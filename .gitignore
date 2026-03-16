@@ -1,0 +1,31 @@
+# Workspace runtime directories (not tracked)
+data/
+results/
+reports/
+tasks/
+tasks_active/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Data files
+*.parquet
+*.pkl
+*.tar.gz
+*.h5
+*.hdf5
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
