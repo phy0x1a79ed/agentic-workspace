@@ -1,0 +1,121 @@
+"""Project CRUD — ports new-project.sh."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+from awm.config import (
+    WORKSPACE_ROOT,
+    TASKS_DIR,
+    DATA_DIR,
+    RESULTS_DIR,
+    REPORTS_DIR,
+)
+from awm.models import ProjectCreateRequest, ProjectCreateResponse
+
+
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def _detect_default_branch(bare_dir: Path) -> str:
+    """Detect main or master branch in a bare repo."""
+    for branch in ("main", "master"):
+        r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify", branch])
+        if r.returncode == 0:
+            return branch
+    for branch in ("main", "master"):
+        r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify", f"refs/remotes/origin/{branch}"])
+        if r.returncode == 0:
+            return branch
+    # Fallback: check HEAD
+    r = _run(["git", "-C", str(bare_dir), "symbolic-ref", "HEAD"])
+    if r.returncode == 0 and "master" in r.stdout:
+        return "master"
+    return "main"
+
+
+def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
+    """Create a new project with bare repo, worktree, and data dirs."""
+    bare_dir = TASKS_DIR / req.name / ".bare"
+
+    if bare_dir.exists():
+        raise FileExistsError(f"Project '{req.name}' already exists at {bare_dir}")
+
+    mode = "fresh"
+    if req.clone_url:
+        mode = "clone"
+    elif req.fork_url:
+        mode = "fork"
+
+    if mode == "fresh":
+        _run(["git", "init", "--bare", str(bare_dir)], check=True)
+
+        # Try creating GitHub repo
+        if shutil.which("gh"):
+            _run(["gh", "repo", "create", f"phy0x1a79ed/{req.name}", "--private"])
+            _run(["git", "-C", str(bare_dir), "remote", "add", "origin",
+                  f"https://github.com/phy0x1a79ed/{req.name}.git"])
+
+        # Create initial commit via temp clone
+        with tempfile.TemporaryDirectory() as tmp:
+            init_dir = Path(tmp) / "init"
+            _run(["git", "clone", str(bare_dir), str(init_dir)])
+            _run(["git", "-C", str(init_dir), "checkout", "-b", "main"])
+            _run(["git", "-C", str(init_dir), "commit", "--allow-empty",
+                  "-m", f"Initial commit for {req.name}"])
+            _run(["git", "-C", str(init_dir), "push", "origin", "main"])
+
+    elif mode == "clone":
+        _run(["git", "clone", "--bare", req.clone_url, str(bare_dir)], check=True)
+        _run(["git", "-C", str(bare_dir), "config", "remote.origin.fetch",
+              "+refs/heads/*:refs/remotes/origin/*"])
+
+    elif mode == "fork":
+        if not shutil.which("gh"):
+            raise RuntimeError("gh CLI is required for --fork")
+        _run(["gh", "repo", "fork", req.fork_url, "--clone=false"])
+        repo_name = Path(req.fork_url).stem
+        fork_clone_url = f"https://github.com/phy0x1a79ed/{repo_name}.git"
+        _run(["git", "clone", "--bare", fork_clone_url, str(bare_dir)], check=True)
+        _run(["git", "-C", str(bare_dir), "config", "remote.origin.fetch",
+              "+refs/heads/*:refs/remotes/origin/*"])
+        _run(["git", "-C", str(bare_dir), "remote", "add", "upstream", req.fork_url])
+
+    # Create supporting directories
+    for d in [
+        DATA_DIR / req.name / "raw",
+        DATA_DIR / req.name / "staged",
+        RESULTS_DIR / req.name,
+        REPORTS_DIR / req.name,
+    ]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Detect default branch and create worktree
+    default_branch = _detect_default_branch(bare_dir)
+    worktree_dir = TASKS_DIR / req.name / default_branch
+
+    if not worktree_dir.exists():
+        r = _run(["git", "-C", str(bare_dir), "worktree", "add",
+                  f"../{default_branch}", default_branch])
+        if r.returncode != 0:
+            _run(["git", "-C", str(bare_dir), "worktree", "add",
+                  f"../{default_branch}", "-b", default_branch])
+
+    # Copy AGENTS.md template if available
+    template = WORKSPACE_ROOT / "skills" / "templates" / "AGENTS.md.template"
+    if template.exists() and worktree_dir.exists():
+        shutil.copy2(template, worktree_dir / "AGENTS.md")
+
+    return ProjectCreateResponse(
+        name=req.name,
+        bare_dir=str(bare_dir),
+        worktree_dir=str(worktree_dir),
+        data_dir=str(DATA_DIR / req.name),
+        results_dir=str(RESULTS_DIR / req.name),
+        reports_dir=str(REPORTS_DIR / req.name),
+        mode=mode,
+    )

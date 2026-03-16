@@ -1,3 +1,6 @@
+# AWM runtime state
+.awm/
+
 # Workspace runtime directories (not tracked)
 data/
 results/

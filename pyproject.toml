@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "typer",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+include = ["awm*"]
+
+[project.scripts]
+awm = "awm.__main__:main"
