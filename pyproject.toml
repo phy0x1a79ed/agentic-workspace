@@ -11,10 +11,25 @@ dependencies = [
     "uvicorn[standard]",
     "typer",
     "httpx",
+    "mcp[cli]",
+    "pyyaml",
 ]
 
 [tool.setuptools.packages.find]
 include = ["awm*"]
 
+[tool.setuptools.package-data]
+"awm.skills" = ["**/*.md", "**/*.template"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "httpx",
+]
+
 [project.scripts]
 awm = "awm.__main__:main"
+awm-mcp = "awm.mcp_server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["awm/tests"]

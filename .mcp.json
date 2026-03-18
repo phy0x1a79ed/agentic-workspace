@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "awm": {
+      "command": "mamba",
+      "args": ["run", "-n", "awm", "awm-mcp"],
+      "env": {
+        "AWM_WORKSPACE": "/home/tony/agentic_workspace"
+      }
+    }
+  }
+}

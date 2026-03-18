@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -26,11 +27,15 @@ project_app = typer.Typer(help="Project management", no_args_is_help=True)
 task_app = typer.Typer(help="Task management", no_args_is_help=True)
 lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
 shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
+skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
+session_app = typer.Typer(help="Session log management", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(task_app, name="task")
 app.add_typer(lock_app, name="lock")
 app.add_typer(shared_app, name="shared")
+app.add_typer(skill_app, name="skill")
+app.add_typer(session_app, name="session")
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +106,7 @@ def init():
     AWM_DIR.mkdir(parents=True, exist_ok=True)
 
     # Ensure workspace directories exist
-    for d in ["data/reference", "results", "reports", "tasks", "tasks_active",
-              "skills/sops", "skills/tools", "skills/templates", "scripts"]:
+    for d in ["data/reference", "repos", "main"]:
         (WORKSPACE_ROOT / d).mkdir(parents=True, exist_ok=True)
 
     init_db()
@@ -198,11 +202,17 @@ def task_create(
     project: str = typer.Argument(..., help="Project name"),
     task: str = typer.Argument(..., help="Task name"),
     from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch"),
+    context: Optional[str] = typer.Option(None, "--context", help="Seed context text for AGENTS.md"),
+    context_file: Optional[Path] = typer.Option(None, "--context-file", help="Read context from file"),
 ):
     """Create a task worktree."""
     payload = {"project": project, "task": task}
     if from_branch:
         payload["from_branch"] = from_branch
+    if context_file:
+        payload["context"] = context_file.read_text(encoding="utf-8")
+    elif context:
+        payload["context"] = context
     r = _api("POST", "/tasks", json=payload)
     _print_json(r)
 
@@ -212,35 +222,29 @@ def task_complete(
     project: str = typer.Argument(..., help="Project name"),
     task: str = typer.Argument(..., help="Task name"),
     merge: bool = typer.Option(False, "--merge", help="Merge feature branch into main"),
+    cleanup: bool = typer.Option(False, "--cleanup", help="Remove worktree and branch after completion"),
 ):
     """Complete a task."""
-    r = _api("PATCH", f"/tasks/{project}/{task}", json={"action": "complete", "merge": merge})
+    r = _api("PATCH", f"/tasks/{project}/{task}", json={"action": "complete", "merge": merge, "cleanup": cleanup})
     _print_json(r)
 
 
-@task_app.command("pause")
-def task_pause(
+@task_app.command("delete")
+def task_delete(
     project: str = typer.Argument(..., help="Project name"),
     task: str = typer.Argument(..., help="Task name"),
+    force: bool = typer.Option(False, "--force", help="Skip confirmation"),
 ):
-    """Pause a task."""
-    r = _api("PATCH", f"/tasks/{project}/{task}", json={"action": "pause"})
-    _print_json(r)
-
-
-@task_app.command("resume")
-def task_resume(
-    project: str = typer.Argument(..., help="Project name"),
-    task: str = typer.Argument(..., help="Task name"),
-):
-    """Resume a paused task."""
-    r = _api("PATCH", f"/tasks/{project}/{task}", json={"action": "resume"})
+    """Delete a task (remove worktree, branch, mark as deleted)."""
+    if not force:
+        typer.confirm(f"Delete task '{task}' in project '{project}'? This removes the worktree and branch.", abort=True)
+    r = _api("DELETE", f"/tasks/{project}/{task}")
     _print_json(r)
 
 
 @task_app.command("list")
 def task_list(
-    status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/paused/all)"),
+    status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/deleted/all)"),
     project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
 ):
     """List tasks."""
@@ -386,3 +390,197 @@ def shared_list(
     for e in edits:
         typer.echo(f"{e['name']:<30} {e['status']:<12} {e['branch']:<30} {e['created_by']:<20}")
     typer.echo(f"\nTotal: {data['total']} edit(s)")
+
+
+# ---------------------------------------------------------------------------
+# Skill commands
+# ---------------------------------------------------------------------------
+
+@skill_app.command("list")
+def skill_list(
+    type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
+    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
+):
+    """List all skills in the catalog."""
+    params = {}
+    if type:
+        params["type"] = type
+    if tags:
+        params["tags"] = tags
+    r = _api("GET", "/skills", params=params)
+
+    data = r.json()
+    if r.status_code >= 400:
+        typer.echo(f"Error: {data}", err=True)
+        raise typer.Exit(1)
+
+    skills = data["skills"]
+    if not skills:
+        typer.echo("(no skills found)")
+        return
+
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35}")
+    for s in skills:
+        tags_str = ", ".join(s.get("tags", []))
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35}")
+    typer.echo(f"\nTotal: {data['total']} skill(s)")
+
+
+@skill_app.command("get")
+def skill_get(
+    path: str = typer.Argument(..., help="Relative path to skill (e.g. sops/git-workflow.md)"),
+):
+    """Read a skill file."""
+    r = _api("GET", f"/skills/{path}")
+    if r.status_code >= 400:
+        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    data = r.json()
+    typer.echo(data["content"])
+
+
+@skill_app.command("search")
+def skill_search(
+    query: str = typer.Argument(..., help="Search query"),
+):
+    """Search skills by name, tags, description, or content."""
+    r = _api("GET", "/skills/search", params={"q": query})
+
+    data = r.json()
+    if r.status_code >= 400:
+        typer.echo(f"Error: {data}", err=True)
+        raise typer.Exit(1)
+
+    skills = data["skills"]
+    if not skills:
+        typer.echo("(no matching skills)")
+        return
+
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'FILE':<35}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<35}")
+    for s in skills:
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {s['file_path']:<35}")
+    typer.echo(f"\nTotal: {data['total']} match(es)")
+
+
+@skill_app.command("reindex")
+def skill_reindex():
+    """Regenerate the skills/_index.md from a live scan."""
+    r = _api("POST", "/skills/reindex")
+    if r.status_code >= 400:
+        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    typer.echo("Skills index regenerated.")
+
+
+# ---------------------------------------------------------------------------
+# Session commands
+# ---------------------------------------------------------------------------
+
+@session_app.command("log")
+def session_log(
+    project: str = typer.Argument(..., help="Project name"),
+    task: str = typer.Argument(..., help="Task name"),
+    summary: str = typer.Option(..., "--summary", help="Session summary"),
+    decisions: Optional[list[str]] = typer.Option(None, "--decision", help="Decisions made (repeatable)"),
+    issues: Optional[list[str]] = typer.Option(None, "--issue", help="Issues encountered (repeatable)"),
+    next_steps: Optional[list[str]] = typer.Option(None, "--next-step", help="Next steps (repeatable)"),
+    agent_id: str = typer.Option("unknown", "--agent", help="Agent identifier"),
+):
+    """Log a session entry to experiences.md."""
+    payload = {
+        "project": project,
+        "task": task,
+        "summary": summary,
+        "agent_id": agent_id,
+    }
+    if decisions:
+        payload["decisions"] = decisions
+    if issues:
+        payload["issues"] = issues
+    if next_steps:
+        payload["next_steps"] = next_steps
+    r = _api("POST", "/sessions", json=payload)
+    _print_json(r)
+
+
+@session_app.command("list")
+def session_list(
+    project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
+    task: Optional[str] = typer.Option(None, "--task", help="Filter by task"),
+    limit: int = typer.Option(50, "--limit", help="Max entries to return"),
+):
+    """List session log entries."""
+    params = {"limit": limit}
+    if project:
+        params["project"] = project
+    if task:
+        params["task"] = task
+    r = _api("GET", "/sessions", params=params)
+
+    data = r.json()
+    if r.status_code >= 400:
+        typer.echo(f"Error: {data}", err=True)
+        raise typer.Exit(1)
+
+    entries = data["entries"]
+    if not entries:
+        typer.echo("(no session logs found)")
+        return
+
+    typer.echo(f"{'ID':<6} {'PROJECT':<18} {'TASK':<22} {'AGENT':<15} {'LOGGED AT':<28} {'SUMMARY':<40}")
+    typer.echo(f"{'--':<6} {'-------':<18} {'----':<22} {'-----':<15} {'---------':<28} {'-------':<40}")
+    for e in entries:
+        summary = e["summary"][:37] + "..." if len(e["summary"]) > 40 else e["summary"]
+        typer.echo(f"{e['id']:<6} {e['project']:<18} {e['task']:<22} {e['agent_id']:<15} {e['logged_at']:<28} {summary:<40}")
+    typer.echo(f"\nTotal: {data['total']} entry(ies)")
+
+
+@session_app.command("get")
+def session_get(
+    session_id: int = typer.Argument(..., help="Session log ID"),
+):
+    """Get a session log entry with full content."""
+    r = _api("GET", f"/sessions/{session_id}")
+    if r.status_code >= 400:
+        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    data = r.json()
+    entry = data["entry"]
+    typer.echo(f"Session #{entry['id']} — {entry['project']}/{entry['task']} ({entry['agent_id']})")
+    typer.echo(f"Logged: {entry['logged_at']}  Commit: {entry.get('git_commit', 'n/a')}")
+    typer.echo("---")
+    typer.echo(data["content"])
+
+
+@session_app.command("reflect")
+def session_reflect(
+    project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
+    task: Optional[str] = typer.Option(None, "--task", help="Filter by task"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Search query across summaries"),
+):
+    """Search session logs for reflection and learning."""
+    params = {}
+    if project:
+        params["project"] = project
+    if task:
+        params["task"] = task
+    if query:
+        params["q"] = query
+    r = _api("GET", "/sessions/reflect", params=params)
+
+    data = r.json()
+    if r.status_code >= 400:
+        typer.echo(f"Error: {data}", err=True)
+        raise typer.Exit(1)
+
+    entries = data["entries"]
+    if not entries:
+        typer.echo("(no matching sessions)")
+        return
+
+    for e in entries:
+        typer.echo(f"\n[#{e['id']}] {e['project']}/{e['task']} — {e['logged_at'][:10]} ({e['agent_id']})")
+        typer.echo(f"  {e['summary']}")
+    typer.echo(f"\nTotal: {data['total']} match(es)")

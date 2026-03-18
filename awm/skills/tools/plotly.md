@@ -2,6 +2,7 @@
 name: Plotly
 type: tool
 tags: [visualization, plotly]
+description: BaseFigure/ApplyTemplate, palettes, Kaleido export
 ---
 
 # Plotly Quick Reference

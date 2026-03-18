@@ -9,3 +9,5 @@ dependencies:
     - uvicorn[standard]
     - typer
     - httpx
+    - mcp[cli]
+    - pyyaml

@@ -2,6 +2,7 @@
 name: dependency-management
 type: sop
 tags: [mamba, conda, environment, dependencies]
+description: Mamba per-project envs + per-task overlays
 ---
 
 # Dependency Management
@@ -39,6 +40,37 @@ mamba env create -f envs/environment.yml
 
 ```bash
 mamba activate <project-name>
+```
+
+## Agent / Non-Interactive Usage
+
+In non-interactive shells (agents, scripts, CI), `mamba activate` and `conda activate` **do not work** — they require shell init (`conda init`).
+
+**Always use `mamba run` instead:**
+
+```bash
+# Run a script
+mamba run -n <project-name> python script.py
+
+# Install a package into the env
+mamba run -n <project-name> pip install <package>
+
+# Run any command
+mamba run -n <project-name> <command>
+```
+
+**Never use system pip** — PEP 668 blocks `pip install` outside of a virtual environment on modern Linux.
+
+**Bootstrap sequence** (check if env exists, create if not):
+
+```bash
+mamba env list | grep -q <project-name> || mamba env create -f env/environment.yml
+```
+
+Then apply the task overlay if present:
+
+```bash
+mamba env update -n <project-name> -f env/environment.yml
 ```
 
 ## Per-Task Overlay Pattern

@@ -12,6 +12,26 @@
   2. `mamba activate {{ENV_NAME}}`
   3. Verify: `python -c "import {{PRIMARY_PACKAGE}}; print('OK')"`
 
+## AWM Integration
+
+This project is managed by AWM. Common operations:
+
+```bash
+# Create a task
+awm task create {{PROJECT_NAME}} <task-name>
+
+# List tasks
+awm task list --project {{PROJECT_NAME}}
+
+# Log a session
+awm session log {{PROJECT_NAME}} <task-name> --summary "..." --agent <agent-id>
+
+# Complete a task
+awm task complete {{PROJECT_NAME}} <task-name> [--merge]
+```
+
+AWM is also available as an MCP server — Claude Code can use tools like `task_create`, `session_log`, `skills_search` directly.
+
 ## Data Files
 
 | File | Location | Description |
@@ -31,6 +51,7 @@
 - Follow the project directory layout: `data/`, `scripts/`, `notebooks/`, `results/`.
 - Name output files with date prefix: `YYYY-MM-DD_description.ext`.
 - Pin package versions in `environment.yml`.
+- Log sessions via `awm session log` at the end of each work session.
 
 ## Gotchas
 

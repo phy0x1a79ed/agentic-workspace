@@ -34,8 +34,14 @@ from awm.models import (
     SharedEditRequest,
     SharedEditListResponse,
     SharedEditActionResponse,
+    SkillListResponse,
+    SkillContentResponse,
+    SessionLogCreateRequest,
+    SessionLogEntry,
+    SessionLogListResponse,
+    SessionLogContentResponse,
 )
-from awm.services import projects, tasks, locks, shared_resources
+from awm.services import projects, tasks, locks, shared_resources, skills, sessions
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state
@@ -198,6 +204,16 @@ def update_task(project: str, task: str, req: TaskUpdateRequest):
         raise HTTPException(400, str(e))
 
 
+@app.delete("/tasks/{project}/{task}", response_model=TaskActionResponse)
+def delete_task(project: str, task: str):
+    try:
+        return tasks.delete_task(project, task)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+
 # ---------------------------------------------------------------------------
 # Locks
 # ---------------------------------------------------------------------------
@@ -257,6 +273,76 @@ def merge_shared_edit(name: str):
 @app.get("/shared", response_model=SharedEditListResponse)
 def list_shared_edits(status: str | None = Query(None)):
     return shared_resources.list_edits(status=status)
+
+
+# ---------------------------------------------------------------------------
+# Skills
+# ---------------------------------------------------------------------------
+
+@app.get("/skills/search", response_model=SkillListResponse)
+def search_skills_endpoint(q: str = Query(...)):
+    return skills.search_skills(q)
+
+
+@app.get("/skills", response_model=SkillListResponse)
+def list_skills_endpoint(
+    type: str | None = Query(None),
+    tags: str | None = Query(None, description="Comma-separated tags"),
+):
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    return skills.list_skills(type_filter=type, tags=tag_list)
+
+
+@app.get("/skills/{path:path}", response_model=SkillContentResponse)
+def get_skill_endpoint(path: str):
+    try:
+        return skills.get_skill(path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/skills/reindex")
+def reindex_skills_endpoint():
+    content = skills.regenerate_index()
+    return {"message": "Index regenerated", "content": content}
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+@app.get("/sessions/reflect", response_model=SessionLogListResponse)
+def reflect_sessions_endpoint(
+    project: str | None = Query(None),
+    task: str | None = Query(None),
+    query: str | None = Query(None, alias="q"),
+):
+    return sessions.reflect(project=project, task=task, query=query)
+
+
+@app.post("/sessions", response_model=SessionLogEntry)
+def log_session_endpoint(req: SessionLogCreateRequest):
+    try:
+        return sessions.log_session(req)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/sessions", response_model=SessionLogListResponse)
+def list_sessions_endpoint(
+    project: str | None = Query(None),
+    task: str | None = Query(None),
+    limit: int = Query(50),
+):
+    return sessions.list_sessions(project=project, task=task, limit=limit)
+
+
+@app.get("/sessions/{session_id}", response_model=SessionLogContentResponse)
+def get_session_endpoint(session_id: int):
+    try:
+        return sessions.get_session(session_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
 
 
 # ---------------------------------------------------------------------------

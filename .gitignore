@@ -3,10 +3,8 @@
 
 # Workspace runtime directories (not tracked)
 data/
-results/
-reports/
-tasks/
-tasks_active/
+main/
+repos/
 
 # Python
 __pycache__/
@@ -14,6 +12,8 @@ __pycache__/
 *.pyo
 *.egg-info/
 .eggs/
+.ruff_cache/
+.pytest_cache/
 
 # Data files
 *.parquet

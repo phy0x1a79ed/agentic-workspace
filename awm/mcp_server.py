@@ -1,0 +1,384 @@
+"""MCP stdio server for the Agentic Workspace Manager.
+
+Exposes AWM services as MCP tools so Claude Code (and other MCP clients)
+can manage projects, tasks, locks, skills, and sessions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+from awm.db import init_db
+from awm.models import (
+    LockAcquireRequest,
+    ProjectCreateRequest,
+    SessionLogCreateRequest,
+    TaskCreateRequest,
+    TaskUpdateRequest,
+)
+from awm.services import locks, projects, sessions, skills, tasks
+
+server = Server("awm")
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+TOOLS: list[Tool] = [
+    # Skills
+    Tool(
+        name="skills_list",
+        description="List skills in the catalog, optionally filtered by type or tags.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "description": "Filter by skill type (sop, tool, template)"},
+                "tags": {"type": "string", "description": "Comma-separated tags to filter by"},
+            },
+        },
+    ),
+    Tool(
+        name="skills_get",
+        description="Read a skill file by relative path (e.g. 'sops/git-workflow.md').",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path to the skill file"},
+            },
+            "required": ["path"],
+        },
+    ),
+    Tool(
+        name="skills_search",
+        description="Search skills by name, tags, description, or content.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="skills_reindex",
+        description="Regenerate the skills/_index.md from a live scan of the skills directory.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # Sessions
+    Tool(
+        name="session_log",
+        description="Log a session entry to a task's experiences.md and record metadata in DB.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "summary": {"type": "string"},
+                "decisions": {"type": "array", "items": {"type": "string"}},
+                "issues": {"type": "array", "items": {"type": "string"}},
+                "next_steps": {"type": "array", "items": {"type": "string"}},
+                "agent_id": {"type": "string", "default": "unknown"},
+            },
+            "required": ["project", "task", "summary"],
+        },
+    ),
+    Tool(
+        name="session_list",
+        description="List session log entries, optionally filtered by project and/or task.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    Tool(
+        name="session_get",
+        description="Get a session log entry by ID with full markdown content.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Session log ID"},
+            },
+            "required": ["id"],
+        },
+    ),
+    Tool(
+        name="session_reflect",
+        description="Search across session summaries and metadata for reflection and learning.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "query": {"type": "string", "description": "Search query across summaries"},
+            },
+        },
+    ),
+    # Tasks
+    Tool(
+        name="task_create",
+        description="Create a new task worktree for a project.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "from_branch": {"type": "string"},
+                "context": {"type": "string", "description": "Seed content for AGENTS.md (task context/instructions)"},
+            },
+            "required": ["project", "task"],
+        },
+    ),
+    Tool(
+        name="task_list",
+        description="List tasks, optionally filtered by status and/or project.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "active, completed, deleted, or all"},
+                "project": {"type": "string"},
+            },
+        },
+    ),
+    Tool(
+        name="task_complete",
+        description="Complete a task, optionally merging the feature branch and/or cleaning up the worktree.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "merge": {"type": "boolean", "default": False},
+                "cleanup": {"type": "boolean", "default": False, "description": "Remove worktree and branch after completion"},
+            },
+            "required": ["project", "task"],
+        },
+    ),
+    Tool(
+        name="task_delete",
+        description="Delete a task — clean up its worktree, branch, and mark as deleted in DB.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+            },
+            "required": ["project", "task"],
+        },
+    ),
+    # Projects
+    Tool(
+        name="project_create",
+        description="Create a new project with bare repo, worktree, and data directories.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "clone_url": {"type": "string"},
+                "fork_url": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+    ),
+    # Locks
+    Tool(
+        name="lock_acquire",
+        description="Acquire a lock on a resource path.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "resource_path": {"type": "string"},
+                "holder_id": {"type": "string"},
+                "lock_type": {"type": "string", "default": "exclusive"},
+                "holder_pid": {"type": "integer"},
+                "metadata": {"type": "string"},
+            },
+            "required": ["resource_path", "holder_id"],
+        },
+    ),
+    Tool(
+        name="lock_release",
+        description="Release a lock on a resource path.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "resource_path": {"type": "string"},
+                "holder_id": {"type": "string"},
+            },
+            "required": ["resource_path", "holder_id"],
+        },
+    ),
+    Tool(
+        name="lock_list",
+        description="List active locks, optionally filtered by holder or path.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "holder_id": {"type": "string"},
+                "path": {"type": "string"},
+            },
+        },
+    ),
+    Tool(
+        name="lock_heartbeat",
+        description="Renew heartbeat for all locks held by a given holder.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "holder_id": {"type": "string"},
+            },
+            "required": ["holder_id"],
+        },
+    ),
+    # Status
+    Tool(
+        name="awm_status",
+        description="Get AWM server status: workspace root, active locks, tasks, and shared edits.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Tool handlers
+# ---------------------------------------------------------------------------
+
+def _serialize(obj: Any) -> str:
+    """Serialize a Pydantic model (or dict) to JSON string."""
+    if hasattr(obj, "model_dump"):
+        return json.dumps(obj.model_dump(), indent=2, default=str)
+    return json.dumps(obj, indent=2, default=str)
+
+
+def _handle_tool(name: str, args: dict) -> str:
+    """Dispatch a tool call to the appropriate service function."""
+    # Skills
+    if name == "skills_list":
+        tag_list = [t.strip() for t in args["tags"].split(",")] if args.get("tags") else None
+        return _serialize(skills.list_skills(type_filter=args.get("type"), tags=tag_list))
+    if name == "skills_get":
+        return _serialize(skills.get_skill(args["path"]))
+    if name == "skills_search":
+        return _serialize(skills.search_skills(args["query"]))
+    if name == "skills_reindex":
+        content = skills.regenerate_index()
+        return json.dumps({"message": "Index regenerated", "lines": len(content.splitlines())})
+
+    # Sessions
+    if name == "session_log":
+        req = SessionLogCreateRequest(**args)
+        return _serialize(sessions.log_session(req))
+    if name == "session_list":
+        return _serialize(sessions.list_sessions(
+            project=args.get("project"), task=args.get("task"), limit=args.get("limit", 50),
+        ))
+    if name == "session_get":
+        return _serialize(sessions.get_session(args["id"]))
+    if name == "session_reflect":
+        return _serialize(sessions.reflect(
+            project=args.get("project"), task=args.get("task"), query=args.get("query"),
+        ))
+
+    # Tasks
+    if name == "task_create":
+        req = TaskCreateRequest(project=args["project"], task=args["task"],
+                                from_branch=args.get("from_branch"),
+                                context=args.get("context"))
+        return _serialize(tasks.create_task(req))
+    if name == "task_list":
+        return _serialize(tasks.list_tasks(status=args.get("status"), project=args.get("project")))
+    if name == "task_complete":
+        req = TaskUpdateRequest(action="complete", merge=args.get("merge", False), cleanup=args.get("cleanup", False))
+        return _serialize(tasks.update_task(args["project"], args["task"], req))
+    if name == "task_delete":
+        return _serialize(tasks.delete_task(args["project"], args["task"]))
+
+    # Projects
+    if name == "project_create":
+        req = ProjectCreateRequest(**args)
+        return _serialize(projects.create_project(req))
+
+    # Locks
+    if name == "lock_acquire":
+        req = LockAcquireRequest(**args)
+        return _serialize(locks.acquire(req))
+    if name == "lock_release":
+        return _serialize(locks.release(args["resource_path"], args["holder_id"]))
+    if name == "lock_list":
+        return _serialize(locks.list_locks(holder_id=args.get("holder_id"), path=args.get("path")))
+    if name == "lock_heartbeat":
+        return _serialize(locks.heartbeat(args["holder_id"]))
+
+    # Status
+    if name == "awm_status":
+        from awm.config import WORKSPACE_ROOT
+        from awm.db import get_connection
+        conn = get_connection()
+        try:
+            active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
+            active_edits = conn.execute(
+                "SELECT COUNT(*) FROM shared_edits WHERE status = 'active'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        task_result = tasks.list_tasks(status="active")
+        return json.dumps({
+            "status": "ok",
+            "workspace_root": str(WORKSPACE_ROOT),
+            "active_locks": active_locks,
+            "active_tasks": task_result.total,
+            "active_shared_edits": active_edits,
+        }, indent=2)
+
+    raise ValueError(f"Unknown tool: {name}")
+
+
+# ---------------------------------------------------------------------------
+# MCP protocol handlers
+# ---------------------------------------------------------------------------
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return TOOLS
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    try:
+        result = _handle_tool(name, arguments)
+        return [TextContent(type="text", text=result)]
+    except FileNotFoundError as e:
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+    except FileExistsError as e:
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+    except (RuntimeError, ValueError) as e:
+        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+async def _run():
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
+
+def main():
+    init_db()
+    locks.reap_stale()
+    asyncio.run(_run())
+
+
+if __name__ == "__main__":
+    main()

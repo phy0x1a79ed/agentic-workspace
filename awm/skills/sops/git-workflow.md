@@ -2,6 +2,7 @@
 name: git-workflow
 type: sop
 tags: [git, bare-repo, worktree, branch, pr]
+description: Bare repo + worktree model, branching, PRs
 ---
 
 # Git Workflow
@@ -11,8 +12,8 @@ tags: [git, bare-repo, worktree, branch, pr]
 Each project uses a **bare repository** with linked worktrees instead of a standard clone.
 
 ```
-projects/<project>/
-  <project>.git/     # bare repo (no working directory)
+tasks/<project>/
+  .bare/             # bare repo (no working directory)
   main/              # worktree -> main branch
   <task-name>/       # worktree -> feat/<task-name> branch
 ```
@@ -30,12 +31,12 @@ projects/<project>/
 | `feat/<task>`   | New features or enhancements    |
 | `fix/<task>`    | Bug fixes                       |
 
-Branches are created automatically by `scripts/new-task.sh`.
+Branches are created automatically by `awm task create`.
 
 ## Listing Worktrees
 
 ```bash
-git -C projects/<project>/<project>.git worktree list
+git -C tasks/<project>/.bare worktree list
 ```
 
 ## Creating Pull Requests
@@ -43,7 +44,7 @@ git -C projects/<project>/<project>.git worktree list
 From within a task worktree:
 
 ```bash
-cd projects/<project>/<task-name>/
+cd tasks/<project>/<task-name>/
 git push -u origin feat/<task-name>
 gh pr create --title "feat: <description>" --body "Summary of changes"
 ```
@@ -53,13 +54,13 @@ gh pr create --title "feat: <description>" --body "Summary of changes"
 Add the upstream remote (done automatically on fork setup):
 
 ```bash
-git -C projects/<project>/<project>.git remote add upstream <upstream-url>
+git -C tasks/<project>/.bare remote add upstream <upstream-url>
 ```
 
 Fetch and merge upstream changes into main:
 
 ```bash
-cd projects/<project>/main/
+cd tasks/<project>/main/
 git fetch upstream
 git merge upstream/main
 git push origin main
@@ -68,7 +69,7 @@ git push origin main
 Rebase a task branch onto updated main:
 
 ```bash
-cd projects/<project>/<task-name>/
+cd tasks/<project>/<task-name>/
 git rebase main
 ```
 
@@ -76,14 +77,14 @@ git rebase main
 
 ```bash
 # Check which branch a worktree is on
-git -C projects/<project>/<task-name> branch --show-current
+git -C tasks/<project>/<task-name> branch --show-current
 
 # View all branches
-git -C projects/<project>/<project>.git branch -a
+git -C tasks/<project>/.bare branch -a
 
 # Remove a worktree
-git -C projects/<project>/<project>.git worktree remove <task-name>
+git -C tasks/<project>/.bare worktree remove <task-name>
 
 # Prune stale worktree references
-git -C projects/<project>/<project>.git worktree prune
+git -C tasks/<project>/.bare worktree prune
 ```

@@ -1,19 +1,21 @@
-"""Task CRUD — ports new-task.sh, complete-task.sh, list-tasks.sh."""
+"""Task CRUD — create, complete, delete, list."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from awm.config import (
     WORKSPACE_ROOT,
-    TASKS_DIR,
-    TASKS_ACTIVE_DIR,
+    REPOS_DIR,
+    MAIN_DIR,
     DATA_DIR,
-    RESULTS_DIR,
-    REPORTS_DIR,
+    SKILLS_DIR,
 )
+from awm.db import get_connection
+from awm.git_utils import run_git, detect_default_branch
 from awm.models import (
     TaskCreateRequest,
     TaskUpdateRequest,
@@ -23,221 +25,229 @@ from awm.models import (
 )
 
 
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def _detect_default_branch(bare_dir: Path) -> str:
-    for branch in ("main", "master"):
-        r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify", branch])
-        if r.returncode == 0:
-            return branch
-    return "main"
+def _get_workspace_dir(project: str, task: str) -> Path:
+    """Return the agent workspace directory for a task."""
+    return MAIN_DIR / project / task
+
+
+def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str) -> None:
+    """Remove a task's worktree and branch, ignoring errors."""
+    # Remove worktree via git
+    r = run_git(["git", "-C", str(bare_dir), "worktree", "remove", str(worktree_dir), "--force"])
+    if r.returncode != 0 and worktree_dir.exists():
+        # Fallback: force-remove the directory
+        shutil.rmtree(worktree_dir, ignore_errors=True)
+
+    # Prune worktree list
+    run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
+
+    # Delete the feature branch (may already be merged/deleted)
+    run_git(["git", "-C", str(bare_dir), "branch", "-D", feature_branch])
 
 
 def create_task(req: TaskCreateRequest) -> TaskActionResponse:
-    """Create a new task worktree branching from the specified (or default) branch."""
-    bare_dir = TASKS_DIR / req.project / ".bare"
+    """Create a new task worktree + agent workspace."""
+    bare_dir = REPOS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         raise FileNotFoundError(f"Project '{req.project}' not found (expected {bare_dir})")
 
-    from_branch = req.from_branch or _detect_default_branch(bare_dir)
-    worktree_dir = TASKS_DIR / req.project / req.task
+    from_branch = req.from_branch or detect_default_branch(bare_dir)
+    repo_dir = REPOS_DIR / req.project / req.task
+    workspace_dir = _get_workspace_dir(req.project, req.task)
     feature_branch = f"feat/{req.task}"
 
-    if worktree_dir.exists():
-        raise FileExistsError(f"Task worktree already exists at {worktree_dir}")
+    if repo_dir.exists():
+        raise FileExistsError(f"Task repo worktree already exists at {repo_dir}")
 
-    # Create worktree with feature branch
-    r = _run(["git", "-C", str(bare_dir), "worktree", "add",
+    # 1. Create git worktree at repos/{project}/{task}/
+    r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
               f"../{req.task}", "-b", feature_branch, from_branch])
     if r.returncode != 0:
         raise RuntimeError(f"Failed to create worktree: {r.stderr}")
 
-    # Create results directory
-    results_task_dir = RESULTS_DIR / req.project / req.task
-    results_task_dir.mkdir(parents=True, exist_ok=True)
+    # 2. Create agent workspace at main/{project}/{task}/
+    workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create symlinks in the worktree
-    (worktree_dir / "data").symlink_to(DATA_DIR)
-    (worktree_dir / "results").symlink_to(results_task_dir)
-    (worktree_dir / "reports").symlink_to(REPORTS_DIR / req.project)
+    # 3. Create symlinks: repo, skills, data
+    (workspace_dir / "repo").symlink_to(repo_dir)
+    (workspace_dir / "skills").symlink_to(SKILLS_DIR)
+    (workspace_dir / "data").symlink_to(DATA_DIR)
 
-    # Write .status
-    (worktree_dir / ".status").write_text("active\n")
+    # 4. Create results/ and inbox/ directories
+    (workspace_dir / "results").mkdir(exist_ok=True)
+    (workspace_dir / "inbox").mkdir(exist_ok=True)
 
-    # Initialize experiences.md
-    (worktree_dir / "experiences.md").write_text(
+    # 5. Write AGENTS.md from context or default header
+    if req.context:
+        agents_content = req.context
+    else:
+        agents_content = (
+            f"# {req.project}/{req.task}\n\n"
+            f"@../../../AGENTS.md\n\n"
+            f"Workspace SOPs and tool guides are in `skills/`.\n"
+        )
+    (workspace_dir / "AGENTS.md").write_text(agents_content)
+
+    # 6. Initialize experiences.md
+    (workspace_dir / "experiences.md").write_text(
         f"# Experiences -- {req.project}/{req.task}\n\n## Log\n\n"
     )
 
-    # Create env/ directory with overlay
-    env_dir = worktree_dir / "env"
-    env_dir.mkdir(exist_ok=True)
-    (env_dir / "environment.yml").write_text(
-        f"# Per-task overlay — install into project env with:\n"
-        f"#   mamba env update -n {req.project} --file env/environment.yml\n"
-        f"name: {req.project}\n"
-        f"channels:\n"
-        f"  - conda-forge\n"
-        f"  - bioconda\n"
-        f"dependencies: []\n"
-    )
-
-    # Create symlink in tasks_active
-    TASKS_ACTIVE_DIR.mkdir(exist_ok=True)
-    link_path = TASKS_ACTIVE_DIR / f"{req.project}_{req.task}"
-    link_target = Path("..") / "tasks" / req.project / req.task
-    if link_path.exists() or link_path.is_symlink():
-        link_path.unlink()
-    link_path.symlink_to(link_target)
+    # 7. Record in DB (worktree → main/ workspace, repo_path → git worktree)
+    now = _now_iso()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tasks (project, task, status, branch, worktree, repo_path, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?)",
+            (req.project, req.task, feature_branch, str(workspace_dir), str(repo_dir), now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     return TaskActionResponse(
         project=req.project,
         task=req.task,
         status="active",
-        message=f"Created task worktree at tasks/{req.project}/{req.task} on branch {feature_branch}",
+        message=f"Created task at repos/{req.project}/{req.task} (workspace: main/{req.project}/{req.task}) on branch {feature_branch}",
     )
 
 
 def update_task(project: str, task: str, req: TaskUpdateRequest) -> TaskActionResponse:
-    """Complete, pause, or resume a task."""
-    worktree_dir = TASKS_DIR / project / task
-    bare_dir = TASKS_DIR / project / ".bare"
+    """Complete a task."""
+    bare_dir = REPOS_DIR / project / ".bare"
+    repo_dir = REPOS_DIR / project / task
+    workspace_dir = _get_workspace_dir(project, task)
 
-    if not worktree_dir.exists():
-        raise FileNotFoundError(f"Task worktree not found at {worktree_dir}")
     if not bare_dir.exists():
         raise FileNotFoundError(f"Bare repo not found at {bare_dir}")
 
     feature_branch = f"feat/{task}"
-    active_link = TASKS_ACTIVE_DIR / f"{project}_{task}"
+    now = _now_iso()
 
-    if req.action == "complete":
-        (worktree_dir / ".status").write_text("completed\n")
+    if req.action != "complete":
+        raise ValueError(f"Unknown action: {req.action}. Only 'complete' is supported.")
 
-        # Remove active symlink
-        if active_link.exists() or active_link.is_symlink():
-            active_link.unlink()
+    # Update DB
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE tasks SET status='completed', updated_at=? WHERE project=? AND task=? AND status='active'",
+            (now, project, task),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-        # Merge if requested
-        merge_msg = ""
+    # Merge if requested
+    merge_msg = ""
+    if req.merge:
+        default_branch = detect_default_branch(bare_dir)
+        main_worktree = REPOS_DIR / project / default_branch
+        if not main_worktree.exists():
+            raise FileNotFoundError(f"Main worktree not found at {main_worktree}")
+        run_git(["git", "-C", str(main_worktree), "checkout", default_branch])
+        r = run_git(["git", "-C", str(main_worktree), "merge", feature_branch,
+                  "-m", f"Merge {feature_branch} into {default_branch}"])
+        if r.returncode != 0:
+            raise RuntimeError(f"Merge failed: {r.stderr}")
+        run_git(["git", "-C", str(main_worktree), "push"])
+        merge_msg = f", merged into {default_branch}"
+
+    # Append completion entry to experiences.md in workspace
+    exp_file = workspace_dir / "experiences.md"
+    if exp_file.exists():
+        today = date.today().isoformat()
+        entry = (
+            f"\n## Completed: {today}\n\n"
+            f"- Task marked as completed on {today}\n"
+            f"- Branch: {feature_branch}\n"
+        )
         if req.merge:
-            default_branch = _detect_default_branch(bare_dir)
-            main_worktree = TASKS_DIR / project / default_branch
-            if not main_worktree.exists():
-                raise FileNotFoundError(f"Main worktree not found at {main_worktree}")
-            _run(["git", "-C", str(main_worktree), "checkout", default_branch])
-            r = _run(["git", "-C", str(main_worktree), "merge", feature_branch,
-                      "-m", f"Merge {feature_branch} into {default_branch}"])
-            if r.returncode != 0:
-                raise RuntimeError(f"Merge failed: {r.stderr}")
-            _run(["git", "-C", str(main_worktree), "push"])
-            merge_msg = f", merged into {default_branch}"
+            entry += f"- Merged into {detect_default_branch(bare_dir)}\n"
+        with open(exp_file, "a") as f:
+            f.write(entry)
 
-        # Append completion entry to experiences.md
-        exp_file = worktree_dir / "experiences.md"
-        if exp_file.exists():
-            today = date.today().isoformat()
-            entry = (
-                f"\n## Completed: {today}\n\n"
-                f"- Task marked as completed on {today}\n"
-                f"- Branch: {feature_branch}\n"
-            )
-            if req.merge:
-                entry += f"- Merged into {_detect_default_branch(bare_dir)}\n"
-            with open(exp_file, "a") as f:
-                f.write(entry)
+    # Cleanup worktree/branch if requested
+    if req.cleanup:
+        _cleanup_worktree(bare_dir, repo_dir, feature_branch)
 
-        return TaskActionResponse(
-            project=project, task=task, status="completed",
-            message=f"Task completed{merge_msg}",
+    return TaskActionResponse(
+        project=project, task=task, status="completed",
+        message=f"Task completed{merge_msg}",
+    )
+
+
+def delete_task(project: str, task: str) -> TaskActionResponse:
+    """Delete a task — clean up worktree, branch, and mark as deleted in DB."""
+    bare_dir = REPOS_DIR / project / ".bare"
+    repo_dir = REPOS_DIR / project / task
+    workspace_dir = _get_workspace_dir(project, task)
+    feature_branch = f"feat/{task}"
+
+    if not bare_dir.exists():
+        raise FileNotFoundError(f"Bare repo not found at {bare_dir}")
+
+    # Find the task in DB (active or completed)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, status FROM tasks WHERE project=? AND task=? AND status IN ('active', 'completed') ORDER BY updated_at DESC LIMIT 1",
+            (project, task),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"No active or completed task '{task}' found in project '{project}'")
+
+        # Clean up git resources
+        _cleanup_worktree(bare_dir, repo_dir, feature_branch)
+
+        # Clean up workspace
+        if workspace_dir.exists():
+            shutil.rmtree(workspace_dir, ignore_errors=True)
+
+        # Mark as deleted
+        now = _now_iso()
+        conn.execute(
+            "UPDATE tasks SET status='deleted', updated_at=? WHERE id=?",
+            (now, row["id"]),
         )
+        conn.commit()
+    finally:
+        conn.close()
 
-    elif req.action == "pause":
-        (worktree_dir / ".status").write_text("paused\n")
-        if active_link.exists() or active_link.is_symlink():
-            active_link.unlink()
-        return TaskActionResponse(
-            project=project, task=task, status="paused",
-            message="Task paused",
-        )
-
-    elif req.action == "resume":
-        (worktree_dir / ".status").write_text("active\n")
-        TASKS_ACTIVE_DIR.mkdir(exist_ok=True)
-        link_target = Path("..") / "tasks" / project / task
-        if active_link.exists() or active_link.is_symlink():
-            active_link.unlink()
-        active_link.symlink_to(link_target)
-        return TaskActionResponse(
-            project=project, task=task, status="active",
-            message="Task resumed",
-        )
-
-    else:
-        raise ValueError(f"Unknown action: {req.action}")
+    return TaskActionResponse(
+        project=project, task=task, status="deleted",
+        message=f"Task deleted, worktree and branch cleaned up",
+    )
 
 
 def list_tasks(status: str | None = None, project: str | None = None) -> TaskListResponse:
     """List tasks, optionally filtered by status and/or project."""
-    tasks: list[TaskInfo] = []
+    conn = get_connection()
+    try:
+        query = "SELECT project, task, status, branch, worktree, repo_path FROM tasks WHERE 1=1"
+        params: list[str] = []
+        if status and status != "all":
+            query += " AND status = ?"
+            params.append(status)
+        if project:
+            query += " AND project = ?"
+            params.append(project)
+        query += " ORDER BY project, task"
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
 
-    # If filtering for active only, use fast path via tasks_active/
-    if status == "active" and TASKS_ACTIVE_DIR.exists():
-        for link in sorted(TASKS_ACTIVE_DIR.iterdir()):
-            if not link.is_symlink() and not link.is_dir():
-                continue
-            target = link.resolve()
-            if not target.is_dir():
-                continue
-            task_name = target.name
-            project_name = target.parent.name
-            if project and project_name != project:
-                continue
-            branch = "unknown"
-            r = _run(["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"])
-            if r.returncode == 0:
-                branch = r.stdout.strip()
-            tasks.append(TaskInfo(
-                project=project_name, task=task_name,
-                status="active", branch=branch, worktree=str(target),
-            ))
-        return TaskListResponse(tasks=tasks, total=len(tasks))
-
-    # Full scan
-    if not TASKS_DIR.exists():
-        return TaskListResponse(tasks=[], total=0)
-
-    for project_dir in sorted(TASKS_DIR.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        project_name = project_dir.name
-        if project and project_name != project:
-            continue
-
-        for task_dir in sorted(project_dir.iterdir()):
-            if not task_dir.is_dir() or task_dir.name == ".bare":
-                continue
-            task_name = task_dir.name
-
-            # Read status
-            status_file = task_dir / ".status"
-            task_status = "unknown"
-            if status_file.exists():
-                task_status = status_file.read_text().strip()
-
-            if status and status != "all" and task_status != status:
-                continue
-
-            branch = "unknown"
-            r = _run(["git", "-C", str(task_dir), "rev-parse", "--abbrev-ref", "HEAD"])
-            if r.returncode == 0:
-                branch = r.stdout.strip()
-
-            tasks.append(TaskInfo(
-                project=project_name, task=task_name,
-                status=task_status, branch=branch, worktree=str(task_dir),
-            ))
-
+    tasks = [
+        TaskInfo(
+            project=r["project"], task=r["task"], status=r["status"],
+            branch=r["branch"], worktree=r["worktree"],
+            repo_path=r["repo_path"],
+        )
+        for r in rows
+    ]
     return TaskListResponse(tasks=tasks, total=len(tasks))

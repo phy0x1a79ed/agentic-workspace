@@ -1,6 +1,6 @@
 # Agentic Workspace Manager (AWM)
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/task management, file locking with crash recovery, and shared resource versioning through git worktrees.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/task management, file locking with crash recovery, skills catalog, session logging, shared resource versioning, and an MCP server for direct tool use by Claude Code.
 
 ## Quick Install
 
@@ -8,7 +8,7 @@ A lightweight Python service + CLI for coordinating multiple AI agents working i
 ./setup.sh
 ```
 
-This creates a `awm` mamba environment, installs the package, initializes the database, and adds `awm` to your PATH.
+This creates a `awm` mamba environment, installs the package, initializes the database, and adds `awm` and `awm-mcp` to your PATH.
 
 ## Manual Install
 
@@ -53,6 +53,38 @@ awm task complete myproject analysis-v1
 awm task complete myproject analysis-v1 --merge
 ```
 
+### Skills
+
+```bash
+awm skill list                              # list all skills with metadata
+awm skill list --type sop                   # filter by type (sop, tool, template)
+awm skill list --tags git,workflow           # filter by tags
+awm skill get sops/git-workflow.md          # read a skill file
+awm skill search normalization              # search by keyword
+awm skill reindex                           # regenerate awm/skills/_index.md
+```
+
+### Session Logging
+
+```bash
+# Log a session (appends to experiences.md, commits, records in DB)
+awm session log myproject analysis-v1 \
+  --summary "Completed normalization pipeline" \
+  --decision "Used quantile normalization for cross-sample comparability" \
+  --issue "Missing values in batch 3 required imputation" \
+  --next-step "Validate with PCA plot" \
+  --agent agent1
+
+# Query sessions
+awm session list --project myproject
+awm session list --project myproject --task analysis-v1
+awm session get 42
+
+# Reflect across past sessions
+awm session reflect --query "normalization"
+awm session reflect --project myproject
+```
+
 ### Locking
 
 ```bash
@@ -77,7 +109,7 @@ awm lock reap
 
 ### Shared Resource Edits
 
-For editing tracked files in the outer repo (skills/, scripts/, AGENTS.md):
+For editing tracked files in the outer repo (AGENTS.md, awm/ package files):
 
 ```bash
 awm shared edit --name update-git-sop --by agent1
@@ -85,6 +117,45 @@ awm shared edit --name update-git-sop --by agent1
 awm shared merge --name update-git-sop
 awm shared list
 ```
+
+## MCP Server
+
+AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 18 tools covering skills, sessions, tasks, projects, locks, and status.
+
+### Setup
+
+The `.mcp.json` at the workspace root registers the server:
+
+```json
+{
+  "mcpServers": {
+    "awm": {
+      "command": "mamba",
+      "args": ["run", "-n", "awm", "awm-mcp"],
+      "env": { "AWM_WORKSPACE": "/home/tony/agentic_workspace" }
+    }
+  }
+}
+```
+
+Claude Code automatically discovers this file and connects to the MCP server.
+
+### Running Manually
+
+```bash
+awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
+```
+
+### Tools
+
+| Category | Tools |
+|----------|-------|
+| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
+| Sessions | `session_log`, `session_list`, `session_get`, `session_reflect` |
+| Tasks | `task_create`, `task_list`, `task_complete`, `task_update` |
+| Projects | `project_create` |
+| Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
+| Status | `awm_status` |
 
 ## REST API
 
@@ -105,12 +176,39 @@ The server listens on `127.0.0.1:7819`. All endpoints:
 | POST | `/shared` | Start shared edit |
 | POST | `/shared/{name}/merge` | Merge shared edit |
 | GET | `/shared` | List shared edits |
+| GET | `/skills` | List skills (query: `type`, `tags`) |
+| GET | `/skills/search` | Search skills (query: `q`) |
+| GET | `/skills/{path}` | Get skill content |
+| POST | `/skills/reindex` | Regenerate skills index |
+| POST | `/sessions` | Log a session entry |
+| GET | `/sessions` | List session logs (query: `project`, `task`, `limit`) |
+| GET | `/sessions/{id}` | Get session with full content |
+| GET | `/sessions/reflect` | Search sessions (query: `project`, `task`, `q`) |
 
 ### curl Examples
 
 ```bash
 # Health check
 curl localhost:7819/status
+
+# List skills
+curl localhost:7819/skills
+curl 'localhost:7819/skills?type=sop'
+curl 'localhost:7819/skills/search?q=git'
+
+# Get a skill
+curl localhost:7819/skills/sops/git-workflow.md
+
+# Log a session
+curl -X POST localhost:7819/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"project":"myproject","task":"analysis","summary":"Did things","agent_id":"agent1"}'
+
+# List sessions
+curl 'localhost:7819/sessions?project=myproject'
+
+# Reflect across sessions
+curl 'localhost:7819/sessions/reflect?q=normalization'
 
 # Create task
 curl -X POST localhost:7819/tasks \
@@ -141,21 +239,48 @@ curl -X DELETE 'localhost:7819/locks?path=data/myproject/&holder=agent1'
 ## Architecture
 
 ```
-awm/                  # Git-tracked Python package
-  cli.py              # Typer CLI
-  server.py           # FastAPI + uvicorn
-  config.py           # Paths and settings
-  db.py               # SQLite (WAL mode)
-  models.py           # Pydantic models
+                  ┌─────────┐  ┌──────────┐  ┌───────────┐
+                  │ Typer   │  │ FastAPI  │  │ MCP stdio │
+                  │ CLI     │  │ HTTP     │  │ Server    │
+                  └────┬────┘  └────┬─────┘  └─────┬─────┘
+                       │            │              │
+                       └────────────┼──────────────┘
+                                    │
+                           ┌────────▼────────┐
+                           │  awm/services/  │
+                           │  (shared core)  │
+                           └────────┬────────┘
+                                    │
+                        ┌───────────┼───────────┐
+                        │           │           │
+                   ┌────▼───┐ ┌────▼────┐ ┌────▼────┐
+                   │ SQLite │ │  Files  │ │  Git    │
+                   │ (index)│ │(content)│ │(history)│
+                   └────────┘ └─────────┘ └─────────┘
+```
+
+```
+awm/                      # Git-tracked Python package
+  __init__.py
+  __main__.py             # Entry point (python -m awm)
+  cli.py                  # Typer CLI
+  server.py               # FastAPI + uvicorn
+  mcp_server.py           # MCP stdio server
+  config.py               # Paths and settings
+  db.py                   # SQLite (WAL mode) + migrations
+  models.py               # Pydantic models
   services/
-    projects.py       # Project CRUD
-    tasks.py          # Task CRUD
-    locks.py          # Lock management
-    shared_resources.py  # Outer-repo worktree flow
-.awm/                 # Runtime state (gitignored)
-  state.db            # SQLite database
-  awm.pid             # Server PID
-  awm.log             # Server log
+    projects.py           # Project CRUD
+    tasks.py              # Task CRUD
+    locks.py              # Lock management
+    skills.py             # Skills scanning + index generation
+    sessions.py           # Session log CRUD (DB + file + git)
+    shared_resources.py   # Outer-repo worktree flow
+.awm/                     # Runtime state (gitignored)
+  state.db                # SQLite database (schema v2)
+  awm.pid                 # Server PID
+  awm.log                 # Server log
+.mcp.json                 # MCP server registration
 ```
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var).
@@ -168,4 +293,6 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 
-**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate.
+**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v2).
+
+**MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.

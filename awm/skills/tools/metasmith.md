@@ -2,6 +2,7 @@
 name: Metasmith
 type: tool
 tags: [pipeline, metasmith, bioinformatics]
+description: Metasmith pipeline reference — composable transforms for metadata processing
 ---
 
 # Metasmith Quick Reference

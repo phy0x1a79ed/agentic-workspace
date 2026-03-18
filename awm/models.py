@@ -45,11 +45,13 @@ class TaskCreateRequest(BaseModel):
     project: str
     task: str
     from_branch: str | None = None
+    context: str | None = None
 
 
 class TaskUpdateRequest(BaseModel):
-    action: str  # "complete", "pause", "resume"
+    action: str = Field(default="complete", pattern="^complete$")
     merge: bool = False
+    cleanup: bool = False
 
 
 class TaskInfo(BaseModel):
@@ -58,6 +60,7 @@ class TaskInfo(BaseModel):
     status: str
     branch: str
     worktree: str
+    repo_path: str | None = None
 
 
 class TaskListResponse(BaseModel):
@@ -137,3 +140,60 @@ class SharedEditListResponse(BaseModel):
 class SharedEditActionResponse(BaseModel):
     message: str
     edit: SharedEditInfo | None = None
+
+
+# ---------------------------------------------------------------------------
+# Skills
+# ---------------------------------------------------------------------------
+
+class SkillInfo(BaseModel):
+    name: str
+    type: str
+    tags: list[str] = Field(default_factory=list)
+    description: str = ""
+    file_path: str
+
+
+class SkillListResponse(BaseModel):
+    skills: list[SkillInfo]
+    total: int
+
+
+class SkillContentResponse(BaseModel):
+    skill: SkillInfo
+    content: str
+
+
+# ---------------------------------------------------------------------------
+# Session Logs
+# ---------------------------------------------------------------------------
+
+class SessionLogCreateRequest(BaseModel):
+    project: str
+    task: str
+    summary: str
+    decisions: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    agent_id: str = "unknown"
+
+
+class SessionLogEntry(BaseModel):
+    id: int
+    project: str
+    task: str
+    file_path: str
+    git_commit: str | None
+    logged_at: str
+    summary: str
+    agent_id: str
+
+
+class SessionLogListResponse(BaseModel):
+    entries: list[SessionLogEntry]
+    total: int
+
+
+class SessionLogContentResponse(BaseModel):
+    entry: SessionLogEntry
+    content: str

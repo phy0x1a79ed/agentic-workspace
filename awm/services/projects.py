@@ -3,44 +3,22 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
 from awm.config import (
     WORKSPACE_ROOT,
-    TASKS_DIR,
+    REPOS_DIR,
+    MAIN_DIR,
     DATA_DIR,
-    RESULTS_DIR,
-    REPORTS_DIR,
 )
+from awm.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.models import ProjectCreateRequest, ProjectCreateResponse
-
-
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
-def _detect_default_branch(bare_dir: Path) -> str:
-    """Detect main or master branch in a bare repo."""
-    for branch in ("main", "master"):
-        r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify", branch])
-        if r.returncode == 0:
-            return branch
-    for branch in ("main", "master"):
-        r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify", f"refs/remotes/origin/{branch}"])
-        if r.returncode == 0:
-            return branch
-    # Fallback: check HEAD
-    r = _run(["git", "-C", str(bare_dir), "symbolic-ref", "HEAD"])
-    if r.returncode == 0 and "master" in r.stdout:
-        return "master"
-    return "main"
 
 
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     """Create a new project with bare repo, worktree, and data dirs."""
-    bare_dir = TASKS_DIR / req.name / ".bare"
+    bare_dir = REPOS_DIR / req.name / ".bare"
 
     if bare_dir.exists():
         raise FileExistsError(f"Project '{req.name}' already exists at {bare_dir}")
@@ -89,14 +67,13 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     for d in [
         DATA_DIR / req.name / "raw",
         DATA_DIR / req.name / "staged",
-        RESULTS_DIR / req.name,
-        REPORTS_DIR / req.name,
+        MAIN_DIR / req.name,
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
     # Detect default branch and create worktree
     default_branch = _detect_default_branch(bare_dir)
-    worktree_dir = TASKS_DIR / req.name / default_branch
+    worktree_dir = REPOS_DIR / req.name / default_branch
 
     if not worktree_dir.exists():
         r = _run(["git", "-C", str(bare_dir), "worktree", "add",
@@ -115,7 +92,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         bare_dir=str(bare_dir),
         worktree_dir=str(worktree_dir),
         data_dir=str(DATA_DIR / req.name),
-        results_dir=str(RESULTS_DIR / req.name),
-        reports_dir=str(REPORTS_DIR / req.name),
+        results_dir=str(MAIN_DIR / req.name),
+        reports_dir=str(MAIN_DIR / req.name),
         mode=mode,
     )

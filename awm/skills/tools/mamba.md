@@ -2,6 +2,7 @@
 name: Mamba
 type: tool
 tags: [environment, conda, mamba]
+description: Conda/mamba quick reference — create, install, export, run
 ---
 
 # Mamba Quick Reference
@@ -58,11 +59,22 @@ channel_priority: strict
 mamba env list
 ```
 
-## Activate / Deactivate
+## Running Commands in an Environment
+
+**Interactive shell** (requires `conda init` / `mamba init`):
 
 ```bash
 mamba activate myenv
+python script.py
 mamba deactivate
 ```
 
-Note: In non-interactive scripts, use `conda run -n myenv <command>` instead of activate.
+**Non-interactive shell** (agents, scripts, CI — use this by default):
+
+```bash
+mamba run -n myenv python script.py
+mamba run -n myenv pip install <package>
+mamba run -n myenv <any-command>
+```
+
+`mamba activate` only works in interactive shells that have run `conda init`. In agent contexts, **always use `mamba run`**.

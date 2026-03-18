@@ -2,6 +2,7 @@
 name: reporting
 type: sop
 tags: [report, publishing, visualization, methods]
+description: Publishing report packages with methods, tables, and figures
 ---
 
 # Reporting
