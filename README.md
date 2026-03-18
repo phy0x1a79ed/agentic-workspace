@@ -1,6 +1,8 @@
 # Agentic Workspace Manager (AWM)
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/task management, file locking with crash recovery, skills catalog, session logging, shared resource versioning, and an MCP server for direct tool use by Claude Code.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/task management, file locking with crash recovery, skills catalog, session logging, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code.
+
+AWM supports a **three-level agent hierarchy** — workspace, project, and task agents — each with specialized personas, startup rituals, and communication patterns. See [Agent System](#agent-system) for details.
 
 ## Quick Install
 
@@ -118,9 +120,65 @@ awm shared merge --name update-git-sop
 awm shared list
 ```
 
+## Agent System
+
+AWM implements a three-level agent hierarchy where each level is defined by AGENTS.md persona content (not standalone SDK agents). The personas shape how Claude Code / opencode behaves at each directory level.
+
+### Levels
+
+| Level | Directory | Role |
+|-------|-----------|------|
+| **Workspace** | Workspace root | Triage, route, delegate, monitor — never does implementation work |
+| **Project** | `main/{project}/` | Manages tasks within a project, coordinates, reports status up |
+| **Task** | `main/{project}/tasks/{task}/` | Executes the plan from inbox, does the actual work |
+
+### Messaging
+
+Agents communicate via scoped message queues stored in SQLite:
+
+```bash
+# Send a message (via MCP tool)
+inbox_send scope=project:myproject sender=workspace msg_type=task_assignment subject="New work" body="..."
+
+# Check inbox
+inbox_search scope=workspace                    # all workspace messages
+inbox_search scope=task:myproject/analysis-v1    # task-specific messages
+inbox_search status=unread                       # only unread
+inbox_search msg_type=reflection                 # filter by type
+
+# Mark as read
+inbox_read id=42
+
+# List valid recipients
+inbox_recipients
+```
+
+**Message types**: `task_assignment`, `reflection`, `status_update`, `notification`, `plan`
+
+**Scopes**: `workspace`, `project:{name}`, `task:{project}/{task}`
+
+### Agent Spawning
+
+The workspace agent can delegate work by spawning fire-and-forget agent subprocesses:
+
+```bash
+# Spawn an agent on a task (via MCP tool)
+agent_spawn project=myproject task=analysis-v1 prompt="Implement feature X"
+
+# The prompt is automatically sent to the task's inbox as a 'plan' message
+# The agent runs detached, logging output to main/{project}/tasks/{task}/agent.log
+```
+
+Supported CLIs: `opencode` (default, interactive TUI) and `claude` (non-interactive `--print` mode). The default is configurable via the `agent_cli` key in the config table.
+
+### SOPs
+
+- `awm skill get sops/agent-personas` — full persona SOP (startup rituals, triage rules, delegation protocol)
+- `awm skill get sops/agent-spawning` — spawning details, CLI config, inbox protocol
+
 ## MCP Server
 
-AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 18 tools covering skills, sessions, tasks, projects, locks, and status.
+AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 23 tools covering skills, sessions, tasks, projects, locks, messaging, agents, and status.
 
 ### Setup
 
@@ -152,9 +210,11 @@ awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
 |----------|-------|
 | Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
 | Sessions | `session_log`, `session_list`, `session_get`, `session_reflect` |
-| Tasks | `task_create`, `task_list`, `task_complete`, `task_update` |
+| Tasks | `task_create`, `task_list`, `task_complete`, `task_delete` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
+| Messaging | `inbox_send`, `inbox_search`, `inbox_read`, `inbox_recipients` |
+| Agents | `agent_spawn` |
 | Status | `awm_status` |
 
 ## REST API
@@ -276,8 +336,11 @@ awm/                      # Git-tracked Python package
     skills.py             # Skills scanning + index generation
     sessions.py           # Session log CRUD (DB + file + git)
     shared_resources.py   # Outer-repo worktree flow
+    messaging.py          # Scoped message queues (inbox)
+    agents.py             # Fire-and-forget agent spawning
+    config_service.py     # Key-value config store
 .awm/                     # Runtime state (gitignored)
-  state.db                # SQLite database (schema v2)
+  state.db                # SQLite database (schema v7)
   awm.pid                 # Server PID
   awm.log                 # Server log
 .mcp.json                 # MCP server registration
@@ -293,6 +356,6 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 
-**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v2).
+**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v7).
 
 **MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.

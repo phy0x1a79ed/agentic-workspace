@@ -68,8 +68,15 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         DATA_DIR / req.name / "raw",
         DATA_DIR / req.name / "staged",
         MAIN_DIR / req.name,
+        MAIN_DIR / req.name / "tasks",
+        MAIN_DIR / req.name / "inbox",
     ]:
         d.mkdir(parents=True, exist_ok=True)
+
+    # Create project-level data symlink → data/{project}
+    data_link = MAIN_DIR / req.name / "data"
+    if not data_link.exists():
+        data_link.symlink_to(DATA_DIR / req.name)
 
     # Detect default branch and create worktree
     default_branch = _detect_default_branch(bare_dir)
@@ -82,7 +89,18 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             _run(["git", "-C", str(bare_dir), "worktree", "add",
                   f"../{default_branch}", "-b", default_branch])
 
-    # Copy AGENTS.md template if available
+    # Write project-level AGENTS.md from project-agents template
+    project_agents_template = WORKSPACE_ROOT / "skills" / "templates" / "project-agents.md.template"
+    if not project_agents_template.exists():
+        # Fall back to package-bundled template
+        from awm.config import SKILLS_DIR
+        project_agents_template = SKILLS_DIR / "templates" / "project-agents.md.template"
+    project_agents_md = MAIN_DIR / req.name / "AGENTS.md"
+    if project_agents_template.exists() and not project_agents_md.exists():
+        content = project_agents_template.read_text().replace("{project}", req.name)
+        project_agents_md.write_text(content)
+
+    # Copy AGENTS.md template to repo worktree if available
     template = WORKSPACE_ROOT / "skills" / "templates" / "AGENTS.md.template"
     if template.exists() and worktree_dir.exists():
         shutil.copy2(template, worktree_dir / "AGENTS.md")

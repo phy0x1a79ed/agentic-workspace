@@ -61,6 +61,7 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.services.tasks.DATA_DIR", data_dir)
     monkeypatch.setattr("awm.services.tasks.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.locks.HEARTBEAT_STALE_THRESHOLD", 120)
+    monkeypatch.setattr("awm.services.agents.MAIN_DIR", main_dir)
 
     # Server patches
     monkeypatch.setattr("awm.server.WORKSPACE_ROOT", workspace)
@@ -162,13 +163,13 @@ def seeded_tasks(db_conn, awm_workspace):
     repos_dir = awm_workspace["repos_dir"]
 
     task_data = [
-        ("proj-a", "task-1", "active", "feat/task-1", str(main_dir / "proj-a" / "task-1"), str(repos_dir / "proj-a" / "task-1"), now, now),
-        ("proj-a", "task-2", "completed", "feat/task-2", str(main_dir / "proj-a" / "task-2"), str(repos_dir / "proj-a" / "task-2"), now, now),
-        ("proj-b", "task-3", "completed", "feat/task-3", str(main_dir / "proj-b" / "task-3"), str(repos_dir / "proj-b" / "task-3"), now, now),
+        ("proj-a", "task-1", "active", "feat/task-1", str(main_dir / "proj-a" / "tasks" / "task-1"), str(repos_dir / "proj-a" / "task-1"), 1, now, now),
+        ("proj-a", "task-2", "completed", "feat/task-2", str(main_dir / "proj-a" / "tasks" / "task-2"), str(repos_dir / "proj-a" / "task-2"), 1, now, now),
+        ("proj-b", "task-3", "completed", "feat/task-3", str(main_dir / "proj-b" / "tasks" / "task-3"), str(repos_dir / "proj-b" / "task-3"), 1, now, now),
     ]
     for t in task_data:
         db_conn.execute(
-            "INSERT INTO tasks (project, task, status, branch, worktree, repo_path, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (project, task, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
             t,
         )
     db_conn.commit()
@@ -187,6 +188,10 @@ def seeded_tasks(db_conn, awm_workspace):
         repo_path = Path(t[5])
         repo_path.mkdir(parents=True, exist_ok=True)
 
+    # Create .bare directories for filesystem project discovery
+    for project_name in ("proj-a", "proj-b"):
+        (repos_dir / project_name / ".bare").mkdir(parents=True, exist_ok=True)
+
     return task_data
 
 
@@ -199,9 +204,9 @@ def seeded_sessions(db_conn, seeded_tasks, awm_workspace):
     t2 = (base + timedelta(seconds=1)).isoformat()
     t3 = (base + timedelta(seconds=2)).isoformat()
     sessions_data = [
-        ("proj-a", "task-1", f"main/proj-a/task-1/experiences.md", None, t1, "Initial exploration of dataset", "agent-1", None),
-        ("proj-a", "task-1", f"main/proj-a/task-1/experiences.md", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}'),
-        ("proj-a", "task-2", f"main/proj-a/task-2/experiences.md", None, t3, "Reviewed results and documented findings", "agent-2", None),
+        ("proj-a", "task-1", f"main/proj-a/tasks/task-1/experiences.md", None, t1, "Initial exploration of dataset", "agent-1", None),
+        ("proj-a", "task-1", f"main/proj-a/tasks/task-1/experiences.md", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}'),
+        ("proj-a", "task-2", f"main/proj-a/tasks/task-2/experiences.md", None, t3, "Reviewed results and documented findings", "agent-2", None),
     ]
     for s in sessions_data:
         db_conn.execute(
