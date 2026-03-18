@@ -25,6 +25,7 @@ include = ["awm*"]
 test = [
     "pytest>=7",
     "httpx",
+    "mcp[cli]",
 ]
 
 [project.scripts]
