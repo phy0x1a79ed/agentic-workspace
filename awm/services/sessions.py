@@ -74,14 +74,14 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
 
 def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
     """Append a session log entry to experiences.md and record in DB."""
-    workspace_dir = MAIN_DIR / req.project / req.task
+    workspace_dir = MAIN_DIR / req.project / "tasks" / req.task
     if not workspace_dir.exists():
         raise FileNotFoundError(
-            f"Task workspace not found: main/{req.project}/{req.task}"
+            f"Task workspace not found: main/{req.project}/tasks/{req.task}"
         )
 
     exp_file = workspace_dir / "experiences.md"
-    rel_path = f"main/{req.project}/{req.task}/experiences.md"
+    rel_path = f"main/{req.project}/tasks/{req.task}/experiences.md"
     logged_at = _now_iso()
 
     # Format and append the entry
@@ -178,7 +178,7 @@ def get_session(session_id: int) -> SessionLogContentResponse:
 
     # Primary: read from workspace
     if not content:
-        exp_file = MAIN_DIR / entry.project / entry.task / "experiences.md"
+        exp_file = MAIN_DIR / entry.project / "tasks" / entry.task / "experiences.md"
         if exp_file.exists():
             content = exp_file.read_text(encoding="utf-8")
 

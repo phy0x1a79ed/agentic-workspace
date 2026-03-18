@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch TEXT NOT NULL,
     worktree TEXT NOT NULL,
     repo_path TEXT,
+    session INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -64,6 +65,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_unique
     ON tasks(project, task) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    msg_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    metadata TEXT,
+    status TEXT NOT NULL DEFAULT 'unread',
+    created_at TEXT NOT NULL,
+    read_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope);
+CREATE INDEX IF NOT EXISTS idx_messages_scope_status ON messages(scope, status);
+
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -125,6 +148,47 @@ CREATE INDEX idx_tasks_project ON tasks(project);
     (4, 5): """\
 ALTER TABLE tasks ADD COLUMN repo_path TEXT;
 """,
+    (6, 7): """\
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    msg_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    metadata TEXT,
+    status TEXT NOT NULL DEFAULT 'unread',
+    created_at TEXT NOT NULL,
+    read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope);
+CREATE INDEX IF NOT EXISTS idx_messages_scope_status ON messages(scope, status);
+
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO config (key, value, updated_at)
+    VALUES ('agent_cli', 'opencode', datetime('now'));
+""",
+    (7, 8): """\
+ALTER TABLE tasks ADD COLUMN session INTEGER NOT NULL DEFAULT 1;
+""",
+    (5, 6): """\
+-- Migrate task worktree paths: main/{project}/{task} → main/{project}/tasks/{task}
+UPDATE tasks SET worktree = REPLACE(worktree,
+    '/' || project || '/' || task,
+    '/' || project || '/tasks/' || task)
+WHERE worktree LIKE '%/main/%' AND worktree NOT LIKE '%/tasks/%';
+
+-- Migrate session file paths
+UPDATE session_logs SET file_path = REPLACE(file_path,
+    'main/' || project || '/' || task || '/',
+    'main/' || project || '/tasks/' || task || '/')
+WHERE file_path LIKE 'main/%' AND file_path NOT LIKE '%/tasks/%';
+""",
 }
 
 
@@ -180,6 +244,9 @@ def init_db(db_path: Path | None = None) -> None:
             # Fresh database — create everything
             conn.executescript(SCHEMA_SQL)
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            conn.execute(
+                "INSERT OR IGNORE INTO config (key, value, updated_at) VALUES ('agent_cli', 'opencode', datetime('now'))"
+            )
             conn.commit()
         else:
             current = row["version"] if isinstance(row, sqlite3.Row) else row[0]

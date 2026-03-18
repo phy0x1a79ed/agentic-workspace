@@ -16,13 +16,15 @@ from mcp.types import TextContent, Tool
 
 from awm.db import init_db
 from awm.models import (
+    AgentSpawnRequest,
     LockAcquireRequest,
+    MessageSendRequest,
     ProjectCreateRequest,
     SessionLogCreateRequest,
     TaskCreateRequest,
     TaskUpdateRequest,
 )
-from awm.services import locks, projects, sessions, skills, tasks
+from awm.services import agents, locks, messaging, projects, sessions, skills, tasks
 
 server = Server("awm")
 
@@ -240,6 +242,67 @@ TOOLS: list[Tool] = [
             "required": ["holder_id"],
         },
     ),
+    # Messaging
+    Tool(
+        name="inbox_send",
+        description="Send a message to a scoped inbox (workspace, project:X, or task:X/Y).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Target scope: 'workspace', 'project:X', or 'task:X/Y'"},
+                "sender": {"type": "string", "description": "Sender identifier (agent name or scope)"},
+                "msg_type": {"type": "string", "enum": ["task_assignment", "reflection", "status_update", "notification", "plan"]},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "metadata": {"type": "string", "description": "Optional JSON metadata"},
+            },
+            "required": ["scope", "sender", "msg_type", "subject", "body"],
+        },
+    ),
+    Tool(
+        name="inbox_search",
+        description="Search/filter messages by scope, status, msg_type, or free-text query.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Filter by scope"},
+                "status": {"type": "string", "description": "Filter by status: unread or read"},
+                "msg_type": {"type": "string", "description": "Filter by message type"},
+                "query": {"type": "string", "description": "Free-text search across subject and body"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    Tool(
+        name="inbox_read",
+        description="Mark a message as read by ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Message ID to mark as read"},
+            },
+            "required": ["id"],
+        },
+    ),
+    Tool(
+        name="inbox_recipients",
+        description="List valid recipient scopes (workspace + all projects + all tasks).",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="agent_spawn",
+        description="Spawn a fire-and-forget agent subprocess on a task workspace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "task": {"type": "string"},
+                "prompt": {"type": "string", "description": "Optional prompt/plan for the agent (sent to task inbox)"},
+                "agent_cli": {"type": "string", "description": "CLI to use: 'opencode' or 'claude' (default from config)"},
+            },
+            "required": ["project", "task"],
+        },
+    ),
     # Status
     Tool(
         name="awm_status",
@@ -318,6 +381,27 @@ def _handle_tool(name: str, args: dict) -> str:
         return _serialize(locks.list_locks(holder_id=args.get("holder_id"), path=args.get("path")))
     if name == "lock_heartbeat":
         return _serialize(locks.heartbeat(args["holder_id"]))
+
+    # Messaging
+    if name == "inbox_send":
+        req = MessageSendRequest(**args)
+        return _serialize(messaging.send_message(req))
+    if name == "inbox_search":
+        return _serialize(messaging.search_messages(
+            scope=args.get("scope"), status=args.get("status"),
+            msg_type=args.get("msg_type"), query=args.get("query"),
+            limit=args.get("limit", 50),
+        ))
+    if name == "inbox_read":
+        return _serialize(messaging.mark_read(args["id"]))
+    if name == "inbox_recipients":
+        recipients = messaging.list_recipients()
+        return json.dumps({"recipients": recipients, "total": len(recipients)}, indent=2)
+
+    # Agent spawning
+    if name == "agent_spawn":
+        req = AgentSpawnRequest(**args)
+        return _serialize(agents.spawn_agent(req))
 
     # Status
     if name == "awm_status":

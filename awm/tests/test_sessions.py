@@ -51,7 +51,7 @@ class TestLogSession:
         assert entry.git_commit is None  # no git commits in new layout
 
         # Check file was appended in workspace (main/)
-        exp_file = awm_workspace["main_dir"] / "proj-a" / "task-1" / "experiences.md"
+        exp_file = awm_workspace["main_dir"] / "proj-a" / "tasks" / "task-1" / "experiences.md"
         content = exp_file.read_text()
         assert "Test session log" in content
 
@@ -121,3 +121,97 @@ class TestReflect:
     def test_reflect_no_match(self, awm_workspace, seeded_sessions):
         result = sessions.reflect(query="zzz_nonexistent_zzz")
         assert result.total == 0
+
+
+# ---------------------------------------------------------------------------
+# Task session lifecycle
+# ---------------------------------------------------------------------------
+
+class TestTaskSessions:
+    """Test session numbering when re-creating completed tasks."""
+
+    def test_create_on_completed_task_creates_session_2(self, awm_workspace, seeded_tasks):
+        """Re-creating a completed task should increment the session number."""
+        from awm.services import tasks as task_svc
+        from awm.models import TaskCreateRequest
+
+        repos_dir = awm_workspace["repos_dir"]
+
+        # task-2 is completed in seeded_tasks — set up bare repo for it
+        bare_dir = repos_dir / "proj-a" / ".bare"
+        bare_dir.mkdir(parents=True, exist_ok=True)
+        # Init a real bare repo so worktree creation works
+        subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
+        # Create an initial commit so branches work
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "clone", str(bare_dir), tmp], check=True, capture_output=True)
+            dummy = os.path.join(tmp, "README.md")
+            with open(dummy, "w") as f:
+                f.write("init")
+            subprocess.run(["git", "-C", tmp, "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-m", "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", tmp, "push"], check=True, capture_output=True)
+
+        req = TaskCreateRequest(project="proj-a", task="task-2")
+        resp = task_svc.create_task(req)
+        assert resp.session == 2
+        assert resp.status == "active"
+
+    def test_create_on_active_task_raises(self, awm_workspace, seeded_tasks):
+        """Creating a task that already has an active session should fail."""
+        from awm.services import tasks as task_svc
+        from awm.models import TaskCreateRequest
+
+        req = TaskCreateRequest(project="proj-a", task="task-1")
+        with pytest.raises(FileExistsError, match="active session"):
+            task_svc.create_task(req)
+
+    def test_session_increments_across_cycles(self, awm_workspace):
+        """Session number should increment correctly across create/complete cycles."""
+        from awm.services import tasks as task_svc
+        from awm.models import TaskCreateRequest, TaskUpdateRequest
+        from awm.db import get_connection
+
+        repos_dir = awm_workspace["repos_dir"]
+
+        # Set up a real bare repo
+        bare_dir = repos_dir / "proj-c" / ".bare"
+        bare_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "clone", str(bare_dir), tmp], check=True, capture_output=True)
+            dummy = os.path.join(tmp, "README.md")
+            with open(dummy, "w") as f:
+                f.write("init")
+            subprocess.run(["git", "-C", tmp, "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-m", "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", tmp, "push"], check=True, capture_output=True)
+
+        # Session 1
+        req = TaskCreateRequest(project="proj-c", task="cycle-task")
+        resp1 = task_svc.create_task(req)
+        assert resp1.session == 1
+
+        # Complete session 1
+        task_svc.update_task("proj-c", "cycle-task", TaskUpdateRequest(action="complete"))
+
+        # Session 2
+        resp2 = task_svc.create_task(req)
+        assert resp2.session == 2
+
+        # Complete session 2
+        task_svc.update_task("proj-c", "cycle-task", TaskUpdateRequest(action="complete"))
+
+        # Session 3
+        resp3 = task_svc.create_task(req)
+        assert resp3.session == 3
+
+    def test_list_tasks_includes_session(self, awm_workspace, seeded_tasks):
+        """list_tasks should return session numbers."""
+        from awm.services import tasks as task_svc
+
+        result = task_svc.list_tasks(status="all")
+        for t in result.tasks:
+            assert t.session >= 1

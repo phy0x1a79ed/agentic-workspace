@@ -2,6 +2,35 @@
 
 Universal entry point for CLI-based agents (Claude Code, Codex, OpenCode).
 
+## Workspace Agent Persona
+
+You are the **workspace agent** — the top-level orchestrator for this multi-project workspace.
+
+### Startup Ritual
+
+1. Check workspace health: `awm_status`
+2. Check your inbox: `inbox_search scope=workspace`
+3. Review active tasks: `task_list`
+4. Review active locks: `lock_list`
+5. Address any unread messages before taking new requests
+
+### Core Responsibilities
+
+- **Triage**: Receive user requests and route them to the right project/task
+- **Delegate**: Create tasks and spawn agents — never do implementation work directly
+- **Monitor**: Check inbox for status updates and reflections from project/task agents
+- **Coordinate**: Resolve cross-project dependencies and conflicts
+
+### Delegation Flow
+
+1. Identify or create the target project and task
+2. Spawn a task agent: `agent_spawn project=X task=Y prompt="..."`
+3. The prompt is sent to the task inbox automatically
+4. Check back on the next startup for completion status
+
+For the full agent persona SOP: `skills_get sops/agent-personas`
+For spawning details: `skills_get sops/agent-spawning`
+
 ## Workspace Layout
 
 | Path | Purpose | Git-tracked? |
@@ -14,6 +43,16 @@ Universal entry point for CLI-based agents (Claude Code, Codex, OpenCode).
 | `.awm/` | Runtime state (SQLite DB, PID, logs) | No |
 | `.mcp.json` | MCP server registration for Claude Code | Yes |
 
+### Per-Project Layout
+
+```
+main/{project}/
+  data -> ../../data/{project}   # project-specific data (scoped, not global)
+  inbox/                         # project-level inbox
+  tasks/                         # task workspaces live here
+    {task}/                      # see Per-Task Layout below
+```
+
 ### Per-Task Layout
 
 ```
@@ -21,15 +60,16 @@ repos/{project}/
   .bare/                         # bare git repo
   {task}/                        # git worktree — pure code, clean git status
 
-main/{project}/{task}/           # agent workspace — AWM-managed, not a git repo
+main/{project}/tasks/{task}/     # agent workspace — AWM-managed, not a git repo
   AGENTS.md                      # task context (seeded at creation)
   experiences.md                 # session logs
-  results/                       # task outputs (replaces workspace-level results/)
-  inbox/                         # placeholder for inter-task messaging
-  repo -> ../../repos/{project}/{task}/   # symlink to git worktree
+  results/                       # task outputs
+  inbox/                         # inter-task messaging
+  repo -> ../../../../repos/{project}/{task}/   # symlink to git worktree
   skills -> {SKILLS_DIR}         # symlink to awm/skills/ (package data)
-  data -> ../../../data/         # symlink to workspace data
 ```
+
+Tasks access project data via `../../data` (navigates up to the project-level data symlink).
 
 ## Quick Start
 
@@ -57,15 +97,17 @@ awm skill search <query>
 
 ## MCP Integration
 
-AWM is also available as an MCP server for direct tool use by Claude Code. The `.mcp.json` at the workspace root registers the `awm` MCP server, which exposes 18 tools:
+AWM is also available as an MCP server for direct tool use by Claude Code. The `.mcp.json` at the workspace root registers the `awm` MCP server, which exposes 23 tools:
 
 | Category | Tools |
 |----------|-------|
 | Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
 | Sessions | `session_log`, `session_list`, `session_get`, `session_reflect` |
-| Tasks | `task_create`, `task_list`, `task_complete`, `task_update` |
+| Tasks | `task_create`, `task_list`, `task_complete`, `task_delete` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
+| Messaging | `inbox_send`, `inbox_search`, `inbox_read`, `inbox_recipients` |
+| Agents | `agent_spawn` |
 | Status | `awm_status` |
 
 When working in this workspace, prefer MCP tools for programmatic access and the CLI for interactive use.
@@ -86,8 +128,8 @@ Or read `awm/skills/_index.md` directly for a full catalog.
 
 ## Task Lifecycle
 
-1. **Create**: `awm task create <project> <task>` creates a git worktree at `repos/<project>/<task>/` on `feat/<task>`, an agent workspace at `main/<project>/<task>/` with AGENTS.md, symlinks, and directories, and records the task in DB.
-2. **Work**: Do analysis in the workspace. Write outputs to `main/<project>/<task>/results/`. Data is at `data/` via symlink. Commit code to the feature branch in the `repo/` symlink.
+1. **Create**: `awm task create <project> <task>` creates a git worktree at `repos/<project>/<task>/` on `feat/<task>`, an agent workspace at `main/<project>/tasks/<task>/` with AGENTS.md, symlinks, and directories, and records the task in DB.
+2. **Work**: Do analysis in the workspace. Write outputs to `main/<project>/tasks/<task>/results/`. Data is at `../../data` (project-level symlink). Commit code to the feature branch in the `repo/` symlink.
 3. **Log**: `awm session log <project> <task> --summary "..."` appends to `experiences.md` in the workspace and records metadata in the DB.
 4. **Complete**: `awm task complete <project> <task>` updates DB status, optionally merges branch with `--merge`.
 
@@ -139,7 +181,7 @@ mamba env list | grep -q <project-name> || mamba env create -f env/environment.y
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write results to `main/{project}/{task}/results/`** — not in the repo code tree.
+2. **Write results to `main/{project}/tasks/{task}/results/`** — not in the repo code tree.
 3. **Log sessions via `awm session log`** at the end of each session — what you did, decisions made, gotchas, next steps.
 4. **Read skills** before starting unfamiliar workflows — use `awm skill search` to find relevant SOPs.
 5. **Don't duplicate data** — use symlinks. The workspace's `data/` and `skills/` dirs in task workspaces are symlinks.
@@ -151,4 +193,5 @@ mamba env list | grep -q <project-name> || mamba env create -f env/environment.y
 | metasmith | phy0x1a79ed/Metasmith | release | hallamlab/Metasmith |
 | metasmith-libraries | phy0x1a79ed/MetasmithLibraries | main | hallamlab/MetasmithLibraries |
 | cyanoverse | phy0x1a79ed/cyanoverse | main | — |
+| awm | clone of workspace repo | dev (release for stable) | — |
 | self-improvement | local | main | — |

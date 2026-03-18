@@ -61,6 +61,7 @@ class TaskInfo(BaseModel):
     branch: str
     worktree: str
     repo_path: str | None = None
+    session: int = 1
 
 
 class TaskListResponse(BaseModel):
@@ -73,6 +74,7 @@ class TaskActionResponse(BaseModel):
     task: str
     status: str
     message: str
+    session: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +199,61 @@ class SessionLogListResponse(BaseModel):
 class SessionLogContentResponse(BaseModel):
     entry: SessionLogEntry
     content: str
+
+
+# ---------------------------------------------------------------------------
+# Messages
+# ---------------------------------------------------------------------------
+
+class MessageSendRequest(BaseModel):
+    scope: str
+    sender: str
+    msg_type: str = Field(
+        ...,
+        pattern="^(task_assignment|reflection|status_update|notification|plan)$",
+    )
+    subject: str
+    body: str
+    metadata: str | None = None
+
+
+class MessageInfo(BaseModel):
+    id: int
+    scope: str
+    sender: str
+    msg_type: str
+    subject: str
+    body: str
+    metadata: str | None
+    status: str
+    created_at: str
+    read_at: str | None
+
+
+class MessageSearchResponse(BaseModel):
+    messages: list[MessageInfo]
+    total: int
+
+
+class MessageActionResponse(BaseModel):
+    message: str
+    msg: MessageInfo | None = None
+
+
+# ---------------------------------------------------------------------------
+# Agent Spawning
+# ---------------------------------------------------------------------------
+
+class AgentSpawnRequest(BaseModel):
+    project: str
+    task: str
+    prompt: str | None = None
+    agent_cli: str | None = None
+
+
+class AgentSpawnResponse(BaseModel):
+    project: str
+    task: str
+    pid: int
+    agent_cli: str
+    message: str
