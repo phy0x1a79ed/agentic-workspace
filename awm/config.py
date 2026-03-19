@@ -41,10 +41,8 @@ MAIN_DIR = WORKSPACE_ROOT / "main"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
-# Legacy aliases — kept temporarily for migration
+# Legacy alias — still used by shared_resources.py for _shared worktrees
 TASKS_DIR = WORKSPACE_ROOT / "tasks"
-RESULTS_DIR = WORKSPACE_ROOT / "results"
-REPORTS_DIR = WORKSPACE_ROOT / "reports"
 
 # ---------------------------------------------------------------------------
 # Server settings

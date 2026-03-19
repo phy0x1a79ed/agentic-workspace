@@ -12,9 +12,9 @@ description: Bare repo + worktree model, branching, PRs
 Each project uses a **bare repository** with linked worktrees instead of a standard clone.
 
 ```
-tasks/<project>/
+repos/<project>/
   .bare/             # bare repo (no working directory)
-  main/              # worktree -> main branch
+  {default_branch}/  # worktree -> default branch (e.g. main, release)
   <task-name>/       # worktree -> feat/<task-name> branch
 ```
 
@@ -36,7 +36,7 @@ Branches are created automatically by `awm task create`.
 ## Listing Worktrees
 
 ```bash
-git -C tasks/<project>/.bare worktree list
+git -C repos/<project>/.bare worktree list
 ```
 
 ## Creating Pull Requests
@@ -44,7 +44,7 @@ git -C tasks/<project>/.bare worktree list
 From within a task worktree:
 
 ```bash
-cd tasks/<project>/<task-name>/
+cd repos/<project>/<task-name>/
 git push -u origin feat/<task-name>
 gh pr create --title "feat: <description>" --body "Summary of changes"
 ```
@@ -54,37 +54,37 @@ gh pr create --title "feat: <description>" --body "Summary of changes"
 Add the upstream remote (done automatically on fork setup):
 
 ```bash
-git -C tasks/<project>/.bare remote add upstream <upstream-url>
+git -C repos/<project>/.bare remote add upstream <upstream-url>
 ```
 
-Fetch and merge upstream changes into main:
+Fetch and merge upstream changes into the default branch:
 
 ```bash
-cd tasks/<project>/main/
+cd repos/<project>/{default_branch}/
 git fetch upstream
-git merge upstream/main
-git push origin main
+git merge upstream/{default_branch}
+git push origin {default_branch}
 ```
 
-Rebase a task branch onto updated main:
+Rebase a task branch onto updated default branch:
 
 ```bash
-cd tasks/<project>/<task-name>/
-git rebase main
+cd repos/<project>/<task-name>/
+git rebase {default_branch}
 ```
 
 ## Common Operations
 
 ```bash
 # Check which branch a worktree is on
-git -C tasks/<project>/<task-name> branch --show-current
+git -C repos/<project>/<task-name> branch --show-current
 
 # View all branches
-git -C tasks/<project>/.bare branch -a
+git -C repos/<project>/.bare branch -a
 
 # Remove a worktree
-git -C tasks/<project>/.bare worktree remove <task-name>
+git -C repos/<project>/.bare worktree remove <task-name>
 
 # Prune stale worktree references
-git -C tasks/<project>/.bare worktree prune
+git -C repos/<project>/.bare worktree prune
 ```

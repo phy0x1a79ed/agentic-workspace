@@ -46,7 +46,7 @@ awm project create myproject --fork https://github.com/org/repo.git
 
 ```bash
 awm task create myproject analysis-v1
-awm task create myproject analysis-v1 --from develop
+awm task create myproject analysis-v1 --from dev
 awm task list
 awm task list --status active --project myproject
 awm task pause myproject analysis-v1
@@ -69,7 +69,7 @@ awm skill reindex                           # regenerate awm/skills/_index.md
 ### Session Logging
 
 ```bash
-# Log a session (appends to experiences.md, commits, records in DB)
+# Log a session (records in DB)
 awm session log myproject analysis-v1 \
   --summary "Completed normalization pipeline" \
   --decision "Used quantile normalization for cross-sample comparability" \
@@ -334,13 +334,13 @@ awm/                      # Git-tracked Python package
     tasks.py              # Task CRUD
     locks.py              # Lock management
     skills.py             # Skills scanning + index generation
-    sessions.py           # Session log CRUD (DB + file + git)
+    sessions.py           # Session log CRUD (DB-only storage)
     shared_resources.py   # Outer-repo worktree flow
     messaging.py          # Scoped message queues (inbox)
     agents.py             # Fire-and-forget agent spawning
     config_service.py     # Key-value config store
 .awm/                     # Runtime state (gitignored)
-  state.db                # SQLite database (schema v7)
+  state.db                # SQLite database (schema v9)
   awm.pid                 # Server PID
   awm.log                 # Server log
 .mcp.json                 # MCP server registration
@@ -356,6 +356,6 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 
-**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v7).
+**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v9).
 
 **MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.

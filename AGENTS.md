@@ -128,14 +128,13 @@ Or read `awm/skills/_index.md` directly for a full catalog.
 
 1. **Create**: `awm task create <project> <task>` creates a git worktree at `repos/<project>/<task>/` on `feat/<task>`, an agent workspace at `main/<project>/tasks/<task>/` with AGENTS.md, symlinks, and directories, and records the task in DB.
 2. **Work**: Do analysis in the workspace. Write outputs to `main/<project>/tasks/<task>/results/`. Data is at `../../data` (project-level symlink). Commit code to the feature branch in the `repo/` symlink.
-3. **Log**: `awm session log <project> <task> --summary "..."` appends to `experiences.md` in the workspace and records metadata in the DB.
+3. **Log**: `awm session log <project> <task> --summary "..."` records the session in the DB.
 4. **Complete**: `awm task complete <project> <task>` updates DB status, optionally merges branch with `--merge`.
 
 ## Session Logging
 
-Session logs follow a DB + file pattern:
-- **SQLite** (metadata index): project, task, summary, agent_id, timestamp
-- **Files** (content): `experiences.md` in each task's workspace (`main/`) holds the full entries
+Session logs are stored in the DB:
+- **SQLite**: project, task, summary, decisions, issues, next steps, agent_id, timestamp, full content
 
 ```bash
 awm session log myproject analysis \

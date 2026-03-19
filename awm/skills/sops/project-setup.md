@@ -13,7 +13,7 @@ description: Creating new, forked, or cloned projects via awm CLI
 awm project create <project-name>
 ```
 
-This creates the full project scaffold: bare repo at `tasks/<project>/.bare/`, main worktree, data directories, and GitHub remote.
+This creates the full project scaffold: bare repo at `repos/<project>/.bare/`, default branch worktree, data directories, agent workspace, and GitHub remote.
 
 ## Forking an Existing Project
 
@@ -29,30 +29,31 @@ Forks the upstream repo on GitHub, clones as a bare repo, and sets up worktrees 
 awm project create <project-name> --clone <repo-url>
 ```
 
-Clones into bare repo format and creates the main worktree.
+Clones into bare repo format and creates the default branch worktree.
 
 ## Post-Setup Checklist
 
 After creating the project, verify:
 
-- [ ] **Bare repo exists**: `tasks/<project>/.bare/` is a valid bare repo (`git -C <path> rev-parse --is-bare-repository` returns `true`)
-- [ ] **Main worktree**: `tasks/<project>/main/` exists and is on the `main` branch
+- [ ] **Bare repo exists**: `repos/<project>/.bare/` is a valid bare repo (`git -C <path> rev-parse --is-bare-repository` returns `true`)
+- [ ] **Default branch worktree**: `repos/<project>/{default_branch}/` exists and is on the correct branch
 - [ ] **Data directories**: `data/<project>/raw/` and `data/<project>/staged/` exist
-- [ ] **GitHub remote**: `git -C tasks/<project>/.bare remote -v` shows the correct GitHub URL
-- [ ] **Results + reports**: `results/<project>/` and `reports/<project>/` exist
-- [ ] **Initial commit**: Main branch has at least one commit
+- [ ] **GitHub remote**: `git -C repos/<project>/.bare remote -v` shows the correct GitHub URL
+- [ ] **Agent workspace**: `main/<project>/` exists with `data` symlink and `tasks/` directory
+- [ ] **Initial commit**: Default branch has at least one commit
 
 ## Directory Structure After Setup
 
 ```
-tasks/<project>/
+repos/<project>/
   .bare/                 # bare repo
-  main/                  # main worktree (checked out to main branch)
+  {default_branch}/      # default branch worktree (e.g. main, release)
+
+main/<project>/
+  data -> ../../data/<project>   # project data symlink
+  tasks/                         # task workspaces created here
 
 data/<project>/
   raw/
   staged/
-
-results/<project>/
-reports/<project>/
 ```
