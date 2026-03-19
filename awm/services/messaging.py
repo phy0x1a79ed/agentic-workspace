@@ -96,26 +96,42 @@ def search_messages(
     return MessageSearchResponse(messages=msgs, total=len(msgs))
 
 
-def mark_read(msg_id: int) -> MessageActionResponse:
-    """Mark a message as read."""
+def read_inbox(
+    scope: str,
+    status: str | None = "unread",
+    limit: int = 50,
+) -> MessageSearchResponse:
+    """Read messages from a scoped inbox and mark unread ones as read."""
+    _validate_scope(scope)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"Message {msg_id} not found")
-        conn.execute(
-            "UPDATE messages SET status = 'read', read_at = ? WHERE id = ?",
-            (now, msg_id),
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        sql = "SELECT * FROM messages WHERE scope = ?"
+        params: list = [scope]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        # Mark fetched unread messages as read
+        unread_ids = [r["id"] for r in rows if r["status"] == "unread"]
+        if unread_ids:
+            placeholders = ",".join("?" * len(unread_ids))
+            conn.execute(
+                f"UPDATE messages SET status = 'read', read_at = ? WHERE id IN ({placeholders})",
+                [now, *unread_ids],
+            )
+            conn.commit()
+            # Re-fetch to return updated rows
+            rows = conn.execute(
+                f"SELECT * FROM messages WHERE id IN ({placeholders}) ORDER BY created_at DESC",
+                unread_ids,
+            ).fetchall()
     finally:
         conn.close()
-    return MessageActionResponse(
-        message=f"Message {msg_id} marked as read",
-        msg=_row_to_info(row),
-    )
+    msgs = [_row_to_info(r) for r in rows]
+    return MessageSearchResponse(messages=msgs, total=len(msgs))
 
 
 def list_recipients() -> list[str]:

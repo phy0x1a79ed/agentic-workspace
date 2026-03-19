@@ -9,7 +9,7 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 ### Startup Ritual
 
 1. Check workspace health: `awm_status`
-2. Check your inbox: `inbox_search scope=workspace`
+2. Check your inbox: `inbox_read scope=workspace`
 3. Review active tasks: `task_list`
 4. Review active locks: `lock_list`
 5. Address any unread messages before taking new requests

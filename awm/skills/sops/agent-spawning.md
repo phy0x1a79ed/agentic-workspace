@@ -56,8 +56,7 @@ SELECT value FROM config WHERE key = 'agent_cli';
 ### After Spawning
 
 The spawned agent should:
-1. Check inbox on startup: `inbox_search scope=task:{project}/{task}`
-2. Read and acknowledge the plan: `inbox_read id=N`
+1. Read inbox: `inbox_read scope=task:{project}/{task}`
 3. Execute the work
 4. Send a `reflection` message to `project:{project}` on completion
 5. Log the session: `session_log`
