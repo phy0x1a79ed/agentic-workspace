@@ -14,9 +14,11 @@
 
 | Skill | File | Description |
 |-------|------|-------------|
+| Chrome DevTools | `tools/chrome-devtools.md` | Chrome DevTools MCP server for browser control from WSL2 |
 | Mamba | `tools/mamba.md` | Conda/mamba quick reference — create, install, export, run |
 | Metasmith | `tools/metasmith.md` | Metasmith pipeline reference — composable transforms for metadata processing |
 | Plotly | `tools/plotly.md` | BaseFigure/ApplyTemplate, palettes, Kaleido export |
+| Three.js | `tools/threejs.md` | Three.js project setup, scene patterns, GLSL conventions, data visualization |
 
 ## Templates
 
