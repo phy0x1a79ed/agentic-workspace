@@ -1,11 +1,10 @@
-"""Session log CRUD: DB metadata + file content."""
+"""Session log CRUD: DB-only storage."""
 
 from __future__ import annotations
 
 import json
-import subprocess
+import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 from awm.config import MAIN_DIR
 from awm.db import get_connection
@@ -17,10 +16,6 @@ from awm.models import (
 )
 
 
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -30,7 +25,7 @@ def _row_to_entry(row) -> SessionLogEntry:
         id=row["id"],
         project=row["project"],
         task=row["task"],
-        file_path=row["file_path"],
+        file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
         logged_at=row["logged_at"],
         summary=row["summary"],
@@ -43,13 +38,13 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
     date_str = logged_at[:10]
     lines = [
         f"\n**Date:** {date_str}",
-        f"",
+        "",
         f"**Task:** {req.project}/{req.task}",
-        f"",
+        "",
         f"**Agent:** {req.agent_id}",
-        f"",
-        f"## Session Summary",
-        f"",
+        "",
+        "## Session Summary",
+        "",
         req.summary,
     ]
 
@@ -73,25 +68,10 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
 
 
 def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
-    """Append a session log entry to experiences.md and record in DB."""
-    workspace_dir = MAIN_DIR / req.project / "tasks" / req.task
-    if not workspace_dir.exists():
-        raise FileNotFoundError(
-            f"Task workspace not found: main/{req.project}/tasks/{req.task}"
-        )
-
-    exp_file = workspace_dir / "experiences.md"
-    rel_path = f"main/{req.project}/tasks/{req.task}/experiences.md"
+    """Record a session log entry in the database."""
     logged_at = _now_iso()
+    content = _format_entry(req, logged_at)
 
-    # Format and append the entry
-    entry_text = _format_entry(req, logged_at)
-    with open(exp_file, "a", encoding="utf-8") as f:
-        f.write(entry_text)
-
-    # No git commit — experiences.md lives in workspace, not repo
-
-    # Store metadata in DB
     metadata = None
     if req.decisions or req.issues or req.next_steps:
         metadata = json.dumps({
@@ -105,11 +85,11 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (req.project, req.task, rel_path, None, logged_at,
-             req.summary, req.agent_id, metadata),
+            (req.project, req.task, "", None, logged_at,
+             req.summary, req.agent_id, metadata, content),
         )
         conn.commit()
         row = conn.execute(
@@ -147,7 +127,7 @@ def list_sessions(
 
 
 def get_session(session_id: int) -> SessionLogContentResponse:
-    """Look up a session by ID and return metadata + content."""
+    """Look up a session by ID and return metadata + content from DB."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -156,66 +136,234 @@ def get_session(session_id: int) -> SessionLogContentResponse:
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
         entry = _row_to_entry(row)
+
+        content = row["content"] or ""
+
+        # Fallback for legacy rows without content
+        if not content:
+            meta: dict = {}
+            if row["metadata"]:
+                try:
+                    meta = json.loads(row["metadata"])
+                except json.JSONDecodeError:
+                    pass
+            parts = [row["summary"]]
+            if meta.get("decisions"):
+                parts.append("\nDecisions: " + ", ".join(meta["decisions"]))
+            if meta.get("issues"):
+                parts.append("\nIssues: " + ", ".join(meta["issues"]))
+            if meta.get("next_steps"):
+                parts.append("\nNext steps: " + ", ".join(meta["next_steps"]))
+            content = "\n".join(parts)
     finally:
         conn.close()
-
-    content = ""
-
-    # Legacy fallback: try reading from git if we have a commit hash
-    if entry.git_commit:
-        # Legacy entries stored in tasks/ worktrees
-        from awm.config import TASKS_DIR, REPOS_DIR
-        for base_dir in [REPOS_DIR, TASKS_DIR]:
-            task_dir = base_dir / entry.project / entry.task
-            if task_dir.exists():
-                r = _run([
-                    "git", "-C", str(task_dir),
-                    "show", f"{entry.git_commit}:{Path('experiences.md')}",
-                ])
-                if r.returncode == 0:
-                    content = r.stdout
-                    break
-
-    # Primary: read from workspace
-    if not content:
-        exp_file = MAIN_DIR / entry.project / "tasks" / entry.task / "experiences.md"
-        if exp_file.exists():
-            content = exp_file.read_text(encoding="utf-8")
-
-    # Fallback: try legacy path
-    if not content:
-        from awm.config import TASKS_DIR
-        legacy_file = TASKS_DIR / entry.project / entry.task / "experiences.md"
-        if legacy_file.exists():
-            content = legacy_file.read_text(encoding="utf-8")
 
     return SessionLogContentResponse(entry=entry, content=content)
 
 
-def reflect(
-    project: str | None = None,
-    task: str | None = None,
-    query: str | None = None,
-) -> SessionLogListResponse:
-    """Search across session summaries for reflection/learning."""
+# ---------------------------------------------------------------------------
+# Experiences.md migration
+# ---------------------------------------------------------------------------
+
+
+def migrate_experiences() -> dict:
+    """Migrate experiences.md files into the database.
+
+    Returns stats: {imported, skipped, files_processed}
+    """
+    imported = 0
+    skipped = 0
+    files_processed = 0
+
     conn = get_connection()
     try:
-        sql = "SELECT * FROM session_logs WHERE 1=1"
-        params: list = []
-        if project:
-            sql += " AND project = ?"
-            params.append(project)
-        if task:
-            sql += " AND task = ?"
-            params.append(task)
-        if query:
-            sql += " AND (summary LIKE ? OR metadata LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like])
-        sql += " ORDER BY logged_at DESC"
+        for exp_file in MAIN_DIR.glob("*/tasks/*/experiences.md"):
+            task_name = exp_file.parent.name
+            project_name = exp_file.parent.parent.parent.name
 
-        rows = conn.execute(sql, params).fetchall()
-        entries = [_row_to_entry(r) for r in rows]
-        return SessionLogListResponse(entries=entries, total=len(entries))
+            text = exp_file.read_text(encoding="utf-8").strip()
+            if not text:
+                continue
+
+            files_processed += 1
+
+            # Strip header
+            text = re.sub(
+                r"^#\s+Experiences\s+--\s+\S+\s*\n*(?:##\s+Log\s*\n*)?", "", text
+            )
+            # Strip completion footer
+            text = re.sub(r"\n*##\s+Completed:.*$", "", text, flags=re.DOTALL)
+            text = text.strip()
+
+            if not text:
+                continue
+
+            # Split entries on --- separator
+            chunks = re.split(r"\n---\n", text)
+
+            for chunk in chunks:
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+
+                entry_data = _parse_structured_entry(chunk, project_name, task_name)
+
+                if entry_data is None:
+                    # Free-form entry
+                    first_line = chunk.split("\n")[0].strip()
+                    if first_line.startswith("#"):
+                        first_line = first_line.lstrip("#").strip()
+                    entry_data = {
+                        "project": project_name,
+                        "task": task_name,
+                        "logged_at": _now_iso(),
+                        "summary": first_line[:200],
+                        "agent_id": "unknown",
+                        "content": chunk,
+                        "metadata": None,
+                    }
+
+                # Dedup check
+                existing = conn.execute(
+                    "SELECT id FROM session_logs WHERE project=? AND task=? AND logged_at=? AND agent_id=?",
+                    (
+                        entry_data["project"],
+                        entry_data["task"],
+                        entry_data["logged_at"],
+                        entry_data["agent_id"],
+                    ),
+                ).fetchone()
+
+                if existing:
+                    skipped += 1
+                    continue
+
+                conn.execute(
+                    """INSERT INTO session_logs
+                        (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        entry_data["project"],
+                        entry_data["task"],
+                        "",
+                        None,
+                        entry_data["logged_at"],
+                        entry_data["summary"],
+                        entry_data["agent_id"],
+                        entry_data["metadata"],
+                        entry_data["content"],
+                    ),
+                )
+                imported += 1
+
+        # Backfill content for existing DB rows that have empty content
+        rows = conn.execute(
+            "SELECT id, project, task, summary, metadata FROM session_logs WHERE content IS NULL OR content = ''"
+        ).fetchall()
+        for row in rows:
+            meta: dict = {}
+            if row["metadata"]:
+                try:
+                    meta = json.loads(row["metadata"])
+                except json.JSONDecodeError:
+                    pass
+
+            parts = [row["summary"]]
+            if meta.get("decisions"):
+                parts.append(
+                    "\nDecisions:\n"
+                    + "\n".join(f"- {d}" for d in meta["decisions"])
+                )
+            if meta.get("issues"):
+                parts.append(
+                    "\nIssues:\n" + "\n".join(f"- {i}" for i in meta["issues"])
+                )
+            if meta.get("next_steps"):
+                parts.append(
+                    "\nNext steps:\n"
+                    + "\n".join(f"- [ ] {s}" for s in meta["next_steps"])
+                )
+
+            backfill_content = "\n".join(parts)
+            conn.execute(
+                "UPDATE session_logs SET content=? WHERE id=?",
+                (backfill_content, row["id"]),
+            )
+
+        conn.commit()
     finally:
         conn.close()
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "files_processed": files_processed,
+    }
+
+
+def _parse_structured_entry(
+    chunk: str, project: str, task: str
+) -> dict | None:
+    """Parse a structured entry (from _format_entry). Returns None if not structured."""
+    date_match = re.search(r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})", chunk)
+    if not date_match:
+        return None
+
+    date_str = date_match.group(1)
+    logged_at = f"{date_str}T00:00:00+00:00"
+
+    agent_match = re.search(r"\*\*Agent:\*\*\s*(\S+)", chunk)
+    agent_id = agent_match.group(1) if agent_match else "unknown"
+
+    summary_match = re.search(
+        r"##\s+Session Summary\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
+    )
+    summary = summary_match.group(1).strip() if summary_match else chunk[:200]
+
+    decisions: list[str] = []
+    decisions_match = re.search(
+        r"##\s+Decisions Made\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
+    )
+    if decisions_match:
+        for line in decisions_match.group(1).strip().split("\n"):
+            line = line.strip()
+            if line.startswith("- "):
+                decisions.append(line[2:])
+
+    issues: list[str] = []
+    issues_match = re.search(
+        r"##\s+Gotchas\s*/\s*Issues\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
+    )
+    if issues_match:
+        for line in issues_match.group(1).strip().split("\n"):
+            line = line.strip()
+            if line.startswith("- "):
+                issues.append(line[2:])
+
+    next_steps: list[str] = []
+    next_match = re.search(
+        r"##\s+Next Steps\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
+    )
+    if next_match:
+        for line in next_match.group(1).strip().split("\n"):
+            line = line.strip()
+            if line.startswith("- [ ] "):
+                next_steps.append(line[6:])
+            elif line.startswith("- "):
+                next_steps.append(line[2:])
+
+    metadata = None
+    if decisions or issues or next_steps:
+        metadata = json.dumps(
+            {"decisions": decisions, "issues": issues, "next_steps": next_steps}
+        )
+
+    return {
+        "project": project,
+        "task": task,
+        "logged_at": logged_at,
+        "summary": summary,
+        "agent_id": agent_id,
+        "content": chunk,
+        "metadata": metadata,
+    }

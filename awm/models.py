@@ -184,8 +184,8 @@ class SessionLogEntry(BaseModel):
     id: int
     project: str
     task: str
-    file_path: str
-    git_commit: str | None
+    file_path: str = ""
+    git_commit: str | None = None
     logged_at: str
     summary: str
     agent_id: str

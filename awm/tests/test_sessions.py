@@ -1,4 +1,4 @@
-"""Tests for awm.services.sessions — log, list, get, reflect."""
+"""Tests for awm.services.sessions — log, list, get, migrate."""
 
 from __future__ import annotations
 
@@ -40,33 +40,30 @@ class TestFormatEntry:
 
 
 class TestLogSession:
-    def test_log_creates_file_and_db_entry(self, awm_workspace, seeded_tasks):
-        """log_session should append to experiences.md and insert a DB row."""
+    def test_log_creates_db_entry(self, awm_workspace):
+        """log_session creates a DB row with content, no file I/O."""
         req = SessionLogCreateRequest(
             project="proj-a", task="task-1", summary="Test session log",
         )
         entry = sessions.log_session(req)
         assert entry.project == "proj-a"
         assert entry.task == "task-1"
-        assert entry.git_commit is None  # no git commits in new layout
+        assert entry.git_commit is None
 
-        # Check file was appended in workspace (main/)
-        exp_file = awm_workspace["main_dir"] / "proj-a" / "tasks" / "task-1" / "experiences.md"
-        content = exp_file.read_text()
-        assert "Test session log" in content
+        # Verify content in DB
+        detail = sessions.get_session(entry.id)
+        assert "Test session log" in detail.content
 
-    def test_log_missing_workspace(self, awm_workspace):
-        req = SessionLogCreateRequest(project="noproject", task="notask", summary="s")
-        with pytest.raises(FileNotFoundError):
-            sessions.log_session(req)
-
-    def test_log_with_metadata(self, awm_workspace, seeded_tasks):
+    def test_log_with_metadata(self, awm_workspace):
         req = SessionLogCreateRequest(
             project="proj-a", task="task-1", summary="s",
             decisions=["d1"], issues=["i1"],
         )
         entry = sessions.log_session(req)
         assert entry.id is not None
+
+        detail = sessions.get_session(entry.id)
+        assert "d1" in detail.content
 
 
 class TestListSessions:
@@ -93,34 +90,85 @@ class TestListSessions:
 
 class TestGetSession:
     def test_get_existing(self, awm_workspace, seeded_sessions):
-        # First get the list to find an ID
         result = sessions.list_sessions()
         entry_id = result.entries[0].id
         detail = sessions.get_session(entry_id)
         assert detail.entry.id == entry_id
+        assert detail.content  # content comes from DB
 
     def test_get_nonexistent(self, awm_workspace):
         with pytest.raises(FileNotFoundError):
             sessions.get_session(99999)
 
 
-class TestReflect:
-    def test_reflect_all(self, awm_workspace, seeded_sessions):
-        result = sessions.reflect()
-        assert result.total == 3
+class TestMigrateExperiences:
+    def test_migrate_structured_entry(self, awm_workspace):
+        main_dir = awm_workspace["main_dir"]
+        ws = main_dir / "proj-x" / "tasks" / "task-x"
+        ws.mkdir(parents=True)
+        (ws / "experiences.md").write_text(
+            "# Experiences -- proj-x/task-x\n\n## Log\n\n"
+            "\n**Date:** 2024-06-15\n\n"
+            "**Task:** proj-x/task-x\n\n"
+            "**Agent:** agent-1\n\n"
+            "## Session Summary\n\n"
+            "Did some work\n\n"
+            "---\n"
+        )
 
-    def test_reflect_by_project(self, awm_workspace, seeded_sessions):
-        result = sessions.reflect(project="proj-a")
-        assert result.total >= 1
+        stats = sessions.migrate_experiences()
+        assert stats["imported"] == 1
+        assert stats["files_processed"] == 1
 
-    def test_reflect_with_query(self, awm_workspace, seeded_sessions):
-        result = sessions.reflect(query="pipeline")
-        assert result.total >= 1
-        assert any("pipeline" in e.summary.lower() for e in result.entries)
+        result = sessions.list_sessions(project="proj-x")
+        assert result.total == 1
+        assert "Did some work" in result.entries[0].summary
 
-    def test_reflect_no_match(self, awm_workspace, seeded_sessions):
-        result = sessions.reflect(query="zzz_nonexistent_zzz")
-        assert result.total == 0
+    def test_migrate_free_form_entry(self, awm_workspace):
+        main_dir = awm_workspace["main_dir"]
+        ws = main_dir / "proj-y" / "tasks" / "task-y"
+        ws.mkdir(parents=True)
+        (ws / "experiences.md").write_text(
+            "# Experiences -- proj-y/task-y\n\n## Log\n\n"
+            "Some free-form notes about this task\n"
+            "that span multiple lines.\n"
+        )
+
+        stats = sessions.migrate_experiences()
+        assert stats["imported"] == 1
+
+    def test_migrate_empty_file(self, awm_workspace):
+        main_dir = awm_workspace["main_dir"]
+        ws = main_dir / "proj-z" / "tasks" / "task-z"
+        ws.mkdir(parents=True)
+        (ws / "experiences.md").write_text(
+            "# Experiences -- proj-z/task-z\n\n## Log\n\n"
+        )
+
+        stats = sessions.migrate_experiences()
+        assert stats["imported"] == 0
+
+    def test_migrate_dedup(self, awm_workspace):
+        """Second migration should skip already-imported entries."""
+        main_dir = awm_workspace["main_dir"]
+        ws = main_dir / "proj-d" / "tasks" / "task-d"
+        ws.mkdir(parents=True)
+        (ws / "experiences.md").write_text(
+            "# Experiences -- proj-d/task-d\n\n## Log\n\n"
+            "\n**Date:** 2024-06-15\n\n"
+            "**Task:** proj-d/task-d\n\n"
+            "**Agent:** agent-1\n\n"
+            "## Session Summary\n\n"
+            "First entry\n\n"
+            "---\n"
+        )
+
+        stats1 = sessions.migrate_experiences()
+        assert stats1["imported"] == 1
+
+        stats2 = sessions.migrate_experiences()
+        assert stats2["skipped"] == 1
+        assert stats2["imported"] == 0
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS session_logs (
     summary TEXT NOT NULL,
     agent_id TEXT DEFAULT 'unknown',
     metadata TEXT,
+    content TEXT,
     UNIQUE(project, task, logged_at, agent_id)
 );
 
@@ -175,6 +176,9 @@ INSERT OR IGNORE INTO config (key, value, updated_at)
 """,
     (7, 8): """\
 ALTER TABLE tasks ADD COLUMN session INTEGER NOT NULL DEFAULT 1;
+""",
+    (8, 9): """\
+ALTER TABLE session_logs ADD COLUMN content TEXT;
 """,
     (5, 6): """\
 -- Migrate task worktree paths: main/{project}/{task} → main/{project}/tasks/{task}

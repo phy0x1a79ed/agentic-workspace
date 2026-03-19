@@ -111,7 +111,10 @@ class TestSessionEndpoints:
         assert resp.status_code == 200
         assert resp.json()["total"] == 3
 
-    def test_reflect_sessions(self, client, seeded_sessions):
-        resp = client.get("/sessions/reflect", params={"q": "pipeline"})
+    def test_get_session(self, client, seeded_sessions):
+        list_resp = client.get("/sessions")
+        entry_id = list_resp.json()["entries"][0]["id"]
+        resp = client.get(f"/sessions/{entry_id}")
         assert resp.status_code == 200
-        assert resp.json()["total"] >= 1
+        assert resp.json()["entry"]["id"] == entry_id
+        assert "content" in resp.json()

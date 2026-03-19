@@ -20,11 +20,12 @@ from awm.models import (
     LockAcquireRequest,
     MessageSendRequest,
     ProjectCreateRequest,
-    SessionLogCreateRequest,
     TaskCreateRequest,
     TaskUpdateRequest,
 )
-from awm.services import agents, locks, messaging, projects, sessions, skills, tasks
+from awm.operations.sessions import SESSION_OPERATIONS
+from awm.registry import dispatch_operation, operations_to_mcp_tools
+from awm.services import agents, locks, messaging, projects, skills, tasks
 
 server = Server("awm")
 
@@ -73,59 +74,8 @@ TOOLS: list[Tool] = [
         description="Regenerate the skills/_index.md from a live scan of the skills directory.",
         inputSchema={"type": "object", "properties": {}},
     ),
-    # Sessions
-    Tool(
-        name="session_log",
-        description="Log a session entry to a task's experiences.md and record metadata in DB.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "project": {"type": "string"},
-                "task": {"type": "string"},
-                "summary": {"type": "string"},
-                "decisions": {"type": "array", "items": {"type": "string"}},
-                "issues": {"type": "array", "items": {"type": "string"}},
-                "next_steps": {"type": "array", "items": {"type": "string"}},
-                "agent_id": {"type": "string", "default": "unknown"},
-            },
-            "required": ["project", "task", "summary"],
-        },
-    ),
-    Tool(
-        name="session_list",
-        description="List session log entries, optionally filtered by project and/or task.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "project": {"type": "string"},
-                "task": {"type": "string"},
-                "limit": {"type": "integer", "default": 50},
-            },
-        },
-    ),
-    Tool(
-        name="session_get",
-        description="Get a session log entry by ID with full markdown content.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "id": {"type": "integer", "description": "Session log ID"},
-            },
-            "required": ["id"],
-        },
-    ),
-    Tool(
-        name="session_reflect",
-        description="Search across session summaries and metadata for reflection and learning.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "project": {"type": "string"},
-                "task": {"type": "string"},
-                "query": {"type": "string", "description": "Search query across summaries"},
-            },
-        },
-    ),
+    # Sessions — from registry
+    *operations_to_mcp_tools(SESSION_OPERATIONS),
     # Tasks
     Tool(
         name="task_create",
@@ -337,20 +287,10 @@ def _handle_tool(name: str, args: dict) -> str:
         content = skills.regenerate_index()
         return json.dumps({"message": "Index regenerated", "lines": len(content.splitlines())})
 
-    # Sessions
-    if name == "session_log":
-        req = SessionLogCreateRequest(**args)
-        return _serialize(sessions.log_session(req))
-    if name == "session_list":
-        return _serialize(sessions.list_sessions(
-            project=args.get("project"), task=args.get("task"), limit=args.get("limit", 50),
-        ))
-    if name == "session_get":
-        return _serialize(sessions.get_session(args["id"]))
-    if name == "session_reflect":
-        return _serialize(sessions.reflect(
-            project=args.get("project"), task=args.get("task"), query=args.get("query"),
-        ))
+    # Sessions — registry dispatch
+    result = dispatch_operation(name, args, SESSION_OPERATIONS)
+    if result is not None:
+        return _serialize(result)
 
     # Tasks
     if name == "task_create":

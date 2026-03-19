@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from awm.config import (
@@ -120,7 +120,7 @@ def create_task(req: TaskCreateRequest) -> TaskActionResponse:
             f"## Startup Ritual\n\n"
             f"1. Check inbox: `inbox_search scope=task:{req.project}/{req.task}`\n"
             f"2. Read and acknowledge the plan message: `inbox_read id=N`\n"
-            f"3. Review this file and `experiences.md` for prior context\n\n"
+            f"3. Review this file and check session logs (`session_list --project {req.project} --task {req.task}`) for prior context\n\n"
             f"## Work\n\n"
             f"- Code changes go in `repo/` (symlink to git worktree)\n"
             f"- Results go in `results/`\n"
@@ -133,12 +133,7 @@ def create_task(req: TaskCreateRequest) -> TaskActionResponse:
         )
     (workspace_dir / "AGENTS.md").write_text(agents_content)
 
-    # 6. Initialize experiences.md
-    (workspace_dir / "experiences.md").write_text(
-        f"# Experiences -- {req.project}/{req.task}\n\n## Log\n\n"
-    )
-
-    # 7. Record in DB (worktree → main/ workspace, repo_path → git worktree)
+    # 6. Record in DB (worktree → main/ workspace, repo_path → git worktree)
     now = _now_iso()
     conn = get_connection()
     try:
@@ -199,20 +194,6 @@ def update_task(project: str, task: str, req: TaskUpdateRequest) -> TaskActionRe
             raise RuntimeError(f"Merge failed: {r.stderr}")
         run_git(["git", "-C", str(main_worktree), "push"])
         merge_msg = f", merged into {default_branch}"
-
-    # Append completion entry to experiences.md in workspace
-    exp_file = workspace_dir / "experiences.md"
-    if exp_file.exists():
-        today = date.today().isoformat()
-        entry = (
-            f"\n## Completed: {today}\n\n"
-            f"- Task marked as completed on {today}\n"
-            f"- Branch: {feature_branch}\n"
-        )
-        if req.merge:
-            entry += f"- Merged into {detect_default_branch(bare_dir)}\n"
-        with open(exp_file, "a") as f:
-            f.write(entry)
 
     # Cleanup worktree/branch if requested
     if req.cleanup:

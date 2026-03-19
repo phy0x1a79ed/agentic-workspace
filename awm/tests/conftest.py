@@ -178,7 +178,6 @@ def seeded_tasks(db_conn, awm_workspace):
     for t in task_data:
         ws_path = Path(t[4])
         ws_path.mkdir(parents=True, exist_ok=True)
-        (ws_path / "experiences.md").write_text(f"# Experiences -- {t[0]}/{t[1]}\n\n## Log\n\n")
         (ws_path / "AGENTS.md").write_text(f"# {t[0]}/{t[1]}\n")
         (ws_path / "results").mkdir(exist_ok=True)
         (ws_path / "inbox").mkdir(exist_ok=True)
@@ -204,13 +203,13 @@ def seeded_sessions(db_conn, seeded_tasks, awm_workspace):
     t2 = (base + timedelta(seconds=1)).isoformat()
     t3 = (base + timedelta(seconds=2)).isoformat()
     sessions_data = [
-        ("proj-a", "task-1", f"main/proj-a/tasks/task-1/experiences.md", None, t1, "Initial exploration of dataset", "agent-1", None),
-        ("proj-a", "task-1", f"main/proj-a/tasks/task-1/experiences.md", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}'),
-        ("proj-a", "task-2", f"main/proj-a/tasks/task-2/experiences.md", None, t3, "Reviewed results and documented findings", "agent-2", None),
+        ("proj-a", "task-1", "", None, t1, "Initial exploration of dataset", "agent-1", None, "Initial exploration of dataset"),
+        ("proj-a", "task-1", "", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}', "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
+        ("proj-a", "task-2", "", None, t3, "Reviewed results and documented findings", "agent-2", None, "Reviewed results and documented findings"),
     ]
     for s in sessions_data:
         db_conn.execute(
-            "INSERT INTO session_logs (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_logs (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content) VALUES (?,?,?,?,?,?,?,?,?)",
             s,
         )
     db_conn.commit()

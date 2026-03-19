@@ -92,10 +92,13 @@ class TestHandleToolSessions:
         data = json.loads(result)
         assert data["total"] == 3
 
-    def test_session_reflect(self, awm_workspace, seeded_sessions):
-        result = _handle_tool("session_reflect", {"query": "pipeline"})
+    def test_session_get(self, awm_workspace, seeded_sessions):
+        list_result = json.loads(_handle_tool("session_list", {}))
+        entry_id = list_result["entries"][0]["id"]
+        result = _handle_tool("session_get", {"session_id": entry_id})
         data = json.loads(result)
-        assert data["total"] >= 1
+        assert data["entry"]["id"] == entry_id
+        assert "content" in data
 
 
 class TestHandleToolStatus:
