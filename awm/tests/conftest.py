@@ -180,7 +180,6 @@ def seeded_tasks(db_conn, awm_workspace):
         ws_path.mkdir(parents=True, exist_ok=True)
         (ws_path / "AGENTS.md").write_text(f"# {t[0]}/{t[1]}\n")
         (ws_path / "results").mkdir(exist_ok=True)
-        (ws_path / "inbox").mkdir(exist_ok=True)
 
     # Create repo directories (repos/) — bare stubs
     for t in task_data:

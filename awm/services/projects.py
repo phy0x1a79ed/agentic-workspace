@@ -69,7 +69,6 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         DATA_DIR / req.name / "staged",
         MAIN_DIR / req.name,
         MAIN_DIR / req.name / "tasks",
-        MAIN_DIR / req.name / "inbox",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 

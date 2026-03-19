@@ -104,9 +104,8 @@ def create_task(req: TaskCreateRequest) -> TaskActionResponse:
         skills_link.unlink()
     skills_link.symlink_to(SKILLS_DIR)
 
-    # 4. Create results/ and inbox/ directories
+    # 4. Create results/ directory
     (workspace_dir / "results").mkdir(exist_ok=True)
-    (workspace_dir / "inbox").mkdir(exist_ok=True)
 
     # 5. Write AGENTS.md from context or default task agent persona
     if req.context:

@@ -48,7 +48,6 @@ For spawning details: `skills_get sops/agent-spawning`
 ```
 main/{project}/
   data -> ../../data/{project}   # project-specific data (scoped, not global)
-  inbox/                         # project-level inbox
   tasks/                         # task workspaces live here
     {task}/                      # see Per-Task Layout below
 ```
@@ -64,7 +63,6 @@ main/{project}/tasks/{task}/     # agent workspace — AWM-managed, not a git re
   AGENTS.md                      # task context (seeded at creation)
   experiences.md                 # session logs
   results/                       # task outputs
-  inbox/                         # inter-task messaging
   repo -> ../../../../repos/{project}/{task}/   # symlink to git worktree
   skills -> {SKILLS_DIR}         # symlink to awm/skills/ (package data)
 ```
