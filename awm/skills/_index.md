@@ -16,7 +16,7 @@
 | Skill | File | Description |
 |-------|------|-------------|
 | Mamba | `tools/mamba.md` | Conda/mamba quick reference — create, install, export, run |
-| Metasmith | `tools/metasmith.md` | Metasmith pipeline reference — composable transforms for metadata processing |
+| Metasmith | `tools/metasmith.md` | Metasmith pipeline reference — composable transforms for HPC bioinformatics workflows via Nextflow + SLURM |
 | Plotly | `tools/plotly.md` | BaseFigure/ApplyTemplate, palettes, Kaleido export |
 
 ## Templates
