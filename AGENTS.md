@@ -1,5 +1,7 @@
 # Agentic Workspace
 
+@WORKSPACE.md
+
 Universal entry point for CLI-based agents (Claude Code, Codex, OpenCode).
 
 ## Workspace Agent Persona
@@ -31,68 +33,6 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 For the full agent persona SOP: `skills_get sops/agent-personas`
 For spawning details: `skills_get sops/agent-spawning`
 
-## Workspace Layout
-
-| Path | Purpose | Git-tracked? |
-|------|---------|-------------|
-| `AGENTS.md` | This file — start here | Yes |
-| `awm/` | AWM service package (Python) + skills catalog | Yes |
-| `data/` | Shared data (reference + per-project raw/staged) | No |
-| `repos/` | Project bare repos + git worktrees (clean code only) | No |
-| `main/` | Agent workspaces (AGENTS.md, experiences, results, symlinks) | No |
-| `.awm/` | Runtime state (SQLite DB, PID, logs) | No |
-| `.mcp.json` | MCP server registration for Claude Code | Yes |
-
-### Per-Project Layout
-
-```
-main/{project}/
-  data -> ../../data/{project}   # project-specific data (scoped, not global)
-  tasks/                         # task workspaces live here
-    {task}/                      # see Per-Task Layout below
-```
-
-### Per-Task Layout
-
-```
-repos/{project}/
-  .bare/                         # bare git repo
-  {task}/                        # git worktree — pure code, clean git status
-
-main/{project}/tasks/{task}/     # agent workspace — AWM-managed, not a git repo
-  AGENTS.md                      # task context (seeded at creation)
-  experiences.md                 # session logs
-  results/                       # task outputs
-  repo -> ../../../../repos/{project}/{task}/   # symlink to git worktree
-  skills -> {SKILLS_DIR}         # symlink to awm/skills/ (package data)
-```
-
-Tasks access project data via `../../data` (navigates up to the project-level data symlink).
-
-## Quick Start
-
-AWM (Agentic Workspace Manager) provides a unified CLI for all workspace operations. The server auto-starts on first use.
-
-```bash
-# List active tasks
-awm task list
-
-# Create a new project
-awm project create <name> [--clone <url>] [--fork <url>]
-
-# Create a task within a project (with optional context seeding)
-awm task create <project> <task> [--from <branch>] [--context "task brief"]
-
-# Complete a task
-awm task complete <project> <task> [--merge]
-
-# Log a session
-awm session log <project> <task> --summary "What was accomplished"
-
-# Search skills
-awm skill search <query>
-```
-
 ## MCP Integration
 
 AWM is also available as an MCP server for direct tool use by Claude Code. The `.mcp.json` at the workspace root registers the `awm` MCP server, which exposes 23 tools:
@@ -110,6 +50,17 @@ AWM is also available as an MCP server for direct tool use by Claude Code. The `
 
 When working in this workspace, prefer MCP tools for programmatic access and the CLI for interactive use.
 
+## Quick Start
+
+```bash
+awm task list                                     # list active tasks
+awm project create <name> [--clone <url>]         # create a new project
+awm task create <project> <task> [--from <branch>] # create a task
+awm task complete <project> <task> [--merge]      # complete a task
+awm session log <project> <task> --summary "..."  # log a session
+awm skill search <query>                          # search skills
+```
+
 ## Skill Discovery
 
 Use the AWM skill commands to browse and search the skills catalog:
@@ -123,66 +74,6 @@ awm skill reindex                     # regenerate skills/_index.md
 ```
 
 Or read `awm/skills/_index.md` directly for a full catalog.
-
-## Task Lifecycle
-
-1. **Create**: `awm task create <project> <task>` creates a git worktree at `repos/<project>/<task>/` on `feat/<task>`, an agent workspace at `main/<project>/tasks/<task>/` with AGENTS.md, symlinks, and directories, and records the task in DB.
-2. **Work**: Do analysis in the workspace. Write outputs to `main/<project>/tasks/<task>/results/`. Data is at `../../data` (project-level symlink). Commit code to the feature branch in the `repo/` symlink.
-3. **Log**: `awm session log <project> <task> --summary "..."` appends to `experiences.md` in the workspace and records metadata in the DB.
-4. **Complete**: `awm task complete <project> <task>` updates DB status, optionally merges branch with `--merge`.
-
-## Session Logging
-
-Session logs follow a DB + file pattern:
-- **SQLite** (metadata index): project, task, summary, agent_id, timestamp
-- **Files** (content): `experiences.md` in each task's workspace (`main/`) holds the full entries
-
-```bash
-awm session log myproject analysis \
-  --summary "Completed normalization pipeline" \
-  --decision "Used quantile normalization" \
-  --issue "Missing values in batch 3" \
-  --next-step "Validate with PCA" \
-  --agent agent1
-
-awm session list --project myproject
-awm session get <id>
-awm session reflect --query "normalization"
-```
-
-## Git Model
-
-Each project uses a **bare repo** at `repos/{project}/.bare/` with worktrees for each task. Git worktrees contain only code — no AWM artifacts pollute `git status`.
-
-- Branch naming: `feat/<task>`, `fix/<task>`
-- PRs created from feature branches
-- See `awm/skills/sops/git-workflow.md` for details
-
-## Python Environment Rules
-
-System Python is externally managed (PEP 668) — `pip install` is blocked.
-
-**Do NOT use:** `python`, `python3`, `pip`, or `pip3` directly.
-**Do NOT use:** `conda activate` or `mamba activate` (requires interactive shell init).
-
-**Always use:**
-```bash
-mamba run -n <project-env> python script.py
-mamba run -n <project-env> pip install <package>
-```
-
-**Bootstrap** (if env doesn't exist):
-```bash
-mamba env list | grep -q <project-name> || mamba env create -f env/environment.yml
-```
-
-## Agent Rules
-
-1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write results to `main/{project}/tasks/{task}/results/`** — not in the repo code tree.
-3. **Log sessions via `awm session log`** at the end of each session — what you did, decisions made, gotchas, next steps.
-4. **Read skills** before starting unfamiliar workflows — use `awm skill search` to find relevant SOPs.
-5. **Don't duplicate data** — use symlinks. The workspace's `data/` and `skills/` dirs in task workspaces are symlinks.
 
 ## Existing Projects
 

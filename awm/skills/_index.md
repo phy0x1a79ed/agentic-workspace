@@ -8,7 +8,7 @@
 | dependency-management | `sops/dependency-management.md` | Mamba per-project envs + per-task overlays |
 | git-workflow | `sops/git-workflow.md` | Bare repo + worktree model, branching, PRs |
 | project-setup | `sops/project-setup.md` | Creating new, forked, or cloned projects via awm CLI |
-| reporting | `sops/reporting.md` | Publishing report packages with methods, tables, and figures |
+| reporting | `sops/inactive/reporting.md` | (Inactive) Publishing report packages with methods, tables, and figures |
 | task-workflow | `sops/task-workflow.md` | Task lifecycle — create, pause, complete — plus session logging |
 
 ## Tool Guides
