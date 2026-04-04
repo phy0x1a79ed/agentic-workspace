@@ -87,36 +87,59 @@ def get_skill(path: str) -> SkillContentResponse:
 
 
 def search_skills(query: str) -> SkillListResponse:
-    """Case-insensitive search across skill name, tags, description, and content."""
+    """Hybrid search: keyword matching + semantic similarity.
+
+    Returns keyword matches first, then semantic matches not already found.
+    """
     q = query.lower()
-    results = []
-    if not SKILLS_DIR.exists():
-        return SkillListResponse(skills=[], total=0)
-    for path in sorted(SKILLS_DIR.rglob("*.md")):
-        if path.name.startswith("_"):
-            continue
-        rel = path.relative_to(SKILLS_DIR)
-        if rel.parts[0] == "templates":
-            continue
-        skill = _skill_from_path(path)
-        # Search across metadata fields
-        searchable = " ".join([
-            skill.name,
-            skill.type,
-            " ".join(skill.tags),
-            skill.description,
-        ]).lower()
-        if q in searchable:
-            results.append(skill)
-            continue
-        # Search in file content
-        try:
-            content = path.read_text(encoding="utf-8").lower()
-            if q in content:
-                results.append(skill)
-        except (OSError, UnicodeDecodeError):
-            pass
-    return SkillListResponse(skills=results, total=len(results))
+    keyword_results = []
+    keyword_paths: set[str] = set()
+
+    if SKILLS_DIR.exists():
+        for path in sorted(SKILLS_DIR.rglob("*.md")):
+            if path.name.startswith("_"):
+                continue
+            rel = path.relative_to(SKILLS_DIR)
+            if rel.parts[0] == "templates":
+                continue
+            skill = _skill_from_path(path)
+            # Search across metadata fields
+            searchable = " ".join([
+                skill.name,
+                skill.type,
+                " ".join(skill.tags),
+                skill.description,
+            ]).lower()
+            if q in searchable:
+                keyword_results.append(skill)
+                keyword_paths.add(skill.file_path)
+                continue
+            # Search in file content
+            try:
+                content = path.read_text(encoding="utf-8").lower()
+                if q in content:
+                    keyword_results.append(skill)
+                    keyword_paths.add(skill.file_path)
+            except (OSError, UnicodeDecodeError):
+                pass
+
+    # Augment with semantic search (best-effort — skip if deps unavailable)
+    semantic_results = []
+    try:
+        from awm.services.embeddings import semantic_search
+        hits = semantic_search(query, source_type="skill", limit=10)
+        for hit in hits:
+            if hit["source_id"] not in keyword_paths and hit["score"] > 0.3:
+                try:
+                    skill = _skill_from_path(SKILLS_DIR / hit["source_id"])
+                    semantic_results.append(skill)
+                except Exception:
+                    pass
+    except Exception:
+        pass  # semantic search unavailable — return keyword results only
+
+    combined = keyword_results + semantic_results
+    return SkillListResponse(skills=combined, total=len(combined))
 
 
 def regenerate_index() -> str:

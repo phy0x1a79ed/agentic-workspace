@@ -12,10 +12,10 @@ from awm.models import (
     MessageSearchResponse,
     MessageActionResponse,
 )
-from awm.services import tasks
+from awm.services import scopes as scope_svc
 
-# Valid scope patterns
-_SCOPE_RE = re.compile(r"^(workspace|project:[a-zA-Z0-9_-]+|task:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)$")
+# Valid scope patterns — accept both "scope:" and legacy "task:" prefixes
+_SCOPE_RE = re.compile(r"^(workspace|project:[a-zA-Z0-9_-]+|(scope|task):[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)$")
 
 
 def _validate_scope(scope: str) -> None:
@@ -119,29 +119,29 @@ def mark_read(msg_id: int) -> MessageActionResponse:
 
 
 def list_recipients() -> list[str]:
-    """Return valid recipient scopes for all projects and tasks."""
+    """Return valid recipient scopes for all projects and scopes."""
     from awm.config import REPOS_DIR
 
-    scopes = ["workspace"]
+    recipients = ["workspace"]
     projects_seen: set[str] = set()
 
     # Discover projects from filesystem
     if REPOS_DIR.is_dir():
         for child in sorted(REPOS_DIR.iterdir()):
             if child.is_dir() and (child / ".bare").is_dir():
-                scopes.append(f"project:{child.name}")
+                recipients.append(f"project:{child.name}")
                 projects_seen.add(child.name)
 
-    # Add ALL tasks (any status) as recipients — DISTINCT by (project, task)
-    result = tasks.list_tasks(status="all")
-    tasks_seen: set[str] = set()
-    for t in result.tasks:
-        if t.project not in projects_seen:
-            scopes.append(f"project:{t.project}")
-            projects_seen.add(t.project)
-        task_key = f"{t.project}/{t.task}"
-        if task_key not in tasks_seen:
-            scopes.append(f"task:{task_key}")
-            tasks_seen.add(task_key)
+    # Add ALL scopes (any status) as recipients — DISTINCT by (project, scope)
+    result = scope_svc.list_scopes(status="all")
+    scopes_seen: set[str] = set()
+    for s in result.scopes:
+        if s.project not in projects_seen:
+            recipients.append(f"project:{s.project}")
+            projects_seen.add(s.project)
+        scope_key = f"{s.project}/{s.scope}"
+        if scope_key not in scopes_seen:
+            recipients.append(f"scope:{scope_key}")
+            scopes_seen.add(scope_key)
 
-    return scopes
+    return recipients

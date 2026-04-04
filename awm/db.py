@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -49,10 +49,10 @@ CREATE TABLE IF NOT EXISTS session_logs (
 CREATE INDEX IF NOT EXISTS idx_session_logs_project_task
     ON session_logs(project, task);
 
-CREATE TABLE IF NOT EXISTS tasks (
+CREATE TABLE IF NOT EXISTS scopes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project TEXT NOT NULL,
-    task TEXT NOT NULL,
+    scope TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     branch TEXT NOT NULL,
     worktree TEXT NOT NULL,
@@ -62,10 +62,56 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_unique
-    ON tasks(project, task) WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scopes_active_unique
+    ON scopes(project, scope) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_scopes_status ON scopes(status);
+CREATE INDEX IF NOT EXISTS idx_scopes_project ON scopes(project);
+
+CREATE TABLE IF NOT EXISTS experiences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_path TEXT,
+    skill_version TEXT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    agent_id TEXT DEFAULT 'unknown',
+    outcome TEXT,
+    summary TEXT NOT NULL,
+    deviations TEXT,
+    suggestions TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_skill ON experiences(skill_path);
+CREATE INDEX IF NOT EXISTS idx_experiences_project ON experiences(project);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    name TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    path TEXT NOT NULL,
+    description TEXT,
+    format TEXT,
+    tags TEXT,
+    status TEXT NOT NULL DEFAULT 'current',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_type, source_id)
+);
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,6 +225,58 @@ ALTER TABLE tasks ADD COLUMN session INTEGER NOT NULL DEFAULT 1;
 """,
     (8, 9): """\
 ALTER TABLE session_logs ADD COLUMN content TEXT;
+""",
+    (9, 10): """\
+-- Rename tasks → scopes
+ALTER TABLE tasks RENAME TO scopes;
+ALTER TABLE scopes RENAME COLUMN task TO scope;
+
+-- Experiences table
+CREATE TABLE IF NOT EXISTS experiences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_path TEXT,
+    skill_version TEXT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    agent_id TEXT DEFAULT 'unknown',
+    outcome TEXT,
+    summary TEXT NOT NULL,
+    deviations TEXT,
+    suggestions TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_experiences_skill ON experiences(skill_path);
+CREATE INDEX IF NOT EXISTS idx_experiences_project ON experiences(project);
+
+-- Artifacts table
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    name TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    path TEXT NOT NULL,
+    description TEXT,
+    format TEXT,
+    tags TEXT,
+    status TEXT NOT NULL DEFAULT 'current',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
+""",
+    (10, 11): """\
+CREATE TABLE IF NOT EXISTS embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_type, source_id)
+);
 """,
     (5, 6): """\
 -- Migrate task worktree paths: main/{project}/{task} → main/{project}/tasks/{task}
