@@ -38,9 +38,9 @@ class TestHandleToolSkills:
         assert data["total"] >= 1
 
     def test_skills_get(self, awm_workspace, sample_skills_dir):
-        result = _handle_tool("skills_get", {"path": "sops/git-workflow.md"})
+        result = _handle_tool("skills_get", {"path": "tools/git.md"})
         data = json.loads(result)
-        assert data["skill"]["name"] == "Git Workflow"
+        assert data["skill"]["name"] == "git"
 
     def test_skills_reindex(self, awm_workspace, sample_skills_dir):
         result = _handle_tool("skills_reindex", {})

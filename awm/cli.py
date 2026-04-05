@@ -427,7 +427,7 @@ def skill_list(
 
 @skill_app.command("get")
 def skill_get(
-    path: str = typer.Argument(..., help="Relative path to skill (e.g. sops/git-workflow.md)"),
+    path: str = typer.Argument(..., help="Relative path to skill (e.g. tools/git.md)"),
 ):
     """Read a skill file."""
     r = _api("GET", f"/skills/{path}")

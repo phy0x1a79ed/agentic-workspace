@@ -30,9 +30,6 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 3. The prompt is sent to the scope inbox automatically
 4. Check back on the next startup for completion status
 
-For the full agent persona reference: `skills_get sops/agent-personas.md`
-For spawning details: `skills_get sops/agent-spawning.md`
-
 ## MCP Integration
 
 AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server, which exposes 27 tools:
@@ -68,7 +65,7 @@ awm skill search <query>                             # search skills (keyword + 
 awm skill list                        # all skills with metadata
 awm skill list --type protocol        # filter by type
 awm skill search "HPC annotation"     # hybrid keyword + semantic search
-awm skill get sops/debrief.md         # read a specific skill
+awm skill get awm/debrief.md          # read a specific skill
 awm skill reindex                     # regenerate skills/_index.md + embeddings
 ```
 

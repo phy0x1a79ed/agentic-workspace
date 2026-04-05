@@ -84,7 +84,7 @@ class TestSessionLogCreateRequest:
 
 class TestSkillInfo:
     def test_defaults(self):
-        s = SkillInfo(name="test", type="sop", file_path="sops/test.md")
+        s = SkillInfo(name="test", type="awm", file_path="awm/test.md")
         assert s.tags == []
         assert s.description == ""
 

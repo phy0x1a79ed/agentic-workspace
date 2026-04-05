@@ -84,9 +84,9 @@ class TestSkillEndpoints:
         assert resp.json()["total"] >= 1
 
     def test_get_skill(self, client, sample_skills_dir):
-        resp = client.get("/skills/sops/git-workflow.md")
+        resp = client.get("/skills/tools/git.md")
         assert resp.status_code == 200
-        assert resp.json()["skill"]["name"] == "Git Workflow"
+        assert resp.json()["skill"]["name"] == "git"
 
     def test_get_skill_404(self, client, sample_skills_dir):
         resp = client.get("/skills/nonexistent.md")

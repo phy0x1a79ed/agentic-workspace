@@ -85,21 +85,25 @@ def sample_skills_dir(awm_workspace):
     """Create a sample skills directory structure with test files."""
     skills_dir = awm_workspace["skills_dir"]
 
-    # SOPs
-    sops_dir = skills_dir / "sops"
-    sops_dir.mkdir()
-    (sops_dir / "git-workflow.md").write_text(
-        "---\nname: Git Workflow\ntype: sop\ntags: [git, workflow]\n"
-        "description: Standard git workflow for projects\n---\n\n# Git Workflow\n\nUse feature branches.\n"
+    # AWM skills
+    awm_dir = skills_dir / "awm"
+    awm_dir.mkdir()
+    (awm_dir / "create-scope.md").write_text(
+        "---\nname: create-scope\ntype: awm\ntags: [scope, workflow]\n"
+        "description: Create and complete a scope\n---\n\n# Create Scope\n\nUse feature branches.\n"
     )
-    (sops_dir / "testing.md").write_text(
-        "---\nname: Testing\ntype: sop\ntags: [testing, quality]\n"
-        "description: Testing standards and practices\n---\n\n# Testing\n\nWrite tests first.\n"
+    (awm_dir / "debrief.md").write_text(
+        "---\nname: debrief\ntype: awm\ntags: [session, debrief]\n"
+        "description: End-of-session debrief\n---\n\n# Debrief\n\nLog the session.\n"
     )
 
     # Tools
     tools_dir = skills_dir / "tools"
     tools_dir.mkdir()
+    (tools_dir / "git.md").write_text(
+        "---\nname: git\ntype: tool\ntags: [git, workflow]\n"
+        "description: Git bare-repo + worktree reference\n---\n\n# Git\n\nUse feature branches.\n"
+    )
     (tools_dir / "mamba.md").write_text(
         "---\nname: Mamba\ntype: tool\ntags: [conda, environments]\n"
         "description: Mamba package manager guide\n---\n\n# Mamba\n\nUse mamba for speed.\n"
@@ -111,7 +115,7 @@ def sample_skills_dir(awm_workspace):
     # Templates (should be excluded from scan)
     templates_dir = skills_dir / "templates"
     templates_dir.mkdir()
-    (templates_dir / "AGENTS.md.template").write_text("# Template\n")
+    (templates_dir / "scope-agents.md.template").write_text("# Template\n")
 
     # Index file (should be excluded from scan)
     (skills_dir / "_index.md").write_text("# Old Index\n")

@@ -11,9 +11,31 @@ from awm.config import (
     PROJECTS_DIR,
     MAIN_DIR,
     DATA_DIR,
+    SKILLS_DIR,
 )
 from awm.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.models import ProjectCreateRequest, ProjectCreateResponse
+
+
+def _find_template(stem: str) -> Path | None:
+    """Locate a template file by a stable stem pattern (e.g. `project-agents`).
+
+    Templates are resolved by filename substring match against any `*.template`
+    file under the workspace skills tree, so renaming or relocating templates
+    does not require a code change. First hit wins; the override copy at
+    `<workspace>/skills/` takes precedence over the package-bundled `SKILLS_DIR`.
+    """
+    roots = []
+    workspace_skills = WORKSPACE_ROOT / "skills"
+    if workspace_skills.exists():
+        roots.append(workspace_skills)
+    if SKILLS_DIR.exists() and SKILLS_DIR not in roots:
+        roots.append(SKILLS_DIR)
+    for root in roots:
+        for path in sorted(root.rglob("*.template")):
+            if stem in path.name:
+                return path
+    return None
 
 
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
@@ -87,21 +109,17 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             _run(["git", "-C", str(bare_dir), "worktree", "add",
                   f"../{default_branch}", "-b", default_branch])
 
-    # Write project-level AGENTS.md from project-agents template
-    project_agents_template = WORKSPACE_ROOT / "skills" / "templates" / "project-agents.md.template"
-    if not project_agents_template.exists():
-        # Fall back to package-bundled template
-        from awm.config import SKILLS_DIR
-        project_agents_template = SKILLS_DIR / "templates" / "project-agents.md.template"
+    # Write project-level AGENTS.md from the project-agents template
+    project_agents_template = _find_template("project-agents")
     project_agents_md = MAIN_DIR / req.name / "AGENTS.md"
-    if project_agents_template.exists() and not project_agents_md.exists():
+    if project_agents_template and not project_agents_md.exists():
         content = project_agents_template.read_text().replace("{project}", req.name)
         project_agents_md.write_text(content)
 
-    # Copy AGENTS.md template to project worktree if available
-    template = WORKSPACE_ROOT / "skills" / "templates" / "AGENTS.md.template"
-    if template.exists() and worktree_dir.exists():
-        content = template.read_text().replace("{project}", req.name)
+    # Write per-worktree AGENTS.md from the scope-agents template
+    scope_agents_template = _find_template("scope-agents")
+    if scope_agents_template and worktree_dir.exists():
+        content = scope_agents_template.read_text().replace("{project}", req.name)
         (worktree_dir / "AGENTS.md").write_text(content)
 
     return ProjectCreateResponse(

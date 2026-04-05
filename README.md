@@ -62,7 +62,7 @@ awm scope delete myproject analysis-v1
 awm skill list                              # list all skills with metadata
 awm skill list --type protocol              # filter by type
 awm skill list --tags git,workflow           # filter by tags
-awm skill get sops/git-workflow.md          # read a skill file
+awm skill get tools/git.md                  # read a skill file
 awm skill search "HPC annotation"           # hybrid keyword + semantic search
 awm skill reindex                           # regenerate index + embeddings
 ```
@@ -164,10 +164,7 @@ agent_spawn project=myproject scope=analysis-v1 prompt="Implement feature X"
 
 Supported CLIs: `opencode` (default, interactive TUI) and `claude` (non-interactive `--print` mode). The default is configurable via the `agent_cli` key in the config table.
 
-### SOPs
-
-- `awm skill get sops/agent-personas` — full persona SOP (startup rituals, triage rules, delegation protocol)
-- `awm skill get sops/agent-spawning` — spawning details, CLI config, inbox protocol
+The 3-level agent hierarchy (workspace / project / scope) is documented in the workspace-level `AGENTS.md`.
 
 ## MCP Server
 
