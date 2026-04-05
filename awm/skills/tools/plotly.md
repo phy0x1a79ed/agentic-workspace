@@ -1,7 +1,5 @@
 ---
 name: plotly
-type: reference
-scope: workspace
 tags: [visualization, plotly, figures, charts, export, kaleido]
 requires: []
 description: BaseFigure/ApplyTemplate, palettes, Kaleido export
