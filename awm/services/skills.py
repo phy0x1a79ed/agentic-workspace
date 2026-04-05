@@ -1,7 +1,9 @@
-"""Skills scanning, frontmatter parsing, search, and index regeneration."""
+"""Skills scanning, frontmatter parsing, search, and embedding sync."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -26,16 +28,6 @@ def _parse_frontmatter(path: Path) -> dict:
         return fm if isinstance(fm, dict) else {}
     except yaml.YAMLError:
         return {}
-
-
-# Acronyms that should stay uppercase when rendering a type as a display label.
-_ACRONYMS = {"awm", "mcp", "cli", "hpc", "api", "sop", "pr"}
-
-
-def _format_type_label(t: str) -> str:
-    """Render a type string as a human-readable section label (acronym-aware titlecase)."""
-    words = t.replace("_", "-").split("-")
-    return " ".join(w.upper() if w.lower() in _ACRONYMS else w.title() for w in words)
 
 
 def _is_template(path: Path) -> bool:
@@ -155,12 +147,20 @@ def search_skills(query: str) -> SkillListResponse:
         from awm.services.embeddings import semantic_search
         hits = semantic_search(query, source_type="skill", limit=10)
         for hit in hits:
-            if hit["source_id"] not in keyword_paths and hit["score"] > 0.3:
-                try:
-                    skill = _skill_from_path(SKILLS_DIR / hit["source_id"])
-                    semantic_results.append(skill)
-                except Exception:
-                    pass
+            if hit["source_id"] in keyword_paths or hit["score"] <= 0.3:
+                continue
+            # Guard against stale embeddings rows whose skill file has been
+            # deleted or moved. Without this check, _skill_from_path would
+            # silently return a ghost SkillInfo (empty description, inferred
+            # type) because _parse_frontmatter tolerates missing files.
+            full = SKILLS_DIR / hit["source_id"]
+            if not full.is_file():
+                continue
+            try:
+                skill = _skill_from_path(full)
+                semantic_results.append(skill)
+            except Exception:
+                pass
     except Exception:
         pass  # semantic search unavailable — return keyword results only
 
@@ -168,45 +168,82 @@ def search_skills(query: str) -> SkillListResponse:
     return SkillListResponse(skills=combined, total=len(combined))
 
 
-def regenerate_index() -> str:
-    """Rebuild skills/_index.md from a live scan of the skills directory.
+# ---------------------------------------------------------------------------
+# Sync — keep the embeddings index aligned with the live skills directory.
+# ---------------------------------------------------------------------------
 
-    Sections are inferred from the skill type (derived from top-level subdirectory
-    unless overridden in frontmatter). Templates are discovered by `.template`
-    suffix wherever they live. No hardcoded category names.
+_SYNC_FP_KEY = "skills_sync_fp"
+
+
+def _fingerprint_skills_dir() -> str:
+    """Cheap fingerprint of the live skills tree.
+
+    Captures every file that `_scan_skills` would include, plus its mtime_ns,
+    so any add/delete/edit invalidates the hash. O(N) stat calls only — no file
+    reads — so safe to call on every invocation of `sync_skills`.
     """
+    if not SKILLS_DIR.exists():
+        return "empty"
+    entries: list[tuple[str, int]] = []
+    for path in sorted(SKILLS_DIR.rglob("*.md")):
+        if path.name.startswith("_") or _is_template(path):
+            continue
+        try:
+            entries.append((str(path.relative_to(SKILLS_DIR)), path.stat().st_mtime_ns))
+        except OSError:
+            continue
+    payload = json.dumps(entries, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def sync_skills(force: bool = False) -> dict:
+    """Sync the embeddings index with the live skills directory.
+
+    Lazy: returns immediately with `skipped=True` when the directory fingerprint
+    matches the last successful sync. Designed to be called from workflow skills
+    (e.g. skill-update) without concern for redundant work.
+
+    When drift is detected (or `force=True`): re-embeds every live skill and
+    deletes embeddings rows whose source file no longer exists. Returns stats.
+    """
+    from awm.services.config_service import get_config, set_config
+    from awm.services.embeddings import index_skill
+    from awm.db import get_connection
+
+    fp = _fingerprint_skills_dir()
+    if not force and get_config(_SYNC_FP_KEY) == fp:
+        return {"skipped": True, "reason": "fingerprint_unchanged"}
+
     skills = _scan_skills()
+    live_paths = {s.file_path for s in skills}
 
-    # Group by type
-    groups: dict[str, list[SkillInfo]] = {}
+    indexed = 0
     for s in skills:
-        groups.setdefault(s.type, []).append(s)
+        try:
+            index_skill(s.file_path)
+            indexed += 1
+        except Exception:
+            pass
 
-    lines = ["# Skills Catalog\n"]
-    for skill_type, items in sorted(groups.items()):
-        label = _format_type_label(skill_type)
-        lines.append(f"\n## {label}\n")
-        lines.append("| Skill | File | Description |")
-        lines.append("|-------|------|-------------|")
-        for s in items:
-            lines.append(f"| {s.name} | `{s.file_path}` | {s.description} |")
+    pruned = 0
+    conn = get_connection()
+    try:
+        existing = [
+            r[0] for r in conn.execute(
+                "SELECT source_id FROM embeddings WHERE source_type='skill'"
+            ).fetchall()
+        ]
+        stale = [sid for sid in existing if sid not in live_paths]
+        if stale:
+            conn.executemany(
+                "DELETE FROM embeddings WHERE source_type='skill' AND source_id=?",
+                [(sid,) for sid in stale],
+            )
+            conn.commit()
+            pruned = len(stale)
+    finally:
+        conn.close()
 
-    # Templates — discovered by suffix, regardless of directory
-    if SKILLS_DIR.exists():
-        template_files = sorted(SKILLS_DIR.rglob("*.template"))
-        if template_files:
-            lines.append("\n## Templates\n")
-            lines.append("| Template | File | Description |")
-            lines.append("|----------|------|-------------|")
-            for t in template_files:
-                if t.name.startswith("."):
-                    continue
-                rel = t.relative_to(SKILLS_DIR)
-                name = t.name.removesuffix(".template").removesuffix(".md")
-                name = name.replace("-", " ").replace("_", " ").title()
-                lines.append(f"| {name} | `{rel}` | |")
+    set_config(_SYNC_FP_KEY, fp)
+    return {"skipped": False, "indexed": indexed, "pruned": pruned}
 
-    content = "\n".join(lines) + "\n"
-    index_path = SKILLS_DIR / "_index.md"
-    index_path.write_text(content, encoding="utf-8")
-    return content

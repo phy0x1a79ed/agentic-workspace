@@ -482,16 +482,6 @@ def skill_search(
     typer.echo(f"\nTotal: {data['total']} match(es)")
 
 
-@skill_app.command("reindex")
-def skill_reindex():
-    """Regenerate the skills/_index.md from a live scan."""
-    r = _api("POST", "/skills/reindex")
-    if r.status_code >= 400:
-        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    typer.echo("Skills index regenerated.")
-
-
 # ---------------------------------------------------------------------------
 # Session commands — registered via registry + migrate-experiences
 # ---------------------------------------------------------------------------

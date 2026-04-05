@@ -194,25 +194,27 @@ def semantic_search(
 
 
 def reindex_all() -> dict:
-    """Rebuild all embeddings from current data."""
-    from awm.services.skills import list_skills
+    """Full rebuild: force skills + artifacts sync, re-embed all experiences, drop stray rows.
 
-    stats = {"skills": 0, "experiences": 0, "artifacts": 0}
+    This is the heavy hammer — prefer `skills.sync_skills()` / `artifacts.sync_artifacts()`
+    for routine, lazy syncing. Use this when you need to guarantee the embeddings table
+    is a complete mirror of current state, including experiences (which are append-only
+    and therefore have no sync function of their own).
+    """
+    from awm.services.skills import sync_skills
+    from awm.services.artifacts import sync_artifacts
 
-    # Skills
-    skill_result = list_skills()
-    for skill in skill_result.skills:
-        try:
-            index_skill(skill.file_path)
-            stats["skills"] += 1
-        except Exception:
-            pass
+    stats: dict = {
+        "skills": sync_skills(force=True),
+        "artifacts": sync_artifacts(force=True),
+        "experiences": 0,
+        "stray_pruned": 0,
+    }
 
-    # Experiences
+    # Experiences — append-only, no sync function. Just upsert all of them.
     conn = get_connection()
     try:
         exp_ids = [r[0] for r in conn.execute("SELECT id FROM experiences").fetchall()]
-        art_ids = [r[0] for r in conn.execute("SELECT id FROM artifacts").fetchall()]
     finally:
         conn.close()
 
@@ -223,11 +225,22 @@ def reindex_all() -> dict:
         except Exception:
             pass
 
-    for aid in art_ids:
-        try:
-            index_artifact(aid)
-            stats["artifacts"] += 1
-        except Exception:
-            pass
+    # Final safety pass: drop embeddings rows whose source_type we don't recognize
+    # (e.g. legacy schema drift). sync_skills / sync_artifacts already handle their
+    # own source_types; this just catches orphans with unknown types.
+    known_types = {"skill", "artifact", "experience"}
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT source_type, source_id FROM embeddings").fetchall()
+        stray = [(t, s) for t, s in rows if t not in known_types]
+        if stray:
+            conn.executemany(
+                "DELETE FROM embeddings WHERE source_type=? AND source_id=?",
+                stray,
+            )
+            conn.commit()
+            stats["stray_pruned"] = len(stray)
+    finally:
+        conn.close()
 
     return stats

@@ -119,18 +119,62 @@ class TestGetSkill:
             skills.get_skill("tools/nonexistent.md")
 
 
-class TestRegenerateIndex:
-    def test_regenerate_creates_index(self, sample_skills_dir):
-        content = skills.regenerate_index()
-        assert "# Skills Catalog" in content
-        assert "git" in content
-        index_path = sample_skills_dir / "_index.md"
-        assert index_path.exists()
-        assert index_path.read_text() == content
+class TestSyncSkills:
+    """Tests for sync_skills with embedding stubbed out.
 
-    def test_regenerate_includes_templates(self, sample_skills_dir):
-        content = skills.regenerate_index()
-        assert "Templates" in content
+    `index_skill` depends on sentence-transformers and sqlite-vec — heavy optional
+    deps that may not be available in the test environment, and which would slow
+    tests down even when they are. Patching it to a no-op isolates the sync
+    reconciliation logic (fingerprint, upsert count, prune) from the embedding
+    backend.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_index_skill(self, monkeypatch):
+        monkeypatch.setattr(
+            "awm.services.embeddings.index_skill",
+            lambda path: None,
+        )
+
+    def test_first_call_indexes_and_prunes(self, sample_skills_dir, db_conn):
+        # Seed a stale skill embedding whose file does not exist.
+        db_conn.execute(
+            "INSERT INTO embeddings (source_type, source_id, chunk_text, embedding, updated_at) "
+            "VALUES ('skill', 'sops/ghost.md', 'ghost', X'00', datetime('now'))"
+        )
+        db_conn.commit()
+
+        result = skills.sync_skills()
+        assert result["skipped"] is False
+        assert result["indexed"] >= 1
+        assert result["pruned"] == 1
+
+        # Ghost row is gone.
+        row = db_conn.execute(
+            "SELECT 1 FROM embeddings WHERE source_type='skill' AND source_id='sops/ghost.md'"
+        ).fetchone()
+        assert row is None
+
+    def test_second_call_is_lazy_noop(self, sample_skills_dir):
+        first = skills.sync_skills()
+        assert first["skipped"] is False
+        second = skills.sync_skills()
+        assert second["skipped"] is True
+        assert second["reason"] == "fingerprint_unchanged"
+
+    def test_edit_invalidates_fingerprint(self, sample_skills_dir):
+        skills.sync_skills()
+        # Touch a skill so its mtime bumps.
+        target = sample_skills_dir / "tools" / "git.md"
+        text = target.read_text()
+        target.write_text(text + "\n<!-- edit -->\n")
+        result = skills.sync_skills()
+        assert result["skipped"] is False
+
+    def test_force_bypasses_fingerprint(self, sample_skills_dir):
+        skills.sync_skills()
+        result = skills.sync_skills(force=True)
+        assert result["skipped"] is False
 
 
 class TestFindByName:

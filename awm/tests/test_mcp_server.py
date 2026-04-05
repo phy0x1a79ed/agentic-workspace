@@ -47,12 +47,6 @@ class TestHandleToolSkills:
         data = json.loads(result)
         assert data["skill"]["name"] == "git"
 
-    def test_skills_reindex(self, awm_workspace, sample_skills_dir):
-        result = handle_tool("skills_reindex", {})
-        data = json.loads(result)
-        assert data["message"] == "Index regenerated"
-
-
 class TestHandleToolLocks:
     def test_lock_acquire_and_release(self, awm_workspace):
         result = handle_tool("lock_acquire", {

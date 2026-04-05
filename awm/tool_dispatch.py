@@ -74,9 +74,14 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="skills_reindex",
-        description="Regenerate the skills/_index.md from a live scan of the skills directory.",
-        inputSchema={"type": "object", "properties": {}},
+        name="skills_sync",
+        description="Lazily reconcile the skills embedding index with the live skills directory. Cheap no-op when nothing has changed; re-embeds and prunes on drift.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean", "description": "Bypass the fingerprint cache and sync unconditionally", "default": False},
+            },
+        },
     ),
     # Sessions — from registry
     *operations_to_mcp_tools(SESSION_OPERATIONS),
@@ -194,6 +199,16 @@ TOOL_DEFINITIONS: list[Tool] = [
                 "artifact_type": {"type": "string"},
                 "query": {"type": "string", "description": "Free-text search across name, description, tags"},
                 "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    Tool(
+        name="artifacts_sync",
+        description="Lazily reconcile artifact status and embeddings with on-disk file presence. Cheap no-op when the artifacts DB is unchanged; on drift, flips missing files to 'stale', restores reappeared ones, and prunes embeddings.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean", "description": "Bypass the DB fingerprint and walk every artifact path", "default": False},
             },
         },
     ),
@@ -370,9 +385,8 @@ def handle_tool(name: str, args: dict) -> str:
         return _serialize(skills.get_skill(args["path"]))
     if name == "skills_search":
         return _serialize(skills.search_skills(args["query"]))
-    if name == "skills_reindex":
-        content = skills.regenerate_index()
-        return json.dumps({"message": "Index regenerated", "lines": len(content.splitlines())})
+    if name == "skills_sync":
+        return json.dumps(skills.sync_skills(force=args.get("force", False)))
 
     # Sessions — registry dispatch
     result = dispatch_operation(name, args, SESSION_OPERATIONS)
@@ -413,6 +427,8 @@ def handle_tool(name: str, args: dict) -> str:
             artifact_type=args.get("artifact_type"), query=args.get("query"),
             limit=args.get("limit", 50),
         ))
+    if name == "artifacts_sync":
+        return json.dumps(artifacts.sync_artifacts(force=args.get("force", False)))
 
     # AWM Refresh
     if name == "awm_refresh":

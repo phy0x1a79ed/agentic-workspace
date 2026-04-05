@@ -47,7 +47,15 @@ Run this protocol at the end of a work session when instructed to debrief.
    - Types: figure, dataset, report, model, script, other.
    - Skip this step if no artifacts were produced.
 
-3. **Refresh** so the next session sees your contributions:
+3. **Sync artifacts** so the registry reflects on-disk reality before closing out:
+
+   ```
+   artifacts_sync
+   ```
+
+   This is lazy — a no-op when nothing has changed since the last sync — so it is safe to call on every debrief. When drift is detected it flips any artifact whose file has been deleted to `status='stale'` (hiding it from search), restores any that have reappeared, and prunes their embeddings. Pass `force=true` only if you deleted files out-of-band without any other DB write during this session.
+
+4. **Refresh** so the next session sees your contributions:
 
    ```
    awm_refresh project={project} scope={scope}
