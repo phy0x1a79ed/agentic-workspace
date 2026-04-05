@@ -251,6 +251,7 @@ class SessionLogCreateRequest(BaseModel):
     issues: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     agent_id: str = "unknown"
+    skill_path: str | None = None
 
 
 class SessionLogEntry(BaseModel):
@@ -262,6 +263,7 @@ class SessionLogEntry(BaseModel):
     logged_at: str
     summary: str
     agent_id: str
+    skill_path: str | None = None
 
 
 class SessionLogListResponse(BaseModel):

@@ -30,6 +30,7 @@ SESSION_OPERATIONS: list[Operation] = [
             Param(name="issues", type="array", description="Issues encountered (repeatable)", cli_name="--issue"),
             Param(name="next_steps", type="array", description="Next steps (repeatable)", cli_name="--next-step"),
             Param(name="agent_id", type="string", default="unknown", description="Agent identifier", cli_name="--agent"),
+            Param(name="skill_path", type="string", description="Path of the skill followed this session, if any", cli_name="--skill"),
         ],
     ),
     Operation(
@@ -46,6 +47,7 @@ SESSION_OPERATIONS: list[Operation] = [
                 Column(key="id", header="ID", width=6),
                 Column(key="project", header="PROJECT", width=18),
                 Column(key="scope", header="SCOPE", width=22),
+                Column(key="skill_path", header="SKILL", width=20, max_len=20),
                 Column(key="agent_id", header="AGENT", width=15),
                 Column(key="logged_at", header="LOGGED AT", width=28),
                 Column(key="summary", header="SUMMARY", width=40, max_len=40),
@@ -70,6 +72,7 @@ SESSION_OPERATIONS: list[Operation] = [
                 ("ID", "entry.id"),
                 ("Project", "entry.project"),
                 ("Scope", "entry.scope"),
+                ("Skill", "entry.skill_path"),
                 ("Agent", "entry.agent_id"),
                 ("Logged", "entry.logged_at"),
                 ("Commit", "entry.git_commit"),
