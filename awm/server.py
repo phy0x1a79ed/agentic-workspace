@@ -303,12 +303,6 @@ def get_skill_endpoint(path: str):
         raise HTTPException(404, str(e))
 
 
-@app.post("/skills/reindex")
-def reindex_skills_endpoint():
-    content = skills.regenerate_index()
-    return {"message": "Index regenerated", "content": content}
-
-
 # ---------------------------------------------------------------------------
 # Sessions — registered via registry
 # ---------------------------------------------------------------------------
