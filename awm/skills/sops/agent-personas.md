@@ -61,8 +61,7 @@ This workspace uses a three-level agent hierarchy. Each level has distinct respo
 
 ### Startup
 
-1. Check inbox: `inbox_search scope=task:{project}/{task}`
-2. Read the plan message (mark as read: `inbox_read id=N`)
+1. Read inbox: `inbox_read scope=task:{project}/{task}`
 3. Review `AGENTS.md` for task context
 4. Check `experiences.md` for prior session logs
 

@@ -50,8 +50,8 @@ class TestTaskCreateRequest:
         assert req.from_branch is None
 
     def test_with_branch(self):
-        req = TaskCreateRequest(project="proj", task="t1", from_branch="develop")
-        assert req.from_branch == "develop"
+        req = TaskCreateRequest(project="proj", task="t1", from_branch="dev")
+        assert req.from_branch == "dev"
 
 
 class TestTaskUpdateRequest:

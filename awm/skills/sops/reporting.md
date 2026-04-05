@@ -9,10 +9,10 @@ description: Publishing report packages with methods, tables, and figures
 
 ## Report Package Structure
 
-Each report is a self-contained directory under `reports/{project}/{report_name}/`:
+Each report is a self-contained directory under the task's results directory: `main/<project>/tasks/<task>/results/<report_name>/`
 
 ```
-reports/<project>/<report_name>/
+main/<project>/tasks/<task>/results/<report_name>/
   methods.md              # Methods narrative (source)
   methods.pdf             # Rendered methods document
   tables/
@@ -37,10 +37,10 @@ reports/<project>/<report_name>/
 
 ```bash
 # Create directory structure
-mkdir -p reports/<project>/<report_name>/{tables,figures}
+mkdir -p main/<project>/tasks/<task>/results/<report_name>/{tables,figures}
 
 # Initialize methods document
-cat > reports/<project>/<report_name>/methods.md << 'EOF'
+cat > main/<project>/tasks/<task>/results/<report_name>/methods.md << 'EOF'
 ---
 title: "<Report Title>"
 date: YYYY-MM-DD
@@ -62,8 +62,8 @@ EOF
 ## Rendering Methods to PDF
 
 ```bash
-pandoc reports/<project>/<report_name>/methods.md \
-  -o reports/<project>/<report_name>/methods.pdf \
+pandoc main/<project>/tasks/<task>/results/<report_name>/methods.md \
+  -o main/<project>/tasks/<task>/results/<report_name>/methods.pdf \
   --pdf-engine=xelatex
 ```
 

@@ -225,13 +225,15 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="inbox_read",
-        description="Mark a message as read by ID.",
+        description="Read messages from a scoped inbox. Returns messages and marks unread ones as read.",
         inputSchema={
             "type": "object",
             "properties": {
-                "id": {"type": "integer", "description": "Message ID to mark as read"},
+                "scope": {"type": "string", "description": "Inbox scope: 'workspace', 'project:X', or 'task:X/Y'"},
+                "status": {"type": "string", "description": "Filter by status: 'unread' (default), 'read', or omit for unread only"},
+                "limit": {"type": "integer", "default": 50},
             },
-            "required": ["id"],
+            "required": ["scope"],
         },
     ),
     Tool(
@@ -333,7 +335,11 @@ def _handle_tool(name: str, args: dict) -> str:
             limit=args.get("limit", 50),
         ))
     if name == "inbox_read":
-        return _serialize(messaging.mark_read(args["id"]))
+        return _serialize(messaging.read_inbox(
+            scope=args["scope"],
+            status=args.get("status", "unread"),
+            limit=args.get("limit", 50),
+        ))
     if name == "inbox_recipients":
         recipients = messaging.list_recipients()
         return json.dumps({"recipients": recipients, "total": len(recipients)}, indent=2)

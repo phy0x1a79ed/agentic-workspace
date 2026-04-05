@@ -27,13 +27,9 @@ def awm_workspace(tmp_path, monkeypatch):
     skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
-    # Legacy dirs (for migration/compat tests)
+    # Legacy dir (still used by shared_resources.py)
     tasks_dir = workspace / "tasks"
     tasks_dir.mkdir()
-    results_dir = workspace / "results"
-    results_dir.mkdir()
-    reports_dir = workspace / "reports"
-    reports_dir.mkdir()
 
     # Patch config module constants
     monkeypatch.setattr("awm.config.WORKSPACE_ROOT", workspace)
@@ -47,8 +43,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.config.SKILLS_DIR", skills_dir)
     # Legacy
     monkeypatch.setattr("awm.config.TASKS_DIR", tasks_dir)
-    monkeypatch.setattr("awm.config.RESULTS_DIR", results_dir)
-    monkeypatch.setattr("awm.config.REPORTS_DIR", reports_dir)
 
     # Patch where imported
     monkeypatch.setattr("awm.db.DB_PATH", db_path)
@@ -83,8 +77,6 @@ def awm_workspace(tmp_path, monkeypatch):
         "data_dir": data_dir,
         # Legacy
         "tasks_dir": tasks_dir,
-        "results_dir": results_dir,
-        "reports_dir": reports_dir,
     }
 
 

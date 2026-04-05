@@ -1,7 +1,7 @@
 ---
 name: task-workflow
 type: sop
-tags: [task, workflow, worktree, status, experience, session]
+tags: [task, workflow, worktree, status, session]
 description: Task lifecycle — create, pause, complete — plus session logging
 ---
 
@@ -11,40 +11,41 @@ description: Task lifecycle — create, pause, complete — plus session logging
 
 ```bash
 awm task create <project> <task>
-awm task create <project> <task> --from develop   # branch from non-default
+awm task create <project> <task> --from dev   # branch from non-default
 ```
 
-This creates a feature branch (`feat/<task>`), a new worktree at `tasks/<project>/<task>/`, symlinks to shared dirs (`data/`, `results/`, `reports/`), and a `.status` file set to `active`.
+This creates:
+- A feature branch (`feat/<task>`)
+- A git worktree at `repos/<project>/<task>/` (clean code only)
+- An agent workspace at `main/<project>/tasks/<task>/` with AGENTS.md, symlinks, and results directory
+- A task record in the DB with status `active`
 
 ### Example
 
 ```bash
 awm task create my-project add-normalization
-# Creates: tasks/my-project/add-normalization/
-# Branch:  feat/add-normalization
-# Status:  active
+# Worktree: repos/my-project/add-normalization/
+# Workspace: main/my-project/tasks/add-normalization/
+# Branch:    feat/add-normalization
+# Status:    active (tracked in DB)
 ```
 
-## Working in a Task Worktree
+## Working in a Task
 
-Navigate to the worktree directory and work normally:
+The agent workspace at `main/<project>/tasks/<task>/` is the working directory for agents. It contains:
 
-```bash
-cd tasks/my-project/add-normalization/
-# edit files, run code, commit changes
-```
+| Path | Target |
+|------|--------|
+| `repo/` | `../../../../repos/<project>/<task>/` (git worktree) |
+| `skills/` | `awm/skills/` (package data) |
+| `results/` | Local directory for task outputs |
+| `../../data` | Project data via the project-level `data` symlink |
 
-All git operations apply to the task branch within that worktree. Shared directories are available via symlinks:
+Code changes go in the `repo/` symlink (which is the git worktree). Results and outputs go in `results/`.
 
-| Symlink | Target |
-|---------|--------|
-| `data/` | `data/` (workspace-wide shared data) |
-| `results/` | `results/<project>/<task>/` |
-| `reports/` | `reports/<project>/` |
+## Status Management
 
-## Status Conventions
-
-The `.status` file in the worktree root tracks task state:
+Task status is tracked in the DB. Use AWM commands to manage it:
 
 | Status      | Meaning                              |
 |-------------|--------------------------------------|
@@ -52,16 +53,14 @@ The `.status` file in the worktree root tracks task state:
 | `paused`    | Work suspended, will resume later    |
 | `completed` | Task finished, ready for cleanup     |
 
-Use AWM commands to manage status:
-
 ```bash
 awm task pause <project> <task>
 awm task resume <project> <task>
 ```
 
-## Experience / Session Logging
+## Session Logging
 
-At the end of each work session, log what happened using the AWM session logger:
+At the end of each work session, log what happened:
 
 ```bash
 awm session log <project> <task> \
@@ -72,12 +71,9 @@ awm session log <project> <task> \
   --agent agent1
 ```
 
-This:
-1. Appends a formatted entry to `experiences.md` in the task worktree
-2. Commits the change to the feature branch
-3. Records the metadata (summary, commit hash, timestamp) in the AWM database
+This records the session in the DB (summary, decisions, issues, next steps, agent ID, timestamp).
 
-You can also query past sessions for reflection:
+You can query past sessions:
 
 ```bash
 awm session list --project my-project
@@ -102,16 +98,14 @@ awm task complete <project> <task> --merge     # merge feature branch into main
 ```
 
 This:
-1. Sets `.status` to `completed`
-2. Updates task status in the AWM database
-3. Appends a completion entry to `experiences.md`
-4. Optionally merges the feature branch into the default branch and pushes
+1. Updates task status to `completed` in the DB
+2. Optionally merges the feature branch into the default branch and pushes
 
 ## Task Lifecycle Summary
 
 ```
 awm task create  -->  active  -->  [pause <-> resume]  -->  awm task complete
                         |                                         |
-                  work in worktree                         merge + cleanup
+                  work in workspace                        merge + cleanup
                   awm session log
 ```
