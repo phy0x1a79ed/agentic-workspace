@@ -145,7 +145,14 @@ class TestSearchMessages:
     def test_search_by_query(self, seeded_messages):
         resp = messaging.search_messages(query="tests passed")
         assert resp.total == 1
-        assert "tests passed" in resp.messages[0].body.lower()
+        assert resp.messages[0].subject == "Build complete"
+
+    def test_search_returns_previews_without_body(self, seeded_messages):
+        resp = messaging.search_messages()
+        assert resp.total == 4
+        for m in resp.messages:
+            assert "body" not in m.model_dump()
+            assert "metadata" not in m.model_dump()
 
     def test_search_query_in_subject(self, seeded_messages):
         resp = messaging.search_messages(query="Review needed")
@@ -166,39 +173,58 @@ class TestSearchMessages:
 
 
 # ---------------------------------------------------------------------------
-# read_inbox
+# fetch_messages
 # ---------------------------------------------------------------------------
 
-class TestReadInbox:
-    def test_read_inbox_returns_unread(self, seeded_messages):
-        resp = messaging.read_inbox(scope="scope:proj-a/scope-1")
-        # Only the unread scope_assignment (not the already-read plan)
-        assert resp.total == 1
-        assert resp.messages[0].msg_type == "scope_assignment"
-        assert resp.messages[0].status == "read"  # marked read by the call
-
-    def test_read_inbox_marks_as_read(self, seeded_messages, db_conn):
-        messaging.read_inbox(scope="workspace")
-        row = db_conn.execute(
-            "SELECT status FROM messages WHERE scope = 'workspace'"
-        ).fetchone()
-        assert row["status"] == "read"
-
-    def test_read_inbox_scope_required(self, seeded_messages):
-        with pytest.raises(TypeError):
-            messaging.read_inbox()  # type: ignore[call-arg]
-
-    def test_read_inbox_invalid_scope(self, seeded_messages):
+class TestFetchMessages:
+    def test_fetch_requires_valid_scope(self, seeded_messages):
         with pytest.raises(ValueError, match="Invalid scope"):
-            messaging.read_inbox(scope="bad")
+            messaging.fetch_messages(scope="bogus")
 
-    def test_read_inbox_with_status_filter(self, seeded_messages):
-        resp = messaging.read_inbox(scope="scope:proj-a/scope-1", status="read")
+    def test_fetch_returns_full_bodies(self, seeded_messages):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1")
+        assert resp.total == 2
+        for m in resp.messages:
+            assert m.body is not None
+            assert "body" in m.model_dump()
+        subjects = {m.subject for m in resp.messages}
+        assert subjects == {"Implement feature X", "Execution plan"}
+
+    def test_fetch_does_not_mark_read_by_default(self, seeded_messages, db_conn):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1")
+        assert resp.marked_read_count == 0
+        row = db_conn.execute(
+            "SELECT status FROM messages WHERE scope = 'scope:proj-a/scope-1' AND subject = 'Implement feature X'"
+        ).fetchone()
+        assert row["status"] == "unread"
+
+    def test_fetch_mark_read_flips_unread_only(self, seeded_messages, db_conn):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1", mark_read=True)
+        assert resp.total == 2
+        assert resp.marked_read_count == 1
+        for m in resp.messages:
+            assert m.status == "read"
+            assert m.read_at is not None
+        again = messaging.fetch_messages(scope="scope:proj-a/scope-1", status="unread", mark_read=True)
+        assert again.total == 0
+        assert again.marked_read_count == 0
+
+    def test_fetch_filter_by_status(self, seeded_messages):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1", status="read")
+        assert resp.total == 1
+        assert resp.messages[0].subject == "Execution plan"
+
+    def test_fetch_filter_by_msg_type(self, seeded_messages):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1", msg_type="plan")
         assert resp.total == 1
         assert resp.messages[0].msg_type == "plan"
 
-    def test_read_inbox_empty(self, seeded_messages):
-        resp = messaging.read_inbox(scope="project:proj-b")
+    def test_fetch_limit(self, seeded_messages):
+        resp = messaging.fetch_messages(scope="scope:proj-a/scope-1", limit=1)
+        assert resp.total == 1
+
+    def test_fetch_empty(self, seeded_messages):
+        resp = messaging.fetch_messages(scope="project:proj-b")
         assert resp.total == 0
 
 

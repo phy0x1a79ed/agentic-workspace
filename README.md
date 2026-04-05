@@ -129,20 +129,30 @@ AWM implements a two-level agent hierarchy defined by AGENTS.md persona content.
 
 ### Messaging
 
-Agents communicate via scoped message queues stored in SQLite:
+Agents communicate via scoped message queues stored in SQLite. Four MCP tools, each with a distinct job:
+
+| Tool | Purpose |
+|---|---|
+| `inbox_send` | Post a message to a scope |
+| `inbox_search` | **Browse previews** (no body) across scopes — for triage/discovery |
+| `inbox_fetch` | **Read full messages** for a specific scope — the "read my inbox" primitive |
+| `inbox_mark_read` | Ack a single message by id (rarely needed; `inbox_fetch mark_read=true` covers bulk) |
 
 ```bash
-# Send a message (via MCP tool)
+# Send a message
 inbox_send scope=project:myproject sender=workspace msg_type=scope_assignment subject="New work" body="..."
 
-# Check inbox
-inbox_search scope=workspace                    # all workspace messages
-inbox_search scope=scope:myproject/analysis-v1   # scope-specific messages
-inbox_search status=unread                       # only unread
-inbox_search msg_type=reflection                 # filter by type
+# Read your inbox (full bodies, scope required). Add mark_read=true to consume.
+inbox_fetch scope=scope:myproject/analysis-v1
+inbox_fetch scope=workspace mark_read=true
 
-# Mark as read
-inbox_read id=42
+# Browse/triage across scopes — returns previews only (cheap)
+inbox_search status=unread
+inbox_search msg_type=reflection
+inbox_search query="deployment"
+
+# Ack a single message by id (for fine-grained cases)
+inbox_mark_read id=42
 
 # List valid recipients
 inbox_recipients

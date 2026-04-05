@@ -9,7 +9,9 @@ from awm.db import get_connection
 from awm.models import (
     MessageSendRequest,
     MessageInfo,
+    MessagePreview,
     MessageSearchResponse,
+    MessageFetchResponse,
     MessageActionResponse,
 )
 from awm.services import scopes as scope_svc
@@ -34,6 +36,19 @@ def _row_to_info(row) -> MessageInfo:
         subject=row["subject"],
         body=row["body"],
         metadata=row["metadata"],
+        status=row["status"],
+        created_at=row["created_at"],
+        read_at=row["read_at"],
+    )
+
+
+def _row_to_preview(row) -> MessagePreview:
+    return MessagePreview(
+        id=row["id"],
+        scope=row["scope"],
+        sender=row["sender"],
+        msg_type=row["msg_type"],
+        subject=row["subject"],
         status=row["status"],
         created_at=row["created_at"],
         read_at=row["read_at"],
@@ -68,7 +83,10 @@ def search_messages(
     query: str | None = None,
     limit: int = 50,
 ) -> MessageSearchResponse:
-    """Search/filter messages."""
+    """Browse message previews (no body/metadata) across scopes.
+
+    For the full content of a specific scope's messages, use `fetch_messages`.
+    """
     conn = get_connection()
     try:
         sql = "SELECT * FROM messages WHERE 1=1"
@@ -92,16 +110,23 @@ def search_messages(
         rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
-    msgs = [_row_to_info(r) for r in rows]
-    return MessageSearchResponse(messages=msgs, total=len(msgs))
+    previews = [_row_to_preview(r) for r in rows]
+    return MessageSearchResponse(messages=previews, total=len(previews))
 
 
-def read_inbox(
+def fetch_messages(
     scope: str,
-    status: str | None = "unread",
+    status: str | None = None,
+    msg_type: str | None = None,
     limit: int = 50,
-) -> MessageSearchResponse:
-    """Read messages from a scoped inbox and mark unread ones as read."""
+    mark_read: bool = False,
+) -> MessageFetchResponse:
+    """Retrieve full messages for a scope, optionally marking them read atomically.
+
+    ``scope`` is required — this is the "read my inbox" primitive.  When
+    ``mark_read=True``, any returned rows that were ``unread`` are flipped to
+    ``read`` in the same transaction and the returned rows reflect the new state.
+    """
     _validate_scope(scope)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -111,27 +136,29 @@ def read_inbox(
         if status:
             sql += " AND status = ?"
             params.append(status)
+        if msg_type:
+            sql += " AND msg_type = ?"
+            params.append(msg_type)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
-        # Mark fetched unread messages as read
-        unread_ids = [r["id"] for r in rows if r["status"] == "unread"]
-        if unread_ids:
-            placeholders = ",".join("?" * len(unread_ids))
-            conn.execute(
-                f"UPDATE messages SET status = 'read', read_at = ? WHERE id IN ({placeholders})",
-                [now, *unread_ids],
-            )
-            conn.commit()
-            # Re-fetch to return updated rows
-            rows = conn.execute(
-                f"SELECT * FROM messages WHERE id IN ({placeholders}) ORDER BY created_at DESC",
-                unread_ids,
-            ).fetchall()
+
+        marked = 0
+        if mark_read and rows:
+            unread_ids = [r["id"] for r in rows if r["status"] == "unread"]
+            if unread_ids:
+                placeholders = ",".join("?" * len(unread_ids))
+                conn.execute(
+                    f"UPDATE messages SET status = 'read', read_at = ? WHERE id IN ({placeholders})",
+                    [now, *unread_ids],
+                )
+                conn.commit()
+                marked = len(unread_ids)
+                rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     msgs = [_row_to_info(r) for r in rows]
-    return MessageSearchResponse(messages=msgs, total=len(msgs))
+    return MessageFetchResponse(messages=msgs, total=len(msgs), marked_read_count=marked)
 
 
 def list_recipients() -> list[str]:

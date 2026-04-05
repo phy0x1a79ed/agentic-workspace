@@ -305,9 +305,27 @@ class MessageInfo(BaseModel):
     read_at: str | None
 
 
+class MessagePreview(BaseModel):
+    """Lightweight message row for browsing — omits body and metadata."""
+    id: int
+    scope: str
+    sender: str
+    msg_type: str
+    subject: str
+    status: str
+    created_at: str
+    read_at: str | None
+
+
 class MessageSearchResponse(BaseModel):
+    messages: list[MessagePreview]
+    total: int
+
+
+class MessageFetchResponse(BaseModel):
     messages: list[MessageInfo]
     total: int
+    marked_read_count: int = 0
 
 
 class MessageActionResponse(BaseModel):

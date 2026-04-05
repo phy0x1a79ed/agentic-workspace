@@ -308,7 +308,11 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="inbox_search",
-        description="Search/filter messages by scope, status, msg_type, or free-text query.",
+        description=(
+            "Browse message PREVIEWS (no body/metadata) across scopes. Use for "
+            "triage and discovery. To read full message bodies for a specific "
+            "scope, use `inbox_fetch`."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -321,8 +325,30 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="inbox_read",
-        description="Mark a message as read by ID.",
+        name="inbox_fetch",
+        description=(
+            "Retrieve full messages (body + metadata) for a scope. This is the "
+            "'read my inbox' primitive. Set `mark_read=true` to atomically mark "
+            "the returned messages as read in the same call."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Target scope: 'workspace', 'project:X', or 'scope:X/Y'"},
+                "status": {"type": "string", "description": "Filter by status: unread or read"},
+                "msg_type": {"type": "string", "description": "Filter by message type"},
+                "limit": {"type": "integer", "default": 50},
+                "mark_read": {"type": "boolean", "default": False, "description": "If true, mark any returned unread messages as read atomically"},
+            },
+            "required": ["scope"],
+        },
+    ),
+    Tool(
+        name="inbox_mark_read",
+        description=(
+            "Mark a single message as read by ID. For bulk consumption of a "
+            "scope's unread messages, prefer `inbox_fetch` with `mark_read=true`."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -460,7 +486,13 @@ def handle_tool(name: str, args: dict) -> str:
             msg_type=args.get("msg_type"), query=args.get("query"),
             limit=args.get("limit", 50),
         ))
-    if name == "inbox_read":
+    if name == "inbox_fetch":
+        return _serialize(messaging.fetch_messages(
+            scope=args["scope"], status=args.get("status"),
+            msg_type=args.get("msg_type"), limit=args.get("limit", 50),
+            mark_read=args.get("mark_read", False),
+        ))
+    if name == "inbox_mark_read":
         return _serialize(messaging.mark_read(args["id"]))
     if name == "inbox_recipients":
         recipients = messaging.list_recipients()

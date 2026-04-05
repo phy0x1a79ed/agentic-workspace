@@ -61,7 +61,7 @@ class TestSpawnAgent:
         # Verify inbox message was created
         from awm.services import messaging
 
-        result = messaging.search_messages(scope="scope:proj-a/scope-1", msg_type="plan")
+        result = messaging.fetch_messages(scope="scope:proj-a/scope-1", msg_type="plan")
         assert result.total >= 1
         assert "Do the work" in result.messages[0].body
 
