@@ -171,10 +171,10 @@ class TestSearchMessages:
 
 class TestReadInbox:
     def test_read_inbox_returns_unread(self, seeded_messages):
-        resp = messaging.read_inbox(scope="task:proj-a/task-1")
-        # Only the unread task_assignment (not the already-read plan)
+        resp = messaging.read_inbox(scope="scope:proj-a/scope-1")
+        # Only the unread scope_assignment (not the already-read plan)
         assert resp.total == 1
-        assert resp.messages[0].msg_type == "task_assignment"
+        assert resp.messages[0].msg_type == "scope_assignment"
         assert resp.messages[0].status == "read"  # marked read by the call
 
     def test_read_inbox_marks_as_read(self, seeded_messages, db_conn):
@@ -193,7 +193,7 @@ class TestReadInbox:
             messaging.read_inbox(scope="bad")
 
     def test_read_inbox_with_status_filter(self, seeded_messages):
-        resp = messaging.read_inbox(scope="task:proj-a/task-1", status="read")
+        resp = messaging.read_inbox(scope="scope:proj-a/scope-1", status="read")
         assert resp.total == 1
         assert resp.messages[0].msg_type == "plan"
 
