@@ -40,6 +40,7 @@ from awm.models import (
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
 from awm.services import projects, scopes, locks, shared_resources, skills
+from awm.tool_dispatch import handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state
@@ -90,6 +91,9 @@ async def _idle_shutdown_loop():
 async def lifespan(app: FastAPI):
     global _last_request_time
     _last_request_time = time.time()
+
+    # Record core start time for awm_status uptime reporting
+    mark_core_start()
 
     # Init DB
     init_db()
@@ -310,6 +314,33 @@ def reindex_skills_endpoint():
 # ---------------------------------------------------------------------------
 
 register_fastapi_routes(app, SESSION_OPERATIONS)
+
+
+# ---------------------------------------------------------------------------
+# Generic tool dispatch (used by the thin MCP stdio proxy)
+# ---------------------------------------------------------------------------
+
+@app.post("/invoke")
+def invoke_tool(payload: dict):
+    """Dispatch an MCP-style tool call by name. The MCP proxy forwards here
+    over HTTP so the core can be restarted without tearing down the stdio
+    pipe Claude Code has open."""
+    name = payload.get("name")
+    args = payload.get("args", {}) or {}
+    if not name:
+        raise HTTPException(400, "missing 'name' in payload")
+    try:
+        result = handle_tool(name, args)
+    except ValueError as e:
+        # Unknown tool name -> 404
+        raise HTTPException(404, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    return {"result": result}
 
 
 # ---------------------------------------------------------------------------

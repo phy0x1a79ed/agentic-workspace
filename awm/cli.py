@@ -171,6 +171,26 @@ def refresh():
     typer.echo("Server refreshed.")
 
 
+@app.command()
+def restart():
+    """Restart the awm core service via systemd (user unit).
+
+    The long-running FastAPI core runs under ``systemctl --user`` as
+    ``awm.service``. Restarting this way is transparent to MCP clients —
+    the stdio proxy reconnects on the next tool call.
+    """
+    r = subprocess.run(
+        ["systemctl", "--user", "restart", "awm.service"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        typer.echo(f"systemctl restart failed: {r.stderr.strip() or r.stdout.strip()}", err=True)
+        typer.echo("Hint: install the unit at ~/.config/systemd/user/awm.service first "
+                   "(see projects/awm/release/deploy/awm.service).", err=True)
+        raise typer.Exit(r.returncode)
+    typer.echo("awm core restarted. MCP clients reconnect on next tool call.")
+
+
 # ---------------------------------------------------------------------------
 # Project commands
 # ---------------------------------------------------------------------------

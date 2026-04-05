@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from awm.mcp_server import _handle_tool
+from awm.tool_dispatch import handle_tool
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import operations_to_mcp_tools, dispatch_operation
 
@@ -66,15 +66,15 @@ class TestDispatch:
 
 
 class TestSessionMCPIntegration:
-    def test_session_list_via_handle_tool(self, awm_workspace, seeded_sessions):
-        result = _handle_tool("session_list", {})
+    def test_session_list_viahandle_tool(self, awm_workspace, seeded_sessions):
+        result = handle_tool("session_list", {})
         data = json.loads(result)
         assert data["total"] == 3
 
-    def test_session_get_via_handle_tool(self, awm_workspace, seeded_sessions):
-        list_result = json.loads(_handle_tool("session_list", {}))
+    def test_session_get_viahandle_tool(self, awm_workspace, seeded_sessions):
+        list_result = json.loads(handle_tool("session_list", {}))
         entry_id = list_result["entries"][0]["id"]
-        result = _handle_tool("session_get", {"session_id": entry_id})
+        result = handle_tool("session_get", {"session_id": entry_id})
         data = json.loads(result)
         assert data["entry"]["id"] == entry_id
         assert "content" in data
