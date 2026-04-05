@@ -38,7 +38,15 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str) -
     r = run_git(["git", "-C", str(bare_dir), "worktree", "remove", str(worktree_dir), "--force"])
     if r.returncode != 0 and worktree_dir.exists():
         shutil.rmtree(worktree_dir, ignore_errors=True)
-    run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
+    # Only remove the target's metadata dir. NEVER run a blanket
+    # `git worktree prune` here: under the .bare layout git sometimes flags
+    # healthy sibling worktrees as prunable due to path-resolution quirks, and
+    # a blanket prune will wipe their `.bare/worktrees/<name>/` metadata too,
+    # leaving dangling `.git` gitlinks in their working directories. See
+    # inbox #111 (2026-04-05).
+    meta_dir = bare_dir / "worktrees" / worktree_dir.name
+    if meta_dir.exists():
+        shutil.rmtree(meta_dir, ignore_errors=True)
     run_git(["git", "-C", str(bare_dir), "branch", "-D", feature_branch])
 
 
