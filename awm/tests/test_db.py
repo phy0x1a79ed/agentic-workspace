@@ -97,7 +97,7 @@ class TestInitDB:
         conn = get_connection(db_path)
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
         assert version == SCHEMA_VERSION
-        # session_logs and tasks should exist
+        # session_logs and scopes should exist
         tables = {
             r[0]
             for r in conn.execute(

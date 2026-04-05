@@ -133,7 +133,7 @@ Agents communicate via scoped message queues stored in SQLite:
 
 ```bash
 # Send a message (via MCP tool)
-inbox_send scope=project:myproject sender=workspace msg_type=task_assignment subject="New work" body="..."
+inbox_send scope=project:myproject sender=workspace msg_type=scope_assignment subject="New work" body="..."
 
 # Check inbox
 inbox_search scope=workspace                    # all workspace messages
@@ -148,7 +148,7 @@ inbox_read id=42
 inbox_recipients
 ```
 
-**Message types**: `task_assignment`, `reflection`, `status_update`, `notification`, `plan`
+**Message types**: `scope_assignment`, `reflection`, `status_update`, `notification`, `plan`
 
 ### Agent Spawning
 
