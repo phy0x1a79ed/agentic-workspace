@@ -24,7 +24,7 @@ SESSION_OPERATIONS: list[Operation] = [
         request_model=SessionLogCreateRequest,
         params=[
             Param(name="project", type="string", required=True, description="Project name", cli_type="argument"),
-            Param(name="task", type="string", required=True, description="Task name", cli_type="argument"),
+            Param(name="scope", type="string", required=True, description="Scope name", cli_type="argument"),
             Param(name="summary", type="string", required=True, description="Session summary", cli_name="--summary"),
             Param(name="decisions", type="array", description="Decisions made (repeatable)", cli_name="--decision"),
             Param(name="issues", type="array", description="Issues encountered (repeatable)", cli_name="--issue"),
@@ -34,7 +34,7 @@ SESSION_OPERATIONS: list[Operation] = [
     ),
     Operation(
         name="session_list",
-        description="List session log entries, optionally filtered by project and/or task.",
+        description="List session log entries, optionally filtered by project and/or scope.",
         service_func=sessions.list_sessions,
         http_method="GET",
         http_path="/sessions",
@@ -45,7 +45,7 @@ SESSION_OPERATIONS: list[Operation] = [
             columns=[
                 Column(key="id", header="ID", width=6),
                 Column(key="project", header="PROJECT", width=18),
-                Column(key="task", header="TASK", width=22),
+                Column(key="scope", header="SCOPE", width=22),
                 Column(key="agent_id", header="AGENT", width=15),
                 Column(key="logged_at", header="LOGGED AT", width=28),
                 Column(key="summary", header="SUMMARY", width=40, max_len=40),
@@ -53,7 +53,7 @@ SESSION_OPERATIONS: list[Operation] = [
         ),
         params=[
             Param(name="project", type="string", description="Filter by project", cli_name="--project"),
-            Param(name="task", type="string", description="Filter by task", cli_name="--task"),
+            Param(name="scope", type="string", description="Filter by scope", cli_name="--scope"),
             Param(name="limit", type="integer", default=50, description="Max entries to return", cli_name="--limit"),
         ],
     ),
@@ -69,7 +69,7 @@ SESSION_OPERATIONS: list[Operation] = [
             fields=[
                 ("ID", "entry.id"),
                 ("Project", "entry.project"),
-                ("Task", "entry.task"),
+                ("Scope", "entry.scope"),
                 ("Agent", "entry.agent_id"),
                 ("Logged", "entry.logged_at"),
                 ("Commit", "entry.git_commit"),

@@ -8,14 +8,14 @@ Shared context for all agents in this workspace.
 |------|---------|
 | `awm/` | AWM service package (Python) + skills catalog |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
-| `repos/` | Project bare repos + git worktrees (agents work here) |
+| `projects/` | Project bare repos + git worktrees (agents work here) |
 
 ### Per-Scope Layout
 
 Agents land directly in the git worktree. All AWM metadata lives in a `.awm/` dotdir inside:
 
 ```
-repos/{project}/
+projects/{project}/
   .bare/                         # bare git repo
   {scope}/                       # git worktree — agent CWD
     .awm/                        # AWM metadata (gitignored)
@@ -50,7 +50,7 @@ Skills are dynamic protocols that improve with use:
 
 ## Git Model
 
-Each project uses a **bare repo** at `repos/{project}/.bare/` with worktrees per scope.
+Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
 
 - Branch naming: `feat/{scope}`
 - PRs created from feature branches

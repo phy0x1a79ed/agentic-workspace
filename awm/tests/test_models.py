@@ -8,20 +8,20 @@ from pydantic import ValidationError
 from awm.models import (
     LockAcquireRequest,
     LockReleaseRequest,
-    TaskCreateRequest,
-    TaskUpdateRequest,
+    ScopeCreateRequest,
+    ScopeUpdateRequest,
     SessionLogCreateRequest,
     SkillInfo,
     StatusResponse,
     LockInfo,
-    TaskInfo,
+    ScopeInfo,
     SessionLogEntry,
 )
 
 
 class TestLockAcquireRequest:
     def test_valid_exclusive(self):
-        req = LockAcquireRequest(resource_path="tasks/p/t", holder_id="agent-1")
+        req = LockAcquireRequest(resource_path="projects/p/s", holder_id="agent-1")
         assert req.lock_type == "exclusive"
         assert req.holder_pid is None
 
@@ -44,29 +44,29 @@ class TestLockAcquireRequest:
             LockAcquireRequest()
 
 
-class TestTaskCreateRequest:
+class TestScopeCreateRequest:
     def test_defaults(self):
-        req = TaskCreateRequest(project="proj", task="t1")
+        req = ScopeCreateRequest(project="proj", scope="s1")
         assert req.from_branch is None
 
     def test_with_branch(self):
-        req = TaskCreateRequest(project="proj", task="t1", from_branch="develop")
+        req = ScopeCreateRequest(project="proj", scope="s1", from_branch="develop")
         assert req.from_branch == "develop"
 
 
-class TestTaskUpdateRequest:
+class TestScopeUpdateRequest:
     def test_valid(self):
-        req = TaskUpdateRequest(action="complete")
+        req = ScopeUpdateRequest(action="complete")
         assert req.merge is False
 
     def test_with_merge(self):
-        req = TaskUpdateRequest(action="complete", merge=True)
+        req = ScopeUpdateRequest(action="complete", merge=True)
         assert req.merge is True
 
 
 class TestSessionLogCreateRequest:
     def test_minimal(self):
-        req = SessionLogCreateRequest(project="p", task="t", summary="Did stuff")
+        req = SessionLogCreateRequest(project="p", scope="t", summary="Did stuff")
         assert req.agent_id == "unknown"
         assert req.decisions == []
         assert req.issues == []
@@ -74,7 +74,7 @@ class TestSessionLogCreateRequest:
 
     def test_full(self):
         req = SessionLogCreateRequest(
-            project="p", task="t", summary="s",
+            project="p", scope="t", summary="s",
             decisions=["d1"], issues=["i1"], next_steps=["n1"],
             agent_id="agent-x",
         )

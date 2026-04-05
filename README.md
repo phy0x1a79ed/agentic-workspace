@@ -1,8 +1,8 @@
 # Agentic Workspace Manager (AWM)
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/task management, file locking with crash recovery, skills catalog, session logging, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, file locking with crash recovery, skills catalog, session logging, experience tracking, artifact registration, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code.
 
-AWM supports a **three-level agent hierarchy** — workspace, project, and task agents — each with specialized personas, startup rituals, and communication patterns. See [Agent System](#agent-system) for details.
+AWM supports a **two-level agent hierarchy** — a workspace agent that triages and delegates, and scope agents that do the actual work. See [Agent System](#agent-system) for details.
 
 ## Quick Install
 
@@ -10,7 +10,7 @@ AWM supports a **three-level agent hierarchy** — workspace, project, and task 
 ./setup.sh
 ```
 
-This creates a `awm` mamba environment, installs the package, initializes the database, and adds `awm` and `awm-mcp` to your PATH.
+This creates an `awm` mamba environment, installs the package, initializes the database, and adds `awm` and `awm-mcp` to your PATH.
 
 ## Manual Install
 
@@ -42,34 +42,35 @@ awm project create myproject --clone https://github.com/org/repo.git
 awm project create myproject --fork https://github.com/org/repo.git
 ```
 
-### Tasks
+### Scopes
+
+Scopes are isolated git worktrees where agents do their work.
 
 ```bash
-awm task create myproject analysis-v1
-awm task create myproject analysis-v1 --from develop
-awm task list
-awm task list --status active --project myproject
-awm task pause myproject analysis-v1
-awm task resume myproject analysis-v1
-awm task complete myproject analysis-v1
-awm task complete myproject analysis-v1 --merge
+awm scope create myproject analysis-v1
+awm scope create myproject analysis-v1 --from develop
+awm scope list
+awm scope list --status active --project myproject
+awm scope complete myproject analysis-v1
+awm scope complete myproject analysis-v1 --merge
+awm scope delete myproject analysis-v1
 ```
 
 ### Skills
 
 ```bash
 awm skill list                              # list all skills with metadata
-awm skill list --type sop                   # filter by type (sop, tool, template)
+awm skill list --type protocol              # filter by type
 awm skill list --tags git,workflow           # filter by tags
 awm skill get sops/git-workflow.md          # read a skill file
-awm skill search normalization              # search by keyword
-awm skill reindex                           # regenerate awm/skills/_index.md
+awm skill search "HPC annotation"           # hybrid keyword + semantic search
+awm skill reindex                           # regenerate index + embeddings
 ```
 
 ### Session Logging
 
 ```bash
-# Log a session (appends to experiences.md, commits, records in DB)
+# Log a session
 awm session log myproject analysis-v1 \
   --summary "Completed normalization pipeline" \
   --decision "Used quantile normalization for cross-sample comparability" \
@@ -79,12 +80,7 @@ awm session log myproject analysis-v1 \
 
 # Query sessions
 awm session list --project myproject
-awm session list --project myproject --task analysis-v1
 awm session get 42
-
-# Reflect across past sessions
-awm session reflect --query "normalization"
-awm session reflect --project myproject
 ```
 
 ### Locking
@@ -115,22 +111,21 @@ For editing tracked files in the outer repo (AGENTS.md, awm/ package files):
 
 ```bash
 awm shared edit --name update-git-sop --by agent1
-# Work in tasks/_shared/update-git-sop/, commit changes
+# Work in the shared edit worktree, commit changes
 awm shared merge --name update-git-sop
 awm shared list
 ```
 
 ## Agent System
 
-AWM implements a three-level agent hierarchy where each level is defined by AGENTS.md persona content (not standalone SDK agents). The personas shape how Claude Code / opencode behaves at each directory level.
+AWM implements a two-level agent hierarchy defined by AGENTS.md persona content. The workspace agent orchestrates while scope agents execute.
 
 ### Levels
 
 | Level | Directory | Role |
 |-------|-----------|------|
 | **Workspace** | Workspace root | Triage, route, delegate, monitor — never does implementation work |
-| **Project** | `main/{project}/` | Manages tasks within a project, coordinates, reports status up |
-| **Task** | `main/{project}/tasks/{task}/` | Executes the plan from inbox, does the actual work |
+| **Scope** | `projects/{project}/{scope}/` | Executes work in an isolated git worktree |
 
 ### Messaging
 
@@ -142,7 +137,7 @@ inbox_send scope=project:myproject sender=workspace msg_type=task_assignment sub
 
 # Check inbox
 inbox_search scope=workspace                    # all workspace messages
-inbox_search scope=task:myproject/analysis-v1    # task-specific messages
+inbox_search scope=scope:myproject/analysis-v1   # scope-specific messages
 inbox_search status=unread                       # only unread
 inbox_search msg_type=reflection                 # filter by type
 
@@ -155,18 +150,16 @@ inbox_recipients
 
 **Message types**: `task_assignment`, `reflection`, `status_update`, `notification`, `plan`
 
-**Scopes**: `workspace`, `project:{name}`, `task:{project}/{task}`
-
 ### Agent Spawning
 
 The workspace agent can delegate work by spawning fire-and-forget agent subprocesses:
 
 ```bash
-# Spawn an agent on a task (via MCP tool)
-agent_spawn project=myproject task=analysis-v1 prompt="Implement feature X"
+# Spawn an agent on a scope (via MCP tool)
+agent_spawn project=myproject scope=analysis-v1 prompt="Implement feature X"
 
-# The prompt is automatically sent to the task's inbox as a 'plan' message
-# The agent runs detached, logging output to main/{project}/tasks/{task}/agent.log
+# The prompt is automatically sent to the scope's inbox as a 'plan' message
+# The agent runs detached, logging output to the scope worktree
 ```
 
 Supported CLIs: `opencode` (default, interactive TUI) and `claude` (non-interactive `--print` mode). The default is configurable via the `agent_cli` key in the config table.
@@ -178,7 +171,7 @@ Supported CLIs: `opencode` (default, interactive TUI) and `claude` (non-interact
 
 ## MCP Server
 
-AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 23 tools covering skills, sessions, tasks, projects, locks, messaging, agents, and status.
+AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 27 tools covering skills, sessions, scopes, experiences, artifacts, projects, locks, messaging, agents, and status.
 
 ### Setup
 
@@ -209,25 +202,28 @@ awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
 | Category | Tools |
 |----------|-------|
 | Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
-| Sessions | `session_log`, `session_list`, `session_get`, `session_reflect` |
-| Tasks | `task_create`, `task_list`, `task_complete`, `task_delete` |
+| Sessions | `session_log`, `session_list`, `session_get` |
+| Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
+| Experiences | `experience_log`, `experience_list` |
+| Artifacts | `artifact_register`, `artifact_search` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_read`, `inbox_recipients` |
 | Agents | `agent_spawn` |
-| Status | `awm_status` |
+| Status | `awm_status`, `awm_refresh` |
 
 ## REST API
 
-The server listens on `127.0.0.1:7819`. All endpoints:
+The server listens on `127.0.0.1:7819`. Key endpoints:
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/status` | Health + summary |
 | POST | `/projects` | Create project |
-| GET | `/tasks` | List tasks |
-| POST | `/tasks` | Create task |
-| PATCH | `/tasks/{project}/{task}` | Update task (complete/pause/resume) |
+| GET | `/scopes` | List scopes |
+| POST | `/scopes` | Create scope |
+| PATCH | `/scopes/{project}/{scope}` | Update scope (complete) |
+| DELETE | `/scopes/{project}/{scope}` | Delete scope |
 | POST | `/locks` | Acquire lock |
 | DELETE | `/locks` | Release lock |
 | GET | `/locks` | List locks |
@@ -241,51 +237,8 @@ The server listens on `127.0.0.1:7819`. All endpoints:
 | GET | `/skills/{path}` | Get skill content |
 | POST | `/skills/reindex` | Regenerate skills index |
 | POST | `/sessions` | Log a session entry |
-| GET | `/sessions` | List session logs (query: `project`, `task`, `limit`) |
+| GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
-| GET | `/sessions/reflect` | Search sessions (query: `project`, `task`, `q`) |
-
-### curl Examples
-
-```bash
-# Health check
-curl localhost:7819/status
-
-# List skills
-curl localhost:7819/skills
-curl 'localhost:7819/skills?type=sop'
-curl 'localhost:7819/skills/search?q=git'
-
-# Get a skill
-curl localhost:7819/skills/sops/git-workflow.md
-
-# Log a session
-curl -X POST localhost:7819/sessions \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"myproject","task":"analysis","summary":"Did things","agent_id":"agent1"}'
-
-# List sessions
-curl 'localhost:7819/sessions?project=myproject'
-
-# Reflect across sessions
-curl 'localhost:7819/sessions/reflect?q=normalization'
-
-# Create task
-curl -X POST localhost:7819/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"project":"myproject","task":"analysis"}'
-
-# Acquire lock
-curl -X POST localhost:7819/locks \
-  -H 'Content-Type: application/json' \
-  -d '{"resource_path":"data/myproject/","holder_id":"agent1","lock_type":"exclusive"}'
-
-# Heartbeat (agents should call every 30s)
-curl -X POST 'localhost:7819/locks/heartbeat?holder=agent1'
-
-# Release lock
-curl -X DELETE 'localhost:7819/locks?path=data/myproject/&holder=agent1'
-```
 
 ## Locking Protocol
 
@@ -331,16 +284,19 @@ awm/                      # Git-tracked Python package
   models.py               # Pydantic models
   services/
     projects.py           # Project CRUD
-    tasks.py              # Task CRUD
+    scopes.py             # Scope CRUD (worktrees)
     locks.py              # Lock management
     skills.py             # Skills scanning + index generation
     sessions.py           # Session log CRUD (DB + file + git)
+    experiences.py        # Experience logging (execution traces)
+    artifacts.py          # Artifact registration + search
+    embeddings.py         # Sentence-transformer embeddings
     shared_resources.py   # Outer-repo worktree flow
     messaging.py          # Scoped message queues (inbox)
     agents.py             # Fire-and-forget agent spawning
     config_service.py     # Key-value config store
 .awm/                     # Runtime state (gitignored)
-  state.db                # SQLite database (schema v7)
+  state.db                # SQLite database (schema v11)
   awm.pid                 # Server PID
   awm.log                 # Server log
 .mcp.json                 # MCP server registration
@@ -356,6 +312,6 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 
-**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v7).
+**Database issues**: Delete `.awm/state.db` and run `awm init` to recreate (schema v11).
 
 **MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.

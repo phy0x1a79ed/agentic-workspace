@@ -211,7 +211,7 @@ TOOLS: list[Tool] = [
     # Projects
     Tool(
         name="project_create",
-        description="Create a new project with bare repo, worktree, and data directories.",
+        description="Create a new project with bare repository, worktree, and data directories.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -281,7 +281,7 @@ TOOLS: list[Tool] = [
             "properties": {
                 "scope": {"type": "string", "description": "Target scope: 'workspace', 'project:X', or 'scope:X/Y'"},
                 "sender": {"type": "string", "description": "Sender identifier (agent name or scope)"},
-                "msg_type": {"type": "string", "enum": ["task_assignment", "reflection", "status_update", "notification", "plan"]},
+                "msg_type": {"type": "string", "enum": ["scope_assignment", "reflection", "status_update", "notification", "plan"]},
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
                 "metadata": {"type": "string", "description": "Optional JSON metadata"},

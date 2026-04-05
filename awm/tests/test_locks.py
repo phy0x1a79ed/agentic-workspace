@@ -14,7 +14,7 @@ from awm.services import locks
 class TestAcquire:
     def test_acquire_exclusive(self, awm_workspace):
         req = LockAcquireRequest(
-            resource_path="tasks/proj/task-1", holder_id="agent-1",
+            resource_path="projects/proj/scope-1", holder_id="agent-1",
             holder_pid=os.getpid(),
         )
         result = locks.acquire(req)
@@ -33,7 +33,7 @@ class TestAcquire:
 
     def test_idempotent_reacquire(self, awm_workspace):
         req = LockAcquireRequest(
-            resource_path="tasks/proj/task-1", holder_id="agent-1",
+            resource_path="projects/proj/scope-1", holder_id="agent-1",
         )
         r1 = locks.acquire(req)
         r2 = locks.acquire(req)
@@ -74,16 +74,16 @@ class TestConflicts:
 
     def test_parent_child_conflict(self, awm_workspace):
         """Locking a parent should conflict with locking a child."""
-        req1 = LockAcquireRequest(resource_path="tasks/proj", holder_id="a1")
-        req2 = LockAcquireRequest(resource_path="tasks/proj/task-1", holder_id="a2")
+        req1 = LockAcquireRequest(resource_path="projects/proj", holder_id="a1")
+        req2 = LockAcquireRequest(resource_path="projects/proj/scope-1", holder_id="a2")
         locks.acquire(req1)
         r2 = locks.acquire(req2)
         assert r2.lock is None
 
     def test_child_parent_conflict(self, awm_workspace):
         """Locking a child should conflict with locking the parent."""
-        req1 = LockAcquireRequest(resource_path="tasks/proj/task-1", holder_id="a1")
-        req2 = LockAcquireRequest(resource_path="tasks/proj", holder_id="a2")
+        req1 = LockAcquireRequest(resource_path="projects/proj/scope-1", holder_id="a1")
+        req2 = LockAcquireRequest(resource_path="projects/proj", holder_id="a2")
         locks.acquire(req1)
         r2 = locks.acquire(req2)
         assert r2.lock is None

@@ -14,14 +14,14 @@ from awm.models import (
 )
 from awm.services import scopes as scope_svc
 
-# Valid scope patterns — accept both "scope:" and legacy "task:" prefixes
-_SCOPE_RE = re.compile(r"^(workspace|project:[a-zA-Z0-9_-]+|(scope|task):[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)$")
+# Valid scope patterns
+_SCOPE_RE = re.compile(r"^(workspace|project:[a-zA-Z0-9_-]+|scope:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)$")
 
 
 def _validate_scope(scope: str) -> None:
     if not _SCOPE_RE.match(scope):
         raise ValueError(
-            f"Invalid scope '{scope}'. Must be 'workspace', 'project:X', or 'task:X/Y'."
+            f"Invalid scope '{scope}'. Must be 'workspace', 'project:X', or 'scope:X/Y'."
         )
 
 
@@ -120,14 +120,14 @@ def mark_read(msg_id: int) -> MessageActionResponse:
 
 def list_recipients() -> list[str]:
     """Return valid recipient scopes for all projects and scopes."""
-    from awm.config import REPOS_DIR
+    from awm.config import PROJECTS_DIR
 
     recipients = ["workspace"]
     projects_seen: set[str] = set()
 
     # Discover projects from filesystem
-    if REPOS_DIR.is_dir():
-        for child in sorted(REPOS_DIR.iterdir()):
+    if PROJECTS_DIR.is_dir():
+        for child in sorted(PROJECTS_DIR.iterdir()):
             if child.is_dir() and (child / ".bare").is_dir():
                 recipients.append(f"project:{child.name}")
                 projects_seen.add(child.name)

@@ -69,18 +69,18 @@ mamba run -n <project-name> <command>
 mamba env list | grep -q <project-name> || mamba env create -f env/environment.yml
 ```
 
-Then apply the task overlay if present:
+Then apply the scope overlay if present:
 
 ```bash
 mamba env update -n <project-name> -f env/environment.yml
 ```
 
-## Per-Task Overlay Pattern
+## Per-Scope Overlay Pattern
 
-Tasks can add temporary or task-specific dependencies via an overlay file at `env/environment.yml` in the worktree root.
+Scopes can add temporary or scope-specific dependencies via an overlay file at `env/environment.yml` in the worktree root.
 
 ```yaml
-# env/environment.yml (in task worktree)
+# env/environment.yml (in scope worktree)
 channels:
   - conda-forge
   - bioconda
@@ -99,13 +99,13 @@ This adds packages to the existing environment without replacing it.
 
 ## Adding Dependencies
 
-1. Add the package to the appropriate `environment.yml` (project-level or task overlay).
+1. Add the package to the appropriate `environment.yml` (project-level or scope overlay).
 2. Run `mamba env update`:
    ```bash
    # Project-level
    mamba env update -n <project-name> -f envs/environment.yml
 
-   # Task overlay
+   # Scope overlay
    mamba env update -n <project-name> -f env/environment.yml
    ```
 3. Commit the updated `environment.yml`.

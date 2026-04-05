@@ -14,40 +14,40 @@ description: Bare repo + worktree model, branching, PRs
 Each project uses a **bare repository** with linked worktrees instead of a standard clone.
 
 ```
-tasks/<project>/
+projects/<project>/
   .bare/             # bare repo (no working directory)
   main/              # worktree -> main branch
-  <task-name>/       # worktree -> feat/<task-name> branch
+  <scope-name>/      # worktree -> feat/<scope-name> branch
 ```
 
 ### Why Bare Repos
 
 - **No checkout conflicts**: A bare repo has no working directory, so switching branches in one worktree never affects another.
 - **Parallel work**: Multiple worktrees can be checked out to different branches simultaneously.
-- **Clean separation**: Each task gets its own directory with its own branch; no stashing or context switching required.
+- **Clean separation**: Each scope gets its own directory with its own branch; no stashing or context switching required.
 
 ## Branch Naming
 
 | Prefix          | Use case                        |
 |-----------------|---------------------------------|
-| `feat/<task>`   | New features or enhancements    |
-| `fix/<task>`    | Bug fixes                       |
+| `feat/<scope>`  | New features or enhancements    |
+| `fix/<scope>`   | Bug fixes                       |
 
-Branches are created automatically by `awm task create`.
+Branches are created automatically by `awm scope create`.
 
 ## Listing Worktrees
 
 ```bash
-git -C tasks/<project>/.bare worktree list
+git -C projects/<project>/.bare worktree list
 ```
 
 ## Creating Pull Requests
 
-From within a task worktree:
+From within a scope worktree:
 
 ```bash
-cd tasks/<project>/<task-name>/
-git push -u origin feat/<task-name>
+cd projects/<project>/<scope-name>/
+git push -u origin feat/<scope-name>
 gh pr create --title "feat: <description>" --body "Summary of changes"
 ```
 
@@ -56,22 +56,22 @@ gh pr create --title "feat: <description>" --body "Summary of changes"
 Add the upstream remote (done automatically on fork setup):
 
 ```bash
-git -C tasks/<project>/.bare remote add upstream <upstream-url>
+git -C projects/<project>/.bare remote add upstream <upstream-url>
 ```
 
 Fetch and merge upstream changes into main:
 
 ```bash
-cd tasks/<project>/main/
+cd projects/<project>/main/
 git fetch upstream
 git merge upstream/main
 git push origin main
 ```
 
-Rebase a task branch onto updated main:
+Rebase a scope branch onto updated main:
 
 ```bash
-cd tasks/<project>/<task-name>/
+cd projects/<project>/<scope-name>/
 git rebase main
 ```
 
@@ -79,14 +79,14 @@ git rebase main
 
 ```bash
 # Check which branch a worktree is on
-git -C tasks/<project>/<task-name> branch --show-current
+git -C projects/<project>/<scope-name> branch --show-current
 
 # View all branches
-git -C tasks/<project>/.bare branch -a
+git -C projects/<project>/.bare branch -a
 
 # Remove a worktree
-git -C tasks/<project>/.bare worktree remove <task-name>
+git -C projects/<project>/.bare worktree remove <scope-name>
 
 # Prune stale worktree references
-git -C tasks/<project>/.bare worktree prune
+git -C projects/<project>/.bare worktree prune
 ```

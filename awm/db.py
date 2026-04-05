@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS shared_edits (
 CREATE TABLE IF NOT EXISTS session_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project TEXT NOT NULL,
-    task TEXT NOT NULL,
+    scope TEXT NOT NULL,
     file_path TEXT NOT NULL,
     git_commit TEXT,
     logged_at TEXT NOT NULL,
@@ -43,11 +43,11 @@ CREATE TABLE IF NOT EXISTS session_logs (
     agent_id TEXT DEFAULT 'unknown',
     metadata TEXT,
     content TEXT,
-    UNIQUE(project, task, logged_at, agent_id)
+    UNIQUE(project, scope, logged_at, agent_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_session_logs_project_task
-    ON session_logs(project, task);
+CREATE INDEX IF NOT EXISTS idx_session_logs_project_scope
+    ON session_logs(project, scope);
 
 CREATE TABLE IF NOT EXISTS scopes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,6 +290,10 @@ UPDATE session_logs SET file_path = REPLACE(file_path,
     'main/' || project || '/' || task || '/',
     'main/' || project || '/tasks/' || task || '/')
 WHERE file_path LIKE 'main/%' AND file_path NOT LIKE '%/tasks/%';
+""",
+    (11, 12): """\
+-- Rename session_logs.task → scope
+ALTER TABLE session_logs RENAME COLUMN task TO scope;
 """,
 }
 

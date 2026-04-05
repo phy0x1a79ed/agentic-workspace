@@ -151,7 +151,7 @@ def get_status():
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
-        active_tasks=scope_result.total,
+        active_scopes=scope_result.total,
         active_shared_edits=active_edits,
     )
 

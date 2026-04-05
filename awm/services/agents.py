@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from awm.config import REPOS_DIR
+from awm.config import PROJECTS_DIR
 from awm.models import (
     AgentSpawnRequest,
     AgentSpawnResponse,
@@ -26,7 +26,7 @@ def spawn_agent(req: AgentSpawnRequest) -> AgentSpawnResponse:
         raise ValueError(f"Unknown agent CLI '{cli}'. Supported: {sorted(_SUPPORTED_CLIS)}")
 
     # Verify scope workspace exists (agent lands in the git worktree)
-    workspace_dir = REPOS_DIR / req.project / req.scope
+    workspace_dir = PROJECTS_DIR / req.project / req.scope
     if not workspace_dir.exists():
         raise FileNotFoundError(
             f"Scope workspace not found at {workspace_dir}"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -13,7 +13,7 @@ class StatusResponse(BaseModel):
     status: str = "ok"
     workspace_root: str
     active_locks: int = 0
-    active_tasks: int = 0
+    active_scopes: int = 0
     active_shared_edits: int = 0
 
 
@@ -42,10 +42,8 @@ class ProjectCreateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScopeCreateRequest(BaseModel):
-    model_config = {"populate_by_name": True}
-
     project: str
-    scope: str = Field(validation_alias=AliasChoices("scope", "task"))
+    scope: str
     from_branch: str | None = None
     context: str | None = None
 
@@ -65,20 +63,11 @@ class ScopeInfo(BaseModel):
     repo_path: str | None = None
     session: int = 1
 
-    @property
-    def task(self) -> str:
-        """Backwards-compat alias for tests."""
-        return self.scope
 
 
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
-
-    @property
-    def tasks(self) -> list[ScopeInfo]:
-        """Backwards-compat alias for tests."""
-        return self.scopes
 
 
 class ScopeActionResponse(BaseModel):
@@ -88,13 +77,6 @@ class ScopeActionResponse(BaseModel):
     message: str
     session: int | None = None
 
-
-# Aliases for backwards compatibility during migration
-TaskCreateRequest = ScopeCreateRequest
-TaskUpdateRequest = ScopeUpdateRequest
-TaskInfo = ScopeInfo
-TaskListResponse = ScopeListResponse
-TaskActionResponse = ScopeActionResponse
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +245,7 @@ class SkillContentResponse(BaseModel):
 
 class SessionLogCreateRequest(BaseModel):
     project: str
-    task: str
+    scope: str
     summary: str
     decisions: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
@@ -274,7 +256,7 @@ class SessionLogCreateRequest(BaseModel):
 class SessionLogEntry(BaseModel):
     id: int
     project: str
-    task: str
+    scope: str
     file_path: str = ""
     git_commit: str | None = None
     logged_at: str
@@ -301,7 +283,7 @@ class MessageSendRequest(BaseModel):
     sender: str
     msg_type: str = Field(
         ...,
-        pattern="^(task_assignment|reflection|status_update|notification|plan)$",
+        pattern="^(scope_assignment|reflection|status_update|notification|plan)$",
     )
     subject: str
     body: str
@@ -336,10 +318,8 @@ class MessageActionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AgentSpawnRequest(BaseModel):
-    model_config = {"populate_by_name": True}
-
     project: str
-    scope: str = Field(validation_alias=AliasChoices("scope", "task"))
+    scope: str
     prompt: str | None = None
     agent_cli: str | None = None
 

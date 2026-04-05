@@ -75,12 +75,12 @@ class TestHandleToolLocks:
 
 
 class TestHandleToolScopes:
-    def test_scope_list(self, awm_workspace, seeded_tasks):
+    def test_scope_list(self, awm_workspace, seeded_scopes):
         result = _handle_tool("scope_list", {})
         data = json.loads(result)
         assert data["total"] == 3
 
-    def test_scope_list_filtered(self, awm_workspace, seeded_tasks):
+    def test_scope_list_filtered(self, awm_workspace, seeded_scopes):
         result = _handle_tool("scope_list", {"status": "active"})
         data = json.loads(result)
         assert data["total"] == 1

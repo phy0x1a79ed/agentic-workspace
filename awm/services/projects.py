@@ -8,7 +8,7 @@ from pathlib import Path
 
 from awm.config import (
     WORKSPACE_ROOT,
-    REPOS_DIR,
+    PROJECTS_DIR,
     MAIN_DIR,
     DATA_DIR,
 )
@@ -17,8 +17,8 @@ from awm.models import ProjectCreateRequest, ProjectCreateResponse
 
 
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
-    """Create a new project with bare repo, worktree, and data dirs."""
-    bare_dir = REPOS_DIR / req.name / ".bare"
+    """Create a new project with bare repository, worktree, and data dirs."""
+    bare_dir = PROJECTS_DIR / req.name / ".bare"
 
     if bare_dir.exists():
         raise FileExistsError(f"Project '{req.name}' already exists at {bare_dir}")
@@ -68,7 +68,6 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         DATA_DIR / req.name / "raw",
         DATA_DIR / req.name / "staged",
         MAIN_DIR / req.name,
-        MAIN_DIR / req.name / "tasks",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +78,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
 
     # Detect default branch and create worktree
     default_branch = _detect_default_branch(bare_dir)
-    worktree_dir = REPOS_DIR / req.name / default_branch
+    worktree_dir = PROJECTS_DIR / req.name / default_branch
 
     if not worktree_dir.exists():
         r = _run(["git", "-C", str(bare_dir), "worktree", "add",
@@ -99,10 +98,11 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         content = project_agents_template.read_text().replace("{project}", req.name)
         project_agents_md.write_text(content)
 
-    # Copy AGENTS.md template to repo worktree if available
+    # Copy AGENTS.md template to project worktree if available
     template = WORKSPACE_ROOT / "skills" / "templates" / "AGENTS.md.template"
     if template.exists() and worktree_dir.exists():
-        shutil.copy2(template, worktree_dir / "AGENTS.md")
+        content = template.read_text().replace("{project}", req.name)
+        (worktree_dir / "AGENTS.md").write_text(content)
 
     return ProjectCreateResponse(
         name=req.name,

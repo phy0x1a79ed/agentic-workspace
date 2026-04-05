@@ -24,7 +24,7 @@ def _row_to_entry(row) -> SessionLogEntry:
     return SessionLogEntry(
         id=row["id"],
         project=row["project"],
-        task=row["task"],
+        scope=row["scope"],
         file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
         logged_at=row["logged_at"],
@@ -39,7 +39,7 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
     lines = [
         f"\n**Date:** {date_str}",
         "",
-        f"**Task:** {req.project}/{req.task}",
+        f"**Scope:** {req.project}/{req.scope}",
         "",
         f"**Agent:** {req.agent_id}",
         "",
@@ -85,10 +85,10 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
+                (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (req.project, req.task, "", None, logged_at,
+            (req.project, req.scope, "", None, logged_at,
              req.summary, req.agent_id, metadata, content),
         )
         conn.commit()
@@ -102,7 +102,7 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
 
 def list_sessions(
     project: str | None = None,
-    task: str | None = None,
+    scope: str | None = None,
     limit: int = 50,
 ) -> SessionLogListResponse:
     """Query session logs with optional filters."""
@@ -113,9 +113,9 @@ def list_sessions(
         if project:
             query += " AND project = ?"
             params.append(project)
-        if task:
-            query += " AND task = ?"
-            params.append(task)
+        if scope:
+            query += " AND scope = ?"
+            params.append(scope)
         query += " ORDER BY logged_at DESC LIMIT ?"
         params.append(limit)
 
@@ -177,8 +177,12 @@ def migrate_experiences() -> dict:
 
     conn = get_connection()
     try:
-        for exp_file in MAIN_DIR.glob("*/tasks/*/experiences.md"):
-            task_name = exp_file.parent.name
+        # Search both old (*/tasks/*/experiences.md) and new layouts
+        exp_files = list(MAIN_DIR.glob("*/tasks/*/experiences.md"))
+        exp_files.extend(MAIN_DIR.glob("*/scopes/*/experiences.md"))
+
+        for exp_file in exp_files:
+            scope_name = exp_file.parent.name
             project_name = exp_file.parent.parent.parent.name
 
             text = exp_file.read_text(encoding="utf-8").strip()
@@ -206,7 +210,7 @@ def migrate_experiences() -> dict:
                 if not chunk:
                     continue
 
-                entry_data = _parse_structured_entry(chunk, project_name, task_name)
+                entry_data = _parse_structured_entry(chunk, project_name, scope_name)
 
                 if entry_data is None:
                     # Free-form entry
@@ -215,7 +219,7 @@ def migrate_experiences() -> dict:
                         first_line = first_line.lstrip("#").strip()
                     entry_data = {
                         "project": project_name,
-                        "task": task_name,
+                        "scope": scope_name,
                         "logged_at": _now_iso(),
                         "summary": first_line[:200],
                         "agent_id": "unknown",
@@ -225,10 +229,10 @@ def migrate_experiences() -> dict:
 
                 # Dedup check
                 existing = conn.execute(
-                    "SELECT id FROM session_logs WHERE project=? AND task=? AND logged_at=? AND agent_id=?",
+                    "SELECT id FROM session_logs WHERE project=? AND scope=? AND logged_at=? AND agent_id=?",
                     (
                         entry_data["project"],
-                        entry_data["task"],
+                        entry_data["scope"],
                         entry_data["logged_at"],
                         entry_data["agent_id"],
                     ),
@@ -240,11 +244,11 @@ def migrate_experiences() -> dict:
 
                 conn.execute(
                     """INSERT INTO session_logs
-                        (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
+                        (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         entry_data["project"],
-                        entry_data["task"],
+                        entry_data["scope"],
                         "",
                         None,
                         entry_data["logged_at"],
@@ -258,7 +262,7 @@ def migrate_experiences() -> dict:
 
         # Backfill content for existing DB rows that have empty content
         rows = conn.execute(
-            "SELECT id, project, task, summary, metadata FROM session_logs WHERE content IS NULL OR content = ''"
+            "SELECT id, project, scope, summary, metadata FROM session_logs WHERE content IS NULL OR content = ''"
         ).fetchall()
         for row in rows:
             meta: dict = {}
@@ -302,7 +306,7 @@ def migrate_experiences() -> dict:
 
 
 def _parse_structured_entry(
-    chunk: str, project: str, task: str
+    chunk: str, project: str, scope: str
 ) -> dict | None:
     """Parse a structured entry (from _format_entry). Returns None if not structured."""
     date_match = re.search(r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})", chunk)
@@ -360,7 +364,7 @@ def _parse_structured_entry(
 
     return {
         "project": project,
-        "task": task,
+        "scope": scope,
         "logged_at": logged_at,
         "summary": summary,
         "agent_id": agent_id,

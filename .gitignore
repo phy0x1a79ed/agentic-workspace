@@ -4,7 +4,7 @@
 # Workspace runtime directories (not tracked)
 data/
 main/
-repos/
+projects/
 
 # Python
 __pycache__/

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from awm.config import (
     WORKSPACE_ROOT,
-    REPOS_DIR,
+    PROJECTS_DIR,
     DATA_DIR,
     SKILLS_DIR,
 )
@@ -167,7 +167,7 @@ def _generate_artifacts_md(project: str, scope: str) -> str:
 
 def refresh_knowledge(project: str, scope: str) -> str:
     """Regenerate .awm/knowledge.md for a scope. Returns the content written."""
-    repo_dir = REPOS_DIR / project / scope
+    repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_knowledge_md(project, scope)
     awm_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +177,7 @@ def refresh_knowledge(project: str, scope: str) -> str:
 
 def refresh_artifacts(project: str, scope: str) -> str:
     """Regenerate .awm/artifacts.md for a scope. Returns the content written."""
-    repo_dir = REPOS_DIR / project / scope
+    repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_artifacts_md(project, scope)
     awm_dir.mkdir(parents=True, exist_ok=True)
@@ -198,12 +198,12 @@ def awm_refresh(project: str, scope: str) -> dict:
 
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata directory."""
-    bare_dir = REPOS_DIR / req.project / ".bare"
+    bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         raise FileNotFoundError(f"Project '{req.project}' not found (expected {bare_dir})")
 
     from_branch = req.from_branch or detect_default_branch(bare_dir)
-    repo_dir = REPOS_DIR / req.project / req.scope
+    repo_dir = PROJECTS_DIR / req.project / req.scope
     feature_branch = f"feat/{req.scope}"
 
     # Check for existing sessions
@@ -230,7 +230,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     if repo_dir.exists():
         _cleanup_worktree(bare_dir, repo_dir, feature_branch)
 
-    # 1. Create git worktree at repos/{project}/{scope}/
+    # 1. Create git worktree at projects/{project}/{scope}/
     r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
               f"../{req.scope}", "-b", feature_branch, from_branch])
     if r.returncode != 0:
@@ -278,17 +278,17 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         scope=req.scope,
         status="active",
         session=session_num,
-        message=f"Created scope at repos/{req.project}/{req.scope} (.awm/ initialized) on branch {feature_branch}, session {session_num}",
+        message=f"Created scope at projects/{req.project}/{req.scope} (.awm/ initialized) on branch {feature_branch}, session {session_num}",
     )
 
 
 def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActionResponse:
     """Complete a scope."""
-    bare_dir = REPOS_DIR / project / ".bare"
-    repo_dir = REPOS_DIR / project / scope
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    repo_dir = PROJECTS_DIR / project / scope
 
     if not bare_dir.exists():
-        raise FileNotFoundError(f"Bare repo not found at {bare_dir}")
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
 
     feature_branch = f"feat/{scope}"
     now = _now_iso()
@@ -309,7 +309,7 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
     merge_msg = ""
     if req.merge:
         default_branch = detect_default_branch(bare_dir)
-        main_worktree = REPOS_DIR / project / default_branch
+        main_worktree = PROJECTS_DIR / project / default_branch
         if not main_worktree.exists():
             raise FileNotFoundError(f"Main worktree not found at {main_worktree}")
         run_git(["git", "-C", str(main_worktree), "checkout", default_branch])
@@ -331,12 +331,12 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
 def delete_scope(project: str, scope: str) -> ScopeActionResponse:
     """Delete a scope — clean up worktree, branch, and mark as deleted in DB."""
-    bare_dir = REPOS_DIR / project / ".bare"
-    repo_dir = REPOS_DIR / project / scope
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    repo_dir = PROJECTS_DIR / project / scope
     feature_branch = f"feat/{scope}"
 
     if not bare_dir.exists():
-        raise FileNotFoundError(f"Bare repo not found at {bare_dir}")
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
 
     conn = get_connection()
     try:
@@ -392,18 +392,3 @@ def list_scopes(status: str | None = None, project: str | None = None) -> ScopeL
     return ScopeListResponse(scopes=scopes, total=len(scopes))
 
 
-# ---------------------------------------------------------------------------
-# Aliases for backwards compatibility during migration
-# ---------------------------------------------------------------------------
-
-def create_task(req):
-    return create_scope(req)
-
-def update_task(project, task, req):
-    return update_scope(project, task, req)
-
-def delete_task(project, task):
-    return delete_scope(project, task)
-
-def list_tasks(status=None, project=None):
-    return list_scopes(status=status, project=project)

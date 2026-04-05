@@ -25,7 +25,7 @@ class TestMCPToolGeneration:
         log_tool = next(t for t in tools if t.name == "session_log")
         props = log_tool.inputSchema["properties"]
         assert "project" in props
-        assert "task" in props
+        assert "scope" in props
         assert "summary" in props
         assert "session_log" in [log_tool.name]
         assert "required" in log_tool.inputSchema

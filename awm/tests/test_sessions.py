@@ -12,15 +12,15 @@ from awm.services import sessions
 
 class TestFormatEntry:
     def test_minimal_entry(self):
-        req = SessionLogCreateRequest(project="p", task="t", summary="Did things")
+        req = SessionLogCreateRequest(project="p", scope="t", summary="Did things")
         text = sessions._format_entry(req, "2024-06-15T12:00:00+00:00")
         assert "**Date:** 2024-06-15" in text
-        assert "**Task:** p/t" in text
+        assert "**Scope:** p/t" in text
         assert "Did things" in text
 
     def test_full_entry(self):
         req = SessionLogCreateRequest(
-            project="p", task="t", summary="Summary",
+            project="p", scope="t", summary="Summary",
             decisions=["Used pandas"], issues=["Slow query"],
             next_steps=["Optimize"], agent_id="agent-x",
         )
@@ -34,7 +34,7 @@ class TestFormatEntry:
         assert "**Agent:** agent-x" in text
 
     def test_entry_ends_with_separator(self):
-        req = SessionLogCreateRequest(project="p", task="t", summary="s")
+        req = SessionLogCreateRequest(project="p", scope="t", summary="s")
         text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
         assert text.strip().endswith("---")
 
@@ -43,11 +43,11 @@ class TestLogSession:
     def test_log_creates_db_entry(self, awm_workspace):
         """log_session creates a DB row with content, no file I/O."""
         req = SessionLogCreateRequest(
-            project="proj-a", task="task-1", summary="Test session log",
+            project="proj-a", scope="scope-1", summary="Test session log",
         )
         entry = sessions.log_session(req)
         assert entry.project == "proj-a"
-        assert entry.task == "task-1"
+        assert entry.scope == "scope-1"
         assert entry.git_commit is None
 
         # Verify content in DB
@@ -56,7 +56,7 @@ class TestLogSession:
 
     def test_log_with_metadata(self, awm_workspace):
         req = SessionLogCreateRequest(
-            project="proj-a", task="task-1", summary="s",
+            project="proj-a", scope="scope-1", summary="s",
             decisions=["d1"], issues=["i1"],
         )
         entry = sessions.log_session(req)
@@ -75,8 +75,8 @@ class TestListSessions:
         result = sessions.list_sessions(project="proj-a")
         assert result.total == 3
 
-    def test_list_by_task(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions(project="proj-a", task="task-1")
+    def test_list_by_scope(self, awm_workspace, seeded_sessions):
+        result = sessions.list_sessions(project="proj-a", scope="scope-1")
         assert result.total == 2
 
     def test_list_with_limit(self, awm_workspace, seeded_sessions):
@@ -104,12 +104,12 @@ class TestGetSession:
 class TestMigrateExperiences:
     def test_migrate_structured_entry(self, awm_workspace):
         main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-x" / "tasks" / "task-x"
+        ws = main_dir / "proj-x" / "tasks" / "scope-x"
         ws.mkdir(parents=True)
         (ws / "experiences.md").write_text(
-            "# Experiences -- proj-x/task-x\n\n## Log\n\n"
+            "# Experiences -- proj-x/scope-x\n\n## Log\n\n"
             "\n**Date:** 2024-06-15\n\n"
-            "**Task:** proj-x/task-x\n\n"
+            "**Scope:** proj-x/scope-x\n\n"
             "**Agent:** agent-1\n\n"
             "## Session Summary\n\n"
             "Did some work\n\n"
@@ -126,11 +126,11 @@ class TestMigrateExperiences:
 
     def test_migrate_free_form_entry(self, awm_workspace):
         main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-y" / "tasks" / "task-y"
+        ws = main_dir / "proj-y" / "tasks" / "scope-y"
         ws.mkdir(parents=True)
         (ws / "experiences.md").write_text(
-            "# Experiences -- proj-y/task-y\n\n## Log\n\n"
-            "Some free-form notes about this task\n"
+            "# Experiences -- proj-y/scope-y\n\n## Log\n\n"
+            "Some free-form notes about this scope\n"
             "that span multiple lines.\n"
         )
 
@@ -139,10 +139,10 @@ class TestMigrateExperiences:
 
     def test_migrate_empty_file(self, awm_workspace):
         main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-z" / "tasks" / "task-z"
+        ws = main_dir / "proj-z" / "tasks" / "scope-z"
         ws.mkdir(parents=True)
         (ws / "experiences.md").write_text(
-            "# Experiences -- proj-z/task-z\n\n## Log\n\n"
+            "# Experiences -- proj-z/scope-z\n\n## Log\n\n"
         )
 
         stats = sessions.migrate_experiences()
@@ -151,12 +151,12 @@ class TestMigrateExperiences:
     def test_migrate_dedup(self, awm_workspace):
         """Second migration should skip already-imported entries."""
         main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-d" / "tasks" / "task-d"
+        ws = main_dir / "proj-d" / "tasks" / "scope-d"
         ws.mkdir(parents=True)
         (ws / "experiences.md").write_text(
-            "# Experiences -- proj-d/task-d\n\n## Log\n\n"
+            "# Experiences -- proj-d/scope-d\n\n## Log\n\n"
             "\n**Date:** 2024-06-15\n\n"
-            "**Task:** proj-d/task-d\n\n"
+            "**Scope:** proj-d/scope-d\n\n"
             "**Agent:** agent-1\n\n"
             "## Session Summary\n\n"
             "First entry\n\n"
@@ -172,21 +172,21 @@ class TestMigrateExperiences:
 
 
 # ---------------------------------------------------------------------------
-# Task session lifecycle
+# Scope session lifecycle
 # ---------------------------------------------------------------------------
 
-class TestTaskSessions:
-    """Test session numbering when re-creating completed tasks."""
+class TestScopeSessions:
+    """Test session numbering when re-creating completed scopes."""
 
-    def test_create_on_completed_task_creates_session_2(self, awm_workspace, seeded_tasks):
-        """Re-creating a completed task should increment the session number."""
-        from awm.services import tasks as task_svc
-        from awm.models import TaskCreateRequest
+    def test_create_on_completed_scope_creates_session_2(self, awm_workspace, seeded_scopes):
+        """Re-creating a completed scope should increment the session number."""
+        from awm.services import scopes as scope_svc
+        from awm.models import ScopeCreateRequest
 
-        repos_dir = awm_workspace["repos_dir"]
+        projects_dir = awm_workspace["projects_dir"]
 
-        # task-2 is completed in seeded_tasks — set up bare repo for it
-        bare_dir = repos_dir / "proj-a" / ".bare"
+        # scope-2 is completed in seeded_scopes — set up bare repo for it
+        bare_dir = projects_dir / "proj-a" / ".bare"
         bare_dir.mkdir(parents=True, exist_ok=True)
         # Init a real bare repo so worktree creation works
         subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
@@ -201,30 +201,30 @@ class TestTaskSessions:
             subprocess.run(["git", "-C", tmp, "commit", "-m", "init"], check=True, capture_output=True)
             subprocess.run(["git", "-C", tmp, "push"], check=True, capture_output=True)
 
-        req = TaskCreateRequest(project="proj-a", task="task-2")
-        resp = task_svc.create_task(req)
+        req = ScopeCreateRequest(project="proj-a", scope="scope-2")
+        resp = scope_svc.create_scope(req)
         assert resp.session == 2
         assert resp.status == "active"
 
-    def test_create_on_active_task_raises(self, awm_workspace, seeded_tasks):
-        """Creating a task that already has an active session should fail."""
-        from awm.services import tasks as task_svc
-        from awm.models import TaskCreateRequest
+    def test_create_on_active_scope_raises(self, awm_workspace, seeded_scopes):
+        """Creating a scope that already has an active session should fail."""
+        from awm.services import scopes as scope_svc
+        from awm.models import ScopeCreateRequest
 
-        req = TaskCreateRequest(project="proj-a", task="task-1")
+        req = ScopeCreateRequest(project="proj-a", scope="scope-1")
         with pytest.raises(FileExistsError, match="active session"):
-            task_svc.create_task(req)
+            scope_svc.create_scope(req)
 
     def test_session_increments_across_cycles(self, awm_workspace):
         """Session number should increment correctly across create/complete cycles."""
-        from awm.services import tasks as task_svc
-        from awm.models import TaskCreateRequest, TaskUpdateRequest
+        from awm.services import scopes as scope_svc
+        from awm.models import ScopeCreateRequest, ScopeUpdateRequest
         from awm.db import get_connection
 
-        repos_dir = awm_workspace["repos_dir"]
+        projects_dir = awm_workspace["projects_dir"]
 
         # Set up a real bare repo
-        bare_dir = repos_dir / "proj-c" / ".bare"
+        bare_dir = projects_dir / "proj-c" / ".bare"
         bare_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True)
         import tempfile, os
@@ -238,28 +238,28 @@ class TestTaskSessions:
             subprocess.run(["git", "-C", tmp, "push"], check=True, capture_output=True)
 
         # Session 1
-        req = TaskCreateRequest(project="proj-c", task="cycle-task")
-        resp1 = task_svc.create_task(req)
+        req = ScopeCreateRequest(project="proj-c", scope="cycle-scope")
+        resp1 = scope_svc.create_scope(req)
         assert resp1.session == 1
 
         # Complete session 1
-        task_svc.update_task("proj-c", "cycle-task", TaskUpdateRequest(action="complete"))
+        scope_svc.update_scope("proj-c", "cycle-scope", ScopeUpdateRequest(action="complete"))
 
         # Session 2
-        resp2 = task_svc.create_task(req)
+        resp2 = scope_svc.create_scope(req)
         assert resp2.session == 2
 
         # Complete session 2
-        task_svc.update_task("proj-c", "cycle-task", TaskUpdateRequest(action="complete"))
+        scope_svc.update_scope("proj-c", "cycle-scope", ScopeUpdateRequest(action="complete"))
 
         # Session 3
-        resp3 = task_svc.create_task(req)
+        resp3 = scope_svc.create_scope(req)
         assert resp3.session == 3
 
-    def test_list_tasks_includes_session(self, awm_workspace, seeded_tasks):
-        """list_tasks should return session numbers."""
-        from awm.services import tasks as task_svc
+    def test_list_scopes_includes_session(self, awm_workspace, seeded_scopes):
+        """list_scopes should return session numbers."""
+        from awm.services import scopes as scope_svc
 
-        result = task_svc.list_tasks(status="all")
-        for t in result.tasks:
-            assert t.session >= 1
+        result = scope_svc.list_scopes(status="all")
+        for s in result.scopes:
+            assert s.session >= 1
