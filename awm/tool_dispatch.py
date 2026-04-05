@@ -53,7 +53,7 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="skills_get",
-        description="Read a skill file by relative path (e.g. 'sops/git-workflow.md').",
+        description="Read a skill file by relative path (e.g. 'tools/git.md').",
         inputSchema={
             "type": "object",
             "properties": {

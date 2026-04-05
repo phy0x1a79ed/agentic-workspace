@@ -34,7 +34,7 @@ def _row_to_entry(row) -> SessionLogEntry:
 
 
 def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
-    """Format a session log entry as markdown following the experience-entry template."""
+    """Format a session log entry as markdown."""
     date_str = logged_at[:10]
     lines = [
         f"\n**Date:** {date_str}",

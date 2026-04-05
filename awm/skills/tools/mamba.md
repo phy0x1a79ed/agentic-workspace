@@ -1,13 +1,13 @@
 ---
 name: mamba
-type: reference
-scope: workspace
-tags: [environment, conda, mamba, python, packages]
+tags: [environment, conda, mamba, python, packages, dependencies]
 requires: []
-description: Conda/mamba quick reference — create, install, export, run
+description: Conda/mamba reference + workspace env conventions (per-project base, per-scope overlay)
 ---
 
-# Mamba Quick Reference
+# Mamba
+
+Conda/mamba CLI reference plus the workspace's conventions for per-project envs and per-scope overlays.
 
 ## Create Environment
 
@@ -30,7 +30,7 @@ mamba install -n myenv -c conda-forge some-package
 mamba env update -n myenv --file environment.yml
 ```
 
-This merges new/changed packages into the existing env. It does not remove packages deleted from the YAML; recreate the env if you need a clean slate.
+This merges new/changed packages into the existing env. It does **not** remove packages deleted from the YAML; recreate the env if you need a clean slate.
 
 ## Export Environment
 
@@ -80,3 +80,67 @@ mamba run -n myenv <any-command>
 ```
 
 `mamba activate` only works in interactive shells that have run `conda init`. In agent contexts, **always use `mamba run`**.
+
+**Never** call bare `python`, `python3`, `pip`, or `pip3` — system Python is PEP 668-locked and will reject installs outside a venv.
+
+## Workspace convention: per-project env
+
+Each project owns one mamba env **named after the project**, defined at `projects/<project>/main/envs/environment.yml`:
+
+```yaml
+name: <project>
+channels:
+  - conda-forge   # always first
+  - bioconda      # second, for bio packages
+dependencies:
+  - python=3.11
+  - ...
+```
+
+Create:
+
+```bash
+mamba env create -f projects/<project>/main/envs/environment.yml
+```
+
+## Workspace convention: per-scope overlay
+
+Scopes that need extra packages drop an overlay at `env/environment.yml` in the worktree root and apply it on top of the project env — never create a new env for a scope:
+
+```bash
+mamba env update -n <project> -f env/environment.yml
+```
+
+`env update` merges new packages in; it does not remove packages that were deleted from the YAML.
+
+## Bootstrap (idempotent)
+
+```bash
+mamba env list | grep -q <project> || mamba env create -f projects/<project>/main/envs/environment.yml
+# then apply any scope overlay
+[ -f env/environment.yml ] && mamba env update -n <project> -f env/environment.yml
+```
+
+## Lock file
+
+```bash
+mamba env export -n <project> --no-builds > projects/<project>/main/envs/environment.lock.yml
+```
+
+Commit the lock file alongside the loose `environment.yml`. Loose pins give flexibility; the lock reproduces exact versions.
+
+## Recreating an environment
+
+From scratch:
+
+```bash
+mamba env remove -n <project>
+mamba env create -f projects/<project>/main/envs/environment.yml
+```
+
+From lock file (exact reproduction):
+
+```bash
+mamba env remove -n <project>
+mamba env create -f projects/<project>/main/envs/environment.lock.yml
+```

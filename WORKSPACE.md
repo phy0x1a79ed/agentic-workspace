@@ -34,15 +34,15 @@ Scopes access project data via `.awm/data/`. All scopes in the same project shar
 1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
 2. **Startup**: Agent reads `.awm/context.md`, runs `awm_refresh`, reads `knowledge.md` + `artifacts.md`.
 3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
-4. **Debrief**: User says "debrief" — agent follows `skills_get path="sops/debrief.md"`.
+4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
 5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
 
 ## Skills System
 
 Skills are dynamic protocols that improve with use:
 
-- **Protocols**: Step-by-step procedures (debrief, skill-update, project-setup)
-- **References**: Knowledge bases (git-workflow, metasmith, mamba, plotly)
+- **AWM skills** (`skills/awm/`): workspace procedures that drive the MCP tool surface (create-project, create-scope, debrief, skill-update)
+- **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly)
 - Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy
 - `skills_search` combines keyword + semantic search (sentence-transformers embeddings)
 - **Experiences** are execution traces attached to skills — log what happened, deviations, and improvement suggestions
@@ -54,7 +54,7 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 
 - Branch naming: `feat/{scope}`
 - PRs created from feature branches
-- See `skills/sops/git-workflow.md` for details
+- See `skills/tools/git.md` for details
 
 ## Python Environment Rules
 

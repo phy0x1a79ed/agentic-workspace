@@ -1,39 +1,34 @@
 # Skills Catalog
 
 
+## Awm
+
+| Skill | File | Description |
+|-------|------|-------------|
+| create-project | `awm/create-project.md` | Create new, forked, or cloned projects via awm CLI |
+| create-scope | `awm/create-scope.md` | Create a scope, work in its worktree, and complete it |
+| debrief | `awm/debrief.md` | End-of-session debrief — log the session, register artifacts, refresh |
+| skill-update | `awm/skill-update.md` | Revise a skill to match the live tool surface, fix drift, and land code changes the skill demands |
+
 ## Protocol
 
 | Skill | File | Description |
 |-------|------|-------------|
-| agent-spawning | `sops/agent-spawning.md` | How to spawn scope agents, configure CLIs, and manage the fire-and-forget lifecycle |
-| debrief | `sops/debrief.md` | End-of-session debrief — log experiences, register artifacts, reflect |
-| project-setup | `sops/project-setup.md` | Creating new, forked, or cloned projects via awm CLI |
-| skill-update | `sops/skill-update.md` | Revise a skill file based on accumulated experiences |
-| scope-workflow | `sops/task-workflow.md` | Scope lifecycle — create, work, debrief, complete — plus session logging |
+| setup-software-from-git-repo | `setup-software-from-git-repo.md` | Bootstrap a third-party tool from a GitHub repo as a scope library |
 
-## Reference
+## Tool Guides
 
 | Skill | File | Description |
 |-------|------|-------------|
-| agent-personas | `sops/agent-personas.md` | Three-level agent persona system — workspace, project, and scope agents |
-| dependency-management | `sops/dependency-management.md` | Mamba per-project envs + per-scope overlays |
-| git-workflow | `sops/git-workflow.md` | Bare repo + worktree model, branching, PRs |
-| mamba | `tools/mamba.md` | Conda/mamba quick reference — create, install, export, run |
+| git | `tools/git.md` | Bare repo + worktree model, branching, PRs, upstream sync |
+| mamba | `tools/mamba.md` | Conda/mamba reference + workspace env conventions (per-project base, per-scope overlay) |
+| mcp | `tools/mcp.md` | Register an existing MCP server in the workspace .mcp.json |
 | metasmith | `tools/metasmith.md` | Metasmith pipeline reference — composable transforms for HPC bioinformatics workflows via Nextflow + SLURM |
 | plotly | `tools/plotly.md` | BaseFigure/ApplyTemplate, palettes, Kaleido export |
-
-## SOPs
-
-| Skill | File | Description |
-|-------|------|-------------|
-| reporting | `sops/inactive/reporting.md` | Publishing report packages with methods, tables, and figures |
 
 ## Templates
 
 | Template | File | Description |
 |----------|------|-------------|
-| Agents.Md | `templates/AGENTS.md.template` | |
-| Delegation Brief | `templates/delegation-brief.md` | |
-| Experience Entry | `templates/experience-entry.md` | |
 | Project Agents.Md | `templates/project-agents.md.template` | |
-| Report Package | `templates/report-package/` | |
+| Scope Agents.Md | `templates/scope-agents.md.template` | |

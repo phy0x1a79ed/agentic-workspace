@@ -11,10 +11,10 @@ from awm.services import skills
 
 class TestParseFrontmatter:
     def test_valid_frontmatter(self, sample_skills_dir):
-        path = sample_skills_dir / "sops" / "git-workflow.md"
+        path = sample_skills_dir / "tools" / "git.md"
         fm = skills._parse_frontmatter(path)
-        assert fm["name"] == "Git Workflow"
-        assert fm["type"] == "sop"
+        assert fm["name"] == "git"
+        assert fm["type"] == "tool"
         assert "git" in fm["tags"]
 
     def test_no_frontmatter(self, sample_skills_dir):
@@ -35,15 +35,16 @@ class TestParseFrontmatter:
 
 
 class TestTypeInference:
-    def test_sop_inferred(self, sample_skills_dir):
-        path = sample_skills_dir / "sops" / "testing.md"
+    def test_awm_inferred(self, sample_skills_dir):
+        path = sample_skills_dir / "awm" / "debrief.md"
         info = skills._skill_from_path(path)
-        assert info.type == "sop"
+        assert info.type == "awm"
 
     def test_tool_inferred_no_frontmatter(self, sample_skills_dir):
         path = sample_skills_dir / "tools" / "plain.md"
         info = skills._skill_from_path(path)
-        assert info.type == "tool"
+        # Type is inferred from the top-level subdirectory name, verbatim.
+        assert info.type == "tools"
         assert info.name == "plain"  # falls back to stem
 
 
@@ -52,7 +53,7 @@ class TestListSkills:
         result = skills.list_skills()
         assert result.total >= 3
         names = {s.name for s in result.skills}
-        assert "Git Workflow" in names
+        assert "git" in names
         assert "Mamba" in names
 
     def test_excludes_index(self, sample_skills_dir):
@@ -67,10 +68,10 @@ class TestListSkills:
             assert not p.startswith("templates/")
 
     def test_filter_by_type(self, sample_skills_dir):
-        result = skills.list_skills(type_filter="sop")
+        result = skills.list_skills(type_filter="awm")
         assert result.total >= 2
         for s in result.skills:
-            assert s.type == "sop"
+            assert s.type == "awm"
 
     def test_filter_by_tags(self, sample_skills_dir):
         result = skills.list_skills(tags=["git"])
@@ -109,20 +110,20 @@ class TestSearchSkills:
 
 class TestGetSkill:
     def test_get_existing(self, sample_skills_dir):
-        result = skills.get_skill("sops/git-workflow.md")
-        assert result.skill.name == "Git Workflow"
+        result = skills.get_skill("tools/git.md")
+        assert result.skill.name == "git"
         assert "feature branches" in result.content.lower()
 
     def test_get_missing(self, sample_skills_dir):
         with pytest.raises(FileNotFoundError):
-            skills.get_skill("sops/nonexistent.md")
+            skills.get_skill("tools/nonexistent.md")
 
 
 class TestRegenerateIndex:
     def test_regenerate_creates_index(self, sample_skills_dir):
         content = skills.regenerate_index()
         assert "# Skills Catalog" in content
-        assert "Git Workflow" in content
+        assert "git" in content
         index_path = sample_skills_dir / "_index.md"
         assert index_path.exists()
         assert index_path.read_text() == content
@@ -130,3 +131,30 @@ class TestRegenerateIndex:
     def test_regenerate_includes_templates(self, sample_skills_dir):
         content = skills.regenerate_index()
         assert "Templates" in content
+
+
+class TestFindByName:
+    def test_find_existing(self, sample_skills_dir):
+        hit = skills.find_by_name("debrief")
+        assert hit is not None
+        assert hit.file_path == "awm/debrief.md"
+
+    def test_find_missing(self, sample_skills_dir):
+        assert skills.find_by_name("nonexistent-skill") is None
+
+    def test_find_is_layout_independent(self, sample_skills_dir):
+        """Renaming the directory a skill lives in should not break find_by_name."""
+        # Move awm/debrief.md to a differently-named directory, stripping the
+        # frontmatter `type:` field so inference kicks in from the new dir name.
+        new_dir = sample_skills_dir / "workflows"
+        new_dir.mkdir()
+        src = sample_skills_dir / "awm" / "debrief.md"
+        (new_dir / "debrief.md").write_text(
+            "---\nname: debrief\ntags: [session]\n"
+            "description: End-of-session debrief\n---\n\n# Debrief\n\nLog the session.\n"
+        )
+        src.unlink()
+        hit = skills.find_by_name("debrief")
+        assert hit is not None
+        assert hit.file_path == "workflows/debrief.md"
+        assert hit.type == "workflows"  # type auto-inferred from the new dir name

@@ -1,0 +1,54 @@
+---
+name: debrief
+tags: [session, completion, reflection, experience, debrief]
+requires: []
+description: End-of-session debrief — log the session, register artifacts, refresh
+---
+
+# Session Debrief
+
+Run this protocol at the end of a work session when instructed to debrief.
+
+## Steps
+
+1. **Log the session.** Capture how things went — what worked, what didn't, what to improve. If you followed a specific skill, pass its path so the reflection is tied back to that skill for later analysis.
+
+   The call has two kinds of fields:
+
+   - **`summary`** — one free-form paragraph. This is the narrative reflection: outcome (success / partial / failure / abandoned), what went well, what didn't, and any deviations or suggestions for a skill you followed.
+   - **`skill_path`** — the path of the skill you followed this session, if any (e.g. `awm/debrief.md`). Omit if no skill was followed.
+   - **`--decision` / `--issue` / `--next-step`** — repeatable flags. Each occurrence appends **one bullet** to a structured list that a future session will read back. Use one flag per discrete item; do **not** cram multiple items into one string.
+     - `--decision` → a concrete choice made this session (what you picked and why)
+     - `--issue` → a gotcha, bug, or blocker encountered
+     - `--next-step` → a specific TODO the next session should pick up
+
+   Example:
+
+   ```
+   session_log project=my-proj scope=add-normalization \
+     skill_path="awm/debrief.md" \
+     summary="Partial success. Quantile normalization worked on batches 1-2, but batch 3 has too many missing values to normalize directly. Debrief skill was clear, no deviations." \
+     --decision "Use quantile normalization for cross-sample comparability" \
+     --decision "Defer batch 3 handling until imputation strategy is chosen" \
+     --issue "Batch 3 has 40% missing values in the expression matrix" \
+     --next-step "Evaluate KNN vs MICE imputation on batch 3" \
+     --next-step "Re-run normalization once batch 3 is imputed"
+   ```
+
+   In the rendered session log, `summary` becomes the `## Session Summary` paragraph and the repeated flags become bullet lists under `## Decisions Made`, `## Gotchas / Issues`, and `## Next Steps`.
+
+2. **Register artifacts** for any new outputs you created:
+
+   ```
+   artifact_register project={project} scope={scope} name="..." artifact_type=... path="..." description="..."
+   ```
+
+   - Path relative to workspace root (e.g. `data/{project}/figures/...`).
+   - Types: figure, dataset, report, model, script, other.
+   - Skip this step if no artifacts were produced.
+
+3. **Refresh** so the next session sees your contributions:
+
+   ```
+   awm_refresh project={project} scope={scope}
+   ```

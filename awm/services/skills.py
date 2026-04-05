@@ -28,14 +28,31 @@ def _parse_frontmatter(path: Path) -> dict:
         return {}
 
 
+# Acronyms that should stay uppercase when rendering a type as a display label.
+_ACRONYMS = {"awm", "mcp", "cli", "hpc", "api", "sop", "pr"}
+
+
+def _format_type_label(t: str) -> str:
+    """Render a type string as a human-readable section label (acronym-aware titlecase)."""
+    words = t.replace("_", "-").split("-")
+    return " ".join(w.upper() if w.lower() in _ACRONYMS else w.title() for w in words)
+
+
+def _is_template(path: Path) -> bool:
+    """Templates are identified by the `.template` filename suffix, regardless of location."""
+    return path.name.endswith(".template")
+
+
 def _skill_from_path(path: Path) -> SkillInfo:
-    """Build a SkillInfo from a skill file path."""
+    """Build a SkillInfo from a skill file path.
+
+    The skill's `type` is inferred from its top-level subdirectory under SKILLS_DIR
+    (e.g. `awm/debrief.md` → type `awm`, `tools/git.md` → type `tools`). Frontmatter
+    may override via an explicit `type:` field.
+    """
     fm = _parse_frontmatter(path)
     rel = path.relative_to(SKILLS_DIR)
-    # Infer type from parent directory if not in frontmatter
-    parent_name = rel.parts[0] if len(rel.parts) > 1 else "unknown"
-    type_map = {"sops": "sop", "tools": "tool", "templates": "template"}
-    inferred_type = type_map.get(parent_name, parent_name)
+    inferred_type = rel.parts[0] if len(rel.parts) > 1 else "unknown"
 
     return SkillInfo(
         name=fm.get("name", path.stem),
@@ -47,19 +64,29 @@ def _skill_from_path(path: Path) -> SkillInfo:
 
 
 def _scan_skills() -> list[SkillInfo]:
-    """Scan SKILLS_DIR for all .md skill files (excluding _index.md and templates/)."""
+    """Scan SKILLS_DIR for all .md skill files (excluding _index.md and *.template files)."""
     skills = []
     if not SKILLS_DIR.exists():
         return skills
     for path in sorted(SKILLS_DIR.rglob("*.md")):
         if path.name.startswith("_"):
             continue
-        # Skip files inside templates/ (they're templates, not skills)
-        rel = path.relative_to(SKILLS_DIR)
-        if rel.parts[0] == "templates":
+        if _is_template(path):
             continue
         skills.append(_skill_from_path(path))
     return skills
+
+
+def find_by_name(name: str) -> SkillInfo | None:
+    """Look up a skill by its frontmatter `name` field.
+
+    Use this instead of hardcoding file paths when another service needs to reference
+    a skill (e.g. to generate context.md pointers). Layout-independent.
+    """
+    for skill in _scan_skills():
+        if skill.name == name:
+            return skill
+    return None
 
 
 def list_skills(
@@ -77,7 +104,7 @@ def list_skills(
 
 
 def get_skill(path: str) -> SkillContentResponse:
-    """Read a skill file by relative path (e.g. 'sops/git-workflow.md')."""
+    """Read a skill file by relative path (e.g. 'tools/git.md')."""
     full_path = SKILLS_DIR / path
     if not full_path.exists() or not full_path.is_file():
         raise FileNotFoundError(f"Skill not found: {path}")
@@ -99,8 +126,7 @@ def search_skills(query: str) -> SkillListResponse:
         for path in sorted(SKILLS_DIR.rglob("*.md")):
             if path.name.startswith("_"):
                 continue
-            rel = path.relative_to(SKILLS_DIR)
-            if rel.parts[0] == "templates":
+            if _is_template(path):
                 continue
             skill = _skill_from_path(path)
             # Search across metadata fields
@@ -143,7 +169,12 @@ def search_skills(query: str) -> SkillListResponse:
 
 
 def regenerate_index() -> str:
-    """Rebuild skills/_index.md from a live scan of the skills directory."""
+    """Rebuild skills/_index.md from a live scan of the skills directory.
+
+    Sections are inferred from the skill type (derived from top-level subdirectory
+    unless overridden in frontmatter). Templates are discovered by `.template`
+    suffix wherever they live. No hardcoded category names.
+    """
     skills = _scan_skills()
 
     # Group by type
@@ -151,22 +182,18 @@ def regenerate_index() -> str:
     for s in skills:
         groups.setdefault(s.type, []).append(s)
 
-    # Type display names
-    type_labels = {"sop": "SOPs", "tool": "Tool Guides"}
-
     lines = ["# Skills Catalog\n"]
     for skill_type, items in sorted(groups.items()):
-        label = type_labels.get(skill_type, skill_type.title())
+        label = _format_type_label(skill_type)
         lines.append(f"\n## {label}\n")
         lines.append("| Skill | File | Description |")
         lines.append("|-------|------|-------------|")
         for s in items:
             lines.append(f"| {s.name} | `{s.file_path}` | {s.description} |")
 
-    # Also list templates
-    templates_dir = SKILLS_DIR / "templates"
-    if templates_dir.exists():
-        template_files = sorted(templates_dir.iterdir())
+    # Templates — discovered by suffix, regardless of directory
+    if SKILLS_DIR.exists():
+        template_files = sorted(SKILLS_DIR.rglob("*.template"))
         if template_files:
             lines.append("\n## Templates\n")
             lines.append("| Template | File | Description |")
@@ -175,9 +202,9 @@ def regenerate_index() -> str:
                 if t.name.startswith("."):
                     continue
                 rel = t.relative_to(SKILLS_DIR)
-                name = t.stem.replace("-", " ").replace("_", " ").title()
-                suffix = "/" if t.is_dir() else ""
-                lines.append(f"| {name} | `{rel}{suffix}` | |")
+                name = t.name.removesuffix(".template").removesuffix(".md")
+                name = name.replace("-", " ").replace("_", " ").title()
+                lines.append(f"| {name} | `{rel}` | |")
 
     content = "\n".join(lines) + "\n"
     index_path = SKILLS_DIR / "_index.md"
