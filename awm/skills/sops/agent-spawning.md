@@ -1,8 +1,10 @@
 ---
-name: Agent Spawning
-type: sop
-tags: [agents, spawning, delegation, cli]
-description: How to spawn task agents, configure CLIs, and manage the fire-and-forget lifecycle
+name: agent-spawning
+type: protocol
+scope: workspace
+tags: [agents, spawning, delegation, cli, scope]
+requires: []
+description: How to spawn scope agents, configure CLIs, and manage the fire-and-forget lifecycle
 ---
 
 # Agent Spawning SOP

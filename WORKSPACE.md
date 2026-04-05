@@ -7,50 +7,54 @@ Shared context for all agents in this workspace.
 | Path | Purpose |
 |------|---------|
 | `awm/` | AWM service package (Python) + skills catalog |
-| `data/` | Shared data (reference + per-project raw/staged) |
-| `repos/` | Project bare repos + git worktrees (clean code only) |
-| `main/` | Agent workspaces (AGENTS.md, experiences, results, symlinks) |
+| `data/` | Shared data (per-project; raw, staged, outputs) |
+| `repos/` | Project bare repos + git worktrees (agents work here) |
 
-### Per-Project Layout
+### Per-Scope Layout
 
-```
-main/{project}/
-  data -> ../../data/{project}   # project-specific data (scoped, not global)
-  tasks/                         # task workspaces live here
-    {task}/                      # see Per-Task Layout below
-```
-
-### Per-Task Layout
+Agents land directly in the git worktree. All AWM metadata lives in a `.awm/` dotdir inside:
 
 ```
 repos/{project}/
   .bare/                         # bare git repo
-  {task}/                        # git worktree — pure code, clean git status
-
-main/{project}/tasks/{task}/     # agent workspace — AWM-managed, not a git repo
-  AGENTS.md                      # task context (seeded at creation)
-  experiences.md                 # session logs
-  results/                       # task outputs
-  repo -> ../../../../repos/{project}/{task}/   # symlink to git worktree
-  skills -> {SKILLS_DIR}         # symlink to awm/skills/ (package data)
+  {scope}/                       # git worktree — agent CWD
+    .awm/                        # AWM metadata (gitignored)
+      context.md                 # scope instructions
+      knowledge.md               # auto-generated: experiences + gotchas
+      artifacts.md               # auto-generated: project artifact index
+      data -> ../../../data/{project}/  # symlink to shared project data
+      skills -> ../../../awm/skills/    # symlink to skill catalog
+    [code files...]              # the actual repo content
 ```
 
-Tasks access project data via `../../data` (navigates up to the project-level data symlink).
+Scopes access project data via `.awm/data/`. All scopes in the same project share the same data directory.
 
-## Task Lifecycle
+## Scope Lifecycle
 
-1. **Create**: `task_create` sets up a git worktree on `feat/<task>`, an agent workspace with AGENTS.md/symlinks, and records the task in DB.
-2. **Work**: Code in `repo/`. Write outputs to `results/`. Data is at `../../data`.
-3. **Log**: `session_log` appends to `experiences.md` and records metadata in DB.
-4. **Complete**: `task_complete` updates DB status, optionally merges branch with `--merge`.
+1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
+2. **Startup**: Agent reads `.awm/context.md`, runs `awm_refresh`, reads `knowledge.md` + `artifacts.md`.
+3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
+4. **Debrief**: User says "debrief" — agent follows `skills_get path="sops/debrief.md"`.
+5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
+
+## Skills System
+
+Skills are dynamic protocols that improve with use:
+
+- **Protocols**: Step-by-step procedures (debrief, skill-update, project-setup)
+- **References**: Knowledge bases (git-workflow, metasmith, mamba, plotly)
+- Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy
+- `skills_search` combines keyword + semantic search (sentence-transformers embeddings)
+- **Experiences** are execution traces attached to skills — log what happened, deviations, and improvement suggestions
+- A dedicated `awm/skill-improvement` scope periodically reads experiences and revises skills
 
 ## Git Model
 
-Each project uses a **bare repo** at `repos/{project}/.bare/` with worktrees per task.
+Each project uses a **bare repo** at `repos/{project}/.bare/` with worktrees per scope.
 
-- Branch naming: `feat/<task>`, `fix/<task>`
+- Branch naming: `feat/{scope}`
 - PRs created from feature branches
-- For detailed git operations, see `skills/sops/git-workflow.md`
+- See `skills/sops/git-workflow.md` for details
 
 ## Python Environment Rules
 
@@ -65,19 +69,10 @@ mamba run -n <project-env> python script.py
 mamba run -n <project-env> pip install <package>
 ```
 
-**Bootstrap** (if env doesn't exist):
-```bash
-mamba env list | grep -q <project-name> || mamba env create -f env/environment.yml
-```
-
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write results to `results/`** — not in the repo code tree.
-3. **Log sessions** at the end of each session via `session_log` — what you did, decisions made, gotchas, next steps.
-4. **Don't duplicate data** — use symlinks. The workspace's `data/` and `skills/` dirs in task workspaces are symlinks.
-5. **Reflect on completion** — when finishing a task, send a `reflection` message to your project scope (`inbox_send scope=project:{project}`) summarizing what worked well and problems encountered. Keep it brief and focused on lessons that help future tasks.
-
-## Skills & Tools
-
-SOPs, tool guides, and templates are in `skills/`. Use `skills_search` to find relevant guides before starting unfamiliar workflows.
+2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
+3. **Don't edit `.awm/knowledge.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
+4. **Follow the debrief skill** when ending a session — log experiences, register artifacts, reflect.
+5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.

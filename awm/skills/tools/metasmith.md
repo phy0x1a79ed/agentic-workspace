@@ -1,7 +1,9 @@
 ---
-name: Metasmith
-type: tool
-tags: [pipeline, metasmith, bioinformatics, hpc]
+name: metasmith
+type: reference
+scope: workspace
+tags: [pipeline, metasmith, bioinformatics, hpc, slurm, nextflow, annotation]
+requires: []
 description: Metasmith pipeline reference — composable transforms for HPC bioinformatics workflows via Nextflow + SLURM
 ---
 

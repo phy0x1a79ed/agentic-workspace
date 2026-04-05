@@ -1,8 +1,10 @@
 ---
-name: Agent Personas
-type: sop
-tags: [agents, personas, orchestration, delegation]
-description: Three-level agent persona system — workspace, project, and task agents
+name: agent-personas
+type: reference
+scope: workspace
+tags: [agents, personas, orchestration, delegation, hierarchy]
+requires: []
+description: Three-level agent persona system — workspace, project, and scope agents
 ---
 
 # Agent Personas SOP

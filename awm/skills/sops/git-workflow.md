@@ -1,7 +1,9 @@
 ---
 name: git-workflow
-type: sop
-tags: [git, bare-repo, worktree, branch, pr]
+type: reference
+scope: workspace
+tags: [git, bare-repo, worktree, branch, pr, merge]
+requires: []
 description: Bare repo + worktree model, branching, PRs
 ---
 

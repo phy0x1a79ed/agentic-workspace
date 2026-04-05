@@ -1,8 +1,10 @@
 ---
-name: task-workflow
-type: sop
-tags: [task, workflow, worktree, status, experience, session]
-description: Task lifecycle — create, pause, complete — plus session logging
+name: scope-workflow
+type: protocol
+scope: workspace
+tags: [scope, workflow, worktree, status, experience, session, lifecycle]
+requires: [git-workflow, debrief]
+description: Scope lifecycle — create, work, debrief, complete — plus session logging
 ---
 
 # Task Workflow

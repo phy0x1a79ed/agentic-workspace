@@ -23,7 +23,7 @@ class TestInitDB:
         assert "locks" in tables
         assert "shared_edits" in tables
         assert "session_logs" in tables
-        assert "tasks" in tables
+        assert "scopes" in tables
         assert "schema_version" in tables
 
     def test_schema_version_is_current(self, awm_workspace):
@@ -105,7 +105,7 @@ class TestInitDB:
             ).fetchall()
         }
         assert "session_logs" in tables
-        assert "tasks" in tables
+        assert "scopes" in tables
         conn.close()
 
     def test_missing_migration_raises(self, tmp_path, monkeypatch):

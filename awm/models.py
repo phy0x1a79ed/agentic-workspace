@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +42,10 @@ class ProjectCreateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ScopeCreateRequest(BaseModel):
+    model_config = {"populate_by_name": True}
+
     project: str
-    scope: str
+    scope: str = Field(validation_alias=AliasChoices("scope", "task"))
     from_branch: str | None = None
     context: str | None = None
 
@@ -63,10 +65,20 @@ class ScopeInfo(BaseModel):
     repo_path: str | None = None
     session: int = 1
 
+    @property
+    def task(self) -> str:
+        """Backwards-compat alias for tests."""
+        return self.scope
+
 
 class ScopeListResponse(BaseModel):
     scopes: list[ScopeInfo]
     total: int
+
+    @property
+    def tasks(self) -> list[ScopeInfo]:
+        """Backwards-compat alias for tests."""
+        return self.scopes
 
 
 class ScopeActionResponse(BaseModel):
@@ -324,8 +336,10 @@ class MessageActionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AgentSpawnRequest(BaseModel):
+    model_config = {"populate_by_name": True}
+
     project: str
-    scope: str
+    scope: str = Field(validation_alias=AliasChoices("scope", "task"))
     prompt: str | None = None
     agent_cli: str | None = None
 

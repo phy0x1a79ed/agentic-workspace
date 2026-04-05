@@ -1,7 +1,9 @@
 ---
-name: Mamba
-type: tool
-tags: [environment, conda, mamba]
+name: mamba
+type: reference
+scope: workspace
+tags: [environment, conda, mamba, python, packages]
+requires: []
 description: Conda/mamba quick reference — create, install, export, run
 ---
 

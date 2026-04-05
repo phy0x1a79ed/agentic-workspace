@@ -51,7 +51,9 @@ def spawn_agent(req: AgentSpawnRequest) -> AgentSpawnResponse:
         cmd = ["claude", "--print", "-p", prompt]
 
     # Spawn
-    log_file = open(workspace_dir / ".awm" / "agent.log", "a")
+    awm_dir = workspace_dir / ".awm"
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    log_file = open(awm_dir / "agent.log", "a")
     proc = subprocess.Popen(
         cmd,
         cwd=str(workspace_dir),

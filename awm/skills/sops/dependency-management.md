@@ -1,8 +1,10 @@
 ---
 name: dependency-management
-type: sop
-tags: [mamba, conda, environment, dependencies]
-description: Mamba per-project envs + per-task overlays
+type: reference
+scope: workspace
+tags: [mamba, conda, environment, dependencies, python]
+requires: []
+description: Mamba per-project envs + per-scope overlays
 ---
 
 # Dependency Management

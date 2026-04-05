@@ -55,13 +55,12 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.db.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.services.skills.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.sessions.MAIN_DIR", main_dir)
-    monkeypatch.setattr("awm.services.tasks.REPOS_DIR", repos_dir)
-    monkeypatch.setattr("awm.services.tasks.MAIN_DIR", main_dir)
-    monkeypatch.setattr("awm.services.tasks.WORKSPACE_ROOT", workspace)
-    monkeypatch.setattr("awm.services.tasks.DATA_DIR", data_dir)
-    monkeypatch.setattr("awm.services.tasks.SKILLS_DIR", skills_dir)
+    monkeypatch.setattr("awm.services.scopes.REPOS_DIR", repos_dir)
+    monkeypatch.setattr("awm.services.scopes.WORKSPACE_ROOT", workspace)
+    monkeypatch.setattr("awm.services.scopes.DATA_DIR", data_dir)
+    monkeypatch.setattr("awm.services.scopes.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.locks.HEARTBEAT_STALE_THRESHOLD", 120)
-    monkeypatch.setattr("awm.services.agents.MAIN_DIR", main_dir)
+    monkeypatch.setattr("awm.services.agents.REPOS_DIR", repos_dir)
 
     # Server patches
     monkeypatch.setattr("awm.server.WORKSPACE_ROOT", workspace)
@@ -169,7 +168,7 @@ def seeded_tasks(db_conn, awm_workspace):
     ]
     for t in task_data:
         db_conn.execute(
-            "INSERT INTO tasks (project, task, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO scopes (project, scope, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
             t,
         )
     db_conn.commit()

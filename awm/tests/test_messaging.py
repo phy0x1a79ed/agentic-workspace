@@ -197,14 +197,14 @@ class TestListRecipients:
         recipients = messaging.list_recipients()
         assert "project:proj-a" in recipients
 
-    def test_recipients_include_active_tasks(self, _init_messaging):
+    def test_recipients_include_active_scopes(self, _init_messaging):
         recipients = messaging.list_recipients()
-        assert "task:proj-a/task-1" in recipients
+        assert "scope:proj-a/task-1" in recipients
 
-    def test_recipients_include_completed_tasks(self, _init_messaging):
+    def test_recipients_include_completed_scopes(self, _init_messaging):
         recipients = messaging.list_recipients()
         # task-2 is completed in seeded_tasks — should still be a recipient
-        assert "task:proj-a/task-2" in recipients
+        assert "scope:proj-a/task-2" in recipients
 
     def test_recipients_include_all_projects(self, _init_messaging):
         recipients = messaging.list_recipients()

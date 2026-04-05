@@ -74,14 +74,14 @@ class TestHandleToolLocks:
         assert "1 lock(s)" in data["message"]
 
 
-class TestHandleToolTasks:
-    def test_task_list(self, awm_workspace, seeded_tasks):
-        result = _handle_tool("task_list", {})
+class TestHandleToolScopes:
+    def test_scope_list(self, awm_workspace, seeded_tasks):
+        result = _handle_tool("scope_list", {})
         data = json.loads(result)
         assert data["total"] == 3
 
-    def test_task_list_filtered(self, awm_workspace, seeded_tasks):
-        result = _handle_tool("task_list", {"status": "active"})
+    def test_scope_list_filtered(self, awm_workspace, seeded_tasks):
+        result = _handle_tool("scope_list", {"status": "active"})
         data = json.loads(result)
         assert data["total"] == 1
 

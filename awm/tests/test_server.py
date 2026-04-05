@@ -93,14 +93,14 @@ class TestSkillEndpoints:
         assert resp.status_code == 404
 
 
-class TestTaskEndpoints:
-    def test_list_tasks(self, client, seeded_tasks):
-        resp = client.get("/tasks")
+class TestScopeEndpoints:
+    def test_list_scopes(self, client, seeded_tasks):
+        resp = client.get("/scopes")
         assert resp.status_code == 200
         assert resp.json()["total"] == 3
 
-    def test_list_tasks_filtered(self, client, seeded_tasks):
-        resp = client.get("/tasks", params={"status": "active"})
+    def test_list_scopes_filtered(self, client, seeded_tasks):
+        resp = client.get("/scopes", params={"status": "active"})
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
 

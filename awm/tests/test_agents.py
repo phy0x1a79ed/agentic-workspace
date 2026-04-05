@@ -19,7 +19,7 @@ def task_workspace(awm_workspace, seeded_tasks):
 class TestSpawnAgent:
     def test_spawn_opencode(self, task_workspace):
         req = AgentSpawnRequest(project="proj-a", task="task-1", agent_cli="opencode")
-        workspace_dir = task_workspace["main_dir"] / "proj-a" / "tasks" / "task-1"
+        workspace_dir = task_workspace["repos_dir"] / "proj-a" / "task-1"
 
         with patch("awm.services.agents.subprocess.Popen") as mock_popen:
             mock_popen.return_value = MagicMock(pid=12345)
@@ -61,7 +61,7 @@ class TestSpawnAgent:
         # Verify inbox message was created
         from awm.services import messaging
 
-        result = messaging.search_messages(scope="task:proj-a/task-1", msg_type="plan")
+        result = messaging.search_messages(scope="scope:proj-a/task-1", msg_type="plan")
         assert result.total >= 1
         assert "Do the work" in result.messages[0].body
 
@@ -96,5 +96,5 @@ class TestSpawnAgent:
             agents.spawn_agent(req)
 
         from awm.services import messaging
-        result = messaging.search_messages(scope="task:proj-a/task-1", msg_type="plan")
+        result = messaging.search_messages(scope="scope:proj-a/task-1", msg_type="plan")
         assert result.total == 0
