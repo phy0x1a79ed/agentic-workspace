@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from awm.config import MAIN_DIR
+from awm.config import PROJECTS_DIR
 from awm.models import (
     AgentSpawnRequest,
     AgentSpawnResponse,
@@ -13,31 +13,32 @@ from awm.models import (
 )
 from awm.services import config_service, messaging
 
+
 _SUPPORTED_CLIS = {"opencode", "claude"}
 
 
 def spawn_agent(req: AgentSpawnRequest) -> AgentSpawnResponse:
-    """Spawn a fire-and-forget agent on a task workspace."""
+    """Spawn a fire-and-forget agent on a scope workspace."""
     # Resolve CLI
     cli = req.agent_cli or config_service.get_config("agent_cli", "opencode")
 
     if cli not in _SUPPORTED_CLIS:
         raise ValueError(f"Unknown agent CLI '{cli}'. Supported: {sorted(_SUPPORTED_CLIS)}")
 
-    # Verify task workspace exists
-    workspace_dir = MAIN_DIR / req.project / "tasks" / req.task
+    # Verify scope workspace exists (agent lands in the git worktree)
+    workspace_dir = PROJECTS_DIR / req.project / req.scope
     if not workspace_dir.exists():
         raise FileNotFoundError(
-            f"Task workspace not found at {workspace_dir}"
+            f"Scope workspace not found at {workspace_dir}"
         )
 
     # Send prompt as plan message if provided
     if req.prompt:
         msg_req = MessageSendRequest(
-            scope=f"task:{req.project}/{req.task}",
+            scope=f"scope:{req.project}/{req.scope}",
             sender="workspace",
             msg_type="plan",
-            subject=f"Agent spawn plan for {req.project}/{req.task}",
+            subject=f"Agent spawn plan for {req.project}/{req.scope}",
             body=req.prompt,
         )
         messaging.send_message(msg_req)
@@ -46,11 +47,13 @@ def spawn_agent(req: AgentSpawnRequest) -> AgentSpawnResponse:
     if cli == "opencode":
         cmd = ["opencode"]
     else:  # claude
-        prompt = req.prompt or f"Work on task {req.task} in project {req.project}. Check your inbox first."
+        prompt = req.prompt or f"Work on scope {req.scope} in project {req.project}. Read .awm/context.md first."
         cmd = ["claude", "--print", "-p", prompt]
 
     # Spawn
-    log_file = open(workspace_dir / "agent.log", "a")
+    awm_dir = workspace_dir / ".awm"
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    log_file = open(awm_dir / "agent.log", "a")
     proc = subprocess.Popen(
         cmd,
         cwd=str(workspace_dir),
@@ -62,7 +65,7 @@ def spawn_agent(req: AgentSpawnRequest) -> AgentSpawnResponse:
 
     return AgentSpawnResponse(
         project=req.project,
-        task=req.task,
+        scope=req.scope,
         pid=proc.pid,
         agent_cli=cli,
         message=f"Spawned {cli} agent (PID {proc.pid}) in {workspace_dir}",

@@ -15,8 +15,8 @@ from awm.services import messaging
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def _init_messaging(awm_workspace, seeded_tasks):
-    """Ensure DB and tasks are ready for messaging tests."""
+def _init_messaging(awm_workspace, seeded_scopes):
+    """Ensure DB and scopes are ready for messaging tests."""
     return awm_workspace
 
 
@@ -29,8 +29,8 @@ def seeded_messages(_init_messaging, db_conn):
     rows = [
         ("workspace", "agent-1", "status_update", "Build complete", "All tests passed", None, "unread", now, None),
         ("project:proj-a", "agent-2", "notification", "Review needed", "PR #42 ready", None, "unread", now, None),
-        ("task:proj-a/task-1", "workspace", "task_assignment", "Implement feature X", "See the spec below", '{"priority": "high"}', "unread", now, None),
-        ("task:proj-a/task-1", "workspace", "plan", "Execution plan", "Step 1: do the thing", None, "read", now, now),
+        ("scope:proj-a/scope-1", "workspace", "scope_assignment", "Implement feature X", "See the spec below", '{"priority": "high"}', "unread", now, None),
+        ("scope:proj-a/scope-1", "workspace", "plan", "Execution plan", "Step 1: do the thing", None, "read", now, now),
     ]
     for r in rows:
         db_conn.execute(
@@ -72,16 +72,16 @@ class TestSendMessage:
         resp = messaging.send_message(req)
         assert resp.msg.scope == "project:proj-a"
 
-    def test_send_to_task_scope(self, _init_messaging):
+    def test_send_to_scope(self, _init_messaging):
         req = MessageSendRequest(
-            scope="task:proj-a/task-1",
+            scope="scope:proj-a/scope-1",
             sender="workspace",
             msg_type="plan",
             subject="Plan",
             body="Do this",
         )
         resp = messaging.send_message(req)
-        assert resp.msg.scope == "task:proj-a/task-1"
+        assert resp.msg.scope == "scope:proj-a/scope-1"
 
     def test_send_invalid_scope(self, _init_messaging):
         req = MessageSendRequest(
@@ -95,7 +95,7 @@ class TestSendMessage:
             messaging.send_message(req)
 
     def test_send_all_msg_types(self, _init_messaging):
-        for msg_type in ["task_assignment", "reflection", "status_update", "notification", "plan"]:
+        for msg_type in ["scope_assignment", "reflection", "status_update", "notification", "plan"]:
             req = MessageSendRequest(
                 scope="workspace",
                 sender="test",
@@ -139,7 +139,7 @@ class TestSearchMessages:
         assert resp.messages[0].status == "read"
 
     def test_search_by_msg_type(self, seeded_messages):
-        resp = messaging.search_messages(msg_type="task_assignment")
+        resp = messaging.search_messages(msg_type="scope_assignment")
         assert resp.total == 1
 
     def test_search_by_query(self, seeded_messages):
@@ -156,9 +156,9 @@ class TestSearchMessages:
         assert resp.total == 2
 
     def test_search_combined_filters(self, seeded_messages):
-        resp = messaging.search_messages(scope="task:proj-a/task-1", status="unread")
+        resp = messaging.search_messages(scope="scope:proj-a/scope-1", status="unread")
         assert resp.total == 1
-        assert resp.messages[0].msg_type == "task_assignment"
+        assert resp.messages[0].msg_type == "scope_assignment"
 
     def test_search_invalid_scope(self, seeded_messages):
         with pytest.raises(ValueError, match="Invalid scope"):
@@ -215,25 +215,22 @@ class TestListRecipients:
         recipients = messaging.list_recipients()
         assert "project:proj-a" in recipients
 
-    def test_recipients_include_active_tasks(self, _init_messaging):
+    def test_recipients_include_active_scopes(self, _init_messaging):
         recipients = messaging.list_recipients()
-        assert "task:proj-a/task-1" in recipients
+        assert "scope:proj-a/scope-1" in recipients
 
-    def test_recipients_include_completed_tasks(self, _init_messaging):
+    def test_recipients_include_completed_scopes(self, _init_messaging):
         recipients = messaging.list_recipients()
-        # task-2 is completed in seeded_tasks — should still be a recipient
-        assert "task:proj-a/task-2" in recipients
+        assert "scope:proj-a/scope-2" in recipients
 
     def test_recipients_include_all_projects(self, _init_messaging):
         recipients = messaging.list_recipients()
-        # proj-b only has completed tasks but should still appear
         assert "project:proj-b" in recipients
 
-    def test_recipients_deduplicate_tasks(self, _init_messaging):
+    def test_recipients_deduplicate_scopes(self, _init_messaging):
         recipients = messaging.list_recipients()
-        # Each task should appear exactly once
-        task_entries = [r for r in recipients if r.startswith("task:")]
-        assert len(task_entries) == len(set(task_entries))
+        scope_entries = [r for r in recipients if r.startswith("scope:")]
+        assert len(scope_entries) == len(set(scope_entries))
 
 
 # ---------------------------------------------------------------------------

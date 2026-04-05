@@ -24,13 +24,13 @@ from awm.config import (
 
 app = typer.Typer(name="awm", help="Agentic Workspace Manager", no_args_is_help=True)
 project_app = typer.Typer(help="Project management", no_args_is_help=True)
-task_app = typer.Typer(help="Task management", no_args_is_help=True)
+scope_app = typer.Typer(help="Scope management", no_args_is_help=True)
 lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
 shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
 skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
-app.add_typer(task_app, name="task")
+app.add_typer(scope_app, name="scope")
 app.add_typer(lock_app, name="lock")
 app.add_typer(shared_app, name="shared")
 app.add_typer(skill_app, name="skill")
@@ -104,7 +104,7 @@ def init():
     AWM_DIR.mkdir(parents=True, exist_ok=True)
 
     # Ensure workspace directories exist
-    for d in ["data/reference", "repos", "main"]:
+    for d in ["data/reference", "projects", "main"]:
         (WORKSPACE_ROOT / d).mkdir(parents=True, exist_ok=True)
 
     init_db()
@@ -122,7 +122,7 @@ def serve():
 
 @app.command()
 def status():
-    """Show server health + active locks + tasks summary."""
+    """Show server health + active locks + scopes summary."""
     r = _api("GET", "/status")
     _print_json(r)
 
@@ -192,83 +192,83 @@ def project_create(
 
 
 # ---------------------------------------------------------------------------
-# Task commands
+# Scope commands
 # ---------------------------------------------------------------------------
 
-@task_app.command("create")
-def task_create(
+@scope_app.command("create")
+def scope_create(
     project: str = typer.Argument(..., help="Project name"),
-    task: str = typer.Argument(..., help="Task name"),
+    scope: str = typer.Argument(..., help="Scope name"),
     from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch"),
     context: Optional[str] = typer.Option(None, "--context", help="Seed context text for AGENTS.md"),
     context_file: Optional[Path] = typer.Option(None, "--context-file", help="Read context from file"),
 ):
-    """Create a task worktree."""
-    payload = {"project": project, "task": task}
+    """Create a scope worktree."""
+    payload = {"project": project, "scope": scope}
     if from_branch:
         payload["from_branch"] = from_branch
     if context_file:
         payload["context"] = context_file.read_text(encoding="utf-8")
     elif context:
         payload["context"] = context
-    r = _api("POST", "/tasks", json=payload)
+    r = _api("POST", "/scopes", json=payload)
     _print_json(r)
 
 
-@task_app.command("complete")
-def task_complete(
+@scope_app.command("complete")
+def scope_complete(
     project: str = typer.Argument(..., help="Project name"),
-    task: str = typer.Argument(..., help="Task name"),
+    scope: str = typer.Argument(..., help="Scope name"),
     merge: bool = typer.Option(False, "--merge", help="Merge feature branch into main"),
     cleanup: bool = typer.Option(False, "--cleanup", help="Remove worktree and branch after completion"),
 ):
-    """Complete a task."""
-    r = _api("PATCH", f"/tasks/{project}/{task}", json={"action": "complete", "merge": merge, "cleanup": cleanup})
+    """Complete a scope."""
+    r = _api("PATCH", f"/scopes/{project}/{scope}", json={"action": "complete", "merge": merge, "cleanup": cleanup})
     _print_json(r)
 
 
-@task_app.command("delete")
-def task_delete(
+@scope_app.command("delete")
+def scope_delete(
     project: str = typer.Argument(..., help="Project name"),
-    task: str = typer.Argument(..., help="Task name"),
+    scope: str = typer.Argument(..., help="Scope name"),
     force: bool = typer.Option(False, "--force", help="Skip confirmation"),
 ):
-    """Delete a task (remove worktree, branch, mark as deleted)."""
+    """Delete a scope (remove worktree, branch, mark as deleted)."""
     if not force:
-        typer.confirm(f"Delete task '{task}' in project '{project}'? This removes the worktree and branch.", abort=True)
-    r = _api("DELETE", f"/tasks/{project}/{task}")
+        typer.confirm(f"Delete scope '{scope}' in project '{project}'? This removes the worktree and branch.", abort=True)
+    r = _api("DELETE", f"/scopes/{project}/{scope}")
     _print_json(r)
 
 
-@task_app.command("list")
-def task_list(
+@scope_app.command("list")
+def scope_list(
     status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/deleted/all)"),
     project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
 ):
-    """List tasks."""
+    """List scopes."""
     params = {}
     if status:
         params["status"] = status
     if project:
         params["project"] = project
-    r = _api("GET", "/tasks", params=params)
+    r = _api("GET", "/scopes", params=params)
 
     data = r.json()
     if r.status_code >= 400:
         typer.echo(f"Error: {data}", err=True)
         raise typer.Exit(1)
 
-    tasks = data["tasks"]
-    if not tasks:
-        typer.echo("(no tasks found)")
+    scopes = data["scopes"]
+    if not scopes:
+        typer.echo("(no scopes found)")
         return
 
     # Table output
-    typer.echo(f"{'PROJECT':<20} {'TASK':<25} {'STATUS':<12} {'BRANCH':<30}")
-    typer.echo(f"{'-------':<20} {'----':<25} {'------':<12} {'------':<30}")
-    for t in tasks:
-        typer.echo(f"{t['project']:<20} {t['task']:<25} {t['status']:<12} {t['branch']:<30}")
-    typer.echo(f"\nTotal: {data['total']} task(s)")
+    typer.echo(f"{'PROJECT':<20} {'SCOPE':<25} {'STATUS':<12} {'BRANCH':<30}")
+    typer.echo(f"{'-------':<20} {'-----':<25} {'------':<12} {'------':<30}")
+    for s in scopes:
+        typer.echo(f"{s['project']:<20} {s['scope']:<25} {s['status']:<12} {s['branch']:<30}")
+    typer.echo(f"\nTotal: {data['total']} scope(s)")
 
 
 # ---------------------------------------------------------------------------

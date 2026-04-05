@@ -1,7 +1,9 @@
 ---
 name: project-setup
-type: sop
-tags: [project, setup, initialization, bare-repo]
+type: protocol
+scope: workspace
+tags: [project, setup, initialization, bare-repo, clone, fork]
+requires: [git-workflow]
 description: Creating new, forked, or cloned projects via awm CLI
 ---
 

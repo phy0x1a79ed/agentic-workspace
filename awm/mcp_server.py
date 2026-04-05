@@ -1,7 +1,7 @@
 """MCP stdio server for the Agentic Workspace Manager.
 
 Exposes AWM services as MCP tools so Claude Code (and other MCP clients)
-can manage projects, tasks, locks, skills, and sessions.
+can manage projects, scopes, locks, skills, experiences, artifacts, and sessions.
 """
 
 from __future__ import annotations
@@ -17,15 +17,17 @@ from mcp.types import TextContent, Tool
 from awm.db import init_db
 from awm.models import (
     AgentSpawnRequest,
+    ArtifactRegisterRequest,
+    ExperienceLogRequest,
     LockAcquireRequest,
     MessageSendRequest,
     ProjectCreateRequest,
-    TaskCreateRequest,
-    TaskUpdateRequest,
+    ScopeCreateRequest,
+    ScopeUpdateRequest,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import dispatch_operation, operations_to_mcp_tools
-from awm.services import agents, locks, messaging, projects, skills, tasks
+from awm.services import agents, artifacts, experiences, locks, messaging, projects, scopes, skills
 
 server = Server("awm")
 
@@ -42,7 +44,7 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "type": {"type": "string", "description": "Filter by skill type (sop, tool, template)"},
+                "type": {"type": "string", "description": "Filter by skill type (protocol, reference, template)"},
                 "tags": {"type": "string", "description": "Comma-separated tags to filter by"},
             },
         },
@@ -76,24 +78,24 @@ TOOLS: list[Tool] = [
     ),
     # Sessions — from registry
     *operations_to_mcp_tools(SESSION_OPERATIONS),
-    # Tasks
+    # Scopes (formerly Tasks)
     Tool(
-        name="task_create",
-        description="Create a new task worktree for a project.",
+        name="scope_create",
+        description="Create a new scope (worktree + .awm/ metadata) for a project.",
         inputSchema={
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
-                "task": {"type": "string"},
+                "scope": {"type": "string"},
                 "from_branch": {"type": "string"},
-                "context": {"type": "string", "description": "Seed content for AGENTS.md (task context/instructions)"},
+                "context": {"type": "string", "description": "Seed content for .awm/context.md"},
             },
-            "required": ["project", "task"],
+            "required": ["project", "scope"],
         },
     ),
     Tool(
-        name="task_list",
-        description="List tasks, optionally filtered by status and/or project.",
+        name="scope_list",
+        description="List scopes, optionally filtered by status and/or project.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -103,35 +105,113 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
-        name="task_complete",
-        description="Complete a task, optionally merging the feature branch and/or cleaning up the worktree.",
+        name="scope_complete",
+        description="Complete a scope, optionally merging the feature branch and/or cleaning up the worktree.",
         inputSchema={
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
-                "task": {"type": "string"},
+                "scope": {"type": "string"},
                 "merge": {"type": "boolean", "default": False},
                 "cleanup": {"type": "boolean", "default": False, "description": "Remove worktree and branch after completion"},
             },
-            "required": ["project", "task"],
+            "required": ["project", "scope"],
         },
     ),
     Tool(
-        name="task_delete",
-        description="Delete a task — clean up its worktree, branch, and mark as deleted in DB.",
+        name="scope_delete",
+        description="Delete a scope — clean up its worktree, branch, and mark as deleted in DB.",
         inputSchema={
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
-                "task": {"type": "string"},
+                "scope": {"type": "string"},
             },
-            "required": ["project", "task"],
+            "required": ["project", "scope"],
+        },
+    ),
+    # Experiences
+    Tool(
+        name="experience_log",
+        description="Log an experience (execution trace), optionally attached to a skill. Auto-captures skill git version.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "skill_path": {"type": "string", "description": "Skill that was followed (optional)"},
+                "outcome": {"type": "string", "enum": ["success", "partial_success", "failure", "abandoned"]},
+                "summary": {"type": "string", "description": "What happened"},
+                "deviations": {"type": "string", "description": "What differed from the protocol"},
+                "suggestions": {"type": "string", "description": "Improvements for the skill"},
+                "agent_id": {"type": "string", "default": "unknown"},
+            },
+            "required": ["project", "scope", "summary"],
+        },
+    ),
+    Tool(
+        name="experience_list",
+        description="List experiences, optionally filtered by skill, project, or scope.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "skill_path": {"type": "string", "description": "Filter by skill path"},
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    # Artifacts
+    Tool(
+        name="artifact_register",
+        description="Register an output artifact (figure, dataset, report, etc.).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "name": {"type": "string", "description": "Human-readable name"},
+                "artifact_type": {"type": "string", "enum": ["figure", "dataset", "report", "model", "script", "other"]},
+                "path": {"type": "string", "description": "Path relative to workspace root"},
+                "description": {"type": "string"},
+                "format": {"type": "string", "description": "File format (svg, csv, parquet, etc.)"},
+                "tags": {"type": "string", "description": "Comma-separated tags"},
+            },
+            "required": ["project", "scope", "name", "artifact_type", "path"],
+        },
+    ),
+    Tool(
+        name="artifact_search",
+        description="Search/list registered artifacts by project, type, or free-text query.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "artifact_type": {"type": "string"},
+                "query": {"type": "string", "description": "Free-text search across name, description, tags"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    # AWM Refresh
+    Tool(
+        name="awm_refresh",
+        description="Regenerate .awm/knowledge.md and .awm/artifacts.md for a scope from current DB state.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+            "required": ["project", "scope"],
         },
     ),
     # Projects
     Tool(
         name="project_create",
-        description="Create a new project with bare repo, worktree, and data directories.",
+        description="Create a new project with bare repository, worktree, and data directories.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -195,13 +275,13 @@ TOOLS: list[Tool] = [
     # Messaging
     Tool(
         name="inbox_send",
-        description="Send a message to a scoped inbox (workspace, project:X, or task:X/Y).",
+        description="Send a message to a scoped inbox (workspace, project:X, or scope:X/Y).",
         inputSchema={
             "type": "object",
             "properties": {
-                "scope": {"type": "string", "description": "Target scope: 'workspace', 'project:X', or 'task:X/Y'"},
+                "scope": {"type": "string", "description": "Target scope: 'workspace', 'project:X', or 'scope:X/Y'"},
                 "sender": {"type": "string", "description": "Sender identifier (agent name or scope)"},
-                "msg_type": {"type": "string", "enum": ["task_assignment", "reflection", "status_update", "notification", "plan"]},
+                "msg_type": {"type": "string", "enum": ["scope_assignment", "reflection", "status_update", "notification", "plan"]},
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
                 "metadata": {"type": "string", "description": "Optional JSON metadata"},
@@ -238,27 +318,27 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="inbox_recipients",
-        description="List valid recipient scopes (workspace + all projects + all tasks).",
+        description="List valid recipient scopes (workspace + all projects + all scopes).",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
         name="agent_spawn",
-        description="Spawn a fire-and-forget agent subprocess on a task workspace.",
+        description="Spawn a fire-and-forget agent subprocess on a scope workspace.",
         inputSchema={
             "type": "object",
             "properties": {
                 "project": {"type": "string"},
-                "task": {"type": "string"},
-                "prompt": {"type": "string", "description": "Optional prompt/plan for the agent (sent to task inbox)"},
+                "scope": {"type": "string"},
+                "prompt": {"type": "string", "description": "Optional prompt/plan for the agent (sent to scope inbox)"},
                 "agent_cli": {"type": "string", "description": "CLI to use: 'opencode' or 'claude' (default from config)"},
             },
-            "required": ["project", "task"],
+            "required": ["project", "scope"],
         },
     ),
     # Status
     Tool(
         name="awm_status",
-        description="Get AWM server status: workspace root, active locks, tasks, and shared edits.",
+        description="Get AWM server status: workspace root, active locks, scopes, and shared edits.",
         inputSchema={"type": "object", "properties": {}},
     ),
 ]
@@ -294,19 +374,44 @@ def _handle_tool(name: str, args: dict) -> str:
     if result is not None:
         return _serialize(result)
 
-    # Tasks
-    if name == "task_create":
-        req = TaskCreateRequest(project=args["project"], task=args["task"],
+    # Scopes
+    if name == "scope_create":
+        req = ScopeCreateRequest(project=args["project"], scope=args["scope"],
                                 from_branch=args.get("from_branch"),
                                 context=args.get("context"))
-        return _serialize(tasks.create_task(req))
-    if name == "task_list":
-        return _serialize(tasks.list_tasks(status=args.get("status"), project=args.get("project")))
-    if name == "task_complete":
-        req = TaskUpdateRequest(action="complete", merge=args.get("merge", False), cleanup=args.get("cleanup", False))
-        return _serialize(tasks.update_task(args["project"], args["task"], req))
-    if name == "task_delete":
-        return _serialize(tasks.delete_task(args["project"], args["task"]))
+        return _serialize(scopes.create_scope(req))
+    if name == "scope_list":
+        return _serialize(scopes.list_scopes(status=args.get("status"), project=args.get("project")))
+    if name == "scope_complete":
+        req = ScopeUpdateRequest(action="complete", merge=args.get("merge", False), cleanup=args.get("cleanup", False))
+        return _serialize(scopes.update_scope(args["project"], args["scope"], req))
+    if name == "scope_delete":
+        return _serialize(scopes.delete_scope(args["project"], args["scope"]))
+
+    # Experiences
+    if name == "experience_log":
+        req = ExperienceLogRequest(**{k: v for k, v in args.items() if v is not None})
+        return _serialize(experiences.log_experience(req))
+    if name == "experience_list":
+        return _serialize(experiences.list_experiences(
+            skill_path=args.get("skill_path"), project=args.get("project"),
+            scope=args.get("scope"), limit=args.get("limit", 50),
+        ))
+
+    # Artifacts
+    if name == "artifact_register":
+        req = ArtifactRegisterRequest(**{k: v for k, v in args.items() if v is not None})
+        return _serialize(artifacts.register_artifact(req))
+    if name == "artifact_search":
+        return _serialize(artifacts.search_artifacts(
+            project=args.get("project"), scope=args.get("scope"),
+            artifact_type=args.get("artifact_type"), query=args.get("query"),
+            limit=args.get("limit", 50),
+        ))
+
+    # AWM Refresh
+    if name == "awm_refresh":
+        return _serialize(scopes.awm_refresh(args["project"], args["scope"]))
 
     # Projects
     if name == "project_create":
@@ -361,12 +466,12 @@ def _handle_tool(name: str, args: dict) -> str:
             ).fetchone()[0]
         finally:
             conn.close()
-        task_result = tasks.list_tasks(status="active")
+        scope_result = scopes.list_scopes(status="active")
         return json.dumps({
             "status": "ok",
             "workspace_root": str(WORKSPACE_ROOT),
             "active_locks": active_locks,
-            "active_tasks": task_result.total,
+            "active_scopes": scope_result.total,
             "active_shared_edits": active_edits,
         }, indent=2)
 

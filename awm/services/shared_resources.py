@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from datetime import datetime, timezone
 
-from awm.config import WORKSPACE_ROOT, TASKS_DIR
+from awm.config import WORKSPACE_ROOT, PROJECTS_DIR
 from awm.db import get_connection
 from awm.models import (
     SharedEditRequest,
@@ -47,7 +47,7 @@ def start_edit(req: SharedEditRequest) -> SharedEditActionResponse:
         )
 
     branch = f"shared/{req.name}"
-    worktree_path = TASKS_DIR / "_shared" / req.name
+    worktree_path = PROJECTS_DIR / "_shared" / req.name
 
     # Create branch from current HEAD of the outer repo
     r = _run(["git", "-C", str(WORKSPACE_ROOT), "branch", branch, "HEAD"])

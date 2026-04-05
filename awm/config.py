@@ -36,13 +36,11 @@ DB_PATH = AWM_DIR / "state.db"
 PID_FILE = AWM_DIR / "awm.pid"
 LOG_FILE = AWM_DIR / "awm.log"
 
-REPOS_DIR = WORKSPACE_ROOT / "repos"
+PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 MAIN_DIR = WORKSPACE_ROOT / "main"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
-# Legacy alias — still used by shared_resources.py for _shared worktrees
-TASKS_DIR = WORKSPACE_ROOT / "tasks"
 
 # ---------------------------------------------------------------------------
 # Server settings

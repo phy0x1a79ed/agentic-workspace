@@ -19,17 +19,14 @@ def awm_workspace(tmp_path, monkeypatch):
     awm_dir = workspace / ".awm"
     awm_dir.mkdir()
     db_path = awm_dir / "state.db"
-    repos_dir = workspace / "repos"
-    repos_dir.mkdir()
+    projects_dir = workspace / "projects"
+    projects_dir.mkdir()
     main_dir = workspace / "main"
     main_dir.mkdir()
     skills_dir = workspace / "skills"
     skills_dir.mkdir()
     data_dir = workspace / "data"
     data_dir.mkdir()
-    # Legacy dir (still used by shared_resources.py)
-    tasks_dir = workspace / "tasks"
-    tasks_dir.mkdir()
 
     # Patch config module constants
     monkeypatch.setattr("awm.config.WORKSPACE_ROOT", workspace)
@@ -37,25 +34,22 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.config.DB_PATH", db_path)
     monkeypatch.setattr("awm.config.PID_FILE", awm_dir / "awm.pid")
     monkeypatch.setattr("awm.config.LOG_FILE", awm_dir / "awm.log")
-    monkeypatch.setattr("awm.config.REPOS_DIR", repos_dir)
+    monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("awm.config.MAIN_DIR", main_dir)
     monkeypatch.setattr("awm.config.DATA_DIR", data_dir)
     monkeypatch.setattr("awm.config.SKILLS_DIR", skills_dir)
-    # Legacy
-    monkeypatch.setattr("awm.config.TASKS_DIR", tasks_dir)
 
     # Patch where imported
     monkeypatch.setattr("awm.db.DB_PATH", db_path)
     monkeypatch.setattr("awm.db.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.services.skills.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.sessions.MAIN_DIR", main_dir)
-    monkeypatch.setattr("awm.services.tasks.REPOS_DIR", repos_dir)
-    monkeypatch.setattr("awm.services.tasks.MAIN_DIR", main_dir)
-    monkeypatch.setattr("awm.services.tasks.WORKSPACE_ROOT", workspace)
-    monkeypatch.setattr("awm.services.tasks.DATA_DIR", data_dir)
-    monkeypatch.setattr("awm.services.tasks.SKILLS_DIR", skills_dir)
+    monkeypatch.setattr("awm.services.scopes.PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr("awm.services.scopes.WORKSPACE_ROOT", workspace)
+    monkeypatch.setattr("awm.services.scopes.DATA_DIR", data_dir)
+    monkeypatch.setattr("awm.services.scopes.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.locks.HEARTBEAT_STALE_THRESHOLD", 120)
-    monkeypatch.setattr("awm.services.agents.MAIN_DIR", main_dir)
+    monkeypatch.setattr("awm.services.agents.PROJECTS_DIR", projects_dir)
 
     # Server patches
     monkeypatch.setattr("awm.server.WORKSPACE_ROOT", workspace)
@@ -71,12 +65,10 @@ def awm_workspace(tmp_path, monkeypatch):
         "workspace": workspace,
         "awm_dir": awm_dir,
         "db_path": db_path,
-        "repos_dir": repos_dir,
+        "projects_dir": projects_dir,
         "main_dir": main_dir,
         "skills_dir": skills_dir,
         "data_dir": data_dir,
-        # Legacy
-        "tasks_dir": tasks_dir,
     }
 
 
@@ -134,8 +126,8 @@ def seeded_locks(db_conn):
     import os
 
     locks_data = [
-        ("repos/proj-a/task-1", "agent-1", os.getpid(), "exclusive", now, now, None),
-        ("repos/proj-a/task-2", "agent-2", os.getpid(), "shared", now, now, '{"info": "test"}'),
+        ("projects/proj-a/scope-1", "agent-1", os.getpid(), "exclusive", now, now, None),
+        ("projects/proj-a/scope-2", "agent-2", os.getpid(), "shared", now, now, '{"info": "test"}'),
         ("data/shared.csv", "agent-1", os.getpid(), "shared", now, now, None),
     ]
     for l in locks_data:
@@ -148,45 +140,45 @@ def seeded_locks(db_conn):
 
 
 @pytest.fixture()
-def seeded_tasks(db_conn, awm_workspace):
-    """Insert task rows and create matching workspace dirs."""
+def seeded_scopes(db_conn, awm_workspace):
+    """Insert scope rows and create matching workspace dirs."""
     now = datetime.now(timezone.utc).isoformat()
     main_dir = awm_workspace["main_dir"]
-    repos_dir = awm_workspace["repos_dir"]
+    projects_dir = awm_workspace["projects_dir"]
 
-    task_data = [
-        ("proj-a", "task-1", "active", "feat/task-1", str(main_dir / "proj-a" / "tasks" / "task-1"), str(repos_dir / "proj-a" / "task-1"), 1, now, now),
-        ("proj-a", "task-2", "completed", "feat/task-2", str(main_dir / "proj-a" / "tasks" / "task-2"), str(repos_dir / "proj-a" / "task-2"), 1, now, now),
-        ("proj-b", "task-3", "completed", "feat/task-3", str(main_dir / "proj-b" / "tasks" / "task-3"), str(repos_dir / "proj-b" / "task-3"), 1, now, now),
+    scope_data = [
+        ("proj-a", "scope-1", "active", "feat/scope-1", str(main_dir / "proj-a" / "scopes" / "scope-1"), str(projects_dir / "proj-a" / "scope-1"), 1, now, now),
+        ("proj-a", "scope-2", "completed", "feat/scope-2", str(main_dir / "proj-a" / "scopes" / "scope-2"), str(projects_dir / "proj-a" / "scope-2"), 1, now, now),
+        ("proj-b", "scope-3", "completed", "feat/scope-3", str(main_dir / "proj-b" / "scopes" / "scope-3"), str(projects_dir / "proj-b" / "scope-3"), 1, now, now),
     ]
-    for t in task_data:
+    for t in scope_data:
         db_conn.execute(
-            "INSERT INTO tasks (project, task, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO scopes (project, scope, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
             t,
         )
     db_conn.commit()
 
     # Create workspace directories (main/)
-    for t in task_data:
+    for t in scope_data:
         ws_path = Path(t[4])
         ws_path.mkdir(parents=True, exist_ok=True)
         (ws_path / "AGENTS.md").write_text(f"# {t[0]}/{t[1]}\n")
         (ws_path / "results").mkdir(exist_ok=True)
 
-    # Create repo directories (repos/) — bare stubs
-    for t in task_data:
+    # Create project directories (projects/) — bare stubs
+    for t in scope_data:
         repo_path = Path(t[5])
         repo_path.mkdir(parents=True, exist_ok=True)
 
     # Create .bare directories for filesystem project discovery
     for project_name in ("proj-a", "proj-b"):
-        (repos_dir / project_name / ".bare").mkdir(parents=True, exist_ok=True)
+        (projects_dir / project_name / ".bare").mkdir(parents=True, exist_ok=True)
 
-    return task_data
+    return scope_data
 
 
 @pytest.fixture()
-def seeded_sessions(db_conn, seeded_tasks, awm_workspace):
+def seeded_sessions(db_conn, seeded_scopes, awm_workspace):
     """Insert session log rows."""
     base = datetime.now(timezone.utc)
     main_dir = awm_workspace["main_dir"]
@@ -194,13 +186,13 @@ def seeded_sessions(db_conn, seeded_tasks, awm_workspace):
     t2 = (base + timedelta(seconds=1)).isoformat()
     t3 = (base + timedelta(seconds=2)).isoformat()
     sessions_data = [
-        ("proj-a", "task-1", "", None, t1, "Initial exploration of dataset", "agent-1", None, "Initial exploration of dataset"),
-        ("proj-a", "task-1", "", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}', "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
-        ("proj-a", "task-2", "", None, t3, "Reviewed results and documented findings", "agent-2", None, "Reviewed results and documented findings"),
+        ("proj-a", "scope-1", "", None, t1, "Initial exploration of dataset", "agent-1", None, "Initial exploration of dataset"),
+        ("proj-a", "scope-1", "", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}', "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
+        ("proj-a", "scope-2", "", None, t3, "Reviewed results and documented findings", "agent-2", None, "Reviewed results and documented findings"),
     ]
     for s in sessions_data:
         db_conn.execute(
-            "INSERT INTO session_logs (project, task, file_path, git_commit, logged_at, summary, agent_id, metadata, content) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_logs (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content) VALUES (?,?,?,?,?,?,?,?,?)",
             s,
         )
     db_conn.commit()

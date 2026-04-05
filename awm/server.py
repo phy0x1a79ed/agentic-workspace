@@ -24,10 +24,10 @@ from awm.models import (
     StatusResponse,
     ProjectCreateRequest,
     ProjectCreateResponse,
-    TaskCreateRequest,
-    TaskUpdateRequest,
-    TaskListResponse,
-    TaskActionResponse,
+    ScopeCreateRequest,
+    ScopeUpdateRequest,
+    ScopeListResponse,
+    ScopeActionResponse,
     LockAcquireRequest,
     LockListResponse,
     LockActionResponse,
@@ -39,7 +39,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
-from awm.services import projects, tasks, locks, shared_resources, skills
+from awm.services import projects, scopes, locks, shared_resources, skills
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state
@@ -146,12 +146,12 @@ def get_status():
     finally:
         conn.close()
 
-    task_result = tasks.list_tasks(status="active")
+    scope_result = scopes.list_scopes(status="active")
 
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
-        active_tasks=task_result.total,
+        active_scopes=scope_result.total,
         active_shared_edits=active_edits,
     )
 
@@ -171,41 +171,41 @@ def create_project(req: ProjectCreateRequest):
 
 
 # ---------------------------------------------------------------------------
-# Tasks
+# Scopes (formerly Tasks)
 # ---------------------------------------------------------------------------
 
-@app.get("/tasks", response_model=TaskListResponse)
-def list_tasks_endpoint(
+@app.get("/scopes", response_model=ScopeListResponse)
+def list_scopes_endpoint(
     status: str | None = Query(None),
     project: str | None = Query(None),
 ):
-    return tasks.list_tasks(status=status, project=project)
+    return scopes.list_scopes(status=status, project=project)
 
 
-@app.post("/tasks", response_model=TaskActionResponse)
-def create_task(req: TaskCreateRequest):
+@app.post("/scopes", response_model=ScopeActionResponse)
+def create_scope(req: ScopeCreateRequest):
     try:
-        return tasks.create_task(req)
+        return scopes.create_scope(req)
     except (FileNotFoundError, FileExistsError) as e:
         raise HTTPException(409, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
 
 
-@app.patch("/tasks/{project}/{task}", response_model=TaskActionResponse)
-def update_task(project: str, task: str, req: TaskUpdateRequest):
+@app.patch("/scopes/{project}/{scope}", response_model=ScopeActionResponse)
+def update_scope(project: str, scope: str, req: ScopeUpdateRequest):
     try:
-        return tasks.update_task(project, task, req)
+        return scopes.update_scope(project, scope, req)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
 
 
-@app.delete("/tasks/{project}/{task}", response_model=TaskActionResponse)
-def delete_task(project: str, task: str):
+@app.delete("/scopes/{project}/{scope}", response_model=ScopeActionResponse)
+def delete_scope(project: str, scope: str):
     try:
-        return tasks.delete_task(project, task)
+        return scopes.delete_scope(project, scope)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except RuntimeError as e:

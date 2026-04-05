@@ -13,7 +13,7 @@ class StatusResponse(BaseModel):
     status: str = "ok"
     workspace_root: str
     active_locks: int = 0
-    active_tasks: int = 0
+    active_scopes: int = 0
     active_shared_edits: int = 0
 
 
@@ -38,25 +38,25 @@ class ProjectCreateResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tasks
+# Scopes (formerly Tasks)
 # ---------------------------------------------------------------------------
 
-class TaskCreateRequest(BaseModel):
+class ScopeCreateRequest(BaseModel):
     project: str
-    task: str
+    scope: str
     from_branch: str | None = None
     context: str | None = None
 
 
-class TaskUpdateRequest(BaseModel):
+class ScopeUpdateRequest(BaseModel):
     action: str = Field(default="complete", pattern="^complete$")
     merge: bool = False
     cleanup: bool = False
 
 
-class TaskInfo(BaseModel):
+class ScopeInfo(BaseModel):
     project: str
-    task: str
+    scope: str
     status: str
     branch: str
     worktree: str
@@ -64,17 +64,90 @@ class TaskInfo(BaseModel):
     session: int = 1
 
 
-class TaskListResponse(BaseModel):
-    tasks: list[TaskInfo]
+
+class ScopeListResponse(BaseModel):
+    scopes: list[ScopeInfo]
     total: int
 
 
-class TaskActionResponse(BaseModel):
+class ScopeActionResponse(BaseModel):
     project: str
-    task: str
+    scope: str
     status: str
     message: str
     session: int | None = None
+
+
+
+# ---------------------------------------------------------------------------
+# Experiences
+# ---------------------------------------------------------------------------
+
+class ExperienceLogRequest(BaseModel):
+    project: str
+    scope: str
+    skill_path: str | None = None
+    outcome: str | None = None
+    summary: str
+    deviations: str | None = None
+    suggestions: str | None = None
+    agent_id: str = "unknown"
+
+
+class ExperienceEntry(BaseModel):
+    id: int
+    skill_path: str | None
+    skill_version: str | None
+    project: str
+    scope: str
+    agent_id: str
+    outcome: str | None
+    summary: str
+    deviations: str | None
+    suggestions: str | None
+    created_at: str
+
+
+class ExperienceListResponse(BaseModel):
+    experiences: list[ExperienceEntry]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------------------------
+
+class ArtifactRegisterRequest(BaseModel):
+    project: str
+    scope: str
+    name: str
+    artifact_type: str = Field(
+        ...,
+        pattern="^(figure|dataset|report|model|script|other)$",
+    )
+    path: str
+    description: str | None = None
+    format: str | None = None
+    tags: str | None = None
+
+
+class ArtifactInfo(BaseModel):
+    id: int
+    project: str
+    scope: str
+    name: str
+    artifact_type: str
+    path: str
+    description: str | None
+    format: str | None
+    tags: str | None
+    status: str
+    created_at: str
+
+
+class ArtifactSearchResponse(BaseModel):
+    artifacts: list[ArtifactInfo]
+    total: int
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +245,7 @@ class SkillContentResponse(BaseModel):
 
 class SessionLogCreateRequest(BaseModel):
     project: str
-    task: str
+    scope: str
     summary: str
     decisions: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
@@ -183,7 +256,7 @@ class SessionLogCreateRequest(BaseModel):
 class SessionLogEntry(BaseModel):
     id: int
     project: str
-    task: str
+    scope: str
     file_path: str = ""
     git_commit: str | None = None
     logged_at: str
@@ -210,7 +283,7 @@ class MessageSendRequest(BaseModel):
     sender: str
     msg_type: str = Field(
         ...,
-        pattern="^(task_assignment|reflection|status_update|notification|plan)$",
+        pattern="^(scope_assignment|reflection|status_update|notification|plan)$",
     )
     subject: str
     body: str
@@ -246,14 +319,14 @@ class MessageActionResponse(BaseModel):
 
 class AgentSpawnRequest(BaseModel):
     project: str
-    task: str
+    scope: str
     prompt: str | None = None
     agent_cli: str | None = None
 
 
 class AgentSpawnResponse(BaseModel):
     project: str
-    task: str
+    scope: str
     pid: int
     agent_cli: str
     message: str
