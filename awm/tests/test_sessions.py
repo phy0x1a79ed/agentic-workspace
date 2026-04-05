@@ -38,6 +38,18 @@ class TestFormatEntry:
         text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
         assert text.strip().endswith("---")
 
+    def test_entry_with_skill_path(self):
+        req = SessionLogCreateRequest(
+            project="p", scope="t", summary="s", skill_path="sops/debrief.md",
+        )
+        text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
+        assert "**Skill:** sops/debrief.md" in text
+
+    def test_entry_without_skill_path_omits_line(self):
+        req = SessionLogCreateRequest(project="p", scope="t", summary="s")
+        text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
+        assert "**Skill:**" not in text
+
 
 class TestLogSession:
     def test_log_creates_db_entry(self, awm_workspace):
@@ -64,6 +76,18 @@ class TestLogSession:
 
         detail = sessions.get_session(entry.id)
         assert "d1" in detail.content
+
+    def test_log_with_skill_path(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="s",
+            skill_path="sops/debrief.md",
+        )
+        entry = sessions.log_session(req)
+        assert entry.skill_path == "sops/debrief.md"
+
+        detail = sessions.get_session(entry.id)
+        assert detail.entry.skill_path == "sops/debrief.md"
+        assert "**Skill:** sops/debrief.md" in detail.content
 
 
 class TestListSessions:

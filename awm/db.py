@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS session_logs (
     agent_id TEXT DEFAULT 'unknown',
     metadata TEXT,
     content TEXT,
+    skill_path TEXT,
     UNIQUE(project, scope, logged_at, agent_id)
 );
 
@@ -294,6 +295,9 @@ WHERE file_path LIKE 'main/%' AND file_path NOT LIKE '%/tasks/%';
     (11, 12): """\
 -- Rename session_logs.task → scope
 ALTER TABLE session_logs RENAME COLUMN task TO scope;
+""",
+    (12, 13): """\
+ALTER TABLE session_logs ADD COLUMN skill_path TEXT;
 """,
 }
 

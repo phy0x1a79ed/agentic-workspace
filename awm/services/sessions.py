@@ -30,6 +30,7 @@ def _row_to_entry(row) -> SessionLogEntry:
         logged_at=row["logged_at"],
         summary=row["summary"],
         agent_id=row["agent_id"],
+        skill_path=row["skill_path"],
     )
 
 
@@ -42,11 +43,15 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
         f"**Scope:** {req.project}/{req.scope}",
         "",
         f"**Agent:** {req.agent_id}",
+    ]
+    if req.skill_path:
+        lines.extend(["", f"**Skill:** {req.skill_path}"])
+    lines.extend([
         "",
         "## Session Summary",
         "",
         req.summary,
-    ]
+    ])
 
     if req.decisions:
         lines.extend(["", "## Decisions Made", ""])
@@ -85,11 +90,11 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content, skill_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (req.project, req.scope, "", None, logged_at,
-             req.summary, req.agent_id, metadata, content),
+             req.summary, req.agent_id, metadata, content, req.skill_path),
         )
         conn.commit()
         row = conn.execute(
