@@ -1,17 +1,23 @@
 """Thin stdio MCP proxy for the AWM core.
 
 This module is a minimal bridge: Claude Code (or any MCP client) launches
-``awm-mcp`` as a stdio child, and every tool call is forwarded over HTTP to
+``awm-mcp`` as a stdio child, and every request is forwarded over HTTP to
 the long-running ``awm serve`` core (managed by systemd).
+
+Design invariant — the proxy is **stateless**. It holds no application data
+(tool definitions, schemas, models, service objects). The only things imported
+from the ``awm`` package are static configuration constants. Tool metadata is
+fetched fresh from the core on every ``list_tools`` call, so adding or
+removing a tool and restarting only the core is enough — the proxy picks up
+the new surface on the next request without needing Claude Code to restart.
 
 Why the split:
 
 - Restarting the core (e.g. after a config/env change) used to drop Claude's
   MCP tools mid-conversation because the stdio child died with the server.
   Now the proxy stays up; it transparently reconnects across core restarts.
-- ``handle_tool`` and the MCP tool schemas live in :mod:`awm.tool_dispatch`
-  so the old in-process dispatch path and the new HTTP path share one source
-  of truth.
+- Keeping the proxy stateless means core restarts fully take effect — no
+  stale snapshots bound at proxy launch time.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import os
 import signal
 import subprocess
 import time
+from typing import Any
 
 import httpx
 from mcp.server import Server
@@ -29,7 +36,6 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm.config import BASE_URL
-from awm.tool_dispatch import TOOL_DEFINITIONS
 
 server = Server("awm")
 
@@ -40,14 +46,24 @@ server = Server("awm")
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return TOOL_DEFINITIONS
+    """Fetch the tool surface from the core on every call — no local cache.
+
+    If the core is unreachable after the retry deadline, the error propagates
+    up to the MCP client. Deliberately no fallback to a bundled snapshot: a
+    stale list is worse than an honest error because it silently drifts from
+    the live tool surface after a core restart.
+    """
+    data = await _request_with_retry("GET", "/tools")
+    return [Tool.model_validate(t) for t in data["tools"]]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
-        result = await _invoke_with_retry(name, arguments)
-        return [TextContent(type="text", text=result)]
+        data = await _request_with_retry(
+            "POST", "/invoke", json_body={"name": name, "args": arguments}
+        )
+        return [TextContent(type="text", text=data["result"])]
     except httpx.HTTPStatusError as e:
         # Core returned a structured error — surface its body.
         try:
@@ -64,12 +80,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 # HTTP dispatch with reconnect
 # ---------------------------------------------------------------------------
 
-async def _invoke_with_retry(name: str, args: dict, max_wait: float = 10.0) -> str:
-    """POST to core /invoke, reconnecting across core restarts.
+async def _request_with_retry(
+    method: str,
+    path: str,
+    json_body: dict | None = None,
+    max_wait: float = 10.0,
+) -> dict[str, Any]:
+    """Make an HTTP request to the core, reconnecting across core restarts.
 
-    When the core is bounced (systemctl restart), the first call sees a
+    When the core is bounced (``systemctl restart``), the first call sees a
     ``ConnectError``; we nudge systemd and retry for up to ``max_wait`` seconds
-    so the user's tool call succeeds transparently.
+    so the caller's request succeeds transparently. Shared between the
+    ``list_tools`` and ``call_tool`` paths so both benefit from the same
+    wakeup + retry logic.
     """
     deadline = time.monotonic() + max_wait
     last_err: Exception | None = None
@@ -77,9 +100,9 @@ async def _invoke_with_retry(name: str, args: dict, max_wait: float = 10.0) -> s
     async with httpx.AsyncClient(base_url=BASE_URL, timeout=60.0) as client:
         while time.monotonic() < deadline:
             try:
-                r = await client.post("/invoke", json={"name": name, "args": args})
+                r = await client.request(method, path, json=json_body)
                 r.raise_for_status()
-                return r.json()["result"]
+                return r.json()
             except httpx.HTTPStatusError:
                 raise
             except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:

@@ -27,6 +27,32 @@ class TestStatus:
         assert "workspace_root" in data
 
 
+class TestToolsEndpoint:
+    """GET /tools is the source of truth for the stateless MCP proxy."""
+
+    def test_returns_all_tool_definitions(self, client):
+        resp = client.get("/tools")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tools" in data
+        names = {t["name"] for t in data["tools"]}
+        # Spot-check a few that must be present.
+        assert "skills_list" in names
+        assert "skills_sync" in names
+        assert "artifacts_sync" in names
+        assert "session_log" in names  # registry-driven
+
+    def test_payload_round_trips_to_mcp_tool(self, client):
+        """The proxy reconstructs Tool(**payload); the wire format must be valid."""
+        from mcp.types import Tool
+
+        resp = client.get("/tools")
+        for t in resp.json()["tools"]:
+            # Tool.model_validate is what the proxy calls; if the server's
+            # dump shape drifts, this blows up.
+            Tool.model_validate(t)
+
+
 class TestLockEndpoints:
     def test_acquire_and_release(self, client):
         # Acquire

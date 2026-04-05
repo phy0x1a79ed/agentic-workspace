@@ -40,7 +40,7 @@ from awm.models import (
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
 from awm.services import projects, scopes, locks, shared_resources, skills
-from awm.tool_dispatch import handle_tool, mark_core_start
+from awm.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state
@@ -313,6 +313,18 @@ register_fastapi_routes(app, SESSION_OPERATIONS)
 # ---------------------------------------------------------------------------
 # Generic tool dispatch (used by the thin MCP stdio proxy)
 # ---------------------------------------------------------------------------
+
+@app.get("/tools")
+def list_tools_endpoint():
+    """Return the current MCP tool definitions.
+
+    The thin stdio proxy fetches this on every `list_tools` call instead of
+    importing `TOOL_DEFINITIONS` at its own process startup. That keeps the
+    proxy stateless: tools added/removed in the core show up immediately
+    after a core restart without needing to restart Claude Code.
+    """
+    return {"tools": [t.model_dump(by_alias=True) for t in TOOL_DEFINITIONS]}
+
 
 @app.post("/invoke")
 def invoke_tool(payload: dict):
