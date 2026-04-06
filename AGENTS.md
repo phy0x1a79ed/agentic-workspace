@@ -32,21 +32,20 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 
 ## MCP Integration
 
-AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server, which exposes 27 tools:
+AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server:
 
 | Category | Tools |
 |----------|-------|
-| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
+| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
 | Sessions | `session_log`, `session_list`, `session_get` |
 | Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
 | Experiences | `experience_log`, `experience_list` |
-| Artifacts | `artifact_register`, `artifact_search` |
-| Refresh | `awm_refresh` |
+| Artifacts | `artifact_register`, `artifact_search`, `artifacts_sync` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
-| Messaging | `inbox_send`, `inbox_search`, `inbox_read`, `inbox_recipients` |
+| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
 | Agents | `agent_spawn` |
-| Status | `awm_status` |
+| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh` |
 
 ## Quick Start
 

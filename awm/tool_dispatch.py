@@ -31,7 +31,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import dispatch_operation, operations_to_mcp_tools
-from awm.services import agents, artifacts, experiences, locks, messaging, projects, scopes, skills
+from awm.services import agents, artifacts, core, experiences, locks, messaging, projects, scopes, skills
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +376,12 @@ TOOL_DEFINITIONS: list[Tool] = [
             "required": ["project", "scope"],
         },
     ),
+    # Restart
+    Tool(
+        name="awm_restart",
+        description="Restart the AWM core service via systemd. MCP clients reconnect transparently on the next tool call.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # Status
     Tool(
         name="awm_status",
@@ -502,6 +508,10 @@ def handle_tool(name: str, args: dict) -> str:
     if name == "agent_spawn":
         req = AgentSpawnRequest(**args)
         return _serialize(agents.spawn_agent(req))
+
+    # Restart
+    if name == "awm_restart":
+        return _serialize(core.restart_core())
 
     # Status
     if name == "awm_status":

@@ -179,16 +179,22 @@ def restart():
     ``awm.service``. Restarting this way is transparent to MCP clients —
     the stdio proxy reconnects on the next tool call.
     """
-    r = subprocess.run(
-        ["systemctl", "--user", "restart", "awm.service"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        typer.echo(f"systemctl restart failed: {r.stderr.strip() or r.stdout.strip()}", err=True)
-        typer.echo("Hint: install the unit at ~/.config/systemd/user/awm.service first "
-                   "(see projects/awm/release/deploy/awm.service).", err=True)
-        raise typer.Exit(r.returncode)
-    typer.echo("awm core restarted. MCP clients reconnect on next tool call.")
+    try:
+        r = _api("POST", "/restart")
+        data = r.json()
+        typer.echo(data.get("message", "awm core restarting."))
+    except Exception:
+        # Core is unreachable — call systemctl directly as fallback.
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", "awm.service"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            typer.echo(f"systemctl restart failed: {result.stderr.strip() or result.stdout.strip()}", err=True)
+            typer.echo("Hint: install the unit at ~/.config/systemd/user/awm.service first "
+                       "(see projects/awm/release/deploy/awm.service).", err=True)
+            raise typer.Exit(result.returncode)
+        typer.echo("awm core restarted (direct systemctl fallback). MCP clients reconnect on next tool call.")
 
 
 # ---------------------------------------------------------------------------

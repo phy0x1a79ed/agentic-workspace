@@ -31,7 +31,8 @@ The server auto-starts when you run any CLI command. To run manually:
 awm serve          # foreground
 awm status         # health check (auto-starts if needed)
 awm stop           # stop the server
-awm refresh        # restart server to pick up source changes
+awm restart        # restart core via systemd (transparent to MCP clients)
+awm refresh        # restart server to pick up source changes (dev mode)
 ```
 
 ### Projects
@@ -178,7 +179,7 @@ The 3-level agent hierarchy (workspace / project / scope) is documented in the w
 
 ## MCP Server
 
-AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes 27 tools covering skills, sessions, scopes, experiences, artifacts, projects, locks, messaging, agents, and status.
+AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes tools covering skills, sessions, scopes, experiences, artifacts, projects, locks, messaging, agents, lifecycle, and status.
 
 ### Setup
 
@@ -208,16 +209,16 @@ awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
 
 | Category | Tools |
 |----------|-------|
-| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_reindex` |
+| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
 | Sessions | `session_log`, `session_list`, `session_get` |
 | Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
 | Experiences | `experience_log`, `experience_list` |
-| Artifacts | `artifact_register`, `artifact_search` |
+| Artifacts | `artifact_register`, `artifact_search`, `artifacts_sync` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
-| Messaging | `inbox_send`, `inbox_search`, `inbox_read`, `inbox_recipients` |
+| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
 | Agents | `agent_spawn` |
-| Status | `awm_status`, `awm_refresh` |
+| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh` |
 
 ## REST API
 
@@ -226,6 +227,7 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/status` | Health + summary |
+| POST | `/restart` | Restart core via systemd (async, returns immediately) |
 | POST | `/projects` | Create project |
 | GET | `/scopes` | List scopes |
 | POST | `/scopes` | Create scope |
@@ -242,7 +244,6 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | GET | `/skills` | List skills (query: `type`, `tags`) |
 | GET | `/skills/search` | Search skills (query: `q`) |
 | GET | `/skills/{path}` | Get skill content |
-| POST | `/skills/reindex` | Regenerate skills index |
 | POST | `/sessions` | Log a session entry |
 | GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
@@ -290,6 +291,7 @@ awm/                      # Git-tracked Python package
   db.py                   # SQLite (WAL mode) + migrations
   models.py               # Pydantic models
   services/
+    core.py               # Core lifecycle (restart)
     projects.py           # Project CRUD
     scopes.py             # Scope CRUD (worktrees)
     locks.py              # Lock management

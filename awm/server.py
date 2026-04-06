@@ -39,7 +39,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
-from awm.services import projects, scopes, locks, shared_resources, skills
+from awm.services import core, projects, scopes, locks, shared_resources, skills
 from awm.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
@@ -158,6 +158,23 @@ def get_status():
         active_scopes=scope_result.total,
         active_shared_edits=active_edits,
     )
+
+
+# ---------------------------------------------------------------------------
+# Restart
+# ---------------------------------------------------------------------------
+
+@app.post("/restart")
+def restart_core_endpoint():
+    """Restart the AWM core via systemd.
+
+    Returns immediately; the actual restart happens asynchronously.
+    MCP clients reconnect transparently on the next tool call.
+    """
+    try:
+        return core.restart_core()
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
 
 
 # ---------------------------------------------------------------------------
