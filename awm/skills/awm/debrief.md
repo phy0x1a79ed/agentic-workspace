@@ -37,15 +37,23 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    In the rendered session log, `summary` becomes the `## Session Summary` paragraph and the repeated flags become bullet lists under `## Decisions Made`, `## Gotchas / Issues`, and `## Next Steps`.
 
-2. **Register artifacts** for any new outputs you created:
+2. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
 
    ```
-   artifact_register project={project} scope={scope} name="..." artifact_type=... path="..." description="..."
+   artifact_search project={project} scope={scope}
    ```
 
+   - **Delete** any artifacts that were replaced or are no longer relevant:
+     ```
+     artifact_delete artifact_id=<id>
+     ```
+   - **Register** new outputs (skips if `artifact_register` is called with an existing `path` — it upserts):
+     ```
+     artifact_register project={project} scope={scope} name="..." artifact_type=... path="..." description="..."
+     ```
    - Path relative to workspace root (e.g. `data/{project}/figures/...`).
    - Types: figure, dataset, report, model, script, other.
-   - Skip this step if no artifacts were produced.
+   - Skip this step if no artifacts were produced or changed.
 
 3. **Sync artifacts** so the registry reflects on-disk reality before closing out:
 

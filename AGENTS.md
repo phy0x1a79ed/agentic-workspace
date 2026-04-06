@@ -40,7 +40,7 @@ AWM is available as an MCP server. The `.mcp.json` at the workspace root registe
 | Sessions | `session_log`, `session_list`, `session_get` |
 | Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
 | Experiences | `experience_log`, `experience_list` |
-| Artifacts | `artifact_register`, `artifact_search`, `artifacts_sync` |
+| Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |

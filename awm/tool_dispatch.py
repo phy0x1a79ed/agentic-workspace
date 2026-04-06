@@ -203,6 +203,17 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
+        name="artifact_delete",
+        description="Permanently delete an artifact by ID. Use artifact_search first to find the ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "artifact_id": {"type": "integer", "description": "Artifact ID (from artifact_search results)"},
+            },
+            "required": ["artifact_id"],
+        },
+    ),
+    Tool(
         name="artifacts_sync",
         description="Lazily reconcile artifact status and embeddings with on-disk file presence. Cheap no-op when the artifacts DB is unchanged; on drift, flips missing files to 'stale', restores reappeared ones, and prunes embeddings.",
         inputSchema={
@@ -459,6 +470,8 @@ def handle_tool(name: str, args: dict) -> str:
             artifact_type=args.get("artifact_type"), query=args.get("query"),
             limit=args.get("limit", 50),
         ))
+    if name == "artifact_delete":
+        return json.dumps(artifacts.delete_artifact(args["artifact_id"]))
     if name == "artifacts_sync":
         return json.dumps(artifacts.sync_artifacts(force=args.get("force", False)))
 

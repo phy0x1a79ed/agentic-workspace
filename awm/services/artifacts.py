@@ -81,6 +81,27 @@ def register_artifact(req: ArtifactRegisterRequest) -> ArtifactInfo:
     return info
 
 
+def delete_artifact(artifact_id: int) -> dict:
+    """Permanently delete an artifact and its embeddings."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, name, path FROM artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Artifact {artifact_id} not found")
+
+        conn.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+        conn.execute(
+            "DELETE FROM embeddings WHERE source_type = 'artifact' AND source_id = ?",
+            (str(artifact_id),),
+        )
+        conn.commit()
+        return {"deleted": True, "id": artifact_id, "name": row["name"], "path": row["path"]}
+    finally:
+        conn.close()
+
+
 def search_artifacts(
     project: str | None = None,
     scope: str | None = None,
