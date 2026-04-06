@@ -22,7 +22,6 @@ from mcp.types import Tool
 from awm.models import (
     AgentSpawnRequest,
     ArtifactRegisterRequest,
-    ExperienceLogRequest,
     LockAcquireRequest,
     MessageSendRequest,
     ProjectCreateRequest,
@@ -31,7 +30,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import dispatch_operation, operations_to_mcp_tools
-from awm.services import agents, artifacts, core, experiences, locks, messaging, projects, scopes, skills
+from awm.services import agents, artifacts, core, locks, messaging, projects, scopes, skills
 
 
 # ---------------------------------------------------------------------------
@@ -135,38 +134,6 @@ TOOL_DEFINITIONS: list[Tool] = [
                 "scope": {"type": "string"},
             },
             "required": ["project", "scope"],
-        },
-    ),
-    # Experiences
-    Tool(
-        name="experience_log",
-        description="Log an experience (execution trace), optionally attached to a skill. Auto-captures skill git version.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "project": {"type": "string"},
-                "scope": {"type": "string"},
-                "skill_path": {"type": "string", "description": "Skill that was followed (optional)"},
-                "outcome": {"type": "string", "enum": ["success", "partial_success", "failure", "abandoned"]},
-                "summary": {"type": "string", "description": "What happened"},
-                "deviations": {"type": "string", "description": "What differed from the protocol"},
-                "suggestions": {"type": "string", "description": "Improvements for the skill"},
-                "agent_id": {"type": "string", "default": "unknown"},
-            },
-            "required": ["project", "scope", "summary"],
-        },
-    ),
-    Tool(
-        name="experience_list",
-        description="List experiences, optionally filtered by skill, project, or scope.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "skill_path": {"type": "string", "description": "Filter by skill path"},
-                "project": {"type": "string"},
-                "scope": {"type": "string"},
-                "limit": {"type": "integer", "default": 50},
-            },
         },
     ),
     # Artifacts
@@ -438,16 +405,6 @@ def handle_tool(name: str, args: dict) -> str:
         return _serialize(scopes.update_scope(args["project"], args["scope"], req))
     if name == "scope_delete":
         return _serialize(scopes.delete_scope(args["project"], args["scope"]))
-
-    # Experiences
-    if name == "experience_log":
-        req = ExperienceLogRequest(**{k: v for k, v in args.items() if v is not None})
-        return _serialize(experiences.log_experience(req))
-    if name == "experience_list":
-        return _serialize(experiences.list_experiences(
-            skill_path=args.get("skill_path"), project=args.get("project"),
-            scope=args.get("scope"), limit=args.get("limit", 50),
-        ))
 
     # Artifacts
     if name == "artifact_register":

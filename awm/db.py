@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS session_logs (
     metadata TEXT,
     content TEXT,
     skill_path TEXT,
+    outcome TEXT,
+    deviations TEXT,
+    suggestions TEXT,
+    skill_version TEXT,
     UNIQUE(project, scope, logged_at, agent_id)
 );
 
@@ -67,24 +71,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_scopes_active_unique
     ON scopes(project, scope) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_scopes_status ON scopes(status);
 CREATE INDEX IF NOT EXISTS idx_scopes_project ON scopes(project);
-
-CREATE TABLE IF NOT EXISTS experiences (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    skill_path TEXT,
-    skill_version TEXT,
-    project TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    agent_id TEXT DEFAULT 'unknown',
-    outcome TEXT,
-    summary TEXT NOT NULL,
-    deviations TEXT,
-    suggestions TEXT,
-    metadata TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_experiences_skill ON experiences(skill_path);
-CREATE INDEX IF NOT EXISTS idx_experiences_project ON experiences(project);
 
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -298,6 +284,24 @@ ALTER TABLE session_logs RENAME COLUMN task TO scope;
 """,
     (12, 13): """\
 ALTER TABLE session_logs ADD COLUMN skill_path TEXT;
+""",
+    (13, 14): """\
+-- Fold experiences into session_logs
+ALTER TABLE session_logs ADD COLUMN outcome TEXT;
+ALTER TABLE session_logs ADD COLUMN deviations TEXT;
+ALTER TABLE session_logs ADD COLUMN suggestions TEXT;
+ALTER TABLE session_logs ADD COLUMN skill_version TEXT;
+
+INSERT INTO session_logs
+    (project, scope, file_path, git_commit, logged_at, summary, agent_id,
+     metadata, content, skill_path, outcome, deviations, suggestions, skill_version)
+SELECT project, scope, '', NULL, created_at, summary, agent_id,
+       metadata, NULL, skill_path, outcome, deviations, suggestions, skill_version
+FROM experiences;
+
+DELETE FROM embeddings WHERE source_type = 'experience';
+
+DROP TABLE IF EXISTS experiences;
 """,
 }
 

@@ -87,13 +87,13 @@ def index_skill(skill_path: str) -> None:
         pass
 
 
-def index_experience(experience_id: int) -> None:
-    """Embed an experience for semantic search."""
+def index_session(session_id: int) -> None:
+    """Embed a session log entry for semantic search."""
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT summary, deviations, suggestions FROM experiences WHERE id=?",
-            (experience_id,),
+            "SELECT summary, deviations, suggestions FROM session_logs WHERE id=?",
+            (session_id,),
         ).fetchone()
     finally:
         conn.close()
@@ -105,7 +105,7 @@ def index_experience(experience_id: int) -> None:
         if row["suggestions"]:
             parts.append(row["suggestions"])
         text = " ".join(parts)
-        _upsert_embedding("experience", str(experience_id), text)
+        _upsert_embedding("session", str(session_id), text)
 
 
 def index_artifact(artifact_id: int) -> None:
@@ -207,28 +207,28 @@ def reindex_all() -> dict:
     stats: dict = {
         "skills": sync_skills(force=True),
         "artifacts": sync_artifacts(force=True),
-        "experiences": 0,
+        "sessions": 0,
         "stray_pruned": 0,
     }
 
-    # Experiences — append-only, no sync function. Just upsert all of them.
+    # Sessions — upsert all session log entries.
     conn = get_connection()
     try:
-        exp_ids = [r[0] for r in conn.execute("SELECT id FROM experiences").fetchall()]
+        session_ids = [r[0] for r in conn.execute("SELECT id FROM session_logs").fetchall()]
     finally:
         conn.close()
 
-    for eid in exp_ids:
+    for sid in session_ids:
         try:
-            index_experience(eid)
-            stats["experiences"] += 1
+            index_session(sid)
+            stats["sessions"] += 1
         except Exception:
             pass
 
     # Final safety pass: drop embeddings rows whose source_type we don't recognize
     # (e.g. legacy schema drift). sync_skills / sync_artifacts already handle their
     # own source_types; this just catches orphans with unknown types.
-    known_types = {"skill", "artifact", "experience"}
+    known_types = {"skill", "artifact", "session"}
     conn = get_connection()
     try:
         rows = conn.execute("SELECT source_type, source_id FROM embeddings").fetchall()
