@@ -50,6 +50,24 @@ class TestFormatEntry:
         text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
         assert "**Skill:**" not in text
 
+    def test_entry_with_outcome(self):
+        req = SessionLogCreateRequest(
+            project="p", scope="t", summary="s", outcome="success",
+        )
+        text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
+        assert "**Outcome:** success" in text
+
+    def test_entry_with_deviations_and_suggestions(self):
+        req = SessionLogCreateRequest(
+            project="p", scope="t", summary="s",
+            deviations="Skipped step 2", suggestions="Automate step 2",
+        )
+        text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
+        assert "## Deviations" in text
+        assert "Skipped step 2" in text
+        assert "## Suggestions" in text
+        assert "Automate step 2" in text
+
 
 class TestLogSession:
     def test_log_creates_db_entry(self, awm_workspace):
@@ -89,6 +107,36 @@ class TestLogSession:
         assert detail.entry.skill_path == "sops/debrief.md"
         assert "**Skill:** sops/debrief.md" in detail.content
 
+    def test_log_with_outcome_and_deviations(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Ran the pipeline",
+            outcome="partial_success", deviations="Skipped step 3",
+            suggestions="Add retry logic",
+        )
+        entry = sessions.log_session(req)
+        assert entry.outcome == "partial_success"
+        assert entry.deviations == "Skipped step 3"
+        assert entry.suggestions == "Add retry logic"
+
+        detail = sessions.get_session(entry.id)
+        assert "**Outcome:** partial_success" in detail.content
+        assert "## Deviations" in detail.content
+        assert "Skipped step 3" in detail.content
+        assert "## Suggestions" in detail.content
+        assert "Add retry logic" in detail.content
+
+    def test_log_with_skill_captures_version(self, awm_workspace, monkeypatch):
+        monkeypatch.setattr(
+            "awm.services.sessions._get_skills_git_hash",
+            lambda: "abc123def456",
+        )
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="s",
+            skill_path="awm/debrief.md",
+        )
+        entry = sessions.log_session(req)
+        assert entry.skill_version == "abc123def456"
+
 
 class TestListSessions:
     def test_list_all(self, awm_workspace, seeded_sessions):
@@ -110,6 +158,22 @@ class TestListSessions:
     def test_list_empty(self, awm_workspace):
         result = sessions.list_sessions()
         assert result.total == 0
+
+    def test_list_by_skill_path(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="s1",
+            skill_path="awm/debrief.md",
+        ))
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="s2",
+            skill_path="awm/create-scope.md",
+        ))
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="s3",
+        ))
+        result = sessions.list_sessions(skill_path="awm/debrief.md")
+        assert result.total == 1
+        assert result.entries[0].skill_path == "awm/debrief.md"
 
 
 class TestGetSession:

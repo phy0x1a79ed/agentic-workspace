@@ -31,6 +31,9 @@ SESSION_OPERATIONS: list[Operation] = [
             Param(name="next_steps", type="array", description="Next steps (repeatable)", cli_name="--next-step"),
             Param(name="agent_id", type="string", default="unknown", description="Agent identifier", cli_name="--agent"),
             Param(name="skill_path", type="string", description="Path of the skill followed this session, if any", cli_name="--skill"),
+            Param(name="outcome", type="string", description="Outcome: success, partial_success, failure, abandoned", cli_name="--outcome"),
+            Param(name="deviations", type="string", description="What differed from the protocol", cli_name="--deviations"),
+            Param(name="suggestions", type="string", description="Improvements for the skill", cli_name="--suggestions"),
         ],
     ),
     Operation(
@@ -48,6 +51,7 @@ SESSION_OPERATIONS: list[Operation] = [
                 Column(key="project", header="PROJECT", width=18),
                 Column(key="scope", header="SCOPE", width=22),
                 Column(key="skill_path", header="SKILL", width=20, max_len=20),
+                Column(key="outcome", header="OUTCOME", width=16),
                 Column(key="agent_id", header="AGENT", width=15),
                 Column(key="logged_at", header="LOGGED AT", width=28),
                 Column(key="summary", header="SUMMARY", width=40, max_len=40),
@@ -56,6 +60,7 @@ SESSION_OPERATIONS: list[Operation] = [
         params=[
             Param(name="project", type="string", description="Filter by project", cli_name="--project"),
             Param(name="scope", type="string", description="Filter by scope", cli_name="--scope"),
+            Param(name="skill_path", type="string", description="Filter by skill path", cli_name="--skill"),
             Param(name="limit", type="integer", default=50, description="Max entries to return", cli_name="--limit"),
         ],
     ),
@@ -73,6 +78,7 @@ SESSION_OPERATIONS: list[Operation] = [
                 ("Project", "entry.project"),
                 ("Scope", "entry.scope"),
                 ("Skill", "entry.skill_path"),
+                ("Outcome", "entry.outcome"),
                 ("Agent", "entry.agent_id"),
                 ("Logged", "entry.logged_at"),
                 ("Commit", "entry.git_commit"),

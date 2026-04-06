@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import datetime, timezone
 
-from awm.config import MAIN_DIR
+from awm.config import MAIN_DIR, SKILLS_DIR
 from awm.db import get_connection
 from awm.models import (
     SessionLogCreateRequest,
@@ -20,6 +21,21 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _get_skills_git_hash() -> str | None:
+    """Get the current git commit hash of the skills directory."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%H", "--", str(SKILLS_DIR)],
+            cwd=str(SKILLS_DIR.parent.parent),
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()[:12]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
 def _row_to_entry(row) -> SessionLogEntry:
     return SessionLogEntry(
         id=row["id"],
@@ -31,6 +47,10 @@ def _row_to_entry(row) -> SessionLogEntry:
         summary=row["summary"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
+        outcome=row["outcome"],
+        deviations=row["deviations"],
+        suggestions=row["suggestions"],
+        skill_version=row["skill_version"],
     )
 
 
@@ -46,6 +66,8 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
     ]
     if req.skill_path:
         lines.extend(["", f"**Skill:** {req.skill_path}"])
+    if req.outcome:
+        lines.extend(["", f"**Outcome:** {req.outcome}"])
     lines.extend([
         "",
         "## Session Summary",
@@ -68,12 +90,22 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
         for ns in req.next_steps:
             lines.append(f"- [ ] {ns}")
 
+    if req.deviations:
+        lines.extend(["", "## Deviations", "", req.deviations])
+
+    if req.suggestions:
+        lines.extend(["", "## Suggestions", "", req.suggestions])
+
     lines.extend(["", "---", ""])
     return "\n".join(lines)
 
 
 def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
     """Record a session log entry in the database."""
+    skill_version = None
+    if req.skill_path:
+        skill_version = _get_skills_git_hash()
+
     logged_at = _now_iso()
     content = _format_entry(req, logged_at)
 
@@ -90,24 +122,37 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content, skill_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (project, scope, file_path, git_commit, logged_at, summary,
+                 agent_id, metadata, content, skill_path,
+                 outcome, deviations, suggestions, skill_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (req.project, req.scope, "", None, logged_at,
-             req.summary, req.agent_id, metadata, content, req.skill_path),
+             req.summary, req.agent_id, metadata, content, req.skill_path,
+             req.outcome, req.deviations, req.suggestions, skill_version),
         )
         conn.commit()
         row = conn.execute(
             "SELECT * FROM session_logs WHERE id = last_insert_rowid()"
         ).fetchone()
-        return _row_to_entry(row)
+        entry = _row_to_entry(row)
     finally:
         conn.close()
+
+    # Auto-index for semantic search (best-effort)
+    try:
+        from awm.services.embeddings import index_session
+        index_session(entry.id)
+    except Exception:
+        pass
+
+    return entry
 
 
 def list_sessions(
     project: str | None = None,
     scope: str | None = None,
+    skill_path: str | None = None,
     limit: int = 50,
 ) -> SessionLogListResponse:
     """Query session logs with optional filters."""
@@ -121,6 +166,9 @@ def list_sessions(
         if scope:
             query += " AND scope = ?"
             params.append(scope)
+        if skill_path:
+            query += " AND skill_path = ?"
+            params.append(skill_path)
         query += " ORDER BY logged_at DESC LIMIT ?"
         params.append(limit)
 
@@ -153,12 +201,18 @@ def get_session(session_id: int) -> SessionLogContentResponse:
                 except json.JSONDecodeError:
                     pass
             parts = [row["summary"]]
+            if row["outcome"]:
+                parts.append(f"\nOutcome: {row['outcome']}")
             if meta.get("decisions"):
                 parts.append("\nDecisions: " + ", ".join(meta["decisions"]))
             if meta.get("issues"):
                 parts.append("\nIssues: " + ", ".join(meta["issues"]))
             if meta.get("next_steps"):
                 parts.append("\nNext steps: " + ", ".join(meta["next_steps"]))
+            if row["deviations"]:
+                parts.append(f"\nDeviations: {row['deviations']}")
+            if row["suggestions"]:
+                parts.append(f"\nSuggestions: {row['suggestions']}")
             content = "\n".join(parts)
     finally:
         conn.close()
