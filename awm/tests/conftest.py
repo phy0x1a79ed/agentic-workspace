@@ -44,6 +44,7 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.db.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.services.skills.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.sessions.MAIN_DIR", main_dir)
+    monkeypatch.setattr("awm.services.sessions.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.scopes.PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("awm.services.scopes.WORKSPACE_ROOT", workspace)
     monkeypatch.setattr("awm.services.scopes.DATA_DIR", data_dir)

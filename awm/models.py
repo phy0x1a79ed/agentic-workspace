@@ -80,40 +80,6 @@ class ScopeActionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Experiences
-# ---------------------------------------------------------------------------
-
-class ExperienceLogRequest(BaseModel):
-    project: str
-    scope: str
-    skill_path: str | None = None
-    outcome: str | None = None
-    summary: str
-    deviations: str | None = None
-    suggestions: str | None = None
-    agent_id: str = "unknown"
-
-
-class ExperienceEntry(BaseModel):
-    id: int
-    skill_path: str | None
-    skill_version: str | None
-    project: str
-    scope: str
-    agent_id: str
-    outcome: str | None
-    summary: str
-    deviations: str | None
-    suggestions: str | None
-    created_at: str
-
-
-class ExperienceListResponse(BaseModel):
-    experiences: list[ExperienceEntry]
-    total: int
-
-
-# ---------------------------------------------------------------------------
 # Artifacts
 # ---------------------------------------------------------------------------
 
@@ -252,6 +218,9 @@ class SessionLogCreateRequest(BaseModel):
     next_steps: list[str] = Field(default_factory=list)
     agent_id: str = "unknown"
     skill_path: str | None = None
+    outcome: str | None = None
+    deviations: str | None = None
+    suggestions: str | None = None
 
 
 class SessionLogEntry(BaseModel):
@@ -264,6 +233,10 @@ class SessionLogEntry(BaseModel):
     summary: str
     agent_id: str
     skill_path: str | None = None
+    outcome: str | None = None
+    deviations: str | None = None
+    suggestions: str | None = None
+    skill_version: str | None = None
 
 
 class SessionLogListResponse(BaseModel):
