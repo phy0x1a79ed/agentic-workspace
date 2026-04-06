@@ -1,6 +1,6 @@
 ---
 name: debrief
-tags: [session, completion, reflection, experience, debrief]
+tags: [session, completion, reflection, debrief]
 requires: []
 description: End-of-session debrief — log the session, register artifacts, refresh
 ---

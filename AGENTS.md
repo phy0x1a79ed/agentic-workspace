@@ -39,7 +39,6 @@ AWM is available as an MCP server. The `.mcp.json` at the workspace root registe
 | Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
 | Sessions | `session_log`, `session_list`, `session_get` |
 | Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
-| Experiences | `experience_log`, `experience_list` |
 | Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
@@ -54,7 +53,7 @@ awm scope list                                      # list active scopes
 awm project create <name> [--clone <url>]            # create a new project
 awm scope create <project> <scope> [--from <branch>] # create a scope
 awm scope complete <project> <scope> [--merge]       # complete a scope
-awm experience log <project> <scope> --summary "..." # log an experience
+awm session log <project> <scope> --summary "..."     # log a session (supports --outcome, --deviations, --suggestions)
 awm skill search <query>                             # search skills (keyword + semantic)
 ```
 

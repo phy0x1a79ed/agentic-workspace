@@ -20,7 +20,7 @@ projects/{project}/
   {scope}/                       # git worktree — agent CWD
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions
-      knowledge.md               # auto-generated: experiences + gotchas
+      knowledge.md               # auto-generated: session history + gotchas
       artifacts.md               # auto-generated: project artifact index
       data -> ../../../data/{project}/  # symlink to shared project data
       skills -> ../../../awm/skills/    # symlink to skill catalog
@@ -45,8 +45,8 @@ Skills are dynamic protocols that improve with use:
 - **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly)
 - Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy
 - `skills_search` combines keyword + semantic search (sentence-transformers embeddings)
-- **Experiences** are execution traces attached to skills — log what happened, deviations, and improvement suggestions
-- A dedicated `awm/skill-improvement` scope periodically reads experiences and revises skills
+- **Session logs** can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `session_log`
+- A dedicated `awm/skill-improvement` scope periodically reads session logs and revises skills
 
 ## Git Model
 
@@ -74,5 +74,5 @@ mamba run -n <project-env> pip install <package>
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
 2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
 3. **Don't edit `.awm/knowledge.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
-4. **Follow the debrief skill** when ending a session — log experiences, register artifacts, reflect.
+4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
 5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.

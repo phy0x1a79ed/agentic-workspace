@@ -179,7 +179,7 @@ The 3-level agent hierarchy (workspace / project / scope) is documented in the w
 
 ## MCP Server
 
-AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes tools covering skills, sessions, scopes, experiences, artifacts, projects, locks, messaging, agents, lifecycle, and status.
+AWM includes an MCP (Model Context Protocol) server for direct integration with Claude Code and other MCP clients. It exposes tools covering skills, sessions, scopes, artifacts, projects, locks, messaging, agents, lifecycle, and status.
 
 ### Setup
 
@@ -212,7 +212,6 @@ awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
 | Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
 | Sessions | `session_log`, `session_list`, `session_get` |
 | Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
-| Experiences | `experience_log`, `experience_list` |
 | Artifacts | `artifact_register`, `artifact_search`, `artifacts_sync` |
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
@@ -296,8 +295,7 @@ awm/                      # Git-tracked Python package
     scopes.py             # Scope CRUD (worktrees)
     locks.py              # Lock management
     skills.py             # Skills scanning + index generation
-    sessions.py           # Session log CRUD (DB + file + git)
-    experiences.py        # Experience logging (execution traces)
+    sessions.py           # Session log CRUD (includes experience tracking)
     artifacts.py          # Artifact registration + search
     embeddings.py         # Sentence-transformer embeddings
     shared_resources.py   # Outer-repo worktree flow
