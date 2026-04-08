@@ -237,10 +237,29 @@ class SessionLogEntry(BaseModel):
     deviations: str | None = None
     suggestions: str | None = None
     skill_version: str | None = None
+    resolved_at: str | None = None
+    resolution: str | None = None
+
+
+class SessionLogPreview(BaseModel):
+    id: int
+    project: str
+    scope: str
+    logged_at: str
+    summary: str
+    agent_id: str
+    skill_path: str | None = None
+    outcome: str | None = None
+    resolved_at: str | None = None
 
 
 class SessionLogListResponse(BaseModel):
     entries: list[SessionLogEntry]
+    total: int
+
+
+class SessionSearchResponse(BaseModel):
+    entries: list[SessionLogPreview]
     total: int
 
 

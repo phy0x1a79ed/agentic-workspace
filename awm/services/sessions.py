@@ -14,6 +14,8 @@ from awm.models import (
     SessionLogEntry,
     SessionLogListResponse,
     SessionLogContentResponse,
+    SessionLogPreview,
+    SessionSearchResponse,
 )
 
 
@@ -51,6 +53,8 @@ def _row_to_entry(row) -> SessionLogEntry:
         deviations=row["deviations"],
         suggestions=row["suggestions"],
         skill_version=row["skill_version"],
+        resolved_at=row["resolved_at"],
+        resolution=row["resolution"],
     )
 
 
@@ -153,6 +157,7 @@ def list_sessions(
     project: str | None = None,
     scope: str | None = None,
     skill_path: str | None = None,
+    status: str | None = None,
     limit: int = 50,
 ) -> SessionLogListResponse:
     """Query session logs with optional filters."""
@@ -169,6 +174,10 @@ def list_sessions(
         if skill_path:
             query += " AND skill_path = ?"
             params.append(skill_path)
+        if status == "open":
+            query += " AND resolved_at IS NULL"
+        elif status == "resolved":
+            query += " AND resolved_at IS NOT NULL"
         query += " ORDER BY logged_at DESC LIMIT ?"
         params.append(limit)
 
@@ -218,6 +227,81 @@ def get_session(session_id: int) -> SessionLogContentResponse:
         conn.close()
 
     return SessionLogContentResponse(entry=entry, content=content)
+
+
+def _row_to_preview(row) -> SessionLogPreview:
+    return SessionLogPreview(
+        id=row["id"],
+        project=row["project"],
+        scope=row["scope"],
+        logged_at=row["logged_at"],
+        summary=row["summary"],
+        agent_id=row["agent_id"],
+        skill_path=row["skill_path"],
+        outcome=row["outcome"],
+        resolved_at=row["resolved_at"],
+    )
+
+
+def resolve_session(session_id: int, resolution: str) -> SessionLogEntry:
+    """Mark a session log entry as resolved."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError(f"Session log {session_id} not found")
+        conn.execute(
+            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE id = ?",
+            (_now_iso(), resolution, session_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_entry(row)
+    finally:
+        conn.close()
+
+
+def search_sessions(
+    project: str | None = None,
+    scope: str | None = None,
+    skill_path: str | None = None,
+    query: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> SessionSearchResponse:
+    """Search session logs, returning previews (no content)."""
+    conn = get_connection()
+    try:
+        sql = "SELECT * FROM session_logs WHERE 1=1"
+        params: list = []
+        if project:
+            sql += " AND project = ?"
+            params.append(project)
+        if scope:
+            sql += " AND scope = ?"
+            params.append(scope)
+        if skill_path:
+            sql += " AND skill_path = ?"
+            params.append(skill_path)
+        if query:
+            sql += " AND (summary LIKE ? OR content LIKE ?)"
+            like = f"%{query}%"
+            params.extend([like, like])
+        if status == "open":
+            sql += " AND resolved_at IS NULL"
+        elif status == "resolved":
+            sql += " AND resolved_at IS NOT NULL"
+        sql += " ORDER BY logged_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        entries = [_row_to_preview(r) for r in rows]
+        return SessionSearchResponse(entries=entries, total=len(entries))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

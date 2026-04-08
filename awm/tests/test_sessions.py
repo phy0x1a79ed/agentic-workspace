@@ -351,3 +351,136 @@ class TestScopeSessions:
         result = scope_svc.list_scopes(status="all")
         for s in result.scopes:
             assert s.session >= 1
+
+
+class TestResolveSession:
+    def test_resolve_marks_entry(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Bug in parser",
+            issues=["Parser crashes on empty input"],
+        )
+        entry = sessions.log_session(req)
+        assert entry.resolved_at is None
+
+        resolved = sessions.resolve_session(entry.id, "Added empty input guard")
+        assert resolved.resolved_at is not None
+        assert resolved.resolution == "Added empty input guard"
+
+    def test_resolve_nonexistent_raises(self, awm_workspace):
+        with pytest.raises(FileNotFoundError):
+            sessions.resolve_session(99999, "n/a")
+
+    def test_re_resolve_updates(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Flaky test",
+        )
+        entry = sessions.log_session(req)
+        sessions.resolve_session(entry.id, "First fix")
+        updated = sessions.resolve_session(entry.id, "Better fix")
+        assert updated.resolution == "Better fix"
+
+
+class TestSearchSessions:
+    def test_search_by_query(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Parser bug fix",
+        ))
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Added logging",
+        ))
+        result = sessions.search_sessions(query="parser")
+        assert result.total == 1
+        assert result.entries[0].summary == "Parser bug fix"
+
+    def test_search_by_status_open(self, awm_workspace):
+        e1 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Open issue",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Resolved issue",
+        ))
+        sessions.resolve_session(e2.id, "Fixed")
+
+        result = sessions.search_sessions(status="open")
+        assert result.total == 1
+        assert result.entries[0].id == e1.id
+
+    def test_search_by_status_resolved(self, awm_workspace):
+        e1 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Open issue",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Resolved issue",
+        ))
+        sessions.resolve_session(e2.id, "Fixed")
+
+        result = sessions.search_sessions(status="resolved")
+        assert result.total == 1
+        assert result.entries[0].id == e2.id
+
+    def test_search_combined_filters(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Parser open",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Parser resolved",
+        ))
+        sessions.resolve_session(e2.id, "Fixed")
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-b", scope="scope-1", summary="Parser other project",
+        ))
+
+        result = sessions.search_sessions(project="proj-a", query="parser", status="open")
+        assert result.total == 1
+        assert result.entries[0].summary == "Parser open"
+
+    def test_search_returns_previews(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Test preview",
+        ))
+        result = sessions.search_sessions()
+        entry = result.entries[0]
+        assert hasattr(entry, "id")
+        assert hasattr(entry, "summary")
+        assert not hasattr(entry, "content")
+        assert not hasattr(entry, "resolution")
+
+
+class TestListSessionsStatus:
+    def test_list_status_open(self, awm_workspace):
+        e1 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Open",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Resolved",
+        ))
+        sessions.resolve_session(e2.id, "Done")
+
+        result = sessions.list_sessions(status="open")
+        assert result.total == 1
+        assert result.entries[0].id == e1.id
+
+    def test_list_status_resolved(self, awm_workspace):
+        e1 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Open",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Resolved",
+        ))
+        sessions.resolve_session(e2.id, "Done")
+
+        result = sessions.list_sessions(status="resolved")
+        assert result.total == 1
+        assert result.entries[0].id == e2.id
+
+    def test_list_default_returns_all(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Open",
+        ))
+        e2 = sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Resolved",
+        ))
+        sessions.resolve_session(e2.id, "Done")
+
+        result = sessions.list_sessions()
+        assert result.total == 2

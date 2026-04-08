@@ -20,7 +20,7 @@ projects/{project}/
   {scope}/                       # git worktree — agent CWD
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions
-      knowledge.md               # auto-generated: session history + gotchas
+      history.md                 # auto-generated: open/resolved session history
       artifacts.md               # auto-generated: project artifact index
       data -> ../../../data/{project}/  # symlink to shared project data
       skills -> ../../../awm/skills/    # symlink to skill catalog
@@ -32,7 +32,7 @@ Scopes access project data via `.awm/data/`. All scopes in the same project shar
 ## Scope Lifecycle
 
 1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
-2. **Startup**: Agent reads `.awm/context.md`, runs `awm_refresh`, reads `knowledge.md` + `artifacts.md`.
+2. **Startup**: Agent reads `.awm/context.md`, runs `awm_refresh`, reads `history.md` + `artifacts.md`.
 3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
 4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
 5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
@@ -73,6 +73,6 @@ mamba run -n <project-env> pip install <package>
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
 2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
-3. **Don't edit `.awm/knowledge.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
+3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
 4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
 5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.

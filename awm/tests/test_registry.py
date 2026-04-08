@@ -18,7 +18,9 @@ class TestMCPToolGeneration:
         assert "session_log" in names
         assert "session_list" in names
         assert "session_get" in names
-        assert len(names) == 3
+        assert "session_resolve" in names
+        assert "session_search" in names
+        assert len(names) == 5
 
     def test_session_log_schema(self):
         tools = operations_to_mcp_tools(SESSION_OPERATIONS)

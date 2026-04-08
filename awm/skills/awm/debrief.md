@@ -37,7 +37,21 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    In the rendered session log, `summary` becomes the `## Session Summary` paragraph and the repeated flags become bullet lists under `## Decisions Made`, `## Gotchas / Issues`, and `## Next Steps`.
 
-2. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
+2. **Resolve fixed issues.** Check for open session issues from prior sessions that were addressed this session. Search for open entries, then resolve any that are no longer relevant:
+
+   ```
+   session_search project={project} scope={scope} status=open
+   ```
+
+   For each issue that was fixed or is no longer relevant:
+
+   ```
+   session_resolve session_id={id} resolution="Fixed: brief description of what was done"
+   ```
+
+   Resolved entries will appear as compact one-liners in `history.md` (with their ID for later retrieval via `session_get`), while open entries remain fully visible. Skip this step if there are no prior open issues.
+
+3. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
 
    ```
    artifact_search project={project} scope={scope}
@@ -55,7 +69,7 @@ Run this protocol at the end of a work session when instructed to debrief.
    - Types: figure, dataset, report, model, script, other.
    - Skip this step if no artifacts were produced or changed.
 
-3. **Sync artifacts** so the registry reflects on-disk reality before closing out:
+4. **Sync artifacts** so the registry reflects on-disk reality before closing out:
 
    ```
    artifacts_sync
@@ -63,7 +77,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    This is lazy — a no-op when nothing has changed since the last sync — so it is safe to call on every debrief. When drift is detected it flips any artifact whose file has been deleted to `status='stale'` (hiding it from search), restores any that have reappeared, and prunes their embeddings. Pass `force=true` only if you deleted files out-of-band without any other DB write during this session.
 
-4. **Refresh** so the next session sees your contributions:
+5. **Refresh** so the next session sees your contributions:
 
    ```
    awm_refresh project={project} scope={scope}

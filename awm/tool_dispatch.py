@@ -193,7 +193,7 @@ TOOL_DEFINITIONS: list[Tool] = [
     # AWM Refresh
     Tool(
         name="awm_refresh",
-        description="Regenerate .awm/knowledge.md and .awm/artifacts.md for a scope from current DB state.",
+        description="Regenerate .awm/history.md and .awm/artifacts.md for a scope from current DB state.",
         inputSchema={
             "type": "object",
             "properties": {
