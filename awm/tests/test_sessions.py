@@ -38,6 +38,20 @@ class TestFormatEntry:
         text = sessions._format_entry(req, "2024-01-01T00:00:00+00:00")
         assert text.strip().endswith("---")
 
+    def test_entry_with_title(self):
+        req = SessionLogCreateRequest(
+            project="p", scope="t", summary="Did things",
+            title="Fix parser bug",
+        )
+        text = sessions._format_entry(req, "2024-06-15T12:00:00+00:00")
+        assert text.startswith("# Fix parser bug")
+        assert "Did things" in text
+
+    def test_entry_without_title_omits_heading(self):
+        req = SessionLogCreateRequest(project="p", scope="t", summary="Did things")
+        text = sessions._format_entry(req, "2024-06-15T12:00:00+00:00")
+        assert not text.lstrip().startswith("#")
+
     def test_entry_with_skill_path(self):
         req = SessionLogCreateRequest(
             project="p", scope="t", summary="s", skill_path="sops/debrief.md",
@@ -125,6 +139,17 @@ class TestLogSession:
         assert "## Suggestions" in detail.content
         assert "Add retry logic" in detail.content
 
+    def test_log_with_title(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Narrative summary",
+            title="Fix parser bug",
+        )
+        entry = sessions.log_session(req)
+        assert entry.title == "Fix parser bug"
+
+        detail = sessions.get_session(entry.id)
+        assert "# Fix parser bug" in detail.content
+
     def test_log_with_skill_captures_version(self, awm_workspace, monkeypatch):
         monkeypatch.setattr(
             "awm.services.sessions._get_skills_git_hash",
@@ -187,6 +212,16 @@ class TestGetSession:
     def test_get_nonexistent(self, awm_workspace):
         with pytest.raises(FileNotFoundError):
             sessions.get_session(99999)
+
+    def test_get_resolved_includes_resolution(self, awm_workspace):
+        req = SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Bug found",
+        )
+        entry = sessions.log_session(req)
+        sessions.resolve_session(entry.id, "Added input validation")
+        detail = sessions.get_session(entry.id)
+        assert "## Resolution" in detail.content
+        assert "Added input validation" in detail.content
 
 
 class TestMigrateExperiences:
@@ -433,6 +468,19 @@ class TestSearchSessions:
         result = sessions.search_sessions(project="proj-a", query="parser", status="open")
         assert result.total == 1
         assert result.entries[0].summary == "Parser open"
+
+    def test_search_matches_title(self, awm_workspace):
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Long narrative",
+            title="Fix parser crash",
+        ))
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary="Other work",
+            title="Add logging",
+        ))
+        result = sessions.search_sessions(query="parser")
+        assert result.total == 1
+        assert result.entries[0].title == "Fix parser crash"
 
     def test_search_returns_previews(self, awm_workspace):
         sessions.log_session(SessionLogCreateRequest(

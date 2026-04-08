@@ -19,6 +19,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    The call has two kinds of fields:
 
+   - **`title`** — a short one-line label (e.g. "Fixed parser crash on empty input"). Shown in `history.md` and search results. Keep it under ~80 characters.
    - **`summary`** — one free-form paragraph. This is the narrative reflection: outcome (success / partial / failure / abandoned), what went well, what didn't, and any deviations or suggestions for a skill you followed.
    - **`skill_path`** — the path of the skill you followed this session, if any (e.g. `awm/debrief.md`). Omit if no skill was followed.
    - **`--decision` / `--issue` / `--next-step`** — repeatable flags. Each occurrence appends **one bullet** to a structured list that a future session will read back. Use one flag per discrete item; do **not** cram multiple items into one string.
@@ -31,6 +32,7 @@ Run this protocol at the end of a work session when instructed to debrief.
    ```
    session_log project=my-proj scope=add-normalization \
      skill_path="awm/debrief.md" \
+     title="Quantile normalization for batches 1-2, batch 3 blocked on missing values" \
      summary="Partial success. Quantile normalization worked on batches 1-2, but batch 3 has too many missing values to normalize directly. Debrief skill was clear, no deviations." \
      --decision "Use quantile normalization for cross-sample comparability" \
      --decision "Defer batch 3 handling until imputation strategy is chosen" \

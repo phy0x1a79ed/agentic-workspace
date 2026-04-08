@@ -47,6 +47,7 @@ def _row_to_entry(row) -> SessionLogEntry:
         git_commit=row["git_commit"],
         logged_at=row["logged_at"],
         summary=row["summary"],
+        title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
         outcome=row["outcome"],
@@ -61,13 +62,16 @@ def _row_to_entry(row) -> SessionLogEntry:
 def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
     """Format a session log entry as markdown."""
     date_str = logged_at[:10]
-    lines = [
-        f"\n**Date:** {date_str}",
+    lines = []
+    if req.title:
+        lines.extend([f"# {req.title}", ""])
+    lines.extend([
+        f"**Date:** {date_str}",
         "",
         f"**Scope:** {req.project}/{req.scope}",
         "",
         f"**Agent:** {req.agent_id}",
-    ]
+    ])
     if req.skill_path:
         lines.extend(["", f"**Skill:** {req.skill_path}"])
     if req.outcome:
@@ -127,13 +131,14 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
             """
             INSERT INTO session_logs
                 (project, scope, file_path, git_commit, logged_at, summary,
-                 agent_id, metadata, content, skill_path,
+                 title, agent_id, metadata, content, skill_path,
                  outcome, deviations, suggestions, skill_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (req.project, req.scope, "", None, logged_at,
-             req.summary, req.agent_id, metadata, content, req.skill_path,
-             req.outcome, req.deviations, req.suggestions, skill_version),
+             req.summary, req.title, req.agent_id, metadata, content,
+             req.skill_path, req.outcome, req.deviations, req.suggestions,
+             skill_version),
         )
         conn.commit()
         row = conn.execute(
@@ -226,7 +231,18 @@ def get_session(session_id: int) -> SessionLogContentResponse:
     finally:
         conn.close()
 
+    if entry.resolved_at:
+        content += f"\n## Resolution\n\n**Resolved:** {entry.resolved_at[:10]}\n\n{entry.resolution}\n"
+
     return SessionLogContentResponse(entry=entry, content=content)
+
+
+def _display_title(row) -> str:
+    """Return the title if set, otherwise truncate summary to 80 chars."""
+    if row["title"]:
+        return row["title"]
+    s = row["summary"]
+    return s[:80] + "…" if len(s) > 80 else s
 
 
 def _row_to_preview(row) -> SessionLogPreview:
@@ -236,6 +252,7 @@ def _row_to_preview(row) -> SessionLogPreview:
         scope=row["scope"],
         logged_at=row["logged_at"],
         summary=row["summary"],
+        title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
         outcome=row["outcome"],
@@ -288,9 +305,9 @@ def search_sessions(
             sql += " AND skill_path = ?"
             params.append(skill_path)
         if query:
-            sql += " AND (summary LIKE ? OR content LIKE ?)"
+            sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
             like = f"%{query}%"
-            params.extend([like, like])
+            params.extend([like, like, like])
         if status == "open":
             sql += " AND resolved_at IS NULL"
         elif status == "resolved":

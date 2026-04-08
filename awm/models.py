@@ -213,6 +213,7 @@ class SessionLogCreateRequest(BaseModel):
     project: str
     scope: str
     summary: str
+    title: str | None = None
     decisions: list[str] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
@@ -231,6 +232,7 @@ class SessionLogEntry(BaseModel):
     git_commit: str | None = None
     logged_at: str
     summary: str
+    title: str | None = None
     agent_id: str
     skill_path: str | None = None
     outcome: str | None = None
@@ -247,6 +249,7 @@ class SessionLogPreview(BaseModel):
     scope: str
     logged_at: str
     summary: str
+    title: str | None = None
     agent_id: str
     skill_path: str | None = None
     outcome: str | None = None

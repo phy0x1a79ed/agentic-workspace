@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS session_logs (
     skill_version TEXT,
     resolved_at TEXT,
     resolution TEXT,
+    title TEXT,
     UNIQUE(project, scope, logged_at, agent_id)
 );
 
@@ -308,6 +309,9 @@ DROP TABLE IF EXISTS experiences;
     (14, 15): """\
 ALTER TABLE session_logs ADD COLUMN resolved_at TEXT;
 ALTER TABLE session_logs ADD COLUMN resolution TEXT;
+""",
+    (15, 16): """\
+ALTER TABLE session_logs ADD COLUMN title TEXT;
 """,
 }
 
