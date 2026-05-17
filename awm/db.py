@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -124,6 +124,22 @@ CREATE TABLE IF NOT EXISTS config (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    agent_cli TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    exited_at TEXT,
+    exit_code INTEGER,
+    log_path TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, scope);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -312,6 +328,22 @@ ALTER TABLE session_logs ADD COLUMN resolution TEXT;
 """,
     (15, 16): """\
 ALTER TABLE session_logs ADD COLUMN title TEXT;
+""",
+    (16, 17): """\
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    agent_cli TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    exited_at TEXT,
+    exit_code INTEGER,
+    log_path TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, scope);
 """,
 }
 

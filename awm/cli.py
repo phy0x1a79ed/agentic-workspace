@@ -28,12 +28,14 @@ scope_app = typer.Typer(help="Scope management", no_args_is_help=True)
 lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
 shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
 skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
+exposed_app = typer.Typer(help="Network-exposed listener admin", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
 app.add_typer(lock_app, name="lock")
 app.add_typer(shared_app, name="shared")
 app.add_typer(skill_app, name="skill")
+app.add_typer(exposed_app, name="exposed")
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +120,80 @@ def serve():
     """Run the AWM server in the foreground."""
     from awm.server import run_server
     run_server()
+
+
+@app.command("serve-exposed")
+def serve_exposed():
+    """Run the network-exposed HTTPS listener (separate from local core).
+
+    Reads bind/port from AWM_EXPOSED_HOST / AWM_EXPOSED_PORT (default
+    127.0.0.1:7820). Enables TLS if AWM_TLS_CERT and AWM_TLS_KEY are set.
+    Requires an auth token in $AWM_AUTH_TOKEN or AUTH_TOKEN_FILE
+    (default ~/.awm/auth.token) — generate one with ``awm exposed init-token``.
+    """
+    from awm.exposed import run_exposed_server
+    run_exposed_server()
+
+
+@exposed_app.command("init-token")
+def exposed_init_token(
+    force: bool = typer.Option(False, "--force", help="Overwrite existing token"),
+):
+    """Generate a random bearer token and write it to AUTH_TOKEN_FILE.
+
+    Prints the token once. The file is chmod 600. Rotate later by re-running
+    with --force; the listener picks up the change on the next request.
+    """
+    import secrets
+    from awm import config as _config
+
+    path = _config.AUTH_TOKEN_FILE
+    if path.exists() and not force:
+        typer.echo(
+            f"Token file already exists at {path}. Use --force to overwrite.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    token = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    typer.echo(f"Token written to {path}")
+    typer.echo(f"Token: {token}")
+    typer.echo("Use as: Authorization: Bearer <token>")
+
+
+@exposed_app.command("status")
+def exposed_status():
+    """Check the exposed listener via /status (no auth required for ping)."""
+    from awm import config as _config
+    import json as _json
+
+    # Try TLS first if cert configured, else plain.
+    scheme = "https" if _config.TLS_CERT else "http"
+    url = f"{scheme}://{_config.EXPOSED_HOST}:{_config.EXPOSED_PORT}/status"
+    token_env = os.environ.get(_config.AUTH_TOKEN_ENV)
+    token_file = _config.AUTH_TOKEN_FILE
+    token = None
+    if token_env:
+        token = token_env.strip()
+    elif token_file.exists():
+        token = token_file.read_text().strip()
+
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        r = httpx.get(url, headers=headers, timeout=5, verify=False)
+    except httpx.HTTPError as exc:
+        typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    typer.echo(_json.dumps(r.json(), indent=2))
 
 
 @app.command()

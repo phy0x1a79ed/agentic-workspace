@@ -345,3 +345,38 @@ class AgentSpawnResponse(BaseModel):
     pid: int
     agent_cli: str
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Agent Sessions (live, tracked, addressable)
+# ---------------------------------------------------------------------------
+
+class AgentSessionCreateRequest(BaseModel):
+    project: str
+    scope: str
+    prompt: str | None = None
+    agent_cli: str | None = None  # defaults to "claude"
+
+
+class AgentSessionInfo(BaseModel):
+    id: int
+    project: str
+    scope: str
+    pid: int
+    status: str  # starting|running|stopping|exited|killed|orphaned
+    agent_cli: str
+    started_at: str
+    exited_at: str | None = None
+    exit_code: int | None = None
+    attached: bool = False
+
+
+class AgentSessionListResponse(BaseModel):
+    sessions: list[AgentSessionInfo]
+    total: int
+
+
+class AgentSessionActionResponse(BaseModel):
+    id: int
+    status: str
+    message: str

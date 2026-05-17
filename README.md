@@ -247,6 +247,102 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
 
+## Network-Exposed Listener (HTTPS + WebSocket)
+
+The default `awm serve` listener is local-only (`127.0.0.1:7819`, no auth). A
+separate `awm serve-exposed` listener exposes the REST surface over HTTPS
+with bearer-token auth, plus a tracked-Claude-session subsystem for remote
+control:
+
+| Method | Path                              | Notes                                  |
+|--------|-----------------------------------|----------------------------------------|
+| POST   | `/agent-sessions`                 | Spawn a `claude` session in a scope    |
+| GET    | `/agent-sessions`                 | List sessions (filter by project/scope/status) |
+| GET    | `/agent-sessions/{id}`            | Status + pid + exit info               |
+| POST   | `/agent-sessions/{id}/stop`       | Graceful SIGTERM                       |
+| POST   | `/agent-sessions/{id}/kill`       | SIGKILL                                |
+| GET    | `/agent-sessions/{id}/log`        | Tail the session's stderr log          |
+| WS     | `/agent-sessions/{id}/chat`       | Bidirectional stream-json chat         |
+| —      | (all existing routes)             | Same as local, plus auth + dest. gate  |
+
+### Enable on a host
+
+```bash
+# 1. Generate a bearer token (chmod 600, prints once)
+awm exposed init-token
+
+# 2. Generate a self-signed cert for LAN / Tailscale use
+mkdir -p ~/.awm/tls
+openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
+    -keyout ~/.awm/tls/key.pem -out ~/.awm/tls/cert.pem \
+    -subj "/CN=$(hostname)"
+
+# 3. Install the systemd unit (one-time)
+cp deploy/awm-exposed.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now awm-exposed.service
+
+# 4. Verify
+awm exposed status
+```
+
+### Auth
+
+Every request needs `Authorization: Bearer <token>`. The token comes from
+`$AWM_AUTH_TOKEN` (preferred) or the file at `$AWM_AUTH_TOKEN_FILE`
+(default: `~/.awm/auth.token`). Rotation is just `echo newtoken > ~/.awm/auth.token`
+— the listener picks up the change on the next request, no restart.
+
+WebSocket clients authenticate via the `Sec-WebSocket-Protocol: bearer.<token>`
+subprotocol (browsers can't set arbitrary headers on the WS handshake) or a
+`?token=<token>` query string.
+
+### Destructive operations
+
+`POST /projects` and `DELETE /scopes/{p}/{s}` are 403'd by default. Set
+`AWM_ALLOW_DESTRUCTIVE=1` in the environment to permit them. No restart
+needed — re-read each request.
+
+### Calling it
+
+```bash
+TOKEN=$(cat ~/.awm/auth.token)
+
+# Health check
+curl -k -H "Authorization: Bearer $TOKEN" https://localhost:7820/status
+
+# Spawn a Claude session in awm/remote-api
+curl -k -H "Authorization: Bearer $TOKEN" \
+     -X POST https://localhost:7820/agent-sessions \
+     -H "Content-Type: application/json" \
+     -d '{"project":"awm","scope":"remote-api","prompt":"summarize objectives.md"}'
+# → {"id":1,"pid":12345,"status":"running",...}
+
+# List
+curl -k -H "Authorization: Bearer $TOKEN" https://localhost:7820/agent-sessions
+
+# Stream chat (uses websocat)
+websocat -k -H "Sec-WebSocket-Protocol: bearer.$TOKEN" \
+    wss://localhost:7820/agent-sessions/1/chat
+
+# Stop / kill
+curl -k -H "Authorization: Bearer $TOKEN" \
+     -X POST https://localhost:7820/agent-sessions/1/stop
+```
+
+### Audit log
+
+Every authenticated mutating request appends one JSON line to
+`~/.awm/access.log`: `{ts, ip, method, path, status, latency_ms}`. Prompts
+and message bodies are deliberately not logged.
+
+### Co-existence with the local core
+
+Both listeners can run simultaneously. They share the SQLite database and
+the same `awm/services/*` layer, but each has its own PID file
+(`awm.pid` / `awm-exposed.pid`), log file, and systemd unit. If the
+exposed listener crashes, the local IPC path keeps working.
+
 ## Locking Protocol
 
 1. **Acquire** before accessing shared resources
