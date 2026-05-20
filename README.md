@@ -343,6 +343,96 @@ the same `awm/services/*` layer, but each has its own PID file
 (`awm.pid` / `awm-exposed.pid`), log file, and systemd unit. If the
 exposed listener crashes, the local IPC path keeps working.
 
+## Federation: Networked Workspaces
+
+Two or more awm instances can be linked so cross-machine messaging and
+read-only searches work without leaving the awm shell. Each peer keeps
+its own SQLite database — federation is an explicit-registry routing
+layer, not a shared database.
+
+### Set up a peer pair
+
+On each host (assumes both have run `deploy/install.sh`):
+
+```bash
+# 1. Give this instance a stable identity
+awm peer init dev-bare --advertise-url https://10.243.0.4:7820
+
+# 2. Register the other side. Token-file is a path that contains the
+#    REMOTE host's bearer token (so this host can authenticate to it).
+awm peer add dev-xaw https://10.243.0.5:7820 \
+    --token-file ~/.awm/peers/dev-xaw.token
+
+# 3. Verify
+awm peer ping dev-xaw          # echoes peer_id, updates last_seen
+awm peer list                  # JSON of registered peers
+awm peer whoami                # this instance's identity
+```
+
+Repeat in reverse on the other host. Discovery is explicit — no gossip,
+no auto-pairing.
+
+### Cross-host messaging
+
+Append `@<peer-id>` to any scope address to route the operation to that
+peer:
+
+```bash
+# bare → xaw
+awm inbox send scope:awm/remote-api@dev-xaw \
+    --sender opal --subject "ping" --body "hello xaw"
+
+# On xaw, the message lands locally with sender = peer:dev-bare/opal
+ssh xaw awm inbox fetch scope:awm/remote-api
+```
+
+The outbound peer's bearer (read from the registered `token_path`) is
+sent in `Authorization`; the local instance's `peer_id` is sent in
+`X-Awm-From`. The receiving end re-writes `sender` to
+`peer:<from-peer-id>/<original-sender>` before storing.
+
+`inbox fetch` and `inbox search` reject `@<peer-id>` scope addresses —
+fetching from a remote peer goes through `ssh <peer> awm inbox fetch ...`
+for now. Federated read fan-out is implemented for skills (see below);
+inbox fan-out is on the roadmap.
+
+### Federated find
+
+The `--peer` flag on read commands queries across the peer set and tags
+each result with its origin:
+
+```bash
+# Search just one remote peer
+awm skill search "annotation" --peer dev-xaw
+
+# Fan out to every registered peer
+awm skill list --peer all
+```
+
+A peer that times out (default 5s) lands in a `degraded: [...]` field
+in the response; the command still exits 0 with whatever did succeed.
+
+### Inbound peer auth
+
+The exposed listener trusts whatever bearer it accepts for that host;
+`X-Awm-From` is the origin claim used for audit + sender rewriting. The
+receiver verifies the claimed peer-id is in its registry — unknown
+peer-ids get a 400. Audit lines (`~/.awm/access.log`) tag federated
+calls with `peer_id`, operator calls with `peer_id: null`.
+
+### Sync source between peers during development
+
+`deploy/sync-to-peer.sh <host>` rsyncs the package + `pip install -e`
+on the remote. `--restart` adds a `systemctl --user restart` on the
+peer. Used as the inner loop while iterating on the federation code.
+
+### End-to-end validation
+
+`deploy/v0_e2e.sh` runs the 14-check validation against a paired
+`xaw` peer: source parity, peer ping both directions, message
+round-trip with sender prefixes, audit log, federated skill search,
+and the degraded-then-recovered path.
+
 ## Locking Protocol
 
 1. **Acquire** before accessing shared resources

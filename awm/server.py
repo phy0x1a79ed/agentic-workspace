@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from awm import __version__
 from awm.config import (
@@ -158,6 +158,92 @@ def get_status():
         active_scopes=scope_result.total,
         active_shared_edits=active_edits,
     )
+
+
+# ---------------------------------------------------------------------------
+# Peer identity (federation)
+# ---------------------------------------------------------------------------
+
+@app.get("/peer")
+def get_peer_identity():
+    """Return the local peer_id + advertise_url, or 404 if `awm peer init`
+    has not been run on this instance. Used by remote peers to verify they
+    are talking to the right host."""
+    from awm.services.network.peers import get_local_identity, LocalIdentityError
+    try:
+        ident = get_local_identity()
+    except LocalIdentityError as exc:
+        raise HTTPException(500, str(exc))
+    if ident is None:
+        raise HTTPException(404, "local peer identity not configured")
+    return ident
+
+
+# ---------------------------------------------------------------------------
+# Inbox (federated entry point — remote peers POST here)
+# ---------------------------------------------------------------------------
+
+@app.post("/inbox")
+def post_inbox(request: Request, payload: dict):
+    """Receive a federated message from a remote peer.
+
+    The remote awm forwards a MessageSendRequest body here; the local
+    inbox stores it after rewriting the sender to include the origin
+    peer_id (extracted from X-Awm-From by middleware).
+    """
+    from awm.services import messaging
+    from awm.models import MessageSendRequest
+
+    origin_peer = getattr(request.state, "from_peer", None)
+    body = dict(payload)
+    if origin_peer:
+        original_sender = body.get("sender", "unknown")
+        body["sender"] = f"peer:{origin_peer}/{original_sender}"
+
+    try:
+        req = MessageSendRequest(**body)
+    except Exception as exc:
+        raise HTTPException(400, f"invalid message body: {exc}")
+
+    try:
+        return messaging.send_message(req)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/messages")
+def get_messages_search(
+    scope: str | None = None,
+    status: str | None = None,
+    msg_type: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+):
+    from awm.services import messaging
+    try:
+        return messaging.search_messages(
+            scope=scope, status=status, msg_type=msg_type, query=query, limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/messages/fetch")
+def get_messages_fetch(
+    scope: str,
+    status: str | None = None,
+    msg_type: str | None = None,
+    limit: int = 50,
+    mark_read: bool = False,
+):
+    from awm.services import messaging
+    try:
+        return messaging.fetch_messages(
+            scope=scope, status=status, msg_type=msg_type,
+            limit=limit, mark_read=mark_read,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 # ---------------------------------------------------------------------------

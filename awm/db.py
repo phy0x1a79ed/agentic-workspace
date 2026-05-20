@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -140,6 +140,15 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, scope);
+
+CREATE TABLE IF NOT EXISTS peers (
+    peer_id TEXT PRIMARY KEY,
+    base_url TEXT NOT NULL,
+    token_path TEXT NOT NULL,
+    friendly_name TEXT,
+    last_seen TEXT,
+    added_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -344,6 +353,16 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, scope);
+""",
+    (17, 18): """\
+CREATE TABLE IF NOT EXISTS peers (
+    peer_id TEXT PRIMARY KEY,
+    base_url TEXT NOT NULL,
+    token_path TEXT NOT NULL,
+    friendly_name TEXT,
+    last_seen TEXT,
+    added_at TEXT NOT NULL
+);
 """,
 }
 

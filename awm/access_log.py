@@ -30,7 +30,14 @@ def record(
     status_code: int,
     latency_ms: float,
     session_id: int | None = None,
+    peer_id: str | None = None,
 ) -> None:
+    """Append one JSON line to the access log.
+
+    ``peer_id`` is non-None when the inbound request carried a valid
+    ``X-Awm-From`` header (a federated call from a registered peer); None
+    for operator calls.
+    """
     line = json.dumps(
         {
             "ts": _ts(),
@@ -40,6 +47,7 @@ def record(
             "status": status_code,
             "latency_ms": round(latency_ms, 2),
             "session_id": session_id,
+            "peer_id": peer_id,
         },
         separators=(",", ":"),
     )

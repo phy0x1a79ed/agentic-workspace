@@ -131,6 +131,7 @@ async def middleware(request: Request, call_next):
             path=request.url.path,
             status_code=response.status_code,
             latency_ms=elapsed_ms,
+            peer_id=getattr(request.state, "from_peer", None),
         )
 
     return response
@@ -299,7 +300,13 @@ async def gate_and_auth_for_core(request: Request, call_next):
     """Enforce auth + destructive gate for routes that fall through to the
     mounted core app. Routes defined directly on the exposed app already use
     Depends(require_bearer) per-route; this middleware is for everything
-    else (proxied through the mount)."""
+    else (proxied through the mount).
+
+    Also handles peer-aware identity: if ``X-Awm-From`` is set to a known
+    peer-id, ``request.state.from_peer`` is populated so /inbox can prefix
+    the stored sender. Unknown peer-ids are 4xx'd rather than silently
+    accepted, to avoid spoofing of un-registered origins.
+    """
     path = request.url.path
 
     # The exposed app's own /agent-sessions routes already use Depends auth.
@@ -316,6 +323,20 @@ async def gate_and_auth_for_core(request: Request, call_next):
     expected = load_token()
     if not expected or not token or not _hmac.compare_digest(token, expected):
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+
+    # Peer-origin identification. We trust the bearer; X-Awm-From is the
+    # origin claim used for sender-prefixing and audit. If the peer-id is
+    # not in our registry, refuse — spoofing of an unknown origin shouldn't
+    # silently succeed.
+    from_peer_header = request.headers.get("x-awm-from")
+    if from_peer_header:
+        from awm.services.network import peers as _peers
+        if _peers.get_peer(from_peer_header) is None:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"unknown peer in X-Awm-From: {from_peer_header}"},
+            )
+        request.state.from_peer = from_peer_header
 
     # Destructive gate
     if _is_destructive(request.method, path):

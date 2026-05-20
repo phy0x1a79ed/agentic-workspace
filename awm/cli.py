@@ -29,6 +29,8 @@ lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
 shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
 skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
 exposed_app = typer.Typer(help="Network-exposed listener admin", no_args_is_help=True)
+peer_app = typer.Typer(help="Federation: manage remote awm peers", no_args_is_help=True)
+inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
@@ -36,6 +38,8 @@ app.add_typer(lock_app, name="lock")
 app.add_typer(shared_app, name="shared")
 app.add_typer(skill_app, name="skill")
 app.add_typer(exposed_app, name="exposed")
+app.add_typer(peer_app, name="peer")
+app.add_typer(inbox_app, name="inbox")
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +205,148 @@ def status():
     """Show server health + active locks + scopes summary."""
     r = _api("GET", "/status")
     _print_json(r)
+
+
+# ---------------------------------------------------------------------------
+# Peer (federation)
+# ---------------------------------------------------------------------------
+
+@peer_app.command("init")
+def peer_init(
+    peer_id: str = typer.Argument(..., help="Stable identifier for this awm instance"),
+    advertise_url: str = typer.Option(..., "--advertise-url",
+                                       help="Base URL peers should use to reach this host"),
+    overwrite: bool = typer.Option(False, "--overwrite",
+                                    help="Replace an existing identity file"),
+):
+    """Set the local peer identity (writes config.PEER_FILE)."""
+    from awm.services.network import peers as peer_svc
+    try:
+        data = peer_svc.set_local_identity(peer_id, advertise_url, overwrite=overwrite)
+    except peer_svc.LocalIdentityError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    import json as _json
+    typer.echo(_json.dumps(data, indent=2))
+
+
+@peer_app.command("add")
+def peer_add(
+    peer_id: str = typer.Argument(..., help="Remote peer's identifier"),
+    base_url: str = typer.Argument(..., help="Remote awm base URL (https://...)"),
+    token_file: str = typer.Option(..., "--token-file",
+                                    help="Path to the bearer token file for this peer"),
+    friendly_name: str = typer.Option(None, "--name", help="Optional friendly name"),
+):
+    """Register a remote awm peer in the local registry."""
+    from awm.services.network import peers as peer_svc
+    try:
+        entry = peer_svc.add_peer(peer_id, base_url, token_file, friendly_name=friendly_name)
+    except (ValueError, FileNotFoundError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    import json as _json
+    typer.echo(_json.dumps(entry, indent=2))
+
+
+@peer_app.command("list")
+def peer_list():
+    """List registered remote peers."""
+    from awm.services.network import peers as peer_svc
+    import json as _json
+    typer.echo(_json.dumps(peer_svc.list_peers(), indent=2))
+
+
+@peer_app.command("remove")
+def peer_remove(peer_id: str = typer.Argument(...)):
+    """Remove a registered peer."""
+    from awm.services.network import peers as peer_svc
+    if not peer_svc.remove_peer(peer_id):
+        typer.echo(f"no such peer: {peer_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"removed peer: {peer_id}")
+
+
+@peer_app.command("ping")
+def peer_ping(
+    peer_id: str = typer.Argument(...),
+    timeout: float = typer.Option(5.0, "--timeout"),
+):
+    """Probe a peer's /peer endpoint, verify identity, and update last_seen."""
+    from awm.services.network import peers as peer_svc
+    import json as _json
+    result = peer_svc.ping_peer(peer_id, timeout=timeout)
+    typer.echo(_json.dumps(dict(result), indent=2))
+    if not result.get("ok"):
+        raise typer.Exit(1)
+
+
+@inbox_app.command("send")
+def inbox_send(
+    scope: str = typer.Argument(..., help="Target scope, e.g. 'scope:foo/bar' or 'scope:foo/bar@dev-xaw'"),
+    subject: str = typer.Option(..., "--subject"),
+    body: str = typer.Option(..., "--body"),
+    sender: str = typer.Option("operator", "--sender"),
+    msg_type: str = typer.Option("notification", "--type",
+                                  help="One of: scope_assignment, reflection, status_update, notification, plan"),
+    metadata: str = typer.Option(None, "--metadata", help="Optional JSON-encoded metadata"),
+):
+    """Send a message. With ``@<peer-id>`` suffix, routes to the remote peer."""
+    payload = {
+        "scope": scope, "sender": sender, "msg_type": msg_type,
+        "subject": subject, "body": body, "metadata": metadata,
+    }
+    r = _api("POST", "/inbox", json=payload)
+    _print_json(r)
+
+
+@inbox_app.command("fetch")
+def inbox_fetch(
+    scope: str = typer.Argument(..., help="Scope to fetch"),
+    mark_read: bool = typer.Option(False, "--mark-read"),
+    limit: int = typer.Option(50, "--limit"),
+):
+    """Fetch full messages from a scope (local only — no @peer routing)."""
+    params = {"scope": scope, "mark_read": str(mark_read).lower(), "limit": limit}
+    r = _api("GET", "/messages/fetch", params=params)
+    _print_json(r)
+
+
+@inbox_app.command("search")
+def inbox_search(
+    scope: str = typer.Option(None, "--scope"),
+    status: str = typer.Option(None, "--status"),
+    msg_type: str = typer.Option(None, "--type"),
+    query: str = typer.Option(None, "--query"),
+    limit: int = typer.Option(50, "--limit"),
+):
+    """Search message previews (local only — no @peer routing)."""
+    params = {}
+    for k, v in (("scope", scope), ("status", status), ("msg_type", msg_type),
+                 ("query", query), ("limit", limit)):
+        if v is not None:
+            params[k] = v
+    r = _api("GET", "/messages", params=params)
+    _print_json(r)
+
+
+@peer_app.command("whoami")
+def peer_whoami():
+    """Show this instance's local peer identity (or report 'unset')."""
+    from awm.services.network import peers as peer_svc
+    import json as _json
+    try:
+        ident = peer_svc.get_local_identity()
+    except peer_svc.LocalIdentityError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+    if ident is None:
+        typer.echo("local peer identity is unset — run `awm peer init`", err=True)
+        raise typer.Exit(1)
+    typer.echo(_json.dumps(ident, indent=2))
 
 
 @app.command()
@@ -496,35 +642,64 @@ def shared_list(
 # Skill commands
 # ---------------------------------------------------------------------------
 
+def _resolve_peer_set(peer_flag: str | None) -> list[str] | None:
+    """Translate a --peer flag into a list of peer_ids, or None for local-only.
+
+    ``--peer all`` returns every registered peer; ``--peer <id>`` returns
+    just that peer (verifies it exists); absent flag returns None.
+    """
+    if not peer_flag:
+        return None
+    from awm.services.network import peers as _peers
+    if peer_flag == "all":
+        return [p["peer_id"] for p in _peers.list_peers()]
+    if _peers.get_peer(peer_flag) is None:
+        typer.echo(f"error: unknown peer '{peer_flag}'", err=True)
+        raise typer.Exit(2)
+    return [peer_flag]
+
+
 @skill_app.command("list")
 def skill_list(
     type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
     tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
+    peer: Optional[str] = typer.Option(None, "--peer",
+                                        help="Federate: 'all' or a peer-id. Excludes local."),
 ):
-    """List all skills in the catalog."""
+    """List all skills in the catalog. With --peer, fetches from remote peers."""
     params = {}
     if type:
         params["type"] = type
     if tags:
         params["tags"] = tags
-    r = _api("GET", "/skills", params=params)
 
-    data = r.json()
-    if r.status_code >= 400:
-        typer.echo(f"Error: {data}", err=True)
-        raise typer.Exit(1)
+    peer_ids = _resolve_peer_set(peer)
+    if peer_ids is not None:
+        from awm.services.network import federation as _fed
+        data = _fed.fan_out_get(peer_ids, "/skills", params, result_key="skills")
+    else:
+        r = _api("GET", "/skills", params=params)
+        if r.status_code >= 400:
+            typer.echo(f"Error: {r.text}", err=True)
+            raise typer.Exit(1)
+        data = r.json()
 
     skills = data["skills"]
     if not skills:
         typer.echo("(no skills found)")
+        if data.get("degraded"):
+            typer.echo(f"degraded peers: {data['degraded']}", err=True)
         return
 
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35}")
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
     for s in skills:
         tags_str = ", ".join(s.get("tags", []))
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35}")
+        origin = s.get("origin_peer_id", "local")
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
     typer.echo(f"\nTotal: {data['total']} skill(s)")
+    if data.get("degraded"):
+        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
 
 
 @skill_app.command("get")
@@ -543,25 +718,37 @@ def skill_get(
 @skill_app.command("search")
 def skill_search(
     query: str = typer.Argument(..., help="Search query"),
+    peer: Optional[str] = typer.Option(None, "--peer",
+                                        help="Federate: 'all' or a peer-id. Excludes local."),
 ):
-    """Search skills by name, tags, description, or content."""
-    r = _api("GET", "/skills/search", params={"q": query})
-
-    data = r.json()
-    if r.status_code >= 400:
-        typer.echo(f"Error: {data}", err=True)
-        raise typer.Exit(1)
+    """Search skills by name, tags, description, or content. With --peer,
+    fan out to remote peers and tag each result with its origin."""
+    peer_ids = _resolve_peer_set(peer)
+    if peer_ids is not None:
+        from awm.services.network import federation as _fed
+        data = _fed.fan_out_get(peer_ids, "/skills/search", {"q": query}, result_key="skills")
+    else:
+        r = _api("GET", "/skills/search", params={"q": query})
+        if r.status_code >= 400:
+            typer.echo(f"Error: {r.text}", err=True)
+            raise typer.Exit(1)
+        data = r.json()
 
     skills = data["skills"]
     if not skills:
         typer.echo("(no matching skills)")
+        if data.get("degraded"):
+            typer.echo(f"degraded peers: {data['degraded']}", err=True)
         return
 
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'FILE':<35}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<35}")
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'FILE':<35} {'PEER':<10}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<35} {'----':<10}")
     for s in skills:
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {s['file_path']:<35}")
+        origin = s.get("origin_peer_id", "local")
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {s['file_path']:<35} {origin:<10}")
     typer.echo(f"\nTotal: {data['total']} match(es)")
+    if data.get("degraded"):
+        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
 
 
 # ---------------------------------------------------------------------------
