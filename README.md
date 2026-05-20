@@ -161,21 +161,31 @@ inbox_recipients
 
 **Message types**: `scope_assignment`, `reflection`, `status_update`, `notification`, `plan`
 
-### Agent Spawning
+### Rooms (agent orchestration)
 
-The workspace agent can delegate work by spawning fire-and-forget agent subprocesses:
+Agents are driven via **rooms** — multi-participant conversations that
+serialize input into a scope's claude session and broadcast its output
+back to all participants. A scope can be in multiple rooms; one process
+per `(project, scope)` is enforced. Use `awm room` CLI or `room_*` MCP
+tools (see `## Rooms` below for the full surface).
 
 ```bash
-# Spawn an agent on a scope (via MCP tool)
-agent_spawn project=myproject scope=analysis-v1 prompt="Implement feature X"
+# One-off: spawn an agent, post a prompt, auto-close when it exits
+awm room one-off --scope awm/my-scope --prompt "summarize objectives.md"
 
-# The prompt is automatically sent to the scope's inbox as a 'plan' message
-# The agent runs detached, logging output to the scope worktree
+# Long-running room with a specific topic
+awm room create --topic "research" --scope awm/my-scope --prompt "start"
+awm room post <name> "another message"
+awm room join <name>            # terminal-attached WS subscriber
+awm room close <name> --kill-agents
 ```
 
-Supported CLIs: `opencode` (default, interactive TUI) and `claude` (non-interactive `--print` mode). The default is configurable via the `agent_cli` key in the config table.
+Only `claude` is supported as the agent CLI (it's the only one with
+duplex stream-json). Concurrent rooms feeding the same scope serialize
+inputs in FIFO order with `[room:X from:Y]` framing on stdin.
 
-The 3-level agent hierarchy (workspace / project / scope) is documented in the workspace-level `AGENTS.md`.
+The 3-level agent hierarchy (workspace / project / scope) is documented
+in the workspace-level `AGENTS.md`.
 
 ## MCP Server
 
@@ -216,7 +226,7 @@ awm-mcp    # starts stdio MCP server (used by MCP clients, not interactive)
 | Projects | `project_create` |
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
-| Agents | `agent_spawn` |
+| Rooms | `room_create`, `room_list`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close` |
 | Lifecycle | `awm_status`, `awm_restart`, `awm_refresh` |
 
 ## REST API
@@ -247,23 +257,17 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
 
-## Network-Exposed Listener (HTTPS + WebSocket)
+## Network-Exposed Listener
 
-The default `awm serve` listener is local-only (`127.0.0.1:7819`, no auth). A
-separate `awm serve-exposed` listener exposes the REST surface over HTTPS
-with bearer-token auth, plus a tracked-Claude-session subsystem for remote
-control:
+The default `awm serve` listener is local-only (`127.0.0.1:7819`, no
+auth). A separate `awm serve-exposed` listener exposes a bearer-auth'd
+REST + WebSocket surface for everything that needs to leave the local
+process — federation, the rooms surface, and the browser UI.
 
-| Method | Path                              | Notes                                  |
-|--------|-----------------------------------|----------------------------------------|
-| POST   | `/agent-sessions`                 | Spawn a `claude` session in a scope    |
-| GET    | `/agent-sessions`                 | List sessions (filter by project/scope/status) |
-| GET    | `/agent-sessions/{id}`            | Status + pid + exit info               |
-| POST   | `/agent-sessions/{id}/stop`       | Graceful SIGTERM                       |
-| POST   | `/agent-sessions/{id}/kill`       | SIGKILL                                |
-| GET    | `/agent-sessions/{id}/log`        | Tail the session's stderr log          |
-| WS     | `/agent-sessions/{id}/chat`       | Bidirectional stream-json chat         |
-| —      | (all existing routes)             | Same as local, plus auth + dest. gate  |
+Inter-peer traffic flows over **SSH tunnels** (see `## Federation`
+below), so the exposed listener defaults to **plain HTTP bound to
+`127.0.0.1`**. TLS is optional (`AWM_TLS_CERT`/`AWM_TLS_KEY`) for the
+rare case where a browser sits on a different host than awm-exposed.
 
 ### Enable on a host
 
@@ -271,31 +275,28 @@ control:
 # 1. Generate a bearer token (chmod 600, prints once)
 awm exposed init-token
 
-# 2. Generate a self-signed cert for LAN / Tailscale use
-mkdir -p ~/.awm/tls
-openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
-    -keyout ~/.awm/tls/key.pem -out ~/.awm/tls/cert.pem \
-    -subj "/CN=$(hostname)"
-
-# 3. Install the systemd unit (one-time)
+# 2. Install the systemd unit (one-time)
 cp deploy/awm-exposed.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now awm-exposed.service
 
-# 4. Verify
+# 3. Verify
 awm exposed status
 ```
 
 ### Auth
 
-Every request needs `Authorization: Bearer <token>`. The token comes from
-`$AWM_AUTH_TOKEN` (preferred) or the file at `$AWM_AUTH_TOKEN_FILE`
-(default: `~/.awm/auth.token`). Rotation is just `echo newtoken > ~/.awm/auth.token`
-— the listener picks up the change on the next request, no restart.
+Every request needs `Authorization: Bearer <token>`. Token sources, in
+order: `$AWM_AUTH_TOKEN` env, file at `$AWM_AUTH_TOKEN_FILE`
+(default `~/.awm/auth.token`). Rotation is `echo newtoken >
+~/.awm/auth.token` — the listener mtime-caches and picks up the change
+on the next request, no restart.
 
-WebSocket clients authenticate via the `Sec-WebSocket-Protocol: bearer.<token>`
-subprotocol (browsers can't set arbitrary headers on the WS handshake) or a
-`?token=<token>` query string.
+WebSocket clients authenticate via the
+`Sec-WebSocket-Protocol: bearer.<token>` subprotocol (browsers can't set
+arbitrary headers on the WS handshake) or a `?token=<token>` query
+string. The optional `X-Awm-From` (peer-origin claim) and `X-Awm-As`
+(user identity claim) headers tag federated requests for audit.
 
 ### Destructive operations
 
@@ -303,52 +304,87 @@ subprotocol (browsers can't set arbitrary headers on the WS handshake) or a
 `AWM_ALLOW_DESTRUCTIVE=1` in the environment to permit them. No restart
 needed — re-read each request.
 
-### Calling it
-
-```bash
-TOKEN=$(cat ~/.awm/auth.token)
-
-# Health check
-curl -k -H "Authorization: Bearer $TOKEN" https://localhost:7820/status
-
-# Spawn a Claude session in awm/remote-api
-curl -k -H "Authorization: Bearer $TOKEN" \
-     -X POST https://localhost:7820/agent-sessions \
-     -H "Content-Type: application/json" \
-     -d '{"project":"awm","scope":"remote-api","prompt":"summarize objectives.md"}'
-# → {"id":1,"pid":12345,"status":"running",...}
-
-# List
-curl -k -H "Authorization: Bearer $TOKEN" https://localhost:7820/agent-sessions
-
-# Stream chat (uses websocat)
-websocat -k -H "Sec-WebSocket-Protocol: bearer.$TOKEN" \
-    wss://localhost:7820/agent-sessions/1/chat
-
-# Stop / kill
-curl -k -H "Authorization: Bearer $TOKEN" \
-     -X POST https://localhost:7820/agent-sessions/1/stop
-```
-
 ### Audit log
 
-Every authenticated mutating request appends one JSON line to
-`~/.awm/access.log`: `{ts, ip, method, path, status, latency_ms}`. Prompts
-and message bodies are deliberately not logged.
+Every authenticated mutating request to the mounted core surface
+appends one JSON line to `~/.awm/access.log`:
+`{ts, ip, method, path, status, latency_ms, peer_id}`. Prompts and
+message bodies are deliberately not logged.
 
 ### Co-existence with the local core
 
-Both listeners can run simultaneously. They share the SQLite database and
-the same `awm/services/*` layer, but each has its own PID file
+Both listeners can run simultaneously. They share the SQLite database
+and the same `awm/services/*` layer, but each has its own PID file
 (`awm.pid` / `awm-exposed.pid`), log file, and systemd unit. If the
 exposed listener crashes, the local IPC path keeps working.
 
+## Rooms
+
+Rooms are awm's multi-participant conversation primitive — humans,
+agents (scopes), and other peers can all be participants. Output from
+an agent fans out to every room the scope is in; input from any
+participant is serialized into the agent's stdin with
+`[room:<name> from:<author>]` framing.
+
+| Method | Path                            | Notes                                  |
+|--------|---------------------------------|----------------------------------------|
+| POST   | `/rooms`                        | Create a room (optional scopes/prompts/close_on_exit) |
+| GET    | `/rooms`                        | List rooms (`?status`, `?participating_scope`, `?peer=all\|<id>`) |
+| GET    | `/rooms/{id}`                   | Room + participants + recent transcript |
+| GET    | `/rooms/{id}/history`           | Longer transcript slice (`?limit_chars`, `?before_ts`) |
+| GET    | `/rooms/search`                 | Search by topic / id / transcript (`?q`, `?peer=all\|<id>`) |
+| POST   | `/rooms/{id}/posts`             | Post a message (`{body, kind?, to?}`)  |
+| POST   | `/rooms/{id}/invite`            | Add a scope (spawns agent if needed)   |
+| POST   | `/rooms/{id}/remove`            | Remove a scope (agent keeps running)   |
+| POST   | `/rooms/{id}/close`             | Close (optionally `--kill-agents`)     |
+| WS     | `/rooms/{id}/attach`            | Subscriber WS — JSON envelope protocol |
+
+Room names are auto-generated `verb-noun` pairs (`babbling-brook`,
+`flowing-mountain`, …) from a ~2500-entry pool, with `-2`, `-3`, …
+suffixes on collision.
+
+The WS envelope is documented in code (`awm/ws_envelope.py`); inbound
+shapes are `{type: post|control|ping}`, outbound are
+`{type: history|post|participant_joined|participant_left|room_closed|upstream_disconnected|lagged|error|pong}`.
+
+### CLI
+
+```bash
+awm room create [--topic T] [--scope SCOPE]... [--prompt SCOPE=TEXT]... [--close-on-exit]
+awm room list   [--peer all|<id>] [--status active]
+awm room get    <name>[@peer]
+awm room history <name>[@peer] [--limit-chars N]
+awm room search "<query>" [--peer all]
+awm room post   <name>[@peer] <text> [--to <scope>]
+awm room invite <name>[@peer] --scope <scope> [--prompt ...]
+awm room remove <name>[@peer] --scope <scope>
+awm room close  <name>[@peer] [--kill-agents]
+awm room join   <name>[@peer]   # terminal-attached WS
+awm room one-off --scope <scope> --prompt "..."   # create + close-on-exit
+```
+
+`@peer` suffix routes to a remote peer via the SSH tunnel; queries
+without `@` hit the local exposed listener.
+
+### Browser UI
+
+`http://<host>:7820/ui/room.html#token=<bearer>&as=<user>&peer=<id>` —
+single-file vanilla-JS dashboard for searching rooms, joining one,
+reading the transcript live, and posting/inviting. Token + identity
+go in the URL hash so they never reach server logs.
+
 ## Federation: Networked Workspaces
 
-Two or more awm instances can be linked so cross-machine messaging and
-read-only searches work without leaving the awm shell. Each peer keeps
-its own SQLite database — federation is an explicit-registry routing
-layer, not a shared database.
+Two or more awm instances can be linked so cross-machine messaging,
+read-only searches, and rooms work without leaving the awm shell.
+Each peer keeps its own SQLite database — federation is an explicit-
+registry routing layer, not a shared database.
+
+**Transport: SSH tunnels.** awm opens a ControlMaster-pooled
+`ssh -fN -L <ephemeral>:127.0.0.1:7820 <alias>` to each peer on demand
+(socket at `$AWM_DIR/ssh/peer-<id>.sock`, persisted for 10m of idle).
+All HTTP and WebSocket traffic to a peer runs through this tunnel —
+no TLS certs, no public ports.
 
 ### Set up a peer pair
 
@@ -356,21 +392,26 @@ On each host (assumes both have run `deploy/install.sh`):
 
 ```bash
 # 1. Give this instance a stable identity
-awm peer init dev-bare --advertise-url https://10.243.0.4:7820
+awm peer init dev-bare
 
-# 2. Register the other side. Token-file is a path that contains the
-#    REMOTE host's bearer token (so this host can authenticate to it).
-awm peer add dev-xaw https://10.243.0.5:7820 \
-    --token-file ~/.awm/peers/dev-xaw.token
+# 2. Register the other side. The bearer token file is the REMOTE host's
+#    auth.token (so this host can authenticate to it). It's copied into a
+#    canonical location at $AWM_DIR/peers/<id>.token.
+awm peer add dev-xaw --ssh-alias xaw --remote-port 7820 \
+    --token-file /path/to/dev-xaw-auth.token
 
-# 3. Verify
-awm peer ping dev-xaw          # echoes peer_id, updates last_seen
-awm peer list                  # JSON of registered peers
-awm peer whoami                # this instance's identity
+# 3. Verify (opens the tunnel, echoes peer_id, updates last_seen)
+awm peer ping dev-xaw
+awm peer list
+awm peer whoami
 ```
 
-Repeat in reverse on the other host. Discovery is explicit — no gossip,
-no auto-pairing.
+`--ssh-alias` is whatever you'd `ssh <alias>` to reach the peer (uses
+`~/.ssh/config`). If one peer can't ssh to the other directly
+(e.g. WSL2 NAT), register that side with an empty `--ssh-alias` and a
+`--remote-port` pointing at an out-of-band reverse forward (e.g.
+`ssh -fN -R 7821:127.0.0.1:7820 <other-host>` maintained from the
+reachable side).
 
 ### Cross-host messaging
 
@@ -412,6 +453,23 @@ awm skill list --peer all
 A peer that times out (default 5s) lands in a `degraded: [...]` field
 in the response; the command still exits 0 with whatever did succeed.
 
+### Cross-peer rooms
+
+```bash
+# Search rooms across all registered peers
+awm room search "topic" --peer all
+
+# Operate on a remote-hosted room (read, post, close) over the tunnel
+awm room get <name>@dev-xaw
+awm room post <name>@dev-xaw "hello from here"
+awm room join <name>@dev-xaw      # WS attached via the tunnel
+```
+
+Posts forwarded to a remote room are tagged
+`user:<as>@<origin-peer-id>` on the host side. The cross-peer agent-
+input path (room hosted on peer A, agent process on peer B) is wired
+via `forward_agent_input` + `/rooms/internal/agent-input`.
+
 ### Inbound peer auth
 
 The exposed listener trusts whatever bearer it accepts for that host;
@@ -428,10 +486,13 @@ peer. Used as the inner loop while iterating on the federation code.
 
 ### End-to-end validation
 
-`deploy/v0_e2e.sh` runs the 14-check validation against a paired
-`xaw` peer: source parity, peer ping both directions, message
-round-trip with sender prefixes, audit log, federated skill search,
-and the degraded-then-recovered path.
+`deploy/v0_rooms.sh` runs the rooms + tunnel validation against a
+paired `xaw` peer: tunnel up + ping both directions, rooms CRUD,
+cross-peer search/get/post, multi-subscriber WS attach with backlog
+replay, localhost binding (negative), schema/scope-unique guarantees.
+
+`deploy/v0_e2e.sh` is the legacy federation-only suite (messaging +
+skill search) — kept for regression checks.
 
 ## Locking Protocol
 

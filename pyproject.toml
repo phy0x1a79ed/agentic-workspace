@@ -13,6 +13,7 @@ dependencies = [
     "httpx",
     "mcp[cli]",
     "pyyaml",
+    "websockets",
 ]
 
 [tool.setuptools.packages.find]
@@ -20,6 +21,7 @@ include = ["awm*"]
 
 [tool.setuptools.package-data]
 "awm.skills" = ["**/*.md", "**/*.template"]
+"awm.static" = ["*.html", "*.css", "*.js"]
 
 [project.optional-dependencies]
 test = [

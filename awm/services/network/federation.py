@@ -1,9 +1,11 @@
 """Outbound federation: forward operations that target ``...@<peer>`` to the
-matching remote awm instance.
+matching remote awm instance over an SSH-tunneled HTTP connection.
 
 Only the operations that the plan calls out are routed:
 - ``send_message`` (inbox_send to a remote scope)
-- Read fan-out for ``--peer all`` / ``--peer <id>`` (separate helper, M5)
+- Read fan-out for ``--peer all`` / ``--peer <id>``
+- Room operations (post / join / leave / search) — added in M3
+- Cross-host agent input (room here, agent there) — added in M3
 
 The local awm peer identity (loaded once per call) is sent in
 ``X-Awm-From`` so the remote can audit-tag and sender-rewrite.
@@ -14,6 +16,7 @@ from __future__ import annotations
 import httpx
 
 from awm.services.network import peers as peer_svc
+from awm.services.network import ssh_tunnel
 
 
 class FederationError(Exception):
@@ -46,10 +49,16 @@ def _local_peer_id() -> str:
 
 
 def _resolve(peer_id: str) -> tuple[str, str]:
-    peer = peer_svc.get_peer(peer_id)
-    if peer is None:
+    """Open (or reuse) the SSH tunnel to peer_id and return
+    (local_base_url, bearer_token). Raises if the peer is unknown or
+    the tunnel cannot be established."""
+    if peer_svc.get_peer(peer_id) is None:
         raise UnknownPeerError(f"unknown peer: {peer_id}")
-    return peer["base_url"].rstrip("/"), peer_svc.load_peer_token(peer_id)
+    try:
+        tun = ssh_tunnel.acquire_tunnel(peer_id)
+    except ssh_tunnel.TunnelError as exc:
+        raise PeerCallError(f"could not tunnel to peer {peer_id}: {exc}") from exc
+    return tun.local_url, peer_svc.load_peer_token(peer_id)
 
 
 def forward_send(target_peer_id: str, payload: dict, timeout: float = 10.0) -> dict:
@@ -71,7 +80,6 @@ def forward_send(target_peer_id: str, payload: dict, timeout: float = 10.0) -> d
             json=payload,
             headers=headers,
             timeout=timeout,
-            verify=False,
         )
     except httpx.HTTPError as exc:
         raise PeerCallError(f"could not reach peer {target_peer_id}: {exc}") from exc
@@ -105,7 +113,7 @@ def _peer_get(peer_id: str, path: str, params: dict | None, timeout: float) -> t
     try:
         r = httpx.get(
             f"{base_url}{path}", params=params, headers=headers,
-            timeout=timeout, verify=False,
+            timeout=timeout,
         )
     except httpx.HTTPError as exc:
         return (peer_id, None, f"{exc.__class__.__name__}: {exc}")
@@ -146,3 +154,142 @@ def fan_out_get(
                 it = {**it, "origin_peer_id": pid}
             merged.append(it)
     return {result_key: merged, "total": len(merged), "degraded": degraded}
+
+
+# ---------------------------------------------------------------------------
+# Room federation forwards (M3)
+# ---------------------------------------------------------------------------
+
+def forward_room_list(peer_id: str, *,
+                      status: str = "active",
+                      participating_scope: str | None = None,
+                      limit: int = 100,
+                      timeout: float = 5.0) -> dict:
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+    }
+    params: dict = {"status": status, "limit": limit}
+    if participating_scope:
+        params["participating_scope"] = participating_scope
+    try:
+        r = httpx.get(f"{base_url}/rooms", params=params, headers=headers,
+                      timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
+                            status_code=r.status_code)
+    return r.json()
+
+
+def forward_room_search(peer_id: str, query: str, *,
+                        limit: int = 20,
+                        timeout: float = 5.0) -> dict:
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+    }
+    try:
+        r = httpx.get(f"{base_url}/rooms/search",
+                      params={"q": query, "limit": limit},
+                      headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
+                            status_code=r.status_code)
+    return r.json()
+
+
+def forward_room_post(peer_id: str, room_id: str, *,
+                      body: str, kind: str = "text",
+                      author: str | None = None,
+                      to_scope: str | None = None,
+                      timeout: float = 5.0) -> dict:
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+        "Content-Type": "application/json",
+    }
+    if author:
+        headers["X-Awm-As"] = author
+    payload = {"body": body, "kind": kind}
+    if to_scope:
+        payload["to"] = to_scope
+    try:
+        r = httpx.post(f"{base_url}/rooms/{room_id}/posts",
+                       json=payload, headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}: {r.text[:200]}",
+                            status_code=r.status_code)
+    return r.json()
+
+
+def forward_room_join(peer_id: str, room_id: str, *,
+                      timeout: float = 5.0) -> dict:
+    """Register *this* peer as a shadow_peer participant on a remote room."""
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+        "Content-Type": "application/json",
+    }
+    try:
+        r = httpx.post(f"{base_url}/rooms/{room_id}/shadow-join",
+                       json={"peer_id": _local_peer_id()},
+                       headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
+                            status_code=r.status_code)
+    return r.json()
+
+
+def forward_room_leave(peer_id: str, room_id: str, *,
+                       timeout: float = 5.0) -> dict:
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+        "Content-Type": "application/json",
+    }
+    try:
+        r = httpx.post(f"{base_url}/rooms/{room_id}/shadow-leave",
+                       json={"peer_id": _local_peer_id()},
+                       headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
+                            status_code=r.status_code)
+    return r.json()
+
+
+def forward_agent_input(peer_id: str, room_id: str, scope: str, *,
+                        body: str, author: str,
+                        timeout: float = 5.0) -> dict:
+    """Push a single input frame to a remote scope (for the case where
+    the room is hosted here but the agent lives on ``peer_id``)."""
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+        "Content-Type": "application/json",
+    }
+    payload = {"scope": scope, "room_id": room_id, "body": body, "author": author}
+    try:
+        r = httpx.post(f"{base_url}/rooms/internal/agent-input",
+                       json=payload, headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
+    if r.status_code != 200:
+        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
+                            status_code=r.status_code)
+    return r.json()

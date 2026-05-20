@@ -31,6 +31,7 @@ skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
 exposed_app = typer.Typer(help="Network-exposed listener admin", no_args_is_help=True)
 peer_app = typer.Typer(help="Federation: manage remote awm peers", no_args_is_help=True)
 inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_help=True)
+room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
@@ -40,6 +41,7 @@ app.add_typer(skill_app, name="skill")
 app.add_typer(exposed_app, name="exposed")
 app.add_typer(peer_app, name="peer")
 app.add_typer(inbox_app, name="inbox")
+app.add_typer(room_app, name="room")
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +99,92 @@ def _print_json(r: httpx.Response):
     data = r.json()
     import json
     typer.echo(json.dumps(data, indent=2))
+
+
+def _exposed_base_and_token() -> tuple[str, str]:
+    """Resolve the local exposed URL + bearer token for /rooms calls."""
+    from awm import config
+    host = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    port = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
+    base = f"http://{host}:{port}"
+    token_env = os.environ.get("AWM_AUTH_TOKEN")
+    if token_env:
+        return base, token_env.strip()
+    candidates = [
+        Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))),
+        Path.home() / ".awm" / "auth.token",
+        config.AUTH_TOKEN_FILE,
+    ]
+    for token_path in candidates:
+        if token_path.exists():
+            return base, token_path.read_text().strip()
+    raise typer.BadParameter(
+        f"auth token not found in any of: {[str(p) for p in candidates]}; "
+        f"run `awm exposed init-token`"
+    )
+
+
+def _split_remote(name: str) -> tuple[str, str | None]:
+    if "@" in name:
+        base, peer = name.rsplit("@", 1)
+        return base, peer
+    return name, None
+
+
+def _exposed_api(method: str, path: str, *,
+                 peer: str | None = None, **kwargs) -> httpx.Response:
+    """Hit a /rooms-style endpoint on the local awm-exposed.
+
+    ``peer`` is reserved for fan-out queries (``--peer all|<id>``) and is
+    passed through as a ``?peer`` query param — the local exposed app's
+    list/search endpoints handle the tunnel + result merging internally.
+    """
+    base, token = _exposed_base_and_token()
+    headers = kwargs.pop("headers", {}) or {}
+    headers["Authorization"] = f"Bearer {token}"
+    if peer:
+        params = kwargs.pop("params", {}) or {}
+        params["peer"] = peer
+        kwargs["params"] = params
+    r = httpx.request(method, f"{base}{path}", headers=headers, timeout=30, **kwargs)
+    return r
+
+
+def _peer_direct_api(method: str, peer_id: str, path: str, **kwargs) -> httpx.Response:
+    """Hit a peer's awm-exposed endpoint *directly* through an SSH tunnel.
+
+    Use this for ``room@peer`` semantics where we want the remote peer to
+    own the operation (e.g. ``awm room post name@xaw`` should make the
+    post land on xaw's transcript, not be forwarded via our local rooms
+    service)."""
+    from awm.services.network import ssh_tunnel
+    from awm.services.network import peers as peer_svc
+    try:
+        tun = ssh_tunnel.acquire_tunnel(peer_id)
+    except ssh_tunnel.TunnelError as exc:
+        raise typer.BadParameter(f"could not tunnel to {peer_id}: {exc}")
+    try:
+        token = peer_svc.load_peer_token(peer_id)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise typer.BadParameter(str(exc))
+    headers = kwargs.pop("headers", {}) or {}
+    headers["Authorization"] = f"Bearer {token}"
+    from awm.services.network import peers as _peers
+    local = _peers.get_local_identity()
+    if local:
+        headers["X-Awm-From"] = local["peer_id"]
+    r = httpx.request(method, f"{tun.local_url}{path}", headers=headers, timeout=30, **kwargs)
+    return r
+
+
+def _api_for_room(method: str, name: str, suffix: str, **kwargs) -> httpx.Response:
+    """Route a room CLI op to either local or via-tunnel based on @peer."""
+    base, peer = _split_remote(name)
+    if peer:
+        return _peer_direct_api(method, peer, f"/rooms/{base}{suffix}", **kwargs)
+    return _exposed_api(method, f"/rooms/{base}{suffix}", **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +302,8 @@ def status():
 @peer_app.command("init")
 def peer_init(
     peer_id: str = typer.Argument(..., help="Stable identifier for this awm instance"),
-    advertise_url: str = typer.Option(..., "--advertise-url",
-                                       help="Base URL peers should use to reach this host"),
+    advertise_url: str = typer.Option(None, "--advertise-url",
+                                       help="Optional cosmetic URL (transport is SSH-tunneled)"),
     overwrite: bool = typer.Option(False, "--overwrite",
                                     help="Replace an existing identity file"),
 ):
@@ -236,15 +324,27 @@ def peer_init(
 @peer_app.command("add")
 def peer_add(
     peer_id: str = typer.Argument(..., help="Remote peer's identifier"),
-    base_url: str = typer.Argument(..., help="Remote awm base URL (https://...)"),
+    ssh_alias: str = typer.Option("", "--ssh-alias",
+                                  help="SSH host alias (omit/empty = loopback mode: peer already reachable on 127.0.0.1:--remote-port via an out-of-band reverse forward)"),
+    remote_port: int = typer.Option(7820, "--remote-port",
+                                    help="Port to reach the peer's awm-exposed on (default 7820); in loopback mode this is the local 127.0.0.1 port"),
     token_file: str = typer.Option(..., "--token-file",
-                                    help="Path to the bearer token file for this peer"),
+                                    help="Path to the bearer token file (copied to canonical location)"),
     friendly_name: str = typer.Option(None, "--name", help="Optional friendly name"),
 ):
-    """Register a remote awm peer in the local registry."""
+    """Register a remote awm peer reachable via an SSH alias.
+
+    The local peer opens a port-forwarded SSH ControlMaster on first use;
+    all federation HTTP and WebSocket traffic runs through it.
+    """
     from awm.services.network import peers as peer_svc
     try:
-        entry = peer_svc.add_peer(peer_id, base_url, token_file, friendly_name=friendly_name)
+        peer_svc.install_peer_token(peer_id, token_file)
+        entry = peer_svc.add_peer(
+            peer_id, ssh_alias,
+            remote_port=remote_port,
+            friendly_name=friendly_name,
+        )
     except (ValueError, FileNotFoundError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2)
@@ -330,6 +430,245 @@ def inbox_search(
         if v is not None:
             params[k] = v
     r = _api("GET", "/messages", params=params)
+    _print_json(r)
+
+
+@room_app.command("create")
+def room_create(
+    topic: str = typer.Option(None, "--topic", help="Optional human-readable topic"),
+    scope: list[str] = typer.Option(
+        None, "--scope",
+        help="Scope to enroll (project/scope[@peer]); repeatable",
+    ),
+    prompt: list[str] = typer.Option(
+        None, "--prompt",
+        help="Initial prompt per scope, as SCOPE=text; repeatable. Bare text "
+             "(no '=') applies to the first --scope.",
+    ),
+    close_on_exit: bool = typer.Option(False, "--close-on-exit"),
+):
+    """Create a room and (optionally) spawn agents on the given scopes."""
+    prompts: dict[str, str] = {}
+    if prompt:
+        for p in prompt:
+            if "=" in p:
+                key, _, val = p.partition("=")
+                prompts[key.strip()] = val
+            elif scope:
+                prompts[scope[0]] = p
+    payload = {
+        "topic": topic, "scopes": scope or [], "prompts": prompts,
+        "close_on_exit": close_on_exit,
+    }
+    r = _exposed_api("POST", "/rooms", json=payload)
+    _print_json(r)
+
+
+@room_app.command("list")
+def room_list(
+    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
+    status: str = typer.Option("active", "--status"),
+    participating_scope: str = typer.Option(None, "--participating-scope"),
+):
+    """List rooms (locally or across peers)."""
+    params = {"status": status}
+    if participating_scope:
+        params["participating_scope"] = participating_scope
+    if peer:
+        params["peer"] = peer
+    r = _exposed_api("GET", "/rooms", params=params)
+    _print_json(r)
+
+
+@room_app.command("get")
+def room_get(name: str = typer.Argument(...)):
+    """Show room details, participants, and recent transcript."""
+    r = _api_for_room("GET", name, "")
+    _print_json(r)
+
+
+@room_app.command("history")
+def room_history(
+    name: str = typer.Argument(...),
+    before_ts: str = typer.Option(None, "--before"),
+    limit_chars: int = typer.Option(4096, "--limit-chars"),
+):
+    """Get a longer slice of the room's transcript."""
+    params = {"limit_chars": limit_chars}
+    if before_ts:
+        params["before_ts"] = before_ts
+    r = _api_for_room("GET", name, "/history", params=params)
+    _print_json(r)
+
+
+@room_app.command("search")
+def room_search(
+    query: str = typer.Argument(...),
+    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
+    limit: int = typer.Option(20, "--limit"),
+):
+    """Search rooms by topic / id / transcript content."""
+    params = {"q": query, "limit": limit}
+    if peer:
+        params["peer"] = peer
+    r = _exposed_api("GET", "/rooms/search", params=params)
+    _print_json(r)
+
+
+@room_app.command("post")
+def room_post(
+    name: str = typer.Argument(...),
+    text: str = typer.Argument(...),
+    to_scope: str = typer.Option(None, "--to", help="Direct-address a scope"),
+):
+    """Post a message to a room (as the local operator)."""
+    r = _api_for_room("POST", name, "/posts", json={"body": text, "to": to_scope})
+    _print_json(r)
+
+
+@room_app.command("invite")
+def room_invite(
+    name: str = typer.Argument(...),
+    scope: str = typer.Option(..., "--scope"),
+    prompt: str = typer.Option(None, "--prompt"),
+):
+    """Invite a scope (agent) into a room."""
+    r = _api_for_room(
+        "POST", name, "/invite",
+        json={"scope": scope, "prompt": prompt},
+    )
+    _print_json(r)
+
+
+@room_app.command("remove")
+def room_remove(
+    name: str = typer.Argument(...),
+    scope: str = typer.Option(..., "--scope"),
+):
+    """Remove a scope from a room (doesn't kill the agent process)."""
+    r = _api_for_room("POST", name, "/remove", json={"scope": scope})
+    _print_json(r)
+
+
+@room_app.command("close")
+def room_close(
+    name: str = typer.Argument(...),
+    kill_agents: bool = typer.Option(False, "--kill-agents"),
+):
+    """Close a room (optionally SIGTERM all participant agents)."""
+    r = _api_for_room(
+        "POST", name, "/close", json={"kill_agents": kill_agents},
+    )
+    _print_json(r)
+
+
+@room_app.command("join")
+def room_join(
+    name: str = typer.Argument(...),
+    quiet: bool = typer.Option(False, "--quiet",
+                                help="Skip the interactive prompt; just stream events"),
+):
+    """Attach to a room's WebSocket — stream events to stdout, accept
+    stdin lines as posts. Terminates on Ctrl-D / Ctrl-C."""
+    import asyncio
+    import json as _json
+    import threading
+    import websockets as _ws
+
+    base_name, peer = _split_remote(name)
+    if peer:
+        from awm.services.network import ssh_tunnel
+        from awm.services.network import peers as peer_svc
+        try:
+            tun = ssh_tunnel.acquire_tunnel(peer)
+        except ssh_tunnel.TunnelError as exc:
+            raise typer.BadParameter(f"could not tunnel to {peer}: {exc}")
+        token = peer_svc.load_peer_token(peer)
+        base_url = tun.local_url
+    else:
+        base_url, token = _exposed_base_and_token()
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
+    uri = f"{ws_url}/rooms/{base_name}/attach"
+
+    async def runner():
+        async with _ws.connect(uri, subprotocols=[f"bearer.{token}"]) as ws:
+            stop = asyncio.Event()
+
+            async def reader():
+                try:
+                    async for raw in ws:
+                        try:
+                            ev = _json.loads(raw)
+                        except _json.JSONDecodeError:
+                            continue
+                        t = ev.get("type")
+                        if t == "history":
+                            for p in ev.get("posts", []):
+                                typer.echo(f"[{p['ts']}] {p['author']}: {p['body']}")
+                        elif t == "post":
+                            p = ev["post"]
+                            typer.echo(f"[{p['ts']}] {p['author']}: {p['body']}")
+                        elif t == "participant_joined":
+                            typer.echo(f"-- {ev['participant']['kind']}:"
+                                       f"{ev['participant']['identifier']} joined --")
+                        elif t == "participant_left":
+                            typer.echo(f"-- {ev['participant']['kind']}:"
+                                       f"{ev['participant']['identifier']} left --")
+                        elif t == "room_closed":
+                            typer.echo(f"-- room closed @ {ev['ts']} --")
+                            stop.set()
+                            return
+                        elif t == "lagged":
+                            typer.echo("-- lagged; closing --", err=True)
+                            stop.set()
+                            return
+                        elif t == "error":
+                            typer.echo(f"-- error: {ev.get('message')}", err=True)
+                except _ws.ConnectionClosed:
+                    pass
+                stop.set()
+
+            async def writer():
+                loop = asyncio.get_event_loop()
+                if quiet:
+                    await stop.wait()
+                    return
+                while not stop.is_set():
+                    try:
+                        line = await loop.run_in_executor(None, sys.stdin.readline)
+                    except KeyboardInterrupt:
+                        break
+                    if not line:  # EOF
+                        break
+                    text = line.rstrip("\n")
+                    if not text:
+                        continue
+                    try:
+                        await ws.send(_json.dumps({"type": "post", "body": text}))
+                    except _ws.ConnectionClosed:
+                        break
+                stop.set()
+
+            await asyncio.gather(reader(), writer())
+
+    try:
+        asyncio.run(runner())
+    except KeyboardInterrupt:
+        pass
+
+
+@room_app.command("one-off")
+def room_one_off(
+    scope: str = typer.Option(..., "--scope"),
+    prompt: str = typer.Option(..., "--prompt"),
+    topic: str = typer.Option(None, "--topic"),
+):
+    """Sugar for ``create --scope ... --prompt ... --close-on-exit``."""
+    payload = {
+        "topic": topic, "scopes": [scope], "prompts": {scope: prompt},
+        "close_on_exit": True,
+    }
+    r = _exposed_api("POST", "/rooms", json=payload)
     _print_json(r)
 
 

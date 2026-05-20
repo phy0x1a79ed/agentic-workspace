@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 22
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -140,15 +140,52 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, scope);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_unique
+    ON agent_sessions(project, scope)
+    WHERE status IN ('starting', 'running', 'stopping', 'orphaned');
 
 CREATE TABLE IF NOT EXISTS peers (
     peer_id TEXT PRIMARY KEY,
-    base_url TEXT NOT NULL,
-    token_path TEXT NOT NULL,
+    ssh_alias TEXT NOT NULL,
+    remote_port INTEGER NOT NULL DEFAULT 7820,
     friendly_name TEXT,
     last_seen TEXT,
     added_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rooms (
+    id TEXT PRIMARY KEY,
+    host_peer_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    topic TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    close_on_exit INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS room_participants (
+    room_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    identifier TEXT NOT NULL,
+    joined_at TEXT NOT NULL,
+    left_at TEXT,
+    PRIMARY KEY (room_id, kind, identifier)
+);
+
+CREATE TABLE IF NOT EXISTS room_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'text',
+    ts TEXT NOT NULL,
+    FOREIGN KEY (room_id) REFERENCES rooms(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_room_posts_room_ts ON room_posts(room_id, ts);
+CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
+CREATE INDEX IF NOT EXISTS idx_room_participants_scope
+    ON room_participants(kind, identifier) WHERE left_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -363,6 +400,69 @@ CREATE TABLE IF NOT EXISTS peers (
     last_seen TEXT,
     added_at TEXT NOT NULL
 );
+""",
+    (21, 22): """\
+-- Rooms can auto-close when their last agent exits — flag persisted on
+-- the room itself so sessions_live can act on _waiter_loop without needing
+-- in-memory orchestration state.
+ALTER TABLE rooms ADD COLUMN close_on_exit INTEGER NOT NULL DEFAULT 0;
+""",
+    (20, 21): """\
+-- One running agent process per (project, scope). Partial unique index
+-- enforces it for the active statuses; exited/killed rows are unconstrained
+-- so the same scope can re-spawn after termination.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_unique
+    ON agent_sessions(project, scope)
+    WHERE status IN ('starting', 'running', 'stopping', 'orphaned');
+""",
+    (19, 20): """\
+-- Rooms primitive: multi-participant conversations with scope-keyed agents
+-- and human/peer subscribers. Tables: rooms, room_participants, room_posts.
+CREATE TABLE IF NOT EXISTS rooms (
+    id TEXT PRIMARY KEY,
+    host_peer_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    topic TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+CREATE TABLE IF NOT EXISTS room_participants (
+    room_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    identifier TEXT NOT NULL,
+    joined_at TEXT NOT NULL,
+    left_at TEXT,
+    PRIMARY KEY (room_id, kind, identifier)
+);
+CREATE TABLE IF NOT EXISTS room_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'text',
+    ts TEXT NOT NULL,
+    FOREIGN KEY (room_id) REFERENCES rooms(id)
+);
+CREATE INDEX IF NOT EXISTS idx_room_posts_room_ts ON room_posts(room_id, ts);
+CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
+CREATE INDEX IF NOT EXISTS idx_room_participants_scope
+    ON room_participants(kind, identifier) WHERE left_at IS NULL;
+""",
+    (18, 19): """\
+-- Peer registry rebuild: SSH-tunneled transport replaces direct-LAN.
+-- base_url / token_path are dropped (URL is derived from the tunnel;
+-- token is loaded from a canonical file). Existing rows are not
+-- migrated — the operator re-runs `awm peer add` with --ssh-alias.
+CREATE TABLE peers_new (
+    peer_id TEXT PRIMARY KEY,
+    ssh_alias TEXT NOT NULL,
+    remote_port INTEGER NOT NULL DEFAULT 7820,
+    friendly_name TEXT,
+    last_seen TEXT,
+    added_at TEXT NOT NULL
+);
+DROP TABLE peers;
+ALTER TABLE peers_new RENAME TO peers;
 """,
 }
 

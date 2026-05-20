@@ -1,19 +1,23 @@
-"""Peer registry: local identity + remote peer CRUD + reachability check.
+"""Peer registry: local identity + remote peer CRUD + SSH-tunneled ping.
 
-Local identity (peer_id + advertise_url) lives in a JSON file at
-``config.PEER_FILE``. Remote peer entries live in the ``peers`` table.
+Local identity (``peer_id`` + optional ``advertise_url``) lives in a JSON
+file at ``config.PEER_FILE``. Remote peer entries live in the ``peers``
+table; each row records the SSH alias and the peer's remote awm port.
+The actual HTTP transport is the SSH tunnel established in
+``ssh_tunnel.acquire_tunnel`` — peers do NOT expose public ports.
 
-Tokens for remote peers are stored as **file paths**, not values — rotation
-is just rewriting the target file, no DB update needed.
+Bearer tokens for remote peers are stored at the canonical path
+``AWM_DIR/peers/<peer_id>.token`` (mode 600). ``awm peer add
+--token-file <src>`` copies content into that location.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-
-import httpx
 
 from awm import config
 from awm.db import get_connection
@@ -28,7 +32,7 @@ class LocalIdentityError(Exception):
 
 
 def get_local_identity() -> dict | None:
-    """Return {"peer_id", "advertise_url"} for this awm instance, or None
+    """Return {"peer_id", "advertise_url"?} for this awm instance, or None
     if `awm peer init` has not been run."""
     path = config.PEER_FILE
     if not path.exists():
@@ -42,16 +46,21 @@ def get_local_identity() -> dict | None:
     return data
 
 
-def set_local_identity(peer_id: str, advertise_url: str, *, overwrite: bool = False) -> dict:
-    """Write the local identity to PEER_FILE. Refuses to overwrite by default."""
+def set_local_identity(peer_id: str, advertise_url: str | None = None, *,
+                       overwrite: bool = False) -> dict:
+    """Write the local identity to PEER_FILE. ``advertise_url`` is optional
+    (cosmetic; informs peers but transport is SSH-tunneled). Refuses to
+    overwrite by default."""
     _validate_peer_id(peer_id)
-    if not advertise_url.startswith(("http://", "https://")):
-        raise ValueError("advertise_url must be http:// or https://")
     path = config.PEER_FILE
     if path.exists() and not overwrite:
         raise LocalIdentityError(f"identity already set at {path}; pass overwrite=True")
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"peer_id": peer_id, "advertise_url": advertise_url.rstrip("/")}
+    data: dict = {"peer_id": peer_id}
+    if advertise_url:
+        if not advertise_url.startswith(("http://", "https://")):
+            raise ValueError("advertise_url must be http:// or https://")
+        data["advertise_url"] = advertise_url.rstrip("/")
     path.write_text(json.dumps(data, indent=2) + "\n")
     return data
 
@@ -60,7 +69,10 @@ def set_local_identity(peer_id: str, advertise_url: str, *, overwrite: bool = Fa
 # Remote peer registry
 # ---------------------------------------------------------------------------
 
-_PEER_ID_OK = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_PEER_ID_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_SSH_ALIAS_OK = re.compile(r"^[A-Za-z0-9._@-]{1,127}$")
+# Empty alias = loopback mode (peer reachable at 127.0.0.1:remote_port via
+# an out-of-band reverse SSH forward maintained elsewhere).
 
 
 def _validate_peer_id(peer_id: str) -> None:
@@ -70,40 +82,80 @@ def _validate_peer_id(peer_id: str) -> None:
         )
 
 
+def _validate_ssh_alias(alias: str) -> None:
+    if alias == "":
+        return  # loopback mode
+    if not _SSH_ALIAS_OK.match(alias):
+        raise ValueError(f"invalid ssh_alias {alias!r}")
+
+
+def _peers_token_dir() -> Path:
+    return config.AWM_DIR / "peers"
+
+
+def _canonical_token_path(peer_id: str) -> Path:
+    return _peers_token_dir() / f"{peer_id}.token"
+
+
+def install_peer_token(peer_id: str, source_path: str | Path) -> Path:
+    """Copy the bearer token from ``source_path`` into the canonical location
+    for ``peer_id`` (mode 0600). Returns the canonical path."""
+    src = Path(source_path).expanduser()
+    if not src.exists():
+        raise FileNotFoundError(f"token file does not exist: {src}")
+    content = src.read_text().strip()
+    if not content:
+        raise ValueError(f"token file {src} is empty")
+    dest_dir = _peers_token_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest_dir, 0o700)
+    except OSError:
+        pass
+    dest = _canonical_token_path(peer_id)
+    dest.write_text(content + "\n")
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+    return dest
+
+
 def _row_to_peer(row) -> dict:
     return {
         "peer_id": row["peer_id"],
-        "base_url": row["base_url"],
-        "token_path": row["token_path"],
+        "ssh_alias": row["ssh_alias"],
+        "remote_port": row["remote_port"],
         "friendly_name": row["friendly_name"],
         "last_seen": row["last_seen"],
         "added_at": row["added_at"],
     }
 
 
-def add_peer(peer_id: str, base_url: str, token_path: str,
+def add_peer(peer_id: str, ssh_alias: str, *,
+             remote_port: int = 7820,
              friendly_name: str | None = None) -> dict:
-    """Register a remote awm peer. Idempotent: re-adding overwrites fields."""
+    """Register a remote awm peer. Idempotent — re-adding overwrites
+    ``ssh_alias``, ``remote_port``, and ``friendly_name``. Token install
+    is a separate step (``install_peer_token``)."""
     _validate_peer_id(peer_id)
-    if not base_url.startswith(("http://", "https://")):
-        raise ValueError("base_url must be http:// or https://")
-    token_path = str(Path(token_path).expanduser())
-    if not Path(token_path).exists():
-        raise FileNotFoundError(f"token file does not exist: {token_path}")
+    _validate_ssh_alias(ssh_alias)
+    if not (1 <= remote_port <= 65535):
+        raise ValueError(f"remote_port out of range: {remote_port}")
 
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         conn.execute(
             """\
-            INSERT INTO peers (peer_id, base_url, token_path, friendly_name, added_at)
+            INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(peer_id) DO UPDATE SET
-                base_url = excluded.base_url,
-                token_path = excluded.token_path,
+                ssh_alias = excluded.ssh_alias,
+                remote_port = excluded.remote_port,
                 friendly_name = excluded.friendly_name
             """,
-            (peer_id, base_url.rstrip("/"), token_path, friendly_name, now),
+            (peer_id, ssh_alias, remote_port, friendly_name, now),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
@@ -137,18 +189,32 @@ def remove_peer(peer_id: str) -> bool:
         conn.commit()
     finally:
         conn.close()
-    return cur.rowcount > 0
+    if cur.rowcount > 0:
+        token = _canonical_token_path(peer_id)
+        if token.exists():
+            try:
+                token.unlink()
+            except OSError:
+                pass
+        return True
+    return False
 
 
 def load_peer_token(peer_id: str) -> str:
-    """Read the bearer token file for a peer. Raises if peer or file missing."""
-    peer = get_peer(peer_id)
-    if peer is None:
+    """Read the bearer token for a peer from the canonical path. Raises
+    if the peer is unknown or the file is missing/empty."""
+    if get_peer(peer_id) is None:
         raise KeyError(f"unknown peer: {peer_id}")
-    path = Path(peer["token_path"])
+    path = _canonical_token_path(peer_id)
     if not path.exists():
-        raise FileNotFoundError(f"token file missing for peer {peer_id}: {path}")
-    return path.read_text().strip()
+        raise FileNotFoundError(
+            f"token file missing for peer {peer_id}: {path} "
+            f"(use `awm peer add --token-file ...` to install)"
+        )
+    content = path.read_text().strip()
+    if not content:
+        raise ValueError(f"token file for peer {peer_id} is empty: {path}")
+    return content
 
 
 def _touch_last_seen(peer_id: str) -> None:
@@ -165,7 +231,7 @@ def _touch_last_seen(peer_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ping (reachability + identity verification)
+# Ping (reachability + identity verification via SSH tunnel)
 # ---------------------------------------------------------------------------
 
 class PingResult(dict):
@@ -173,23 +239,34 @@ class PingResult(dict):
 
 
 def ping_peer(peer_id: str, timeout: float = 5.0) -> PingResult:
-    """GET /peer on the remote, verify the peer_id echo, update last_seen.
+    """Open (or reuse) the SSH tunnel to ``peer_id``, GET ``/peer`` over it,
+    verify the peer_id echo, and update last_seen.
 
     Returns a dict with ``ok``, ``status_code``, ``echoed_peer_id``, and
     ``advertise_url`` if reachable; ``ok=False`` and ``reason`` otherwise.
     """
-    peer = get_peer(peer_id)
-    if peer is None:
+    import httpx
+    from awm.services.network import ssh_tunnel
+
+    if get_peer(peer_id) is None:
         return PingResult(ok=False, reason=f"unknown peer: {peer_id}")
 
-    token = load_peer_token(peer_id)
-    url = peer["base_url"].rstrip("/") + "/peer"
+    try:
+        token = load_peer_token(peer_id)
+    except (FileNotFoundError, ValueError) as exc:
+        return PingResult(ok=False, reason=str(exc))
+
+    try:
+        tun = ssh_tunnel.acquire_tunnel(peer_id)
+    except ssh_tunnel.TunnelError as exc:
+        return PingResult(ok=False, reason=f"tunnel error: {exc}")
+
+    url = tun.local_url + "/peer"
     try:
         r = httpx.get(
             url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
-            verify=False,  # self-signed certs are the norm for ZeroTier/LAN
         )
     except httpx.HTTPError as exc:
         return PingResult(ok=False, reason=f"HTTP error: {exc}")
@@ -215,4 +292,5 @@ def ping_peer(peer_id: str, timeout: float = 5.0) -> PingResult:
         status_code=200,
         echoed_peer_id=echoed,
         advertise_url=body.get("advertise_url"),
+        local_port=tun.local_port,
     )

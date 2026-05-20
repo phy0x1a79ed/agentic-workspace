@@ -28,23 +28,15 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
-    Query,
     Request,
-    WebSocket,
 )
 from starlette.responses import JSONResponse, Response
 
 from awm import __version__, config
 from awm.access_log import record as record_access
 from awm.db import init_db
-from awm.middleware_auth import authenticate_websocket, require_bearer
+from awm.middleware_auth import require_bearer
 from awm.middleware_gate import require_destructive
-from awm.models import (
-    AgentSessionActionResponse,
-    AgentSessionCreateRequest,
-    AgentSessionInfo,
-    AgentSessionListResponse,
-)
 from awm.server import app as core_app
 from awm.services import sessions_live
 
@@ -68,6 +60,12 @@ async def lifespan(app: FastAPI):
             config.EXPOSED_PID_FILE.unlink()
         except OSError:
             pass
+
+    try:
+        from awm.services.network import ssh_tunnel
+        ssh_tunnel.release_all_tunnels()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -148,116 +146,20 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 
 
 # ---------------------------------------------------------------------------
-# Live-session routes (NEW — not in core_app)
+# Rooms surface (M4). The legacy /agent-sessions/* routes are gone —
+# sessions are no longer addressable directly; clients drive agents via
+# rooms.
 # ---------------------------------------------------------------------------
 
-@app.post(
-    "/agent-sessions",
-    response_model=AgentSessionInfo,
-    dependencies=[Depends(require_bearer)],
-)
-async def create_agent_session(req: AgentSessionCreateRequest):
-    try:
-        return await sessions_live.create_session(req)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
+from awm.api.rooms import router as rooms_router  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
 
+app.include_router(rooms_router)
 
-@app.get(
-    "/agent-sessions",
-    response_model=AgentSessionListResponse,
-    dependencies=[Depends(require_bearer)],
-)
-def list_agent_sessions(
-    project: str | None = Query(None),
-    scope: str | None = Query(None),
-    status: str | None = Query(None),
-):
-    items = sessions_live.list_sessions(project=project, scope=scope, status=status)
-    return AgentSessionListResponse(sessions=items, total=len(items))
-
-
-@app.get(
-    "/agent-sessions/{session_id}",
-    response_model=AgentSessionInfo,
-    dependencies=[Depends(require_bearer)],
-)
-def get_agent_session(session_id: int):
-    info = sessions_live.get_session(session_id)
-    if info is None:
-        raise HTTPException(404, "session not found")
-    return info
-
-
-@app.post(
-    "/agent-sessions/{session_id}/stop",
-    response_model=AgentSessionActionResponse,
-    dependencies=[Depends(require_bearer)],
-)
-async def stop_agent_session(session_id: int):
-    try:
-        info = await sessions_live.stop_session(session_id)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    return AgentSessionActionResponse(
-        id=info.id, status=info.status, message="SIGTERM sent"
-    )
-
-
-@app.post(
-    "/agent-sessions/{session_id}/kill",
-    response_model=AgentSessionActionResponse,
-    dependencies=[Depends(require_bearer)],
-)
-async def kill_agent_session(session_id: int):
-    try:
-        info = await sessions_live.kill_session(session_id)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    return AgentSessionActionResponse(
-        id=info.id, status=info.status, message="SIGKILL sent"
-    )
-
-
-@app.get(
-    "/agent-sessions/{session_id}/log",
-    dependencies=[Depends(require_bearer)],
-)
-def get_agent_session_log(session_id: int, lines: int = Query(200, ge=1, le=5000)):
-    try:
-        text = sessions_live.tail_log(session_id, lines=lines)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    return {"log": text}
-
-
-@app.websocket("/agent-sessions/{session_id}/chat")
-async def chat_agent_session(websocket: WebSocket, session_id: int):
-    """Bidirectional stream-json chat with a live session.
-
-    Auth: ``Sec-WebSocket-Protocol: bearer.<token>`` (preferred) or
-    ``?token=<token>`` query string.
-    """
-    subprotocol = await authenticate_websocket(websocket)
-    # If auth failed, authenticate_websocket already closed the socket.
-    if websocket.client_state.name == "DISCONNECTED":
-        return
-
-    await websocket.accept(subprotocol=subprotocol)
-
-    try:
-        await sessions_live.attach_ws(session_id, websocket)
-    except FileNotFoundError:
-        await websocket.close(code=1008, reason="session not found")
-    except sessions_live.AttachError as exc:
-        await websocket.close(code=1008, reason=str(exc))
-    except Exception:
-        # WebSocket disconnect — receive_text raises. attach_ws cleans up.
-        pass
+_STATIC_DIR = _Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
 
 
 # ---------------------------------------------------------------------------
@@ -309,8 +211,12 @@ async def gate_and_auth_for_core(request: Request, call_next):
     """
     path = request.url.path
 
-    # The exposed app's own /agent-sessions routes already use Depends auth.
-    if path.startswith("/agent-sessions"):
+    # Routes mounted directly on the exposed app (with their own
+    # Depends(require_bearer)) skip middleware-level auth to avoid
+    # double work. /ui is intentionally unauthenticated — the static
+    # HTML pulls its bearer from the URL hash and uses it for /rooms
+    # API calls.
+    if path.startswith("/rooms") or path.startswith("/ui"):
         return await call_next(request)
 
     # Auth check

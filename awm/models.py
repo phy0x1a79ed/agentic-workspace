@@ -380,3 +380,82 @@ class AgentSessionActionResponse(BaseModel):
     id: int
     status: str
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Rooms
+# ---------------------------------------------------------------------------
+
+class RoomInfo(BaseModel):
+    id: str
+    host_peer_id: str
+    created_at: str
+    closed_at: str | None = None
+    topic: str | None = None
+    status: str  # active|closed
+
+
+class ParticipantInfo(BaseModel):
+    room_id: str
+    kind: str  # scope|subscriber|shadow_peer
+    identifier: str
+    joined_at: str
+    left_at: str | None = None
+
+
+class PostInfo(BaseModel):
+    id: int
+    room_id: str
+    author: str
+    body: str
+    kind: str
+    ts: str
+
+
+class RoomCreateRequest(BaseModel):
+    topic: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    prompts: dict[str, str] = Field(default_factory=dict)
+    close_on_exit: bool = False
+
+
+class RoomListResponse(BaseModel):
+    rooms: list[RoomInfo]
+    total: int
+
+
+class RoomDetail(BaseModel):
+    room: RoomInfo
+    participants: list[ParticipantInfo]
+    recent: list[PostInfo]
+
+
+class RoomHistoryResponse(BaseModel):
+    posts: list[PostInfo]
+    total: int
+
+
+class RoomPostRequest(BaseModel):
+    body: str
+    kind: str = "text"
+    to: str | None = None  # optional ``scope:<scope>`` direct-address
+
+
+class RoomInviteRequest(BaseModel):
+    scope: str
+    prompt: str | None = None
+
+
+class RoomRemoveRequest(BaseModel):
+    scope: str
+
+
+class RoomCloseRequest(BaseModel):
+    kill_agents: bool = False
+
+
+class RoomActionResponse(BaseModel):
+    message: str
+    room: RoomInfo | None = None
+    post: PostInfo | None = None
+    participant: ParticipantInfo | None = None

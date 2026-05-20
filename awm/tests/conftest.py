@@ -51,7 +51,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.services.scopes.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.artifacts.WORKSPACE_ROOT", workspace)
     monkeypatch.setattr("awm.services.locks.HEARTBEAT_STALE_THRESHOLD", 120)
-    monkeypatch.setattr("awm.services.agents.PROJECTS_DIR", projects_dir)
 
     # Server patches
     monkeypatch.setattr("awm.server.WORKSPACE_ROOT", workspace)

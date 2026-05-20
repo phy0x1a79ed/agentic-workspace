@@ -20,7 +20,6 @@ from typing import Any
 from mcp.types import Tool
 
 from awm.models import (
-    AgentSpawnRequest,
     ArtifactRegisterRequest,
     LockAcquireRequest,
     MessageSendRequest,
@@ -30,7 +29,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import dispatch_operation, operations_to_mcp_tools
-from awm.services import agents, artifacts, core, locks, messaging, projects, scopes, skills
+from awm.services import artifacts, core, locks, messaging, projects, scopes, skills
 
 
 # ---------------------------------------------------------------------------
@@ -340,18 +339,120 @@ TOOL_DEFINITIONS: list[Tool] = [
         description="List valid recipient scopes (workspace + all projects + all scopes).",
         inputSchema={"type": "object", "properties": {}},
     ),
+    # `agent_spawn` was removed when rooms became the orchestration primitive.
+    # Use `room_create --scope ... --prompt ...` (M5) instead.
     Tool(
-        name="agent_spawn",
-        description="Spawn a fire-and-forget agent subprocess on a scope workspace.",
+        name="room_create",
+        description="Create a multi-participant room; optionally seed with agent scopes and per-scope prompts.",
         inputSchema={
             "type": "object",
             "properties": {
-                "project": {"type": "string"},
-                "scope": {"type": "string"},
-                "prompt": {"type": "string", "description": "Optional prompt/plan for the agent (sent to scope inbox)"},
-                "agent_cli": {"type": "string", "description": "CLI to use: 'opencode' or 'claude' (default from config)"},
+                "topic": {"type": "string"},
+                "scopes": {"type": "array", "items": {"type": "string"},
+                            "description": "List of project/scope[@peer] identifiers to enroll as agents"},
+                "prompts": {"type": "object",
+                             "description": "Per-scope opener prompts, keyed by scope identifier"},
+                "close_on_exit": {"type": "boolean"},
             },
-            "required": ["project", "scope"],
+        },
+    ),
+    Tool(
+        name="room_list",
+        description="List active rooms (optionally fan out across peers).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "active|closed|all"},
+                "participating_scope": {"type": "string"},
+                "peer": {"type": "string", "description": "all|<peer-id> for fan-out"},
+                "limit": {"type": "integer"},
+            },
+        },
+    ),
+    Tool(
+        name="room_get",
+        description="Get a room's metadata, participants, and recent transcript.",
+        inputSchema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string"}},
+            "required": ["room_id"],
+        },
+    ),
+    Tool(
+        name="room_history",
+        description="Fetch a longer slice of a room's transcript (by char-budget).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "limit_chars": {"type": "integer"},
+                "before_ts": {"type": "string"},
+            },
+            "required": ["room_id"],
+        },
+    ),
+    Tool(
+        name="room_search",
+        description="Search rooms by topic, id, or transcript content (with peer fan-out).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "peer": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="room_post",
+        description="Post a message into a room. Agents that participate receive it as a framed stdin input.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "body": {"type": "string"},
+                "kind": {"type": "string", "description": "text|tool_use|tool_result|system (default: text)"},
+                "to": {"type": "string", "description": "Optional scope to direct-address"},
+            },
+            "required": ["room_id", "body"],
+        },
+    ),
+    Tool(
+        name="room_invite",
+        description="Invite a scope (agent) into a room. Spawns the live session if not already running.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "scope": {"type": "string", "description": "project/scope[@peer]"},
+                "prompt": {"type": "string"},
+            },
+            "required": ["room_id", "scope"],
+        },
+    ),
+    Tool(
+        name="room_remove",
+        description="Remove a scope from a room (the agent process keeps running).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+            "required": ["room_id", "scope"],
+        },
+    ),
+    Tool(
+        name="room_close",
+        description="Close a room; optionally SIGTERM every participating local agent.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string"},
+                "kill_agents": {"type": "boolean"},
+            },
+            "required": ["room_id"],
         },
     ),
     # Restart
@@ -378,6 +479,110 @@ def _serialize(obj: Any) -> str:
     if hasattr(obj, "model_dump"):
         return json.dumps(obj.model_dump(), indent=2, default=str)
     return json.dumps(obj, indent=2, default=str)
+
+
+def _exposed_url_and_token() -> tuple[str, str]:
+    """Resolve the local exposed URL + bearer token for /rooms tool calls."""
+    import os
+    from pathlib import Path
+    from awm import config
+    host = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    port = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
+    token_env = os.environ.get("AWM_AUTH_TOKEN")
+    if token_env:
+        return f"http://{host}:{port}", token_env.strip()
+    token_path = Path(
+        os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))
+    )
+    if not token_path.exists():
+        raise RuntimeError(
+            f"auth token not found at {token_path}; run `awm exposed init-token`"
+        )
+    return f"http://{host}:{port}", token_path.read_text().strip()
+
+
+def _dispatch_room_tool(name: str, args: dict) -> str:
+    """Route a room_* MCP tool to the local awm-exposed /rooms surface."""
+    import httpx
+    base, token = _exposed_url_and_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def _do(method: str, path: str, **kw):
+        try:
+            r = httpx.request(
+                method, f"{base}{path}", headers=headers, timeout=30, **kw,
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"could not reach awm-exposed: {exc}") from exc
+        if r.status_code >= 400:
+            raise RuntimeError(f"{method} {path} → {r.status_code}: {r.text[:300]}")
+        return r.json()
+
+    if name == "room_create":
+        body = {
+            "topic": args.get("topic"),
+            "scopes": args.get("scopes", []),
+            "prompts": args.get("prompts", {}),
+            "close_on_exit": args.get("close_on_exit", False),
+        }
+        return json.dumps(_do("POST", "/rooms", json=body), indent=2)
+    if name == "room_list":
+        params = {"status": args.get("status", "active"),
+                  "limit": args.get("limit", 100)}
+        if args.get("participating_scope"):
+            params["participating_scope"] = args["participating_scope"]
+        if args.get("peer"):
+            params["peer"] = args["peer"]
+        return json.dumps(_do("GET", "/rooms", params=params), indent=2)
+    if name == "room_get":
+        return json.dumps(_do("GET", f"/rooms/{args['room_id']}"), indent=2)
+    if name == "room_history":
+        params: dict = {"limit_chars": args.get("limit_chars", 4096)}
+        if args.get("before_ts"):
+            params["before_ts"] = args["before_ts"]
+        return json.dumps(
+            _do("GET", f"/rooms/{args['room_id']}/history", params=params),
+            indent=2,
+        )
+    if name == "room_search":
+        params = {"query": args["query"], "limit": args.get("limit", 20)}
+        if args.get("peer"):
+            params["peer"] = args["peer"]
+        return json.dumps(
+            _do("GET", "/rooms/search",
+                params={"q": args["query"], **({"peer": args["peer"]} if args.get("peer") else {}),
+                        "limit": args.get("limit", 20)}),
+            indent=2,
+        )
+    if name == "room_post":
+        body = {"body": args["body"], "kind": args.get("kind", "text")}
+        if args.get("to"):
+            body["to"] = args["to"]
+        return json.dumps(
+            _do("POST", f"/rooms/{args['room_id']}/posts", json=body),
+            indent=2,
+        )
+    if name == "room_invite":
+        body = {"scope": args["scope"], "prompt": args.get("prompt")}
+        return json.dumps(
+            _do("POST", f"/rooms/{args['room_id']}/invite", json=body),
+            indent=2,
+        )
+    if name == "room_remove":
+        return json.dumps(
+            _do("POST", f"/rooms/{args['room_id']}/remove",
+                json={"scope": args["scope"]}),
+            indent=2,
+        )
+    if name == "room_close":
+        return json.dumps(
+            _do("POST", f"/rooms/{args['room_id']}/close",
+                json={"kill_agents": args.get("kill_agents", False)}),
+            indent=2,
+        )
+    raise RuntimeError(f"unhandled room tool: {name}")
 
 
 def handle_tool(name: str, args: dict) -> str:
@@ -474,10 +679,14 @@ def handle_tool(name: str, args: dict) -> str:
         recipients = messaging.list_recipients()
         return json.dumps({"recipients": recipients, "total": len(recipients)}, indent=2)
 
-    # Agent spawning
-    if name == "agent_spawn":
-        req = AgentSpawnRequest(**args)
-        return _serialize(agents.spawn_agent(req))
+    # Rooms — dispatch through the local exposed app for consistent auth
+    # + cross-peer fan-out semantics.
+    if name in (
+        "room_create", "room_list", "room_get", "room_history",
+        "room_search", "room_post", "room_invite", "room_remove",
+        "room_close",
+    ):
+        return _dispatch_room_tool(name, args)
 
     # Restart
     if name == "awm_restart":
