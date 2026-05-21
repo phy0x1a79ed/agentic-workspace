@@ -54,3 +54,27 @@ IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 m
 HEARTBEAT_INTERVAL = 30        # seconds — agents should heartbeat this often
 HEARTBEAT_STALE_THRESHOLD = 120  # seconds — locks older than this are reapable
 REAPER_INTERVAL = 30           # seconds — how often the reaper runs
+
+
+# ---------------------------------------------------------------------------
+# Exposed (network-reachable) listener
+# ---------------------------------------------------------------------------
+
+EXPOSED_HOST = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
+EXPOSED_PORT = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
+EXPOSED_PID_FILE = AWM_DIR / "awm-exposed.pid"
+EXPOSED_LOG_FILE = AWM_DIR / "awm-exposed.log"
+
+TLS_CERT = os.environ.get("AWM_TLS_CERT")
+TLS_KEY = os.environ.get("AWM_TLS_KEY")
+
+AUTH_TOKEN_ENV = "AWM_AUTH_TOKEN"
+AUTH_TOKEN_FILE = Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(AWM_DIR / "auth.token")))
+
+# Local peer identity (peer_id + advertise_url) is host-level state, like
+# AUTH_TOKEN_FILE. Defaults workspace-local; override to ~/.awm/peer.json in
+# a deployed unit if multiple workspaces should share an identity.
+PEER_FILE = Path(os.environ.get("AWM_PEER_FILE", str(AWM_DIR / "peer.json")))
+
+ACCESS_LOG = AWM_DIR / "access.log"
+ALLOW_DESTRUCTIVE = os.environ.get("AWM_ALLOW_DESTRUCTIVE") == "1"
