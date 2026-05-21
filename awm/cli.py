@@ -386,7 +386,7 @@ def peer_ping(
 
 @inbox_app.command("send")
 def inbox_send(
-    scope: str = typer.Argument(..., help="Target scope, e.g. 'scope:foo/bar' or 'scope:foo/bar@dev-xaw'"),
+    scope: str = typer.Argument(..., help="Target scope, e.g. 'scope:foo/bar' or 'scope:foo/bar@crux'"),
     subject: str = typer.Option(..., "--subject"),
     body: str = typer.Option(..., "--body"),
     sender: str = typer.Option("operator", "--sender"),

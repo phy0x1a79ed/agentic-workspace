@@ -392,16 +392,16 @@ On each host (assumes both have run `deploy/install.sh`):
 
 ```bash
 # 1. Give this instance a stable identity
-awm peer init dev-bare
+awm peer init capella
 
 # 2. Register the other side. The bearer token file is the REMOTE host's
 #    auth.token (so this host can authenticate to it). It's copied into a
 #    canonical location at $AWM_DIR/peers/<id>.token.
-awm peer add dev-xaw --ssh-alias xaw --remote-port 7820 \
-    --token-file /path/to/dev-xaw-auth.token
+awm peer add crux --ssh-alias crux --remote-port 7820 \
+    --token-file /path/to/crux-auth.token
 
 # 3. Verify (opens the tunnel, echoes peer_id, updates last_seen)
-awm peer ping dev-xaw
+awm peer ping crux
 awm peer list
 awm peer whoami
 ```
@@ -420,10 +420,10 @@ peer:
 
 ```bash
 # bare → xaw
-awm inbox send scope:awm/remote-api@dev-xaw \
+awm inbox send scope:awm/remote-api@crux \
     --sender opal --subject "ping" --body "hello xaw"
 
-# On xaw, the message lands locally with sender = peer:dev-bare/opal
+# On crux, the message lands locally with sender = peer:capella/opal
 ssh xaw awm inbox fetch scope:awm/remote-api
 ```
 
@@ -444,7 +444,7 @@ each result with its origin:
 
 ```bash
 # Search just one remote peer
-awm skill search "annotation" --peer dev-xaw
+awm skill search "annotation" --peer crux
 
 # Fan out to every registered peer
 awm skill list --peer all
@@ -460,9 +460,9 @@ in the response; the command still exits 0 with whatever did succeed.
 awm room search "topic" --peer all
 
 # Operate on a remote-hosted room (read, post, close) over the tunnel
-awm room get <name>@dev-xaw
-awm room post <name>@dev-xaw "hello from here"
-awm room join <name>@dev-xaw      # WS attached via the tunnel
+awm room get <name>@crux
+awm room post <name>@crux "hello from here"
+awm room join <name>@crux      # WS attached via the tunnel
 ```
 
 Posts forwarded to a remote room are tagged

@@ -234,7 +234,7 @@ def set_shadow_peer_dispatcher(fn: Callable[[str, str, Post], None] | None) -> N
 
 def _split_scope(ident: str) -> tuple[str, str | None]:
     """Return (local_scope, peer_id_or_None) for a participant identifier
-    like ``'awm/research'`` or ``'awm/research@dev-xaw'``."""
+    like ``'awm/research'`` or ``'awm/research@crux'``."""
     if "@" in ident:
         base, peer = ident.rsplit("@", 1)
         return base, peer

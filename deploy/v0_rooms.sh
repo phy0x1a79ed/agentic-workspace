@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # V0: end-to-end validation of the awm rooms/agents/SSH-tunnel stack.
-# Driven from bare; reaches dev-xaw over the SSH tunnel.
+# Driven from capella; reaches crux over the SSH tunnel.
 #
 # Pre-requisites (already in place after the M0–M6 build):
-#   - bare: awm-exposed bound 127.0.0.1:7820, no TLS
-#   - bare: ~/.awm/auth.token, ~/.awm/peers/dev-xaw.token
-#   - xaw : awm-exposed bound 127.0.0.1:7820, no TLS
-#   - bare: maintains ssh -fN -R 7821:127.0.0.1:7820 xaw (reverse tunnel)
-#   - peer registry: bare has dev-xaw(--ssh-alias xaw); xaw has dev-bare(loopback :7821)
-#   - scope `awm/room-test` exists on bare
+#   - capella: awm-exposed bound 127.0.0.1:7820, no TLS
+#   - capella: ~/.awm/auth.token, ~/.awm/peers/crux.token
+#   - crux   : awm-exposed bound 127.0.0.1:7820, no TLS
+#   - capella: maintains ssh -fN -R 7821:127.0.0.1:7820 crux (reverse tunnel)
+#   - peer registry: capella has crux(--ssh-alias crux); crux has capella(loopback :7821)
+#   - scope `awm/room-test` exists on capella
 #
 # This script runs the V0 scenarios that apply to a single-project
 # WSL2 + laptop rig. Scenarios requiring the same project mirrored on
@@ -17,14 +17,14 @@
 
 set -u
 PASS=0; FAIL=0; SKIP=0
-PEER=dev-xaw
+PEER=crux
 SCOPE=awm/room-test
 
 export AWM_AUTH_TOKEN_FILE="${AWM_AUTH_TOKEN_FILE:-/home/tony/.awm/auth.token}"
 export AWM_WORKSPACE="${AWM_WORKSPACE:-/home/tony/agentic_workspace}"
 
-XAW_RUN() {
-  ssh xaw "export AWM_WORKSPACE=/home/tony/agentic_workspace
+CRUX_RUN() {
+  ssh crux "export AWM_WORKSPACE=/home/tony/agentic_workspace
            ~/miniforge3/envs/awm/bin/$*"
 }
 
@@ -76,11 +76,11 @@ print(d.get('$1', ''))"
 }
 
 echo "=== 1. Tunnel + ping ==="
-expect_in "bare→xaw ping" '"ok": true' \
+expect_in "capella→crux ping" '"ok": true' \
     awm peer ping $PEER
-expect_in "xaw→bare ping" '"ok": true' \
-    ssh xaw 'export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm peer ping dev-bare'
-COUNT=$(pgrep -fc 'ssh -fN.*ControlMaster=auto.*peer-dev-xaw' || true)
+expect_in "crux→capella ping" '"ok": true' \
+    ssh crux 'export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm peer ping capella'
+COUNT=$(pgrep -fc 'ssh -fN.*ControlMaster=auto.*peer-crux' || true)
 if [[ "$COUNT" == "1" ]]; then
   echo "  ok: exactly one ssh master alive"; PASS=$((PASS+1))
 else
@@ -114,13 +114,13 @@ echo ""
 echo "=== 4. Cross-peer room search + post (C6) ==="
 MARKER=$(date +%s)
 R2=$(awm room create --topic "v0-xpeer-$MARKER" | get_field id)
-expect_in "xaw finds bare's room via --peer all" "v0-xpeer-$MARKER" \
-    ssh xaw "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room search v0-xpeer-$MARKER --peer all"
-expect_in "xaw gets room@dev-bare" "host_peer_id" \
-    ssh xaw "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room get $R2@dev-bare"
-expect_in "xaw posts to room@dev-bare" '"message": "posted"' \
-    ssh xaw "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room post $R2@dev-bare 'xaw ping'"
-expect_in "post visible on bare with xaw origin tag" "user:operator@dev-xaw" \
+expect_in "crux finds capella's room via --peer all" "v0-xpeer-$MARKER" \
+    ssh crux "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room search v0-xpeer-$MARKER --peer all"
+expect_in "crux gets room@capella" "host_peer_id" \
+    ssh crux "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room get $R2@capella"
+expect_in "crux posts to room@capella" '"message": "posted"' \
+    ssh crux "export AWM_WORKSPACE=/home/tony/agentic_workspace; ~/miniforge3/envs/awm/bin/awm room post $R2@capella 'crux ping'"
+expect_in "post visible on capella with crux origin tag" "user:operator@crux" \
     awm room history $R2
 awm room close $R2 >/dev/null
 
@@ -142,15 +142,15 @@ awm room close $R3 >/dev/null
 
 echo ""
 echo "=== 6. Localhost binding (C0 negative) ==="
-XAW_IP=$(ssh xaw 'hostname -I' | awk '{print $1}')
-expect_in "xaw's 7820 not on LAN" "000" \
-    bash -c "curl -s -o /dev/null --connect-timeout 3 -w '%{http_code}' http://$XAW_IP:7820/peer"
+CRUX_IP=$(ssh crux 'hostname -I' | awk '{print $1}')
+expect_in "crux's 7820 not on LAN" "000" \
+    bash -c "curl -s -o /dev/null --connect-timeout 3 -w '%{http_code}' http://$CRUX_IP:7820/peer"
 expect_in "but tunneled ping still works" '"ok": true' \
     awm peer ping $PEER
 
 echo ""
 echo "=== 7. Schema + scope-unique guarantees ==="
-expect_in "bare DB at v22" "22" \
+expect_in "capella DB at v22" "22" \
     bash -c "python3 -c \"import sqlite3; c=sqlite3.connect('$AWM_WORKSPACE/.awm/state.db'); print(c.execute('SELECT version FROM schema_version').fetchone()[0])\""
 expect_in "partial unique index present" "idx_agent_sessions_active_unique" \
     bash -c "python3 -c \"import sqlite3; c=sqlite3.connect('$AWM_WORKSPACE/.awm/state.db'); print([r[0] for r in c.execute(\\\"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_sessions'\\\").fetchall()])\""
@@ -158,7 +158,7 @@ expect_in "partial unique index present" "idx_agent_sessions_active_unique" \
 echo ""
 echo "=== Deferred / requires extra setup ==="
 skip "V0 #11 — agent on remote peer in local room" \
-    "xaw has no awm project mirror; needs separate sync"
+    "crux has no awm project mirror; needs separate sync"
 skip "V0 #6  — multi-room single agent stdin ordering" \
     "requires real claude session — covered by M1 mock-subprocess test"
 skip "V0 #7  — multi-agent room (no auto-feed)" \

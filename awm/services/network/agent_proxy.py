@@ -1,7 +1,7 @@
 """Cross-peer room subscription proxy.
 
 When a local subscriber joins a room hosted on another peer
-(``flowing-mountain@dev-xaw``), we don't open one WebSocket per local
+(``flowing-mountain@crux``), we don't open one WebSocket per local
 client — instead, we maintain **one upstream WS per (peer, room)** and
 fan its events out to all local subscribers via the same
 ``rooms.subscribe_room`` mechanism that local rooms use.

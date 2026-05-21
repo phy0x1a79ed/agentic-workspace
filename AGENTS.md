@@ -10,11 +10,12 @@ You are the **workspace agent** — the top-level orchestrator for this multi-pr
 
 ### Startup Ritual
 
-1. Check workspace health: `awm_status`
-2. Check your inbox: `inbox_search scope=workspace`
-3. Review active scopes: `scope_list`
-4. Review active locks: `lock_list`
-5. Address any unread messages before taking new requests
+1. Check this machine's identity: `cat NAME.md` (workspace-root file naming this awm node: capella, crux, mira, …; gitignored)
+2. Check workspace health: `awm_status`
+3. Check your inbox: `inbox_search scope=workspace`
+4. Review active scopes: `scope_list`
+5. Review active locks: `lock_list`
+6. Address any unread messages before taking new requests
 
 ### Core Responsibilities
 
