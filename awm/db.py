@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -406,6 +406,12 @@ CREATE TABLE IF NOT EXISTS peers (
 -- the room itself so sessions_live can act on _waiter_loop without needing
 -- in-memory orchestration state.
 ALTER TABLE rooms ADD COLUMN close_on_exit INTEGER NOT NULL DEFAULT 0;
+""",
+    (22, 23): """\
+-- Rooms now support an 'archived' status alongside 'active' and 'closed'.
+-- No schema change required (status column is TEXT with no CHECK constraint);
+-- this migration is a marker so older code knows the domain has grown.
+SELECT 1;
 """,
     (20, 21): """\
 -- One running agent process per (project, scope). Partial unique index

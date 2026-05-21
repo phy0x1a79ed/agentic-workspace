@@ -392,7 +392,8 @@ class RoomInfo(BaseModel):
     created_at: str
     closed_at: str | None = None
     topic: str | None = None
-    status: str  # active|closed
+    status: str  # active|closed|archived
+    close_on_exit: bool = False
 
 
 class ParticipantInfo(BaseModel):
@@ -459,3 +460,75 @@ class RoomActionResponse(BaseModel):
     room: RoomInfo | None = None
     post: PostInfo | None = None
     participant: ParticipantInfo | None = None
+
+
+class RoomArchiveBlockedResponse(BaseModel):
+    """Body for the 409 returned when ``POST /rooms/{id}/archive`` is
+    refused due to remaining active scope participants."""
+    error: str = "room_archive_blocked"
+    room_id: str
+    blocking_scopes: list[str]
+
+
+class LiveAgentState(BaseModel):
+    pid: int | None = None
+    status: str | None = None
+    started_at: str | None = None
+    exited_at: str | None = None
+    exit_code: int | None = None
+    agent_cli: str | None = None
+
+
+class RoomAgentInfo(BaseModel):
+    scope: str
+    kind: str  # 'scope' (local) | 'shadow_peer' (remote)
+    identifier: str
+    joined_at: str
+    live: LiveAgentState | None = None  # None for shadow_peer
+
+
+class RoomAgentsResponse(BaseModel):
+    agents: list[RoomAgentInfo]
+
+
+# ---------------------------------------------------------------------------
+# Peers (control-center surface)
+# ---------------------------------------------------------------------------
+
+class PeerInfo(BaseModel):
+    peer_id: str
+    ssh_alias: str | None = None
+    remote_port: int | None = None
+    friendly_name: str | None = None
+    last_seen: str | None = None
+    added_at: str | None = None
+
+
+class PeerListResponse(BaseModel):
+    peers: list[PeerInfo]
+
+
+class PeerPingResponse(BaseModel):
+    peer_id: str
+    ok: bool
+    rtt_ms: float | None = None
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Projects (control-center surface — list)
+# ---------------------------------------------------------------------------
+
+class ProjectScopeCounts(BaseModel):
+    active: int = 0
+    completed: int = 0
+    deleted: int = 0
+
+
+class ProjectListInfo(BaseModel):
+    name: str
+    scope_counts: ProjectScopeCounts
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectListInfo]

@@ -56,6 +56,19 @@ class ScopeBusyError(RoomError):
     """A second LiveSession spawn for an already-running scope was attempted."""
 
 
+class RoomArchiveBlocked(RoomError):
+    """``archive_room`` refused because the room still has active scope
+    participants. Inspect ``.blocking_scopes`` for the identifiers."""
+
+    def __init__(self, room_id: str, blocking_scopes: list[str]):
+        self.room_id = room_id
+        self.blocking_scopes = blocking_scopes
+        super().__init__(
+            f"room {room_id} has {len(blocking_scopes)} active scope "
+            f"participant(s): {', '.join(blocking_scopes)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Local peer identity for host_peer_id stamping
 # ---------------------------------------------------------------------------
@@ -390,6 +403,48 @@ def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
                 cb(room_id)
             except Exception:  # noqa: BLE001
                 pass
+    return _row_to_room(row)
+
+
+def archive_room(room_id: str) -> Room:
+    """Soft-archive a room: flip status to 'archived' so it drops out of
+    default listings. Refuses if any participant with ``kind='scope'`` is
+    still active (``left_at IS NULL``) — raise :class:`RoomArchiveBlocked`
+    carrying the blocking scope identifiers.
+
+    Closed rooms and active rooms with no remaining scope participants
+    are both archivable. Already-archived rooms return unchanged."""
+    room = get_room(room_id)
+    if room is None:
+        raise RoomNotFound(f"no such room: {room_id}")
+    if room.status == "archived":
+        return room
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT identifier FROM room_participants "
+            "WHERE room_id = ? AND kind = 'scope' AND left_at IS NULL",
+            (room_id,),
+        ).fetchall()
+        blocking = [r["identifier"] for r in rows]
+        if blocking:
+            raise RoomArchiveBlocked(room_id, blocking)
+        now = _now()
+        # Preserve closed_at if already set; stamp it for active→archived.
+        if room.closed_at is None:
+            conn.execute(
+                "UPDATE rooms SET status = 'archived', closed_at = ? WHERE id = ?",
+                (now, room_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE rooms SET status = 'archived' WHERE id = ?",
+                (room_id,),
+            )
+        conn.commit()
+        row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+    finally:
+        conn.close()
     return _row_to_room(row)
 
 

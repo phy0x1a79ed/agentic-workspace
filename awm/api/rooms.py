@@ -27,9 +27,13 @@ from fastapi import (
 from awm import ws_envelope as env
 from awm.middleware_auth import require_bearer
 from awm.models import (
+    LiveAgentState,
     ParticipantInfo,
     PostInfo,
     RoomActionResponse,
+    RoomAgentInfo,
+    RoomAgentsResponse,
+    RoomArchiveBlockedResponse,
     RoomCloseRequest,
     RoomCreateRequest,
     RoomDetail,
@@ -316,6 +320,61 @@ def close_room(room_id: str, req: RoomCloseRequest):
     except rooms_svc.RoomNotFound:
         raise HTTPException(404, f"no such room: {room_id}")
     return RoomActionResponse(message="closed", room=_room_info(room))
+
+
+@router.post("/{room_id}/archive", response_model=RoomActionResponse,
+             dependencies=[Depends(require_bearer)],
+             responses={409: {"model": RoomArchiveBlockedResponse}})
+def archive_room(room_id: str):
+    """Soft-archive a room. 409 with ``blocking_scopes`` if any agent
+    (kind='scope') participants are still active."""
+    try:
+        room = rooms_svc.archive_room(room_id)
+    except rooms_svc.RoomNotFound:
+        raise HTTPException(404, f"no such room: {room_id}")
+    except rooms_svc.RoomArchiveBlocked as exc:
+        raise HTTPException(409, detail={
+            "error": "room_archive_blocked",
+            "room_id": exc.room_id,
+            "blocking_scopes": exc.blocking_scopes,
+        })
+    return RoomActionResponse(message="archived", room=_room_info(room))
+
+
+@router.get("/{room_id}/agents", response_model=RoomAgentsResponse,
+            dependencies=[Depends(require_bearer)])
+def get_room_agents(room_id: str):
+    """Per-agent panel data — list scope/shadow_peer participants and,
+    for local scopes, attach their live session state from
+    ``sessions_live._by_scope``."""
+    room = rooms_svc.get_room(room_id)
+    if room is None:
+        raise HTTPException(404, f"no such room: {room_id}")
+    from awm.services import sessions_live
+
+    agents: list[RoomAgentInfo] = []
+    for p in rooms_svc.list_participants(room_id, active_only=False):
+        if p.kind not in ("scope", "shadow_peer"):
+            continue
+        live: LiveAgentState | None = None
+        if p.kind == "scope":
+            base_scope, peer = rooms_svc._split_scope(p.identifier)
+            if peer is None:
+                session = sessions_live._by_scope.get(base_scope)
+                if session is not None:
+                    live = LiveAgentState(
+                        pid=getattr(session.proc, "pid", None),
+                        status=session.status,
+                        started_at=session.started_at,
+                        exited_at=session.exited_at,
+                        exit_code=session.exit_code,
+                        agent_cli=session.agent_cli,
+                    )
+        agents.append(RoomAgentInfo(
+            scope=p.identifier, kind=p.kind, identifier=p.identifier,
+            joined_at=p.joined_at, live=live,
+        ))
+    return RoomAgentsResponse(agents=agents)
 
 
 # ---------------------------------------------------------------------------

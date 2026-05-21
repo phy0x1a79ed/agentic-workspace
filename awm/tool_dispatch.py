@@ -455,6 +455,44 @@ TOOL_DEFINITIONS: list[Tool] = [
             "required": ["room_id"],
         },
     ),
+    Tool(
+        name="room_archive",
+        description="Soft-archive a room; refused if it still has active scope participants.",
+        inputSchema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string"}},
+            "required": ["room_id"],
+        },
+    ),
+    Tool(
+        name="room_agents",
+        description="List a room's scope/shadow_peer participants with attached live agent state.",
+        inputSchema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string"}},
+            "required": ["room_id"],
+        },
+    ),
+    # Peers (control-center)
+    Tool(
+        name="peers_list",
+        description="List registered remote awm peers.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="peer_ping",
+        description="Probe a registered peer via its SSH tunnel; reports reachability and round-trip ms.",
+        inputSchema={
+            "type": "object",
+            "properties": {"peer_id": {"type": "string"}},
+            "required": ["peer_id"],
+        },
+    ),
+    Tool(
+        name="project_list",
+        description="List projects derived from the scopes table, with per-status scope counts.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # Restart
     Tool(
         name="awm_restart",
@@ -582,6 +620,16 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
                 json={"kill_agents": args.get("kill_agents", False)}),
             indent=2,
         )
+    if name == "room_archive":
+        return json.dumps(
+            _do("POST", f"/rooms/{args['room_id']}/archive"),
+            indent=2,
+        )
+    if name == "room_agents":
+        return json.dumps(
+            _do("GET", f"/rooms/{args['room_id']}/agents"),
+            indent=2,
+        )
     raise RuntimeError(f"unhandled room tool: {name}")
 
 
@@ -684,9 +732,46 @@ def handle_tool(name: str, args: dict) -> str:
     if name in (
         "room_create", "room_list", "room_get", "room_history",
         "room_search", "room_post", "room_invite", "room_remove",
-        "room_close",
+        "room_close", "room_archive", "room_agents",
     ):
         return _dispatch_room_tool(name, args)
+
+    # Peers (control-center surface)
+    if name == "peers_list":
+        from awm.services.network import peers as peer_svc
+        rows = peer_svc.list_peers()
+        return json.dumps({"peers": rows, "total": len(rows)}, indent=2, default=str)
+    if name == "peer_ping":
+        import time as _time
+        from awm.services.network import peers as peer_svc
+        t0 = _time.monotonic()
+        result = peer_svc.ping_peer(args["peer_id"])
+        rtt_ms = (_time.monotonic() - t0) * 1000.0
+        ok = bool(result.get("ok"))
+        return json.dumps({
+            "peer_id": args["peer_id"],
+            "ok": ok,
+            "rtt_ms": round(rtt_ms, 2) if ok else None,
+            "error": None if ok else (result.get("reason") or "ping failed"),
+        }, indent=2)
+    if name == "project_list":
+        from awm.db import get_connection
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT project, status, COUNT(*) AS n FROM scopes "
+                "GROUP BY project, status ORDER BY project"
+            ).fetchall()
+        finally:
+            conn.close()
+        by_project: dict = {}
+        for r in rows:
+            counts = by_project.setdefault(r["project"], {"active": 0, "completed": 0, "deleted": 0})
+            if r["status"] in counts:
+                counts[r["status"]] = r["n"]
+        return json.dumps({
+            "projects": [{"name": n, "scope_counts": c} for n, c in by_project.items()],
+        }, indent=2)
 
     # Restart
     if name == "awm_restart":

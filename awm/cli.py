@@ -562,6 +562,20 @@ def room_close(
     _print_json(r)
 
 
+@room_app.command("archive")
+def room_archive(name: str = typer.Argument(...)):
+    """Soft-archive a room. Refused (409) if active scope participants remain."""
+    r = _api_for_room("POST", name, "/archive")
+    _print_json(r)
+
+
+@room_app.command("agents")
+def room_agents(name: str = typer.Argument(...)):
+    """List room participants with live agent state (PID, status)."""
+    r = _api_for_room("GET", name, "/agents")
+    _print_json(r)
+
+
 @room_app.command("join")
 def room_join(
     name: str = typer.Argument(...),
@@ -775,6 +789,13 @@ def project_create(
     elif fork:
         payload["fork_url"] = fork
     r = _api("POST", "/projects", json=payload)
+    _print_json(r)
+
+
+@project_app.command("list")
+def project_list():
+    """List projects with per-status scope counts."""
+    r = _api("GET", "/projects")
     _print_json(r)
 
 

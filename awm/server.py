@@ -24,6 +24,9 @@ from awm.models import (
     StatusResponse,
     ProjectCreateRequest,
     ProjectCreateResponse,
+    ProjectListInfo,
+    ProjectListResponse,
+    ProjectScopeCounts,
     ScopeCreateRequest,
     ScopeUpdateRequest,
     ScopeListResponse,
@@ -36,6 +39,9 @@ from awm.models import (
     SharedEditActionResponse,
     SkillListResponse,
     SkillContentResponse,
+    PeerInfo,
+    PeerListResponse,
+    PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
@@ -177,6 +183,57 @@ def get_peer_identity():
     if ident is None:
         raise HTTPException(404, "local peer identity not configured")
     return ident
+
+
+@app.get("/peers", response_model=PeerListResponse)
+def list_peers_endpoint():
+    """List registered remote peers (control-center surface)."""
+    from awm.services.network import peers as peer_svc
+    rows = peer_svc.list_peers()
+    return PeerListResponse(peers=[PeerInfo(**r) for r in rows])
+
+
+@app.get("/peers/{peer_id}/ping", response_model=PeerPingResponse)
+def ping_peer_endpoint(peer_id: str):
+    """Probe a registered peer via its SSH tunnel; reports reachability
+    and round-trip ms."""
+    from awm.services.network import peers as peer_svc
+    t0 = time.monotonic()
+    result = peer_svc.ping_peer(peer_id)
+    rtt_ms = (time.monotonic() - t0) * 1000.0
+    ok = bool(result.get("ok"))
+    return PeerPingResponse(
+        peer_id=peer_id,
+        ok=ok,
+        rtt_ms=round(rtt_ms, 2) if ok else None,
+        error=None if ok else (result.get("reason") or "ping failed"),
+    )
+
+
+@app.get("/projects", response_model=ProjectListResponse)
+def list_projects_endpoint():
+    """List projects derived from the scopes table, with per-status counts."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT project, status, COUNT(*) AS n FROM scopes "
+            "GROUP BY project, status ORDER BY project"
+        ).fetchall()
+    finally:
+        conn.close()
+    by_project: dict[str, ProjectScopeCounts] = {}
+    for r in rows:
+        counts = by_project.setdefault(r["project"], ProjectScopeCounts())
+        if r["status"] == "active":
+            counts.active = r["n"]
+        elif r["status"] == "completed":
+            counts.completed = r["n"]
+        elif r["status"] == "deleted":
+            counts.deleted = r["n"]
+    return ProjectListResponse(projects=[
+        ProjectListInfo(name=name, scope_counts=counts)
+        for name, counts in by_project.items()
+    ])
 
 
 # ---------------------------------------------------------------------------

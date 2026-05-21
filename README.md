@@ -256,6 +256,9 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | POST | `/sessions` | Log a session entry |
 | GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
+| GET | `/peers` | List registered remote peers (control-center) |
+| GET | `/peers/{id}/ping` | Probe peer via SSH tunnel, report rtt |
+| GET | `/projects` | List projects with per-status scope counts |
 
 ## Network-Exposed Listener
 
@@ -337,6 +340,8 @@ participant is serialized into the agent's stdin with
 | POST   | `/rooms/{id}/invite`            | Add a scope (spawns agent if needed)   |
 | POST   | `/rooms/{id}/remove`            | Remove a scope (agent keeps running)   |
 | POST   | `/rooms/{id}/close`             | Close (optionally `--kill-agents`)     |
+| POST   | `/rooms/{id}/archive`           | Soft-archive (409 if active scope participants remain) |
+| GET    | `/rooms/{id}/agents`            | Per-agent panel data (scope/shadow_peer + live session state) |
 | WS     | `/rooms/{id}/attach`            | Subscriber WS — JSON envelope protocol |
 
 Room names are auto-generated `verb-noun` pairs (`babbling-brook`,
@@ -359,6 +364,8 @@ awm room post   <name>[@peer] <text> [--to <scope>]
 awm room invite <name>[@peer] --scope <scope> [--prompt ...]
 awm room remove <name>[@peer] --scope <scope>
 awm room close  <name>[@peer] [--kill-agents]
+awm room archive <name>           # 409 if active scope participants remain
+awm room agents  <name>           # list participants + live session state
 awm room join   <name>[@peer]   # terminal-attached WS
 awm room one-off --scope <scope> --prompt "..."   # create + close-on-exit
 ```
@@ -368,10 +375,16 @@ without `@` hit the local exposed listener.
 
 ### Browser UI
 
-`http://<host>:7820/ui/room.html#token=<bearer>&as=<user>&peer=<id>` —
-single-file vanilla-JS dashboard for searching rooms, joining one,
-reading the transcript live, and posting/inviting. Token + identity
-go in the URL hash so they never reach server logs.
+`http://<host>:7820/ui/index.html#token=<bearer>&as=<user>&peer=<id>` —
+single-file vanilla-JS control center with hash-routed tabs:
+
+- `#/status` — local peer, registered peers (ping), projects, scopes, core status
+- `#/rooms` — search / create / archive; filter by status (active|closed|archived|all) or peer
+- `#/room/<id>` — chat transcript + composer + collapsible per-agent panels (PID, status, agent_cli)
+
+Token + identity go in the URL hash so they never reach server logs. The
+legacy `/ui/room.html` URL redirects into `#/room/<id>` for backwards
+compatibility with existing bookmarks.
 
 ## Federation: Networked Workspaces
 

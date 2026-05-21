@@ -150,10 +150,38 @@ expect_in "but tunneled ping still works" '"ok": true' \
 
 echo ""
 echo "=== 7. Schema + scope-unique guarantees ==="
-expect_in "capella DB at v22" "22" \
+expect_in "capella DB at v23" "23" \
     bash -c "python3 -c \"import sqlite3; c=sqlite3.connect('$AWM_WORKSPACE/.awm/state.db'); print(c.execute('SELECT version FROM schema_version').fetchone()[0])\""
 expect_in "partial unique index present" "idx_agent_sessions_active_unique" \
     bash -c "python3 -c \"import sqlite3; c=sqlite3.connect('$AWM_WORKSPACE/.awm/state.db'); print([r[0] for r in c.execute(\\\"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_sessions'\\\").fetchall()])\""
+
+echo ""
+echo "=== 8. Control-center HTTP surfaces (peers, projects, archive, agents) ==="
+TOKEN="$(cat $AWM_AUTH_TOKEN_FILE)"
+BASE="http://127.0.0.1:7820"
+AUTH=(-H "Authorization: Bearer $TOKEN")
+expect_in "GET /peers includes crux" "crux" \
+    curl -s "${AUTH[@]}" "$BASE/peers"
+expect_in "GET /peers/crux/ping is ok" '"ok":true' \
+    curl -s "${AUTH[@]}" "$BASE/peers/crux/ping"
+expect_in "GET /projects lists awm" '"name":"awm"' \
+    curl -s "${AUTH[@]}" "$BASE/projects"
+R4=$(awm room create --topic "v0-archive-empty" | get_field id)
+expect_in "archive empty room succeeds" '"message":"archived"' \
+    curl -s -X POST "${AUTH[@]}" "$BASE/rooms/$R4/archive"
+expect_in "archived room hides from default list" "HIDDEN" \
+    bash -c "awm room list | grep -q $R4 && echo MATCH || echo HIDDEN"
+expect_in "archived room reappears with status=archived" "$R4" \
+    awm room list --status archived
+R5=$(awm room create --topic "v0-archive-blocked" --scope $SCOPE | get_field id)
+expect_in "archive of room with active scope returns 409" "409" \
+    curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" "$BASE/rooms/$R5/archive"
+expect_in "blocked archive lists the scope in detail" "$SCOPE" \
+    curl -s -X POST "${AUTH[@]}" "$BASE/rooms/$R5/archive"
+expect_in "GET /rooms/{id}/agents lists scope participants" "$SCOPE" \
+    curl -s "${AUTH[@]}" "$BASE/rooms/$R5/agents"
+awm room close $R5 >/dev/null
+awm room post $R5 ignored 2>/dev/null || true
 
 echo ""
 echo "=== Deferred / requires extra setup ==="
