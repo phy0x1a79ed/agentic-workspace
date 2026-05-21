@@ -1,6 +1,9 @@
 # AWM runtime state
 .awm/
 
+# Machine identity — per-host; see AGENTS.md
+NAME.md
+
 # Workspace runtime directories (not tracked)
 data/
 main/
