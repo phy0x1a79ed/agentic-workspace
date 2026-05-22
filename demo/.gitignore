@@ -1,0 +1,13 @@
+# runtime logs
+*.log
+
+# captured audio diagnostics
+last_utterance.wav
+smoke.wav
+
+# downloaded model assets
+voices/
+
+# python
+__pycache__/
+*.pyc

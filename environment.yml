@@ -11,3 +11,6 @@ dependencies:
     - httpx
     - mcp[cli]
     - pyyaml
+    - faster-whisper
+    - pocket-tts
+    - numpy

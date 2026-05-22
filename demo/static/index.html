@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>awm voice demo</title>
+  <style>
+    body { font-family: ui-monospace, Menlo, monospace; background: #111; color: #ddd;
+           margin: 0; padding: 20px; }
+    h1 { font-size: 16px; font-weight: 500; color: #888; margin: 0 0 12px; }
+    #status { color: #6cf; }
+    #ptt {
+      display: inline-block; padding: 12px 20px; border-radius: 6px;
+      background: #2a2a2a; border: 1px solid #444; cursor: pointer;
+      user-select: none; margin: 10px 0;
+    }
+    #ptt.active { background: #5a2; color: #fff; border-color: #6b3; }
+    #latency { color: #888; font-size: 12px; margin-bottom: 12px; }
+    #meter { color: #fc6; font-size: 12px; margin: 4px 0 8px; }
+    #volume { color: #888; font-size: 12px; margin: 4px 0 8px;
+              display: flex; align-items: center; gap: 8px; }
+    #vol { width: 200px; }
+    #transcript {
+      height: 60vh; overflow-y: auto; background: #1a1a1a;
+      padding: 12px; border-radius: 6px; border: 1px solid #2a2a2a;
+    }
+    .line { padding: 4px 0; white-space: pre-wrap; }
+    .line.user { color: #6cf; }
+    .line.assistant { color: #cfc; }
+    .line.tool { color: #c9a; font-size: 12px; opacity: 0.85; }
+    .line.tool-result { color: #998; font-size: 12px; opacity: 0.75; }
+    .show {
+      margin: 6px 0; padding: 8px 12px; border-radius: 6px;
+      background: #20242c; border-left: 3px solid #6cf;
+    }
+    .show-label { color: #6cf; font-size: 11px; text-transform: uppercase;
+                  letter-spacing: 0.05em; margin-bottom: 4px; }
+    .show pre { margin: 0; white-space: pre-wrap; word-break: break-word;
+                color: #e6e6e6; font-family: ui-monospace, Menlo, monospace; }
+    .show.link { border-left-color: #6f9; }
+    .show.link a { color: #6f9; text-decoration: underline;
+                   word-break: break-all; }
+    .show.path { border-left-color: #fc6; }
+    .show.path pre { color: #fc6; }
+    .show.code { border-left-color: #c9a; }
+    .line.error { color: #f66; }
+    #stage {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      background: #222; color: #888; font-size: 12px; margin: 4px 0;
+      border: 1px solid #333;
+    }
+    #stage.listening { background: #3a2; color: #fff; border-color: #4b3; }
+    #stage.transcribing { background: #28a; color: #fff; border-color: #39b; }
+    #stage.thinking { background: #a82; color: #fff; border-color: #b93; }
+    #stage.responding { background: #38a; color: #fff; border-color: #49b; }
+    #stage.speaking { background: #a3a; color: #fff; border-color: #b4b; }
+    #stage.tool { background: #555; color: #fc9; border-color: #666; }
+  </style>
+</head>
+<body>
+  <h1>awm voice demo · status: <span id="status">connecting…</span></h1>
+  <div id="stage">idle</div>
+  <div id="ptt">Hold SPACE or this button to talk</div>
+  <div id="meter">mic level: <span id="meter-val">not connected</span></div>
+  <div id="volume">
+    <label for="vol">tts volume:</label>
+    <input id="vol" type="range" min="0" max="200" value="100" step="1" />
+    <span id="vol-val">100%</span>
+  </div>
+  <div id="latency">STT —ms · first-token —ms · first-audio —ms</div>
+  <div id="transcript"></div>
+  <script src="/static/client.js"></script>
+</body>
+</html>
