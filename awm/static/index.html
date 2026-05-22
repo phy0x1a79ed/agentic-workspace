@@ -45,6 +45,16 @@
   .post.kind-tool_use { color: #a60; }
   .post.kind-tool_result { color: #06a; }
   .post.kind-system, .post.kind-join, .post.kind-leave { color: #888; font-style: italic; }
+  .post.kind-slash { color: #606; font-family: monospace; }
+  .cmd-row { padding: 3px 4px; cursor: pointer; font-size: 11px;
+             border-bottom: 1px dotted #eee; display: flex; gap: 6px; }
+  .cmd-row:hover { background: #f0f4ff; }
+  .cmd-row code { color: #606; font-weight: bold; flex: 0 0 auto; }
+  .cmd-row .desc { color: #555; }
+  .cmd-list { max-height: 320px; overflow-y: auto; border: 1px solid #eee;
+              background: #fafafa; }
+  .cmd-group { padding: 3px 6px; font-size: 10px; color: #888;
+               background: #f0f0f0; text-transform: uppercase; }
   .composer { padding-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .composer input[type=text] { flex: 1; min-width: 200px; }
   .right-pane { overflow-y: auto; padding-left: 6px; border-left: 1px solid #eee; }
@@ -143,18 +153,17 @@
       </div>
       <div id="transcript"></div>
       <div class="composer">
-        <input type="text" id="post-body" placeholder="message" disabled />
-        <select id="post-kind" disabled>
-          <option value="text">text</option>
-          <option value="system">system</option>
-        </select>
-        <input type="text" id="post-to" placeholder="to (scope, optional)" disabled />
+        <input type="text" id="post-body" placeholder="message or /command" disabled />
+        <input type="text" id="post-to" placeholder="to (scope; required for /command)" disabled />
         <button id="post-send" disabled>send</button>
       </div>
     </main>
     <aside class="right-pane">
       <details open><summary>Agents <button data-refresh="agents">refresh</button></summary>
         <div id="agents-list"></div>
+      </details>
+      <details><summary>Commands <button data-refresh="cmds">refresh</button> <span id="cmd-target" style="color:#888;font-size:10px"></span></summary>
+        <div id="cmd-list" class="cmd-list">pick an agent to load…</div>
       </details>
       <details><summary>Subscribers</summary>
         <div id="subs-list"></div>
@@ -420,6 +429,7 @@ document.querySelectorAll("[data-refresh]").forEach(btn => {
     else if (which === "scopes") refreshScopes();
     else if (which === "core") refreshCore();
     else if (which === "agents") refreshAgents();
+    else if (which === "cmds") loadCommands(defaultCmdScope());
   });
 });
 
@@ -558,7 +568,7 @@ async function attachToRoom(roomId) {
 }
 
 function setRoomEnabled(yes) {
-  for (const id of ["post-body", "post-kind", "post-to", "post-send"]) {
+  for (const id of ["post-body", "post-to", "post-send"]) {
     document.getElementById(id).disabled = !yes;
   }
 }
@@ -588,6 +598,7 @@ async function refreshRoomDetail() {
     const shadows = document.getElementById("shadow-list");
     subs.innerHTML = ""; shadows.innerHTML = "";
     for (const p of r.participants) {
+      if (p.left_at) continue;  // only show currently-attached
       if (p.kind === "subscriber") {
         const d = document.createElement("div");
         d.textContent = `${p.identifier} (joined ${p.joined_at})`;
@@ -614,16 +625,30 @@ async function refreshAgents() {
       const card = document.createElement("div");
       card.className = "agent-card";
       const live = a.live;
-      const liveHtml = live
-        ? `pid=${esc(live.pid)} status=${esc(live.status)} cli=${esc(live.agent_cli)}<br>started ${esc(live.started_at)}` +
-          (live.exited_at ? `<br>exited ${esc(live.exited_at)} code=${esc(live.exit_code)}` : "")
-        : (a.kind === "shadow_peer" ? `<em>remote (peer)</em>` : `<em>no live session</em>`);
+      let liveHtml;
+      if (live) {
+        const flagLine =
+          `mode=${esc(live.permission_mode || "?")} ` +
+          `model=${esc(live.model || "default")} ` +
+          `effort=${esc(live.effort || "default")}`;
+        liveHtml =
+          `pid=${esc(live.pid)} status=${esc(live.status)} cli=${esc(live.agent_cli)}<br>` +
+          `${flagLine}<br>` +
+          `started ${esc(live.started_at)}` +
+          (live.exited_at ? `<br>exited ${esc(live.exited_at)} code=${esc(live.exit_code)}` : "");
+      } else {
+        liveHtml = a.kind === "shadow_peer" ? `<em>remote (peer)</em>` : `<em>no live session</em>`;
+      }
       card.innerHTML =
         `<div class="scope">${esc(a.scope)} <span style="color:#888">[${esc(a.kind)}]</span></div>` +
         `<div>${liveHtml}</div>`;
       out.appendChild(card);
     }
     if (!r.agents.length) out.innerHTML = "<em>no agent/peer participants</em>";
+    // Auto-populate the command panel for the first local scope so users
+    // don't have to hunt for it. Re-load on each agents refresh so live-
+    // session slash commands appear once claude reports its init event.
+    loadCommands(defaultCmdScope());
   } catch (e) {
     out.innerHTML = `<span class="err">${esc(e.message)}</span>`;
   }
@@ -712,16 +737,109 @@ document.getElementById("post-body").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPost(); }
 });
 
-function sendPost() {
-  if (!ws || ws.readyState !== 1) return;
-  const body = document.getElementById("post-body").value;
+async function sendPost() {
+  const bodyEl = document.getElementById("post-body");
+  const toEl = document.getElementById("post-to");
+  const body = bodyEl.value;
   if (!body.trim()) return;
-  const kind = document.getElementById("post-kind").value || "text";
-  const to = document.getElementById("post-to").value.trim() || undefined;
-  const msg = { type: "post", body, kind };
+  const to = toEl.value.trim();
+
+  if (body.trim().startsWith("/")) {
+    // Slash command: must be targeted, must reach the REST endpoint so the
+    // server can parse + dispatch (or forward to claude unframed).
+    if (!to) {
+      setBanner("slash commands require a `to:` scope (e.g. awm/web-ui)");
+      return;
+    }
+    try {
+      const r = await api(
+        "POST",
+        `/rooms/${encodeURIComponent(currentRoomId)}/agents/${encodeURIComponent(to)}/slash`,
+        { cmd: body.trim() },
+      );
+      setBanner(r.handled
+        ? `slash handled: ${r.result.split("\n")[0].slice(0, 120)}`
+        : `slash forwarded to ${to}`);
+      bodyEl.value = "";
+    } catch (e) {
+      setBanner(`slash error: ${e.message}`);
+    }
+    return;
+  }
+
+  if (!ws || ws.readyState !== 1) return;
+  const msg = { type: "post", body, kind: "text" };
   if (to) msg.to = to;
   ws.send(JSON.stringify(msg));
-  document.getElementById("post-body").value = "";
+  bodyEl.value = "";
+}
+
+function setBanner(text) {
+  const el = document.getElementById("room-banner");
+  if (el) el.textContent = text;
+}
+
+async function loadCommands(scope) {
+  const list = document.getElementById("cmd-list");
+  const target = document.getElementById("cmd-target");
+  if (!scope) {
+    list.innerHTML = "<div style='padding:6px'>pick an agent to load…</div>";
+    target.textContent = "";
+    return;
+  }
+  target.textContent = `(${scope})`;
+  list.innerHTML = "<div style='padding:6px'>loading…</div>";
+  try {
+    const r = await api(
+      "GET",
+      `/rooms/${encodeURIComponent(currentRoomId)}/agents/${encodeURIComponent(scope)}/slash-commands`,
+    );
+    const parts = [];
+    parts.push(`<div class="cmd-group">server</div>`);
+    for (const c of r.server) {
+      parts.push(
+        `<div class="cmd-row" data-fill="${esc(c.name + (c.args ? ' ' + c.args : ''))}" data-to="${esc(scope)}">` +
+        `<code>${esc(c.name)} ${esc(c.args)}</code>` +
+        `<span class="desc">${esc(c.description)}</span></div>`,
+      );
+    }
+    parts.push(`<div class="cmd-group">claude</div>`);
+    if (r.claude.length === 0) {
+      parts.push(`<div style="padding:4px 6px;color:#888;font-size:11px"><em>no live session yet</em></div>`);
+    } else {
+      for (const name of r.claude) {
+        parts.push(
+          `<div class="cmd-row" data-fill="/${esc(name)}" data-to="${esc(scope)}">` +
+          `<code>/${esc(name)}</code></div>`,
+        );
+      }
+    }
+    list.innerHTML = parts.join("");
+    list.querySelectorAll(".cmd-row").forEach((el) => {
+      el.addEventListener("click", () => {
+        document.getElementById("post-body").value = el.dataset.fill + " ";
+        document.getElementById("post-to").value = el.dataset.to;
+        document.getElementById("post-body").focus();
+      });
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="err" style="padding:6px">${esc(e.message)}</div>`;
+  }
+}
+
+// Pick the first local-scope agent as the default command-panel target.
+function defaultCmdScope() {
+  const cards = document.querySelectorAll("#agents-list .agent-card");
+  for (const c of cards) {
+    const tag = c.querySelector(".scope");
+    if (!tag) continue;
+    const text = tag.textContent || "";
+    // skip shadow_peer entries: those show "[shadow_peer]" in the tag.
+    if (text.includes("[shadow_peer]")) continue;
+    const scope = (text.split(" ")[0] || "").trim();
+    if (scope) return scope;
+  }
+  return null;
 }
 
 document.getElementById("close-room-btn").addEventListener("click", async () => {

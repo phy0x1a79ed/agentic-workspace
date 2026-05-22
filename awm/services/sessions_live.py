@@ -91,6 +91,16 @@ class LiveSession:
         self.input_pump_task: Optional[asyncio.Task] = None
         # Stdin frames audit-log for tests (mirror of what gets written).
         self.stdin_frames_log = log_path.parent / "agent.log"
+        # Spawn-time flags + captured claude session id (from init event).
+        # Resume preserves server-side conversation state across respawns.
+        self.permission_mode: str = "default"
+        self.model: Optional[str] = None
+        self.effort: Optional[str] = None
+        self.claude_session_id: Optional[str] = None
+        # Slash commands advertised by claude in the init event (per-scope).
+        self.claude_slash_commands: list[str] = []
+        # In-flight respawn lock so concurrent /restart calls don't fight.
+        self.respawn_lock: asyncio.Lock = asyncio.Lock()
 
 
 _registry: dict[int, LiveSession] = {}
@@ -110,13 +120,51 @@ class ScopeBusyError(Exception):
 # Public API
 # ---------------------------------------------------------------------------
 
+_VALID_PERMISSION_MODES = (
+    "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan",
+)
+_VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _build_claude_argv(
+    *, permission_mode: str, model: Optional[str], effort: Optional[str],
+    resume_session_id: Optional[str],
+) -> list[str]:
+    argv = [
+        "claude", "--print", "--verbose",
+        "--input-format=stream-json", "--output-format=stream-json",
+        "--include-partial-messages",
+        f"--permission-mode={permission_mode}",
+    ]
+    if model:
+        argv.extend(["--model", model])
+    if effort:
+        argv.extend(["--effort", effort])
+    if resume_session_id:
+        argv.extend(["--resume", resume_session_id])
+    return argv
+
+
 async def create_session(*, project: str, scope: str,
-                         agent_cli: str = "claude") -> LiveSession:
+                         agent_cli: str = "claude",
+                         permission_mode: str = "default",
+                         model: Optional[str] = None,
+                         effort: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> LiveSession:
     """Spawn a claude subprocess and register it. Raises ScopeBusyError
     if the scope already has an active session."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Live sessions require: {sorted(_SUPPORTED_CLIS)}"
+        )
+    if permission_mode not in _VALID_PERMISSION_MODES:
+        raise ValueError(
+            f"Invalid permission_mode {permission_mode!r}; "
+            f"choices: {list(_VALID_PERMISSION_MODES)}"
+        )
+    if effort is not None and effort not in _VALID_EFFORTS:
+        raise ValueError(
+            f"Invalid effort {effort!r}; choices: {list(_VALID_EFFORTS)}"
         )
 
     key = _scope_key(project, scope)
@@ -137,12 +185,25 @@ async def create_session(*, project: str, scope: str,
         started_at = _now()
         conn = get_connection()
         try:
+            # If no resume id was passed, recover the most recent one this
+            # scope captured in a prior life. Lets re-invite-after-death
+            # still pass --resume even though _by_scope was reaped.
+            if resume_session_id is None:
+                row = conn.execute(
+                    "SELECT claude_session_id FROM agent_sessions "
+                    "WHERE project=? AND scope=? AND claude_session_id IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (project, scope),
+                ).fetchone()
+                if row is not None:
+                    resume_session_id = row["claude_session_id"]
             try:
                 cur = conn.execute(
                     "INSERT INTO agent_sessions "
-                    "(project, scope, pid, status, agent_cli, started_at, log_path) "
-                    "VALUES (?, ?, 0, 'starting', ?, ?, ?)",
-                    (project, scope, agent_cli, started_at, str(log_path)),
+                    "(project, scope, pid, status, agent_cli, started_at, log_path, claude_session_id) "
+                    "VALUES (?, ?, 0, 'starting', ?, ?, ?, ?)",
+                    (project, scope, agent_cli, started_at, str(log_path),
+                     resume_session_id),
                 )
                 session_id = cur.lastrowid
                 conn.commit()
@@ -155,15 +216,14 @@ async def create_session(*, project: str, scope: str,
             conn.close()
 
         # Spawn the subprocess.
+        argv = _build_claude_argv(
+            permission_mode=permission_mode, model=model, effort=effort,
+            resume_session_id=resume_session_id,
+        )
         log_fp = open(log_path, "ab")
         try:
             proc = await asyncio.create_subprocess_exec(
-                "claude",
-                "--print",
-                "--verbose",
-                "--input-format=stream-json",
-                "--output-format=stream-json",
-                "--include-partial-messages",
+                *argv,
                 cwd=str(workspace_dir),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -200,6 +260,12 @@ async def create_session(*, project: str, scope: str,
             agent_cli=agent_cli, log_path=log_path, proc=proc,
         )
         session.started_at = started_at
+        session.permission_mode = permission_mode
+        session.model = model
+        session.effort = effort
+        # Optimistically reuse the resume id; the init event will overwrite
+        # it with the authoritative one claude reports.
+        session.claude_session_id = resume_session_id
         _registry[session_id] = session
         _by_scope[key] = session
 
@@ -309,9 +375,13 @@ def _extract_renderable(parsed: dict) -> list[tuple[str, str]]:
                     snippet = snippet[:240] + "…"
                 out.append(("tool_result", snippet or "[tool_result: empty]"))
     elif t == "result":
-        body = parsed.get("result")
-        if isinstance(body, str) and body.strip():
-            out.append(("text", body.strip()))
+        # The successful "result" event repeats the final assistant text we
+        # already posted from the preceding "assistant" event, so skip it.
+        # Errors aren't carried in any assistant event, so surface them here.
+        if parsed.get("is_error"):
+            body = parsed.get("result")
+            if isinstance(body, str) and body.strip():
+                out.append(("system", f"[error] {body.strip()}"))
     return out
 
 
@@ -351,6 +421,26 @@ async def _reader_loop(session: LiveSession) -> None:
             except OSError:
                 pass
             continue
+
+        # Capture init metadata so /restart can resume + the UI knows what
+        # slash commands this scope's claude exposes.
+        if parsed.get("type") == "system" and parsed.get("subtype") == "init":
+            sid = parsed.get("session_id")
+            if isinstance(sid, str) and sid != session.claude_session_id:
+                session.claude_session_id = sid
+                # Persist so re-invite after death can still --resume.
+                conn = get_connection()
+                try:
+                    conn.execute(
+                        "UPDATE agent_sessions SET claude_session_id=? WHERE id=?",
+                        (sid, session.id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            cmds = parsed.get("slash_commands")
+            if isinstance(cmds, list):
+                session.claude_slash_commands = [c for c in cmds if isinstance(c, str)]
 
         events = _extract_renderable(parsed)
         if not events:
@@ -459,6 +549,95 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
     except ProcessLookupError:
         pass
     return _info_from_row(_row_for(session_id))
+
+
+# ---------------------------------------------------------------------------
+# Respawn + slash-input primitives
+# ---------------------------------------------------------------------------
+
+class NoSessionError(Exception):
+    """No live session exists for the requested scope."""
+
+
+async def respawn_session(
+    scope_key: str, *,
+    force: bool = False,
+    permission_mode: Optional[str] = None,
+    model: Optional[str] = None,
+    effort: Optional[str] = None,
+) -> LiveSession:
+    """Kill the current LiveSession for ``scope_key`` and spawn a fresh one
+    with ``--resume <claude_session_id>`` so conversation context is
+    preserved server-side.
+
+    Any of permission_mode/model/effort that aren't passed inherit the
+    current session's values. ``force=True`` uses SIGKILL; otherwise
+    SIGTERM with a short drain wait.
+    """
+    current = _by_scope.get(scope_key)
+    if current is None:
+        raise NoSessionError(f"no active session for {scope_key}")
+
+    async with current.respawn_lock:
+        new_mode = permission_mode if permission_mode is not None else current.permission_mode
+        new_model = model if model is not None else current.model
+        new_effort = effort if effort is not None else current.effort
+        resume_sid = current.claude_session_id
+        project, scope = current.project, current.scope
+
+        # Tear down the old subprocess and wait for the waiter loop to
+        # de-register it from _by_scope before spawning the replacement.
+        if force:
+            await kill_session(current.id)
+        else:
+            await stop_session(current.id)
+        # _waiter_loop removes from _by_scope on exit; bounded wait.
+        for _ in range(60):  # up to ~3s
+            if _by_scope.get(scope_key) is None:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            # Drain didn't complete — escalate.
+            await kill_session(current.id)
+            for _ in range(40):
+                if _by_scope.get(scope_key) is None:
+                    break
+                await asyncio.sleep(0.05)
+
+    return await create_session(
+        project=project, scope=scope,
+        permission_mode=new_mode, model=new_model, effort=new_effort,
+        resume_session_id=resume_sid,
+    )
+
+
+async def send_slash(scope_key: str, body: str) -> None:
+    """Write a raw stream-json user message containing ``body`` directly to
+    the scope's claude stdin, bypassing the room-framing pump.
+
+    Slash commands like /clear or /compact MUST start the user message at
+    position 0 to be recognized as commands. The standard input pump's
+    ``[room:X from:Y]\\n`` prefix breaks that, so this path exists.
+    """
+    session = _by_scope.get(scope_key)
+    if session is None:
+        raise NoSessionError(f"no active session for {scope_key}")
+    if session.proc is None or session.proc.stdin is None:
+        raise NoSessionError(f"session for {scope_key} has no stdin")
+    if session.proc.stdin.is_closing():
+        raise NoSessionError(f"session for {scope_key} stdin is closing")
+    payload = {
+        "type": "user",
+        "message": {"role": "user", "content": body},
+    }
+    line = (json.dumps(payload) + "\n").encode("utf-8")
+    session.proc.stdin.write(line)
+    await session.proc.stdin.drain()
+    try:
+        with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
+            fp.write(f"STDIN(slash) {body!r}\n")
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,9 @@ from fastapi import (
 from awm import ws_envelope as env
 from awm.middleware_auth import require_bearer
 from awm.models import (
+    AgentSlashCatalog,
+    AgentSlashRequest,
+    AgentSlashResponse,
     LiveAgentState,
     ParticipantInfo,
     PostInfo,
@@ -43,8 +46,9 @@ from awm.models import (
     RoomListResponse,
     RoomPostRequest,
     RoomRemoveRequest,
+    SlashCommandInfo,
 )
-from awm.services import orchestration, rooms as rooms_svc
+from awm.services import agent_slash, orchestration, rooms as rooms_svc
 from awm.ws_auth import authenticate_room_ws
 
 
@@ -369,12 +373,119 @@ def get_room_agents(room_id: str):
                         exited_at=session.exited_at,
                         exit_code=session.exit_code,
                         agent_cli=session.agent_cli,
+                        permission_mode=session.permission_mode,
+                        model=session.model,
+                        effort=session.effort,
+                        claude_session_id=session.claude_session_id,
                     )
         agents.append(RoomAgentInfo(
             scope=p.identifier, kind=p.kind, identifier=p.identifier,
             joined_at=p.joined_at, live=live,
         ))
     return RoomAgentsResponse(agents=agents)
+
+
+# ---------------------------------------------------------------------------
+# Agent slash-command surface
+# ---------------------------------------------------------------------------
+
+def _require_local_scope_participant(room_id: str, scope: str) -> None:
+    """Reject if scope isn't a local scope participant in the room.
+
+    Slash commands are agent-control and must be ``to:``-targeted; broadcast
+    or untargeted slashes are refused at the API edge.
+    """
+    room = rooms_svc.get_room(room_id)
+    if room is None:
+        raise HTTPException(404, f"no such room: {room_id}")
+    base_scope, peer = rooms_svc._split_scope(scope)
+    if peer is not None:
+        raise HTTPException(
+            400, f"slash commands on remote scopes are not yet supported: {scope!r}"
+        )
+    for p in rooms_svc.list_participants(room_id, active_only=True):
+        if p.kind == "scope" and p.identifier == scope:
+            return
+    raise HTTPException(
+        404, f"scope {scope!r} is not an active participant of room {room_id!r}"
+    )
+
+
+@router.get(
+    "/{room_id}/agents/{scope:path}/slash-commands",
+    response_model=AgentSlashCatalog,
+    dependencies=[Depends(require_bearer)],
+)
+def get_agent_slash_commands(room_id: str, scope: str) -> AgentSlashCatalog:
+    """Catalog of slash commands for the given scope.
+
+    Returns server-controlled commands plus any commands the scope's live
+    claude reported in its init event (claude-specific list).
+    """
+    _require_local_scope_participant(room_id, scope)
+    from awm.services import sessions_live
+    sess = sessions_live._by_scope.get(scope)
+    claude_cmds = list(sess.claude_slash_commands) if sess is not None else []
+    return AgentSlashCatalog(
+        server=[SlashCommandInfo(**c) for c in agent_slash.server_catalog()],
+        claude=claude_cmds,
+    )
+
+
+@router.post(
+    "/{room_id}/agents/{scope:path}/slash",
+    response_model=AgentSlashResponse,
+    dependencies=[Depends(require_bearer)],
+)
+async def post_agent_slash(
+    room_id: str, scope: str, req: AgentSlashRequest, request: Request,
+) -> AgentSlashResponse:
+    """Run a slash command against a scope's agent.
+
+    If the leading token matches a server command, the registered handler
+    runs and its message is posted to the room as ``system``. Otherwise
+    the line is forwarded unframed to the scope's claude stdin so /clear,
+    /compact, plugin commands etc. still work.
+
+    Either way the original command is recorded in the room transcript as
+    kind=``slash`` (authored by the caller) for audit.
+    """
+    _require_local_scope_participant(room_id, scope)
+    line = (req.cmd or "").strip()
+    if not line.startswith("/"):
+        raise HTTPException(400, "slash commands must start with '/'")
+
+    author = _opener_from_request(request)
+    # Audit-log the invocation in the room first.
+    try:
+        rooms_svc.post(room_id, author=author, body=line, kind="slash",
+                       to_scope=scope)
+    except rooms_svc.RoomError as exc:
+        raise HTTPException(409, str(exc))
+
+    try:
+        handled, message = await agent_slash.dispatch(scope, line)
+    except agent_slash.SlashParseError as exc:
+        raise HTTPException(400, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    if handled:
+        # Post the server response as a system message so all subscribers
+        # see what happened.
+        try:
+            rooms_svc.post(room_id, author="system", body=message, kind="system")
+        except rooms_svc.RoomError:
+            pass
+        return AgentSlashResponse(handled=True, result=message)
+
+    # Unknown server command — forward raw to the scope's claude stdin.
+    from awm.services import sessions_live
+    try:
+        await sessions_live.send_slash(scope, line)
+    except sessions_live.NoSessionError as exc:
+        raise HTTPException(409, str(exc))
+    return AgentSlashResponse(handled=False, result="")
 
 
 # ---------------------------------------------------------------------------

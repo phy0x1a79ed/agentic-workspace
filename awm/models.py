@@ -477,6 +477,10 @@ class LiveAgentState(BaseModel):
     exited_at: str | None = None
     exit_code: int | None = None
     agent_cli: str | None = None
+    permission_mode: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    claude_session_id: str | None = None
 
 
 class RoomAgentInfo(BaseModel):
@@ -489,6 +493,30 @@ class RoomAgentInfo(BaseModel):
 
 class RoomAgentsResponse(BaseModel):
     agents: list[RoomAgentInfo]
+
+
+# ---------------------------------------------------------------------------
+# Agent slash-command surface
+# ---------------------------------------------------------------------------
+
+class SlashCommandInfo(BaseModel):
+    name: str          # leading slash, e.g. "/restart"
+    args: str          # display string, e.g. "[mode]"
+    description: str
+
+
+class AgentSlashCatalog(BaseModel):
+    server: list[SlashCommandInfo]
+    claude: list[str]  # bare claude command names (no leading slash)
+
+
+class AgentSlashRequest(BaseModel):
+    cmd: str           # full command line including leading slash
+
+
+class AgentSlashResponse(BaseModel):
+    handled: bool      # True = server command; False = forwarded to claude
+    result: str        # result message (empty for forwarded)
 
 
 # ---------------------------------------------------------------------------

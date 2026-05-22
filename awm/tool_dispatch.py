@@ -531,14 +531,18 @@ def _exposed_url_and_token() -> tuple[str, str]:
     token_env = os.environ.get("AWM_AUTH_TOKEN")
     if token_env:
         return f"http://{host}:{port}", token_env.strip()
-    token_path = Path(
-        os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))
+    candidates = [
+        Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))),
+        Path.home() / ".awm" / "auth.token",
+        config.AUTH_TOKEN_FILE,
+    ]
+    for token_path in candidates:
+        if token_path.exists():
+            return f"http://{host}:{port}", token_path.read_text().strip()
+    raise RuntimeError(
+        f"auth token not found in any of: {[str(p) for p in candidates]}; "
+        f"run `awm exposed init-token`"
     )
-    if not token_path.exists():
-        raise RuntimeError(
-            f"auth token not found at {token_path}; run `awm exposed init-token`"
-        )
-    return f"http://{host}:{port}", token_path.read_text().strip()
 
 
 def _dispatch_room_tool(name: str, args: dict) -> str:

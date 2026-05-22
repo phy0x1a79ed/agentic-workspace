@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     started_at TEXT NOT NULL,
     exited_at TEXT,
     exit_code INTEGER,
-    log_path TEXT NOT NULL
+    log_path TEXT NOT NULL,
+    claude_session_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
@@ -412,6 +413,12 @@ ALTER TABLE rooms ADD COLUMN close_on_exit INTEGER NOT NULL DEFAULT 0;
 -- No schema change required (status column is TEXT with no CHECK constraint);
 -- this migration is a marker so older code knows the domain has grown.
 SELECT 1;
+""",
+    (23, 24): """\
+-- Persist claude's resume id so re-invite after the agent process dies
+-- (and is reaped from sessions_live._by_scope) can still pass --resume
+-- to the new claude subprocess.
+ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT;
 """,
     (20, 21): """\
 -- One running agent process per (project, scope). Partial unique index
