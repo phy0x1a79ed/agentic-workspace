@@ -8,7 +8,7 @@ integration yet.
 ## Setup
 
 ```bash
-# Add deps to the awm env (faster-whisper, pocket-tts, numpy)
+# Python deps for the awm env (faster-whisper, pocket-tts, numpy)
 cd /home/tony/agentic_workspace/projects/awm/voice
 mamba env update -n awm -f environment.yml
 ```
@@ -16,20 +16,55 @@ mamba env update -n awm -f environment.yml
 Model downloads happen automatically on first launch:
 - whisper `small.en` (~250 MB) → `~/.cache/huggingface/`
 - pocket-tts weights (~440 MB) → `~/.cache/huggingface/`
-- voice state for `jean` is fetched on demand
+- voice state for the default voice (`jean`) is fetched on demand
 
 Total first-run download ≈ 700 MB. Subsequent starts use the cache.
 
-## Run
+## Run (local)
 
 ```bash
 cd demo
 VOICE_NAME=jean mamba run -n awm uvicorn server:app --host 127.0.0.1 --port 7830
 ```
 
-Open <http://localhost:7830/>. Grant mic permission. Select the correct
-input device in Chrome's site permissions if the meter doesn't move when
-you talk.
+Open <http://localhost:7830/> — `localhost` gets the browser's
+secure-context exemption, so the mic works over plain HTTP here.
+
+## Run (exposed over ZeroTier / LAN, HTTPS)
+
+Any non-`localhost` origin requires HTTPS for `getUserMedia` to work in
+the browser. One-time cert generation:
+
+```bash
+cd demo
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj '/CN=awm-voice-demo' \
+  -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' \
+  -keyout dev.key -out dev.crt
+```
+
+Launch on a port that's already routed through to this WSL VM (here
+`12100`, in the user's pre-provisioned `12100-12150` exposed range):
+
+```bash
+cd demo
+VOICE_NAME=jean mamba run -n awm uvicorn server:app \
+  --host 0.0.0.0 --port 12100 \
+  --ssl-keyfile dev.key --ssl-certfile dev.crt
+```
+
+Open `https://<host-ip>:12100/` from any ZeroTier peer. Chrome will
+warn about the self-signed cert — click **Advanced → Proceed**. After
+that the WebSocket rides on `wss://`, the mic prompt appears normally,
+and the demo behaves the same as the local-only mode.
+
+There's still **no auth** on the WS/REST surface. ZeroTier membership
+is the trust boundary. For belt-and-suspenders, lift the bearer-token
+pattern from `awm/middleware_auth.py`.
+
+In either mode, grant mic permission on first load. If the live mic meter
+stays flat while you speak, select the correct input device in Chrome's
+site permissions for this origin.
 
 ## Configuration
 
@@ -110,6 +145,7 @@ To turn this off, delete `mcp-config.json` (or remove the
 | `mcp-config.json` | MCP config registering `show` for the claude subprocess. |
 | `stt.py` | faster-whisper wrapper (lazy load, configurable model/compute). |
 | `tts.py` | pocket-tts wrapper. Voice from `VOICE_NAME`. |
+| `dev.key` + `dev.crt` | Self-signed TLS material for HTTPS exposure (gitignored). |
 | `text_clean.py` | Strip markdown / code / URLs before sending to TTS. |
 | `static/index.html` + `client.js` | PTT UI, mic meter, volume slider, status pill, WebAudio playback queue, markdown-aware aside rendering. |
 | `static/mic-worklet.js` | AudioWorklet: downsample mic to 16kHz int16 PCM. |

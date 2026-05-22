@@ -5,8 +5,14 @@
 last_utterance.wav
 smoke.wav
 
+# TLS material — self-signed dev cert
+*.key
+*.crt
+*.pem
+
 # downloaded model assets
 voices/
+vits/
 
 # python
 __pycache__/
