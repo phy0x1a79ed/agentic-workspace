@@ -109,7 +109,7 @@ class Room:
 @dataclass
 class Participant:
     room_id: str
-    kind: str           # 'scope' | 'subscriber' | 'shadow_peer'
+    kind: str           # 'scope' | 'subscriber' | 'shadow_peer' | 'voice'
     identifier: str
     joined_at: str
     left_at: str | None
@@ -476,7 +476,7 @@ def list_participants(room_id: str, *, active_only: bool = True) -> list[Partici
 
 
 def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
-    if kind not in ("scope", "subscriber", "shadow_peer"):
+    if kind not in ("scope", "subscriber", "shadow_peer", "voice"):
         raise ValueError(f"invalid participant kind: {kind!r}")
     room = get_room(room_id)
     if room is None:

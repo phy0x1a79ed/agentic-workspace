@@ -259,6 +259,11 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | GET | `/peers` | List registered remote peers (control-center) |
 | GET | `/peers/{id}/ping` | Probe peer via SSH tunnel, report rtt |
 | GET | `/projects` | List projects with per-status scope counts |
+| GET | `/voice/state` | Current user's voice agent status (joined rooms, connected tabs) |
+| POST | `/voice/text` | Send typed input to the voice agent (no-mic alternative) |
+| POST | `/voice/rooms/{id}/join` | Voice agent joins a room as a `voice:<user>` participant |
+| POST | `/voice/rooms/{id}/leave` | Voice agent leaves a room |
+| WS | `/voice/ws` | Per-user voice WebSocket (PTT audio, transcripts, TTS playback) |
 
 ## Network-Exposed Listener
 
@@ -385,6 +390,36 @@ single-file vanilla-JS control center with hash-routed tabs:
 Token + identity go in the URL hash so they never reach server logs. The
 legacy `/ui/room.html` URL redirects into `#/room/<id>` for backwards
 compatibility with existing bookmarks.
+
+### Voice side panel
+
+The control center has an always-visible voice side panel on the right
+of every tab. Push-to-talk (mouse on the PTT button or hold `Space`
+outside text fields), faster-whisper STT, a persistent `claude`
+subprocess as the voice agent, kyutai pocket-tts for playback, and a
+`show()` MCP side channel that renders code / paths / links / text into
+the transcript without speaking them.
+
+- **Per-user singleton, cross-window sync.** One voice agent per
+  identified user (keyed off the `X-Awm-As` header / hash). Multiple
+  browser tabs of the same user share that agent — PTT in window A
+  streams the transcript and TTS to every tab in real time. The agent
+  persists across tab close/reload; idle for `VOICE_IDLE_SEC` (30 min
+  default) with no connected clients releases it.
+- **Joins rooms as a real participant.** Click **+ join** in the side
+  panel to register the voice agent into an active room with kind
+  `voice` and identifier `<user>`. The agent's claude has MCP access to
+  the `awm` rooms tools (`room_list`, `room_get`, `room_post`,
+  `room_history`, `room_invite`, `room_search`) and posts as
+  `voice:<user>` in the joined room's transcript.
+- **HTTPS / mic access.** Browsers gate `getUserMedia` to secure
+  contexts. `localhost` is exempt; for ZeroTier / LAN access, configure
+  `AWM_TLS_CERT`/`AWM_TLS_KEY` on the exposed listener.
+- **First-run model download.** Whisper `small.en` + pocket-tts weights
+  + the default voice (`VOICE_NAME=jean`) total ~700 MB on first launch
+  (cached under `~/.cache/huggingface/`). The exposed listener starts
+  immediately and warms the models in the background — first PTT may
+  wait a few seconds while loading completes.
 
 ## Federation: Networked Workspaces
 

@@ -53,7 +53,38 @@ async def lifespan(app: FastAPI):
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
+    # Warm voice models in the background — first connection waits a few
+    # seconds rather than every connection paying full load cost. Failures
+    # log but don't take down the listener.
+    async def _warm_voice() -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            from awm.voice.stt import get_transcriber
+            from awm.voice.tts import get_synthesizer
+            t0 = time.perf_counter()
+            await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
+            await loop.run_in_executor(None, get_synthesizer()._ensure_loaded)
+            print(f"[awm-exposed] voice models ready in "
+                  f"{time.perf_counter() - t0:.1f}s")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[awm-exposed] voice models unavailable: {exc}")
+
+    warmup_task = asyncio.create_task(_warm_voice())
+
+    try:
+        from awm.voice.registry import get_registry
+        get_registry().start_reaper()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice registry init failed: {exc}")
+
     yield
+
+    warmup_task.cancel()
+    try:
+        from awm.voice.registry import get_registry
+        await get_registry().shutdown()
+    except Exception:
+        pass
 
     if config.EXPOSED_PID_FILE.exists():
         try:
@@ -152,10 +183,12 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 # ---------------------------------------------------------------------------
 
 from awm.api.rooms import router as rooms_router  # noqa: E402
+from awm.voice.router import router as voice_router  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
+app.include_router(voice_router)
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
@@ -216,7 +249,8 @@ async def gate_and_auth_for_core(request: Request, call_next):
     # double work. /ui is intentionally unauthenticated — the static
     # HTML pulls its bearer from the URL hash and uses it for /rooms
     # API calls.
-    if path.startswith("/rooms") or path.startswith("/ui"):
+    if path.startswith("/rooms") or path.startswith("/ui") \
+            or path.startswith("/voice"):
         return await call_next(request)
 
     # Auth check

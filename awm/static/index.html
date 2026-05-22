@@ -29,8 +29,15 @@
   .status-line { color: #666; font-size: 11px; padding: 4px 0; }
   .err { color: #b00; }
   .ok { color: #060; }
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+           height: calc(100vh - 32px); min-height: 0; }
+  .shell > main { overflow-y: auto; min-width: 0; }
+  .shell > aside.voice-panel { border-left: 1px solid #ccc;
+                               background: #fafafa; overflow: hidden;
+                               display: flex; flex-direction: column;
+                               min-height: 0; }
   .room-layout { display: grid; grid-template-columns: 200px 1fr 240px;
-                 gap: 12px; height: calc(100vh - 80px); }
+                 gap: 12px; height: 100%; }
   .room-list { overflow-y: auto; border-right: 1px solid #eee; padding-right: 6px; }
   .room-list .room-card { padding: 4px 6px; cursor: pointer;
                           border-bottom: 1px dashed #ddd; }
@@ -67,6 +74,7 @@
   form.inline label { display: block; margin: 4px 0; font-size: 11px; }
   form.inline input[type=text], form.inline textarea { width: 100%; }
 </style>
+<link rel="stylesheet" href="/ui/voice-panel.css">
 </head>
 <body>
 <nav>
@@ -76,6 +84,9 @@
   <a href="#/room/" data-tab="room" id="nav-room" hidden>room</a>
   <span class="me" id="me"></span>
 </nav>
+
+<div class="shell">
+<main>
 
 <section id="tab-status" hidden>
   <h2>Status</h2>
@@ -178,6 +189,43 @@
     </aside>
   </div>
 </section>
+</main>
+
+<aside class="voice-panel" id="voice-panel">
+  <div class="vp-header">
+    <strong>voice</strong>
+    <span class="vp-conn" id="vp-conn">disconnected</span>
+  </div>
+  <div class="vp-stage" id="vp-stage">idle</div>
+  <button class="vp-ptt" id="vp-ptt" type="button">
+    Hold <kbd>SPACE</kbd> or this button to talk
+  </button>
+  <div class="vp-meter" id="vp-meter">mic: <span id="vp-meter-val">—</span></div>
+  <div class="vp-latency" id="vp-latency">STT —ms · first-token —ms · first-audio —ms</div>
+  <div class="vp-rooms">
+    <div class="vp-rooms-header">
+      <span>joined rooms</span>
+      <button id="vp-join-toggle" type="button">+ join</button>
+    </div>
+    <div class="vp-rooms-list" id="vp-rooms-list"><em>none</em></div>
+    <div class="vp-room-picker" id="vp-room-picker" hidden>
+      <select id="vp-room-select"><option value="">loading…</option></select>
+      <button id="vp-room-join" type="button">join</button>
+      <button id="vp-room-cancel" type="button">cancel</button>
+    </div>
+  </div>
+  <div class="vp-input">
+    <input type="text" id="vp-text" placeholder="type to voice agent…" />
+    <button id="vp-text-send" type="button">send</button>
+  </div>
+  <div class="vp-transcript" id="vp-transcript"></div>
+  <div class="vp-volume">
+    <label for="vp-vol">tts vol</label>
+    <input id="vp-vol" type="range" min="0" max="200" value="100" step="1">
+    <span id="vp-vol-val">100%</span>
+  </div>
+</aside>
+</div>
 
 <script>
 "use strict";
@@ -890,5 +938,6 @@ document.querySelectorAll("nav a[data-tab]").forEach(a => {
 
 applyRoute();
 </script>
+<script src="/ui/voice-panel.js"></script>
 </body>
 </html>
