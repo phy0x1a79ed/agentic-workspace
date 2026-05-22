@@ -13,6 +13,7 @@ smoke.wav
 # downloaded model assets
 voices/
 vits/
+models/
 
 # python
 __pycache__/

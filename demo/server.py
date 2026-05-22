@@ -40,8 +40,17 @@ from contextlib import asynccontextmanager
 
 from claude_session import ClaudeSession
 from stt import get_transcriber
+from stt_streaming import get_streaming_recognizer, get_whisper_streaming_recognizer
 from text_clean import clean_for_tts
 from tts import get_synthesizer
+
+
+import os
+
+# "whisper" — non-streaming faster-whisper, transcribe on PTT release (most accurate; default)
+# "sherpa" — sherpa-onnx streaming zipformer (fast partials, lower accuracy on conversational)
+# "whisper-stream" — rolling-window faster-whisper (partials are slow on CPU; see README caveat)
+STT_BACKEND = os.environ.get("STT_BACKEND", "whisper").lower()
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -53,10 +62,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    log.info("loading TTS + STT models…")
+    log.info("loading TTS + STT models (backend=%s)…", STT_BACKEND)
     t0 = time.monotonic()
     await loop.run_in_executor(None, get_synthesizer()._ensure_loaded)
-    await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
+    if STT_BACKEND == "sherpa":
+        await loop.run_in_executor(None, get_streaming_recognizer()._ensure_loaded)
+    elif STT_BACKEND == "whisper-stream":
+        await loop.run_in_executor(None, get_whisper_streaming_recognizer()._ensure_loaded)
+    else:
+        await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
     log.info("models ready in %.1fs", time.monotonic() - t0)
     yield
 
@@ -73,6 +87,18 @@ async def index() -> FileResponse:
 # Sentence boundary — split on terminal punctuation followed by whitespace
 # or end-of-buffer. Keeps the punctuation with the sentence.
 _SENTENCE_RE = re.compile(r"[^.!?\n]+[.!?\n]+|\Z", re.DOTALL)
+
+
+def _pretty(text: str) -> str:
+    """Normalize STT output. Sherpa zipformer emits ALL CAPS no punctuation;
+    whisper emits already-cased text. Detect and only fix the former."""
+    s = text.strip()
+    if not s:
+        return s
+    if s == s.upper() and any(c.isalpha() for c in s):
+        s = s.lower()
+        return s[:1].upper() + s[1:]
+    return s
 
 
 def _split_sentences(buf: str) -> tuple[list[str], str]:
@@ -121,6 +147,15 @@ class Conn:
         self.turn_seq = 0
         self.tts = get_synthesizer()
         self.stt = get_transcriber()
+        if STT_BACKEND == "sherpa":
+            self.stt_stream = get_streaming_recognizer()
+        elif STT_BACKEND == "whisper-stream":
+            self.stt_stream = get_whisper_streaming_recognizer()
+        else:
+            self.stt_stream = None
+        self.stt_session = None
+        self._last_partial = ""
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.reader_task: asyncio.Task | None = None
         self.send_lock = asyncio.Lock()  # serialize WS sends (binary + json)
 
@@ -149,11 +184,31 @@ class Conn:
 
     async def handle_start(self) -> None:
         self.pcm_chunks.clear()
+        self._last_partial = ""
+        self._loop = asyncio.get_running_loop()
+        if STT_BACKEND == "sherpa":
+            self.stt_session = self.stt_stream.new_session()
+        elif STT_BACKEND == "whisper-stream":
+            self.stt_session = self.stt_stream.new_session(on_partial=self._partial_from_thread)
+            self.stt_session.start()
         self.recording = True
         # Cancel any in-flight TTS turn — user is barging in.
         if self.turn is not None:
             self.turn.cancelled = True
         await self._status("listening", "listening…")
+
+    def _partial_from_thread(self, text: str) -> None:
+        """Bridge worker-thread partial callbacks onto the asyncio loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._enqueue_partial, text)
+
+    def _enqueue_partial(self, text: str) -> None:
+        if text == self._last_partial:
+            return
+        self._last_partial = text
+        asyncio.create_task(self.send_json({"type": "stt_partial", "text": _pretty(text)}))
 
     async def handle_end(self) -> None:
         self.recording = False
@@ -189,11 +244,16 @@ class Conn:
 
         t0 = time.monotonic()
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(
-            None, self.stt.transcribe, pcm, 16000
-        )
+        if self.stt_session is not None:
+            sess, self.stt_session = self.stt_session, None
+            text = await loop.run_in_executor(None, sess.finalize)
+            text = _pretty(text)
+        else:
+            text = await loop.run_in_executor(
+                None, self.stt.transcribe, pcm, 16000
+            )
         stt_ms = int((time.monotonic() - t0) * 1000)
-        log.info("STT (%dms): %r", stt_ms, text)
+        log.info("STT [%s] (%dms): %r", STT_BACKEND, stt_ms, text)
         await self.send_json({"type": "latency", "stage": "stt", "ms": stt_ms})
         if not text:
             await self.send_json({"type": "transcript", "text": ""})
@@ -212,8 +272,22 @@ class Conn:
             self.turn.cancelled = True
 
     async def add_audio(self, data: bytes) -> None:
-        if self.recording:
-            self.pcm_chunks.append(data)
+        if not self.recording:
+            return
+        self.pcm_chunks.append(data)
+        sess = self.stt_session
+        if sess is None:
+            return
+        if STT_BACKEND == "whisper-stream":
+            # Buffer append is O(1) — worker thread handles decoding.
+            sess.accept(data)
+            return
+        # Sherpa path: synchronous decode in executor, partials returned inline.
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, sess.accept, data)
+        if text and text != self._last_partial:
+            self._last_partial = text
+            await self.send_json({"type": "stt_partial", "text": _pretty(text)})
 
     async def _reader_loop(self) -> None:
         try:

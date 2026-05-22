@@ -83,6 +83,27 @@ function setStage(stage, text) {
   ui.stage.textContent = text || stage || "idle";
 }
 
+function updateUserPartial(text) {
+  let last = ui.transcript.lastElementChild;
+  if (!last || !last.classList.contains("user-stream")) {
+    last = document.createElement("div");
+    last.className = "line user user-stream";
+    ui.transcript.appendChild(last);
+  }
+  last.textContent = `user: ${text}…`;
+  ui.transcript.scrollTop = ui.transcript.scrollHeight;
+}
+
+function finalizeUserPartial(text) {
+  let last = ui.transcript.lastElementChild;
+  if (last && last.classList.contains("user-stream")) {
+    last.classList.remove("user-stream");
+    last.textContent = `user: ${text}`;
+  } else if (text) {
+    logTranscript("user", text);
+  }
+}
+
 function appendAssistantDelta(text) {
   let last = ui.transcript.lastElementChild;
   if (!last || !last.classList.contains("assistant-stream")) {
@@ -224,7 +245,10 @@ function handleWsText(payload) {
       setStage(msg.stage, msg.text || msg.stage);
       break;
     case "transcript":
-      if (msg.text) logTranscript("user", msg.text);
+      finalizeUserPartial(msg.text || "");
+      break;
+    case "stt_partial":
+      if (msg.text) updateUserPartial(msg.text);
       break;
     case "agent_text":
       appendAssistantDelta(msg.delta);

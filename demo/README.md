@@ -75,8 +75,18 @@ Knobs you can tweak without code changes:
 | TTS voice | `VOICE_NAME` env | `jean` | Any name from the pocket-tts catalog (`alba`, `eve`, `michael`, `paul`, etc.), an absolute path to a `.wav`/`.safetensors`, or an `hf://kyutai/tts-voices/...` URI for voice cloning. |
 | Playback speed | `static/client.js` (`window.PLAYBACK_RATE`) | `1.1` | Multiplied onto `AudioBufferSourceNode.playbackRate`. Lifts pitch slightly; not pitch-preserved time-stretch. Override at runtime in DevTools: `window.PLAYBACK_RATE = 1.0`. |
 | Playback volume | UI slider | `100%` | Master `GainNode` on the TTS path. 0–200%, live during a turn. |
-| STT model | `WHISPER_MODEL` env | `small.en` | Any faster-whisper size: `tiny.en`, `base.en`, `medium.en`. |
+| STT backend | `STT_BACKEND` env | `whisper` | `whisper` (faster-whisper, transcribe on PTT release; most accurate), `sherpa` (sherpa-onnx streaming zipformer; live partials, lower accuracy on conversational speech), `whisper-stream` (rolling-window faster-whisper; live partials, **slow on CPU — see caveat below**). |
+| STT model | `WHISPER_MODEL` env | `small.en` | faster-whisper size used by the `whisper` backend: `tiny.en`, `base.en`, `small.en`, `medium.en`. |
+| Streaming whisper model | `WHISPER_STREAM_MODEL` env | `base.en` | Model used by the `whisper-stream` backend. Smaller is faster but no streaming variant escapes the 30 s mel-padding cost. |
 | STT compute | `WHISPER_COMPUTE` env | `int8` | `int8`, `int8_float16`, `float32`. |
+| Sherpa model dir | `SHERPA_MODEL_DIR` env | `demo/models/sherpa-onnx-streaming-zipformer-en-2023-06-26` | Path to a sherpa-onnx streaming-zipformer model directory. |
+| Sherpa threads | `SHERPA_NUM_THREADS` env | `2` | CPU threads for the sherpa decoder. |
+
+### STT backend caveats
+
+- `whisper-stream` works but is **slow on CPU**: faster-whisper pads every input to a fixed **30 s mel window** before the encoder runs, so a 0.4 s partial costs the same encoder time as a 28 s clip. On a CPU-only laptop the per-partial cost (~5–10 s of wall time) breaks the streaming UX. Use `whisper` for accuracy or `sherpa` for true streaming.
+- `sherpa` uses a chunk-by-chunk encoder so partials are cheap (RTF ~0.09 on a CPU laptop), but the shipped 2023-06-26 English zipformer is LibriSpeech/GigaSpeech-trained and noticeably weaker than whisper on conversational speech. Server lowercases + sentence-cases the ALL-CAPS output before display.
+- `whisper` (default before this scope) is non-streaming: the full clip is transcribed at PTT release. Most accurate, but release-to-final scales with clip length.
 | Agent persona | `voice-agent.md` (or `VOICE_AGENT_PROMPT` env path) | bundled file | Markdown appended to claude's system prompt via `--append-system-prompt`. Edit and reload the page to apply. |
 | Visual side channel | `mcp-config.json` + `show_mcp.py` | enabled | Registers the `show(content, kind)` MCP tool. Allowed-listed in claude's argv so it never prompts. |
 | Markdown TTS scrubber | `text_clean.py` | always on | Defense-in-depth strip of stray bold/code/headings the agent might emit despite the persona. |
