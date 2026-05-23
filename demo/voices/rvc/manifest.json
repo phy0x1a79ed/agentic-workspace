@@ -1,0 +1,191 @@
+[
+  {
+    "label": "chelly_egoist",
+    "source_name": "Chelly (EGOIST)",
+    "repo": "Zerobeastskaiai/RVCmodel",
+    "pth": "/home/tony/agentic_workspace/projects/awm/voice/demo/voices/rvc/Chelly_Egoist.pth",
+    "index": "/home/tony/agentic_workspace/projects/awm/voice/demo/voices/rvc/Chelly_Egoist.index"
+  },
+  {
+    "label": "ikura_yoasobi",
+    "source_name": "Lilas Ikuta (YOASOBI)",
+    "repo": "Mugiwara89/Luffy",
+    "pth": "/home/tony/agentic_workspace/projects/awm/voice/demo/voices/rvc/library/ikura_yoasobi/model.pth",
+    "index": null
+  },
+  {
+    "label": "hatsune_miku",
+    "source_name": "\u521d\u97f3\u30df\u30af (Hatsune Miku) [VOCALOID + Piapro Studio NT] - Weights.gg Model",
+    "repo": "ammy-dream/rvc-models-pack",
+    "pth": "demo/voices/rvc/library/hatsune_miku/model.pth",
+    "index": "demo/voices/rvc/library/hatsune_miku/model.index"
+  },
+  {
+    "label": "gawr_gura",
+    "source_name": "Gawr Gura (Hololive EN) RVC v1 RVC v1 40k 1000epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/gawr_gura/Gura.pth",
+    "index": "demo/voices/rvc/library/gawr_gura/added_IVF4130_Flat_nprobe_12.index"
+  },
+  {
+    "label": "zero_two",
+    "source_name": "Zero Two RVC v2 40k 325epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/zero_two/content/unzips/bedf2eb5-8224-4cca-9583-010d883de953/zeroTwo-v2.pth",
+    "index": null
+  },
+  {
+    "label": "nier_2b",
+    "source_name": "2B (NieR - Automata)-rvc2",
+    "repo": "aaaaaaawws/models-moved",
+    "pth": "demo/voices/rvc/library/nier_2b/2B.pth",
+    "index": "demo/voices/rvc/library/nier_2b/added_2B.index"
+  },
+  {
+    "label": "ranni",
+    "source_name": "Ranni RVC v2 40k 220epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/ranni/Ranni.pth",
+    "index": "demo/voices/rvc/library/ranni/added_IVF1087_Flat_nprobe_1_v2.index"
+  },
+  {
+    "label": "rem_rezero",
+    "source_name": "Rem [Re_Zero] Latino",
+    "repo": "MisterHyun/shikanoko.zip",
+    "pth": "demo/voices/rvc/library/rem_rezero/model.pth",
+    "index": null
+  },
+  {
+    "label": "makima",
+    "source_name": "Makima RVC v1 40k 250epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/makima/makima.pth",
+    "index": null
+  },
+  {
+    "label": "power_csm",
+    "source_name": "Power (Chainsaw Man)-rvc2",
+    "repo": "aaaaaaawws/models-moved",
+    "pth": "demo/voices/rvc/library/power_csm/PB_e600_s6600.pth",
+    "index": "demo/voices/rvc/library/power_csm/added_IVF352_Flat_nprobe_1_PB_v2.index"
+  },
+  {
+    "label": "mikasa",
+    "source_name": "Mikasa Ackerman (Attack on Titan) (JP) - Weights.gg Model",
+    "repo": "ggus21/rvc_genshin",
+    "pth": "demo/voices/rvc/library/mikasa/Mikasa/model.pth",
+    "index": "demo/voices/rvc/library/mikasa/Mikasa/model.index"
+  },
+  {
+    "label": "senjougahara",
+    "source_name": "Senjougahara",
+    "repo": "Theopan/Senjougahara",
+    "pth": "demo/voices/rvc/library/senjougahara/model.pth",
+    "index": "demo/voices/rvc/library/senjougahara/model.index"
+  },
+  {
+    "label": "narrator",
+    "source_name": "Tabby Ratha (AF6_Storytel Voice Narrator) - Weights.gg Model",
+    "repo": "chika85449/Chika854V2-RVC",
+    "pth": "demo/voices/rvc/library/narrator/model.pth",
+    "index": "demo/voices/rvc/library/narrator/model.index"
+  },
+  {
+    "label": "attenborough",
+    "source_name": "David Attenborough - Weights.gg Model",
+    "repo": "Chris-Reid/Attenborough",
+    "pth": "demo/voices/rvc/library/attenborough/DavidAttenborough/weights/model.pth",
+    "index": "demo/voices/rvc/library/attenborough/DavidAttenborough/logs/DavidAttenborough/model.index"
+  },
+  {
+    "label": "morgan_freeman",
+    "source_name": "Morgan Freeman 300 RVC v1 40k 300epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/morgan_freeman/morgan_freeman300.pth",
+    "index": null
+  },
+  {
+    "label": "british_female",
+    "source_name": "RVCapcut/BritishFemale-CapCut",
+    "repo": "Kryptone/RVCollection-Revamped",
+    "pth": "demo/voices/rvc/library/british_female/BritishFemale-CapCut.pth",
+    "index": "demo/voices/rvc/library/british_female/added_IVF877_Flat_nprobe_1_BritishFemale-CapCut_v2.index"
+  },
+  {
+    "label": "deep_male",
+    "source_name": "Deepins02 (\u0421\u0442\u0440\u0438\u043c\u0435\u0440) male rlntiwnbim31puusddle50q6zzu0vo",
+    "repo": "dodislavik/MODELS",
+    "pth": "demo/voices/rvc/library/deep_male/model.pth",
+    "index": "demo/voices/rvc/library/deep_male/model.index"
+  },
+  {
+    "label": "whisper_voice",
+    "source_name": "Female Whisper TTS Voice model - Weights.gg Model",
+    "repo": "r0seyyyd33p/RVC-voices",
+    "pth": "demo/voices/rvc/library/whisper_voice/model.pth",
+    "index": "demo/voices/rvc/library/whisper_voice/model.index"
+  },
+  {
+    "label": "announcer",
+    "source_name": "Announcer Tf 2 RVC v2 40k 100epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/announcer/content/unzips/8c4c6e71-86fe-4e7e-8399-c615745080dd/announcer-tf2/announcer-tf2.pth",
+    "index": null
+  },
+  {
+    "label": "audiobook",
+    "source_name": "Arnold Schwarzenegger (Audiobook)",
+    "repo": "aaaaaaawws/models-moved",
+    "pth": "demo/voices/rvc/library/audiobook/Arnold_v2_e250_s50250.pth",
+    "index": "demo/voices/rvc/library/audiobook/added_IVF3675_Flat_nprobe_1_Arnold_v2_v2.index"
+  },
+  {
+    "label": "vegeta",
+    "source_name": "DBZ Vegeta - RVC RVC v1 40k 350epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/vegeta/Vegeta_4900.pth",
+    "index": "demo/voices/rvc/library/vegeta/added_IVF947_Flat_nprobe_1.index"
+  },
+  {
+    "label": "snape",
+    "source_name": "Snape RVC v1 40k 300epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/snape/Snape.pth",
+    "index": "demo/voices/rvc/library/snape/added_IVF383_Flat_nprobe_5.index"
+  },
+  {
+    "label": "morty",
+    "source_name": "morty",
+    "repo": "gayboifarti/rvcv2",
+    "pth": "demo/voices/rvc/library/morty/morty.pth",
+    "index": "demo/voices/rvc/library/morty/added_IVF709_Flat_nprobe_1_morty_v2.index"
+  },
+  {
+    "label": "rick_sanchez",
+    "source_name": "Rick Sanchez C 137 Lat RVC v1 40k 200epoch",
+    "repo": "juuxn/RVCModels",
+    "pth": "demo/voices/rvc/library/rick_sanchez/Rick_Sanchez_C137_lat.pth",
+    "index": "demo/voices/rvc/library/rick_sanchez/added_IVF1147_Flat_nprobe_1_v1.index"
+  },
+  {
+    "label": "squidward",
+    "source_name": "Squidward Tentacles (SpongeBob SquarePants) (Help Wanted) - Weights Model",
+    "repo": "2toughman/RVC_Models",
+    "pth": "demo/voices/rvc/library/squidward/model.pth",
+    "index": "demo/voices/rvc/library/squidward/model.index"
+  },
+  {
+    "label": "mario",
+    "source_name": "Super Mario - Weights.gg Model",
+    "repo": "jajca/rvc_v2",
+    "pth": "demo/voices/rvc/library/mario/mario.pth",
+    "index": "demo/voices/rvc/library/mario/mario.index"
+  },
+  {
+    "label": "glados",
+    "source_name": "GLaDOSLA (Portal)",
+    "repo": "WoomyPearl/RVC-Model-Palace",
+    "pth": "/home/tony/agentic_workspace/projects/awm/voice/demo/voices/rvc/library/glados/GLaDOSLA.pth",
+    "index": "/home/tony/agentic_workspace/projects/awm/voice/demo/voices/rvc/library/glados/added_IVF1127_Flat_nprobe_1_GLaDOSLA_v2.index"
+  }
+]

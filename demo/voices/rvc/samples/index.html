@@ -1,0 +1,338 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>RVC voice samples</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; background:#111; color:#ddd;
+         max-width: 900px; margin: 2em auto; padding: 0 1em; }
+  h1 { font-weight: 600; }
+  h2 { font-weight: 500; margin-top: 2em; color: #8cf; border-bottom: 1px solid #333;
+        padding-bottom: 0.3em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+           gap: 0.8em; }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+           padding: 0.8em; }
+  .card.fail { opacity: 0.4; }
+  .t { font-weight: 600; margin-bottom: 0.4em; }
+  audio { width: 100%; }
+  .m { font-size: 11px; color: #888; margin-top: 0.4em; }
+  .ver { background: #224; color: #8cf; padding: 1px 5px; border-radius: 3px;
+          font-family: monospace; }
+  .source-card { background: #1f2a1f; border-color: #3a5; }
+  .synth-box { background: #1a1a1a; border: 1px solid #2b6e8f; border-radius: 8px;
+                padding: 1em; margin: 1.2em 0; }
+  .synth-box h2 { border: none; margin: 0 0 0.6em 0; color: #8cf; font-size: 1.05em; }
+  .synth-box textarea { width: 100%; background: #111; color: #ddd; border: 1px solid #333;
+                         border-radius: 4px; padding: 6px; font: inherit; resize: vertical; }
+  .syn-row { display: flex; flex-wrap: wrap; gap: 0.8em; margin-top: 0.6em; align-items: center; }
+  .syn-row label { display: flex; align-items: center; gap: 0.3em; font-size: 12px; color: #aaa; }
+  .syn-row select, .syn-row input[type=range] { background: #111; color: #ddd; border: 1px solid #333;
+                                                  border-radius: 4px; padding: 3px; font: inherit; }
+  .syn-row input[type=range] { width: 120px; }
+  #syn-btn { background: #2b6e8f; color: white; border: none; border-radius: 4px;
+              padding: 6px 14px; cursor: pointer; font: inherit; }
+  #syn-btn:hover { background: #3690b8; }
+  #syn-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #syn-pitch-val { font-family: monospace; min-width: 40px; }
+  .syn-status { font-size: 11px; color: #888; margin-top: 0.5em; font-family: monospace; }
+  .source-card[data-src] { display: none; }
+  .source-card.active { display: block; }
+  #src-picker { background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+                 padding: 0.8em; margin: 1em 0; position: sticky; top: 0; z-index: 10; }
+  .src-btn { display: inline-block; margin-right: 1em; cursor: pointer; padding: 4px 8px;
+              border-radius: 4px; }
+  .src-btn:hover { background: #222; }
+  .src-btn input { margin-right: 4px; }
+  .src-label { font-size: 12px; color: #8cf; }
+</style>
+</head><body>
+<h1>RVC voice samples</h1>
+<p>Source clips rendered with Kokoro-82M (4 distinct voices across the pitch/accent range),
+each converted through 27 RVC models from the
+<a href="https://huggingface.co/spaces/r3gm/Model_Voice_Finder" style="color:#8cf">r3gm catalog</a>.
+Use the synthesizer below to feed any text through the live pipeline, or click a radio
+to A/B against a pre-rendered source.</p>
+
+<div id="synthesizer" class="synth-box">
+  <h2 style="margin-top:0">Live synthesizer</h2>
+  <textarea id="syn-text" rows="2" placeholder="Type something to synthesize…">Hey there! I'm wired up and ready. Go ahead, ask me anything.</textarea>
+  <div class="syn-row">
+    <label>TTS voice <select id="syn-tts"><option>loading…</option></select></label>
+    <label>RVC voice <select id="syn-rvc"><option>loading…</option></select></label>
+    <label>Pitch <input id="syn-pitch" type="range" min="-12" max="12" value="0" step="1">
+      <span id="syn-pitch-val">0 st</span></label>
+    <button id="syn-btn">Stream ▶</button>
+  </div>
+  <div id="syn-status" class="syn-status">loading voices…</div>
+</div>
+
+<div id="src-picker">
+  <div style="margin-bottom: 6px; color: #888; font-size: 12px;">SOURCE VOICE:</div>
+    <label class="src-btn"><input type="radio" name="src" value="src_male_low"> <span class="src-label">Kokoro bm_george (deep male)</span></label>
+    <label class="src-btn"><input type="radio" name="src" value="src_male_mid"> <span class="src-label">Kokoro am_adam (mid male)</span></label>
+    <label class="src-btn"><input type="radio" name="src" value="src_female_mid" checked> <span class="src-label">Kokoro bf_emma (mid female)</span></label>
+    <label class="src-btn"><input type="radio" name="src" value="src_female_high"> <span class="src-label">Kokoro af_sky (high female)</span></label>
+</div>
+
+  <div class="card source-card" data-src="src_male_low"><div class="t">Source: Kokoro bm_george (deep male)</div><audio controls preload="none" src="src_male_low.wav"></audio></div>
+  <div class="card source-card" data-src="src_male_mid"><div class="t">Source: Kokoro am_adam (mid male)</div><audio controls preload="none" src="src_male_mid.wav"></audio></div>
+  <div class="card source-card" data-src="src_female_mid"><div class="t">Source: Kokoro bf_emma (mid female)</div><audio controls preload="none" src="src_female_mid.wav"></audio></div>
+  <div class="card source-card" data-src="src_female_high"><div class="t">Source: Kokoro af_sky (high female)</div><audio controls preload="none" src="src_female_high.wav"></audio></div>
+
+<h2>Singers / vocalists</h2>
+<div class="grid">
+  <div class="card">
+    <div class="t">Chelly (EGOIST)</div>
+    <audio data-src="src_male_low" controls preload="none" src="chelly_egoist__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="chelly_egoist__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="chelly_egoist__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="chelly_egoist__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · Zerobeastskaiai/RVCmodel · 526ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Ikura / Lilas Ikuta (YOASOBI)</div>
+    <audio data-src="src_male_low" controls preload="none" src="ikura_yoasobi__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="ikura_yoasobi__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="ikura_yoasobi__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="ikura_yoasobi__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · Mugiwara89/Luffy · 185ms</div>
+  </div>
+</div>
+<h2>Anime / VTuber / game</h2>
+<div class="grid">
+  <div class="card">
+    <div class="t">Hatsune Miku</div>
+    <audio data-src="src_male_low" controls preload="none" src="hatsune_miku__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="hatsune_miku__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="hatsune_miku__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="hatsune_miku__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · ammy-dream/rvc-models-pack · 251ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Gawr Gura</div>
+    <audio data-src="src_male_low" controls preload="none" src="gawr_gura__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="gawr_gura__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="gawr_gura__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="gawr_gura__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 250ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Zero Two</div>
+    <audio data-src="src_male_low" controls preload="none" src="zero_two__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="zero_two__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="zero_two__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="zero_two__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · juuxn/RVCModels · 168ms</div>
+  </div>
+  <div class="card">
+    <div class="t">2B (NieR Automata)</div>
+    <audio data-src="src_male_low" controls preload="none" src="nier_2b__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="nier_2b__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="nier_2b__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="nier_2b__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · aaaaaaawws/models-moved · 506ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Ranni (Elden Ring)</div>
+    <audio data-src="src_male_low" controls preload="none" src="ranni__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="ranni__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="ranni__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="ranni__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · juuxn/RVCModels · 217ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Rem (Re:Zero)</div>
+    <audio data-src="src_male_low" controls preload="none" src="rem_rezero__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="rem_rezero__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="rem_rezero__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="rem_rezero__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · MisterHyun/shikanoko.zip · 184ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Makima</div>
+    <audio data-src="src_male_low" controls preload="none" src="makima__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="makima__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="makima__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="makima__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 163ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Power (Chainsaw Man)</div>
+    <audio data-src="src_male_low" controls preload="none" src="power_csm__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="power_csm__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="power_csm__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="power_csm__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · aaaaaaawws/models-moved · 190ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Mikasa</div>
+    <audio data-src="src_male_low" controls preload="none" src="mikasa__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="mikasa__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="mikasa__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="mikasa__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · ggus21/rvc_genshin · 191ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Hitagi Senjougahara</div>
+    <audio data-src="src_male_low" controls preload="none" src="senjougahara__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="senjougahara__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="senjougahara__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="senjougahara__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · Theopan/Senjougahara · 214ms</div>
+  </div>
+</div>
+<h2>Generic / stylized</h2>
+<div class="grid">
+  <div class="card">
+    <div class="t">Tabby Ratha (narrator)</div>
+    <audio data-src="src_male_low" controls preload="none" src="narrator__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="narrator__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="narrator__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="narrator__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · chika85449/Chika854V2-RVC · 192ms</div>
+  </div>
+  <div class="card">
+    <div class="t">David Attenborough</div>
+    <audio data-src="src_male_low" controls preload="none" src="attenborough__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="attenborough__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="attenborough__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="attenborough__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · Chris-Reid/Attenborough · 218ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Morgan Freeman</div>
+    <audio data-src="src_male_low" controls preload="none" src="morgan_freeman__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="morgan_freeman__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="morgan_freeman__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="morgan_freeman__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 165ms</div>
+  </div>
+  <div class="card">
+    <div class="t">British Female</div>
+    <audio data-src="src_male_low" controls preload="none" src="british_female__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="british_female__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="british_female__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="british_female__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · Kryptone/RVCollection-Revamped · 221ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Deepins02 (deep male)</div>
+    <audio data-src="src_male_low" controls preload="none" src="deep_male__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="deep_male__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="deep_male__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="deep_male__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · dodislavik/MODELS · 211ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Female Whisper</div>
+    <audio data-src="src_male_low" controls preload="none" src="whisper_voice__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="whisper_voice__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="whisper_voice__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="whisper_voice__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · r0seyyyd33p/RVC-voices · 202ms</div>
+  </div>
+  <div class="card">
+    <div class="t">TF2 Announcer</div>
+    <audio data-src="src_male_low" controls preload="none" src="announcer__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="announcer__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="announcer__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="announcer__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · juuxn/RVCModels · 169ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Schwarzenegger (audiobook)</div>
+    <audio data-src="src_male_low" controls preload="none" src="audiobook__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="audiobook__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="audiobook__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="audiobook__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · aaaaaaawws/models-moved · 513ms</div>
+  </div>
+</div>
+<h2>Curator picks</h2>
+<div class="grid">
+  <div class="card">
+    <div class="t">Vegeta</div>
+    <audio data-src="src_male_low" controls preload="none" src="vegeta__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="vegeta__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="vegeta__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="vegeta__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 183ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Severus Snape</div>
+    <audio data-src="src_male_low" controls preload="none" src="snape__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="snape__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="snape__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="snape__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 170ms</div>
+  </div>
+  <div class="card">
+    <div class="t">GLaDOS (Portal)</div>
+    <audio data-src="src_male_low" controls preload="none" src="glados__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="glados__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="glados__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="glados__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · WoomyPearl/RVC-Model-Palace · 225ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Morty Smith</div>
+    <audio data-src="src_male_low" controls preload="none" src="morty__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="morty__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="morty__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="morty__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · gayboifarti/rvcv2 · 215ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Rick Sanchez</div>
+    <audio data-src="src_male_low" controls preload="none" src="rick_sanchez__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="rick_sanchez__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="rick_sanchez__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="rick_sanchez__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v1</span> · juuxn/RVCModels · 185ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Squidward</div>
+    <audio data-src="src_male_low" controls preload="none" src="squidward__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="squidward__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="squidward__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="squidward__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · 2toughman/RVC_Models · 204ms</div>
+  </div>
+  <div class="card">
+    <div class="t">Mario</div>
+    <audio data-src="src_male_low" controls preload="none" src="mario__src_male_low.wav" style="display:none"></audio>
+    <audio data-src="src_male_mid" controls preload="none" src="mario__src_male_mid.wav" style="display:none"></audio>
+    <audio data-src="src_female_mid" controls preload="none" src="mario__src_female_mid.wav" style=""></audio>
+    <audio data-src="src_female_high" controls preload="none" src="mario__src_female_high.wav" style="display:none"></audio>
+    <div class="m"><span class="ver">v2</span> · jajca/rvc_v2 · 217ms</div>
+  </div>
+</div>
+
+<p style="margin-top:2em;color:#666;font-size:11px">
+Total: 27/27 voices,
+×4 sources = 108 clips.
+Sample text: "Hey there! I'm wired up and ready. Go ahead, ask me anything."
+</p>
+
+<script>
+const picker = document.querySelectorAll('#src-picker input[name="src"]');
+picker.forEach(r => r.addEventListener('change', e => {
+  const sel = e.target.value;
+  // Pause every audio first so switching doesn't leave ghosts playing
+  document.querySelectorAll('audio').forEach(a => a.pause());
+  // Source preview cards
+  document.querySelectorAll('.source-card').forEach(c => {
+    c.classList.toggle('active', c.dataset.src === sel);
+  });
+  // Voice cards: show only the audio matching the selected source
+  document.querySelectorAll('.card audio[data-src]').forEach(a => {
+    a.style.display = a.dataset.src === sel ? '' : 'none';
+  });
+}));
+// Initialize active source-card
+document.querySelectorAll('.source-card').forEach(c => {
+  c.classList.toggle('active', c.dataset.src === 'src_female_mid');
+});
+</script>
+<script src="synth.js"></script>
+</body></html>

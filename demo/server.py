@@ -39,10 +39,11 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from claude_session import ClaudeSession
+from openrouter_session import OpenRouterSession
+from rvc import get_rvc_client
 from stt import get_transcriber
 from stt_streaming import get_streaming_recognizer, get_whisper_streaming_recognizer
 from text_clean import clean_for_tts
-from tts import get_synthesizer
 
 
 import os
@@ -51,6 +52,34 @@ import os
 # "sherpa" — sherpa-onnx streaming zipformer (fast partials, lower accuracy on conversational)
 # "whisper-stream" — rolling-window faster-whisper (partials are slow on CPU; see README caveat)
 STT_BACKEND = os.environ.get("STT_BACKEND", "whisper").lower()
+
+# "piper" — fast neural TTS, clean low-prosody output (good RVC feedstock; default)
+# "pocket" — kyutai pocket-tts, more natural but slower
+TTS_BACKEND = os.environ.get("TTS_BACKEND", "piper").lower()
+
+# "openrouter" — OpenRouter chat completions (free models by default; needs OPENROUTER_API_KEY)
+# "claude" — persistent `claude` CLI subprocess
+LLM_BACKEND = os.environ.get("LLM_BACKEND", "openrouter").lower()
+
+
+def _new_llm_session(log_path: Path):
+    if LLM_BACKEND == "claude":
+        s = ClaudeSession()
+        s.log_path = log_path
+        return s
+    if LLM_BACKEND == "openrouter":
+        return OpenRouterSession(log_path=log_path)
+    raise ValueError(f"unknown LLM_BACKEND={LLM_BACKEND!r}")
+
+
+def _load_tts():
+    if TTS_BACKEND == "pocket":
+        from tts import get_synthesizer
+        return get_synthesizer()
+    if TTS_BACKEND == "piper":
+        from piper_tts import get_piper_synthesizer
+        return get_piper_synthesizer()
+    raise ValueError(f"unknown TTS_BACKEND={TTS_BACKEND!r}")
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -62,9 +91,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
-    log.info("loading TTS + STT models (backend=%s)…", STT_BACKEND)
+    log.info("loading TTS + STT models (tts=%s, stt=%s)…", TTS_BACKEND, STT_BACKEND)
     t0 = time.monotonic()
-    await loop.run_in_executor(None, get_synthesizer()._ensure_loaded)
+    await loop.run_in_executor(None, _load_tts()._ensure_loaded)
+    # Best-effort probe of the RVC sidecar — non-fatal if absent.
+    await loop.run_in_executor(None, get_rvc_client().check)
     if STT_BACKEND == "sherpa":
         await loop.run_in_executor(None, get_streaming_recognizer()._ensure_loaded)
     elif STT_BACKEND == "whisper-stream":
@@ -140,12 +171,15 @@ class TurnState:
 class Conn:
     def __init__(self, ws: WebSocket):
         self.ws = ws
-        self.session = ClaudeSession()
+        # Concrete session is built in start() once we know the log path.
+        self.session = None  # type: ignore[assignment]
         self.pcm_chunks: list[bytes] = []
         self.recording = False
         self.turn: TurnState | None = None
         self.turn_seq = 0
-        self.tts = get_synthesizer()
+        self.tts = _load_tts()
+        self.rvc = get_rvc_client()
+        self.rvc_enabled = False
         self.stt = get_transcriber()
         if STT_BACKEND == "sherpa":
             self.stt_stream = get_streaming_recognizer()
@@ -168,16 +202,23 @@ class Conn:
             await self.ws.send_bytes(data)
 
     async def start(self) -> None:
-        log_path = Path(__file__).parent / "claude.log"
-        self.session.log_path = log_path
+        log_path = Path(__file__).parent / (
+            "claude.log" if LLM_BACKEND == "claude" else "llm.log"
+        )
+        self.session = _new_llm_session(log_path)
         await self.session.start()
         self.reader_task = asyncio.create_task(self._reader_loop())
-        await self.send_json({"type": "ready"})
+        await self.send_json({
+            "type": "ready",
+            "rvc_available": self.rvc.available,
+            "llm_backend": LLM_BACKEND,
+        })
 
     async def stop(self) -> None:
         if self.reader_task is not None:
             self.reader_task.cancel()
-        await self.session.stop()
+        if self.session is not None:
+            await self.session.stop()
 
     async def _status(self, stage: str, text: str = "") -> None:
         await self.send_json({"type": "status", "stage": stage, "text": text})
@@ -271,6 +312,20 @@ class Conn:
         if self.turn is not None:
             self.turn.cancelled = True
 
+    async def handle_config(self, payload: dict) -> None:
+        if "rvc" in payload:
+            want = bool(payload["rvc"])
+            if want and not self.rvc.available:
+                # Re-probe in case the sidecar came up after server start.
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.rvc.check)
+            self.rvc_enabled = want and self.rvc.available
+            await self.send_json({
+                "type": "config_ack",
+                "rvc": self.rvc_enabled,
+                "rvc_available": self.rvc.available,
+            })
+
     async def add_audio(self, data: bytes) -> None:
         if not self.recording:
             return
@@ -357,6 +412,17 @@ class Conn:
         pcm = await loop.run_in_executor(None, self.tts.synth, cleaned)
         if turn.cancelled or not pcm:
             return
+        sample_rate = self.tts.sample_rate
+        if self.rvc_enabled:
+            try:
+                pcm = await loop.run_in_executor(
+                    None, self.rvc.convert, pcm, sample_rate, 0
+                )
+                sample_rate = self.rvc.sample_rate
+            except Exception as exc:  # noqa: BLE001
+                log.warning("RVC convert failed, falling back to dry TTS: %s", exc)
+        if turn.cancelled or not pcm:
+            return
         if turn.first_audio_ts is None:
             turn.first_audio_ts = time.monotonic()
             await self.send_json({
@@ -367,7 +433,7 @@ class Conn:
             await self._status("speaking", "speaking…")
         await self.send_json({
             "type": "audio",
-            "sample_rate": self.tts.sample_rate,
+            "sample_rate": sample_rate,
         })
         await self.send_binary(pcm)
 
@@ -396,6 +462,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
                     await conn.handle_end()
                 elif t == "cancel":
                     await conn.handle_cancel()
+                elif t == "config":
+                    await conn.handle_config(payload)
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001

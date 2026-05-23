@@ -9,6 +9,8 @@ const ui = {
   meterVal: document.getElementById("meter-val"),
   vol: document.getElementById("vol"),
   volVal: document.getElementById("vol-val"),
+  rvc: document.getElementById("rvc"),
+  rvcStatus: document.getElementById("rvc-status"),
 };
 
 let ws = null;
@@ -26,6 +28,12 @@ ui.vol.addEventListener("input", () => {
   const v = readVol();
   ui.volVal.textContent = `${Math.round(v * 100)}%`;
   if (masterGain) masterGain.gain.value = v;
+});
+
+ui.rvc.addEventListener("change", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "config", rvc: ui.rvc.checked }));
+  }
 });
 
 // Playback queue: each entry is {sampleRate, pcm: Int16Array}
@@ -240,6 +248,20 @@ function handleWsText(payload) {
     case "ready":
       setStatus("ready");
       setStage("idle", "idle");
+      if (msg.rvc_available) {
+        ui.rvc.disabled = false;
+        ui.rvcStatus.textContent = "(available — toggle to apply Chelly_Egoist voice)";
+      } else {
+        ui.rvc.disabled = true;
+        ui.rvcStatus.textContent = "(sidecar not running — see README to start awm-rvc service)";
+      }
+      break;
+    case "config_ack":
+      ui.rvc.checked = !!msg.rvc;
+      ui.rvc.disabled = !msg.rvc_available;
+      ui.rvcStatus.textContent = msg.rvc
+        ? "(on)"
+        : (msg.rvc_available ? "(off)" : "(sidecar not running)");
       break;
     case "status":
       setStage(msg.stage, msg.text || msg.stage);
