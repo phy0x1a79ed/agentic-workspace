@@ -22,6 +22,7 @@ from awm.models import (
     ScopeListResponse,
     ScopeActionResponse,
 )
+from awm.services._validation import validate_name
 from awm.services.replication.schema import new_uuid, next_legacy_id
 
 
@@ -222,6 +223,8 @@ def _generate_artifacts_md(project: str, scope: str) -> str:
 
 def refresh_history(project: str, scope: str) -> str:
     """Regenerate .awm/history.md for a scope. Returns the content written."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_history_md(project, scope)
@@ -234,6 +237,8 @@ def refresh_history(project: str, scope: str) -> str:
 
 def refresh_artifacts(project: str, scope: str) -> str:
     """Regenerate .awm/artifacts.md for a scope. Returns the content written."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_artifacts_md(project, scope)
@@ -244,6 +249,8 @@ def refresh_artifacts(project: str, scope: str) -> str:
 
 def awm_refresh(project: str, scope: str) -> dict:
     """Refresh both history.md and artifacts.md for a scope."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     h = refresh_history(project, scope)
     a = refresh_artifacts(project, scope)
     return {
@@ -255,6 +262,8 @@ def awm_refresh(project: str, scope: str) -> dict:
 
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata directory."""
+    validate_name(req.project, kind="project name")
+    validate_name(req.scope, kind="scope name")
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         raise FileNotFoundError(f"Project '{req.project}' not found (expected {bare_dir})")
@@ -348,6 +357,8 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
 
 def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActionResponse:
     """Complete a scope."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
 
@@ -395,6 +406,8 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
 def delete_scope(project: str, scope: str) -> ScopeActionResponse:
     """Delete a scope — clean up worktree, branch, and mark as deleted in DB."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
     feature_branch = f"feat/{scope}"

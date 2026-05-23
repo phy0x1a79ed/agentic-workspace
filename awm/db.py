@@ -33,9 +33,8 @@ CREATE TABLE IF NOT EXISTS shared_edits (
 );
 
 -- session_logs: UNIQUE(project, scope, logged_at, agent_id) is gone because
--- cr-sqlite forbids non-PK unique constraints on CRRs. Dedup moves to the
--- application layer (services/sessions.py:migrate_experiences already
--- queries for an existing row before inserting).
+-- cr-sqlite forbids non-PK unique constraints on CRRs. Dedup is now the
+-- writer's responsibility at the application layer.
 CREATE TABLE IF NOT EXISTS session_logs (
     uuid TEXT NOT NULL PRIMARY KEY,
     legacy_id INTEGER NOT NULL DEFAULT 0,
@@ -711,9 +710,8 @@ CREATE INDEX IF NOT EXISTS idx_room_posts_legacy ON room_posts(legacy_id, origin
 -- v32: session_logs INTEGER→UUID. Third per-table CRR migration.
 -- Public id is still the integer legacy_id (returned via SessionLogEntry.id);
 -- uuid is internal-only. UNIQUE(project, scope, logged_at, agent_id) drops
--- because cr-sqlite rejects non-PK unique constraints on CRRs; dedup moves
--- to services/sessions.py:migrate_experiences (it already does a
--- pre-insert SELECT, so behavior is preserved).
+-- because cr-sqlite rejects non-PK unique constraints on CRRs; dedup is
+-- now the writer's responsibility at the application layer.
 
 CREATE TABLE session_logs_new (
     uuid TEXT NOT NULL PRIMARY KEY,

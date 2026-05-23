@@ -1293,19 +1293,6 @@ _session_groups = register_cli_commands(app, SESSION_OPERATIONS, _api)
 _session_app = _session_groups["session"]
 
 
-@_session_app.command("migrate-experiences")
-def session_migrate_experiences():
-    """Migrate experiences.md files into the database."""
-    from awm.db import init_db
-
-    init_db()
-    from awm.services import sessions
-
-    stats = sessions.migrate_experiences()
-    typer.echo(f"Files processed: {stats['files_processed']}")
-    typer.echo(f"Imported: {stats['imported']}")
-    typer.echo(f"Skipped (already in DB): {stats['skipped']}")
-
 
 # ---------------------------------------------------------------------------
 # Discord operator whitelist

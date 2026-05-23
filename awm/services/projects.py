@@ -9,16 +9,17 @@ from pathlib import Path
 from awm.config import (
     WORKSPACE_ROOT,
     PROJECTS_DIR,
-    MAIN_DIR,
     DATA_DIR,
     SKILLS_DIR,
+    GITHUB_USER,
 )
 from awm.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.models import ProjectCreateRequest, ProjectCreateResponse
+from awm.services._validation import validate_name
 
 
 def _find_template(stem: str) -> Path | None:
-    """Locate a template file by a stable stem pattern (e.g. `project-agents`).
+    """Locate a template file by a stable stem pattern (e.g. `scope-agents`).
 
     Templates are resolved by filename substring match against any `*.template`
     file under the workspace skills tree, so renaming or relocating templates
@@ -38,8 +39,16 @@ def _find_template(stem: str) -> Path | None:
     return None
 
 
+def _branch_exists(bare_dir: Path, branch: str) -> bool:
+    r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify",
+              f"refs/heads/{branch}"])
+    return r.returncode == 0
+
+
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     """Create a new project with bare repository, worktree, and data dirs."""
+    validate_name(req.name, kind="project name")
+
     bare_dir = PROJECTS_DIR / req.name / ".bare"
 
     if bare_dir.exists():
@@ -56,9 +65,10 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
 
         # Try creating GitHub repo
         if shutil.which("gh"):
-            _run(["gh", "repo", "create", f"phy0x1a79ed/{req.name}", "--private"])
+            _run(["gh", "repo", "create", f"{GITHUB_USER}/{req.name}", "--private"],
+                 check=True)
             _run(["git", "-C", str(bare_dir), "remote", "add", "origin",
-                  f"https://github.com/phy0x1a79ed/{req.name}.git"])
+                  f"https://github.com/{GITHUB_USER}/{req.name}.git"], check=True)
 
         # Create initial commit via temp clone
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,7 +77,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             _run(["git", "-C", str(init_dir), "checkout", "-b", "main"])
             _run(["git", "-C", str(init_dir), "commit", "--allow-empty",
                   "-m", f"Initial commit for {req.name}"])
-            _run(["git", "-C", str(init_dir), "push", "origin", "main"])
+            _run(["git", "-C", str(init_dir), "push", "origin", "main"], check=True)
 
     elif mode == "clone":
         _run(["git", "clone", "--bare", req.clone_url, str(bare_dir)], check=True)
@@ -79,7 +89,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             raise RuntimeError("gh CLI is required for --fork")
         _run(["gh", "repo", "fork", req.fork_url, "--clone=false"])
         repo_name = Path(req.fork_url).stem
-        fork_clone_url = f"https://github.com/phy0x1a79ed/{repo_name}.git"
+        fork_clone_url = f"https://github.com/{GITHUB_USER}/{repo_name}.git"
         _run(["git", "clone", "--bare", fork_clone_url, str(bare_dir)], check=True)
         _run(["git", "-C", str(bare_dir), "config", "remote.origin.fetch",
               "+refs/heads/*:refs/remotes/origin/*"])
@@ -89,32 +99,24 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     for d in [
         DATA_DIR / req.name / "raw",
         DATA_DIR / req.name / "staged",
-        MAIN_DIR / req.name,
     ]:
         d.mkdir(parents=True, exist_ok=True)
-
-    # Create project-level data symlink → data/{project}
-    data_link = MAIN_DIR / req.name / "data"
-    if not data_link.exists():
-        data_link.symlink_to(DATA_DIR / req.name)
 
     # Detect default branch and create worktree
     default_branch = _detect_default_branch(bare_dir)
     worktree_dir = PROJECTS_DIR / req.name / default_branch
 
     if not worktree_dir.exists():
-        r = _run(["git", "-C", str(bare_dir), "worktree", "add",
-                  f"../{default_branch}", default_branch])
+        if _branch_exists(bare_dir, default_branch):
+            r = _run(["git", "-C", str(bare_dir), "worktree", "add",
+                      f"../{default_branch}", default_branch])
+        else:
+            r = _run(["git", "-C", str(bare_dir), "worktree", "add",
+                      f"../{default_branch}", "-b", default_branch])
         if r.returncode != 0:
-            _run(["git", "-C", str(bare_dir), "worktree", "add",
-                  f"../{default_branch}", "-b", default_branch])
-
-    # Write project-level AGENTS.md from the project-agents template
-    project_agents_template = _find_template("project-agents")
-    project_agents_md = MAIN_DIR / req.name / "AGENTS.md"
-    if project_agents_template and not project_agents_md.exists():
-        content = project_agents_template.read_text().replace("{project}", req.name)
-        project_agents_md.write_text(content)
+            raise RuntimeError(
+                f"Failed to create worktree for {default_branch}: {r.stderr}"
+            )
 
     # Write per-worktree AGENTS.md from the scope-agents template
     scope_agents_template = _find_template("scope-agents")
@@ -127,7 +129,5 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         bare_dir=str(bare_dir),
         worktree_dir=str(worktree_dir),
         data_dir=str(DATA_DIR / req.name),
-        results_dir=str(MAIN_DIR / req.name),
-        reports_dir=str(MAIN_DIR / req.name),
         mode=mode,
     )
