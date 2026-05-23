@@ -14,9 +14,34 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 
 log = logging.getLogger("awm.replication.schema")
+
+
+def new_uuid() -> str:
+    """Mint a fresh uuid4 hex for use as a CRR primary key."""
+    return uuid.uuid4().hex
+
+
+def next_legacy_id(conn: sqlite3.Connection, table: str, origin_peer: str) -> int:
+    """Return the next monotonic ``legacy_id`` for ``table`` scoped to
+    ``origin_peer``. Used by CRR tables that expose an INTEGER public id
+    even though the cr-sqlite PK is a uuid.
+
+    Each peer keeps its own per-table sequence; ``UNIQUE(legacy_id,
+    origin_peer)`` on the table prevents cross-peer collisions after
+    replication. Must be called inside the same write transaction as the
+    INSERT it feeds — SQLite WAL serializes writers, so the MAX+1 read
+    cannot be undercut by a concurrent insert from the same daemon.
+    """
+    row = conn.execute(
+        f"SELECT COALESCE(MAX(legacy_id), 0) + 1 AS n "  # noqa: S608 — table is a constant
+        f"FROM {table} WHERE origin_peer = ?",
+        (origin_peer,),
+    ).fetchone()
+    return int(row[0]) if row else 1
 
 
 # Vendored Linux x86_64 binary. Override via env for other platforms /
@@ -27,16 +52,21 @@ _DEFAULT_EXT_PATH = (
 CRSQLITE_EXT_PATH = Path(os.environ.get("AWM_CRSQLITE_EXT", str(_DEFAULT_EXT_PATH)))
 
 
-# Tables registered as Conflict-free Replicated Relations. The five
-# INTEGER-PK tables (room_posts, scopes, session_logs, messages, artifacts)
-# are intentionally absent until their per-table INTEGER→UUID migrations
-# land (one per PR per the phase-4 plan); cr-sqlite requires non-AUTOINCREMENT
+# Tables registered as Conflict-free Replicated Relations. The remaining
+# INTEGER-PK tables (scopes, session_logs, messages, artifacts) are
+# intentionally absent until their per-table INTEGER→UUID migrations land
+# (one per PR per the phase-4 plan); cr-sqlite requires non-AUTOINCREMENT
 # unique PKs so each peer can mint new IDs without collisions.
 CRR_TABLES: tuple[str, ...] = (
     "rooms",
     "room_participants",
     "peers",
     "discord_operators",
+    "room_posts",
+    "scopes",
+    "session_logs",
+    "messages",
+    "artifacts",
 )
 
 

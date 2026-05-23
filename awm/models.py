@@ -114,6 +114,11 @@ class ArtifactInfo(BaseModel):
     tags: str | None
     status: str
     created_at: str
+    # v34: peer that owns the on-disk file. Empty string = pre-federation
+    # local. Callers consult this before reading ``path`` directly so they
+    # know whether to GET /artifacts/{id}/content (which federates) instead
+    # of opening the local file.
+    origin_peer: str = ""
 
 
 class ArtifactSearchResponse(BaseModel):

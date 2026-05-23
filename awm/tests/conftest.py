@@ -160,10 +160,14 @@ def seeded_scopes(db_conn, awm_workspace):
         ("proj-a", "scope-2", "completed", "feat/scope-2", str(main_dir / "proj-a" / "scopes" / "scope-2"), str(projects_dir / "proj-a" / "scope-2"), 1, now, now),
         ("proj-b", "scope-3", "completed", "feat/scope-3", str(main_dir / "proj-b" / "scopes" / "scope-3"), str(projects_dir / "proj-b" / "scope-3"), 1, now, now),
     ]
-    for t in scope_data:
+    from awm.services.replication.schema import new_uuid
+    for i, t in enumerate(scope_data, start=1):
         db_conn.execute(
-            "INSERT INTO scopes (project, scope, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            t,
+            "INSERT INTO scopes "
+            "(uuid, legacy_id, origin_peer, project, scope, status, branch, "
+            " worktree, repo_path, session, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (new_uuid(), i, "test-host", *t),
         )
     db_conn.commit()
 
@@ -201,7 +205,14 @@ def seeded_sessions(db_conn, seeded_scopes, awm_workspace):
     ]
     for s in sessions_data:
         db_conn.execute(
-            "INSERT INTO session_logs (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_logs "
+            "(uuid, legacy_id, origin_peer, "
+            " project, scope, file_path, git_commit, logged_at, summary, "
+            " agent_id, metadata, content) "
+            "VALUES ((lower(hex(randomblob(16)))), "
+            "        (SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM session_logs), "
+            "        '', "  # origin_peer='' matches _local_peer_id() fallback in tests
+            "        ?,?,?,?,?,?,?,?,?)",
             s,
         )
     db_conn.commit()

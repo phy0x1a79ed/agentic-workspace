@@ -317,6 +317,16 @@ Valid bearers come from two sources, both pure files on disk:
 match the *specific* peer's token file matching the `X-Awm-From` header.
 This prevents peer A from impersonating peer B.
 
+> **Note on the legacy `~/.awm/` path.** Earlier deploys (and the
+> `deploy/install.sh` script) placed the token at `~/.awm/auth.token`
+> so it survived workspace re-inits. The canonical location is now
+> `$WORKSPACE_ROOT/.awm/auth.token` — the listener reads only the
+> workspace path. If a stale `~/.awm/auth.token` is still present and
+> a client uses it, `verify_bearer` logs a one-shot WARNING
+> ("bearer matches stale ~/.awm/auth.token …") so the misconfiguration
+> is visible. Either delete the home-dir file or symlink it to the
+> workspace one.
+
 **Browser bootstrap.** The web UI does not accept a bearer in the URL
 hash. Instead, the operator triggers a one-shot login flow:
 
@@ -324,7 +334,12 @@ hash. Instead, the operator triggers a one-shot login flow:
   `[discord]` section configured) — the bot DMs a URL that sets the
   bearer as an HttpOnly cookie on click. Operators eligible for `/login`
   are listed in the `discord_operators` table (`awm discord
-  add-operator <discord_user_id> <awm_user>`).
+  add-operator <discord_user_id> <awm_user>`). The bot depends on
+  `discord.py>=2.3` (declared in `environment.yml` / `pyproject.toml`);
+  for existing deploys, refresh via
+  `mamba env update -n awm -f environment.yml --prune` — without it,
+  `awm/services/discord/bot.py` falls back to a no-op import and the
+  operator must use the CLI-based `awm login` instead.
 - **`awm login [--as <user>]`** on the daemon host — prints the same
   URL for the operator to open in a browser.
 

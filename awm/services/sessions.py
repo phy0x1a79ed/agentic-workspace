@@ -17,6 +17,20 @@ from awm.models import (
     SessionLogPreview,
     SessionSearchResponse,
 )
+from awm.services.network import peers as peer_svc
+from awm.services.replication.schema import new_uuid, next_legacy_id
+
+
+def _local_peer_id() -> str:
+    """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
+    Used to stamp origin_peer on new session_log rows."""
+    try:
+        ident = peer_svc.get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
 
 
 def _now_iso() -> str:
@@ -40,7 +54,7 @@ def _get_skills_git_hash() -> str | None:
 
 def _row_to_entry(row) -> SessionLogEntry:
     return SessionLogEntry(
-        id=row["id"],
+        id=row["legacy_id"],
         project=row["project"],
         scope=row["scope"],
         file_path=row["file_path"] or "",
@@ -127,22 +141,27 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
 
     conn = get_connection()
     try:
+        origin = _local_peer_id()
+        legacy = next_legacy_id(conn, "session_logs", origin)
+        uid = new_uuid()
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, scope, file_path, git_commit, logged_at, summary,
+                (uuid, legacy_id, origin_peer,
+                 project, scope, file_path, git_commit, logged_at, summary,
                  title, agent_id, metadata, content, skill_path,
                  outcome, deviations, suggestions, skill_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (req.project, req.scope, "", None, logged_at,
+            (uid, legacy, origin,
+             req.project, req.scope, "", None, logged_at,
              req.summary, req.title, req.agent_id, metadata, content,
              req.skill_path, req.outcome, req.deviations, req.suggestions,
              skill_version),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = last_insert_rowid()"
+            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
         ).fetchone()
         entry = _row_to_entry(row)
     finally:
@@ -193,12 +212,17 @@ def list_sessions(
         conn.close()
 
 
-def get_session(session_id: int) -> SessionLogContentResponse:
-    """Look up a session by ID and return metadata + content from DB."""
+def get_session(session_id: int | str) -> SessionLogContentResponse:
+    """Look up a session by its public ``legacy_id``. Accepts ``42`` or
+    ``'42@<peer>'`` to disambiguate same-legacy_id rows from different
+    peers post-replication."""
+    legacy_id, peer = peer_svc.parse_id_ref(session_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT * FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
@@ -247,7 +271,7 @@ def _display_title(row) -> str:
 
 def _row_to_preview(row) -> SessionLogPreview:
     return SessionLogPreview(
-        id=row["id"],
+        id=row["legacy_id"],
         project=row["project"],
         scope=row["scope"],
         logged_at=row["logged_at"],
@@ -260,22 +284,26 @@ def _row_to_preview(row) -> SessionLogPreview:
     )
 
 
-def resolve_session(session_id: int, resolution: str) -> SessionLogEntry:
-    """Mark a session log entry as resolved."""
+def resolve_session(session_id: int | str, resolution: str) -> SessionLogEntry:
+    """Mark a session log entry as resolved. Accepts ``42`` or ``'42@<peer>'``."""
+    legacy_id, peer = peer_svc.parse_id_ref(session_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT uuid FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
+        uid = row["uuid"]
         conn.execute(
-            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE id = ?",
-            (_now_iso(), resolution, session_id),
+            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE uuid = ?",
+            (_now_iso(), resolution, uid),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
         ).fetchone()
         return _row_to_entry(row)
     finally:
@@ -387,9 +415,10 @@ def migrate_experiences() -> dict:
                         "metadata": None,
                     }
 
-                # Dedup check
+                # Dedup check (was a UNIQUE constraint pre-v32; now app-level).
                 existing = conn.execute(
-                    "SELECT id FROM session_logs WHERE project=? AND scope=? AND logged_at=? AND agent_id=?",
+                    "SELECT uuid FROM session_logs "
+                    "WHERE project=? AND scope=? AND logged_at=? AND agent_id=?",
                     (
                         entry_data["project"],
                         entry_data["scope"],
@@ -402,11 +431,16 @@ def migrate_experiences() -> dict:
                     skipped += 1
                     continue
 
+                origin = _local_peer_id()
+                legacy = next_legacy_id(conn, "session_logs", origin)
                 conn.execute(
                     """INSERT INTO session_logs
-                        (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (uuid, legacy_id, origin_peer,
+                         project, scope, file_path, git_commit, logged_at,
+                         summary, agent_id, metadata, content)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
+                        new_uuid(), legacy, origin,
                         entry_data["project"],
                         entry_data["scope"],
                         "",
@@ -420,9 +454,12 @@ def migrate_experiences() -> dict:
                 )
                 imported += 1
 
-        # Backfill content for existing DB rows that have empty content
+        # Backfill content for existing DB rows that have empty content.
+        # Keyed by uuid (the v32 internal PK) so we can UPDATE without
+        # caring about (legacy_id, origin_peer) disambiguation.
         rows = conn.execute(
-            "SELECT id, project, scope, summary, metadata FROM session_logs WHERE content IS NULL OR content = ''"
+            "SELECT uuid, project, scope, summary, metadata "
+            "FROM session_logs WHERE content IS NULL OR content = ''"
         ).fetchall()
         for row in rows:
             meta: dict = {}
@@ -450,8 +487,8 @@ def migrate_experiences() -> dict:
 
             backfill_content = "\n".join(parts)
             conn.execute(
-                "UPDATE session_logs SET content=? WHERE id=?",
-                (backfill_content, row["id"]),
+                "UPDATE session_logs SET content=? WHERE uuid=?",
+                (backfill_content, row["uuid"]),
             )
 
         conn.commit()

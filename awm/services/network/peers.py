@@ -82,6 +82,39 @@ def _validate_peer_id(peer_id: str) -> None:
         )
 
 
+# Matches "<int>" or "<int>@<peer-id>" where peer-id obeys the same grammar
+# enforced by _PEER_ID_OK above. Used by services/MCP tools that accept a
+# public id and need to disambiguate post-replication collisions: a bare
+# integer refers to the local row, the ``@peer`` suffix selects a row that
+# originated on the named peer.
+_ID_REF_RE = re.compile(r"^(\d+)(?:@([A-Za-z0-9][A-Za-z0-9_-]{0,63}))?$")
+
+
+def parse_id_ref(value: int | str) -> tuple[int, str | None]:
+    """Parse a public id reference into ``(legacy_id, peer_id_or_None)``.
+
+    Accepts an int (``42``), a numeric string (``"42"``), or a peer-scoped
+    ref (``"42@capella"``). Returns ``(42, None)`` when no peer is named
+    — callers should treat ``None`` as "use the local peer's id" when
+    querying ``WHERE legacy_id = ? AND origin_peer = ?``.
+
+    Raises ``ValueError`` on anything else (negative, non-numeric, bad
+    peer-id shape).
+    """
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"id must be non-negative, got {value}")
+        return value, None
+    if not isinstance(value, str):
+        raise ValueError(f"id ref must be int or str, got {type(value).__name__}")
+    m = _ID_REF_RE.match(value.strip())
+    if not m:
+        raise ValueError(
+            f"invalid id ref {value!r}: expected '<int>' or '<int>@<peer-id>'"
+        )
+    return int(m.group(1)), m.group(2)
+
+
 def _validate_ssh_alias(alias: str) -> None:
     if alias == "":
         return  # loopback mode

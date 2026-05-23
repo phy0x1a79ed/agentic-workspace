@@ -299,14 +299,35 @@ def exposed_status():
     hardcoded defaults if the discovery file is missing.
     """
     import json as _json
+    import ssl as _ssl
     base, token = _exposed_base_and_token()
     url = f"{base}/status"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    def _try(target_url: str):
+        return httpx.get(target_url, headers=headers, timeout=5, verify=False)
+
     try:
-        r = httpx.get(url, headers=headers, timeout=5, verify=False)
+        r = _try(url)
     except httpx.HTTPError as exc:
-        typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
-        raise typer.Exit(1)
+        # If exposed.json said HTTPS but the listener is actually a hand-rolled
+        # plain-HTTP one, the TLS handshake will surface as SSLError wrapped in
+        # an httpx.ConnectError. Try HTTP once before giving up.
+        is_ssl = isinstance(exc.__cause__, _ssl.SSLError) or isinstance(exc, _ssl.SSLError)
+        if base.startswith("https://") and is_ssl:
+            fallback = "http://" + base[len("https://"):]
+            try:
+                r = _try(f"{fallback}/status")
+            except httpx.HTTPError as exc2:
+                typer.echo(
+                    f"Could not reach exposed listener at {url} "
+                    f"(also tried {fallback}/status): {exc2}",
+                    err=True,
+                )
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
+            raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)

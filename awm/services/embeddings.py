@@ -88,11 +88,16 @@ def index_skill(skill_path: str) -> None:
 
 
 def index_session(session_id: int) -> None:
-    """Embed a session log entry for semantic search."""
+    """Embed a session log entry for semantic search. ``session_id`` is the
+    public ``legacy_id`` minted by the local peer; v32 keeps the public id
+    INTEGER, so this signature is unchanged."""
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT summary, deviations, suggestions FROM session_logs WHERE id=?",
+            "SELECT summary, deviations, suggestions "
+            "FROM session_logs WHERE legacy_id=? "
+            "AND origin_peer = COALESCE("
+            "  (SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')",
             (session_id,),
         ).fetchone()
     finally:
@@ -109,11 +114,15 @@ def index_session(session_id: int) -> None:
 
 
 def index_artifact(artifact_id: int) -> None:
-    """Embed an artifact for semantic search."""
+    """Embed an artifact for semantic search. ``artifact_id`` is the public
+    legacy_id of a local-origin artifact (remote-origin artifacts are
+    indexed on their owning peer; we'd duplicate the work otherwise)."""
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT name, description, tags FROM artifacts WHERE id=?",
+            "SELECT name, description, tags FROM artifacts "
+            "WHERE legacy_id=? AND origin_peer = "
+            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias='self' LIMIT 1), '')",
             (artifact_id,),
         ).fetchone()
     finally:
@@ -214,7 +223,12 @@ def reindex_all() -> dict:
     # Sessions — upsert all session log entries.
     conn = get_connection()
     try:
-        session_ids = [r[0] for r in conn.execute("SELECT id FROM session_logs").fetchall()]
+        # Only index local-origin sessions; replicated remote rows are
+        # indexed on their owning peer.
+        session_ids = [r[0] for r in conn.execute(
+            "SELECT legacy_id FROM session_logs WHERE origin_peer = "
+            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')"
+        ).fetchall()]
     finally:
         conn.close()
 

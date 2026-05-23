@@ -478,6 +478,33 @@ register_fastapi_routes(app, SESSION_OPERATIONS)
 
 
 # ---------------------------------------------------------------------------
+# Artifact content (phase 6 — federates when origin_peer != self)
+# ---------------------------------------------------------------------------
+
+@app.get("/artifacts/{artifact_ref}/content")
+def get_artifact_content(artifact_ref: str):
+    """Return the bytes of an artifact. ``artifact_ref`` is the public
+    legacy_id (``42``) or a peer-scoped ref (``42@capella``). Remote-
+    origin rows transparently proxy to the owning peer via /peer/."""
+    from fastapi.responses import Response as _Response
+    from awm.services import artifacts
+
+    # parse_id_ref also accepts plain ints; the path arg arrives as str.
+    try:
+        # Try int first for compactness; falls back to str grammar.
+        ref: int | str = int(artifact_ref)
+    except ValueError:
+        ref = artifact_ref
+    try:
+        data = artifacts.get_content(ref)
+    except artifacts.ArtifactNotFound as exc:
+        raise HTTPException(404, str(exc))
+    except artifacts.ArtifactContentUnavailable as exc:
+        raise HTTPException(502, str(exc))
+    return _Response(content=data, media_type="application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
 # Generic tool dispatch (used by the thin MCP stdio proxy)
 # ---------------------------------------------------------------------------
 

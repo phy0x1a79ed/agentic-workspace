@@ -19,9 +19,35 @@ claimed peer in ``X-Awm-From``.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from fastapi import Header, HTTPException, Query, Request, WebSocket, status
 
 from awm.services import auth as auth_svc
+
+log = logging.getLogger("awm.middleware_auth")
+
+
+def _warn_if_legacy_home_token(presented: str | None) -> None:
+    """If a presented bearer matches a stale ``~/.awm/auth.token`` (the
+    pre-WORKSPACE_ROOT location) but not the active token, log a single
+    WARNING so an operator notices they're using the wrong file."""
+    if not presented:
+        return
+    legacy = Path.home() / ".awm" / "auth.token"
+    try:
+        if not legacy.is_file():
+            return
+        stale = legacy.read_text().strip()
+    except OSError:
+        return
+    if stale and stale == presented:
+        log.warning(
+            "bearer matches stale ~/.awm/auth.token; the active token "
+            "lives under $WORKSPACE_ROOT/.awm/auth.token — update your "
+            "client config to point at the workspace path."
+        )
 
 
 def load_token() -> str | None:
@@ -60,6 +86,7 @@ def require_bearer(
     """
     token = _token_from_request(request)
     if not auth_svc.verify_bearer(token):
+        _warn_if_legacy_home_token(token)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="unauthorized",

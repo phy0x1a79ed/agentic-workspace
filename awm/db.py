@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 34
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -32,15 +32,21 @@ CREATE TABLE IF NOT EXISTS shared_edits (
     status TEXT NOT NULL DEFAULT 'active'
 );
 
+-- session_logs: UNIQUE(project, scope, logged_at, agent_id) is gone because
+-- cr-sqlite forbids non-PK unique constraints on CRRs. Dedup moves to the
+-- application layer (services/sessions.py:migrate_experiences already
+-- queries for an existing row before inserting).
 CREATE TABLE IF NOT EXISTS session_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    file_path TEXT NOT NULL,
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
     git_commit TEXT,
-    logged_at TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    agent_id TEXT DEFAULT 'unknown',
+    logged_at TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    agent_id TEXT NOT NULL DEFAULT 'unknown',
     metadata TEXT,
     content TEXT,
     skill_path TEXT,
@@ -50,48 +56,63 @@ CREATE TABLE IF NOT EXISTS session_logs (
     skill_version TEXT,
     resolved_at TEXT,
     resolution TEXT,
-    title TEXT,
-    UNIQUE(project, scope, logged_at, agent_id)
+    title TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_logs_project_scope
     ON session_logs(project, scope);
+CREATE INDEX IF NOT EXISTS idx_session_logs_legacy
+    ON session_logs(legacy_id, origin_peer);
 
+-- scopes: cr-sqlite forbids UNIQUE indices beyond the PK, so the
+-- previously-partial "one active row per (project, scope)" constraint
+-- moves into the application layer (services/scopes.py:create_scope still
+-- explicitly rejects a duplicate-active insert).
 CREATE TABLE IF NOT EXISTS scopes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project TEXT NOT NULL,
-    scope TEXT NOT NULL,
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
-    branch TEXT NOT NULL,
-    worktree TEXT NOT NULL,
+    branch TEXT NOT NULL DEFAULT '',
+    worktree TEXT NOT NULL DEFAULT '',
     repo_path TEXT,
     session INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_scopes_active_unique
-    ON scopes(project, scope) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_scopes_status ON scopes(status);
 CREATE INDEX IF NOT EXISTS idx_scopes_project ON scopes(project);
+CREATE INDEX IF NOT EXISTS idx_scopes_legacy ON scopes(legacy_id, origin_peer);
 
+-- artifacts: UNIQUE(path) drops because cr-sqlite forbids non-PK unique
+-- constraints on CRRs. Application-layer upsert in services/artifacts.py
+-- already SELECTs by path before INSERT or UPDATE, so behavior is
+-- preserved within a single peer. Cross-peer: two peers may now register
+-- the same path independently (each row keyed by its own origin_peer +
+-- legacy_id) — phase 6 federation handles the content-fetch routing.
 CREATE TABLE IF NOT EXISTS artifacts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project TEXT NOT NULL,
-    scope TEXT NOT NULL,
-    name TEXT NOT NULL,
-    artifact_type TEXT NOT NULL,
-    path TEXT NOT NULL,
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    artifact_type TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
     description TEXT,
     format TEXT,
     tags TEXT,
     status TEXT NOT NULL DEFAULT 'current',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
+CREATE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
+CREATE INDEX IF NOT EXISTS idx_artifacts_legacy ON artifacts(legacy_id, origin_peer);
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,20 +125,23 @@ CREATE TABLE IF NOT EXISTS embeddings (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL,
-    sender TEXT NOT NULL,
-    msg_type TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    body TEXT NOT NULL,
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    msg_type TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
     metadata TEXT,
     status TEXT NOT NULL DEFAULT 'unread',
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT '',
     read_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope);
 CREATE INDEX IF NOT EXISTS idx_messages_scope_status ON messages(scope, status);
+CREATE INDEX IF NOT EXISTS idx_messages_legacy ON messages(legacy_id, origin_peer);
 
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY,
@@ -181,17 +205,24 @@ CREATE TABLE IF NOT EXISTS room_participants (
     PRIMARY KEY (room_id, kind, identifier)
 );
 
+-- room_posts: cr-sqlite forbids UNIQUE constraints beyond the PK on CRR
+-- tables, so the per-peer (legacy_id, origin_peer) uniqueness is enforced
+-- in services/rooms.py via next_legacy_id() inside the write transaction
+-- rather than by a DB constraint. The non-unique index supports the
+-- read path.
 CREATE TABLE IF NOT EXISTS room_posts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT NOT NULL,
-    author TEXT NOT NULL,
-    body TEXT NOT NULL,
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    room_id TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
     kind TEXT NOT NULL DEFAULT 'text',
-    ts TEXT NOT NULL,
-    FOREIGN KEY (room_id) REFERENCES rooms(id)
+    ts TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_room_posts_room_ts ON room_posts(room_id, ts);
+CREATE INDEX IF NOT EXISTS idx_room_posts_legacy ON room_posts(legacy_id, origin_peer);
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_room_participants_scope
     ON room_participants(kind, identifier) WHERE left_at IS NULL;
@@ -623,6 +654,231 @@ CREATE TABLE IF NOT EXISTS peer_sync_state (
     last_db_version INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT ''
 );
+""",
+
+    (29, 30): """\
+-- v30: room_posts INTEGER→UUID, the first of five per-table conversions
+-- (room_posts → scopes → session_logs → messages → artifacts) needed
+-- for cr-sqlite replication. AUTOINCREMENT INTEGER PKs collide across
+-- peers; cr-sqlite requires non-autoincrement unique PKs, so we move to
+-- uuid TEXT PK + per-peer monotonic legacy_id INTEGER + origin_peer.
+--
+-- Post-v30 row identity:
+--   - ``uuid``        — cr-sqlite PK, internal only.
+--   - ``legacy_id``   — public id, minted by the owning peer in its own
+--                       local sequence. Same id may appear on different
+--                       peers (different origin_peer disambiguates).
+--   - ``origin_peer`` — the peer that minted ``legacy_id`` for this row.
+--
+-- The FK to rooms(id) is dropped: replicated posts can arrive before
+-- their parent room replicates, and cr-sqlite doesn't enforce FKs across
+-- CRRs anyway.
+--
+-- Backfill: existing posts get fresh uuids; legacy_id ← id (preserves
+-- public identity); origin_peer ← (the post's room's host_peer_id), so
+-- the row's "owning peer" matches the room that hosts it. Pre-v28 rooms
+-- without host_peer_id fall back to '' (empty string) — those rows are
+-- effectively local-only until reconciled.
+
+CREATE TABLE room_posts_new (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    room_id TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'text',
+    ts TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO room_posts_new (uuid, legacy_id, origin_peer, room_id, author, body, kind, ts)
+    SELECT
+        lower(hex(randomblob(16))),
+        room_posts.id,
+        COALESCE((SELECT host_peer_id FROM rooms WHERE rooms.id = room_posts.room_id), ''),
+        room_posts.room_id,
+        room_posts.author,
+        room_posts.body,
+        room_posts.kind,
+        room_posts.ts
+    FROM room_posts;
+DROP TABLE room_posts;
+ALTER TABLE room_posts_new RENAME TO room_posts;
+CREATE INDEX IF NOT EXISTS idx_room_posts_room_ts ON room_posts(room_id, ts);
+CREATE INDEX IF NOT EXISTS idx_room_posts_legacy ON room_posts(legacy_id, origin_peer);
+""",
+
+    (31, 32): """\
+-- v32: session_logs INTEGER→UUID. Third per-table CRR migration.
+-- Public id is still the integer legacy_id (returned via SessionLogEntry.id);
+-- uuid is internal-only. UNIQUE(project, scope, logged_at, agent_id) drops
+-- because cr-sqlite rejects non-PK unique constraints on CRRs; dedup moves
+-- to services/sessions.py:migrate_experiences (it already does a
+-- pre-insert SELECT, so behavior is preserved).
+
+CREATE TABLE session_logs_new (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    git_commit TEXT,
+    logged_at TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    agent_id TEXT NOT NULL DEFAULT 'unknown',
+    metadata TEXT,
+    content TEXT,
+    skill_path TEXT,
+    outcome TEXT,
+    deviations TEXT,
+    suggestions TEXT,
+    skill_version TEXT,
+    resolved_at TEXT,
+    resolution TEXT,
+    title TEXT
+);
+INSERT INTO session_logs_new (uuid, legacy_id, origin_peer, project, scope,
+                              file_path, git_commit, logged_at, summary,
+                              agent_id, metadata, content, skill_path,
+                              outcome, deviations, suggestions, skill_version,
+                              resolved_at, resolution, title)
+    SELECT
+        lower(hex(randomblob(16))),
+        id,
+        COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), ''),
+        project, scope, COALESCE(file_path, ''), git_commit,
+        logged_at, summary, COALESCE(agent_id, 'unknown'), metadata, content,
+        skill_path, outcome, deviations, suggestions, skill_version,
+        resolved_at, resolution, title
+    FROM session_logs;
+DROP TABLE session_logs;
+ALTER TABLE session_logs_new RENAME TO session_logs;
+CREATE INDEX IF NOT EXISTS idx_session_logs_project_scope
+    ON session_logs(project, scope);
+CREATE INDEX IF NOT EXISTS idx_session_logs_legacy
+    ON session_logs(legacy_id, origin_peer);
+""",
+
+    (32, 33): """\
+-- v33: messages INTEGER→UUID. Fourth per-table CRR migration.
+-- Public id stays INTEGER (returned as MessageInfo.id = legacy_id). The
+-- recipient peer mints the legacy_id at receive time — for cross-peer
+-- sends the existing /peer/inbox handler recurses into send_message()
+-- locally on the recipient, so the per-peer monotonic sequence runs on
+-- the owning peer just like rooms/sessions.
+
+CREATE TABLE messages_new (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    sender TEXT NOT NULL DEFAULT '',
+    msg_type TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    metadata TEXT,
+    status TEXT NOT NULL DEFAULT 'unread',
+    created_at TEXT NOT NULL DEFAULT '',
+    read_at TEXT
+);
+INSERT INTO messages_new (uuid, legacy_id, origin_peer, scope, sender,
+                          msg_type, subject, body, metadata, status,
+                          created_at, read_at)
+    SELECT
+        lower(hex(randomblob(16))),
+        id,
+        COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), ''),
+        scope, sender, msg_type, subject, body, metadata, status,
+        created_at, read_at
+    FROM messages;
+DROP TABLE messages;
+ALTER TABLE messages_new RENAME TO messages;
+CREATE INDEX IF NOT EXISTS idx_messages_scope ON messages(scope);
+CREATE INDEX IF NOT EXISTS idx_messages_scope_status ON messages(scope, status);
+CREATE INDEX IF NOT EXISTS idx_messages_legacy ON messages(legacy_id, origin_peer);
+""",
+
+    (33, 34): """\
+-- v34: artifacts INTEGER→UUID. Final per-table CRR migration.
+-- Drops UNIQUE(path) (cr-sqlite forbids non-PK unique indices on CRRs).
+-- The path-keyed upsert in services/artifacts.py:register_artifact moves
+-- the constraint into the app layer (it already SELECTs by path before
+-- choosing INSERT vs UPDATE). Adds origin_peer so phase 6 content-fetch
+-- federation can decide whether to read locally or proxy to the owning
+-- peer.
+DROP INDEX IF EXISTS idx_artifacts_path;
+
+CREATE TABLE artifacts_new (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    artifact_type TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    description TEXT,
+    format TEXT,
+    tags TEXT,
+    status TEXT NOT NULL DEFAULT 'current',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO artifacts_new (uuid, legacy_id, origin_peer, project, scope, name,
+                           artifact_type, path, description, format, tags,
+                           status, created_at, updated_at)
+    SELECT
+        lower(hex(randomblob(16))),
+        id,
+        COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), ''),
+        project, scope, name, artifact_type, path, description, format,
+        tags, status, created_at, updated_at
+    FROM artifacts;
+DROP TABLE artifacts;
+ALTER TABLE artifacts_new RENAME TO artifacts;
+CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
+CREATE INDEX IF NOT EXISTS idx_artifacts_path ON artifacts(path);
+CREATE INDEX IF NOT EXISTS idx_artifacts_legacy ON artifacts(legacy_id, origin_peer);
+""",
+
+    (30, 31): """\
+-- v31: scopes INTEGER→UUID. Second of five per-table CRR migrations.
+-- Public identifier is (project, scope) — uuid is purely internal for
+-- cr-sqlite. legacy_id is kept for parity with other CRR tables but is
+-- not currently exposed to callers. Drop the partial unique index since
+-- cr-sqlite forbids UNIQUE constraints beyond the PK on CRRs; the
+-- application-level check in create_scope() still rejects duplicate
+-- active rows.
+DROP INDEX IF EXISTS idx_scopes_active_unique;
+
+CREATE TABLE scopes_new (
+    uuid TEXT NOT NULL PRIMARY KEY,
+    legacy_id INTEGER NOT NULL DEFAULT 0,
+    origin_peer TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    branch TEXT NOT NULL DEFAULT '',
+    worktree TEXT NOT NULL DEFAULT '',
+    repo_path TEXT,
+    session INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO scopes_new (uuid, legacy_id, origin_peer, project, scope, status,
+                        branch, worktree, repo_path, session, created_at, updated_at)
+    SELECT
+        lower(hex(randomblob(16))),
+        id,
+        COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), ''),
+        project, scope, status, branch, worktree, repo_path,
+        session, created_at, updated_at
+    FROM scopes;
+DROP TABLE scopes;
+ALTER TABLE scopes_new RENAME TO scopes;
+CREATE INDEX IF NOT EXISTS idx_scopes_status ON scopes(status);
+CREATE INDEX IF NOT EXISTS idx_scopes_project ON scopes(project);
+CREATE INDEX IF NOT EXISTS idx_scopes_legacy ON scopes(legacy_id, origin_peer);
 """,
 }
 

@@ -1,8 +1,30 @@
-"""Lock acquire/release/heartbeat/reap with file + folder semantics."""
+"""Lock acquire/release/heartbeat/reap with file + folder semantics.
+
+Phase 7 — cross-peer routing. Locks themselves stay local-only (NOT
+CRR-replicated): two peers cannot share an authoritative lock without
+breaking the semantics. But a resource that lives on peer X (a scope
+created on X, an artifact registered on X, a room hosted on X) should
+have its locks held on X — otherwise locking a remote-origin resource
+locally only blocks the local agent, not the actual owner.
+
+So acquire/release/heartbeat parse the ``resource_path`` against a small
+grammar:
+
+  scope:<project>/<name>[@<peer>]
+  artifact:<legacy_id>[@<peer>]
+  room:<legacy_id>[@<peer>]
+
+…look up the resource's ``origin_peer`` in the DB, and if it's a remote
+peer, forward the operation to that peer's ``POST /peer/lock/...``
+endpoint. Anything that doesn't match the grammar is treated as a local-
+only resource (existing behavior).
+"""
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -14,6 +36,91 @@ from awm.models import (
     LockListResponse,
     LockActionResponse,
 )
+from awm.services.network import peers as peer_svc
+
+log = logging.getLogger("awm.services.locks")
+
+
+# Resource-path grammar for federation. Matches:
+#   scope:proj/name        scope:proj/name@peer
+#   artifact:<legacy>      artifact:<legacy>@peer
+#   room:<legacy>          room:<legacy>@peer
+_RESOURCE_RE = re.compile(
+    r"^(?P<kind>scope|artifact|room):"
+    r"(?P<body>[^@]+?)"
+    r"(?:@(?P<peer>[A-Za-z0-9][A-Za-z0-9_-]{0,63}))?$"
+)
+
+
+def _local_peer_id() -> str:
+    try:
+        ident = peer_svc.get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
+
+
+def _resolve_owner(resource_path: str) -> str | None:
+    """Return the peer id that owns ``resource_path``, or None if the path
+    is local-only / unstructured.
+
+    A returned peer id may equal the local peer, in which case the caller
+    handles the lock locally (no federation hop). Returning None means the
+    path doesn't fit the federated-resource grammar — local-only.
+    """
+    m = _RESOURCE_RE.match(resource_path)
+    if m is None:
+        return None
+    kind = m.group("kind")
+    body = m.group("body")
+    suffix_peer = m.group("peer")
+    if suffix_peer:
+        return suffix_peer
+
+    conn = get_connection()
+    try:
+        if kind == "scope":
+            if "/" not in body:
+                return None
+            project, scope_name = body.split("/", 1)
+            row = conn.execute(
+                "SELECT origin_peer FROM scopes "
+                "WHERE project = ? AND scope = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (project, scope_name),
+            ).fetchone()
+        elif kind == "artifact":
+            try:
+                legacy = int(body)
+            except ValueError:
+                return None
+            row = conn.execute(
+                "SELECT origin_peer FROM artifacts WHERE legacy_id = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (legacy,),
+            ).fetchone()
+        elif kind == "room":
+            row = conn.execute(
+                "SELECT host_peer_id AS origin_peer FROM rooms "
+                "WHERE id = ? LIMIT 1",
+                (body,),
+            ).fetchone()
+        else:
+            return None
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+    owner = row["origin_peer"] or ""
+    return owner or None
+
+
+# Peers we've ever federated a lock to in this process — used to fan out
+# heartbeats. In-memory only; on restart the next acquire repopulates.
+_federated_peers: set[str] = set()
 
 
 def _row_to_info(row: sqlite3.Row) -> LockInfo:
@@ -69,7 +176,21 @@ def _find_conflicts(
 
 
 def acquire(req: LockAcquireRequest) -> LockActionResponse:
-    """Acquire a lock, failing if there's a conflict."""
+    """Acquire a lock, federating to the owning peer when the resource_path
+    matches the federated grammar and the owner is remote."""
+    owner = _resolve_owner(req.resource_path)
+    local = _local_peer_id()
+    if owner is not None and owner != local and owner != "":
+        from awm.services.network import federation
+        try:
+            resp = federation.forward_lock(owner, "acquire", req.model_dump())
+        except federation.FederationError as exc:
+            return LockActionResponse(
+                message=f"federation_unreachable: {exc}", lock=None,
+            )
+        _federated_peers.add(owner)
+        return _coerce_lock_action_response(resp)
+
     conn = get_connection()
     try:
         conflicts = _find_conflicts(conn, req.resource_path, req.holder_id, req.lock_type)
@@ -110,7 +231,21 @@ def acquire(req: LockAcquireRequest) -> LockActionResponse:
 
 
 def release(resource_path: str, holder_id: str) -> LockActionResponse:
-    """Release a specific lock."""
+    """Release a specific lock, federating when the resource is remote-owned."""
+    owner = _resolve_owner(resource_path)
+    local = _local_peer_id()
+    if owner is not None and owner != local and owner != "":
+        from awm.services.network import federation
+        try:
+            resp = federation.forward_lock(
+                owner, "release",
+                {"resource_path": resource_path, "holder_id": holder_id},
+            )
+        except federation.FederationError as exc:
+            return LockActionResponse(
+                message=f"federation_unreachable: {exc}", lock=None,
+            )
+        return _coerce_lock_action_response(resp)
     conn = get_connection()
     try:
         row = conn.execute(
@@ -132,7 +267,9 @@ def release(resource_path: str, holder_id: str) -> LockActionResponse:
 
 
 def heartbeat(holder_id: str) -> LockActionResponse:
-    """Renew heartbeat for all locks held by a given holder."""
+    """Renew heartbeat for all locks held by a given holder. Heartbeat is
+    fanned out to every peer this process has ever federated to in
+    addition to the local update."""
     conn = get_connection()
     try:
         now = _now_iso()
@@ -141,11 +278,49 @@ def heartbeat(holder_id: str) -> LockActionResponse:
             (now, holder_id),
         )
         conn.commit()
-        return LockActionResponse(
-            message=f"Heartbeat renewed for {cursor.rowcount} lock(s)",
-        )
+        local_count = cursor.rowcount
     finally:
         conn.close()
+
+    remote_count = 0
+    if _federated_peers:
+        from awm.services.network import federation
+        for peer in list(_federated_peers):
+            try:
+                resp = federation.forward_lock(
+                    peer, "heartbeat", {"holder_id": holder_id},
+                )
+                if isinstance(resp, dict):
+                    msg = resp.get("message", "")
+                    # Best-effort: extract the count from "Heartbeat renewed for N lock(s)"
+                    m = re.search(r"for (\d+) lock", msg)
+                    if m:
+                        remote_count += int(m.group(1))
+            except federation.FederationError as exc:
+                log.warning("heartbeat to %s failed: %s", peer, exc)
+
+    return LockActionResponse(
+        message=f"Heartbeat renewed for {local_count + remote_count} lock(s)",
+    )
+
+
+def _coerce_lock_action_response(payload) -> LockActionResponse:
+    """Pydantic-revive a remote /peer/lock/* JSON response, tolerating that
+    ``lock`` may be None or a nested dict."""
+    if isinstance(payload, LockActionResponse):
+        return payload
+    if not isinstance(payload, dict):
+        return LockActionResponse(message=str(payload), lock=None)
+    lock_payload = payload.get("lock")
+    lock_info = None
+    if isinstance(lock_payload, dict):
+        try:
+            lock_info = LockInfo(**lock_payload)
+        except Exception:  # noqa: BLE001
+            lock_info = None
+    return LockActionResponse(
+        message=payload.get("message", ""), lock=lock_info,
+    )
 
 
 def list_locks(holder_id: str | None = None, path: str | None = None) -> LockListResponse:

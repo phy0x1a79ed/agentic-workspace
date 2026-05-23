@@ -22,6 +22,21 @@ from awm.models import (
     ScopeListResponse,
     ScopeActionResponse,
 )
+from awm.services.replication.schema import new_uuid, next_legacy_id
+
+
+def _local_peer_id() -> str:
+    """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
+    Used to stamp origin_peer on new scope rows so post-replication peers
+    can identify which peer minted each row."""
+    try:
+        from awm.services.network.peers import get_local_identity
+        ident = get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
 
 
 def _now_iso() -> str:
@@ -99,15 +114,21 @@ def _generate_history_md(project: str, scope: str) -> str:
             (project, scope),
         ).fetchall()
 
-        # Open sessions (unresolved)
+        # Open sessions (unresolved). Alias legacy_id → id so the markdown
+        # formatter doesn't need to know about the v32 column rename.
         open_sessions = conn.execute(
-            "SELECT * FROM session_logs WHERE project=? AND resolved_at IS NULL ORDER BY logged_at DESC LIMIT 50",
+            "SELECT legacy_id AS id, title, summary, scope, skill_path, "
+            "       outcome, deviations, suggestions "
+            "FROM session_logs WHERE project=? AND resolved_at IS NULL "
+            "ORDER BY logged_at DESC LIMIT 50",
             (project,),
         ).fetchall()
 
         # Resolved sessions
         resolved_sessions = conn.execute(
-            "SELECT id, title, summary FROM session_logs WHERE project=? AND resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT 50",
+            "SELECT legacy_id AS id, title, summary FROM session_logs "
+            "WHERE project=? AND resolved_at IS NOT NULL "
+            "ORDER BY resolved_at DESC LIMIT 50",
             (project,),
         ).fetchall()
     finally:
@@ -252,7 +273,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         session_num = (row["max_session"] or 0) + 1 if row and row["max_session"] else 1
 
         active = conn.execute(
-            "SELECT id FROM scopes WHERE project=? AND scope=? AND status='active'",
+            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
             (req.project, req.scope),
         ).fetchone()
         if active:
@@ -301,9 +322,16 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     now = _now_iso()
     conn = get_connection()
     try:
+        origin = _local_peer_id()
+        legacy = next_legacy_id(conn, "scopes", origin)
         conn.execute(
-            "INSERT INTO scopes (project, scope, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?)",
-            (req.project, req.scope, feature_branch, str(repo_dir), str(repo_dir), session_num, now, now),
+            "INSERT INTO scopes "
+            "(uuid, legacy_id, origin_peer, project, scope, status, branch, "
+            " worktree, repo_path, session, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+            (new_uuid(), legacy, origin, req.project, req.scope,
+             feature_branch, str(repo_dir), str(repo_dir), session_num,
+             now, now),
         )
         conn.commit()
     finally:
@@ -377,7 +405,9 @@ def delete_scope(project: str, scope: str) -> ScopeActionResponse:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT id, status FROM scopes WHERE project=? AND scope=? AND status IN ('active', 'completed') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT uuid, status FROM scopes "
+            "WHERE project=? AND scope=? AND status IN ('active', 'completed') "
+            "ORDER BY updated_at DESC LIMIT 1",
             (project, scope),
         ).fetchone()
         if row is None:
@@ -387,8 +417,8 @@ def delete_scope(project: str, scope: str) -> ScopeActionResponse:
 
         now = _now_iso()
         conn.execute(
-            "UPDATE scopes SET status='deleted', updated_at=? WHERE id=?",
-            (now, row["id"]),
+            "UPDATE scopes SET status='deleted', updated_at=? WHERE uuid=?",
+            (now, row["uuid"]),
         )
         conn.commit()
     finally:

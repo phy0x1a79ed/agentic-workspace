@@ -183,6 +183,77 @@ def _peer_get(peer_id: str, path: str, params: dict | None, timeout: float) -> t
         return (peer_id, None, "non-JSON response")
 
 
+def forward_artifact_content(
+    peer_id: str, legacy_id: int, *, timeout: float = 30.0,
+) -> bytes:
+    """Fetch raw artifact bytes from the owning peer's
+    ``GET /peer/artifacts/{legacy_id}/content`` endpoint. Returns the
+    response body verbatim (no JSON decode). Raises FederationError on
+    transport failure or non-200; the caller turns that into a 404/502.
+
+    Timeout default is 30s — content can be larger than DB payloads.
+    """
+    base_url, token = _resolve(peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+    }
+    try:
+        r = httpx.get(
+            f"{base_url}/peer/artifacts/{legacy_id}/content",
+            headers=headers, timeout=timeout, verify=_HTTPS_VERIFY,
+        )
+    except httpx.HTTPError as exc:
+        raise FederationError(
+            f"artifact content fetch from {peer_id} failed: "
+            f"{exc.__class__.__name__}: {exc}"
+        ) from exc
+    if r.status_code != 200:
+        raise FederationError(
+            f"artifact content fetch from {peer_id}: HTTP {r.status_code}",
+            status_code=r.status_code,
+        )
+    return r.content
+
+
+def forward_lock(
+    target_peer_id: str, op: str, payload: dict, *, timeout: float = 5.0,
+) -> dict:
+    """Forward a lock op to ``target_peer_id``'s ``POST /peer/lock/{op}``.
+    ``op`` is one of ``acquire`` / ``release`` / ``heartbeat``. Returns
+    the parsed JSON; raises FederationError on transport failure or
+    non-200."""
+    if op not in ("acquire", "release", "heartbeat"):
+        raise ValueError(f"unknown lock op: {op}")
+    base_url, token = _resolve(target_peer_id)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-Awm-From": _local_peer_id(),
+        "Content-Type": "application/json",
+    }
+    try:
+        r = httpx.post(
+            f"{base_url}/peer/lock/{op}", headers=headers, json=payload,
+            timeout=timeout, verify=_HTTPS_VERIFY,
+        )
+    except httpx.HTTPError as exc:
+        raise FederationError(
+            f"lock {op} to {target_peer_id} failed: "
+            f"{exc.__class__.__name__}: {exc}"
+        ) from exc
+    if r.status_code != 200:
+        raise FederationError(
+            f"lock {op} to {target_peer_id}: HTTP {r.status_code}: {r.text[:200]}",
+            status_code=r.status_code,
+        )
+    try:
+        return r.json()
+    except ValueError as exc:
+        raise FederationError(
+            f"lock {op} to {target_peer_id}: non-JSON response",
+        ) from exc
+
+
 def fan_out_get(
     peer_ids: list[str],
     path: str,

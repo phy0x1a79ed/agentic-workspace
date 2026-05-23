@@ -155,3 +155,166 @@ def peer_agent_input(request: Request, body: dict):
     )
     agent_instances.enqueue_input(session, room_id, fake_post)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Federated artifact content (phase 6)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/artifacts/{legacy_id}/content",
+    dependencies=[Depends(require_peer_bearer)],
+)
+def peer_artifact_content(legacy_id: int, request: Request):
+    """Stream the bytes of a local artifact for a remote peer that holds
+    the metadata via replication but not the file. Only serves rows whose
+    ``origin_peer`` is this peer — never re-federates."""
+    from fastapi.responses import Response as _Response
+    from awm.services import artifacts as artifacts_svc
+
+    # _require_from_peer enforces X-Awm-From; we don't actually need the
+    # value but the call validates the header is present.
+    _require_from_peer(request)
+    local = artifacts_svc._local_peer_id()
+    conn = artifacts_svc.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT path FROM artifacts WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, local),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(404, f"no local artifact with legacy_id={legacy_id}")
+    try:
+        data = artifacts_svc._read_local_content(row["path"])
+    except artifacts_svc.ArtifactNotFound as exc:
+        raise HTTPException(404, str(exc))
+    return _Response(content=data, media_type="application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
+# Federated locks (phase 7)
+# ---------------------------------------------------------------------------
+
+@router.post("/lock/acquire", dependencies=[Depends(require_peer_bearer)])
+def peer_lock_acquire(request: Request, payload: dict):
+    """A remote peer is acquiring a lock on a resource that lives here.
+    We never re-federate: the resource is presumed to live locally (the
+    caller already resolved origin_peer to this peer)."""
+    from awm.models import LockAcquireRequest
+    from awm.services import locks as locks_svc
+
+    _require_from_peer(request)
+    try:
+        req = LockAcquireRequest(**payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"invalid lock-acquire body: {exc}")
+    # Local-only path: skip the resolver since federation already routed us.
+    return _local_lock_acquire(req)
+
+
+@router.post("/lock/release", dependencies=[Depends(require_peer_bearer)])
+def peer_lock_release(request: Request, payload: dict):
+    from awm.services import locks as locks_svc
+
+    _require_from_peer(request)
+    resource_path = payload.get("resource_path")
+    holder_id = payload.get("holder_id")
+    if not resource_path or not holder_id:
+        raise HTTPException(400, "resource_path and holder_id required")
+    return _local_lock_release(resource_path, holder_id)
+
+
+@router.post("/lock/heartbeat", dependencies=[Depends(require_peer_bearer)])
+def peer_lock_heartbeat(request: Request, payload: dict):
+    from awm.services import locks as locks_svc
+
+    _require_from_peer(request)
+    holder_id = payload.get("holder_id")
+    if not holder_id:
+        raise HTTPException(400, "holder_id required")
+    return _local_lock_heartbeat(holder_id)
+
+
+def _local_lock_acquire(req):
+    """Call the local-only acquire path, bypassing _resolve_owner. Used
+    by the federated /peer/lock/acquire handler to prevent re-federation
+    when a peer chain happens to misroute (e.g. stale origin_peer)."""
+    from awm.services import locks as locks_svc
+
+    conn = locks_svc.get_connection()
+    try:
+        conflicts = locks_svc._find_conflicts(
+            conn, req.resource_path, req.holder_id, req.lock_type,
+        )
+        if conflicts:
+            holders = ", ".join(
+                f"{c.holder_id} ({c.resource_path})" for c in conflicts
+            )
+            return locks_svc.LockActionResponse(
+                message=f"Conflict: resource locked by {holders}", lock=None,
+            )
+        now = locks_svc._now_iso()
+        conn.execute(
+            "INSERT INTO locks (resource_path, holder_id, holder_pid, "
+            " lock_type, acquired_at, heartbeat_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(resource_path, holder_id) DO UPDATE SET "
+            "  heartbeat_at = excluded.heartbeat_at, "
+            "  holder_pid = excluded.holder_pid, "
+            "  lock_type = excluded.lock_type, "
+            "  metadata = excluded.metadata",
+            (req.resource_path, req.holder_id, req.holder_pid,
+             req.lock_type, now, now, req.metadata),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM locks WHERE resource_path = ? AND holder_id = ?",
+            (req.resource_path, req.holder_id),
+        ).fetchone()
+        return locks_svc.LockActionResponse(
+            message="Lock acquired", lock=locks_svc._row_to_info(row),
+        )
+    finally:
+        conn.close()
+
+
+def _local_lock_release(resource_path: str, holder_id: str):
+    from awm.services import locks as locks_svc
+
+    conn = locks_svc.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM locks WHERE resource_path = ? AND holder_id = ?",
+            (resource_path, holder_id),
+        ).fetchone()
+        if row is None:
+            return locks_svc.LockActionResponse(message="No matching lock found")
+        info = locks_svc._row_to_info(row)
+        conn.execute(
+            "DELETE FROM locks WHERE resource_path = ? AND holder_id = ?",
+            (resource_path, holder_id),
+        )
+        conn.commit()
+        return locks_svc.LockActionResponse(message="Lock released", lock=info)
+    finally:
+        conn.close()
+
+
+def _local_lock_heartbeat(holder_id: str):
+    from awm.services import locks as locks_svc
+
+    conn = locks_svc.get_connection()
+    try:
+        now = locks_svc._now_iso()
+        cur = conn.execute(
+            "UPDATE locks SET heartbeat_at = ? WHERE holder_id = ?",
+            (now, holder_id),
+        )
+        conn.commit()
+        return locks_svc.LockActionResponse(
+            message=f"Heartbeat renewed for {cur.rowcount} lock(s)",
+        )
+    finally:
+        conn.close()

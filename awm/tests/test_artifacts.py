@@ -36,7 +36,7 @@ class TestSyncArtifacts:
         assert result["marked_stale"] == 1
 
         row = db_conn.execute(
-            "SELECT status FROM artifacts WHERE id=?", (aid,)
+            "SELECT status FROM artifacts WHERE legacy_id=?", (aid,)
         ).fetchone()
         assert row["status"] == "stale"
 
@@ -59,7 +59,7 @@ class TestSyncArtifacts:
         result = artifacts.sync_artifacts(force=True)
         assert result["restored"] == 1
         row = db_conn.execute(
-            "SELECT status FROM artifacts WHERE id=?", (aid,)
+            "SELECT status FROM artifacts WHERE legacy_id=?", (aid,)
         ).fetchone()
         assert row["status"] == "current"
 

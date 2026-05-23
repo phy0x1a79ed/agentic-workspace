@@ -34,6 +34,7 @@ from typing import Any, Callable, Iterable
 from awm.db import get_connection
 from awm.services import rooms_names
 from awm.services.network import peers as peer_svc
+from awm.services.replication.schema import new_uuid, next_legacy_id
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +162,29 @@ def _row_to_participant(row) -> Participant:
 
 def _row_to_post(row) -> Post:
     return Post(
-        id=row["id"], room_id=row["room_id"], author=row["author"],
+        id=row["legacy_id"], room_id=row["room_id"], author=row["author"],
         body=row["body"], kind=row["kind"], ts=row["ts"],
     )
+
+
+def _insert_post(conn, *, room_id: str, author: str, body: str,
+                 kind: str, ts: str) -> str:
+    """Insert a row into ``room_posts`` with a freshly minted uuid PK and
+    per-peer monotonic ``legacy_id``. Returns the uuid so callers can
+    re-fetch the row when they need the full Post object.
+
+    The conn must be inside an active transaction; uuid/legacy_id minting
+    relies on WAL serializing writers."""
+    origin = _local_peer_id()
+    uid = new_uuid()
+    legacy = next_legacy_id(conn, "room_posts", origin)
+    conn.execute(
+        "INSERT INTO room_posts "
+        "(uuid, legacy_id, origin_peer, room_id, author, body, kind, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (uid, legacy, origin, room_id, author, body, kind, ts),
+    )
+    return uid
 
 
 # ---------------------------------------------------------------------------
@@ -298,17 +319,11 @@ def create_room(*, topic: str | None = None,
                 "VALUES (?, 'scope', ?, ?)",
                 (name, s, now),
             )
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, 'system', ?)",
-            (name, "system", f"room opened by {opener}", now),
-        )
+        _insert_post(conn, room_id=name, author="system",
+                     body=f"room opened by {opener}", kind="system", ts=now)
         for s in scopes:
-            conn.execute(
-                "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-                "VALUES (?, ?, ?, 'join', ?)",
-                (name, f"agent:{s}", f"scope:{s} joined", now),
-            )
+            _insert_post(conn, room_id=name, author=f"agent:{s}",
+                         body=f"scope:{s} joined", kind="join", ts=now)
         conn.commit()
         row = conn.execute("SELECT * FROM rooms WHERE id = ?", (name,)).fetchone()
     finally:
@@ -385,11 +400,8 @@ def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
             "UPDATE rooms SET status = 'closed', closed_at = ? WHERE id = ?",
             (now, room_id),
         )
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, 'system', 'room closed', 'system', ?)",
-            (room_id, now),
-        )
+        _insert_post(conn, room_id=room_id, author="system",
+                     body="room closed", kind="system", ts=now)
         conn.commit()
         row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
     finally:
@@ -512,11 +524,8 @@ def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
                 "SELECT * FROM room_participants WHERE room_id = ? AND kind = ? AND identifier = ?",
                 (room_id, kind, identifier),
             ).fetchone()
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, 'join', ?)",
-            (room_id, f"{kind}:{identifier}", f"{kind}:{identifier} joined", now),
-        )
+        _insert_post(conn, room_id=room_id, author=f"{kind}:{identifier}",
+                     body=f"{kind}:{identifier} joined", kind="join", ts=now)
         conn.commit()
     finally:
         conn.close()
@@ -536,11 +545,10 @@ def remove_participant(room_id: str, kind: str, identifier: str) -> bool:
             (now, room_id, kind, identifier),
         )
         if cur.rowcount > 0:
-            conn.execute(
-                "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-                "VALUES (?, ?, ?, 'leave', ?)",
-                (room_id, f"{kind}:{identifier}", f"{kind}:{identifier} left", now),
-            )
+            _insert_post(conn, room_id=room_id,
+                         author=f"{kind}:{identifier}",
+                         body=f"{kind}:{identifier} left",
+                         kind="leave", ts=now)
         conn.commit()
     finally:
         conn.close()
@@ -577,14 +585,11 @@ def post(room_id: str, *, author: str, body: str, kind: str = "text",
     now = _now()
     conn = get_connection()
     try:
-        cur = conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (room_id, author, body, kind, now),
-        )
+        uid = _insert_post(conn, room_id=room_id, author=author,
+                           body=body, kind=kind, ts=now)
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM room_posts WHERE id = ?", (cur.lastrowid,),
+            "SELECT * FROM room_posts WHERE uuid = ?", (uid,),
         ).fetchone()
     finally:
         conn.close()
@@ -646,7 +651,7 @@ def history(room_id: str, *, limit_chars: int = 1024,
     if before_ts is not None:
         sql += " AND ts < ?"
         params.append(before_ts)
-    sql += " ORDER BY ts DESC, id DESC"
+    sql += " ORDER BY ts DESC, uuid DESC"
     conn = get_connection()
     try:
         rows = conn.execute(sql, params).fetchall()
@@ -699,11 +704,16 @@ def auto_close_for_scope(scope_key: str) -> list[str]:
     return closed
 
 
-def get_post(post_id: int) -> Post | None:
+def get_post(post_id: int | str) -> Post | None:
+    """Return a post by its public ``legacy_id``. Accepts ``42`` or
+    ``'42@<peer>'``; bare ints resolve to the local peer."""
+    legacy_id, peer = peer_svc.parse_id_ref(post_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM room_posts WHERE id = ?", (post_id,),
+            "SELECT * FROM room_posts WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
     finally:
         conn.close()
