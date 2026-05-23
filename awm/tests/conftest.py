@@ -21,8 +21,6 @@ def awm_workspace(tmp_path, monkeypatch):
     db_path = awm_dir / "state.db"
     projects_dir = workspace / "projects"
     projects_dir.mkdir()
-    main_dir = workspace / "main"
-    main_dir.mkdir()
     skills_dir = workspace / "skills"
     skills_dir.mkdir()
     data_dir = workspace / "data"
@@ -35,7 +33,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.config.PID_FILE", awm_dir / "awm.pid")
     monkeypatch.setattr("awm.config.LOG_FILE", awm_dir / "awm.log")
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr("awm.config.MAIN_DIR", main_dir)
     monkeypatch.setattr("awm.config.DATA_DIR", data_dir)
     monkeypatch.setattr("awm.config.SKILLS_DIR", skills_dir)
     # PEER_FILE defaults to the developer's workspace — redirect into the
@@ -47,7 +44,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.db.DB_PATH", db_path)
     monkeypatch.setattr("awm.db.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.services.skills.SKILLS_DIR", skills_dir)
-    monkeypatch.setattr("awm.services.sessions.MAIN_DIR", main_dir)
     monkeypatch.setattr("awm.services.sessions.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.scopes.PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("awm.services.scopes.WORKSPACE_ROOT", workspace)
@@ -71,7 +67,6 @@ def awm_workspace(tmp_path, monkeypatch):
         "awm_dir": awm_dir,
         "db_path": db_path,
         "projects_dir": projects_dir,
-        "main_dir": main_dir,
         "skills_dir": skills_dir,
         "data_dir": data_dir,
     }
@@ -152,13 +147,14 @@ def seeded_locks(db_conn):
 def seeded_scopes(db_conn, awm_workspace):
     """Insert scope rows and create matching workspace dirs."""
     now = datetime.now(timezone.utc).isoformat()
-    main_dir = awm_workspace["main_dir"]
+    workspace = awm_workspace["workspace"]
     projects_dir = awm_workspace["projects_dir"]
+    scope_worktrees = workspace / "test_worktrees"
 
     scope_data = [
-        ("proj-a", "scope-1", "active", "feat/scope-1", str(main_dir / "proj-a" / "scopes" / "scope-1"), str(projects_dir / "proj-a" / "scope-1"), 1, now, now),
-        ("proj-a", "scope-2", "completed", "feat/scope-2", str(main_dir / "proj-a" / "scopes" / "scope-2"), str(projects_dir / "proj-a" / "scope-2"), 1, now, now),
-        ("proj-b", "scope-3", "completed", "feat/scope-3", str(main_dir / "proj-b" / "scopes" / "scope-3"), str(projects_dir / "proj-b" / "scope-3"), 1, now, now),
+        ("proj-a", "scope-1", "active", "feat/scope-1", str(scope_worktrees / "proj-a" / "scope-1"), str(projects_dir / "proj-a" / "scope-1"), 1, now, now),
+        ("proj-a", "scope-2", "completed", "feat/scope-2", str(scope_worktrees / "proj-a" / "scope-2"), str(projects_dir / "proj-a" / "scope-2"), 1, now, now),
+        ("proj-b", "scope-3", "completed", "feat/scope-3", str(scope_worktrees / "proj-b" / "scope-3"), str(projects_dir / "proj-b" / "scope-3"), 1, now, now),
     ]
     from awm.services.replication.schema import new_uuid
     for i, t in enumerate(scope_data, start=1):
@@ -171,7 +167,7 @@ def seeded_scopes(db_conn, awm_workspace):
         )
     db_conn.commit()
 
-    # Create workspace directories (main/)
+    # Create per-scope worktree dirs (test-only path)
     for t in scope_data:
         ws_path = Path(t[4])
         ws_path.mkdir(parents=True, exist_ok=True)
@@ -194,7 +190,6 @@ def seeded_scopes(db_conn, awm_workspace):
 def seeded_sessions(db_conn, seeded_scopes, awm_workspace):
     """Insert session log rows."""
     base = datetime.now(timezone.utc)
-    main_dir = awm_workspace["main_dir"]
     t1 = base.isoformat()
     t2 = (base + timedelta(seconds=1)).isoformat()
     t3 = (base + timedelta(seconds=2)).isoformat()

@@ -1,4 +1,4 @@
-"""Tests for awm.services.sessions — log, list, get, migrate."""
+"""Tests for awm.services.sessions — log, list, get."""
 
 from __future__ import annotations
 
@@ -222,76 +222,6 @@ class TestGetSession:
         detail = sessions.get_session(entry.id)
         assert "## Resolution" in detail.content
         assert "Added input validation" in detail.content
-
-
-class TestMigrateExperiences:
-    def test_migrate_structured_entry(self, awm_workspace):
-        main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-x" / "tasks" / "scope-x"
-        ws.mkdir(parents=True)
-        (ws / "experiences.md").write_text(
-            "# Experiences -- proj-x/scope-x\n\n## Log\n\n"
-            "\n**Date:** 2024-06-15\n\n"
-            "**Scope:** proj-x/scope-x\n\n"
-            "**Agent:** agent-1\n\n"
-            "## Session Summary\n\n"
-            "Did some work\n\n"
-            "---\n"
-        )
-
-        stats = sessions.migrate_experiences()
-        assert stats["imported"] == 1
-        assert stats["files_processed"] == 1
-
-        result = sessions.list_sessions(project="proj-x")
-        assert result.total == 1
-        assert "Did some work" in result.entries[0].summary
-
-    def test_migrate_free_form_entry(self, awm_workspace):
-        main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-y" / "tasks" / "scope-y"
-        ws.mkdir(parents=True)
-        (ws / "experiences.md").write_text(
-            "# Experiences -- proj-y/scope-y\n\n## Log\n\n"
-            "Some free-form notes about this scope\n"
-            "that span multiple lines.\n"
-        )
-
-        stats = sessions.migrate_experiences()
-        assert stats["imported"] == 1
-
-    def test_migrate_empty_file(self, awm_workspace):
-        main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-z" / "tasks" / "scope-z"
-        ws.mkdir(parents=True)
-        (ws / "experiences.md").write_text(
-            "# Experiences -- proj-z/scope-z\n\n## Log\n\n"
-        )
-
-        stats = sessions.migrate_experiences()
-        assert stats["imported"] == 0
-
-    def test_migrate_dedup(self, awm_workspace):
-        """Second migration should skip already-imported entries."""
-        main_dir = awm_workspace["main_dir"]
-        ws = main_dir / "proj-d" / "tasks" / "scope-d"
-        ws.mkdir(parents=True)
-        (ws / "experiences.md").write_text(
-            "# Experiences -- proj-d/scope-d\n\n## Log\n\n"
-            "\n**Date:** 2024-06-15\n\n"
-            "**Scope:** proj-d/scope-d\n\n"
-            "**Agent:** agent-1\n\n"
-            "## Session Summary\n\n"
-            "First entry\n\n"
-            "---\n"
-        )
-
-        stats1 = sessions.migrate_experiences()
-        assert stats1["imported"] == 1
-
-        stats2 = sessions.migrate_experiences()
-        assert stats2["skipped"] == 1
-        assert stats2["imported"] == 0
 
 
 # ---------------------------------------------------------------------------

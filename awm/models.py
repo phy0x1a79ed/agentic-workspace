@@ -37,8 +37,6 @@ class ProjectCreateResponse(BaseModel):
     bare_dir: str
     worktree_dir: str
     data_dir: str
-    results_dir: str
-    reports_dir: str
     mode: str
 
 

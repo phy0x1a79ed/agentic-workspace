@@ -37,9 +37,10 @@ PID_FILE = AWM_DIR / "awm.pid"
 LOG_FILE = AWM_DIR / "awm.log"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
-MAIN_DIR = WORKSPACE_ROOT / "main"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
 
 # ---------------------------------------------------------------------------

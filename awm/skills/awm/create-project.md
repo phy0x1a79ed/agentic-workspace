@@ -15,7 +15,7 @@ awm project create <project-name> --fork <upstream-url>  # fork on GitHub + clon
 awm project create <project-name> --clone <repo-url>     # clone existing repo as bare
 ```
 
-All three modes scaffold: bare repo at `projects/<project>/.bare/`, default-branch worktree at `projects/<project>/<default-branch>/`, data dirs under `data/<project>/`, and a `main/<project>/AGENTS.md` rendered from the project template.
+All three modes scaffold: bare repo at `projects/<project>/.bare/`, default-branch worktree at `projects/<project>/<default-branch>/` (with an `AGENTS.md` rendered from the scope template), and data dirs under `data/<project>/`. No project-level AGENTS.md or data symlink is produced — per-scope `.awm/` directories carry all per-scope state.
 
 ## Post-Setup Verification
 
@@ -24,7 +24,7 @@ All three modes scaffold: bare repo at `projects/<project>/.bare/`, default-bran
 - `data/<project>/raw/` and `data/<project>/staged/` exist.
 - For `--fork` / `--clone`: `git -C projects/<project>/.bare remote -v` shows the expected `origin` (and `upstream` on fork).
 - Initial commit is present on the default branch.
-- `main/<project>/AGENTS.md` exists.
+- `projects/<project>/<default-branch>/AGENTS.md` exists.
 
 ## Layout After Setup
 
@@ -32,11 +32,9 @@ All three modes scaffold: bare repo at `projects/<project>/.bare/`, default-bran
 projects/<project>/
   .bare/                   # bare repo
   <default-branch>/        # worktree checked out to the default branch
+    AGENTS.md              # scope-agent scaffold
 
 data/<project>/
   raw/                     # immutable inputs
   staged/                  # processed inputs
-
-main/<project>/
-  AGENTS.md                # project-agent scaffold
 ```

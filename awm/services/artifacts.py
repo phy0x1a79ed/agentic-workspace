@@ -19,6 +19,7 @@ from awm.models import (
     ArtifactInfo,
     ArtifactSearchResponse,
 )
+from awm.services._validation import validate_name
 from awm.services.network import peers as peer_svc
 from awm.services.replication.schema import new_uuid, next_legacy_id
 
@@ -61,6 +62,8 @@ def register_artifact(req: ArtifactRegisterRequest) -> ArtifactInfo:
     each peer manages its own copies, replication propagates the metadata,
     and content federation handles reads. So the upsert is scoped to local
     rows only — two peers can independently register the same path."""
+    validate_name(req.project, kind="project name")
+    validate_name(req.scope, kind="scope name")
     now = _now_iso()
     origin = _local_peer_id()
     conn = get_connection()
