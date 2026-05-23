@@ -50,15 +50,30 @@ def _write_discovery_file() -> Path:
     listener's scheme, host, port, and token-file path without guessing.
 
     Eliminates the silent config drift between launchers documented in
-    inbox bugs #160/#161/#166.
+    inbox bugs #160/#161/#166. Also carries the current leadership view
+    so CLI / MCP / operators can see who's ACTIVE without polling /status.
     """
     have_tls = config.TLS_CERT.exists() and config.TLS_KEY.exists()
+    leadership_state = "ACTIVE"
+    current_leader: str | None = None
+    self_priority = 100
+    try:
+        from awm.services.leadership import state as _ldr_state
+        s = _ldr_state.get_state()
+        leadership_state = s.leadership
+        current_leader = s.current_leader
+        self_priority = s.self_priority
+    except Exception:
+        pass
     discovery = {
         "scheme": "https" if have_tls else "http",
         "host": config.EXPOSED_HOST,
         "port": config.EXPOSED_PORT,
         "token_file": str(config.AUTH_TOKEN_FILE),
         "pid": os.getpid(),
+        "leadership_state": leadership_state,
+        "current_leader": current_leader,
+        "peer_priority": self_priority,
     }
     path = config.AWM_DIR / "exposed.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,28 +112,57 @@ async def lifespan(app: FastAPI):
 
     # Discord bot — opt-in. Started iff $AWM_DIR/discord.toml is present
     # and parseable. Operators are whitelisted via the discord_operators
-    # table (see `awm discord add-operator`).
-    discord_task: asyncio.Task | None = None
+    # table (see `awm discord add-operator`). Lifecycle is now driven by
+    # the leadership state machine: only the ACTIVE peer holds the gateway.
     try:
         from awm.services.discord import config as discord_config
-        from awm.services.discord import bot as discord_bot
         dc = discord_config.load()
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] discord disabled: {exc}")
         dc = None
+    from awm.services.leadership import discord as ldr_discord
+    ldr_discord.set_config(dc)
     if dc is not None:
-        async def _run_discord() -> None:
-            try:
-                await discord_bot.run_bot(dc)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                print(f"[awm-exposed] discord bot crashed: {exc}")
-        discord_task = asyncio.create_task(_run_discord())
         print(
-            f"[awm-exposed] discord bot starting "
-            f"(account={dc.account_name or '?'})"
+            f"[awm-exposed] discord bot configured "
+            f"(account={dc.account_name or '?'}) — will connect when ACTIVE"
         )
+
+    # cr-sqlite replication pull loop. Started unconditionally; the loop
+    # itself no-ops when the extension binary is missing.
+    from awm.services.replication import sync as repl_sync
+    replication_task = asyncio.create_task(
+        repl_sync.run_sync_loop(), name="replication-sync",
+    )
+
+    # Leadership state machine. Configure self from peers-table self-row;
+    # register Discord start/stop callbacks; spin up the probe loop. Initial
+    # state is STANDBY — the first poll round promotes if nobody outranks us.
+    from awm.services.leadership import state as ldr_state
+    from awm.services.leadership import poll as ldr_poll
+    from awm.services.network import peers as _peer_svc
+    self_ident = _peer_svc.get_local_identity()
+    if self_ident:
+        self_peer_id = self_ident["peer_id"]
+        self_row = _peer_svc.get_peer(self_peer_id)
+        self_priority = int((self_row or {}).get("peer_priority", 100))
+        ldr_state.configure(self_peer_id, self_priority)
+        ldr_state.on_promote(ldr_discord.start_bot)
+        ldr_state.on_demote(ldr_discord.stop_bot)
+        leadership_task = asyncio.create_task(
+            ldr_poll.run_poll_loop(), name="leadership-poll"
+        )
+        print(
+            f"[awm-exposed] leadership: self={self_peer_id} "
+            f"priority={self_priority} (probe interval={ldr_poll.POLL_INTERVAL_S}s)"
+        )
+    else:
+        # Pre-federation single-node operation: no peer identity, no poll
+        # loop. Treat self as ACTIVE so the UI mounts unconditionally.
+        ldr_state.configure("local", 0)
+        await ldr_state.promote("local")
+        leadership_task = None
+        print("[awm-exposed] leadership: no peer identity — running ACTIVE single-node")
 
     # Warm voice models in the background — first connection waits a few
     # seconds rather than every connection paying full load cost. Failures
@@ -148,8 +192,13 @@ async def lifespan(app: FastAPI):
 
     challenges_sweeper_task.cancel()
     warmup_task.cancel()
-    if discord_task is not None:
-        discord_task.cancel()
+    replication_task.cancel()
+    if leadership_task is not None:
+        leadership_task.cancel()
+    try:
+        await ldr_discord.stop_bot()
+    except Exception:
+        pass
     try:
         from awm.voice.registry import get_registry
         await get_registry().shutdown()
@@ -261,12 +310,14 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 
 from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
+from awm.services.replication.endpoint import router as repl_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
 app.include_router(peer_router)
+app.include_router(repl_router)
 app.include_router(voice_router)
 
 
@@ -418,6 +469,22 @@ def _is_destructive(method: str, path: str) -> bool:
     return False
 
 
+_STANDBY_GATED_PREFIXES = ("/ui/", "/ui")
+_STANDBY_GATED_PATHS = ("/auth/mint", "/auth/bootstrap")
+
+
+def _is_standby_gated(path: str) -> bool:
+    """Routes that should 503+Location when the local peer is STANDBY:
+    the SPA itself and the login-flow entry points. ``/auth/whoami`` and
+    ``/auth/session`` stay reachable so an already-cookied browser can
+    finish its current request and clear state cleanly."""
+    if path in _STANDBY_GATED_PATHS:
+        return True
+    if path == "/ui" or path.startswith("/ui/"):
+        return True
+    return False
+
+
 @app.middleware("http")
 async def gate_and_auth_for_core(request: Request, call_next):
     """Enforce auth + destructive gate for routes that fall through to the
@@ -429,8 +496,35 @@ async def gate_and_auth_for_core(request: Request, call_next):
     peer-id, ``request.state.from_peer`` is populated so /inbox can prefix
     the stored sender. Unknown peer-ids are 4xx'd rather than silently
     accepted, to avoid spoofing of un-registered origins.
+
+    Leadership gate: when the local peer is STANDBY and the request targets
+    the UI or the login-flow entry, redirect (or 503-without-Location if no
+    leader is known yet) so operators land on the ACTIVE peer.
     """
     path = request.url.path
+
+    # Leadership gate runs first — STANDBY peers must not serve UI even if
+    # the caller has a valid cookie. /peer/*, /status, and the rest of the
+    # federation surface stay open in STANDBY.
+    if _is_standby_gated(path):
+        try:
+            from awm.services.leadership import state as _ldr_state
+            s = _ldr_state.get_state()
+            if s.leadership == "STANDBY":
+                leader = _ldr_state.current_leader_base_url()
+                if leader:
+                    return Response(
+                        status_code=503,
+                        headers={"Location": f"{leader}{path}"},
+                        content=b"standby; redirecting to active leader",
+                    )
+                return Response(
+                    status_code=503,
+                    content=b"standby; no active leader known yet",
+                )
+        except Exception:
+            # Leadership service not configured — fall through (single-node).
+            pass
 
     # Routes mounted directly on the exposed app (with their own
     # Depends(require_bearer)) skip middleware-level auth to avoid

@@ -462,6 +462,35 @@ def peer_remove(peer_id: str = typer.Argument(...)):
     typer.echo(f"removed peer: {peer_id}")
 
 
+@peer_app.command("set-priority")
+def peer_set_priority(
+    peer_id: str = typer.Argument(..., help="peer_id (or 'self' to update the local self-row)"),
+    priority: int = typer.Argument(..., help="integer priority; lower = higher precedence; 0 wins"),
+):
+    """Set ``peer_priority`` for leader election.
+
+    Each peer in the cluster should have a unique integer. Lower-numbered
+    peers win leadership when reachable; higher-numbered peers stand by.
+    """
+    from awm.services.network import peers as peer_svc
+    target_id = peer_id
+    if peer_id == "self":
+        ident = peer_svc.get_local_identity()
+        if ident is None:
+            typer.echo("error: no local peer identity; run `awm peer init` first", err=True)
+            raise typer.Exit(2)
+        target_id = ident["peer_id"]
+    try:
+        updated = peer_svc.set_peer_priority(target_id, priority)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    if updated is None:
+        typer.echo(f"no such peer: {target_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{target_id}: peer_priority = {priority}")
+
+
 @peer_app.command("refresh-token")
 def peer_refresh_token(
     peer_id: str = typer.Argument(...),

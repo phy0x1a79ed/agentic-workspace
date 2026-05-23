@@ -83,6 +83,7 @@
   <a href="#/rooms" data-tab="rooms">rooms</a>
   <a href="#/room/" data-tab="room" id="nav-room" hidden>room</a>
   <span class="me" id="me"></span>
+  <span id="leader-badge" title="leadership state" style="margin-left:auto; font-size:11px; padding:2px 6px; border:1px solid #ccc; border-radius:3px;"></span>
 </nav>
 
 <div class="shell">
@@ -448,10 +449,37 @@ async function refreshCore() {
   try {
     const r = await api("GET", "/status");
     out.textContent = JSON.stringify(r, null, 2);
+    updateLeaderBadge(r);
   } catch (e) {
     out.textContent = e.message;
   }
 }
+
+function updateLeaderBadge(status) {
+  const el = document.getElementById("leader-badge");
+  if (!el || !status) return;
+  if (status.leadership_state === "ACTIVE") {
+    el.textContent = "ACTIVE";
+    el.style.background = "#dcfce7";
+    el.style.color = "#166534";
+    el.style.borderColor = "#86efac";
+  } else {
+    const leader = status.current_leader || "?";
+    el.textContent = `STANDBY → ${leader}`;
+    el.style.background = "#f3f4f6";
+    el.style.color = "#374151";
+    el.style.borderColor = "#d1d5db";
+  }
+}
+
+async function pollLeaderBadge() {
+  try {
+    const r = await api("GET", "/status");
+    updateLeaderBadge(r);
+  } catch (e) { /* ignore */ }
+}
+setInterval(pollLeaderBadge, 5000);
+window.addEventListener("load", () => { setTimeout(pollLeaderBadge, 500); });
 
 document.querySelectorAll("[data-refresh]").forEach(btn => {
   btn.addEventListener("click", () => {

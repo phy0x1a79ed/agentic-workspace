@@ -205,6 +205,7 @@ def _row_to_peer(row) -> dict:
         "added_at": row["added_at"],
         "endpoints": endpoints,
         "tls_fingerprint": row["tls_fingerprint"] if "tls_fingerprint" in row.keys() else None,
+        "peer_priority": row["peer_priority"] if "peer_priority" in row.keys() else 100,
     }
 
 
@@ -253,7 +254,8 @@ def add_peer(peer_id: str, ssh_alias: str, *,
              remote_port: int = 7820,
              friendly_name: str | None = None,
              endpoints: list[dict] | None = None,
-             tls_fingerprint: str | None = None) -> dict:
+             tls_fingerprint: str | None = None,
+             peer_priority: int | None = None) -> dict:
     """Register a remote awm peer. Idempotent — re-adding overwrites
     ``ssh_alias``, ``remote_port``, ``friendly_name``, ``endpoints``, and
     ``tls_fingerprint``. Token install is a separate step
@@ -272,22 +274,41 @@ def add_peer(peer_id: str, ssh_alias: str, *,
     endpoints_json = json.dumps(normalized) if normalized else None
 
     now = datetime.now(timezone.utc).isoformat()
+    effective_priority = 100 if peer_priority is None else int(peer_priority)
     conn = get_connection()
     try:
-        conn.execute(
-            """\
-            INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at, endpoints, tls_fingerprint)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(peer_id) DO UPDATE SET
-                ssh_alias = excluded.ssh_alias,
-                remote_port = excluded.remote_port,
-                friendly_name = excluded.friendly_name,
-                endpoints = excluded.endpoints,
-                tls_fingerprint = excluded.tls_fingerprint
-            """,
-            (peer_id, ssh_alias, remote_port, friendly_name, now,
-             endpoints_json, tls_fingerprint),
-        )
+        if peer_priority is None:
+            # Preserve existing priority on update; seed default on insert.
+            conn.execute(
+                """\
+                INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at, endpoints, tls_fingerprint, peer_priority)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(peer_id) DO UPDATE SET
+                    ssh_alias = excluded.ssh_alias,
+                    remote_port = excluded.remote_port,
+                    friendly_name = excluded.friendly_name,
+                    endpoints = excluded.endpoints,
+                    tls_fingerprint = excluded.tls_fingerprint
+                """,
+                (peer_id, ssh_alias, remote_port, friendly_name, now,
+                 endpoints_json, tls_fingerprint, effective_priority),
+            )
+        else:
+            conn.execute(
+                """\
+                INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at, endpoints, tls_fingerprint, peer_priority)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(peer_id) DO UPDATE SET
+                    ssh_alias = excluded.ssh_alias,
+                    remote_port = excluded.remote_port,
+                    friendly_name = excluded.friendly_name,
+                    endpoints = excluded.endpoints,
+                    tls_fingerprint = excluded.tls_fingerprint,
+                    peer_priority = excluded.peer_priority
+                """,
+                (peer_id, ssh_alias, remote_port, friendly_name, now,
+                 endpoints_json, tls_fingerprint, effective_priority),
+            )
         conn.commit()
         row = conn.execute("SELECT * FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
     finally:
@@ -302,6 +323,41 @@ def list_peers() -> list[dict]:
     finally:
         conn.close()
     return [_row_to_peer(r) for r in rows]
+
+
+def list_remote_peers() -> list[dict]:
+    """All peers except this host's self-row. Ordered by peer_priority ASC
+    (highest precedence first). Used by leader election to find peers worth
+    deferring to."""
+    ident = get_local_identity()
+    self_id = ident["peer_id"] if ident else None
+    out = []
+    for p in list_peers():
+        if self_id and p["peer_id"] == self_id:
+            continue
+        out.append(p)
+    out.sort(key=lambda p: (p.get("peer_priority", 100), p["peer_id"]))
+    return out
+
+
+def set_peer_priority(peer_id: str, priority: int) -> dict | None:
+    """Update peer_priority for an existing peer. Returns the updated row,
+    or None if peer is unknown."""
+    if not isinstance(priority, int) or priority < 0:
+        raise ValueError(f"peer_priority must be a non-negative integer, got {priority!r}")
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE peers SET peer_priority = ? WHERE peer_id = ?",
+            (priority, peer_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT * FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
+    finally:
+        conn.close()
+    return _row_to_peer(row) if row else None
 
 
 def get_peer(peer_id: str) -> dict | None:

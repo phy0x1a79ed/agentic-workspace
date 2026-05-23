@@ -158,11 +158,28 @@ def get_status():
 
     scope_result = scopes.list_scopes(status="active")
 
+    # Leadership view — only meaningful when reached via the exposed listener.
+    # When the singleton hasn't been configured (core-only / pre-lifespan),
+    # default to ACTIVE so single-node deployments keep their UI reachable.
+    try:
+        from awm.services.leadership import state as ldr_state
+        s = ldr_state.get_state()
+        leadership_state = s.leadership
+        current_leader = s.current_leader
+        peer_priority = s.self_priority
+    except Exception:
+        leadership_state = "ACTIVE"
+        current_leader = None
+        peer_priority = 100
+
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
         active_scopes=scope_result.total,
         active_shared_edits=active_edits,
+        leadership_state=leadership_state,
+        current_leader=current_leader,
+        peer_priority=peer_priority,
     )
 
 

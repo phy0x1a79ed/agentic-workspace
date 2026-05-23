@@ -15,6 +15,11 @@ class StatusResponse(BaseModel):
     active_locks: int = 0
     active_scopes: int = 0
     active_shared_edits: int = 0
+    # Leadership state — populated by the exposed listener; the local-only
+    # core (port 7819) leaves these at defaults.
+    leadership_state: str = "ACTIVE"      # "ACTIVE" | "STANDBY"
+    current_leader: str | None = None     # peer_id self thinks is leader
+    peer_priority: int = 100              # self priority
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +537,9 @@ class PeerInfo(BaseModel):
     friendly_name: str | None = None
     last_seen: str | None = None
     added_at: str | None = None
+    peer_priority: int = 100
+    endpoints: list[dict] | None = None
+    tls_fingerprint: str | None = None
 
 
 class PeerListResponse(BaseModel):

@@ -571,6 +571,49 @@ receiver verifies the claimed peer-id is in its registry — unknown
 peer-ids get a 400. Audit lines (`~/.awm/access.log`) tag federated
 calls with `peer_id`, operator calls with `peer_id: null`.
 
+### Leadership / failover
+
+The exposed listener does application-layer leader election so only one
+peer at a time mounts the operator-facing UI and holds the Discord bot
+gateway. Each peer has an integer `peer_priority` (lower wins; ties
+broken by `peer_id`); the lowest-priority reachable peer is ACTIVE,
+others are STANDBY.
+
+```bash
+# Set priorities — lower number = higher precedence.
+awm peer set-priority self 10                       # this peer is the primary
+awm peer set-priority xps 20                        # xps is the fallback
+```
+
+In STANDBY, `/ui/*`, `/auth/mint`, and `/auth/bootstrap` return
+`503 + Location: <leader>/...` so operators land on whichever peer is
+currently ACTIVE. `/peer/*` federation, `/status`, and `/auth/whoami`
+stay reachable on every peer. The Discord bot (Shape A: single shared
+token in each peer's `$AWM_DIR/discord.toml`) only connects from the
+ACTIVE peer; Discord's one-gateway-per-token rule means failover is
+clean — the new ACTIVE peer's reconnect succeeds within ~30s.
+
+State machine: K=3 consecutive `/status` failures from every
+higher-priority peer to promote (~9s @ 3s interval); a single success
+from any of them demotes immediately. Current leader is gossiped via
+`/status` and surfaced in `$AWM_DIR/exposed.json` and the control-center
+status-tab badge.
+
+### DB replication (cr-sqlite)
+
+Replicable tables (`rooms`, `room_participants`, `peers`,
+`discord_operators` today; the rest in follow-up PRs as each
+INTEGER→UUID migration lands) are marked CRR via the
+vendored cr-sqlite extension at `awm/_native/crsqlite.so`. The exposed
+listener runs a pull loop every 5s that asks each remote peer
+`GET /peer/db-sync?since=<cursor>` and applies the binary changeset
+locally. Per-peer cursor lives in `peer_sync_state` (local-only). Locks
+and agent_sessions stay per-peer-local.
+
+The extension is loaded automatically in `db.get_connection()`; if the
+binary is missing the daemon logs a warning and runs in single-peer
+mode (replication is a no-op, the rest of AWM works fine).
+
 ### Sync source between peers during development
 
 `deploy/sync-to-peer.sh <host>` rsyncs the package + `pip install -e`
