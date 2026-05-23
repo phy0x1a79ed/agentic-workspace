@@ -1,6 +1,6 @@
 """Persistent `claude` subprocess wrapper for the voice agent.
 
-Mirrors the stream-json framing used by awm/services/sessions_live.py.
+Mirrors the stream-json framing used by awm/services/agent_instances.py.
 Bundles two MCP servers:
 
 - ``show``: stdio script in this package, lets the agent emit visual-
@@ -38,6 +38,9 @@ AWM_ROOM_TOOL_NAMES = [
     "mcp__awm__room_history",
     "mcp__awm__room_invite",
     "mcp__awm__room_search",
+    "mcp__awm__room_agents",
+    "mcp__awm__agent_control",
+    "mcp__awm__awm_status",
 ]
 
 

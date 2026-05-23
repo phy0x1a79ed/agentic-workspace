@@ -102,28 +102,21 @@ def _print_json(r: httpx.Response):
 
 
 def _exposed_base_and_token() -> tuple[str, str]:
-    """Resolve the local exposed URL + bearer token for /rooms calls."""
-    from awm import config
+    """Resolve the local HTTPS exposed URL + bearer token for /rooms calls.
+
+    The auth/TLS ritual lives in :mod:`awm.services.auth`; this helper just
+    forwards. Operators never see a ``--token`` flag.
+    """
+    from awm.services import auth as _auth
+    try:
+        token = _auth.local_token(generate_if_missing=False)
+    except _auth.TokenMissing as exc:
+        raise typer.BadParameter(str(exc))
     host = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
     if host == "0.0.0.0":
         host = "127.0.0.1"
     port = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
-    base = f"http://{host}:{port}"
-    token_env = os.environ.get("AWM_AUTH_TOKEN")
-    if token_env:
-        return base, token_env.strip()
-    candidates = [
-        Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))),
-        Path.home() / ".awm" / "auth.token",
-        config.AUTH_TOKEN_FILE,
-    ]
-    for token_path in candidates:
-        if token_path.exists():
-            return base, token_path.read_text().strip()
-    raise typer.BadParameter(
-        f"auth token not found in any of: {[str(p) for p in candidates]}; "
-        f"run `awm exposed init-token`"
-    )
+    return f"https://{host}:{port}", token
 
 
 def _split_remote(name: str) -> tuple[str, str | None]:
@@ -148,34 +141,39 @@ def _exposed_api(method: str, path: str, *,
         params = kwargs.pop("params", {}) or {}
         params["peer"] = peer
         kwargs["params"] = params
-    r = httpx.request(method, f"{base}{path}", headers=headers, timeout=30, **kwargs)
+    # Self-signed TLS on loopback — bearer is the trust boundary.
+    r = httpx.request(
+        method, f"{base}{path}", headers=headers, timeout=30, verify=False,
+        **kwargs,
+    )
     return r
 
 
 def _peer_direct_api(method: str, peer_id: str, path: str, **kwargs) -> httpx.Response:
-    """Hit a peer's awm-exposed endpoint *directly* through an SSH tunnel.
+    """Hit a peer's HTTPS endpoint directly via the peer-client resolver.
 
-    Use this for ``room@peer`` semantics where we want the remote peer to
-    own the operation (e.g. ``awm room post name@xaw`` should make the
-    post land on xaw's transcript, not be forwarded via our local rooms
-    service)."""
-    from awm.services.network import ssh_tunnel
-    from awm.services.network import peers as peer_svc
+    Honors the peer's ``endpoints`` list (direct → SSH fallback) configured
+    via ``awm peer add --endpoint ...``. The bearer is the peer-token
+    installed under ``$AWM_DIR/peers/<peer_id>.token``; ``X-Awm-From`` is
+    our local peer id so the remote tags the post correctly.
+
+    Use this for ``room@peer`` semantics where the remote peer owns the
+    operation (``awm room post name@xps`` lands on xps's transcript).
+    """
+    from awm.services.network import federation, peers as _peers
     try:
-        tun = ssh_tunnel.acquire_tunnel(peer_id)
-    except ssh_tunnel.TunnelError as exc:
-        raise typer.BadParameter(f"could not tunnel to {peer_id}: {exc}")
-    try:
-        token = peer_svc.load_peer_token(peer_id)
-    except (FileNotFoundError, KeyError, ValueError) as exc:
+        base_url, token = federation._resolve(peer_id)
+    except federation.FederationError as exc:
         raise typer.BadParameter(str(exc))
     headers = kwargs.pop("headers", {}) or {}
     headers["Authorization"] = f"Bearer {token}"
-    from awm.services.network import peers as _peers
     local = _peers.get_local_identity()
     if local:
         headers["X-Awm-From"] = local["peer_id"]
-    r = httpx.request(method, f"{tun.local_url}{path}", headers=headers, timeout=30, **kwargs)
+    r = httpx.request(
+        method, f"{base_url}{path}", headers=headers, timeout=30,
+        verify=False, **kwargs,
+    )
     return r
 
 
@@ -331,19 +329,65 @@ def peer_add(
     token_file: str = typer.Option(..., "--token-file",
                                     help="Path to the bearer token file (copied to canonical location)"),
     friendly_name: str = typer.Option(None, "--name", help="Optional friendly name"),
+    endpoint: list[str] = typer.Option(
+        None, "--endpoint",
+        help=(
+            "Repeatable. ``--endpoint direct=https://10.x.y.z:7820`` or "
+            "``--endpoint ssh=alias:port``. Listed-first endpoints are "
+            "tried first; the SSH-alias pair is a synthesized last fallback."
+        ),
+    ),
+    tls_fingerprint: str = typer.Option(
+        None, "--tls-fingerprint",
+        help="SHA-256 of the remote daemon's TLS cert (optional pinning).",
+    ),
 ):
-    """Register a remote awm peer reachable via an SSH alias.
+    """Register a remote awm peer reachable via one or more endpoints.
 
-    The local peer opens a port-forwarded SSH ControlMaster on first use;
-    all federation HTTP and WebSocket traffic runs through it.
+    Each ``--endpoint`` can be:
+
+      ``direct=https://10.147.20.5:7820``  — direct HTTPS to a known IP.
+
+      ``ssh=capella:7820``  — SSH-tunneled (alias passed to OpenSSH).
+
+    The legacy ``--ssh-alias`` + ``--remote-port`` pair is preserved as a
+    trailing fallback entry when no explicit ``--endpoint`` is given.
     """
     from awm.services.network import peers as peer_svc
+
+    parsed: list[dict] = []
+    for raw in endpoint or []:
+        if "=" not in raw:
+            typer.echo(f"error: --endpoint must be kind=spec; got {raw!r}", err=True)
+            raise typer.Exit(2)
+        kind, spec = raw.split("=", 1)
+        kind = kind.strip()
+        spec = spec.strip()
+        if kind == "direct":
+            parsed.append({"kind": "direct", "url": spec})
+        elif kind == "ssh":
+            if ":" not in spec:
+                typer.echo(f"error: ssh endpoint must be alias:port; got {spec!r}", err=True)
+                raise typer.Exit(2)
+            alias, port_s = spec.rsplit(":", 1)
+            try:
+                port_v = int(port_s)
+            except ValueError:
+                typer.echo(f"error: ssh endpoint port must be int; got {port_s!r}", err=True)
+                raise typer.Exit(2)
+            parsed.append({"kind": "ssh", "alias": alias, "port": port_v})
+        else:
+            typer.echo(f"error: unknown endpoint kind {kind!r}", err=True)
+            raise typer.Exit(2)
+
     try:
         peer_svc.install_peer_token(peer_id, token_file)
         entry = peer_svc.add_peer(
             peer_id, ssh_alias,
             remote_port=remote_port,
             friendly_name=friendly_name,
+            endpoints=parsed or None,
+            tls_fingerprint=tls_fingerprint,
         )
     except (ValueError, FileNotFoundError) as exc:
         typer.echo(f"error: {exc}", err=True)

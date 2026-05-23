@@ -402,3 +402,47 @@ def get_registry() -> VoiceRegistry:
         log_dir = Path(getattr(config, "AWM_DIR", Path.home() / ".awm")) / "voice"
         _registry = VoiceRegistry(log_dir)
     return _registry
+
+
+async def run_voice_ws_session(websocket: WebSocket, user_as: str) -> None:
+    """Drive a voice WS connection end-to-end.
+
+    Owns the per-user agent acquisition, audio/text frame demux, and
+    detach-on-exit. The API handler shrinks to ``auth + accept +
+    delegate`` (matches the same split applied to /rooms/{id}/attach).
+    """
+    from fastapi import WebSocketDisconnect
+
+    reg = get_registry()
+    agent = await reg.get_or_create(user_as)
+    await reg.attach(agent, websocket)
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if "bytes" in msg and msg["bytes"] is not None:
+                await agent.add_audio(websocket, msg["bytes"])
+                continue
+            text = msg.get("text")
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            t = payload.get("type")
+            if t == "start":
+                await agent.handle_start(websocket)
+            elif t == "end":
+                await agent.handle_end(websocket)
+            elif t == "cancel":
+                await agent.handle_cancel()
+            elif t == "text":
+                await agent.handle_text(str(payload.get("body", "")))
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        log.exception("voice ws handler crashed for %s", user_as)
+    finally:
+        reg.detach(agent, websocket)

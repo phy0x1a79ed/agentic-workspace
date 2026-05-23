@@ -3,7 +3,7 @@
 Slash commands posted to a room with a ``to:`` scope are routed here. If
 the command matches a registered server command, the handler runs and a
 result message is posted back to the room. Unknown commands fall through
-to the scope's claude stdin (via ``sessions_live.send_slash``) so /clear,
+to the scope's claude stdin (via ``agent_instances.send_slash``) so /clear,
 /compact, plugin commands, etc. still work.
 
 The catalog is intentionally small and explicit — each entry has a name,
@@ -18,7 +18,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
-from awm.services import sessions_live
+from awm.services import agent_instances
 
 
 @dataclass
@@ -60,12 +60,12 @@ def parse_command_line(line: str) -> tuple[str, list[str]]:
 
 async def _h_restart(scope_key: str, args: list[str]) -> str:
     mode = args[0] if args else None
-    if mode is not None and mode not in sessions_live._VALID_PERMISSION_MODES:
+    if mode is not None and mode not in agent_instances._VALID_PERMISSION_MODES:
         return (
             f"invalid permission-mode {mode!r}; "
-            f"choices: {list(sessions_live._VALID_PERMISSION_MODES)}"
+            f"choices: {list(agent_instances._VALID_PERMISSION_MODES)}"
         )
-    sess = await sessions_live.respawn_session(
+    sess = await agent_instances.respawn_session(
         scope_key, permission_mode=mode,
     )
     return (
@@ -76,16 +76,16 @@ async def _h_restart(scope_key: str, args: list[str]) -> str:
 
 
 async def _h_kill(scope_key: str, args: list[str]) -> str:
-    sess = sessions_live._by_scope.get(scope_key)
+    sess = agent_instances._by_scope.get(scope_key)
     if sess is None:
         return f"no active session for {scope_key}"
-    await sessions_live.kill_session(sess.id)
+    await agent_instances.kill_session(sess.id)
     return f"killed {scope_key} (pid={sess.proc.pid})"
 
 
 async def _h_mode(scope_key: str, args: list[str]) -> str:
     if not args:
-        return f"usage: /mode <{'|'.join(sessions_live._VALID_PERMISSION_MODES)}>"
+        return f"usage: /mode <{'|'.join(agent_instances._VALID_PERMISSION_MODES)}>"
     return await _h_restart(scope_key, args[:1])
 
 
@@ -100,27 +100,43 @@ async def _h_yolo(scope_key: str, args: list[str]) -> str:
 async def _h_model(scope_key: str, args: list[str]) -> str:
     if not args:
         return "usage: /model <opus|sonnet|haiku|...>"
-    sess = await sessions_live.respawn_session(scope_key, model=args[0])
+    sess = await agent_instances.respawn_session(scope_key, model=args[0])
     return f"respawned {scope_key} on model={sess.model}"
 
 
 async def _h_effort(scope_key: str, args: list[str]) -> str:
     if not args:
-        return f"usage: /effort <{'|'.join(sessions_live._VALID_EFFORTS)}>"
-    if args[0] not in sessions_live._VALID_EFFORTS:
+        return f"usage: /effort <{'|'.join(agent_instances._VALID_EFFORTS)}>"
+    if args[0] not in agent_instances._VALID_EFFORTS:
         return (
             f"invalid effort {args[0]!r}; "
-            f"choices: {list(sessions_live._VALID_EFFORTS)}"
+            f"choices: {list(agent_instances._VALID_EFFORTS)}"
         )
-    sess = await sessions_live.respawn_session(scope_key, effort=args[0])
+    sess = await agent_instances.respawn_session(scope_key, effort=args[0])
     return f"respawned {scope_key} on effort={sess.effort}"
+
+
+async def _h_compact(scope_key: str, args: list[str]) -> str:
+    sess = agent_instances._by_scope.get(scope_key)
+    if sess is None:
+        return f"no active session for {scope_key}"
+    await agent_instances.send_slash(scope_key, "/compact")
+    return f"sent /compact to {scope_key}; summary will appear in transcript"
+
+
+async def _h_clear(scope_key: str, args: list[str]) -> str:
+    sess = agent_instances._by_scope.get(scope_key)
+    if sess is None:
+        return f"no active session for {scope_key}"
+    await agent_instances.send_slash(scope_key, "/clear")
+    return f"sent /clear to {scope_key}"
 
 
 async def _h_help(scope_key: str, args: list[str]) -> str:
     lines = ["server slash commands:"]
     for cmd in REGISTRY.values():
         lines.append(f"  {cmd.name} {cmd.args}  — {cmd.description}")
-    sess = sessions_live._by_scope.get(scope_key)
+    sess = agent_instances._by_scope.get(scope_key)
     if sess and sess.claude_slash_commands:
         lines.append("")
         lines.append(f"claude commands for {scope_key}:")
@@ -141,6 +157,8 @@ _COMMANDS: list[SlashCommand] = [
     SlashCommand("/yolo", "", "Shortcut for /mode bypassPermissions.", _h_yolo),
     SlashCommand("/model", "<name>", "Respawn with --model. e.g. opus, sonnet, haiku, or full id.", _h_model),
     SlashCommand("/effort", "<level>", "Respawn with --effort. Choices: low, medium, high, xhigh, max.", _h_effort),
+    SlashCommand("/compact", "", "Trigger claude's auto-compaction on the agent (preserves session, summarizes context).", _h_compact),
+    SlashCommand("/clear", "", "Clear the agent's conversation context (claude /clear).", _h_clear),
     SlashCommand("/help", "", "Echo this catalog plus the scope's claude commands.", _h_help),
 ]
 
@@ -163,7 +181,7 @@ async def dispatch(scope_key: str, line: str) -> tuple[bool, str]:
         result string (post as ``system`` to the room).
       - ``handled=False``: the command isn't registered server-side; the
         caller should forward the raw line to the scope's claude stdin
-        via ``sessions_live.send_slash``. ``message`` is empty.
+        via ``agent_instances.send_slash``. ``message`` is empty.
 
     Raises ``SlashParseError`` if ``line`` isn't a valid slash form.
     """

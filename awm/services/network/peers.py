@@ -122,6 +122,22 @@ def install_peer_token(peer_id: str, source_path: str | Path) -> Path:
 
 
 def _row_to_peer(row) -> dict:
+    raw_endpoints = row["endpoints"] if "endpoints" in row.keys() else None
+    try:
+        endpoints = json.loads(raw_endpoints) if raw_endpoints else None
+    except (TypeError, ValueError):
+        endpoints = None
+    # Synthesize the legacy ssh entry when endpoints is empty so callers
+    # always see the SSH-tunnel fallback as the last item.
+    if not endpoints:
+        if row["ssh_alias"]:
+            endpoints = [{
+                "kind": "ssh",
+                "alias": row["ssh_alias"],
+                "port": row["remote_port"],
+            }]
+        else:
+            endpoints = []
     return {
         "peer_id": row["peer_id"],
         "ssh_alias": row["ssh_alias"],
@@ -129,33 +145,90 @@ def _row_to_peer(row) -> dict:
         "friendly_name": row["friendly_name"],
         "last_seen": row["last_seen"],
         "added_at": row["added_at"],
+        "endpoints": endpoints,
+        "tls_fingerprint": row["tls_fingerprint"] if "tls_fingerprint" in row.keys() else None,
     }
+
+
+def _normalize_endpoints(endpoints: list[dict] | None) -> list[dict]:
+    """Validate + canonicalize endpoint entries.
+
+    Each entry is a dict with ``kind`` ∈ {``direct``, ``ssh``}. ``direct``
+    requires ``url`` (https://host:port). ``ssh`` requires ``alias`` and
+    ``port``. Other keys are preserved.
+    """
+    if not endpoints:
+        return []
+    out: list[dict] = []
+    for raw in endpoints:
+        if not isinstance(raw, dict):
+            raise ValueError(f"endpoint must be a dict, got {type(raw).__name__}")
+        kind = raw.get("kind")
+        if kind == "direct":
+            url = raw.get("url")
+            if not url or not isinstance(url, str):
+                raise ValueError("direct endpoint requires url=https://host:port")
+            if not url.startswith(("https://", "http://")):
+                raise ValueError(f"direct endpoint url must be http(s): {url}")
+            entry = {"kind": "direct", "url": url}
+        elif kind == "ssh":
+            alias = raw.get("alias")
+            port = raw.get("port")
+            if not alias or not isinstance(alias, str):
+                raise ValueError("ssh endpoint requires alias=<host>")
+            try:
+                port = int(port)
+            except (TypeError, ValueError):
+                raise ValueError("ssh endpoint requires integer port")
+            if not (1 <= port <= 65535):
+                raise ValueError(f"ssh endpoint port out of range: {port}")
+            entry = {"kind": "ssh", "alias": alias, "port": port}
+        else:
+            raise ValueError(f"unknown endpoint kind: {kind!r}")
+        if "tls_fingerprint" in raw and raw["tls_fingerprint"]:
+            entry["tls_fingerprint"] = raw["tls_fingerprint"]
+        out.append(entry)
+    return out
 
 
 def add_peer(peer_id: str, ssh_alias: str, *,
              remote_port: int = 7820,
-             friendly_name: str | None = None) -> dict:
+             friendly_name: str | None = None,
+             endpoints: list[dict] | None = None,
+             tls_fingerprint: str | None = None) -> dict:
     """Register a remote awm peer. Idempotent — re-adding overwrites
-    ``ssh_alias``, ``remote_port``, and ``friendly_name``. Token install
-    is a separate step (``install_peer_token``)."""
+    ``ssh_alias``, ``remote_port``, ``friendly_name``, ``endpoints``, and
+    ``tls_fingerprint``. Token install is a separate step
+    (:func:`install_peer_token`).
+
+    ``endpoints`` is an optional ordered list of ``{kind, ...}`` dicts. The
+    peer-client tries each one in order; the legacy ``ssh_alias`` +
+    ``remote_port`` are synthesized as a trailing fallback entry if
+    ``endpoints`` is empty/None.
+    """
     _validate_peer_id(peer_id)
     _validate_ssh_alias(ssh_alias)
     if not (1 <= remote_port <= 65535):
         raise ValueError(f"remote_port out of range: {remote_port}")
+    normalized = _normalize_endpoints(endpoints)
+    endpoints_json = json.dumps(normalized) if normalized else None
 
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         conn.execute(
             """\
-            INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name, added_at, endpoints, tls_fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(peer_id) DO UPDATE SET
                 ssh_alias = excluded.ssh_alias,
                 remote_port = excluded.remote_port,
-                friendly_name = excluded.friendly_name
+                friendly_name = excluded.friendly_name,
+                endpoints = excluded.endpoints,
+                tls_fingerprint = excluded.tls_fingerprint
             """,
-            (peer_id, ssh_alias, remote_port, friendly_name, now),
+            (peer_id, ssh_alias, remote_port, friendly_name, now,
+             endpoints_json, tls_fingerprint),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
@@ -239,34 +312,31 @@ class PingResult(dict):
 
 
 def ping_peer(peer_id: str, timeout: float = 5.0) -> PingResult:
-    """Open (or reuse) the SSH tunnel to ``peer_id``, GET ``/peer`` over it,
-    verify the peer_id echo, and update last_seen.
+    """Reach ``peer_id`` via its preferred endpoint, GET ``/peer``,
+    verify the ``peer_id`` echo, update last_seen.
 
-    Returns a dict with ``ok``, ``status_code``, ``echoed_peer_id``, and
-    ``advertise_url`` if reachable; ``ok=False`` and ``reason`` otherwise.
+    Returns a dict with ``ok``, ``status_code``, ``echoed_peer_id``,
+    ``advertise_url``, and ``endpoint`` (which endpoint kind succeeded)
+    if reachable; ``ok=False`` and ``reason`` otherwise.
     """
     import httpx
-    from awm.services.network import ssh_tunnel
+    from awm.services.network import federation
 
     if get_peer(peer_id) is None:
         return PingResult(ok=False, reason=f"unknown peer: {peer_id}")
 
     try:
-        token = load_peer_token(peer_id)
-    except (FileNotFoundError, ValueError) as exc:
+        base_url, token = federation._resolve(peer_id)
+    except federation.FederationError as exc:
         return PingResult(ok=False, reason=str(exc))
 
-    try:
-        tun = ssh_tunnel.acquire_tunnel(peer_id)
-    except ssh_tunnel.TunnelError as exc:
-        return PingResult(ok=False, reason=f"tunnel error: {exc}")
-
-    url = tun.local_url + "/peer"
+    url = base_url + "/peer"
     try:
         r = httpx.get(
             url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
+            verify=False,
         )
     except httpx.HTTPError as exc:
         return PingResult(ok=False, reason=f"HTTP error: {exc}")
@@ -287,10 +357,11 @@ def ping_peer(peer_id: str, timeout: float = 5.0) -> PingResult:
         )
 
     _touch_last_seen(peer_id)
+    chosen = federation._preferred_endpoint.get(peer_id)
     return PingResult(
         ok=True,
         status_code=200,
         echoed_peer_id=echoed,
         advertise_url=body.get("advertise_url"),
-        local_port=tun.local_port,
+        endpoint=chosen,
     )

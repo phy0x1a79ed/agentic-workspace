@@ -65,9 +65,21 @@ class DetailOutput:
     body_field: str = ""
 
 
+_DEFAULT_SURFACES = frozenset({"cli", "mcp", "http"})
+
+
 @dataclass
 class Operation:
-    """A declarative operation definition."""
+    """A declarative operation definition.
+
+    ``surfaces`` controls which generated surfaces are emitted for this
+    operation (subset of ``{"cli", "mcp", "http"}``). ``peer_only=True``
+    short-circuits the surfaces to ``{"http"}`` and tags the route so
+    callers / generators know it belongs to the peer-facing API (federation
+    receivers — auth is per-peer bearer + ``X-Awm-From``, not operator
+    bearer). ``tags`` is a free-form grouping hint (control-center vs
+    internal, etc.) for future filtering / docs.
+    """
 
     name: str
     description: str
@@ -79,6 +91,22 @@ class Operation:
     output: JsonOutput | TableOutput | DetailOutput
     params: list[Param] = field(default_factory=list)
     request_model: type | None = None
+    surfaces: frozenset[str] = field(default_factory=lambda: _DEFAULT_SURFACES)
+    peer_only: bool = False
+    tags: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.peer_only:
+            # Peer-only operations are exclusively HTTP routes on the
+            # peer-facing surface; never expose them via CLI/MCP.
+            self.surfaces = frozenset({"http"})
+        if not isinstance(self.surfaces, frozenset):
+            self.surfaces = frozenset(self.surfaces)
+        unknown = self.surfaces - {"cli", "mcp", "http"}
+        if unknown:
+            raise ValueError(
+                f"Operation {self.name!r}: unknown surfaces {sorted(unknown)}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +159,7 @@ def dispatch_operation(name: str, args: dict, operations: list[Operation]) -> An
 
 
 def operations_to_mcp_tools(operations: list[Operation]) -> list[Tool]:
-    return [_to_mcp_tool(op) for op in operations]
+    return [_to_mcp_tool(op) for op in operations if "mcp" in op.surfaces]
 
 
 def _to_mcp_tool(op: Operation) -> Tool:
@@ -167,10 +195,26 @@ def _to_mcp_tool(op: Operation) -> Tool:
 # ---------------------------------------------------------------------------
 
 
-def register_fastapi_routes(app, operations: list[Operation]) -> None:
+def register_fastapi_routes(
+    app, operations: list[Operation], *, include_peer_only: bool = False
+) -> None:
+    """Register HTTP routes for operations whose ``surfaces`` include ``"http"``.
+
+    ``include_peer_only`` gates the peer-facing subset (``peer_only=True``);
+    callers register user-facing and peer-facing routes on different apps
+    (or under different mounts) to keep auth modes from mixing.
+    """
     for op in operations:
+        if "http" not in op.surfaces:
+            continue
+        if op.peer_only and not include_peer_only:
+            continue
+        if not op.peer_only and include_peer_only:
+            continue
         handler = _make_fastapi_handler(op)
-        app.add_api_route(op.http_path, handler, methods=[op.http_method])
+        app.add_api_route(
+            op.http_path, handler, methods=[op.http_method], tags=list(op.tags),
+        )
 
 
 def _make_fastapi_handler(op: Operation):
@@ -237,9 +281,14 @@ def _make_fastapi_handler(op: Operation):
 def register_cli_commands(
     parent_app, operations: list[Operation], api_func: Callable
 ) -> dict[str, typer.Typer]:
-    """Register operations as Typer CLI commands. Returns {group_name: Typer}."""
+    """Register operations as Typer CLI commands. Returns {group_name: Typer}.
+
+    Only operations with ``"cli"`` in ``surfaces`` are emitted.
+    """
     groups: dict[str, list[Operation]] = {}
     for op in operations:
+        if "cli" not in op.surfaces:
+            continue
         groups.setdefault(op.cli_group, []).append(op)
 
     result: dict[str, typer.Typer] = {}

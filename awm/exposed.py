@@ -38,7 +38,7 @@ from awm.db import init_db
 from awm.middleware_auth import require_bearer
 from awm.middleware_gate import require_destructive
 from awm.server import app as core_app
-from awm.services import sessions_live
+from awm.services import agent_instances, auth as auth_svc
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +48,28 @@ from awm.services import sessions_live
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    sessions_live.reconcile_on_startup()
+    info = auth_svc.bootstrap()
+    print(
+        f"[awm-exposed] auth ready: token={info['token_file']} "
+        f"cert={info['tls_cert']} fp={info['tls_fingerprint'][:16]}…"
+    )
+    agent_instances.reconcile_on_startup()
 
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
+
+    # Periodic sweep of expired web-UI session cookies.
+    async def _session_sweeper() -> None:
+        while True:
+            try:
+                await asyncio.sleep(60)
+                auth_svc.sweep_expired()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+    session_sweeper_task = asyncio.create_task(_session_sweeper())
 
     # Warm voice models in the background — first connection waits a few
     # seconds rather than every connection paying full load cost. Failures
@@ -79,6 +97,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    session_sweeper_task.cancel()
     warmup_task.cancel()
     try:
         from awm.voice.registry import get_registry
@@ -182,13 +201,74 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 # rooms.
 # ---------------------------------------------------------------------------
 
+from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
+app.include_router(peer_router)
 app.include_router(voice_router)
+
+
+# ---------------------------------------------------------------------------
+# Web UI auth bootstrap — bearer-in-URL-hash → session cookie
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/exchange")
+async def auth_exchange(request: Request):
+    """Trade a one-shot bearer for a session cookie.
+
+    The web UI loads with ``#token=<bearer>`` in the URL hash, POSTs that
+    bearer here, then clears the hash via ``history.replaceState`` before
+    any other code runs. Subsequent requests / WS handshakes carry the
+    cookie automatically.
+    """
+    auth = request.headers.get("authorization", "")
+    token: str | None = None
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    if not token:
+        try:
+            body = await request.json()
+            token = (body.get("token") or "").strip() if isinstance(body, dict) else None
+        except Exception:
+            token = None
+    identity = auth_svc.verify_bearer(token) if token else None
+    if identity is None or identity.kind != "local":
+        # Only minted from the local-daemon bearer. Session-issued tokens
+        # can not bootstrap further sessions.
+        raise HTTPException(401, "unauthorized")
+
+    sid = auth_svc.mint_session(identity)
+    response = JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "expires_in_s": auth_svc.SESSION_TTL_SECONDS,
+        },
+    )
+    response.set_cookie(
+        key=auth_svc.SESSION_COOKIE,
+        value=sid,
+        max_age=auth_svc.SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.delete("/auth/session")
+async def auth_logout(request: Request):
+    """Drop the caller's web-UI session and clear the cookie."""
+    sid = request.cookies.get(auth_svc.SESSION_COOKIE)
+    dropped = auth_svc.drop_session(sid) if sid else False
+    response = JSONResponse(status_code=200, content={"dropped": dropped})
+    response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
+    return response
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
@@ -246,22 +326,23 @@ async def gate_and_auth_for_core(request: Request, call_next):
 
     # Routes mounted directly on the exposed app (with their own
     # Depends(require_bearer)) skip middleware-level auth to avoid
-    # double work. /ui is intentionally unauthenticated — the static
-    # HTML pulls its bearer from the URL hash and uses it for /rooms
-    # API calls.
-    if path.startswith("/rooms") or path.startswith("/ui") \
-            or path.startswith("/voice"):
+    # double work. /ui and /auth/exchange are intentionally
+    # unauthenticated at the middleware level: /ui is static HTML;
+    # /auth/exchange validates its own bearer to mint a session cookie.
+    if (path.startswith("/rooms") or path.startswith("/ui")
+            or path.startswith("/voice")
+            or path.startswith("/auth/")):
         return await call_next(request)
 
-    # Auth check
+    # Auth check — local-token bearer or live web-UI session cookie.
     auth = request.headers.get("authorization", "")
     token: str | None = None
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
-    from awm.middleware_auth import load_token
-    import hmac as _hmac
-    expected = load_token()
-    if not expected or not token or not _hmac.compare_digest(token, expected):
+    if not token:
+        token = request.cookies.get(auth_svc.SESSION_COOKIE)
+    identity = auth_svc.verify_bearer(token) if token else None
+    if identity is None:
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
     # Peer-origin identification. We trust the bearer; X-Awm-From is the
@@ -304,24 +385,17 @@ app.mount("/", core_app)
 # ---------------------------------------------------------------------------
 
 def run_exposed_server() -> None:
-    """Start the network-exposed uvicorn listener with optional TLS."""
+    """Start the HTTPS listener. TLS is mandatory and auto-bootstrapped."""
     config.EXPOSED_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cert, key = auth_svc.bootstrap_tls(generate_if_missing=True)
 
+    import ssl
     kwargs: dict = {
         "host": config.EXPOSED_HOST,
         "port": config.EXPOSED_PORT,
         "log_level": "info",
+        "ssl_certfile": str(cert),
+        "ssl_keyfile": str(key),
+        "ssl_version": ssl.PROTOCOL_TLS_SERVER,
     }
-    if config.TLS_CERT and config.TLS_KEY:
-        kwargs["ssl_certfile"] = config.TLS_CERT
-        kwargs["ssl_keyfile"] = config.TLS_KEY
-        # Minimum TLS 1.2 per objectives.md hygiene.
-        import ssl
-        kwargs["ssl_version"] = ssl.PROTOCOL_TLS_SERVER
-    else:
-        print(
-            "[awm-exposed] WARNING: no TLS cert configured "
-            "(set AWM_TLS_CERT and AWM_TLS_KEY). Starting plaintext."
-        )
-
     uvicorn.run(app, **kwargs)

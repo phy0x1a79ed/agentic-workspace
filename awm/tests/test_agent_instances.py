@@ -1,6 +1,6 @@
-"""Tests for awm.services.sessions_live pure helpers.
+"""Tests for awm.services.agent_instances pure helpers.
 
-The LiveSession lifecycle is integration-heavy (spawns claude); these tests
+The AgentInstance lifecycle is integration-heavy (spawns claude); these tests
 cover the stream-json parsing in _extract_renderable plus the DB-level
 persistence of claude_session_id that lets re-invite-after-death still
 resume the same claude conversation.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from awm.db import get_connection
-from awm.services.sessions_live import _extract_renderable
+from awm.services.agent_instances import _extract_renderable
 
 
 def test_assistant_text_block_emits_text():

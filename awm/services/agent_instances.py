@@ -1,6 +1,6 @@
-"""Live Claude session management — rooms-aware, tracked, addressable.
+"""Agent instance management — rooms-aware, tracked, addressable.
 
-A LiveSession owns one ``claude --input-format=stream-json
+An AgentInstance owns one ``claude --input-format=stream-json
 --output-format=stream-json`` subprocess for a single ``(project, scope)``.
 Its job is the *agent runtime*: serialize inputs from any number of rooms
 into stdin, parse stdout, and broadcast text/tool events to the rooms the
@@ -53,10 +53,10 @@ def _scope_key(project: str, scope: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LiveSession
+# AgentInstance
 # ---------------------------------------------------------------------------
 
-class LiveSession:
+class AgentInstance:
     """In-memory handle for a running claude subprocess.
 
     A session is identified by ``(project, scope)``; only one can be
@@ -99,12 +99,18 @@ class LiveSession:
         self.claude_session_id: Optional[str] = None
         # Slash commands advertised by claude in the init event (per-scope).
         self.claude_slash_commands: list[str] = []
+        # Context-window telemetry, populated from stream-json events.
+        # ``context_used`` is the cumulative input tokens fed to the next
+        # turn (input + cache_read + cache_creation). ``context_max`` is
+        # heuristically derived from the model id reported at init.
+        self.context_used: int = 0
+        self.context_max: Optional[int] = None
         # In-flight respawn lock so concurrent /restart calls don't fight.
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
 
 
-_registry: dict[int, LiveSession] = {}
-_by_scope: dict[str, LiveSession] = {}
+_registry: dict[int, AgentInstance] = {}
+_by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
 
 
@@ -113,7 +119,7 @@ def _now() -> str:
 
 
 class ScopeBusyError(Exception):
-    """A second LiveSession spawn for an already-running scope was attempted."""
+    """A second AgentInstance spawn for an already-running scope was attempted."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +156,7 @@ async def create_session(*, project: str, scope: str,
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
-                         resume_session_id: Optional[str] = None) -> LiveSession:
+                         resume_session_id: Optional[str] = None) -> AgentInstance:
     """Spawn a claude subprocess and register it. Raises ScopeBusyError
     if the scope already has an active session."""
     if agent_cli not in _SUPPORTED_CLIS:
@@ -255,7 +261,7 @@ async def create_session(*, project: str, scope: str,
         finally:
             conn.close()
 
-        session = LiveSession(
+        session = AgentInstance(
             id=session_id, project=project, scope=scope,
             agent_cli=agent_cli, log_path=log_path, proc=proc,
         )
@@ -276,11 +282,11 @@ async def create_session(*, project: str, scope: str,
     return session
 
 
-def get_session_by_scope(project: str, scope: str) -> LiveSession | None:
+def get_session_by_scope(project: str, scope: str) -> AgentInstance | None:
     return _by_scope.get(_scope_key(project, scope))
 
 
-def get_session(session_id: int) -> LiveSession | None:
+def get_session(session_id: int) -> AgentInstance | None:
     return _registry.get(session_id)
 
 
@@ -288,7 +294,7 @@ def get_session(session_id: int) -> LiveSession | None:
 # Input pump — serialize per-room posts into stdin
 # ---------------------------------------------------------------------------
 
-async def _input_pump(session: LiveSession) -> None:
+async def _input_pump(session: AgentInstance) -> None:
     """Drain ``input_queue`` and write each frame to stdin as one stream-json
     user message with ``[room:X from:Y]`` framing."""
     while True:
@@ -319,7 +325,7 @@ async def _input_pump(session: LiveSession) -> None:
             pass
 
 
-def enqueue_input(session: LiveSession, room_id: str, post: rooms_svc.Post) -> bool:
+def enqueue_input(session: AgentInstance, room_id: str, post: rooms_svc.Post) -> bool:
     """Non-blocking push onto the session's input queue. Returns False
     if the queue is full (caller may decide to drop or warn)."""
     try:
@@ -332,6 +338,55 @@ def enqueue_input(session: LiveSession, room_id: str, post: rooms_svc.Post) -> b
 # ---------------------------------------------------------------------------
 # Output reader — parse stream-json, broadcast to rooms
 # ---------------------------------------------------------------------------
+
+def _lookup_context_max(model_id: Optional[str]) -> Optional[int]:
+    """Heuristic context-window size for a claude model id.
+
+    The id format used by claude-code is e.g. ``claude-opus-4-7`` or
+    ``claude-opus-4-7[1m]``. We match on substrings rather than exact
+    ids so newer minor versions keep working without a code change.
+    Returns ``None`` if the model is unknown — the UI hides the bar.
+    """
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    m = model_id.lower()
+    if "[1m]" in m:
+        return 1_000_000
+    if "opus" in m or "sonnet" in m or "haiku" in m:
+        return 200_000
+    return None
+
+
+def _update_usage_from_event(session: "AgentInstance", parsed: dict) -> None:
+    """Best-effort extraction of token usage from a stream-json event.
+
+    Stream-json assistant messages carry a ``usage`` block with
+    ``input_tokens``, ``output_tokens``, ``cache_creation_input_tokens``,
+    ``cache_read_input_tokens``. We treat the sum of the three input-
+    side fields as ``context_used`` — that's the size of the prompt
+    fed into the next turn, which is what an operator cares about
+    when deciding whether to /compact.
+
+    Schema may drift across claude versions; on any failure we leave
+    ``context_used`` unchanged rather than zeroing or crashing.
+    """
+    try:
+        usage = None
+        if parsed.get("type") == "assistant":
+            usage = parsed.get("message", {}).get("usage")
+        elif parsed.get("type") == "result":
+            usage = parsed.get("usage")
+        if not isinstance(usage, dict):
+            return
+        inp = usage.get("input_tokens") or 0
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        cache_create = usage.get("cache_creation_input_tokens") or 0
+        total = int(inp) + int(cache_read) + int(cache_create)
+        if total > 0:
+            session.context_used = total
+    except (TypeError, ValueError, AttributeError):
+        return
+
 
 def _extract_renderable(parsed: dict) -> list[tuple[str, str]]:
     """Return [(kind, body)] pairs to post for a parsed stream-json event.
@@ -402,7 +457,7 @@ def _rooms_for_scope(scope_key: str) -> list[str]:
     return [r["room_id"] for r in rows]
 
 
-async def _reader_loop(session: LiveSession) -> None:
+async def _reader_loop(session: AgentInstance) -> None:
     """Read stdout lines, parse, post to all participating rooms."""
     assert session.proc is not None and session.proc.stdout is not None
     stdout = session.proc.stdout
@@ -441,6 +496,12 @@ async def _reader_loop(session: LiveSession) -> None:
             cmds = parsed.get("slash_commands")
             if isinstance(cmds, list):
                 session.claude_slash_commands = [c for c in cmds if isinstance(c, str)]
+            # Capture context-window from init's reported model. Fall
+            # back to the spawn-arg model if init doesn't carry one.
+            init_model = parsed.get("model") or session.model
+            session.context_max = _lookup_context_max(init_model)
+
+        _update_usage_from_event(session, parsed)
 
         events = _extract_renderable(parsed)
         if not events:
@@ -464,7 +525,7 @@ async def _reader_loop(session: LiveSession) -> None:
 # Waiter — finalize on exit
 # ---------------------------------------------------------------------------
 
-async def _waiter_loop(session: LiveSession) -> None:
+async def _waiter_loop(session: AgentInstance) -> None:
     assert session.proc is not None
     exit_code = await session.proc.wait()
     session.exit_code = exit_code
@@ -556,7 +617,7 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
 # ---------------------------------------------------------------------------
 
 class NoSessionError(Exception):
-    """No live session exists for the requested scope."""
+    """No agent instance exists for the requested scope."""
 
 
 async def respawn_session(
@@ -565,8 +626,8 @@ async def respawn_session(
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
     effort: Optional[str] = None,
-) -> LiveSession:
-    """Kill the current LiveSession for ``scope_key`` and spawn a fresh one
+) -> AgentInstance:
+    """Kill the current AgentInstance for ``scope_key`` and spawn a fresh one
     with ``--resume <claude_session_id>`` so conversation context is
     preserved server-side.
 
@@ -831,7 +892,7 @@ def _dispatch_shadow_peer(peer_id: str, room_id: str,
 
 
 def install_room_dispatchers() -> None:
-    """Wire the rooms service to push input frames into LiveSessions and
+    """Wire the rooms service to push input frames into AgentInstances and
     to kill agents on close_room(..., kill_agents=True)."""
     rooms_svc.set_local_scope_dispatcher(_dispatch_local_post)
     rooms_svc.set_remote_scope_dispatcher(_dispatch_remote_scope)

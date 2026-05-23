@@ -1,7 +1,7 @@
-"""Higher-level glue between rooms, live sessions, and federation.
+"""Higher-level glue between rooms, agent instances, and federation.
 
 This is the small "what do I do when a user creates a room with scopes"
-orchestration that sits above rooms.py (data layer) and sessions_live.py
+orchestration that sits above rooms.py (data layer) and agent_instances.py
 (agent runtime). It exists so the rooms HTTP router and CLI don't have
 to duplicate the spawn-if-needed dance.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from awm.services import rooms as rooms_svc
-from awm.services import sessions_live
+from awm.services import agent_instances
 
 
 def _split_scope(s: str) -> tuple[str, str, str | None]:
@@ -30,14 +30,14 @@ def _split_scope(s: str) -> tuple[str, str, str | None]:
 
 
 async def _ensure_local_session(scope_key: str) -> None:
-    """Spawn a LiveSession for ``scope_key`` if one isn't running.
+    """Spawn a AgentInstance for ``scope_key`` if one isn't running.
     No-op if it is."""
-    if sessions_live._by_scope.get(scope_key) is not None:
+    if agent_instances._by_scope.get(scope_key) is not None:
         return
     project, scope = scope_key.split("/", 1)
     try:
-        await sessions_live.create_session(project=project, scope=scope)
-    except sessions_live.ScopeBusyError:
+        await agent_instances.create_session(project=project, scope=scope)
+    except agent_instances.ScopeBusyError:
         return  # raced with another caller; that's fine
     except FileNotFoundError:
         raise
@@ -71,12 +71,12 @@ async def create_room_with_scopes(*, topic: str | None,
         close_on_exit=close_on_exit,
     )
 
-    local_sessions: list[sessions_live.LiveSession] = []
+    local_sessions: list[agent_instances.AgentInstance] = []
     for (project, scope, peer), raw in parsed:
         if peer is None:
             scope_key = f"{project}/{scope}"
             await _ensure_local_session(scope_key)
-            sess = sessions_live._by_scope.get(scope_key)
+            sess = agent_instances._by_scope.get(scope_key)
             if sess is not None:
                 local_sessions.append(sess)
         else:
@@ -94,7 +94,7 @@ async def create_room_with_scopes(*, topic: str | None,
     return room
 
 
-async def _close_stdin_after_drain(session: sessions_live.LiveSession) -> None:
+async def _close_stdin_after_drain(session: agent_instances.AgentInstance) -> None:
     """For close_on_exit rooms: let the input pump drain the prompt(s), then
     close stdin so claude finishes the response and exits naturally."""
     # Wait for queue to empty.
@@ -119,7 +119,7 @@ async def invite_scope_to_room(room_id: str, scope_identifier: str, *,
                                prompt: str | None,
                                opener: str) -> rooms_svc.Participant:
     """Add a scope (local or remote) as a participant. Spawn the local
-    LiveSession if needed. Post an optional initial prompt."""
+    AgentInstance if needed. Post an optional initial prompt."""
     project, scope, peer = _split_scope(scope_identifier)
     if peer is None:
         await _ensure_local_session(f"{project}/{scope}")

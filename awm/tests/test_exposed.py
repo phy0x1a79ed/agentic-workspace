@@ -29,18 +29,17 @@ def exposed_workspace(awm_workspace, monkeypatch):
     # The new service module imports PROJECTS_DIR at module load time —
     # patch the imported reference too, matching the pattern in conftest.
     monkeypatch.setattr(
-        "awm.services.sessions_live.PROJECTS_DIR",
+        "awm.services.agent_instances.PROJECTS_DIR",
         awm_workspace["projects_dir"],
     )
 
-    # Reset the mtime cache so each test's token file is re-read.
-    import awm.middleware_auth as ma
-    ma._cached_token = None
-    ma._cached_mtime = None
+    # Reset the auth-service token cache so each test's token file is re-read.
+    from awm.services import auth as _auth
+    _auth._token_cache.update({"value": None, "mtime": None})
 
     # Reset live-session registry between tests.
-    from awm.services import sessions_live
-    sessions_live._registry.clear()
+    from awm.services import agent_instances
+    agent_instances._registry.clear()
 
     monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("AWM_ALLOW_DESTRUCTIVE", raising=False)
@@ -209,7 +208,7 @@ def mock_subprocess(monkeypatch):
         return proc
 
     monkeypatch.setattr(
-        "awm.services.sessions_live.asyncio.create_subprocess_exec",
+        "awm.services.agent_instances.asyncio.create_subprocess_exec",
         _fake_exec,
     )
     return fakes

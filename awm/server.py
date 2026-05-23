@@ -242,26 +242,16 @@ def list_projects_endpoint():
 
 @app.post("/inbox")
 def post_inbox(request: Request, payload: dict):
-    """Receive a federated message from a remote peer.
-
-    The remote awm forwards a MessageSendRequest body here; the local
-    inbox stores it after rewriting the sender to include the origin
-    peer_id (extracted from X-Awm-From by middleware).
-    """
-    from awm.services import messaging
+    """User-facing inbox-send. Stores a message with the sender from the
+    request body verbatim — federated cross-peer sends go through
+    ``POST /peer/inbox`` instead (which prefixes the origin peer id)."""
     from awm.models import MessageSendRequest
-
-    origin_peer = getattr(request.state, "from_peer", None)
-    body = dict(payload)
-    if origin_peer:
-        original_sender = body.get("sender", "unknown")
-        body["sender"] = f"peer:{origin_peer}/{original_sender}"
+    from awm.services import messaging
 
     try:
-        req = MessageSendRequest(**body)
+        req = MessageSendRequest(**payload)
     except Exception as exc:
         raise HTTPException(400, f"invalid message body: {exc}")
-
     try:
         return messaging.send_message(req)
     except ValueError as exc:

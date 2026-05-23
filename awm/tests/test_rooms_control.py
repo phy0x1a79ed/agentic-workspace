@@ -85,15 +85,14 @@ def exposed_client(awm_workspace, monkeypatch):
     monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", pid_file)
     monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", log_file)
     monkeypatch.setattr(
-        "awm.services.sessions_live.PROJECTS_DIR",
+        "awm.services.agent_instances.PROJECTS_DIR",
         awm_workspace["projects_dir"],
     )
-    import awm.middleware_auth as ma
-    ma._cached_token = None
-    ma._cached_mtime = None
-    from awm.services import sessions_live
-    sessions_live._registry.clear()
-    sessions_live._by_scope.clear()
+    from awm.services import auth as _auth
+    _auth._token_cache.update({"value": None, "mtime": None})
+    from awm.services import agent_instances
+    agent_instances._registry.clear()
+    agent_instances._by_scope.clear()
     monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("AWM_ALLOW_DESTRUCTIVE", raising=False)
 

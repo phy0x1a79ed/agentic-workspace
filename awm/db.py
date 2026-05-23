@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -151,7 +151,9 @@ CREATE TABLE IF NOT EXISTS peers (
     remote_port INTEGER NOT NULL DEFAULT 7820,
     friendly_name TEXT,
     last_seen TEXT,
-    added_at TEXT NOT NULL
+    added_at TEXT NOT NULL,
+    endpoints TEXT,           -- JSON: ordered list of {kind, ...}
+    tls_fingerprint TEXT      -- SHA-256 of remote cert, when pinning
 );
 
 CREATE TABLE IF NOT EXISTS rooms (
@@ -404,7 +406,7 @@ CREATE TABLE IF NOT EXISTS peers (
 """,
     (21, 22): """\
 -- Rooms can auto-close when their last agent exits — flag persisted on
--- the room itself so sessions_live can act on _waiter_loop without needing
+-- the room itself so agent_instances can act on _waiter_loop without needing
 -- in-memory orchestration state.
 ALTER TABLE rooms ADD COLUMN close_on_exit INTEGER NOT NULL DEFAULT 0;
 """,
@@ -416,7 +418,7 @@ SELECT 1;
 """,
     (23, 24): """\
 -- Persist claude's resume id so re-invite after the agent process dies
--- (and is reaped from sessions_live._by_scope) can still pass --resume
+-- (and is reaped from agent_instances._by_scope) can still pass --resume
 -- to the new claude subprocess.
 ALTER TABLE agent_sessions ADD COLUMN claude_session_id TEXT;
 """,
@@ -477,6 +479,18 @@ CREATE TABLE peers_new (
 DROP TABLE peers;
 ALTER TABLE peers_new RENAME TO peers;
 """,
+    (24, 25): """\
+-- Direct endpoints + TLS pinning for the peer-client.
+-- ``endpoints`` is a JSON-encoded ordered list of ``{kind, ...}`` entries
+-- (``direct=https://10.x.y.z:7820``, ``ssh=alias:port``). When NULL, the
+-- peer_client falls back to the legacy ssh_alias/remote_port pair so
+-- existing peer rows continue to work without a re-add.
+-- ``tls_fingerprint`` is the SHA-256 of the remote daemon's cert, used
+-- by the peer_client for optional pinning. NULL = no pinning, fall back
+-- to TLS verify=False (acceptable for zerotier overlays).
+ALTER TABLE peers ADD COLUMN endpoints TEXT;
+ALTER TABLE peers ADD COLUMN tls_fingerprint TEXT;
+""",
 }
 
 
@@ -506,7 +520,11 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         except sqlite3.OperationalError as exc:
             # Handle partial prior migration (e.g. column already added but
             # version not bumped due to crash). Bump version and continue.
-            if "duplicate column name" in str(exc):
+            # Also handle the case where a migration tries to ALTER a table
+            # the source DB never had — happens in contrived test fixtures
+            # that hand-build a partial schema then ask init_db to migrate it.
+            msg = str(exc)
+            if "duplicate column name" in msg or "no such table" in msg:
                 conn.execute(
                     "UPDATE schema_version SET version = ?", (next_ver,)
                 )

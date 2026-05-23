@@ -15,7 +15,6 @@ identity is derived from the ``X-Awm-As`` header (defaults to
 
 from __future__ import annotations
 
-import json
 import logging
 
 from fastapi import (
@@ -24,13 +23,12 @@ from fastapi import (
     HTTPException,
     Request,
     WebSocket,
-    WebSocketDisconnect,
 )
 from pydantic import BaseModel
 
 from awm.middleware_auth import require_bearer
 from awm.services import rooms as rooms_svc
-from awm.voice.registry import VoiceAgent, get_registry
+from awm.voice.registry import get_registry
 from awm.ws_auth import authenticate_room_ws
 
 
@@ -142,39 +140,5 @@ async def voice_ws(websocket: WebSocket) -> None:
     if not auth.ok:
         return
     await websocket.accept(subprotocol=auth.subprotocol)
-
-    user = auth.user_as
-    reg = get_registry()
-    agent: VoiceAgent = await reg.get_or_create(user)
-    await reg.attach(agent, websocket)
-
-    try:
-        while True:
-            msg = await websocket.receive()
-            if msg["type"] == "websocket.disconnect":
-                break
-            if "bytes" in msg and msg["bytes"] is not None:
-                await agent.add_audio(websocket, msg["bytes"])
-                continue
-            text = msg.get("text")
-            if not text:
-                continue
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            t = payload.get("type")
-            if t == "start":
-                await agent.handle_start(websocket)
-            elif t == "end":
-                await agent.handle_end(websocket)
-            elif t == "cancel":
-                await agent.handle_cancel()
-            elif t == "text":
-                await agent.handle_text(str(payload.get("body", "")))
-    except WebSocketDisconnect:
-        pass
-    except Exception:  # noqa: BLE001
-        log.exception("voice ws handler crashed for %s", user)
-    finally:
-        reg.detach(agent, websocket)
+    from awm.voice.registry import run_voice_ws_session
+    await run_voice_ws_session(websocket, auth.user_as)

@@ -11,10 +11,10 @@ to a single host peer (the one that created it), and owns:
 - A **transcript**: append-only rows in ``room_posts``.
 
 The room service is the *fan-out hub*: when a post arrives at the host
-peer, it dispatches to local scopes (via their LiveSession input queue),
+peer, it dispatches to local scopes (via their AgentInstance input queue),
 remote scopes (POST to that peer's agent input endpoint), local
 subscribers (their WS-out queue), and shadow peers (POST to that peer's
-room posts endpoint). LiveSession wiring and the WS multiplex layer live
+room posts endpoint). AgentInstance wiring and the WS multiplex layer live
 in M1 / M3; this module is the data + dispatch core.
 
 In-process event delivery uses an asyncio-friendly subscriber registry
@@ -53,7 +53,7 @@ class RoomClosed(RoomError):
 
 
 class ScopeBusyError(RoomError):
-    """A second LiveSession spawn for an already-running scope was attempted."""
+    """A second AgentInstance spawn for an already-running scope was attempted."""
 
 
 class RoomArchiveBlocked(RoomError):
@@ -212,10 +212,10 @@ def _broadcast(room_id: str, event: dict) -> None:
 # ---------------------------------------------------------------------------
 # Agent-input dispatch hooks
 # ---------------------------------------------------------------------------
-# The rooms service stays free of LiveSession's concrete shape so it can
+# The rooms service stays free of AgentInstance's concrete shape so it can
 # be unit-tested without the agent runtime. M1 registers a callable here
 # that takes (room_id, scope, post) and enqueues into the matching
-# LiveSession.input_queue.
+# AgentInstance.input_queue.
 
 _local_scope_dispatcher: Callable[[str, str, Post], None] | None = None
 _remote_scope_dispatcher: Callable[[str, str, str, Post], None] | None = None
@@ -223,7 +223,7 @@ _shadow_peer_dispatcher: Callable[[str, str, Post], None] | None = None
 
 
 def set_local_scope_dispatcher(fn: Callable[[str, str, Post], None] | None) -> None:
-    """``fn(room_id, scope_key, post)`` — push to a local LiveSession."""
+    """``fn(room_id, scope_key, post)`` — push to a local AgentInstance."""
     global _local_scope_dispatcher
     _local_scope_dispatcher = fn
 
@@ -562,7 +562,7 @@ def post(room_id: str, *, author: str, body: str, kind: str = "text",
 
     Dispatch rules:
     - All live subscribers (local WS + shadow peers) receive the post.
-    - Local scope participants receive it as a LiveSession input frame
+    - Local scope participants receive it as a AgentInstance input frame
       iff the author is non-agent OR ``to_scope`` matches the scope.
     - Remote scope participants are forwarded via the remote_scope
       dispatcher (M3).
@@ -666,7 +666,7 @@ def history(room_id: str, *, limit_chars: int = 1024,
 def auto_close_for_scope(scope_key: str) -> list[str]:
     """Close any active ``close_on_exit`` rooms whose participating scopes
     are all gone after ``scope_key`` left. Returns the list of room IDs
-    that were closed. Called from sessions_live._waiter_loop."""
+    that were closed. Called from agent_instances._waiter_loop."""
     closed: list[str] = []
     conn = get_connection()
     try:
@@ -708,3 +708,131 @@ def get_post(post_id: int) -> Post | None:
     finally:
         conn.close()
     return _row_to_post(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# WS subscriber pump
+# ---------------------------------------------------------------------------
+
+_WS_QUEUE_MAX = 256
+
+
+async def run_subscriber_session(
+    websocket,
+    room_id: str,
+    user_as: str,
+) -> None:
+    """Drive a fully-attached WS subscriber for ``room_id``.
+
+    Owns the queue/subscriber/broadcast loop: subscribes the socket to
+    the room's event stream, registers a ``subscriber`` participant,
+    streams transcript backlog, and spawns the reader + writer tasks.
+    The API handler that calls into this function should already have
+    authenticated and ``await websocket.accept(...)``ed before calling.
+
+    Anything WS-protocol-shaped (envelope serialization, ``X-Awm-As`` →
+    author rewriting) is owned here, NOT by the API layer. The API
+    handler shrinks to ``auth + accept + delegate``.
+    """
+    # Imported here so the services layer doesn't grow a runtime dep on
+    # the API package's envelope module shape (it's free-standing).
+    from awm import ws_envelope as env
+
+    room = get_room(room_id)
+    if room is None:
+        await websocket.send_text(json.dumps(env.error(f"no such room: {room_id}")))
+        await websocket.close(code=1008, reason="no such room")
+        return
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_WS_QUEUE_MAX)
+    subscriber_id = f"ws:{id(websocket)}:{user_as}"
+    await subscribe_room(room_id, queue)
+    try:
+        add_participant(room_id, "subscriber", subscriber_id)
+    except RoomClosed:
+        await websocket.send_text(json.dumps(env.error(f"room {room_id} is closed")))
+        await websocket.close(code=1008, reason="room closed")
+        await unsubscribe_room(room_id, queue)
+        return
+
+    # Send transcript backlog.
+    backlog = history(room_id, limit_chars=4096)
+    await websocket.send_text(json.dumps(
+        env.history([p.to_dict() for p in backlog])
+    ))
+
+    async def writer():
+        while True:
+            ev = await queue.get()
+            if env.is_lagged(ev):
+                try:
+                    await websocket.send_text(json.dumps(ev))
+                except Exception:
+                    return
+                await websocket.close(code=1011, reason="lagged")
+                return
+            try:
+                await websocket.send_text(json.dumps(ev))
+            except Exception:
+                return
+
+    async def reader():
+        from fastapi import WebSocketDisconnect
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                return
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps(env.error("invalid JSON")))
+                continue
+            mtype = msg.get("type")
+            if mtype == "post":
+                body = msg.get("body", "")
+                kind = msg.get("kind", "text")
+                to_scope = msg.get("to") or None
+                try:
+                    post(room_id, author=user_as, body=body,
+                         kind=kind, to_scope=to_scope)
+                except RoomError as exc:
+                    await websocket.send_text(json.dumps(env.error(str(exc))))
+            elif mtype == "control":
+                action = msg.get("action")
+                if action == "close":
+                    try:
+                        close_room(room_id)
+                    except RoomError as exc:
+                        await websocket.send_text(json.dumps(env.error(str(exc))))
+                elif action == "kill":
+                    try:
+                        close_room(room_id, kill_agents=True)
+                    except RoomError as exc:
+                        await websocket.send_text(json.dumps(env.error(str(exc))))
+                else:
+                    await websocket.send_text(json.dumps(
+                        env.error(f"unknown control action: {action}")))
+            elif mtype == "ping":
+                await websocket.send_text(json.dumps(env.pong()))
+            else:
+                await websocket.send_text(json.dumps(
+                    env.error(f"unknown envelope type: {mtype}")))
+
+    writer_task = asyncio.create_task(writer())
+    reader_task = asyncio.create_task(reader())
+    try:
+        await asyncio.wait(
+            {writer_task, reader_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        writer_task.cancel()
+        reader_task.cancel()
+        await unsubscribe_room(room_id, queue)
+        remove_participant(room_id, "subscriber", subscriber_id)
+        try:
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close()
+        except Exception:
+            pass

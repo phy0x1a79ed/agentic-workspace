@@ -26,7 +26,15 @@
   }
 
   const cfg = parseHashConfig();
-  if (!cfg.token) return; // main app already showed the no-token error.
+  // The main app's bootstrapAuth exchanges the URL-hash bearer for an
+  // HttpOnly session cookie and clears the hash. By the time this panel
+  // initializes we can be in either of two states:
+  //   1) cfg.token is set — first load, the main app is mid-exchange.
+  //      We still rely on the cookie that the exchange will produce
+  //      (fetch sends `credentials: include`, WS handshake sends cookies
+  //      automatically).
+  //   2) cfg.token is empty — return-visit with a live cookie.
+  // Either way we proceed; auth lives in the cookie, not in this module.
 
   // ---- DOM refs -----------------------------------------------------------
 
@@ -55,10 +63,8 @@
   async function api(method, path, body) {
     const init = {
       method,
-      headers: {
-        "Authorization": `Bearer ${cfg.token}`,
-        "X-Awm-As": cfg.as,
-      },
+      credentials: "include",
+      headers: { "X-Awm-As": cfg.as },
     };
     if (body !== undefined) {
       init.headers["Content-Type"] = "application/json";
@@ -248,25 +254,132 @@
       `first-audio ${ui.latency.dataset.first_audio ?? "—"}ms`;
   }
 
+  let joinedRoomIds = [];
+  const agentPollers = new Map(); // room_id -> { card, agentsBox }
+
   function renderJoinedRooms(rooms) {
-    if (!rooms || rooms.length === 0) {
+    joinedRoomIds = Array.isArray(rooms) ? rooms.slice() : [];
+    if (!joinedRoomIds.length) {
       ui.roomsList.innerHTML = "<em>none</em>";
+      agentPollers.clear();
       return;
     }
     ui.roomsList.innerHTML = "";
-    for (const r of rooms) {
-      const chip = document.createElement("span");
-      chip.className = "vp-chip";
-      chip.textContent = r;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = "×";
-      btn.title = `leave ${r}`;
-      btn.addEventListener("click", () => leaveRoom(r));
-      chip.appendChild(btn);
-      ui.roomsList.appendChild(chip);
+    agentPollers.clear();
+    for (const r of joinedRoomIds) {
+      const card = document.createElement("div");
+      card.className = "vp-room-card";
+      const header = document.createElement("div");
+      header.className = "vp-room-card-header";
+      const label = document.createElement("span");
+      label.className = "vp-chip";
+      label.textContent = r;
+      const leave = document.createElement("button");
+      leave.type = "button";
+      leave.textContent = "×";
+      leave.title = `leave ${r}`;
+      leave.addEventListener("click", () => leaveRoom(r));
+      label.appendChild(leave);
+      header.appendChild(label);
+      card.appendChild(header);
+      const agentsBox = document.createElement("div");
+      agentsBox.className = "vp-agents";
+      agentsBox.textContent = "…";
+      card.appendChild(agentsBox);
+      ui.roomsList.appendChild(card);
+      agentPollers.set(r, { card, agentsBox });
+    }
+    refreshAgentCards();
+  }
+
+  async function refreshAgentCards() {
+    for (const [room_id, slot] of agentPollers.entries()) {
+      try {
+        const r = await api("GET", `/rooms/${encodeURIComponent(room_id)}/agents`);
+        renderAgentsForRoom(room_id, slot.agentsBox, r.agents || []);
+      } catch (e) {
+        slot.agentsBox.innerHTML = `<div class="vp-agent-err">${escapeHtml(e.message)}</div>`;
+      }
     }
   }
+
+  function renderAgentsForRoom(room_id, box, agents) {
+    box.innerHTML = "";
+    const scopeAgents = agents.filter(a => a.kind === "scope");
+    if (!scopeAgents.length) {
+      box.innerHTML = `<div class="vp-agent-empty">no live agents</div>`;
+      return;
+    }
+    for (const a of scopeAgents) {
+      const row = document.createElement("div");
+      row.className = "vp-agent-row";
+      const scope = document.createElement("div");
+      scope.className = "vp-agent-scope";
+      scope.textContent = a.scope;
+      row.appendChild(scope);
+
+      const live = a.live;
+      if (live && typeof live.context_max === "number" && live.context_max > 0) {
+        const bar = document.createElement("div");
+        bar.className = "vp-agent-bar";
+        const fill = document.createElement("div");
+        fill.className = "vp-agent-bar-fill";
+        const used = typeof live.context_used === "number" ? live.context_used : 0;
+        const pct = Math.min(100, Math.max(0, (used / live.context_max) * 100));
+        fill.style.width = `${pct.toFixed(1)}%`;
+        if (pct >= 90) fill.classList.add("hot");
+        else if (pct >= 70) fill.classList.add("warm");
+        bar.appendChild(fill);
+        bar.title = `${used.toLocaleString()} / ${live.context_max.toLocaleString()} tokens`;
+        row.appendChild(bar);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "vp-agent-actions";
+      const liveOk = live && live.status === "running";
+      for (const [label, cmd] of [["compact", "/compact"], ["restart", "/restart"], ["yolo", "/yolo"]]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = label;
+        btn.disabled = !liveOk;
+        btn.title = liveOk ? `send ${cmd} to ${a.scope}` : `no live session`;
+        btn.addEventListener("click", () => sendAgentSlash(room_id, a.scope, cmd, btn));
+        actions.appendChild(btn);
+      }
+      row.appendChild(actions);
+      box.appendChild(row);
+    }
+  }
+
+  async function sendAgentSlash(room_id, scope, cmd, btn) {
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      const r = await api(
+        "POST",
+        `/rooms/${encodeURIComponent(room_id)}/agents/${encodeURIComponent(scope)}/slash`,
+        { cmd },
+      );
+      btn.textContent = r.handled ? "ok" : "sent";
+      setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 1200);
+      refreshAgentCards();
+    } catch (e) {
+      btn.textContent = "err";
+      btn.title = e.message;
+      setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 2000);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  setInterval(() => {
+    if (agentPollers.size > 0) refreshAgentCards();
+  }, 5000);
 
   // ---- WebSocket ----------------------------------------------------------
 
@@ -275,8 +388,8 @@
 
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${proto}//${location.host}/voice/ws`,
-                       [`bearer.${cfg.token}`]);
+    // Cookie carries auth; no subprotocol bearer needed.
+    ws = new WebSocket(`${proto}//${location.host}/voice/ws`);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => { setConn("ok", "connected"); wsBackoff = 1000; };
     ws.onclose = (ev) => {
