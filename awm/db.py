@@ -915,9 +915,16 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         if sql is None:
             raise RuntimeError(f"No migration path from v{current} to v{next_ver}")
         try:
-            # Bundle the version bump with the migration so they commit together
+            # SQLite's recommended table-rebuild pattern requires FKs off
+            # during DROP/RENAME — see https://sqlite.org/lang_altertable.html
+            # §7. Re-enable at the end, with foreign_key_check raising if the
+            # rebuild left dangling references.
             conn.executescript(
-                sql + f"\nUPDATE schema_version SET version = {next_ver};"
+                "PRAGMA foreign_keys=OFF;\n"
+                + sql
+                + f"\nUPDATE schema_version SET version = {next_ver};\n"
+                + "PRAGMA foreign_key_check;\n"
+                + "PRAGMA foreign_keys=ON;"
             )
         except sqlite3.OperationalError as exc:
             # Handle partial prior migration (e.g. column already added but
