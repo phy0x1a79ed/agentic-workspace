@@ -481,6 +481,8 @@ class LiveAgentState(BaseModel):
     model: str | None = None
     effort: str | None = None
     claude_session_id: str | None = None
+    context_used: int | None = None
+    context_max: int | None = None
 
 
 class RoomAgentInfo(BaseModel):

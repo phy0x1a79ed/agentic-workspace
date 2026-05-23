@@ -6,17 +6,25 @@ This module owns:
   the file IS the access boundary for CLI / MCP / in-process callers.
 - The self-signed TLS cert+key at ``$AWM_DIR/tls/{cert,key}.pem`` — both
   bootstrapped on daemon startup if missing.
-- ``verify_bearer(token)`` — single resolver mapping a bearer token to an
-  identity. Used by the FastAPI auth middleware.
+- ``verify_bearer(token)`` — pure-key membership check over
+  ``{local_token} ∪ {peer_tokens}``. Returns ``True`` if the token is a
+  valid key, ``False`` otherwise. **Auth is not identity.**
+- ``verify_peer_bearer(token, claimed_peer)`` — cross-check used on
+  ``/peer/*`` routes: the token must match the specific peer claimed in
+  the ``X-Awm-From`` header. This prevents peer A's bearer from being
+  presented while claiming to be peer B.
 - ``client_kwargs()`` — internal httpx wiring (headers + verify) so every
   caller (CLI, MCP, in-process) gets identical, transparent auth without
   knowing what's in those kwargs.
-- Short-lived web-UI session cookies — minted by ``/auth/exchange`` from
-  a one-shot bearer, validated by the auth middleware on subsequent
-  requests so the bearer never has to leave the URL hash.
+- One-shot login challenges — short-lived single-use nonces minted by the
+  Discord bot / ``awm login`` CLI, consumed by ``/auth/bootstrap`` to set
+  the bearer as an HttpOnly cookie. The long-lived bearer never leaves
+  the daemon.
 
-Design intent: auth is a service-layer concern. Transports (HTTPS) just
-carry credentials; whether a caller is allowed lives here.
+Design intent: auth is a service-layer concern, and a bearer is just a
+key. Identity (which user is acting, which peer is calling) is a separate
+claim carried by ``X-Awm-As`` / ``X-Awm-From`` headers — see
+``awm/api/peer.py`` for how peer identity is cross-checked.
 """
 
 from __future__ import annotations
@@ -27,25 +35,9 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from awm import config
-
-
-# ---------------------------------------------------------------------------
-# Identity
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class Identity:
-    """Who the caller is. Returned by :func:`verify_bearer`."""
-
-    kind: str  # "local" | "peer" | "session"
-    name: str  # local: "operator"; peer: peer_id; session: session_id
-    expires_at: Optional[float] = None  # epoch seconds, sessions only
 
 
 # ---------------------------------------------------------------------------
@@ -222,53 +214,18 @@ def bootstrap() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Session cookies (web UI)
+# Cookie name (bearer-as-cookie; no server-side session state)
 # ---------------------------------------------------------------------------
 
-
+# Browser bearer is stored verbatim in this HttpOnly cookie. Rotation =
+# rewrite ``$AWM_DIR/auth.token``; existing cookies stop validating on the
+# next request. There is no ``_sessions`` dict, no TTL, no expiry-sweep —
+# the bearer itself is the credential.
 SESSION_COOKIE = "awm_session"
-SESSION_TTL_SECONDS = 24 * 60 * 60
 
-_sessions: dict[str, Identity] = {}
-_sessions_lock = threading.Lock()
-
-
-def mint_session(identity: Identity, *, ttl: int = SESSION_TTL_SECONDS) -> str:
-    """Create a session for ``identity`` and return its opaque id."""
-    sid = secrets.token_urlsafe(32)
-    expires = time.time() + ttl
-    entry = Identity(kind="session", name=identity.name, expires_at=expires)
-    with _sessions_lock:
-        _sessions[sid] = entry
-    return sid
-
-
-def drop_session(sid: str) -> bool:
-    with _sessions_lock:
-        return _sessions.pop(sid, None) is not None
-
-
-def get_session(sid: str) -> Identity | None:
-    with _sessions_lock:
-        entry = _sessions.get(sid)
-        if entry is None:
-            return None
-        if entry.expires_at and entry.expires_at < time.time():
-            _sessions.pop(sid, None)
-            return None
-        return entry
-
-
-def sweep_expired() -> int:
-    now = time.time()
-    dropped = 0
-    with _sessions_lock:
-        for sid in list(_sessions):
-            entry = _sessions[sid]
-            if entry.expires_at and entry.expires_at < now:
-                _sessions.pop(sid, None)
-                dropped += 1
-    return dropped
+# Non-HttpOnly companion cookie carrying the operator's display name.
+# The SPA reads this to populate the ``X-Awm-As`` header. Not a credential.
+AS_COOKIE = "awm_as"
 
 
 # ---------------------------------------------------------------------------
@@ -276,16 +233,24 @@ def sweep_expired() -> int:
 # ---------------------------------------------------------------------------
 
 
-def verify_bearer(token: str | None) -> Identity | None:
-    """Resolve ``token`` to an :class:`Identity`, or None on miss.
+def verify_bearer(token: str | None) -> bool:
+    """Pure-key membership check: is ``token`` a valid bearer?
 
-    Order: local-token → registered peer tokens → live sessions.
+    Returns ``True`` iff ``token`` matches either:
+
+      1. the local-daemon token (``$AWM_DIR/auth.token``), or
+      2. any registered peer token (``$AWM_DIR/peers/*.token``).
+
+    No identity is returned — auth and identity are separate. Callers who
+    need to know *who* the caller is must read ``X-Awm-As`` /
+    ``X-Awm-From``, and ``/peer/*`` routes must use
+    :func:`verify_peer_bearer` to cross-check.
     """
     if not token:
-        return None
+        return False
     token = token.strip()
     if not token:
-        return None
+        return False
 
     # 1) Local operator token.
     try:
@@ -293,14 +258,62 @@ def verify_bearer(token: str | None) -> Identity | None:
     except TokenMissing:
         expected = None
     if expected and hmac.compare_digest(token, expected):
-        return Identity(kind="local", name="operator")
+        return True
 
-    # 2) Live web-UI sessions.
-    sess = get_session(token)
-    if sess is not None:
-        return sess
+    # 2) Registered peer tokens. Iterate $AWM_DIR/peers/*.token directly
+    # so we don't depend on the DB peers table at auth time (DB may be
+    # locked, peers table may be empty for a fresh install). Token files
+    # are the source of truth: install_peer_token writes them, remove_peer
+    # deletes them.
+    peers_dir = config.AWM_DIR / "peers"
+    if peers_dir.is_dir():
+        try:
+            entries = list(peers_dir.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.is_file() or not entry.name.endswith(".token"):
+                continue
+            try:
+                value = entry.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if value and hmac.compare_digest(token, value):
+                return True
 
-    return None
+    return False
+
+
+def verify_peer_bearer(token: str | None, claimed_peer: str) -> bool:
+    """Cross-check: does ``token`` match the specific peer's token file?
+
+    Used by ``/peer/*`` routes after the ``X-Awm-From`` header is parsed.
+    Prevents peer A from presenting its own bearer while claiming
+    ``X-Awm-From: B`` — federation routes need to know which peer they're
+    talking to, not just that *some* registered peer authenticated.
+    """
+    if not token or not claimed_peer:
+        return False
+    token = token.strip()
+    if not token:
+        return False
+
+    # Path traversal guard — peer ids should be simple ascii but a stray
+    # ``../`` shouldn't even be considered. We never let claimed_peer
+    # escape the peers/ directory.
+    if "/" in claimed_peer or "\\" in claimed_peer or claimed_peer.startswith("."):
+        return False
+
+    peer_token_path = config.AWM_DIR / "peers" / f"{claimed_peer}.token"
+    if not peer_token_path.is_file():
+        return False
+    try:
+        expected = peer_token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not expected:
+        return False
+    return hmac.compare_digest(token, expected)
 
 
 # ---------------------------------------------------------------------------
@@ -309,11 +322,20 @@ def verify_bearer(token: str | None) -> Identity | None:
 
 
 def client_kwargs(*, timeout: float = 30.0) -> dict:
-    """Return httpx kwargs that authenticate to the local daemon.
+    """Return httpx kwargs for HTTPS calls to the local daemon.
 
-    ``verify=False`` is intentional: the daemon binds loopback with a
-    self-signed cert; the bearer provides authn/authz. Add pinning later
-    if cross-host clients need it.
+    ``verify=False`` disables **TLS server-certificate verification** —
+    not auth. The daemon binds a self-signed cert that no public CA has
+    signed, so an httpx default of ``verify=True`` would reject it. The
+    trust boundary is the transport (loopback for CLI/MCP, SSH tunnel for
+    peer-to-peer federation), not the cert chain.
+
+    Auth is independent: the bearer in the ``Authorization`` header is
+    what proves the caller is permitted; TLS just keeps the bearer off
+    the wire in cleartext.
+
+    For non-loopback, non-tunneled HTTPS in the future, switch to
+    ``verify=str(config.TLS_CERT)`` to pin the daemon's cert.
     """
     token = local_token()  # raises TokenMissing on client misconfigure
     return {
@@ -329,3 +351,59 @@ def base_url() -> str:
     if host == "0.0.0.0":
         host = "127.0.0.1"
     return f"https://{host}:{config.EXPOSED_PORT}"
+
+
+# ---------------------------------------------------------------------------
+# One-shot login challenges (phase 2 — Discord-DM / `awm login` flow)
+# ---------------------------------------------------------------------------
+
+# ``nonce → (awm_user, expires_at_epoch)``. Single-use: consume_challenge
+# pops the entry atomically. The sweeper drops expired entries.
+_challenges: dict[str, tuple[str, float]] = {}
+_challenges_lock = threading.Lock()
+
+CHALLENGE_TTL_SECONDS = 60
+
+
+def mint_challenge(awm_user: str, *, ttl: int = CHALLENGE_TTL_SECONDS) -> str:
+    """Mint a single-use login nonce for ``awm_user`` and return it.
+
+    Caller (Discord bot, ``awm login`` CLI) builds the URL
+    ``{base_url()}/auth/bootstrap?ot={nonce}`` and hands it to the
+    operator. ``/auth/bootstrap`` consumes the nonce, sets the bearer as
+    an HttpOnly cookie, and redirects to ``/ui/``.
+    """
+    nonce = secrets.token_urlsafe(32)
+    expires = time.time() + ttl
+    with _challenges_lock:
+        _challenges[nonce] = (awm_user, expires)
+    return nonce
+
+
+def consume_challenge(nonce: str | None) -> str | None:
+    """Pop ``nonce`` atomically. Returns the bound ``awm_user`` on
+    success, ``None`` if the nonce is missing, already used, or expired.
+    """
+    if not nonce:
+        return None
+    with _challenges_lock:
+        entry = _challenges.pop(nonce, None)
+    if entry is None:
+        return None
+    awm_user, expires = entry
+    if expires < time.time():
+        return None
+    return awm_user
+
+
+def sweep_challenges() -> int:
+    """Drop expired challenges. Returns the number dropped."""
+    now = time.time()
+    dropped = 0
+    with _challenges_lock:
+        for nonce in list(_challenges):
+            _, expires = _challenges[nonce]
+            if expires < now:
+                _challenges.pop(nonce, None)
+                dropped += 1
+    return dropped

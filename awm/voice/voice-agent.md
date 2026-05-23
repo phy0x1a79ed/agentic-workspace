@@ -42,6 +42,24 @@ talk to another agent or post into a room, use these tools.
   prose-only style is unnecessary. Plain commands or short questions
   are fine.
 
+## Controlling agents (compact, restart, mode)
+
+You can drive harness-level operations on any live agent in a joined
+room via the `agent_control` MCP tool. Common cases:
+
+- User says "compact" or "free up context" for a participant →
+  `agent_control(room_id="r-xyz", scope="awm/dev", command="/compact")`.
+- User says "restart in YOLO" → `command="/yolo"`. Other modes:
+  `/plan`, `/mode acceptEdits`, `/mode default`.
+- Switch model or effort → `/model sonnet`, `/effort high`.
+- "Kill the dev agent" → `command="/kill"`. The session ends; you'll
+  need a `room_invite` to bring it back.
+- List what's available for a scope → `command="/help"`.
+
+You cannot compact yourself through `agent_control`. If the user asks
+you to compact yourself, tell them to click the Compact button on the
+voice card in the side panel.
+
 ## Style
 
 - Keep responses short. Two or three sentences for a typical answer.

@@ -51,7 +51,52 @@
   margin-left: auto; font-size: 11px; padding: 1px 6px;
 }
 .voice-panel .vp-rooms-list {
-  margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 4px; display: flex; flex-direction: column; gap: 6px;
+}
+.voice-panel .vp-room-card {
+  border: 1px solid #e0e0e0; border-radius: 4px; background: #fff;
+  padding: 4px 6px;
+}
+.voice-panel .vp-room-card-header {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+}
+.voice-panel .vp-agents {
+  margin-top: 4px; display: flex; flex-direction: column; gap: 4px;
+}
+.voice-panel .vp-agent-empty,
+.voice-panel .vp-agent-err {
+  color: #888; font-size: 11px; padding: 2px 0;
+}
+.voice-panel .vp-agent-err { color: #b00; }
+.voice-panel .vp-agent-row {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 3px 4px; background: #f7f7f7; border-radius: 3px;
+}
+.voice-panel .vp-agent-scope {
+  font-weight: bold; font-size: 11px; color: #333;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.voice-panel .vp-agent-bar {
+  height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden;
+}
+.voice-panel .vp-agent-bar-fill {
+  height: 100%; background: #6a8; transition: width 0.3s ease;
+}
+.voice-panel .vp-agent-bar-fill.warm { background: #d80; }
+.voice-panel .vp-agent-bar-fill.hot { background: #b00; }
+.voice-panel .vp-agent-actions {
+  display: flex; gap: 3px; margin-top: 2px;
+}
+.voice-panel .vp-agent-actions button {
+  font: inherit; font-size: 10px; padding: 1px 6px;
+  background: #f0f4ff; border: 1px solid #ccd; border-radius: 3px;
+  cursor: pointer; color: #335;
+}
+.voice-panel .vp-agent-actions button:hover:not(:disabled) {
+  background: #e0e8ff;
+}
+.voice-panel .vp-agent-actions button:disabled {
+  opacity: 0.4; cursor: not-allowed;
 }
 .voice-panel .vp-rooms-list .vp-chip {
   background: #f0f4ff; border: 1px solid #ccd; border-radius: 10px;

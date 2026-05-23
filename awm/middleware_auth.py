@@ -1,11 +1,20 @@
 """Bearer-token auth dependencies for the HTTPS listener.
 
-All auth resolution delegates to :mod:`awm.services.auth`. Tokens come from
-either the local-daemon token file or a live web-UI session cookie. WS
-handshakes accept the same bearer in a ``Sec-WebSocket-Protocol`` value of
-the form ``bearer.<token>`` (preferred — browsers can not set arbitrary
-headers on the WS handshake), the ``awm_session`` cookie, or as a fallback
-``?token=`` query string.
+All auth resolution delegates to :mod:`awm.services.auth`. A bearer is
+just a key — proof of possession, nothing more. Tokens come from either
+the local-daemon token file, a registered peer's token file, or the
+``awm_session`` HttpOnly cookie (which carries the bearer verbatim, with
+no session indirection).
+
+WS handshakes accept the same bearer in a ``Sec-WebSocket-Protocol``
+value of the form ``bearer.<token>`` (preferred — browsers can not set
+arbitrary headers on the WS handshake), the ``awm_session`` cookie, or
+as a fallback ``?token=`` query string.
+
+Identity (which user, which peer) is a separate claim: routes that need
+it read ``X-Awm-As`` / ``X-Awm-From``. ``/peer/*`` routes use
+:func:`require_peer_bearer` so the bearer is cross-checked against the
+claimed peer in ``X-Awm-From``.
 """
 
 from __future__ import annotations
@@ -25,37 +34,67 @@ def load_token() -> str | None:
         return None
 
 
-def _identity_from_request(request: Request) -> auth_svc.Identity | None:
-    """Resolve bearer-or-cookie → identity for an incoming HTTP request."""
+def _token_from_request(request: Request) -> str | None:
+    """Extract the bearer token from an HTTP request: Authorization
+    header → ``awm_session`` cookie."""
     auth_hdr = request.headers.get("authorization", "")
-    token: str | None = None
     if auth_hdr.lower().startswith("bearer "):
         token = auth_hdr[7:].strip()
-    if not token:
-        cookie = request.cookies.get(auth_svc.SESSION_COOKIE)
-        if cookie:
-            token = cookie
-    if not token:
-        return None
-    return auth_svc.verify_bearer(token)
+        if token:
+            return token
+    cookie = request.cookies.get(auth_svc.SESSION_COOKIE)
+    if cookie:
+        return cookie
+    return None
 
 
 def require_bearer(
     request: Request,
     authorization: str | None = Header(default=None),
-) -> auth_svc.Identity:
+) -> None:
     """FastAPI dependency for HTTP routes. 401 on missing/bad token.
 
-    Returns the resolved :class:`Identity` so handlers can introspect
-    the caller (e.g. peer-id, session expiry).
+    Pure-key check: any valid bearer (local or peer) is accepted.
+    Returns None — handlers read identity from ``X-Awm-As`` /
+    ``X-Awm-From`` if they need it, not from this dependency.
     """
-    identity = _identity_from_request(request)
-    if identity is None:
+    token = _token_from_request(request)
+    if not auth_svc.verify_bearer(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="unauthorized",
         )
-    return identity
+
+
+def require_peer_bearer(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> str:
+    """FastAPI dependency for ``/peer/*`` routes.
+
+    Enforces both:
+
+      1. ``X-Awm-From`` is present (the claimed origin peer id).
+      2. The presented bearer matches the *specific* peer's token file.
+
+    Prevents peer A from impersonating peer B by passing its own bearer
+    with ``X-Awm-From: B``. Returns the verified peer id so handlers can
+    use it without re-reading the header.
+    """
+    token = _token_from_request(request)
+    claimed_peer = request.headers.get("x-awm-from", "").strip()
+    if not claimed_peer:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Awm-From required",
+        )
+    if not auth_svc.verify_peer_bearer(token, claimed_peer):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+        )
+    request.state.from_peer = claimed_peer
+    return claimed_peer
 
 
 async def authenticate_websocket(
@@ -86,7 +125,7 @@ async def authenticate_websocket(
     if supplied is None and token:
         supplied = token
 
-    if not supplied or auth_svc.verify_bearer(supplied) is None:
+    if not auth_svc.verify_bearer(supplied):
         await websocket.close(code=1008, reason="unauthorized")
         return None
 

@@ -45,6 +45,27 @@ from awm.services import agent_instances, auth as auth_svc
 # Lifespan
 # ---------------------------------------------------------------------------
 
+def _write_discovery_file() -> Path:
+    """Write ``$AWM_DIR/exposed.json`` so CLI/MCP can discover the live
+    listener's scheme, host, port, and token-file path without guessing.
+
+    Eliminates the silent config drift between launchers documented in
+    inbox bugs #160/#161/#166.
+    """
+    have_tls = config.TLS_CERT.exists() and config.TLS_KEY.exists()
+    discovery = {
+        "scheme": "https" if have_tls else "http",
+        "host": config.EXPOSED_HOST,
+        "port": config.EXPOSED_PORT,
+        "token_file": str(config.AUTH_TOKEN_FILE),
+        "pid": os.getpid(),
+    }
+    path = config.AWM_DIR / "exposed.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(discovery, indent=2) + "\n")
+    return path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -58,18 +79,46 @@ async def lifespan(app: FastAPI):
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
-    # Periodic sweep of expired web-UI session cookies.
-    async def _session_sweeper() -> None:
+    discovery_path = _write_discovery_file()
+    print(f"[awm-exposed] discovery file: {discovery_path}")
+
+    # Periodic sweep of expired one-shot login challenges.
+    async def _challenges_sweeper() -> None:
         while True:
             try:
-                await asyncio.sleep(60)
-                auth_svc.sweep_expired()
+                await asyncio.sleep(30)
+                auth_svc.sweep_challenges()
             except asyncio.CancelledError:
                 break
             except Exception:
                 continue
 
-    session_sweeper_task = asyncio.create_task(_session_sweeper())
+    challenges_sweeper_task = asyncio.create_task(_challenges_sweeper())
+
+    # Discord bot — opt-in. Started iff $AWM_DIR/discord.toml is present
+    # and parseable. Operators are whitelisted via the discord_operators
+    # table (see `awm discord add-operator`).
+    discord_task: asyncio.Task | None = None
+    try:
+        from awm.services.discord import config as discord_config
+        from awm.services.discord import bot as discord_bot
+        dc = discord_config.load()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] discord disabled: {exc}")
+        dc = None
+    if dc is not None:
+        async def _run_discord() -> None:
+            try:
+                await discord_bot.run_bot(dc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                print(f"[awm-exposed] discord bot crashed: {exc}")
+        discord_task = asyncio.create_task(_run_discord())
+        print(
+            f"[awm-exposed] discord bot starting "
+            f"(account={dc.account_name or '?'})"
+        )
 
     # Warm voice models in the background — first connection waits a few
     # seconds rather than every connection paying full load cost. Failures
@@ -97,8 +146,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    session_sweeper_task.cancel()
+    challenges_sweeper_task.cancel()
     warmup_task.cancel()
+    if discord_task is not None:
+        discord_task.cancel()
     try:
         from awm.voice.registry import get_registry
         await get_registry().shutdown()
@@ -108,6 +159,13 @@ async def lifespan(app: FastAPI):
     if config.EXPOSED_PID_FILE.exists():
         try:
             config.EXPOSED_PID_FILE.unlink()
+        except OSError:
+            pass
+
+    discovery_path = config.AWM_DIR / "exposed.json"
+    if discovery_path.exists():
+        try:
+            discovery_path.unlink()
         except OSError:
             pass
 
@@ -213,47 +271,87 @@ app.include_router(voice_router)
 
 
 # ---------------------------------------------------------------------------
-# Web UI auth bootstrap — bearer-in-URL-hash → session cookie
+# Web UI auth — one-shot login flow (Discord DM or `awm login` CLI)
 # ---------------------------------------------------------------------------
 
-@app.post("/auth/exchange")
-async def auth_exchange(request: Request):
-    """Trade a one-shot bearer for a session cookie.
+def _is_loopback(request: Request) -> bool:
+    """Reject ``/auth/mint`` from anywhere but the loopback interface.
 
-    The web UI loads with ``#token=<bearer>`` in the URL hash, POSTs that
-    bearer here, then clears the hash via ``history.replaceState`` before
-    any other code runs. Subsequent requests / WS handshakes carry the
-    cookie automatically.
+    The CLI and the in-process Discord bot both call /auth/mint over
+    loopback, so we don't need a separate auth layer for it. Non-loopback
+    callers (browser, federated peers) can not mint challenges — they go
+    through the Discord bot UX or the CLI.
+
+    ``testclient`` is Starlette TestClient's sentinel host string —
+    accept it so unit tests can exercise this route directly. The
+    sentinel is unreachable in production (no real socket binds to it).
     """
-    auth = request.headers.get("authorization", "")
-    token: str | None = None
-    if auth.lower().startswith("bearer "):
-        token = auth[7:].strip()
-    if not token:
-        try:
-            body = await request.json()
-            token = (body.get("token") or "").strip() if isinstance(body, dict) else None
-        except Exception:
-            token = None
-    identity = auth_svc.verify_bearer(token) if token else None
-    if identity is None or identity.kind != "local":
-        # Only minted from the local-daemon bearer. Session-issued tokens
-        # can not bootstrap further sessions.
-        raise HTTPException(401, "unauthorized")
+    if request.client is None:
+        return False
+    host = request.client.host
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
 
-    sid = auth_svc.mint_session(identity)
-    response = JSONResponse(
-        status_code=200,
-        content={
-            "ok": True,
-            "expires_in_s": auth_svc.SESSION_TTL_SECONDS,
-        },
-    )
+
+@app.post("/auth/mint")
+async def auth_mint(request: Request, _auth: None = Depends(require_bearer)):
+    """Mint a one-shot login challenge.
+
+    Loopback-only. Body: ``{"awm_user": "<name>"}``. Returns
+    ``{"nonce": "...", "url": "https://.../auth/bootstrap?ot=..."}``. The
+    operator opens the URL in a browser; ``/auth/bootstrap`` consumes the
+    nonce and sets the bearer as an HttpOnly cookie.
+    """
+    if not _is_loopback(request):
+        raise HTTPException(403, "/auth/mint is loopback-only")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    awm_user = (body.get("awm_user") if isinstance(body, dict) else None) or "operator"
+    awm_user = str(awm_user).strip() or "operator"
+
+    nonce = auth_svc.mint_challenge(awm_user)
+    url = f"{auth_svc.base_url()}/auth/bootstrap?ot={nonce}"
+    return JSONResponse({
+        "nonce": nonce,
+        "url": url,
+        "awm_user": awm_user,
+        "expires_in_s": auth_svc.CHALLENGE_TTL_SECONDS,
+    })
+
+
+@app.get("/auth/bootstrap")
+async def auth_bootstrap(request: Request):
+    """Consume a one-shot nonce and set the bearer cookie.
+
+    The bearer itself is stored verbatim in the HttpOnly ``awm_session``
+    cookie — no server-side session state. A non-HttpOnly ``awm_as``
+    cookie carries the operator's display name so the SPA can populate
+    ``X-Awm-As``.
+    """
+    nonce = request.query_params.get("ot", "")
+    awm_user = auth_svc.consume_challenge(nonce)
+    if awm_user is None:
+        raise HTTPException(401, "challenge expired or invalid — request a new login")
+
+    try:
+        bearer = auth_svc.local_token(generate_if_missing=False)
+    except auth_svc.TokenMissing:
+        raise HTTPException(500, "daemon token not initialized")
+
+    response = Response(status_code=302, headers={"Location": "/ui/"})
     response.set_cookie(
         key=auth_svc.SESSION_COOKIE,
-        value=sid,
-        max_age=auth_svc.SESSION_TTL_SECONDS,
+        value=bearer,
         httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    response.set_cookie(
+        key=auth_svc.AS_COOKIE,
+        value=awm_user,
+        httponly=False,
         secure=True,
         samesite="strict",
         path="/",
@@ -261,13 +359,23 @@ async def auth_exchange(request: Request):
     return response
 
 
+@app.get("/auth/whoami")
+async def auth_whoami(request: Request, _auth: None = Depends(require_bearer)):
+    """Return the operator display name (from ``awm_as`` cookie).
+
+    Used by ``/ui/login.html`` to poll for completion after the operator
+    clicks a DM'd bootstrap link in another tab.
+    """
+    awm_user = request.cookies.get(auth_svc.AS_COOKIE) or "operator"
+    return JSONResponse({"awm_user": awm_user})
+
+
 @app.delete("/auth/session")
-async def auth_logout(request: Request):
-    """Drop the caller's web-UI session and clear the cookie."""
-    sid = request.cookies.get(auth_svc.SESSION_COOKIE)
-    dropped = auth_svc.drop_session(sid) if sid else False
-    response = JSONResponse(status_code=200, content={"dropped": dropped})
+async def auth_logout(_request: Request):
+    """Clear the bearer cookie. Operator must re-login via Discord or CLI."""
+    response = JSONResponse({"ok": True})
     response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
+    response.delete_cookie(auth_svc.AS_COOKIE, path="/")
     return response
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
@@ -331,18 +439,19 @@ async def gate_and_auth_for_core(request: Request, call_next):
     # /auth/exchange validates its own bearer to mint a session cookie.
     if (path.startswith("/rooms") or path.startswith("/ui")
             or path.startswith("/voice")
+            or path.startswith("/peer/")
             or path.startswith("/auth/")):
         return await call_next(request)
 
-    # Auth check — local-token bearer or live web-UI session cookie.
+    # Auth check — local-token bearer, peer-token bearer, or the
+    # awm_session cookie (which carries the bearer verbatim).
     auth = request.headers.get("authorization", "")
     token: str | None = None
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
     if not token:
         token = request.cookies.get(auth_svc.SESSION_COOKIE)
-    identity = auth_svc.verify_bearer(token) if token else None
-    if identity is None:
+    if not auth_svc.verify_bearer(token):
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
     # Peer-origin identification. We trust the bearer; X-Awm-From is the

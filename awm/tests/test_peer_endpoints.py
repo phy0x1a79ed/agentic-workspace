@@ -1,8 +1,12 @@
-"""Tests for the peer endpoints column + federation _resolve fallback order."""
+"""Tests for the peer endpoints column, federation _resolve fallback,
+peer-token SSH bootstrap, and /peer/* route cross-check (require_peer_bearer)."""
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -94,3 +98,148 @@ class TestResolveOrder:
         assert base == "https://10.0.0.5:7820"
         assert token == "peer-token-xyz"
         assert called_ssh == []
+
+
+# ---------------------------------------------------------------------------
+# SSH peer-token bootstrap
+# ---------------------------------------------------------------------------
+
+class TestInstallPeerTokenViaSSH:
+    def test_writes_token_with_0600_when_ssh_succeeds(
+        self, peer_workspace, monkeypatch,
+    ):
+        from awm.services.network import peers
+
+        class _R:
+            returncode = 0
+            stdout = "remote-secret-token\n"
+            stderr = ""
+
+        def fake_run(cmd, **kw):  # noqa: ARG001
+            return _R()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        dest = peers.install_peer_token_via_ssh("alpha", "alpha-host")
+        assert dest.exists()
+        assert (dest.stat().st_mode & 0o777) == 0o600
+        assert dest.read_text().strip() == "remote-secret-token"
+
+    def test_raises_on_ssh_failure(self, peer_workspace, monkeypatch):
+        from awm.services.network import peers
+
+        class _R:
+            returncode = 255
+            stdout = ""
+            stderr = "Permission denied"
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        with pytest.raises(RuntimeError, match="ssh.*failed"):
+            peers.install_peer_token_via_ssh("alpha", "alpha-host")
+
+    def test_raises_on_empty_remote_token(self, peer_workspace, monkeypatch):
+        from awm.services.network import peers
+
+        class _R:
+            returncode = 0
+            stdout = "\n"
+            stderr = ""
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: _R())
+        with pytest.raises(RuntimeError, match="empty"):
+            peers.install_peer_token_via_ssh("alpha", "alpha-host")
+
+    def test_rejects_missing_alias(self, peer_workspace):
+        from awm.services.network import peers
+        with pytest.raises(ValueError):
+            peers.install_peer_token_via_ssh("alpha", "")
+
+
+# ---------------------------------------------------------------------------
+# /peer/* route cross-check via require_peer_bearer
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def peer_client(awm_workspace, monkeypatch):
+    awm_dir = awm_workspace["awm_dir"]
+    (awm_dir / "auth.token").write_text("local-secret\n")
+    peers_dir = awm_dir / "peers"
+    peers_dir.mkdir()
+    (peers_dir / "alpha.token").write_text("alpha-secret\n")
+    (peers_dir / "bravo.token").write_text("bravo-secret\n")
+
+    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", awm_dir / "auth.token")
+    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", awm_dir / "awm-exposed.pid")
+    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", awm_dir / "awm-exposed.log")
+    monkeypatch.setattr(
+        "awm.services.agent_instances.PROJECTS_DIR",
+        awm_workspace["projects_dir"],
+    )
+
+    from awm.services import auth as _auth
+    _auth._token_cache.update({"value": None, "mtime": None})
+    from awm.services import agent_instances
+    agent_instances._registry.clear()
+    agent_instances._by_scope.clear()
+    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
+
+    # Register the peers so middleware-level "unknown peer" checks pass.
+    from awm.services.network import peers as peer_svc
+    peer_svc.add_peer("alpha", "alpha-host")
+    peer_svc.add_peer("bravo", "bravo-host")
+
+    from awm.exposed import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
+class TestPeerRouteAuth:
+    def test_missing_x_awm_from_400(self, peer_client):
+        r = peer_client.post(
+            "/peer/inbox",
+            headers={"Authorization": "Bearer alpha-secret"},
+            json={"sender": "x", "recipient": "y", "body": "hi"},
+        )
+        assert r.status_code == 400
+        assert "X-Awm-From" in r.json()["detail"]
+
+    def test_bearer_mismatch_rejected(self, peer_client):
+        # alpha's bearer presented but claiming to be bravo → 401.
+        r = peer_client.post(
+            "/peer/inbox",
+            headers={
+                "Authorization": "Bearer alpha-secret",
+                "X-Awm-From": "bravo",
+            },
+            json={"sender": "x", "recipient": "y", "body": "hi"},
+        )
+        assert r.status_code == 401
+
+    def test_local_token_cannot_impersonate_peer(self, peer_client):
+        r = peer_client.post(
+            "/peer/inbox",
+            headers={
+                "Authorization": "Bearer local-secret",
+                "X-Awm-From": "alpha",
+            },
+            json={"sender": "x", "recipient": "y", "body": "hi"},
+        )
+        assert r.status_code == 401
+
+    def test_matching_bearer_accepted(self, peer_client, awm_workspace):
+        # We need a scope so messaging.send_message has somewhere to put it.
+        # /peer/inbox calls messaging.send_message which validates the
+        # recipient scope exists; the easiest way to verify auth passes is
+        # to use an intentionally-invalid body and assert we get a 400
+        # from the *handler* (auth passed) rather than 401 from the dep.
+        r = peer_client.post(
+            "/peer/inbox",
+            headers={
+                "Authorization": "Bearer alpha-secret",
+                "X-Awm-From": "alpha",
+            },
+            json={"definitely": "not a MessageSendRequest"},
+        )
+        # 400 = auth passed, body invalid (which is what we want to assert).
+        assert r.status_code == 400
+        assert "invalid message body" in r.json()["detail"].lower() \
+            or "field required" in str(r.json()).lower()

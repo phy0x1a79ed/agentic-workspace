@@ -1,9 +1,9 @@
 """Tests for the auth service: token bootstrap, TLS cert generation,
-bearer verification, session minting."""
+pure-key bearer verification, peer-bearer cross-check, one-shot
+login challenges."""
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
@@ -12,7 +12,7 @@ import pytest
 
 @pytest.fixture()
 def auth_dir(tmp_path, monkeypatch):
-    """Isolate AUTH_TOKEN_FILE and TLS paths under tmp_path."""
+    """Isolate AUTH_TOKEN_FILE, TLS paths, and the peers/ dir under tmp_path."""
     awm_dir = tmp_path / ".awm"
     awm_dir.mkdir()
     tls_dir = awm_dir / "tls"
@@ -28,7 +28,7 @@ def auth_dir(tmp_path, monkeypatch):
     from awm.services import auth as _auth
     _auth._token_cache.clear()
     _auth._token_cache["value"] = None
-    _auth._sessions.clear()
+    _auth._challenges.clear()
 
     return awm_dir
 
@@ -94,45 +94,108 @@ class TestTLSBootstrap:
 
 
 class TestVerifyBearer:
-    def test_local_token_resolves_to_local_identity(self, auth_dir):
+    def test_local_token_accepted(self, auth_dir):
         from awm.services import auth
         tok = auth.local_token(generate_if_missing=True)
-        ident = auth.verify_bearer(tok)
-        assert ident is not None
-        assert ident.kind == "local"
-        assert ident.name == "operator"
+        assert auth.verify_bearer(tok) is True
 
-    def test_bad_token_returns_none(self, auth_dir):
+    def test_bad_token_rejected(self, auth_dir):
         from awm.services import auth
         auth.local_token(generate_if_missing=True)
-        assert auth.verify_bearer("garbage") is None
-        assert auth.verify_bearer(None) is None
-        assert auth.verify_bearer("") is None
+        assert auth.verify_bearer("garbage") is False
+        assert auth.verify_bearer(None) is False
+        assert auth.verify_bearer("") is False
+        assert auth.verify_bearer("   ") is False
 
-
-class TestSessions:
-    def test_mint_and_resolve(self, auth_dir):
+    def test_peer_token_accepted(self, auth_dir):
         from awm.services import auth
-        ident = auth.Identity(kind="local", name="operator")
-        sid = auth.mint_session(ident)
-        resolved = auth.verify_bearer(sid)
-        assert resolved is not None
-        assert resolved.kind == "session"
+        auth.local_token(generate_if_missing=True)
+        peers = auth_dir / "peers"
+        peers.mkdir()
+        (peers / "alpha.token").write_text("peer-alpha-secret\n")
+        (peers / "bravo.token").write_text("peer-bravo-secret\n")
+        assert auth.verify_bearer("peer-alpha-secret") is True
+        assert auth.verify_bearer("peer-bravo-secret") is True
+        assert auth.verify_bearer("peer-charlie-secret") is False
 
-    def test_drop_invalidates(self, auth_dir):
+    def test_empty_peer_file_does_not_authenticate_empty_bearer(self, auth_dir):
         from awm.services import auth
-        ident = auth.Identity(kind="local", name="operator")
-        sid = auth.mint_session(ident)
-        assert auth.drop_session(sid) is True
-        assert auth.verify_bearer(sid) is None
+        auth.local_token(generate_if_missing=True)
+        peers = auth_dir / "peers"
+        peers.mkdir()
+        (peers / "ghost.token").write_text("")
+        assert auth.verify_bearer("") is False
 
-    def test_sweep_expired_drops_old(self, auth_dir):
+
+class TestVerifyPeerBearer:
+    def test_match_accepted(self, auth_dir):
         from awm.services import auth
-        ident = auth.Identity(kind="local", name="operator")
-        sid = auth.mint_session(ident, ttl=-1)  # immediately stale
-        dropped = auth.sweep_expired()
+        peers = auth_dir / "peers"
+        peers.mkdir()
+        (peers / "alpha.token").write_text("alpha-secret\n")
+        assert auth.verify_peer_bearer("alpha-secret", "alpha") is True
+
+    def test_mismatch_rejected(self, auth_dir):
+        from awm.services import auth
+        peers = auth_dir / "peers"
+        peers.mkdir()
+        (peers / "alpha.token").write_text("alpha-secret\n")
+        (peers / "bravo.token").write_text("bravo-secret\n")
+        # bravo's bearer presented but claiming to be alpha → rejected.
+        assert auth.verify_peer_bearer("bravo-secret", "alpha") is False
+
+    def test_missing_peer_rejected(self, auth_dir):
+        from awm.services import auth
+        (auth_dir / "peers").mkdir()
+        assert auth.verify_peer_bearer("anything", "unknown") is False
+
+    def test_path_traversal_rejected(self, auth_dir):
+        from awm.services import auth
+        (auth_dir / "peers").mkdir()
+        (auth_dir / "auth.token").write_text("local-token\n")
+        # Trying to claim a peer name that escapes the peers/ dir must fail.
+        assert auth.verify_peer_bearer("local-token", "../auth") is False
+        assert auth.verify_peer_bearer("local-token", ".hidden") is False
+
+    def test_blank_claimed_peer_rejected(self, auth_dir):
+        from awm.services import auth
+        assert auth.verify_peer_bearer("anything", "") is False
+        assert auth.verify_peer_bearer("anything", None) is False  # type: ignore
+
+
+class TestChallenges:
+    def test_round_trip(self, auth_dir):
+        from awm.services import auth
+        nonce = auth.mint_challenge("tony")
+        assert auth.consume_challenge(nonce) == "tony"
+
+    def test_single_use(self, auth_dir):
+        from awm.services import auth
+        nonce = auth.mint_challenge("operator")
+        assert auth.consume_challenge(nonce) == "operator"
+        # Already consumed.
+        assert auth.consume_challenge(nonce) is None
+
+    def test_expired_returns_none(self, auth_dir):
+        from awm.services import auth
+        nonce = auth.mint_challenge("operator", ttl=-1)
+        assert auth.consume_challenge(nonce) is None
+
+    def test_unknown_nonce_returns_none(self, auth_dir):
+        from awm.services import auth
+        assert auth.consume_challenge("never-minted") is None
+        assert auth.consume_challenge(None) is None
+        assert auth.consume_challenge("") is None
+
+    def test_sweep_drops_expired(self, auth_dir):
+        from awm.services import auth
+        live = auth.mint_challenge("a")
+        stale = auth.mint_challenge("b", ttl=-1)
+        dropped = auth.sweep_challenges()
         assert dropped >= 1
-        assert auth.verify_bearer(sid) is None
+        # Live nonce still consumable.
+        assert auth.consume_challenge(live) == "a"
+        assert auth.consume_challenge(stale) is None
 
 
 class TestBootstrap:

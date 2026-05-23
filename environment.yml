@@ -11,3 +11,4 @@ dependencies:
     - httpx
     - mcp[cli]
     - pyyaml
+    - discord.py>=2.3

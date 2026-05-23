@@ -294,17 +294,62 @@ awm exposed status
 
 ### Auth
 
+A bearer token is **a key — proof of possession, nothing more**. Auth is
+not identity: any caller who can present a valid bearer is authenticated;
+*who* they are is a separate claim carried by `X-Awm-As` (user) and
+`X-Awm-From` (peer-origin) headers.
+
 Every request needs `Authorization: Bearer <token>`. Token sources, in
-order: `$AWM_AUTH_TOKEN` env, file at `$AWM_AUTH_TOKEN_FILE`
-(default `~/.awm/auth.token`). Rotation is `echo newtoken >
-~/.awm/auth.token` — the listener mtime-caches and picks up the change
-on the next request, no restart.
+order: `$AWM_AUTH_TOKEN` env var, file at `$WORKSPACE_ROOT/.awm/auth.token`.
+Rotation is `echo newtoken > $WORKSPACE_ROOT/.awm/auth.token` — the
+listener re-reads the file on every request, no restart and no in-memory
+cache to flush.
+
+Valid bearers come from two sources, both pure files on disk:
+
+- The local-daemon token at `$WORKSPACE_ROOT/.awm/auth.token` (the
+  operator key on this host).
+- Per-peer tokens at `$WORKSPACE_ROOT/.awm/peers/<peer_id>.token`
+  (installed by `awm peer add --bootstrap-via-ssh ...`, which fetches
+  the remote's `~/.awm/auth.token` over SSH).
+
+`/peer/*` routes additionally cross-check: the presented bearer must
+match the *specific* peer's token file matching the `X-Awm-From` header.
+This prevents peer A from impersonating peer B.
+
+**Browser bootstrap.** The web UI does not accept a bearer in the URL
+hash. Instead, the operator triggers a one-shot login flow:
+
+- **`/login` slash command** on the per-peer Discord bot (if
+  `[discord]` section configured) — the bot DMs a URL that sets the
+  bearer as an HttpOnly cookie on click. Operators eligible for `/login`
+  are listed in the `discord_operators` table (`awm discord
+  add-operator <discord_user_id> <awm_user>`).
+- **`awm login [--as <user>]`** on the daemon host — prints the same
+  URL for the operator to open in a browser.
+
+Either path mints a single-use nonce (60s TTL, in-memory), redeemed at
+`/auth/bootstrap?ot=<nonce>` which sets `awm_session=<bearer>;
+HttpOnly; Secure; SameSite=Strict` and redirects to `/ui/`. The
+long-lived bearer never leaves the daemon.
+
+**TLS.** The daemon binds a self-signed cert (CN=awm-daemon) auto-
+bootstrapped at `$WORKSPACE_ROOT/.awm/tls/{cert,key}.pem`. Internal
+httpx callers pass `verify=False` to disable TLS server-cert
+verification (the chain is unknown to public CAs) — not to disable auth.
+The trust boundary is the transport (loopback for CLI/MCP, SSH tunnel
+for peer-to-peer), not the cert chain.
+
+**Discovery.** `serve-exposed` writes `$WORKSPACE_ROOT/.awm/exposed.json`
+at startup with `{scheme, host, port, token_file, pid}`. CLI and MCP
+read this as the source of truth for the live listener, eliminating the
+config drift previously seen across `awm exposed status`, `awm peer
+ping`, etc.
 
 WebSocket clients authenticate via the
 `Sec-WebSocket-Protocol: bearer.<token>` subprotocol (browsers can't set
-arbitrary headers on the WS handshake) or a `?token=<token>` query
-string. The optional `X-Awm-From` (peer-origin claim) and `X-Awm-As`
-(user identity claim) headers tag federated requests for audit.
+arbitrary headers on the WS handshake), the `awm_session` HttpOnly
+cookie, or a `?token=<token>` query string.
 
 ### Destructive operations
 

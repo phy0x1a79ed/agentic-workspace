@@ -9,32 +9,19 @@
 (function () {
   "use strict";
 
-  // ---- Hash config (shared with the main app) -----------------------------
+  // ---- Identity (display name only — auth lives in the HttpOnly cookie) ---
 
-  function parseHashConfig() {
-    const raw = location.hash;
-    let configPart = raw.slice(1);
-    const routeIdx = configPart.indexOf("#/");
-    if (routeIdx >= 0) configPart = configPart.slice(0, routeIdx);
-    else if (configPart.startsWith("/")) configPart = "";
-    const params = new URLSearchParams(configPart);
-    return {
-      token: params.get("token") || "",
-      as: params.get("as") || "user:operator",
-      peer: params.get("peer") || "",
-    };
+  function readCookie(name) {
+    const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : "";
   }
 
-  const cfg = parseHashConfig();
-  // The main app's bootstrapAuth exchanges the URL-hash bearer for an
-  // HttpOnly session cookie and clears the hash. By the time this panel
-  // initializes we can be in either of two states:
-  //   1) cfg.token is set — first load, the main app is mid-exchange.
-  //      We still rely on the cookie that the exchange will produce
-  //      (fetch sends `credentials: include`, WS handshake sends cookies
-  //      automatically).
-  //   2) cfg.token is empty — return-visit with a live cookie.
-  // Either way we proceed; auth lives in the cookie, not in this module.
+  const cfg = {
+    as: "user:" + (readCookie("awm_as") || "operator"),
+  };
+  // Auth lives in the `awm_session` HttpOnly cookie set by /auth/bootstrap
+  // (entered via the Discord bot's /login or `awm login`). fetch sends it
+  // with `credentials: include`; the WS handshake sends cookies natively.
 
   // ---- DOM refs -----------------------------------------------------------
 

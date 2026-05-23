@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -189,6 +189,12 @@ CREATE INDEX IF NOT EXISTS idx_room_posts_room_ts ON room_posts(room_id, ts);
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_room_participants_scope
     ON room_participants(kind, identifier) WHERE left_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS discord_operators (
+    discord_user_id TEXT PRIMARY KEY,
+    awm_user TEXT NOT NULL,
+    added_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -490,6 +496,18 @@ ALTER TABLE peers_new RENAME TO peers;
 -- to TLS verify=False (acceptable for zerotier overlays).
 ALTER TABLE peers ADD COLUMN endpoints TEXT;
 ALTER TABLE peers ADD COLUMN tls_fingerprint TEXT;
+""",
+
+    (25, 26): """\
+-- v26: discord operators table. Whitelists which Discord users may run
+-- the /login slash command and what awm_user identity they map to. The
+-- bot consults this table on every /login invocation; absence means
+-- "not authorized."
+CREATE TABLE IF NOT EXISTS discord_operators (
+    discord_user_id TEXT PRIMARY KEY,
+    awm_user TEXT NOT NULL,
+    added_at TEXT NOT NULL
+);
 """,
 }
 

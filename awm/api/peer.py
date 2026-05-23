@@ -18,7 +18,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from awm.middleware_auth import require_bearer
+from awm.middleware_auth import require_peer_bearer
 from awm.services import rooms as rooms_svc
 
 
@@ -38,7 +38,7 @@ def _require_from_peer(request: Request) -> str:
 # Federated inbox
 # ---------------------------------------------------------------------------
 
-@router.post("/inbox", dependencies=[Depends(require_bearer)])
+@router.post("/inbox", dependencies=[Depends(require_peer_bearer)])
 def peer_inbox(request: Request, payload: dict):
     """Receive a federated message from a remote peer.
 
@@ -68,7 +68,7 @@ def peer_inbox(request: Request, payload: dict):
 # Federated room post (the cross-peer broadcast receiver)
 # ---------------------------------------------------------------------------
 
-@router.post("/rooms/{room_id}/posts", dependencies=[Depends(require_bearer)])
+@router.post("/rooms/{room_id}/posts", dependencies=[Depends(require_peer_bearer)])
 def peer_room_post(room_id: str, request: Request, payload: dict):
     """Receive a post from a remote peer.
 
@@ -96,7 +96,7 @@ def peer_room_post(room_id: str, request: Request, payload: dict):
 # Shadow participants
 # ---------------------------------------------------------------------------
 
-@router.post("/rooms/{room_id}/shadow-join", dependencies=[Depends(require_bearer)])
+@router.post("/rooms/{room_id}/shadow-join", dependencies=[Depends(require_peer_bearer)])
 def peer_shadow_join(room_id: str, request: Request):
     """A remote peer is announcing itself as a ``shadow_peer`` participant."""
     from_peer = _require_from_peer(request)
@@ -109,7 +109,7 @@ def peer_shadow_join(room_id: str, request: Request):
     return {"ok": True, "participant": participant.to_dict()}
 
 
-@router.post("/rooms/{room_id}/shadow-leave", dependencies=[Depends(require_bearer)])
+@router.post("/rooms/{room_id}/shadow-leave", dependencies=[Depends(require_peer_bearer)])
 def peer_shadow_leave(room_id: str, request: Request):
     from_peer = _require_from_peer(request)
     rooms_svc.remove_participant(room_id, "shadow_peer", from_peer)
@@ -120,7 +120,7 @@ def peer_shadow_leave(room_id: str, request: Request):
 # Cross-host agent input
 # ---------------------------------------------------------------------------
 
-@router.post("/rooms/agent-input", dependencies=[Depends(require_bearer)])
+@router.post("/rooms/agent-input", dependencies=[Depends(require_peer_bearer)])
 def peer_agent_input(request: Request, body: dict):
     """Remote peer is pushing an input frame for a scope that lives here."""
     from awm.services import agent_instances

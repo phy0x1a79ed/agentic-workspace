@@ -97,6 +97,64 @@ def _canonical_token_path(peer_id: str) -> Path:
     return _peers_token_dir() / f"{peer_id}.token"
 
 
+def install_peer_token_via_ssh(peer_id: str, ssh_alias: str, *,
+                               remote_path: str = "~/.awm/auth.token",
+                               timeout: float = 15.0) -> Path:
+    """Fetch a peer's bearer token over SSH and install it locally.
+
+    Runs ``ssh <alias> "cat <remote_path>"`` (default ``~/.awm/auth.token``
+    on the remote) and writes the result to the canonical token path
+    with mode 0600. SSH is the trust root — if the remote allows us to
+    read the token file, we accept it as that peer's bearer.
+
+    Returns the canonical path. Raises ``RuntimeError`` on ssh failure
+    or empty output.
+    """
+    import subprocess
+
+    if not ssh_alias:
+        raise ValueError("ssh_alias is required")
+    _validate_ssh_alias(ssh_alias)
+    _validate_peer_id(peer_id)
+
+    cmd = ["ssh", "-o", "BatchMode=yes", ssh_alias, f"cat {remote_path}"]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ssh fetch timed out after {timeout}s") from exc
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "(no stderr)"
+        raise RuntimeError(
+            f"ssh {ssh_alias} failed (exit {result.returncode}): {stderr}"
+        )
+    content = result.stdout.strip()
+    if not content:
+        raise RuntimeError(
+            f"remote {remote_path} on {ssh_alias} is empty — "
+            "is the awm daemon initialized over there?"
+        )
+
+    dest_dir = _peers_token_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest_dir, 0o700)
+    except OSError:
+        pass
+    dest = _canonical_token_path(peer_id)
+    dest.write_text(content + "\n")
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+    return dest
+
+
 def install_peer_token(peer_id: str, source_path: str | Path) -> Path:
     """Copy the bearer token from ``source_path`` into the canonical location
     for ``peer_id`` (mode 0600). Returns the canonical path."""
