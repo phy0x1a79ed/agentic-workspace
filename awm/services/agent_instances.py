@@ -40,6 +40,7 @@ from awm.config import PROJECTS_DIR
 from awm.db import get_connection
 from awm.models import AgentSessionInfo
 from awm.services import rooms as rooms_svc
+from awm.services._path import resolve_bin
 
 
 _SUPPORTED_CLIS = {"claude"}
@@ -137,7 +138,7 @@ def _build_claude_argv(
     resume_session_id: Optional[str],
 ) -> list[str]:
     argv = [
-        "claude", "--print", "--verbose",
+        resolve_bin("claude"), "--print", "--verbose",
         "--input-format=stream-json", "--output-format=stream-json",
         "--include-partial-messages",
         f"--permission-mode={permission_mode}",
