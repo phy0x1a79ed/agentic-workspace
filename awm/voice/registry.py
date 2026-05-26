@@ -82,6 +82,13 @@ class VoiceAgent:
         # end-of-turn text into that room via rooms.post(). Last-write-wins
         # across clients: the most recent attach decides the active room.
         self.bound_room_id: Optional[str] = None
+        # Current "focus" from the SPA's focus tab. Tells the agent which
+        # room is in the foreground and who to address: the manager
+        # (vagrant scope itself), one specific worker scope, or "all
+        # workers" which the agent should fan-out via room_post per
+        # scope. Stored as a plain dict so we can pass it as JSON in the
+        # turn prefix without any deserialization.
+        self.current_focus: Optional[dict] = None
         self.pcm_chunks: list[bytes] = []
         self.recording_client: Optional[WebSocket] = None
         self.turn: Optional[TurnState] = None
@@ -169,6 +176,35 @@ class VoiceAgent:
     async def _status(self, stage: str, text: str = "") -> None:
         await self.broadcast_json({"type": "status", "stage": stage, "text": text})
 
+    def _focus_prefix(self) -> str:
+        """One-line context preface telling the agent where the user is
+        focused and who to address. Intentionally terse — the agent's
+        persona doc explains how to interpret these fields.
+
+        Format:
+          [focus room=<room_id> address=<descriptor>] <user text>
+
+        Descriptor is one of:
+          - "manager" (post to the vagrant scope itself; treat as inner monologue)
+          - "scope:<identifier>" (post to that one scope via to_scope)
+          - "all-workers:[<s1>,<s2>,...]" (fan out room_post per worker scope)
+        """
+        focus = self.current_focus
+        if not focus or not focus.get("room_id"):
+            return ""
+        room_id = focus.get("room_id")
+        rec = focus.get("recipient") or {}
+        kind = rec.get("kind")
+        scopes = rec.get("scopes") or []
+        if kind == "all-workers":
+            addr = f"all-workers:[{','.join(scopes)}]"
+        elif kind == "scope" and scopes:
+            # If only the vagrant scope is in scopes, that's "manager".
+            addr = f"scope:{scopes[0]}"
+        else:
+            addr = "manager"
+        return f"[focus room={room_id} address={addr}] "
+
     # ---- input handlers (any client) ----
 
     async def handle_start(self, ws: WebSocket) -> None:
@@ -222,7 +258,7 @@ class VoiceAgent:
         self.turn_seq += 1
         self.turn = TurnState(self.turn_seq)
         await self._status("thinking", "claude thinking…")
-        await self.session.send(text)
+        await self.session.send(self._focus_prefix() + text)
         self.last_active = time.monotonic()
 
     async def handle_cancel(self) -> None:
@@ -237,8 +273,31 @@ class VoiceAgent:
         self.turn_seq += 1
         self.turn = TurnState(self.turn_seq)
         await self._status("thinking", "claude thinking…")
-        await self.session.send(body)
+        await self.session.send(self._focus_prefix() + body)
         self.last_active = time.monotonic()
+
+    def update_focus(self, focus: Optional[dict]) -> None:
+        """Replace the current focus from a /voice/ws ``focus`` frame.
+
+        Sanitizes the structure but doesn't validate scope identifiers —
+        invalid ones surface as agent-side room_post failures, which is
+        more visible to the user than a silent server reject.
+        """
+        if not focus:
+            self.current_focus = None
+            return
+        room_id = focus.get("room_id")
+        if not room_id:
+            self.current_focus = None
+            return
+        rec = focus.get("recipient") or {}
+        self.current_focus = {
+            "room_id": str(room_id),
+            "recipient": {
+                "kind": str(rec.get("kind") or "scope"),
+                "scopes": [str(s) for s in (rec.get("scopes") or []) if s],
+            },
+        }
 
     async def add_audio(self, ws: WebSocket, data: bytes) -> None:
         # Accept audio only from the currently-recording client.
@@ -480,6 +539,11 @@ async def run_voice_ws_session(
                 await agent.handle_cancel()
             elif t == "text":
                 await agent.handle_text(str(payload.get("body", "")))
+            elif t == "focus":
+                agent.update_focus({
+                    "room_id": payload.get("room_id"),
+                    "recipient": payload.get("recipient"),
+                })
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001

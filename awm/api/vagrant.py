@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from awm.middleware_auth import require_bearer
-from awm.services.scopes import ensure_vagrant_session
+from awm.services.scopes import ensure_vagrant_session, vagrant_scope_identifier
 
 
 router = APIRouter(prefix="/vagrant", tags=["vagrant"])
@@ -20,6 +20,10 @@ router = APIRouter(prefix="/vagrant", tags=["vagrant"])
 class VagrantSessionResponse(BaseModel):
     scope_uuid: str
     room_id: str
+    # ``project/scope`` identifier for the vagrant scope. Matches the
+    # ``scope`` field of ``GET /rooms/{id}/agents`` so the UI can mark
+    # which agent in a room is "the manager".
+    scope_identifier: str
 
 
 def _user_from_request(request: Request) -> str:
@@ -38,4 +42,8 @@ async def session(request: Request) -> VagrantSessionResponse:
     except FileNotFoundError as exc:
         # 503: server-side bootstrap missing (run `awm vagrant-init`).
         raise HTTPException(status_code=503, detail=str(exc))
-    return VagrantSessionResponse(scope_uuid=scope_uuid, room_id=room_id)
+    return VagrantSessionResponse(
+        scope_uuid=scope_uuid,
+        room_id=room_id,
+        scope_identifier=vagrant_scope_identifier(user_as),
+    )

@@ -73,6 +73,298 @@
                 border: 1px solid #ddd; }
   form.inline label { display: block; margin: 4px 0; font-size: 11px; }
   form.inline input[type=text], form.inline textarea { width: 100%; }
+
+  /* ---- Focus tab --------------------------------------------------- */
+  /* A precision-terminal layout: tight 1px borders, deliberate accent
+     stripes, mono throughout. The vagrant/manager room is the user's
+     anchor (amber); worker rooms address the team (indigo). */
+
+  #tab-focus { padding: 0; height: calc(100vh - 32px); background: #fcfcfd; }
+  .focus-layout { display: grid;
+                  grid-template-columns: 220px minmax(0, 1fr) 280px;
+                  height: 100%; min-height: 0; }
+
+  .focus-rail, .focus-side {
+    background: #fafbfc;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .focus-rail { border-right: 1px solid #e5e7eb; }
+  .focus-side { border-left: 1px solid #e5e7eb; overflow-y: auto; padding: 0; }
+
+  .focus-rail-header, .focus-side-header {
+    font-size: 10px; letter-spacing: 0.14em; color: #6b7280;
+    text-transform: uppercase; padding: 14px 14px 8px; font-weight: 700;
+    border-bottom: 1px dashed #e5e7eb;
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .focus-rail-header::before, .focus-side-header::before {
+    content: "▸"; color: #c7cdd6; font-size: 10px;
+  }
+
+  .focus-rooms { overflow-y: auto; flex: 1; padding: 4px 0; }
+  .focus-room-card {
+    position: relative;
+    padding: 9px 12px 9px 16px;
+    margin: 0; cursor: pointer;
+    border: 0; border-bottom: 1px solid #f1f3f5;
+    background: transparent;
+    font-size: 11.5px; line-height: 1.4;
+    transition: background 90ms ease;
+  }
+  .focus-room-card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px; background: transparent;
+    transition: background 90ms ease;
+  }
+  .focus-room-card:hover { background: #f3f4f6; }
+  .focus-room-card:hover::before { background: #d1d5db; }
+  .focus-room-card.active {
+    background: #eef2ff;
+    color: #312e81;
+  }
+  .focus-room-card.active::before { background: #4f46e5; }
+  .focus-room-card.vagrant {
+    background: #fffbeb;
+  }
+  .focus-room-card.vagrant::before { background: #fcd34d; }
+  .focus-room-card.vagrant.active {
+    background: #fef3c7;
+    color: #78350f;
+  }
+  .focus-room-card.vagrant.active::before { background: #f59e0b; }
+  .focus-room-card .label-row {
+    display: flex; align-items: baseline; gap: 6px;
+    font-weight: 600;
+  }
+  .focus-room-card .topic {
+    color: #9ca3af; font-size: 10px; font-weight: 400;
+    margin-top: 1px; letter-spacing: 0.01em;
+  }
+  .focus-room-card.active .topic { color: #6366f1; }
+  .focus-room-card.vagrant.active .topic { color: #b45309; }
+  .focus-room-card .leave {
+    margin-left: auto; opacity: 0;
+    background: transparent; border: 0; padding: 0 4px;
+    color: #9ca3af; cursor: pointer; font-size: 14px; line-height: 1;
+  }
+  .focus-room-card:hover .leave { opacity: 0.7; }
+  .focus-room-card .leave:hover { opacity: 1; color: #dc2626; }
+
+  .focus-join-bar { padding: 10px 12px; border-top: 1px solid #e5e7eb;
+                    background: #f6f7f9; }
+  .focus-join-bar button {
+    width: 100%; font-size: 11px; padding: 6px;
+    background: #fff; border: 1px solid #d1d5db; border-radius: 3px;
+    color: #374151; cursor: pointer;
+    transition: all 90ms ease;
+  }
+  .focus-join-bar button:hover {
+    border-color: #6366f1; color: #4338ca; background: #f5f3ff;
+  }
+  .focus-join-picker {
+    padding: 10px 12px; font-size: 11px;
+    border-top: 1px solid #e5e7eb; background: #f6f7f9;
+  }
+  .focus-join-picker select {
+    width: 100%; margin-bottom: 6px; padding: 4px;
+    border: 1px solid #d1d5db; border-radius: 3px; background: #fff;
+  }
+  .focus-join-picker .picker-actions { display: flex; gap: 4px; }
+  .focus-join-picker .picker-actions button { padding: 4px 8px; }
+  .focus-join-picker .picker-actions button.primary {
+    flex: 1; background: #4f46e5; color: #fff; border-color: #4338ca;
+  }
+  .focus-join-picker .picker-actions button.primary:hover {
+    background: #4338ca;
+  }
+
+  .focus-transcript-pane {
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .focus-room-header {
+    padding: 12px 18px; border-bottom: 1px solid #e5e7eb;
+    background: #fff;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .focus-room-header .title {
+    font-size: 13px; font-weight: 700; color: #111827;
+    letter-spacing: -0.005em;
+  }
+  .focus-room-header .title::before {
+    content: "#"; color: #c7cdd6; margin-right: 4px;
+  }
+  .focus-room-header .banner {
+    color: #9ca3af; font-size: 10px;
+    margin-left: auto; letter-spacing: 0.04em;
+  }
+
+  #focus-transcript {
+    flex: 1; overflow-y: auto; padding: 14px 18px;
+    background: #fff;
+    background-image:
+      linear-gradient(to bottom, rgba(99,102,241,0.02), transparent 80px);
+  }
+  #focus-transcript .post {
+    margin-bottom: 10px; padding-bottom: 8px;
+    border-bottom: 1px solid #f3f4f6;
+    white-space: pre-wrap; word-break: break-word;
+    font-size: 12px; line-height: 1.5;
+  }
+  #focus-transcript .post .author { font-weight: 700; color: #111827; }
+  #focus-transcript .post .ts {
+    color: #c7cdd6; font-size: 10px; margin-left: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  #focus-transcript .post.kind-system,
+  #focus-transcript .post.kind-join,
+  #focus-transcript .post.kind-leave {
+    color: #9ca3af; font-style: italic; font-size: 11px;
+  }
+  #focus-transcript .post.kind-tool_use { color: #b45309; }
+  #focus-transcript .post.kind-tool_result { color: #1d4ed8; }
+  #focus-transcript .fanout-group {
+    padding: 8px 10px; margin: 0 0 10px;
+    background: #f5f3ff;
+    border-left: 3px solid #6366f1;
+    border-radius: 0 3px 3px 0;
+    font-size: 11.5px; line-height: 1.5;
+  }
+  #focus-transcript .fanout-group .fanout-head {
+    color: #4338ca; font-weight: 700; margin-bottom: 4px;
+    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  #focus-transcript .fanout-group .topic {
+    color: #6b7280; font-size: 10px; margin-top: 4px;
+  }
+
+  .focus-composer {
+    padding: 10px 14px;
+    border-top: 1px solid #e5e7eb;
+    background: #fafbfc;
+    display: flex; gap: 8px; align-items: stretch;
+  }
+  .focus-composer .recipient-hint {
+    display: inline-flex; align-items: center;
+    font-size: 10px; color: #4338ca;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    padding: 3px 8px; border-radius: 3px;
+    letter-spacing: 0.04em; font-weight: 600;
+    white-space: nowrap;
+  }
+  .focus-composer .recipient-hint.manager {
+    color: #92400e; background: #fef3c7; border-color: #fcd34d;
+  }
+  .focus-composer .recipient-hint.empty {
+    color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb;
+  }
+  .focus-composer input[type=text] {
+    flex: 1; padding: 7px 10px;
+    border: 1px solid #d1d5db; border-radius: 3px;
+    background: #fff; font: inherit; font-size: 12px;
+    transition: border-color 90ms ease, box-shadow 90ms ease;
+  }
+  .focus-composer input[type=text]:focus {
+    outline: none; border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+  }
+  .focus-composer input[type=text]:disabled {
+    background: #f3f4f6; color: #9ca3af;
+  }
+  .focus-composer button {
+    padding: 6px 16px; background: #4f46e5;
+    color: #fff; border: 1px solid #4338ca;
+    border-radius: 3px; cursor: pointer;
+    font: inherit; font-weight: 600; letter-spacing: 0.04em;
+    transition: background 90ms ease, transform 60ms ease;
+  }
+  .focus-composer button:hover:not(:disabled) {
+    background: #4338ca;
+  }
+  .focus-composer button:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .focus-composer button:disabled {
+    background: #d1d5db; cursor: not-allowed;
+    border-color: #d1d5db; color: #f9fafb;
+  }
+
+  /* Side panel: stacked sections with terminal-style headers */
+  .focus-side > .focus-side-block { padding: 0 14px 14px; }
+  #focus-agents-list, #focus-recipient { padding: 8px 14px 0; }
+  #focus-agents-list .agent-card {
+    background: #fff; border: 1px solid #e5e7eb;
+    border-left: 2px solid #d1d5db;
+    border-radius: 0 3px 3px 0;
+    margin: 0 0 6px; padding: 6px 8px;
+    font-size: 11px;
+  }
+  #focus-agents-list .agent-card .scope {
+    font-weight: 700; color: #111827; font-size: 11px;
+  }
+  #focus-agents-list .agent-card.manager {
+    border-left-color: #f59e0b; background: #fffbeb;
+  }
+  #focus-agents-list .agent-card .manager-tag {
+    color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
+    font-size: 9px; padding: 1px 5px; border-radius: 2px;
+    margin-left: 4px; font-weight: 700; letter-spacing: 0.08em;
+  }
+
+  .focus-recipient { display: flex; flex-direction: column; gap: 4px; }
+  .focus-recipient label.chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid #e5e7eb; border-radius: 3px;
+    cursor: pointer; font-size: 11px;
+    background: #fff;
+    transition: all 90ms ease;
+    position: relative;
+  }
+  .focus-recipient label.chip::before {
+    content: ""; position: absolute; left: -1px; top: -1px; bottom: -1px;
+    width: 2px; background: transparent; border-radius: 3px 0 0 3px;
+    transition: background 90ms ease;
+  }
+  .focus-recipient label.chip:hover { background: #f9fafb; }
+  .focus-recipient label.chip.checked {
+    background: #eef2ff; border-color: #6366f1;
+    color: #312e81; font-weight: 600;
+  }
+  .focus-recipient label.chip.checked::before { background: #4f46e5; }
+  .focus-recipient label.chip.checked.manager-chip {
+    background: #fef3c7; border-color: #f59e0b;
+    color: #78350f;
+  }
+  .focus-recipient label.chip.checked.manager-chip::before {
+    background: #f59e0b;
+  }
+  .focus-recipient label.chip input {
+    margin: 0;
+    /* Hide native radio; the chip itself signals selection. */
+    appearance: none; width: 0; height: 0; opacity: 0; position: absolute;
+  }
+  .focus-recipient label.chip .chip-label {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .focus-recipient label.chip .badge {
+    color: #fff; font-size: 9px; padding: 1px 6px;
+    border-radius: 8px; font-weight: 700; letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .focus-recipient label.chip.workers .badge { background: #6366f1; }
+  .focus-recipient label.chip.manager-chip .badge { background: #f59e0b; }
+
+  .focus-empty {
+    padding: 40px 24px; color: #9ca3af; font-size: 11.5px;
+    text-align: center; font-style: italic;
+    letter-spacing: 0.02em;
+  }
+  .focus-empty::before {
+    content: "—"; display: block; color: #d1d5db;
+    margin-bottom: 8px; font-size: 14px;
+  }
 </style>
 <link rel="stylesheet" href="/ui/voice-panel.css">
 </head>
@@ -80,6 +372,7 @@
 <nav>
   <strong>awm control center</strong>
   <a href="#/status" data-tab="status">status</a>
+  <a href="#/focus" data-tab="focus">focus</a>
   <a href="#/rooms" data-tab="rooms">rooms</a>
   <a href="#/room/" data-tab="room" id="nav-room" hidden>room</a>
   <span class="me" id="me"></span>
@@ -113,6 +406,51 @@
 
   <h3>Core <button data-refresh="core">refresh</button></h3>
   <pre id="core-status"></pre>
+</section>
+
+<section id="tab-focus" hidden>
+  <div class="focus-layout">
+    <aside class="focus-rail">
+      <div class="focus-rail-header">Focus</div>
+      <div class="focus-rooms" id="focus-rooms-list">
+        <div class="focus-empty">loading rooms…</div>
+      </div>
+      <div class="focus-join-bar">
+        <button type="button" id="focus-join-toggle">+ join room</button>
+      </div>
+      <div class="focus-join-picker" id="focus-join-picker" hidden>
+        <select id="focus-join-select"><option value="">loading…</option></select>
+        <div class="picker-actions">
+          <button type="button" id="focus-join-confirm" class="primary">join</button>
+          <button type="button" id="focus-join-cancel">cancel</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="focus-transcript-pane">
+      <div class="focus-room-header">
+        <span class="title" id="focus-room-title">no room selected</span>
+        <span class="banner" id="focus-room-banner"></span>
+      </div>
+      <div id="focus-transcript">
+        <div class="focus-empty">pick a room from the list, or join one</div>
+      </div>
+      <div class="focus-composer">
+        <span class="recipient-hint" id="focus-recipient-hint">→ ?</span>
+        <input type="text" id="focus-post-body" placeholder="message…" disabled />
+        <button type="button" id="focus-post-send" disabled>send</button>
+      </div>
+    </main>
+
+    <aside class="focus-side">
+      <div class="focus-side-header">Agents</div>
+      <div id="focus-agents-list"><em style="font-size:11px;color:#9ca3af">no room focused</em></div>
+      <div class="focus-side-header" style="margin-top:12px">Recipient</div>
+      <div class="focus-recipient" id="focus-recipient">
+        <em style="font-size:11px;color:#9ca3af">no room focused</em>
+      </div>
+    </aside>
+  </div>
 </section>
 
 <section id="tab-rooms" hidden>
@@ -298,7 +636,7 @@ function esc(s) {
 // Routing
 // ---------------------------------------------------------------------------
 
-const TABS = ["status", "rooms", "room"];
+const TABS = ["status", "focus", "rooms", "room"];
 
 function navigate(route) {
   const newHash = "#" + route;
@@ -326,6 +664,11 @@ function applyRoute() {
   } else if (route === "/rooms") {
     showTab("rooms");
     refreshRooms();
+  } else if (route.startsWith("/focus")) {
+    showTab("focus");
+    // /focus or /focus/<room_id>
+    const m = route.match(/^\/focus(?:\/([^/?#]+))?/);
+    enterFocusTab(m && m[1] ? decodeURIComponent(m[1]) : null);
   } else {
     showTab("status");
     refreshStatusAll();
@@ -937,6 +1280,551 @@ document.getElementById("invite-btn").addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Focus tab — multi-room work surface with vagrant-as-manager addressing
+// ---------------------------------------------------------------------------
+
+// Per-user vagrant scope identifier (e.g. "_vagrant/user-user-operator").
+// Populated from POST /vagrant/session at boot; the rail pins this room
+// and the recipient selector excludes it when computing "all workers".
+let vagrantSession = { room_id: null, scope_identifier: null };
+
+let focusRoomId = null;
+let focusWs = null;
+let focusWsBackoff = 1000;
+let focusEarliestTs = null;
+let focusJoinedRooms = [];
+let focusAgents = []; // last /rooms/{id}/agents response for the focused room
+
+// Per-room recipient choice persisted across reloads.
+// Stored as JSON: {"<room_id>": "<key>"} where key is one of:
+//   "manager" | "all-workers" | "scope:<identifier>"
+function loadFocusRecipients() {
+  try { return JSON.parse(localStorage.getItem("awm.focus.recipients") || "{}"); }
+  catch { return {}; }
+}
+function saveFocusRecipients(map) {
+  try { localStorage.setItem("awm.focus.recipients", JSON.stringify(map)); }
+  catch {}
+}
+function getRecipientChoice(roomId) {
+  return loadFocusRecipients()[roomId] || null;
+}
+function setRecipientChoice(roomId, key) {
+  const m = loadFocusRecipients();
+  m[roomId] = key;
+  saveFocusRecipients(m);
+}
+
+function isVagrantRoom(roomId) {
+  return vagrantSession.room_id && roomId === vagrantSession.room_id;
+}
+
+// Entry point. Called by applyRoute() whenever the user lands on /focus.
+async function enterFocusTab(roomId) {
+  await refreshFocusRail();
+  // If a room was specified in the URL, focus it. Otherwise default to
+  // vagrant home room when we know it; else first joined room; else nothing.
+  let target = roomId;
+  if (!target && vagrantSession.room_id && focusJoinedRooms.includes(vagrantSession.room_id)) {
+    target = vagrantSession.room_id;
+  }
+  if (!target && focusJoinedRooms.length) target = focusJoinedRooms[0];
+  if (target) await focusOnRoom(target);
+  else {
+    focusRoomId = null;
+    renderFocusRail();
+    document.getElementById("focus-room-title").textContent = "no room focused";
+    document.getElementById("focus-transcript").innerHTML =
+      `<div class="focus-empty">join a room to start</div>`;
+    setFocusComposerEnabled(false);
+  }
+}
+
+async function refreshFocusRail() {
+  try {
+    const r = await api("GET", "/voice/state");
+    focusJoinedRooms = r.joined_rooms || [];
+  } catch (e) {
+    focusJoinedRooms = [];
+  }
+  // The vagrant home room must always be visible in the rail. It's the
+  // user's anchor (the "home" room) — pin it even if the voice agent
+  // hasn't been formally joined to it (it always is, but be defensive).
+  if (vagrantSession.room_id && !focusJoinedRooms.includes(vagrantSession.room_id)) {
+    focusJoinedRooms = [vagrantSession.room_id, ...focusJoinedRooms];
+  }
+  renderFocusRail();
+}
+
+function renderFocusRail() {
+  const list = document.getElementById("focus-rooms-list");
+  if (!focusJoinedRooms.length) {
+    list.innerHTML = `<div class="focus-empty">no joined rooms</div>`;
+    return;
+  }
+  // Sort: vagrant first, then alphabetical by id.
+  const sorted = focusJoinedRooms.slice().sort((a, b) => {
+    if (isVagrantRoom(a)) return -1;
+    if (isVagrantRoom(b)) return 1;
+    return a.localeCompare(b);
+  });
+  list.innerHTML = "";
+  for (const rid of sorted) {
+    const div = document.createElement("div");
+    const isVag = isVagrantRoom(rid);
+    div.className =
+      "focus-room-card" +
+      (rid === focusRoomId ? " active" : "") +
+      (isVag ? " vagrant" : "");
+    const label = isVag ? "home" : rid;
+    div.innerHTML =
+      `<div class="label-row">` +
+        `<span>${esc(label)}</span>` +
+        (!isVag
+          ? `<button class="leave" type="button" data-leave="${esc(rid)}" title="leave room">×</button>`
+          : "") +
+      `</div>` +
+      `<div class="topic">${esc(isVag ? "manager · " + rid : rid)}</div>`;
+    div.addEventListener("click", (e) => {
+      if (e.target.closest("[data-leave]")) return; // handled below
+      navigate(`/focus/${rid}`);
+    });
+    list.appendChild(div);
+  }
+  list.querySelectorAll("[data-leave]").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const rid = btn.dataset.leave;
+      if (!confirm(`Stop tracking room ${rid}?`)) return;
+      try {
+        await api("POST", `/voice/rooms/${encodeURIComponent(rid)}/leave`);
+        await refreshFocusRail();
+        if (focusRoomId === rid) {
+          // fall back to vagrant home
+          if (vagrantSession.room_id) navigate(`/focus/${vagrantSession.room_id}`);
+          else navigate("/focus");
+        }
+      } catch (err) {
+        setFocusBanner(`leave failed: ${err.message}`);
+      }
+    });
+  });
+}
+
+// Join picker — lists active rooms NOT already joined; calling join routes
+// the vagrant voice agent in as a participant (the manager-as-proxy model).
+document.getElementById("focus-join-toggle").addEventListener("click", async () => {
+  const picker = document.getElementById("focus-join-picker");
+  const sel = document.getElementById("focus-join-select");
+  picker.hidden = false;
+  sel.innerHTML = "<option value=''>loading…</option>";
+  try {
+    const r = await api("GET", "/rooms?status=active");
+    sel.innerHTML = "";
+    const joined = new Set(focusJoinedRooms);
+    let count = 0;
+    for (const room of (r.rooms || [])) {
+      if (joined.has(room.id)) continue;
+      const opt = document.createElement("option");
+      opt.value = room.id;
+      opt.textContent = `${room.id}${room.topic ? " — " + room.topic : ""}`;
+      sel.appendChild(opt);
+      count++;
+    }
+    if (!count) sel.innerHTML = "<option value=''>no other active rooms</option>";
+  } catch (e) {
+    sel.innerHTML = `<option value=''>error: ${esc(e.message)}</option>`;
+  }
+});
+document.getElementById("focus-join-cancel").addEventListener("click", () => {
+  document.getElementById("focus-join-picker").hidden = true;
+});
+document.getElementById("focus-join-confirm").addEventListener("click", async () => {
+  const rid = document.getElementById("focus-join-select").value;
+  if (!rid) return;
+  try {
+    await api("POST", `/voice/rooms/${encodeURIComponent(rid)}/join`);
+    document.getElementById("focus-join-picker").hidden = true;
+    await refreshFocusRail();
+    navigate(`/focus/${rid}`);
+  } catch (e) {
+    setFocusBanner(`join failed: ${e.message}`);
+  }
+});
+
+async function focusOnRoom(roomId) {
+  if (focusRoomId === roomId && focusWs && focusWs.readyState === 1) return;
+  focusRoomId = roomId;
+  focusEarliestTs = null;
+  document.getElementById("focus-room-title").textContent = roomId;
+  document.getElementById("focus-transcript").innerHTML = "";
+  renderFocusRail();
+  setFocusComposerEnabled(true);
+  closeFocusWs();
+  await refreshFocusAgents();
+  openFocusWs(roomId);
+  notifyVoiceFocusChange();
+}
+
+function setFocusBanner(text) {
+  const el = document.getElementById("focus-room-banner");
+  if (el) el.textContent = text;
+}
+
+function setFocusComposerEnabled(yes) {
+  document.getElementById("focus-post-body").disabled = !yes;
+  document.getElementById("focus-post-send").disabled = !yes;
+}
+
+function openFocusWs(roomId) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/rooms/${encodeURIComponent(roomId)}/attach`;
+  focusWs = new WebSocket(url);
+  focusWs.onopen = () => {
+    setFocusBanner(`attached`);
+    focusWsBackoff = 1000;
+  };
+  focusWs.onmessage = (e) => {
+    try { handleFocusEvent(JSON.parse(e.data)); } catch {}
+  };
+  focusWs.onclose = (ev) => {
+    setFocusBanner(`disconnected (${ev.code}); reconnecting…`);
+    if (focusRoomId === roomId) {
+      setTimeout(() => openFocusWs(roomId), focusWsBackoff);
+      focusWsBackoff = Math.min(focusWsBackoff * 2, 15000);
+    }
+  };
+  focusWs.onerror = () => setFocusBanner("ws error");
+}
+
+function closeFocusWs() {
+  if (focusWs) { try { focusWs.close(); } catch {} focusWs = null; }
+}
+
+// Recent posts buffer + fan-out grouping. When the UI sends N addressed
+// posts (one per worker), we collapse them in the transcript into one
+// "→ workers" group so the user sees a single intent instead of N rows.
+const FANOUT_WINDOW_MS = 2500;
+let pendingFanout = null; // { author, body, ts, scopes:Set, el }
+
+function handleFocusEvent(ev) {
+  switch (ev.type) {
+    case "history":
+      for (const p of ev.posts) renderFocusPost(p, false);
+      break;
+    case "post":
+      renderFocusPost(ev.post, false);
+      break;
+    case "participant_joined":
+    case "participant_left":
+      refreshFocusAgents();
+      break;
+    case "room_closed":
+      setFocusBanner(`closed @ ${ev.ts}`);
+      break;
+    case "error":
+      setFocusBanner(`server: ${ev.message}`);
+      break;
+  }
+}
+
+function renderFocusPost(p, prepend) {
+  const t = document.getElementById("focus-transcript");
+  if (!t) return;
+  if (!earliestTrack(p)) {
+    /* track only */
+  }
+
+  // Fan-out collapse: same author + same body + recent → group into one card.
+  if (!prepend && p.kind === "text" && pendingFanout
+      && pendingFanout.body === p.body
+      && pendingFanout.author === p.author
+      && (Date.now() - pendingFanout.startedAt) < FANOUT_WINDOW_MS) {
+    pendingFanout.scopes.add(extractToScope(p) || "?");
+    updateFanoutGroup(pendingFanout);
+    return;
+  }
+
+  const div = document.createElement("div");
+  div.className = `post kind-${p.kind || "text"}`;
+  div.innerHTML =
+    `<span class="author">${esc(p.author)}</span>` +
+    `<span class="ts">${esc(p.ts || "")}</span>` +
+    `<div>${esc(p.body || "")}</div>`;
+  if (prepend) t.insertBefore(div, t.firstChild);
+  else { t.appendChild(div); t.scrollTop = t.scrollHeight; }
+}
+
+function earliestTrack(p) {
+  if (!focusEarliestTs || (p.ts && p.ts < focusEarliestTs)) focusEarliestTs = p.ts;
+  return true;
+}
+
+function extractToScope(/* p */) {
+  // Server-side broadcast doesn't tag the post with the to_scope, so we
+  // can't reconstruct fan-out destinations from the transcript alone.
+  // Reserved hook for future server enrichment; for now we just count.
+  return null;
+}
+
+function updateFanoutGroup(g) {
+  const headSpan = g.el.querySelector(".fanout-head");
+  if (headSpan) {
+    headSpan.textContent =
+      `${g.author} → ${g.scopes.size} recipients`;
+  }
+}
+
+function beginFanoutGroup(author, body, scopes) {
+  // Render a single collapsed card for the upcoming N posts.
+  const t = document.getElementById("focus-transcript");
+  const div = document.createElement("div");
+  div.className = "fanout-group";
+  div.innerHTML =
+    `<div class="fanout-head">${esc(author)} → ${scopes.length} recipients</div>` +
+    `<div>${esc(body)}</div>` +
+    `<div class="topic" style="margin-top:2px">to: ${esc(scopes.join(", "))}</div>`;
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+  pendingFanout = {
+    author, body, scopes: new Set(scopes),
+    startedAt: Date.now(),
+    el: div,
+  };
+  setTimeout(() => { if (pendingFanout && pendingFanout.el === div) pendingFanout = null; },
+            FANOUT_WINDOW_MS + 500);
+}
+
+async function refreshFocusAgents() {
+  const out = document.getElementById("focus-agents-list");
+  if (!focusRoomId) {
+    out.innerHTML = `<em style="font-size:11px;color:#9ca3af">no room focused</em>`;
+    renderFocusRecipient();
+    return;
+  }
+  out.innerHTML = "<em style='font-size:11px;color:#9ca3af'>loading…</em>";
+  try {
+    const r = await api("GET", `/rooms/${encodeURIComponent(focusRoomId)}/agents`);
+    focusAgents = r.agents || [];
+    out.innerHTML = "";
+    for (const a of focusAgents) {
+      const card = document.createElement("div");
+      const isManager = a.scope === vagrantSession.scope_identifier;
+      card.className = "agent-card" + (isManager ? " manager" : "");
+      const live = a.live;
+      const liveTxt = live
+        ? `${esc(live.status || "?")} · ${esc(live.model || "default")}`
+        : `<em>${a.kind === "shadow_peer" ? "remote" : "—"}</em>`;
+      card.innerHTML =
+        `<div class="scope">` +
+          esc(a.scope) +
+          (isManager ? `<span class="manager-tag">manager</span>` : "") +
+        `</div>` +
+        `<div style="color:#6b7280;font-size:10px;margin-top:2px">${liveTxt}</div>`;
+      out.appendChild(card);
+    }
+    if (!focusAgents.length) {
+      out.innerHTML = "<em style='font-size:11px;color:#9ca3af'>no agents</em>";
+    }
+  } catch (e) {
+    out.innerHTML = `<span class="err" style="font-size:11px">${esc(e.message)}</span>`;
+    focusAgents = [];
+  }
+  renderFocusRecipient();
+}
+
+function nonManagerScopes() {
+  return focusAgents
+    .filter(a => a.scope !== vagrantSession.scope_identifier && a.kind !== "shadow_peer")
+    .map(a => a.scope);
+}
+
+function defaultRecipientKey() {
+  // In vagrant home: address the manager.
+  // Elsewhere: address all workers.
+  if (!focusRoomId) return null;
+  if (isVagrantRoom(focusRoomId)) return "manager";
+  return nonManagerScopes().length ? "all-workers" : "manager";
+}
+
+function activeRecipientKey() {
+  if (!focusRoomId) return null;
+  let key = getRecipientChoice(focusRoomId) || defaultRecipientKey();
+  // Validate the persisted key still refers to a present scope.
+  if (key && key.startsWith("scope:")) {
+    const ident = key.slice("scope:".length);
+    if (!focusAgents.some(a => a.scope === ident)) {
+      key = defaultRecipientKey();
+    }
+  }
+  if (key === "all-workers" && !nonManagerScopes().length) key = "manager";
+  return key;
+}
+
+function renderFocusRecipient() {
+  const box = document.getElementById("focus-recipient");
+  const hint = document.getElementById("focus-recipient-hint");
+  box.innerHTML = "";
+  if (!focusRoomId) {
+    box.innerHTML = `<em style="font-size:11px;color:#9ca3af">no room focused</em>`;
+    hint.textContent = "→ ?";
+    return;
+  }
+  const choices = [];
+  const workers = nonManagerScopes();
+  if (workers.length) {
+    choices.push({
+      key: "all-workers",
+      label: `all workers`,
+      badgeClass: "workers",
+      badge: `${workers.length}`,
+    });
+  }
+  // Manager option: only meaningful if vagrant agent is in the room.
+  const hasManager = focusAgents.some(a => a.scope === vagrantSession.scope_identifier);
+  if (hasManager || isVagrantRoom(focusRoomId)) {
+    choices.push({
+      key: "manager",
+      label: `manager`,
+      badgeClass: "manager",
+      badge: "vagrant",
+    });
+  }
+  for (const ident of workers) {
+    choices.push({
+      key: `scope:${ident}`,
+      label: ident,
+    });
+  }
+
+  const activeKey = activeRecipientKey();
+
+  for (const c of choices) {
+    const lbl = document.createElement("label");
+    const variantClass =
+      c.key === "manager" ? "manager-chip" :
+      c.key === "all-workers" ? "workers" : "";
+    const isChecked = c.key === activeKey;
+    lbl.className = "chip" +
+      (variantClass ? ` ${variantClass}` : "") +
+      (isChecked ? " checked" : "");
+    lbl.innerHTML =
+      `<input type="radio" name="focus-recip" value="${esc(c.key)}" ${isChecked ? "checked" : ""}/>` +
+      `<span class="chip-label">${esc(c.label)}</span>` +
+      (c.badge ? `<span class="badge">${esc(c.badge)}</span>` : "");
+    lbl.querySelector("input").addEventListener("change", () => {
+      setRecipientChoice(focusRoomId, c.key);
+      renderFocusRecipient(); // re-render to update checked styling
+      updateRecipientHint();
+      notifyVoiceFocusChange();
+    });
+    box.appendChild(lbl);
+  }
+  if (!choices.length) {
+    box.innerHTML = `<em style="font-size:11px;color:#9ca3af">no recipients yet</em>`;
+  }
+  updateRecipientHint();
+}
+
+function updateRecipientHint() {
+  const hint = document.getElementById("focus-recipient-hint");
+  const k = activeRecipientKey();
+  hint.className = "recipient-hint";
+  if (!k) { hint.textContent = "→ no recipient"; hint.classList.add("empty"); return; }
+  if (k === "manager") {
+    hint.textContent = "→ manager";
+    hint.classList.add("manager");
+  } else if (k === "all-workers") {
+    hint.textContent = `→ all workers · ${nonManagerScopes().length}`;
+  } else if (k.startsWith("scope:")) {
+    hint.textContent = `→ ${k.slice(6)}`;
+  } else {
+    hint.textContent = "→ ?";
+    hint.classList.add("empty");
+  }
+}
+
+// Compose + send. Resolves the active recipient and either posts once
+// addressed (manager / single scope) or fans out N times (all workers).
+async function sendFocusPost() {
+  const bodyEl = document.getElementById("focus-post-body");
+  const body = bodyEl.value;
+  if (!body.trim() || !focusRoomId) return;
+  const key = activeRecipientKey();
+  if (!key) { setFocusBanner("no recipient"); return; }
+  bodyEl.value = "";
+
+  let targets = [];
+  if (key === "manager") {
+    if (vagrantSession.scope_identifier) targets = [vagrantSession.scope_identifier];
+    else { setFocusBanner("manager scope unknown"); return; }
+  } else if (key === "all-workers") {
+    targets = nonManagerScopes();
+    if (!targets.length) { setFocusBanner("no workers in this room"); return; }
+  } else if (key.startsWith("scope:")) {
+    targets = [key.slice(6)];
+  }
+
+  // Fan-out grouping for transcript prettification (>1 recipient).
+  if (targets.length > 1) {
+    beginFanoutGroup(`user:${cfg.as.replace(/^user:/, "")}`, body, targets);
+  }
+
+  const errs = [];
+  await Promise.all(targets.map(async (scope) => {
+    try {
+      await api("POST", `/rooms/${encodeURIComponent(focusRoomId)}/posts`,
+                { body, kind: "text", to: `scope:${scope}` });
+    } catch (e) {
+      errs.push(`${scope}: ${e.message}`);
+    }
+  }));
+  if (errs.length) setFocusBanner(`send errors: ${errs.join("; ")}`);
+  else setFocusBanner("");
+}
+
+document.getElementById("focus-post-send").addEventListener("click", sendFocusPost);
+document.getElementById("focus-post-body").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendFocusPost(); }
+});
+
+// Notify the voice panel (lives in voice-panel.js) that focus state
+// changed. The voice panel will forward this over its /voice/ws so the
+// voice agent knows where to direct its room_post tool calls.
+function notifyVoiceFocusChange() {
+  const detail = {
+    room_id: focusRoomId,
+    recipient: buildRecipientDescriptor(),
+  };
+  window.dispatchEvent(new CustomEvent("awm-focus-change", { detail }));
+}
+
+function buildRecipientDescriptor() {
+  if (!focusRoomId) return null;
+  const key = activeRecipientKey();
+  if (!key) return null;
+  if (key === "manager") {
+    return { kind: "scope", scopes: vagrantSession.scope_identifier
+              ? [vagrantSession.scope_identifier] : [] };
+  }
+  if (key === "all-workers") {
+    return { kind: "all-workers", scopes: nonManagerScopes() };
+  }
+  if (key.startsWith("scope:")) {
+    return { kind: "scope", scopes: [key.slice(6)] };
+  }
+  return null;
+}
+
+// Periodic agent refresh (catches model/effort changes, new participants).
+setInterval(() => {
+  if (focusRoomId && document.getElementById("tab-focus") &&
+      !document.getElementById("tab-focus").hidden) {
+    refreshFocusAgents();
+  }
+}, 5000);
+
+// ---------------------------------------------------------------------------
 // Nav clicks
 // ---------------------------------------------------------------------------
 
@@ -945,6 +1833,9 @@ document.querySelectorAll("nav a[data-tab]").forEach(a => {
     e.preventDefault();
     const tab = a.dataset.tab;
     if (tab === "status") navigate("/status");
+    else if (tab === "focus") {
+      navigate(focusRoomId ? `/focus/${focusRoomId}` : "/focus");
+    }
     else if (tab === "rooms") navigate("/rooms");
     else if (tab === "room" && currentRoomId) navigate(`/room/${currentRoomId}`);
   });
@@ -955,16 +1846,20 @@ document.querySelectorAll("nav a[data-tab]").forEach(a => {
 // ---------------------------------------------------------------------------
 
 async function bootstrapVagrantSession() {
-  // First connect: provision a vagrant scope + default room on the host
-  // peer and land in it. If the hash already pins a specific route, leave
-  // it alone — reloads keep the user where they were.
-  if (location.hash && location.hash !== "#" && location.hash !== "#/status") {
-    return;
-  }
+  // Always provision the vagrant scope + default room and remember its
+  // identifier so the focus tab can pin it. If the hash doesn't already
+  // pin a specific route, land on #/focus/<vagrant_room>.
   try {
     const r = await api("POST", "/vagrant/session");
     if (r && r.room_id) {
-      navigate(`/room/${r.room_id}`);
+      vagrantSession = {
+        room_id: r.room_id,
+        scope_identifier: r.scope_identifier || null,
+      };
+      const hash = location.hash;
+      if (!hash || hash === "#" || hash === "#/status") {
+        navigate(`/focus/${r.room_id}`);
+      }
     }
   } catch (err) {
     // Server may not be bootstrapped yet (`awm vagrant-init` not run).

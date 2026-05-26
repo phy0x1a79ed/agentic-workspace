@@ -388,7 +388,15 @@
     const qs = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
     ws = new WebSocket(`${proto}//${location.host}/voice/ws${qs}`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { setConn("ok", "connected"); wsBackoff = 1000; };
+    ws.onopen = () => {
+      setConn("ok", "connected");
+      wsBackoff = 1000;
+      // Re-establish focus context after any reconnect.
+      if (lastFocusFrame) {
+        try { ws.send(JSON.stringify({ type: "focus", ...lastFocusFrame })); }
+        catch {}
+      }
+    };
     ws.onclose = (ev) => {
       setConn("err", `disconnected (${ev.code})`);
       setTimeout(connectWs, wsBackoff);
@@ -567,6 +575,33 @@
     try { await api("POST", `/voice/rooms/${encodeURIComponent(roomId)}/leave`); }
     catch (e) { appendLine("error", e.message); }
   }
+
+  // ---- Focus frame (forwarded from the focus tab) -------------------------
+  //
+  // The control-center focus tab dispatches `awm-focus-change` whenever
+  // the focused room or recipient changes. We forward that to the voice
+  // session over /voice/ws so the voice agent knows where to direct
+  // its room_post tool calls (manager / specific worker / all workers).
+  // We also resend the last known focus on every reconnect so the
+  // agent's context isn't lost after a server restart or network blip.
+
+  let lastFocusFrame = null;
+
+  function sendFocusFrame(frame) {
+    lastFocusFrame = frame;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: "focus", ...frame })); }
+      catch {}
+    }
+  }
+
+  window.addEventListener("awm-focus-change", (e) => {
+    if (!e || !e.detail) return;
+    sendFocusFrame({
+      room_id: e.detail.room_id || null,
+      recipient: e.detail.recipient || null,
+    });
+  });
 
   // ---- Boot ---------------------------------------------------------------
 
