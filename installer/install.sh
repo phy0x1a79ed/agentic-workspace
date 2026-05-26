@@ -9,10 +9,13 @@
 # travels in the curl invocation (or pre-set in the environment).
 set -e
 
+OS="$(uname -s)"
 ARCH="$(uname -m)"
-case "$ARCH" in
-    x86_64|amd64) ASSET="probe-linux-x86_64" ;;
-    *) printf 'probe: unsupported arch %s (v1 is linux-x86_64 only)\n' "$ARCH" >&2; exit 1 ;;
+case "$OS-$ARCH" in
+    Linux-x86_64|Linux-amd64)    ASSET="probe-linux-x86_64" ;;
+    Darwin-x86_64)               ASSET="probe-darwin-x86_64" ;;
+    Darwin-arm64|Darwin-aarch64) ASSET="probe-darwin-aarch64" ;;
+    *) printf 'probe: unsupported os/arch %s/%s\n' "$OS" "$ARCH" >&2; exit 1 ;;
 esac
 
 NAME="${1:-}"
