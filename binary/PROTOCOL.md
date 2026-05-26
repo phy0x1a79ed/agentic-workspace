@@ -10,6 +10,20 @@ Two layers:
 
 Once the data channel is open, the broker is no longer in the data path.
 
+### MQTT-relay fallback (UDP-blocked friends)
+
+Some environments block all outbound UDP (HPC nodes, restrictive corporate
+egress). WebRTC cannot work in those: the data channel rides DTLS-over-UDP
+even when TURN is in use, and the current webrtc-rs (0.11 / 0.13) does not
+implement TURN-over-TCP relay gathering — `agent_gather.rs` explicitly
+warns "Unable to handle URL" for any `?transport=tcp` URL.
+
+When both ends are launched with `--mqtt-relay`, layer 2 is replaced: the
+same Frame JSON is published on `probe/<name>/from-{friend,operator}/data`
+topics on the EMQX broker. The protocol is otherwise identical (same Frame
+enum, same id/exit semantics). Trade-off: the broker sees command output;
+no P2P privacy. Use only where WebRTC is infeasible.
+
 ---
 
 ## Signaling (MQTT)
@@ -22,10 +36,12 @@ user, e.g. `mybox`, `alice-laptop`, `test-7f3a`). Topics:
 | friend publishes | `probe/<name>/from-friend/sdp`         | SDP answer                    |
 | friend publishes | `probe/<name>/from-friend/ice`         | one ICE candidate per message |
 | friend publishes | `probe/<name>/from-friend/bye`         | graceful teardown signal      |
+| friend publishes | `probe/<name>/from-friend/data`        | data frame (mqtt-relay only)  |
 | operator publishes | `probe/<name>/from-operator/turn`    | ICE server config (optional)  |
 | operator publishes | `probe/<name>/from-operator/sdp`     | SDP offer                     |
 | operator publishes | `probe/<name>/from-operator/ice`     | one ICE candidate per message |
 | operator publishes | `probe/<name>/from-operator/bye`     | graceful teardown signal      |
+| operator publishes | `probe/<name>/from-operator/data`    | data frame (mqtt-relay only)  |
 
 All messages: **QoS 1, no retain**.
 

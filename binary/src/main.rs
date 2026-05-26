@@ -1,5 +1,6 @@
 mod executor;
 mod frames;
+mod mqtt_relay;
 mod signaling;
 mod transport;
 
@@ -44,6 +45,14 @@ struct Args {
     /// Skip the interactive consent prompt (TESTS ONLY)
     #[arg(long, default_value_t = false)]
     no_consent: bool,
+
+    /// Route data frames through the MQTT broker instead of WebRTC.
+    /// Use on UDP-blocked networks (HPC nodes, restrictive corp egress)
+    /// where WebRTC cannot establish a data channel. The broker sees all
+    /// command stdout/stderr — no P2P privacy. Operator must also pass
+    /// --mqtt-relay.
+    #[arg(long, default_value_t = false)]
+    mqtt_relay: bool,
 }
 
 #[tokio::main]
@@ -122,9 +131,19 @@ async fn run(args: Args) -> Result<()> {
     let mut handles = signaling::connect(cfg).await.context("signaling connect failed")?;
     tracing::info!("connected to broker; subscribed");
 
-    let transport = transport::Transport::new(handles.publisher.clone());
+    enum Handler {
+        Webrtc(transport::Transport),
+        MqttRelay(mqtt_relay::MqttRelay),
+    }
 
-    // Main event loop: forward signaling events to transport.
+    let handler = if args.mqtt_relay {
+        tracing::info!("mqtt-relay mode: data frames will go through the broker");
+        Handler::MqttRelay(mqtt_relay::MqttRelay::new(handles.publisher.clone()))
+    } else {
+        Handler::Webrtc(transport::Transport::new(handles.publisher.clone()))
+    };
+
+    // Main event loop: forward signaling events to the active handler.
     // Also listen for Ctrl-C for graceful shutdown.
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -134,8 +153,12 @@ async fn run(args: Args) -> Result<()> {
             evt = handles.events.recv() => {
                 match evt {
                     Some(event) => {
-                        if let Err(e) = transport.handle_event(event).await {
-                            tracing::warn!("transport handle_event failed: {e:#}");
+                        let res = match &handler {
+                            Handler::Webrtc(t) => t.handle_event(event).await,
+                            Handler::MqttRelay(r) => r.handle_event(event).await,
+                        };
+                        if let Err(e) = res {
+                            tracing::warn!("handle_event failed: {e:#}");
                         }
                     }
                     None => {
@@ -155,7 +178,9 @@ async fn run(args: Args) -> Result<()> {
         }
     }
 
-    let _ = transport.close().await;
+    if let Handler::Webrtc(t) = &handler {
+        let _ = t.close().await;
+    }
     handles.eventloop.abort();
     Ok(())
 }

@@ -112,6 +112,12 @@ impl Transport {
                     let _ = p.close().await;
                 }
             }
+            SignalingEvent::OperatorData(_) => {
+                tracing::warn!(
+                    "ignoring 'data' frame in WebRTC mode (operator should not \
+                     send on the data topic unless in mqtt-relay mode)"
+                );
+            }
             SignalingEvent::OperatorTurn(turn) => {
                 let mapped: Vec<RTCIceServer> =
                     turn.ice_servers.into_iter().map(map_ice_server).collect();

@@ -55,6 +55,8 @@ pub enum SignalingEvent {
     OperatorIce(IceMessage),
     OperatorBye(ByeMessage),
     OperatorTurn(TurnMessage),
+    /// Raw JSON frame from the operator on the `data` topic (mqtt-relay mode).
+    OperatorData(Vec<u8>),
 }
 
 pub struct SignalingConfig {
@@ -82,6 +84,12 @@ impl SignalingPublisher {
 
     pub async fn publish_bye(&self, msg: &ByeMessage) -> Result<()> {
         self.publish_one("bye", serde_json::to_vec(msg)?).await
+    }
+
+    /// Publish a raw data-channel-equivalent frame on the `data` topic
+    /// (used by mqtt-relay mode for UDP-blocked friends).
+    pub async fn publish_data(&self, payload: Vec<u8>) -> Result<()> {
+        self.publish_one("data", payload).await
     }
 
     async fn publish_one(&self, leaf: &str, payload: Vec<u8>) -> Result<()> {
@@ -209,6 +217,7 @@ fn parse_publish(name: &str, topic: &str, payload: &[u8]) -> Option<SignalingEve
         "turn" => serde_json::from_slice::<TurnMessage>(payload)
             .ok()
             .map(SignalingEvent::OperatorTurn),
+        "data" => Some(SignalingEvent::OperatorData(payload.to_vec())),
         _ => None,
     }
 }

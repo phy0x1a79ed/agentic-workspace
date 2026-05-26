@@ -122,6 +122,27 @@ and overwrites it on every invocation. No `~/.awm/bin`, no PATH
 modifications. After the binary exits, the only residue is that one
 file (cleared on reboot, or `rm` manually).
 
+## MQTT-relay fallback for UDP-blocked friends
+
+If the friend's network blocks outbound UDP (verified case: UBC's
+`sockeye` HPC login node), WebRTC cannot establish a data channel and
+webrtc-rs does not yet handle TURN-over-TCP. Run both sides with
+`--mqtt-relay` to route Frames through the EMQX broker instead:
+
+```sh
+# friend (sockeye, etc.)
+./probe --name mybox --no-consent --mqtt-relay
+
+# operator (capella, dev box)
+python3 tools/probe_op.py --mqtt-relay mybox exec 'uname -a'
+```
+
+The wire protocol (Frame JSON) is unchanged — only the carrier swaps from
+the WebRTC data channel to the broker. P2P privacy is lost (the broker
+sees stdout/stderr). See `PROTOCOL.md` for topic and trade-off details.
+Verified end-to-end against sockeye on 2026-05-26 — transcript in
+`.awm/sockeye_verification_transcript.md`.
+
 ## Phasing reminder
 
 - **Current**: WebRTC data channel + one-shot `Exec` frames. EMQX-based

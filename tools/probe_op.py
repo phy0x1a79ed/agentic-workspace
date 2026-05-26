@@ -66,6 +66,10 @@ def parse_args() -> argparse.Namespace:
                    help="Cloudflare API token (or CF_TURN_API_TOKEN env)")
     p.add_argument("--no-turn", action="store_true",
                    help="Skip TURN minting even if creds are present (STUN only)")
+    p.add_argument("--mqtt-relay", action="store_true",
+                   help="Route frames through the MQTT broker instead of WebRTC. "
+                        "Use on UDP-blocked friends (HPC, restrictive corp). "
+                        "Probe binary must also be started with --mqtt-relay.")
     p.add_argument("--timeout", type=float, default=30.0,
                    help="exec deadline in seconds")
     p.add_argument("--connect-timeout", type=float, default=20.0,
@@ -388,6 +392,139 @@ class Session:
             await self.pc.close()
 
 
+class RelaySession:
+    """MQTT-relay equivalent of Session — no WebRTC, frames ride on
+    `probe/<name>/from-{role}/data` topics.
+
+    Mirrors the public surface of Session (channel_open, connection_dead,
+    exec_one, send_bye, close) so repl() and exec mode don't have to care
+    which transport they're talking to.
+    """
+
+    def __init__(self, args: argparse.Namespace, mqtt: aiomqtt.Client,
+                 stream_to_stdio: bool = True):
+        self.args = args
+        self.mqtt = mqtt
+        self.channel_open = asyncio.Event()
+        self.connection_dead = asyncio.Event()
+        self.next_id = 0
+        self.in_flight: dict = {}
+        self.stream_to_stdio = stream_to_stdio
+        self._reader_task: asyncio.Task | None = None
+
+    async def setup_pc(self):
+        # Subscribe to the friend's data + bye topics. No PC to build —
+        # the moment we have a subscription we can publish exec frames.
+        await self.mqtt.subscribe(f"probe/{self.args.name}/from-friend/+")
+        self.channel_open.set()
+        logger.info("mqtt-relay subscribed; channel_open set")
+
+    async def signaling_listener(self):
+        async for message in self.mqtt.messages:
+            topic = message.topic.value
+            leaf = topic.rsplit("/", 1)[-1]
+            if leaf == "data":
+                try:
+                    frame = json.loads(message.payload.decode())
+                except Exception as e:
+                    logger.warning("bad data frame on %s: %s", topic, e)
+                    continue
+                self._on_frame_dict(frame)
+            elif leaf == "bye":
+                try:
+                    payload = json.loads(message.payload.decode())
+                except Exception:
+                    payload = {}
+                logger.info("friend sent bye: %s", payload.get("reason"))
+                self.connection_dead.set()
+                return
+            elif leaf in ("sdp", "ice"):
+                # friend should not be sending these in relay mode; ignore
+                logger.warning("ignoring %s on %s in relay mode", leaf, topic)
+            else:
+                logger.warning("unknown leaf: %s", leaf)
+
+    def _on_frame_dict(self, frame: dict):
+        ftype = frame.get("type")
+        fid = frame.get("id")
+        entry = self.in_flight.get(fid)
+        if ftype == "stdout":
+            data = base64.b64decode(frame["data"])
+            if entry is not None:
+                entry["stdout"].extend(data)
+            if self.stream_to_stdio:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+        elif ftype == "stderr":
+            data = base64.b64decode(frame["data"])
+            if entry is not None:
+                entry["stderr"].extend(data)
+            if self.stream_to_stdio:
+                sys.stderr.buffer.write(data)
+                sys.stderr.buffer.flush()
+        elif ftype == "exit":
+            if entry is not None:
+                entry["code"] = frame.get("code") if frame.get("code") is not None else 0
+                entry["event"].set()
+        elif ftype == "error":
+            msg = frame.get("message", "")
+            if entry is not None:
+                entry["stderr"].extend(f"[probe error] {msg}\n".encode())
+                entry["code"] = 127
+                entry["event"].set()
+            elif self.stream_to_stdio:
+                sys.stderr.write(f"[probe error] {msg}\n")
+        else:
+            logger.warning("unexpected frame type: %s", ftype)
+
+    async def send_offer(self):
+        # No-op in relay mode (kept for API parity with Session).
+        return
+
+    def _alloc_id(self) -> int:
+        self.next_id += 1
+        return self.next_id
+
+    async def exec_one(self, cmd: str, timeout: float) -> tuple[int, bytes, bytes]:
+        fid = self._alloc_id()
+        entry = {
+            "event": asyncio.Event(),
+            "code": 1,
+            "stdout": bytearray(),
+            "stderr": bytearray(),
+        }
+        self.in_flight[fid] = entry
+        payload = json.dumps({"type": "exec", "id": fid, "cmd": cmd}).encode()
+        topic = f"probe/{self.args.name}/from-operator/data"
+        await self.mqtt.publish(topic, payload, qos=1)
+        try:
+            await asyncio.wait_for(entry["event"].wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            msg = f"[operator] timeout after {timeout}s\n".encode()
+            entry["stderr"].extend(msg)
+            if self.stream_to_stdio:
+                sys.stderr.buffer.write(msg)
+            entry["code"] = 124
+        finally:
+            self.in_flight.pop(fid, None)
+        return entry["code"], bytes(entry["stdout"]), bytes(entry["stderr"])
+
+    async def send_bye(self):
+        topic = f"probe/{self.args.name}/from-operator/bye"
+        try:
+            await self.mqtt.publish(
+                topic,
+                json.dumps({"reason": "operator finished"}).encode(),
+                qos=1,
+            )
+        except Exception:
+            pass
+
+    async def close(self):
+        # Nothing to tear down — the aiomqtt context exits cleanly.
+        return
+
+
 async def repl(session: Session):
     sys.stderr.write(f"[connected to {session.args.name}] Ctrl-D to exit\n")
     loop = asyncio.get_event_loop()
@@ -447,7 +584,10 @@ async def amain() -> int:
         client_kwargs["websocket_path"] = path
 
     async with aiomqtt.Client(**client_kwargs) as mqtt:
-        session = Session(args, mqtt)
+        if args.mqtt_relay:
+            session = RelaySession(args, mqtt)
+        else:
+            session = Session(args, mqtt)
         await session.setup_pc()
 
         sig_task = asyncio.create_task(session.signaling_listener())
@@ -468,9 +608,8 @@ async def amain() -> int:
                 return 3
 
             if session.connection_dead.is_set():
-                sys.stderr.write(
-                    f"[operator] pc state {session.pc.connectionState}\n"
-                )
+                state = getattr(getattr(session, "pc", None), "connectionState", "n/a")
+                sys.stderr.write(f"[operator] pc state {state}\n")
                 return 4
 
             if args.mode == "exec":
