@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import urllib.request
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -32,7 +33,9 @@ from aiortc.sdp import candidate_from_sdp
 
 logger = logging.getLogger("operator")
 
-ENV_FILE = Path(__file__).resolve().parent / ".env.emqx"
+ENV_FILE = Path(__file__).resolve().parent / ".env.probe"
+CF_TURN_ENDPOINT = "https://rtc.live.cloudflare.com/v1/turn/keys/{key_id}/credentials/generate"
+CF_TURN_TTL_SECS = 600
 
 
 def load_env_file(path: Path) -> dict:
@@ -57,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mqtt-url", default=None)
     p.add_argument("--mqtt-user", default=None)
     p.add_argument("--mqtt-pass", default=None)
+    p.add_argument("--cf-turn-id", default=None,
+                   help="Cloudflare TURN key ID (or CF_TURN_TOKEN_ID env)")
+    p.add_argument("--cf-turn-token", default=None,
+                   help="Cloudflare API token (or CF_TURN_API_TOKEN env)")
+    p.add_argument("--no-turn", action="store_true",
+                   help="Skip TURN minting even if creds are present (STUN only)")
     p.add_argument("--timeout", type=float, default=30.0,
                    help="exec deadline in seconds")
     p.add_argument("--connect-timeout", type=float, default=20.0,
@@ -68,6 +77,8 @@ def parse_args() -> argparse.Namespace:
     args.mqtt_url = args.mqtt_url or os.environ.get("EMQX_URL") or env.get("EMQX_URL")
     args.mqtt_user = args.mqtt_user or os.environ.get("EMQX_USER") or env.get("EMQX_USER")
     args.mqtt_pass = args.mqtt_pass or os.environ.get("EMQX_PASS") or env.get("EMQX_PASS")
+    args.cf_turn_id = args.cf_turn_id or os.environ.get("CF_TURN_TOKEN_ID") or env.get("CF_TURN_TOKEN_ID")
+    args.cf_turn_token = args.cf_turn_token or os.environ.get("CF_TURN_API_TOKEN") or env.get("CF_TURN_API_TOKEN")
 
     missing = [
         name for name, val in [
@@ -79,13 +90,55 @@ def parse_args() -> argparse.Namespace:
     if missing:
         p.error(
             f"missing EMQX config: {', '.join(missing)}\n"
-            f"set in env or {ENV_FILE} (see .env.emqx.example)"
+            f"set in env or {ENV_FILE} (see .env.probe.example)"
         )
     return args
 
 
+def mint_cf_turn(key_id: str, api_token: str, ttl: int = CF_TURN_TTL_SECS, timeout: float = 10.0) -> list[dict]:
+    """POST to Cloudflare; return a list of RTCIceServer-shape dicts.
+
+    CF returns one server object with mixed stun:/turn:/turns: URLs and a
+    single username+credential pair. webrtc-rs rejects entries that mix
+    stun: with turn: (credentials are required for turn but forbidden for
+    stun), so we split into two entries: one stun-only without credentials,
+    one turn-only with the CF credentials.
+
+    Raises urllib.error.HTTPError / URLError on failure — caller decides
+    whether to fall back to STUN-only.
+    """
+    req = urllib.request.Request(
+        CF_TURN_ENDPOINT.format(key_id=key_id),
+        data=json.dumps({"ttl": ttl}).encode(),
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+            # CF's edge 403s the default "Python-urllib/X.Y" UA; spoofing a
+            # named client is the documented workaround.
+            "User-Agent": "probe-operator/0.0.1",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read())
+    raw = body["iceServers"]
+    stun_urls = [u for u in raw["urls"] if u.startswith("stun:")]
+    turn_urls = [u for u in raw["urls"] if u.startswith(("turn:", "turns:"))]
+    servers: list[dict] = []
+    if stun_urls:
+        servers.append({"urls": stun_urls})
+    if turn_urls:
+        servers.append({
+            "urls": turn_urls,
+            "username": raw["username"],
+            "credential": raw["credential"],
+        })
+    return servers
+
+
 class Session:
-    def __init__(self, args: argparse.Namespace, mqtt: aiomqtt.Client):
+    def __init__(self, args: argparse.Namespace, mqtt: aiomqtt.Client,
+                 stream_to_stdio: bool = True):
         self.args = args
         self.mqtt = mqtt
         self.pc: RTCPeerConnection | None = None
@@ -94,11 +147,17 @@ class Session:
         self.connection_dead = asyncio.Event()
         self.next_id = 0
         self.in_flight: dict = {}
+        # When False, stdout/stderr frames are only buffered into the in_flight
+        # entry (caller reads them via exec_one's return value). Tests use this
+        # so they can assert on the bytes without scraping a subprocess pipe.
+        self.stream_to_stdio = stream_to_stdio
+        self._published_candidates: set[str] = set()
 
     async def setup_pc(self):
-        config = RTCConfiguration(iceServers=[
-            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
-        ])
+        ice_servers, turn_payload = self._build_ice_servers()
+        if turn_payload is not None:
+            await self._publish_turn(turn_payload)
+        config = RTCConfiguration(iceServers=ice_servers)
         self.pc = RTCPeerConnection(configuration=config)
         self.channel = self.pc.createDataChannel("ctrl")
 
@@ -123,6 +182,50 @@ class Session:
                 self.connection_dead.set()
                 self.channel_open.set()  # unblock waiters
 
+    def _build_ice_servers(self) -> tuple[list[RTCIceServer], dict | None]:
+        """Return (ice_servers, turn_payload).
+
+        turn_payload is the JSON dict to publish on the from-operator/turn
+        topic (so the friend can use the same servers), or None when running
+        STUN-only.
+        """
+        fallback = [RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
+        if self.args.no_turn:
+            logger.info("TURN minting disabled (--no-turn)")
+            return fallback, None
+        if not (self.args.cf_turn_id and self.args.cf_turn_token):
+            logger.info("CF_TURN creds not present; STUN-only")
+            return fallback, None
+        try:
+            servers = mint_cf_turn(self.args.cf_turn_id, self.args.cf_turn_token)
+        except Exception as e:
+            logger.warning("TURN mint failed (%s); falling back to STUN-only", e)
+            return fallback, None
+        total_urls = sum(len(s["urls"]) for s in servers)
+        user_prefix = next(
+            (s["username"][:8] for s in servers if s.get("username")), ""
+        )
+        logger.info(
+            "minted CF TURN credential (entries=%d, urls=%d, user=%s...)",
+            len(servers), total_urls, user_prefix,
+        )
+        ice = [
+            RTCIceServer(
+                urls=s["urls"],
+                username=s.get("username"),
+                credential=s.get("credential"),
+            )
+            for s in servers
+        ]
+        # Wire shape: list of server objects matching aiortc/webrtc-rs schema.
+        payload = {"iceServers": servers}
+        return ice, payload
+
+    async def _publish_turn(self, payload: dict):
+        topic = f"probe/{self.args.name}/from-operator/turn"
+        await self.mqtt.publish(topic, json.dumps(payload).encode(), qos=1)
+        logger.info("published TURN config to %s", topic)
+
     def _on_frame(self, message):
         if isinstance(message, bytes):
             text = message.decode("utf-8", errors="ignore")
@@ -137,43 +240,57 @@ class Session:
         fid = frame.get("id")
         entry = self.in_flight.get(fid)
         if ftype == "stdout":
-            sys.stdout.buffer.write(base64.b64decode(frame["data"]))
-            sys.stdout.buffer.flush()
+            data = base64.b64decode(frame["data"])
+            if entry is not None:
+                entry["stdout"].extend(data)
+            if self.stream_to_stdio:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
         elif ftype == "stderr":
-            sys.stderr.buffer.write(base64.b64decode(frame["data"]))
-            sys.stderr.buffer.flush()
+            data = base64.b64decode(frame["data"])
+            if entry is not None:
+                entry["stderr"].extend(data)
+            if self.stream_to_stdio:
+                sys.stderr.buffer.write(data)
+                sys.stderr.buffer.flush()
         elif ftype == "exit":
             if entry is not None:
                 entry["code"] = frame.get("code") if frame.get("code") is not None else 0
                 entry["event"].set()
         elif ftype == "error":
-            sys.stderr.write(f"[probe error] {frame.get('message')}\n")
+            msg = frame.get("message", "")
             if entry is not None:
+                entry["stderr"].extend(f"[probe error] {msg}\n".encode())
                 entry["code"] = 127
                 entry["event"].set()
+            elif self.stream_to_stdio:
+                sys.stderr.write(f"[probe error] {msg}\n")
         else:
             logger.warning("unexpected frame type: %s", ftype)
 
     async def send_offer(self):
+        """Publish the SDP offer as soon as setLocalDescription returns.
+
+        aiortc's setLocalDescription gathers candidates internally before it
+        returns, so by the time we publish, the SDP already embeds them.
+        That means we can drop the old extra `await gathering complete`
+        step — it was a no-op on top of setLocalDescription. The friend
+        gets the offer the moment we have one to send.
+        """
         offer = await self.pc.createOffer()
         await self.pc.setLocalDescription(offer)
-        await self._wait_ice_gathering_complete()
-        payload = {"type": "offer", "sdp": self.pc.localDescription.sdp}
+        sdp = self.pc.localDescription.sdp
+        # Record candidates already embedded in the offer so we never
+        # republish them on the trickle topic.
+        for line in sdp.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("a=candidate:"):
+                self._published_candidates.add(stripped[2:])
+        payload = {"type": "offer", "sdp": sdp}
         topic = f"probe/{self.args.name}/from-operator/sdp"
         await self.mqtt.publish(topic, json.dumps(payload).encode(), qos=1)
-        logger.info("published SDP offer to %s", topic)
-
-    async def _wait_ice_gathering_complete(self):
-        if self.pc.iceGatheringState == "complete":
-            return
-        done = asyncio.Event()
-
-        @self.pc.on("icegatheringstatechange")
-        def _on_change():
-            if self.pc.iceGatheringState == "complete":
-                done.set()
-
-        await done.wait()
+        logger.info("published SDP offer to %s (gathering=%s)",
+                    topic, self.pc.iceGatheringState)
 
     async def signaling_listener(self):
         await self.mqtt.subscribe(f"probe/{self.args.name}/from-friend/+")
@@ -219,23 +336,41 @@ class Session:
         self.next_id += 1
         return self.next_id
 
-    async def exec_one(self, cmd: str, timeout: float) -> int:
+    async def exec_one(self, cmd: str, timeout: float) -> tuple[int, bytes, bytes]:
+        """Send an Exec frame and await the exit. Returns (code, stdout, stderr).
+
+        stdout/stderr are always buffered into the returned bytes. If
+        ``stream_to_stdio`` is True (default), they are also written to
+        sys.stdout/stderr as they arrive — so the CLI mode is unchanged and
+        tests can ignore the buffers, or use ``stream_to_stdio=False`` to
+        suppress streaming entirely and assert only on the returned bytes.
+        """
         if not self.channel_open.is_set():
-            sys.stderr.write("[operator] channel not open\n")
-            return 4
+            msg = b"[operator] channel not open\n"
+            if self.stream_to_stdio:
+                sys.stderr.buffer.write(msg)
+            return 4, b"", msg
         fid = self._alloc_id()
-        entry = {"event": asyncio.Event(), "code": 1}
+        entry = {
+            "event": asyncio.Event(),
+            "code": 1,
+            "stdout": bytearray(),
+            "stderr": bytearray(),
+        }
         self.in_flight[fid] = entry
         frame = json.dumps({"type": "exec", "id": fid, "cmd": cmd})
         self.channel.send(frame)
         try:
             await asyncio.wait_for(entry["event"].wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            sys.stderr.write(f"[operator] timeout after {timeout}s\n")
-            return 124
+            msg = f"[operator] timeout after {timeout}s\n".encode()
+            entry["stderr"].extend(msg)
+            if self.stream_to_stdio:
+                sys.stderr.buffer.write(msg)
+            entry["code"] = 124
         finally:
             self.in_flight.pop(fid, None)
-        return entry["code"]
+        return entry["code"], bytes(entry["stdout"]), bytes(entry["stderr"])
 
     async def send_bye(self):
         topic = f"probe/{self.args.name}/from-operator/bye"
@@ -270,6 +405,7 @@ async def repl(session: Session):
             continue
         if line in (":q", ":quit", "exit"):
             return
+        # bytes are also streamed live; discard the tuple
         await session.exec_one(line, session.args.timeout)
 
 
@@ -338,7 +474,7 @@ async def amain() -> int:
                 return 4
 
             if args.mode == "exec":
-                rc = await session.exec_one(args.cmd, args.timeout)
+                rc, _, _ = await session.exec_one(args.cmd, args.timeout)
             else:
                 await repl(session)
                 rc = 0

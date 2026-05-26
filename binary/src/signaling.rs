@@ -34,11 +34,27 @@ pub struct ByeMessage {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IceServerEntry {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnMessage {
+    #[serde(rename = "iceServers")]
+    pub ice_servers: Vec<IceServerEntry>,
+}
+
 #[derive(Debug)]
 pub enum SignalingEvent {
     OperatorSdp(SdpMessage),
     OperatorIce(IceMessage),
     OperatorBye(ByeMessage),
+    OperatorTurn(TurnMessage),
 }
 
 pub struct SignalingConfig {
@@ -190,6 +206,9 @@ fn parse_publish(name: &str, topic: &str, payload: &[u8]) -> Option<SignalingEve
         "bye" => serde_json::from_slice::<ByeMessage>(payload)
             .ok()
             .map(SignalingEvent::OperatorBye),
+        "turn" => serde_json::from_slice::<TurnMessage>(payload)
+            .ok()
+            .map(SignalingEvent::OperatorTurn),
         _ => None,
     }
 }
@@ -241,5 +260,35 @@ mod tests {
     fn ignores_unknown_leaf() {
         let payload = br#"{}"#;
         assert!(parse_publish("foo", "probe/foo/from-operator/unknown", payload).is_none());
+    }
+
+    #[test]
+    fn parses_turn() {
+        let payload = br#"{"iceServers":[{"urls":["turn:turn.cloudflare.com:3478?transport=udp","turns:turn.cloudflare.com:5349?transport=tcp"],"username":"g071e","credential":"396c3"}]}"#;
+        let evt = parse_publish("foo", "probe/foo/from-operator/turn", payload).unwrap();
+        match evt {
+            SignalingEvent::OperatorTurn(t) => {
+                assert_eq!(t.ice_servers.len(), 1);
+                let s = &t.ice_servers[0];
+                assert_eq!(s.urls.len(), 2);
+                assert!(s.urls[0].starts_with("turn:"));
+                assert_eq!(s.username.as_deref(), Some("g071e"));
+                assert_eq!(s.credential.as_deref(), Some("396c3"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_turn_without_credentials() {
+        let payload = br#"{"iceServers":[{"urls":["stun:stun.example:3478"]}]}"#;
+        let evt = parse_publish("foo", "probe/foo/from-operator/turn", payload).unwrap();
+        match evt {
+            SignalingEvent::OperatorTurn(t) => {
+                assert!(t.ice_servers[0].username.is_none());
+                assert!(t.ice_servers[0].credential.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

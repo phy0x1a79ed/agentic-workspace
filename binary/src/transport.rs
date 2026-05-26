@@ -1,7 +1,7 @@
 use crate::executor;
 use crate::frames::Frame;
 use crate::signaling::{
-    IceMessage, SdpMessage, SdpType, SignalingEvent, SignalingPublisher,
+    IceMessage, IceServerEntry, SdpMessage, SdpType, SignalingEvent, SignalingPublisher,
 };
 use anyhow::Result;
 use std::sync::Arc;
@@ -12,17 +12,46 @@ use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+fn default_ice_servers() -> Vec<RTCIceServer> {
+    vec![RTCIceServer {
+        urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+        ..Default::default()
+    }]
+}
+
+/// Translate a wire-format IceServerEntry into webrtc-rs's RTCIceServer.
+/// webrtc-rs's default credential_type is Unspecified, which it then refuses
+/// on any turn:/turns: URL with ErrTurnCredentials — so set it to Password
+/// whenever creds are present (Cloudflare's TURN uses long-term-credential).
+pub(crate) fn map_ice_server(entry: IceServerEntry) -> RTCIceServer {
+    let username = entry.username.unwrap_or_default();
+    let credential = entry.credential.unwrap_or_default();
+    let credential_type = if username.is_empty() && credential.is_empty() {
+        RTCIceCredentialType::Unspecified
+    } else {
+        RTCIceCredentialType::Password
+    };
+    RTCIceServer {
+        urls: entry.urls,
+        username,
+        credential,
+        credential_type,
+    }
+}
+
 /// Friend-side transport: holds at most one live RTCPeerConnection. Each new
 /// operator session (signaled by a fresh SDP Offer) replaces the previous pc.
 pub struct Transport {
     publisher: SignalingPublisher,
     current: Mutex<Option<Arc<RTCPeerConnection>>>,
+    ice_servers: Mutex<Vec<RTCIceServer>>,
 }
 
 impl Transport {
@@ -30,6 +59,7 @@ impl Transport {
         Self {
             publisher,
             current: Mutex::new(None),
+            ice_servers: Mutex::new(default_ice_servers()),
         }
     }
 
@@ -44,7 +74,8 @@ impl Transport {
                 if let Some(p) = prev {
                     let _ = p.close().await;
                 }
-                let pc = build_pc(self.publisher.clone()).await?;
+                let ice_servers = self.ice_servers.lock().await.clone();
+                let pc = build_pc(self.publisher.clone(), ice_servers).await?;
                 let desc = RTCSessionDescription::offer(sdp.sdp)?;
                 pc.set_remote_description(desc).await?;
                 let answer = pc.create_answer(None).await?;
@@ -81,6 +112,15 @@ impl Transport {
                     let _ = p.close().await;
                 }
             }
+            SignalingEvent::OperatorTurn(turn) => {
+                let mapped: Vec<RTCIceServer> =
+                    turn.ice_servers.into_iter().map(map_ice_server).collect();
+                tracing::info!(
+                    "received TURN config from operator ({} server(s))",
+                    mapped.len()
+                );
+                *self.ice_servers.lock().await = mapped;
+            }
         }
         Ok(())
     }
@@ -94,7 +134,10 @@ impl Transport {
     }
 }
 
-async fn build_pc(publisher: SignalingPublisher) -> Result<Arc<RTCPeerConnection>> {
+async fn build_pc(
+    publisher: SignalingPublisher,
+    ice_servers: Vec<RTCIceServer>,
+) -> Result<Arc<RTCPeerConnection>> {
     let mut me = MediaEngine::default();
     me.register_default_codecs()?;
     let mut registry = Registry::new();
@@ -104,10 +147,7 @@ async fn build_pc(publisher: SignalingPublisher) -> Result<Arc<RTCPeerConnection
         .with_interceptor_registry(registry)
         .build();
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
+        ice_servers,
         ..Default::default()
     };
     let pc = Arc::new(api.new_peer_connection(config).await?);
@@ -190,6 +230,47 @@ async fn attach_data_channel(dc: Arc<RTCDataChannel>) {
             tracing::info!("data channel closed");
         })
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_full_ice_server() {
+        let entry = IceServerEntry {
+            urls: vec!["turn:turn.cloudflare.com:3478?transport=udp".into()],
+            username: Some("u".into()),
+            credential: Some("c".into()),
+        };
+        let mapped = map_ice_server(entry);
+        assert_eq!(mapped.urls.len(), 1);
+        assert_eq!(mapped.username, "u");
+        assert_eq!(mapped.credential, "c");
+        // Must be Password for webrtc-rs to accept turn URLs.
+        assert!(matches!(mapped.credential_type, RTCIceCredentialType::Password));
+    }
+
+    #[test]
+    fn maps_stun_without_credentials() {
+        let entry = IceServerEntry {
+            urls: vec!["stun:stun.example:3478".into()],
+            username: None,
+            credential: None,
+        };
+        let mapped = map_ice_server(entry);
+        assert_eq!(mapped.username, "");
+        assert_eq!(mapped.credential, "");
+        assert!(matches!(mapped.credential_type, RTCIceCredentialType::Unspecified));
+    }
+
+    #[test]
+    fn default_ice_servers_is_stun_only() {
+        let servers = default_ice_servers();
+        assert_eq!(servers.len(), 1);
+        assert!(servers[0].urls[0].starts_with("stun:"));
+        assert!(servers[0].username.is_empty());
+    }
 }
 
 async fn handle_inbound_frame(frame: Frame, dc: Arc<RTCDataChannel>) {

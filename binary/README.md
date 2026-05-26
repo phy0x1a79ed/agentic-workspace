@@ -26,6 +26,12 @@ Signaling rides on a serverless EMQX broker
 (`wss://s12a68ff.ala.us-east-1.emqxsl.com:8084/mqtt`). Once the data
 channel opens, shell I/O is P2P — EMQX never sees command output.
 
+If `CF_TURN_TOKEN_ID` + `CF_TURN_API_TOKEN` are configured (see
+`tools/.env.probe.example`), the operator mints a short-lived
+Cloudflare Realtime TURN credential at startup and ships it to the
+friend over the `probe/<name>/from-operator/turn` topic before the
+SDP offer. Without those creds, both sides fall back to STUN-only.
+
 See [`PROTOCOL.md`](./PROTOCOL.md) for topic and frame schemas.
 
 ## Prerequisites
@@ -39,7 +45,7 @@ See [`PROTOCOL.md`](./PROTOCOL.md) for topic and frame schemas.
   ```sh
   pip install -r ../tools/requirements.txt
   ```
-- EMQX credentials in `../tools/.env.emqx` (copy `.env.emqx.example`).
+- EMQX credentials in `../tools/.env.probe` (copy `.env.probe.example`).
 
 ## Build
 
@@ -99,7 +105,7 @@ python3 tools/probe_op.py mybox
 
 ## End-to-end test
 
-With `tools/.env.emqx` populated and a release build available:
+With `tools/.env.probe` populated and a release build available:
 
 ```sh
 cd ..

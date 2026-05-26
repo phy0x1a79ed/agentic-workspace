@@ -22,11 +22,26 @@ user, e.g. `mybox`, `alice-laptop`, `test-7f3a`). Topics:
 | friend publishes | `probe/<name>/from-friend/sdp`         | SDP answer                    |
 | friend publishes | `probe/<name>/from-friend/ice`         | one ICE candidate per message |
 | friend publishes | `probe/<name>/from-friend/bye`         | graceful teardown signal      |
+| operator publishes | `probe/<name>/from-operator/turn`    | ICE server config (optional)  |
 | operator publishes | `probe/<name>/from-operator/sdp`     | SDP offer                     |
 | operator publishes | `probe/<name>/from-operator/ice`     | one ICE candidate per message |
 | operator publishes | `probe/<name>/from-operator/bye`     | graceful teardown signal      |
 
 All messages: **QoS 1, no retain**.
+
+### Ordering contract (operator → friend)
+
+The operator MUST publish in this order when starting a session:
+
+1. `turn` (optional — omit for STUN-only)
+2. `sdp` (offer)
+3. `ice` (zero or more candidates, trickled)
+
+Friend processes events in delivery order. If `turn` arrives before `sdp`,
+its ice_servers replace the friend's STUN-only default before the peer
+connection is built. If `turn` is omitted, the friend stays on its baked-in
+STUN fallback (`stun:stun.l.google.com:19302`); strict-NAT friends may then
+fail to establish the data channel.
 
 ### Payload schemas
 
@@ -39,7 +54,29 @@ All messages: **QoS 1, no retain**.
 
 // .../bye
 {"reason": "user requested" | "channel closed" | "error: ..."}
+
+// .../turn  (operator-only; one or more server entries)
+{
+  "iceServers": [
+    {
+      "urls": [
+        "stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:3478?transport=tcp",
+        "turns:turn.cloudflare.com:5349?transport=tcp"
+      ],
+      "username": "g071...",
+      "credential": "396c..."
+    }
+  ]
+}
 ```
+
+The `turn` payload is the standard WebRTC `RTCIceServer[]` shape (urls
++ optional username/credential per entry). The operator is responsible
+for normalizing provider quirks — Cloudflare Realtime TURN, for
+instance, returns `iceServers` as a single object that the operator
+must wrap into a single-element array before publishing.
 
 ### Name collisions
 

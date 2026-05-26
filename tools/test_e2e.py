@@ -2,19 +2,26 @@
 """End-to-end test for probe transport + exec.
 
 Spawns the friend-side probe binary as a subprocess (with --no-consent),
-then runs the operator script through several exec scenarios against the
-real EMQX broker. Each scenario asserts stdout / stderr / exit code.
+then drives `probe_op.Session` *in-process* over a single MQTT connection
+and a single WebRTC peer connection — running all scenarios sequentially
+on the same data channel. This eliminates per-scenario operator startup,
+TURN mint, and ICE gather (the previous subprocess-per-scenario design
+spent ~30s per case mostly on connection setup).
 
 Requires:
-    - tools/.env.emqx with valid EMQX_URL/EMQX_USER/EMQX_PASS
+    - tools/.env.probe with valid EMQX_URL/EMQX_USER/EMQX_PASS and
+      (optionally) CF_TURN_TOKEN_ID/CF_TURN_API_TOKEN.
     - binary/target/release/probe built (cargo build --release)
-    - aiortc + aiomqtt installed (pip install -r tools/requirements.txt)
+    - aiortc + aiomqtt installed (conda env `awm`, or
+      pip install -r tools/requirements.txt)
 
 Usage:
     python3 tools/test_e2e.py
 """
 from __future__ import annotations
 
+import argparse
+import asyncio
 import os
 import platform
 import subprocess
@@ -22,14 +29,20 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
+
+import aiomqtt
 
 SCOPE_ROOT = Path(__file__).resolve().parent.parent
-PROBE_BIN = SCOPE_ROOT / "binary" / "target" / "release" / "probe"
-OPERATOR = SCOPE_ROOT / "tools" / "probe_op.py"
-ENV_FILE = SCOPE_ROOT / "tools" / ".env.emqx"
+sys.path.insert(0, str(SCOPE_ROOT / "tools"))
 
-CONNECT_TIMEOUT = "30"
-EXEC_TIMEOUT = "20"
+import probe_op  # noqa: E402
+
+PROBE_BIN = SCOPE_ROOT / "binary" / "target" / "release" / "probe"
+ENV_FILE = SCOPE_ROOT / "tools" / ".env.probe"
+
+CONNECT_TIMEOUT = 30.0
+EXEC_TIMEOUT = 20.0
 
 
 def load_env_file(path: Path) -> dict:
@@ -46,7 +59,6 @@ def load_env_file(path: Path) -> dict:
 
 
 def spawn_probe(name: str, env: dict) -> subprocess.Popen:
-    # URL+USER are baked into the binary; we only pass PASS via env.
     cmd = [str(PROBE_BIN), "--name", name, "--no-consent"]
     print(f"  spawn: {' '.join(cmd)} (EMQX_PASS via env)")
     proc = subprocess.Popen(
@@ -60,7 +72,6 @@ def spawn_probe(name: str, env: dict) -> subprocess.Popen:
 
 
 def wait_for_probe_ready(proc: subprocess.Popen, name: str, timeout: float = 15.0) -> bool:
-    """Read probe stderr until we see the 'code=<name>' line or it dies."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -90,25 +101,6 @@ def drain_probe_stderr_background(proc: subprocess.Popen):
     t = threading.Thread(target=drain, daemon=True)
     t.start()
     return t
-
-
-def run_operator_exec(name: str, cmd: str, env: dict, timeout: float = 60.0) -> tuple[int, bytes, bytes]:
-    op_cmd = [
-        sys.executable,
-        str(OPERATOR),
-        name,
-        "--timeout", EXEC_TIMEOUT,
-        "--connect-timeout", CONNECT_TIMEOUT,
-        "exec",
-        cmd,
-    ]
-    proc = subprocess.run(
-        op_cmd,
-        capture_output=True,
-        timeout=timeout,
-        env={**os.environ, **env},
-    )
-    return proc.returncode, proc.stdout, proc.stderr
 
 
 SCENARIOS = [
@@ -151,9 +143,102 @@ SCENARIOS = [
 ]
 
 
+def _build_session_args(name: str, env: dict) -> argparse.Namespace:
+    """Construct the argparse.Namespace shape probe_op.Session expects."""
+    return argparse.Namespace(
+        name=name,
+        mode=None,
+        mqtt_url=env["EMQX_URL"],
+        mqtt_user=env["EMQX_USER"],
+        mqtt_pass=env["EMQX_PASS"],
+        cf_turn_id=env.get("CF_TURN_TOKEN_ID"),
+        cf_turn_token=env.get("CF_TURN_API_TOKEN"),
+        no_turn=False,
+        timeout=EXEC_TIMEOUT,
+        connect_timeout=CONNECT_TIMEOUT,
+        verbose=False,
+    )
+
+
+async def run_scenarios(name: str, env: dict) -> tuple[int, int]:
+    args = _build_session_args(name, env)
+    url = urlparse(args.mqtt_url)
+    hostname = url.hostname
+    port = url.port or (8084 if url.scheme in ("wss", "https") else 8883)
+    path = url.path or "/mqtt"
+    use_wss = url.scheme in ("wss", "https")
+
+    client_kwargs = dict(
+        hostname=hostname,
+        port=port,
+        username=args.mqtt_user,
+        password=args.mqtt_pass,
+        identifier=f"e2e-{uuid.uuid4().hex[:8]}",
+        keepalive=30,
+        tls_params=aiomqtt.TLSParameters(),
+    )
+    if use_wss:
+        client_kwargs["transport"] = "websockets"
+        client_kwargs["websocket_path"] = path
+
+    passed = 0
+    failed = 0
+
+    async with aiomqtt.Client(**client_kwargs) as mqtt:
+        session = probe_op.Session(args, mqtt, stream_to_stdio=False)
+        await session.setup_pc()
+        sig_task = asyncio.create_task(session.signaling_listener())
+        try:
+            await session.send_offer()
+            try:
+                await asyncio.wait_for(
+                    session.channel_open.wait(),
+                    timeout=CONNECT_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                print(f"FAIL: data channel did not open within {CONNECT_TIMEOUT}s",
+                      file=sys.stderr)
+                return 0, len(SCENARIOS)
+            if session.connection_dead.is_set():
+                print(f"FAIL: pc state {session.pc.connectionState}", file=sys.stderr)
+                return 0, len(SCENARIOS)
+
+            for label, cmd, expected_rc, ok_stdout, ok_stderr in SCENARIOS:
+                print(f"\n--- {label} ---")
+                print(f"  cmd: {cmd!r}")
+                t0 = time.monotonic()
+                try:
+                    rc, out, err = await session.exec_one(cmd, EXEC_TIMEOUT)
+                except Exception as e:
+                    print(f"  FAIL: exec_one raised {e!r}", file=sys.stderr)
+                    failed += 1
+                    continue
+                dt = time.monotonic() - t0
+                ok = rc == expected_rc and ok_stdout(out) and ok_stderr(err)
+                print(f"  rc={rc} stdout={out!r} stderr={err!r} ({dt*1000:.0f}ms)")
+                if ok:
+                    print("  PASS")
+                    passed += 1
+                else:
+                    print(f"  FAIL: expected rc={expected_rc}")
+                    failed += 1
+
+            await session.send_bye()
+        finally:
+            sig_task.cancel()
+            try:
+                await sig_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            await session.close()
+
+    return passed, failed
+
+
 def main() -> int:
     if not PROBE_BIN.is_file():
-        print(f"FATAL: {PROBE_BIN} not found; build with: cd binary && cargo build --release", file=sys.stderr)
+        print(f"FATAL: {PROBE_BIN} not found; build with: cd binary && cargo build --release",
+              file=sys.stderr)
         return 2
 
     env = load_env_file(ENV_FILE)
@@ -171,28 +256,11 @@ def main() -> int:
         probe.terminate()
         return 3
 
-    drain_thread = drain_probe_stderr_background(probe)
+    drain_probe_stderr_background(probe)
 
-    passed = 0
-    failed = 0
+    t_total = time.monotonic()
     try:
-        for label, cmd, expected_rc, ok_stdout, ok_stderr in SCENARIOS:
-            print(f"\n--- {label} ---")
-            print(f"  cmd: {cmd!r}")
-            try:
-                rc, out, err = run_operator_exec(name, cmd, env)
-            except subprocess.TimeoutExpired:
-                print(f"  FAIL: operator timed out", file=sys.stderr)
-                failed += 1
-                continue
-            ok = rc == expected_rc and ok_stdout(out) and ok_stderr(err)
-            print(f"  rc={rc} stdout={out!r} stderr={err!r}")
-            if ok:
-                print(f"  PASS")
-                passed += 1
-            else:
-                print(f"  FAIL: expected rc={expected_rc}")
-                failed += 1
+        passed, failed = asyncio.run(run_scenarios(name, env))
     finally:
         print("\n=== teardown ===")
         try:
@@ -202,7 +270,8 @@ def main() -> int:
             probe.kill()
             probe.wait(timeout=1)
 
-    print(f"\n=== results: {passed} passed, {failed} failed ===")
+    elapsed = time.monotonic() - t_total
+    print(f"\n=== results: {passed} passed, {failed} failed ({elapsed:.1f}s total) ===")
     return 0 if failed == 0 else 1
 
 

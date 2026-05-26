@@ -42,7 +42,7 @@ SCOPE_ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = SCOPE_ROOT / "installer" / "install.sh"
 BINARY_RELEASE = SCOPE_ROOT / "binary" / "target" / "release" / "probe"
 BINARY_STUB = SCOPE_ROOT / "binary" / "stub.sh"
-ENV_FILE = SCOPE_ROOT / "tools" / ".env.emqx"
+ENV_FILE = SCOPE_ROOT / "tools" / ".env.probe"
 DEFAULT_PORT = 12110
 DEFAULT_HOST = "0.0.0.0"
 
