@@ -239,7 +239,6 @@ class SessionLogEntry(BaseModel):
     file_path: str = ""
     git_commit: str | None = None
     logged_at: str
-    summary: str
     title: str | None = None
     agent_id: str
     skill_path: str | None = None
@@ -252,6 +251,8 @@ class SessionLogEntry(BaseModel):
 
 
 class SessionLogPreview(BaseModel):
+    """Lightweight session row. `summary` is at most ~240 chars; check
+    `summary_truncated` to know if the underlying row had more."""
     id: int
     project: str
     scope: str
@@ -262,6 +263,7 @@ class SessionLogPreview(BaseModel):
     skill_path: str | None = None
     outcome: str | None = None
     resolved_at: str | None = None
+    summary_truncated: bool = False
 
 
 class SessionLogListResponse(BaseModel):

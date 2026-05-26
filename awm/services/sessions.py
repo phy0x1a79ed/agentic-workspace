@@ -19,6 +19,8 @@ from awm.models import (
 from awm.services.network import peers as peer_svc
 from awm.services.replication.schema import new_uuid, next_legacy_id
 
+_SUMMARY_PREVIEW_CHARS = 240
+
 
 def _local_peer_id() -> str:
     """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
@@ -59,7 +61,6 @@ def _row_to_entry(row) -> SessionLogEntry:
         file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
         logged_at=row["logged_at"],
-        summary=row["summary"],
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
@@ -186,7 +187,12 @@ def list_sessions(
     """Query session logs with optional filters."""
     conn = get_connection()
     try:
-        query = "SELECT * FROM session_logs WHERE 1=1"
+        query = (
+            "SELECT legacy_id, project, scope, file_path, git_commit, logged_at, "
+            "title, agent_id, skill_path, outcome, deviations, suggestions, "
+            "skill_version, resolved_at, resolution "
+            "FROM session_logs WHERE 1=1"
+        )
         params: list = []
         if project:
             query += " AND project = ?"
@@ -269,17 +275,23 @@ def _display_title(row) -> str:
 
 
 def _row_to_preview(row) -> SessionLogPreview:
+    raw_len = row["summary_len"] or 0
+    truncated = raw_len > _SUMMARY_PREVIEW_CHARS
+    summary = row["summary_preview"] or ""
+    if truncated:
+        summary = summary + "…"
     return SessionLogPreview(
         id=row["legacy_id"],
         project=row["project"],
         scope=row["scope"],
         logged_at=row["logged_at"],
-        summary=row["summary"],
+        summary=summary,
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
         outcome=row["outcome"],
         resolved_at=row["resolved_at"],
+        summary_truncated=truncated,
     )
 
 
@@ -320,8 +332,14 @@ def search_sessions(
     """Search session logs, returning previews (no content)."""
     conn = get_connection()
     try:
-        sql = "SELECT * FROM session_logs WHERE 1=1"
-        params: list = []
+        sql = (
+            "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
+            "skill_path, outcome, resolved_at, "
+            "SUBSTR(summary, 1, ?) AS summary_preview, "
+            "LENGTH(summary) AS summary_len "
+            "FROM session_logs WHERE 1=1"
+        )
+        params: list = [_SUMMARY_PREVIEW_CHARS]
         if project:
             sql += " AND project = ?"
             params.append(project)

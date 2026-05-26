@@ -422,6 +422,21 @@ class TestSearchSessions:
         assert hasattr(entry, "summary")
         assert not hasattr(entry, "content")
         assert not hasattr(entry, "resolution")
+        assert entry.summary_truncated is False
+        assert entry.summary == "Test preview"
+
+    def test_search_truncates_long_summary(self, awm_workspace):
+        long_summary = "A" * 500
+        sessions.log_session(SessionLogCreateRequest(
+            project="proj-a", scope="scope-1", summary=long_summary,
+        ))
+        result = sessions.search_sessions()
+        entry = result.entries[0]
+        assert entry.summary_truncated is True
+        # 240 chars + ellipsis
+        assert len(entry.summary) == 241
+        assert entry.summary.endswith("…")
+        assert entry.summary[:240] == "A" * 240
 
 
 class TestListSessionsStatus:
