@@ -69,6 +69,15 @@
     el.focus();
   }
 
+  // PTT semantics: speaking IS the send. After STT lands, fire the focus
+  // composer's send the same way the Send button does. sendFocusPost
+  // clears the textarea on success, which doubles as the "sent" signal.
+  function autoSend() {
+    if (typeof window.sendFocusPost === "function") {
+      try { window.sendFocusPost(); } catch {}
+    }
+  }
+
   // ---- Audio capture ------------------------------------------------------
 
   let audioCtx = null;
@@ -178,7 +187,7 @@
           setStage(msg.stage, msg.text || msg.stage);
           break;
         case "stt_result":
-          if (msg.text) appendTranscript(msg.text);
+          if (msg.text) { appendTranscript(msg.text); autoSend(); }
           break;
         case "error":
           setStage("error", msg.message || "error");
@@ -221,7 +230,7 @@
     setStage("transcribing", "transcribing…");
     try {
       const text = await postPcm(pcm);
-      if (text) appendTranscript(text);
+      if (text) { appendTranscript(text); autoSend(); }
       setStage("idle", "idle");
     } catch (e) {
       setStage("error", "stt failed");

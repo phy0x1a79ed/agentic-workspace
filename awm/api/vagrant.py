@@ -68,6 +68,10 @@ async def session(request: Request) -> VagrantSessionResponse:
                 project=VAGRANT_PROJECT,
                 scope=scope_name,
                 agent_cli="claude",
+                # Vagrant manager needs free MCP-tool access to reply in rooms
+                # (mcp__awm__room_post). Mirrors how an operator's manual
+                # claude session runs with --dangerously-skip-permissions.
+                permission_mode="bypassPermissions",
             )
         except agent_instances.ScopeBusyError:
             # Race with another spawn — that's success for our purposes.
