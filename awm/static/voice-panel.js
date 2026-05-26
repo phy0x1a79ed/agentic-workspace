@@ -76,10 +76,18 @@
   let micConnected = false;
   let recording = false;
 
-  function readVol() { return (parseInt(ui.vol.value, 10) || 0) / 100; }
-  ui.vol.addEventListener("input", () => {
+  // Tiny helper: bind a listener only if the element actually exists.
+  // Lets us delete DOM nodes from index.html without crashing the module.
+  function on(el, evt, fn, opts) {
+    if (el) el.addEventListener(evt, fn, opts);
+  }
+
+  function readVol() {
+    return ui.vol ? (parseInt(ui.vol.value, 10) || 0) / 100 : 1.0;
+  }
+  on(ui.vol, "input", () => {
     const v = readVol();
-    ui.volVal.textContent = `${Math.round(v * 100)}%`;
+    if (ui.volVal) ui.volVal.textContent = `${Math.round(v * 100)}%`;
     if (masterGain) masterGain.gain.value = v;
   });
 
@@ -124,7 +132,7 @@
       for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
       const rms = Math.sqrt(sum / buf.length);
       const bar = "▮".repeat(Math.min(20, Math.round(rms * 200)));
-      ui.meterVal.textContent = `${rms.toFixed(3)} ${bar}`;
+      if (ui.meterVal) ui.meterVal.textContent = `${rms.toFixed(3)} ${bar}`;
       requestAnimationFrame(tick);
     }
     tick();
@@ -174,16 +182,19 @@
   // ---- Transcript rendering ----------------------------------------------
 
   function setConn(state, label) {
+    if (!ui.conn) return;
     ui.conn.className = "vp-conn " + (state || "");
     ui.conn.textContent = label;
   }
 
   function setStage(stage, text) {
+    if (!ui.stage) return;
     ui.stage.className = "vp-stage " + (stage || "");
     ui.stage.textContent = text || stage || "idle";
   }
 
   function appendLine(role, text) {
+    if (!ui.transcript) return;
     const div = document.createElement("div");
     div.className = "vp-line " + role;
     div.textContent = `${role}: ${text}`;
@@ -192,6 +203,7 @@
   }
 
   function appendAssistantDelta(text) {
+    if (!ui.transcript) return;
     let last = ui.transcript.lastElementChild;
     if (!last || !last.classList.contains("assistant-stream")) {
       last = document.createElement("div");
@@ -204,6 +216,7 @@
   }
 
   function endAssistantStream() {
+    if (!ui.transcript) return;
     const last = ui.transcript.lastElementChild;
     if (last && last.classList.contains("assistant-stream")) {
       last.classList.remove("assistant-stream");
@@ -211,6 +224,7 @@
   }
 
   function renderShow(content, kind) {
+    if (!ui.transcript) return;
     const box = document.createElement("div");
     box.className = "vp-show " + (kind || "text");
     const label = document.createElement("div");
@@ -234,6 +248,7 @@
   }
 
   function setLatency(stage, ms) {
+    if (!ui.latency) return;
     ui.latency.dataset[stage] = ms;
     ui.latency.textContent =
       `STT ${ui.latency.dataset.stt ?? "—"}ms · ` +
@@ -246,6 +261,7 @@
 
   function renderJoinedRooms(rooms) {
     joinedRoomIds = Array.isArray(rooms) ? rooms.slice() : [];
+    if (!ui.roomsList) return;  // DOM was removed (M7); state already tracked above.
     if (!joinedRoomIds.length) {
       ui.roomsList.innerHTML = "<em>none</em>";
       agentPollers.clear();
@@ -444,9 +460,17 @@
       case "latency":
         setLatency(msg.stage, msg.ms);
         break;
-      case "joined_rooms":
-        renderJoinedRooms(msg.rooms || []);
+      case "joined_rooms": {
+        const rooms = msg.rooms || [];
+        renderJoinedRooms(rooms);
+        // Broadcast for other widgets (focus rail, reconcile loop) so they
+        // can act on push-updated voice state without polling /voice/state.
+        try {
+          window.dispatchEvent(new CustomEvent("awm-voice-joined-rooms",
+                                               { detail: { rooms } }));
+        } catch {}
         break;
+      }
       case "error":
         appendLine("error", msg.message);
         break;
@@ -474,7 +498,7 @@
     if (audioCtx.state === "suspended") await audioCtx.resume();
     flushPlayback();
     recording = true;
-    ui.ptt.classList.add("active");
+    if (ui.ptt) ui.ptt.classList.add("active");
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "start" }));
     }
@@ -483,32 +507,41 @@
   function pttUp() {
     if (!recording) return;
     recording = false;
-    ui.ptt.classList.remove("active");
+    if (ui.ptt) ui.ptt.classList.remove("active");
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "end" }));
     }
   }
 
-  ui.ptt.addEventListener("mousedown", pttDown);
-  ui.ptt.addEventListener("mouseup", pttUp);
-  ui.ptt.addEventListener("mouseleave", () => recording && pttUp());
-  ui.ptt.addEventListener("touchstart", (e) => { e.preventDefault(); pttDown(); });
-  ui.ptt.addEventListener("touchend", (e) => { e.preventDefault(); pttUp(); });
+  on(ui.ptt, "mousedown", pttDown);
+  on(ui.ptt, "mouseup", pttUp);
+  on(ui.ptt, "mouseleave", () => recording && pttUp());
+  on(ui.ptt, "touchstart", (e) => { e.preventDefault(); pttDown(); });
+  on(ui.ptt, "touchend", (e) => { e.preventDefault(); pttUp(); });
 
-  // Spacebar PTT — but only when no text input is focused.
+  // Spacebar PTT — but only when no text input is focused and the focus
+  // tab is actually visible (the PTT button lives there now; firing it
+  // on hidden tabs would mutate a non-rendered element).
   function isTypingFocus() {
     const el = document.activeElement;
     if (!el) return false;
     const tag = el.tagName;
     return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
   }
+  function isFocusTabVisible() {
+    if (!ui.ptt) return false;
+    const tab = document.getElementById("tab-focus");
+    return !!(tab && !tab.hidden);
+  }
   window.addEventListener("keydown", (e) => {
     if (e.code !== "Space" || e.repeat || isTypingFocus()) return;
+    if (!isFocusTabVisible()) return;
     e.preventDefault();
     pttDown();
   });
   window.addEventListener("keyup", (e) => {
     if (e.code !== "Space" || isTypingFocus()) return;
+    if (!isFocusTabVisible() && !recording) return;
     e.preventDefault();
     pttUp();
   });
@@ -516,6 +549,7 @@
   // ---- Typed input --------------------------------------------------------
 
   async function sendText() {
+    if (!ui.textInput) return;
     const body = ui.textInput.value;
     if (!body.trim()) return;
     ui.textInput.value = "";
@@ -526,19 +560,21 @@
       catch (e) { appendLine("error", e.message); }
     }
   }
-  ui.textSend.addEventListener("click", sendText);
-  ui.textInput.addEventListener("keydown", (e) => {
+  on(ui.textSend, "click", sendText);
+  on(ui.textInput, "keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); sendText(); }
   });
 
-  // ---- Room join/leave ----------------------------------------------------
+  // ---- Room join/leave (legacy in-panel picker; M3 deletes its DOM in
+  // the focus tab. Handlers stay guarded for any other surfaces.) -----------
 
-  ui.joinToggle.addEventListener("click", async () => {
-    ui.roomPicker.hidden = false;
+  on(ui.joinToggle, "click", async () => {
+    if (ui.roomPicker) ui.roomPicker.hidden = false;
     ui.joinToggle.disabled = true;
     try {
       const r = await api("GET", "/rooms?status=active");
       const sel = ui.roomSelect;
+      if (!sel) return;
       sel.innerHTML = "";
       for (const room of (r.rooms || [])) {
         const opt = document.createElement("option");
@@ -556,16 +592,16 @@
     }
   });
 
-  ui.roomCancel.addEventListener("click", () => {
-    ui.roomPicker.hidden = true;
+  on(ui.roomCancel, "click", () => {
+    if (ui.roomPicker) ui.roomPicker.hidden = true;
   });
 
-  ui.roomJoin.addEventListener("click", async () => {
-    const roomId = ui.roomSelect.value;
+  on(ui.roomJoin, "click", async () => {
+    const roomId = ui.roomSelect && ui.roomSelect.value;
     if (!roomId) return;
     try {
       await api("POST", `/voice/rooms/${encodeURIComponent(roomId)}/join`);
-      ui.roomPicker.hidden = true;
+      if (ui.roomPicker) ui.roomPicker.hidden = true;
     } catch (e) {
       appendLine("error", e.message);
     }
@@ -575,6 +611,47 @@
     try { await api("POST", `/voice/rooms/${encodeURIComponent(roomId)}/leave`); }
     catch (e) { appendLine("error", e.message); }
   }
+
+  // ---- Silent voice-join reconciliation -----------------------------------
+  //
+  // The focus rail's source of truth is the vagrant scope's room
+  // participation (see refreshFocusRail in index.html). Whenever the rail
+  // refreshes we ensure the voice agent has joined every room shown so
+  // its room_post tool calls actually reach those transcripts. Join-only
+  // — we never auto-leave; voice membership is a superset of rail rooms.
+  // Authoritative "already joined" state comes from joinedRoomIds, which
+  // tracks the server's last `joined_rooms` WS broadcast.
+
+  const voiceJoinAttempted = new Set();   // permanent-fail dedupe per room
+  const voiceJoinInFlight = new Set();    // in-flight dedupe per room
+
+  async function reconcileVoiceJoins(rooms) {
+    if (!Array.isArray(rooms)) return;
+    const already = new Set(joinedRoomIds);
+    for (const rid of rooms) {
+      if (!rid) continue;
+      if (already.has(rid)) continue;
+      if (voiceJoinAttempted.has(rid)) continue;
+      if (voiceJoinInFlight.has(rid)) continue;
+      voiceJoinInFlight.add(rid);
+      try {
+        await api("POST", `/voice/rooms/${encodeURIComponent(rid)}/join`);
+      } catch (e) {
+        // Don't surface as banner noise; common cases (closing room, 409
+        // already-joined races) shouldn't loop. Log once for debuggability.
+        voiceJoinAttempted.add(rid);
+        try { console.warn(`[voice] silent join failed for ${rid}:`, e.message); }
+        catch {}
+      } finally {
+        voiceJoinInFlight.delete(rid);
+      }
+    }
+  }
+
+  window.addEventListener("awm-focus-rail-changed", (e) => {
+    const rooms = (e && e.detail && e.detail.rooms) || [];
+    reconcileVoiceJoins(rooms);
+  });
 
   // ---- Focus frame (forwarded from the focus tab) -------------------------
   //

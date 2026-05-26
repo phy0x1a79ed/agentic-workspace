@@ -4,101 +4,208 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>awm control center</title>
+<script>
+  // Pre-paint theme application — runs before stylesheets to avoid FOUC.
+  try {
+    var t = localStorage.getItem("awm.theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 <style>
+  :root {
+    --bg: #ffffff;
+    --bg-elevated: #fafafa;
+    --bg-muted: #f3f4f6;
+    --bg-nav: #eeeeee;
+    --bg-input: #ffffff;
+    --fg: #111827;
+    --fg-muted: #6b7280;
+    --fg-faint: #9ca3af;
+    --border: #e5e7eb;
+    --border-strong: #d1d5db;
+    --border-dash: #f1f3f5;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --accent-fg: #ffffff;
+    --accent-soft: #eef2ff;
+    --accent-soft-strong: #e0e7ff;
+    --accent-soft-border: #c7d2fe;
+    --accent-soft-fg: #312e81;
+    --accent-line: #6366f1;
+    --accent-manager: #f59e0b;
+    --accent-manager-line: #fcd34d;
+    --accent-manager-soft: #fffbeb;
+    --accent-manager-soft-strong: #fef3c7;
+    --accent-manager-fg: #78350f;
+    --accent-manager-muted-fg: #b45309;
+    --danger: #b91c1c;
+    --danger-soft: #fee2e2;
+    --ok: #166534;
+    --ok-soft: #dcfce7;
+    --ok-soft-border: #86efac;
+    --shadow-focus: rgba(99,102,241,0.18);
+    --shadow-soft: rgba(99,102,241,0.04);
+    color-scheme: light;
+  }
+
+  [data-theme="dark"] {
+    --bg: #0d1117;
+    --bg-elevated: #161b22;
+    --bg-muted: #1f2632;
+    --bg-nav: #161b22;
+    --bg-input: #0d1117;
+    --fg: #e6edf3;
+    --fg-muted: #9ca3af;
+    --fg-faint: #6b7280;
+    --border: #30363d;
+    --border-strong: #444c56;
+    --border-dash: #21262d;
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-fg: #0d1117;
+    --accent-soft: #1e1b4b;
+    --accent-soft-strong: #312e81;
+    --accent-soft-border: #4338ca;
+    --accent-soft-fg: #c7d2fe;
+    --accent-line: #818cf8;
+    --accent-manager: #fbbf24;
+    --accent-manager-line: #f59e0b;
+    --accent-manager-soft: #2a1f08;
+    --accent-manager-soft-strong: #3f2d0a;
+    --accent-manager-fg: #fde68a;
+    --accent-manager-muted-fg: #fcd34d;
+    --danger: #f87171;
+    --danger-soft: #2a1212;
+    --ok: #86efac;
+    --ok-soft: #14241a;
+    --ok-soft-border: #166534;
+    --shadow-focus: rgba(129,140,248,0.30);
+    --shadow-soft: rgba(129,140,248,0.06);
+    color-scheme: dark;
+  }
+
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-         margin: 0; padding: 0; font-size: 13px; }
-  nav { background: #eee; padding: 6px 10px; border-bottom: 1px solid #ccc;
+         margin: 0; padding: 0; font-size: 13px;
+         background: var(--bg); color: var(--fg); }
+  nav { background: var(--bg-nav); padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
         display: flex; gap: 8px; align-items: baseline; }
-  nav a { padding: 4px 10px; text-decoration: none; color: #333; }
-  nav a.active { background: #fff; border: 1px solid #ccc; border-bottom: 0; }
-  nav .me { margin-left: auto; color: #666; font-size: 11px; }
+  nav a { padding: 4px 10px; text-decoration: none; color: var(--fg-muted); }
+  nav a.active { background: var(--bg); border: 1px solid var(--border);
+                 border-bottom: 0; color: var(--fg); }
+  nav .me { margin-left: auto; color: var(--fg-muted); font-size: 11px; }
+  nav .theme-toggle {
+    font: inherit; font-size: 14px;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--fg-muted); cursor: pointer;
+    padding: 2px 8px; border-radius: 3px; line-height: 1;
+  }
+  nav .theme-toggle:hover {
+    color: var(--accent); border-color: var(--accent);
+  }
   section { padding: 12px 16px; }
   section[hidden] { display: none; }
-  h2 { margin: 16px 0 6px; font-size: 14px; }
-  h3 { margin: 10px 0 4px; font-size: 12px; color: #555;
+  h2 { margin: 16px 0 6px; font-size: 14px; color: var(--fg); }
+  h3 { margin: 10px 0 4px; font-size: 12px; color: var(--fg-muted);
        text-transform: uppercase; letter-spacing: 0.05em; }
   table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid #eee;
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border);
            font-size: 12px; vertical-align: top; }
-  th { background: #f7f7f7; }
-  button { font: inherit; padding: 2px 8px; cursor: pointer; }
-  input, select, textarea { font: inherit; padding: 2px 4px; }
+  th { background: var(--bg-muted); }
+  button { font: inherit; padding: 2px 8px; cursor: pointer;
+           background: var(--bg-elevated); color: var(--fg);
+           border: 1px solid var(--border-strong); border-radius: 3px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  input, select, textarea { font: inherit; padding: 2px 4px;
+           background: var(--bg-input); color: var(--fg);
+           border: 1px solid var(--border-strong); border-radius: 3px; }
   textarea { width: 100%; min-height: 60px; }
   details { margin: 4px 0; }
-  details summary { cursor: pointer; padding: 2px 0; }
-  .status-line { color: #666; font-size: 11px; padding: 4px 0; }
-  .err { color: #b00; }
-  .ok { color: #060; }
-  .shell { display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+  details summary { cursor: pointer; padding: 2px 0; color: var(--fg); }
+  pre { color: var(--fg); }
+  code { color: var(--accent); }
+  .status-line { color: var(--fg-muted); font-size: 11px; padding: 4px 0; }
+  .err { color: var(--danger); }
+  .ok { color: var(--ok); }
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr);
            height: calc(100vh - 32px); min-height: 0; }
   .shell > main { overflow-y: auto; min-width: 0; }
-  .shell > aside.voice-panel { border-left: 1px solid #ccc;
-                               background: #fafafa; overflow: hidden;
-                               display: flex; flex-direction: column;
-                               min-height: 0; }
   .room-layout { display: grid; grid-template-columns: 200px 1fr 240px;
                  gap: 12px; height: 100%; }
-  .room-list { overflow-y: auto; border-right: 1px solid #eee; padding-right: 6px; }
+  .room-list { overflow-y: auto; border-right: 1px solid var(--border); padding-right: 6px; }
   .room-list .room-card { padding: 4px 6px; cursor: pointer;
-                          border-bottom: 1px dashed #ddd; }
-  .room-list .room-card.active { background: #f0f4ff; font-weight: bold; }
+                          border-bottom: 1px dashed var(--border); }
+  .room-list .room-card.active { background: var(--accent-soft); font-weight: bold;
+                                  color: var(--accent-soft-fg); }
   .transcript-pane { display: flex; flex-direction: column; min-height: 0; }
   #transcript { flex: 1; overflow-y: auto; padding: 6px;
-                border: 1px solid #ddd; background: #fafafa; }
+                border: 1px solid var(--border); background: var(--bg-elevated); }
   .post { margin-bottom: 6px; padding-bottom: 4px;
-          border-bottom: 1px dotted #eee; white-space: pre-wrap; word-break: break-word; }
+          border-bottom: 1px dotted var(--border); white-space: pre-wrap; word-break: break-word; }
   .post .author { font-weight: bold; }
-  .post .ts { color: #888; font-size: 10px; margin-left: 6px; }
-  .post.kind-tool_use { color: #a60; }
-  .post.kind-tool_result { color: #06a; }
-  .post.kind-system, .post.kind-join, .post.kind-leave { color: #888; font-style: italic; }
-  .post.kind-slash { color: #606; font-family: monospace; }
+  .post .ts { color: var(--fg-faint); font-size: 10px; margin-left: 6px; }
+  .post.kind-tool_use { color: var(--accent-manager-muted-fg); }
+  .post.kind-tool_result { color: var(--accent); }
+  .post.kind-system, .post.kind-join, .post.kind-leave { color: var(--fg-muted); font-style: italic; }
+  .post.kind-slash { color: var(--accent); font-family: monospace; }
   .cmd-row { padding: 3px 4px; cursor: pointer; font-size: 11px;
-             border-bottom: 1px dotted #eee; display: flex; gap: 6px; }
-  .cmd-row:hover { background: #f0f4ff; }
-  .cmd-row code { color: #606; font-weight: bold; flex: 0 0 auto; }
-  .cmd-row .desc { color: #555; }
-  .cmd-list { max-height: 320px; overflow-y: auto; border: 1px solid #eee;
-              background: #fafafa; }
-  .cmd-group { padding: 3px 6px; font-size: 10px; color: #888;
-               background: #f0f0f0; text-transform: uppercase; }
+             border-bottom: 1px dotted var(--border); display: flex; gap: 6px; }
+  .cmd-row:hover { background: var(--accent-soft); }
+  .cmd-row code { color: var(--accent); font-weight: bold; flex: 0 0 auto; }
+  .cmd-row .desc { color: var(--fg-muted); }
+  .cmd-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--border);
+              background: var(--bg-elevated); }
+  .cmd-group { padding: 3px 6px; font-size: 10px; color: var(--fg-muted);
+               background: var(--bg-muted); text-transform: uppercase; }
   .composer { padding-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
   .composer input[type=text] { flex: 1; min-width: 200px; }
-  .right-pane { overflow-y: auto; padding-left: 6px; border-left: 1px solid #eee; }
-  .agent-card { margin: 4px 0; padding: 4px 6px; background: #f9f9f9;
-                border: 1px solid #eee; font-size: 11px; }
+  .right-pane { overflow-y: auto; padding-left: 6px; border-left: 1px solid var(--border); }
+  .agent-card { margin: 4px 0; padding: 4px 6px; background: var(--bg-elevated);
+                border: 1px solid var(--border); font-size: 11px; color: var(--fg); }
   .agent-card .scope { font-weight: bold; }
-  .blocked { color: #b00; font-size: 11px; padding: 2px 0; }
-  form.inline { margin: 6px 0; padding: 8px; background: #f7f7f7;
-                border: 1px solid #ddd; }
+  .blocked { color: var(--danger); font-size: 11px; padding: 2px 0; }
+  form.inline { margin: 6px 0; padding: 8px; background: var(--bg-elevated);
+                border: 1px solid var(--border); }
   form.inline label { display: block; margin: 4px 0; font-size: 11px; }
   form.inline input[type=text], form.inline textarea { width: 100%; }
 
-  /* ---- Focus tab --------------------------------------------------- */
-  /* A precision-terminal layout: tight 1px borders, deliberate accent
-     stripes, mono throughout. The vagrant/manager room is the user's
-     anchor (amber); worker rooms address the team (indigo). */
+  /* Leader badge — class-driven variants so theming flows through CSS vars. */
+  #leader-badge { font-size: 11px; padding: 2px 6px; border-radius: 3px;
+                  border: 1px solid var(--border-strong);
+                  background: var(--bg-muted); color: var(--fg-muted); }
+  #leader-badge.active {
+    background: var(--ok-soft); color: var(--ok);
+    border-color: var(--ok-soft-border);
+  }
+  #leader-badge.standby {
+    background: var(--bg-muted); color: var(--fg-muted);
+    border-color: var(--border-strong);
+  }
 
-  #tab-focus { padding: 0; height: calc(100vh - 32px); background: #fcfcfd; }
+  /* ---- Focus tab --------------------------------------------------- */
+  /* Precision-terminal layout: tight 1px borders, accent stripes, mono
+     throughout. Indigo = focus/active/worker; amber = vagrant manager. */
+
+  #tab-focus { padding: 0; height: calc(100vh - 32px); background: var(--bg); }
   .focus-layout { display: grid;
                   grid-template-columns: 220px minmax(0, 1fr) 280px;
                   height: 100%; min-height: 0; }
 
   .focus-rail, .focus-side {
-    background: #fafbfc;
+    background: var(--bg-elevated);
     display: flex; flex-direction: column; min-height: 0;
   }
-  .focus-rail { border-right: 1px solid #e5e7eb; }
-  .focus-side { border-left: 1px solid #e5e7eb; overflow-y: auto; padding: 0; }
+  .focus-rail { border-right: 1px solid var(--border); }
+  .focus-side { border-left: 1px solid var(--border); overflow-y: auto; padding: 0; }
 
   .focus-rail-header, .focus-side-header {
-    font-size: 10px; letter-spacing: 0.14em; color: #6b7280;
+    font-size: 10px; letter-spacing: 0.14em; color: var(--fg-muted);
     text-transform: uppercase; padding: 14px 14px 8px; font-weight: 700;
-    border-bottom: 1px dashed #e5e7eb;
+    border-bottom: 1px dashed var(--border);
     display: flex; align-items: baseline; gap: 6px;
   }
   .focus-rail-header::before, .focus-side-header::before {
-    content: "▸"; color: #c7cdd6; font-size: 10px;
+    content: "▸"; color: var(--fg-faint); font-size: 10px;
   }
 
   .focus-rooms { overflow-y: auto; flex: 1; padding: 4px 0; }
@@ -106,8 +213,9 @@
     position: relative;
     padding: 9px 12px 9px 16px;
     margin: 0; cursor: pointer;
-    border: 0; border-bottom: 1px solid #f1f3f5;
+    border: 0; border-bottom: 1px solid var(--border-dash);
     background: transparent;
+    color: var(--fg);
     font-size: 11.5px; line-height: 1.4;
     transition: background 90ms ease;
   }
@@ -116,208 +224,340 @@
     width: 3px; background: transparent;
     transition: background 90ms ease;
   }
-  .focus-room-card:hover { background: #f3f4f6; }
-  .focus-room-card:hover::before { background: #d1d5db; }
+  .focus-room-card:hover { background: var(--bg-muted); }
+  .focus-room-card:hover::before { background: var(--border-strong); }
   .focus-room-card.active {
-    background: #eef2ff;
-    color: #312e81;
+    background: var(--accent-soft);
+    color: var(--accent-soft-fg);
   }
-  .focus-room-card.active::before { background: #4f46e5; }
+  .focus-room-card.active::before { background: var(--accent); }
   .focus-room-card.vagrant {
-    background: #fffbeb;
+    background: var(--accent-manager-soft);
   }
-  .focus-room-card.vagrant::before { background: #fcd34d; }
+  .focus-room-card.vagrant::before { background: var(--accent-manager-line); }
   .focus-room-card.vagrant.active {
-    background: #fef3c7;
-    color: #78350f;
+    background: var(--accent-manager-soft-strong);
+    color: var(--accent-manager-fg);
   }
-  .focus-room-card.vagrant.active::before { background: #f59e0b; }
+  .focus-room-card.vagrant.active::before { background: var(--accent-manager); }
   .focus-room-card .label-row {
     display: flex; align-items: baseline; gap: 6px;
     font-weight: 600;
   }
   .focus-room-card .topic {
-    color: #9ca3af; font-size: 10px; font-weight: 400;
+    color: var(--fg-faint); font-size: 10px; font-weight: 400;
     margin-top: 1px; letter-spacing: 0.01em;
   }
-  .focus-room-card.active .topic { color: #6366f1; }
-  .focus-room-card.vagrant.active .topic { color: #b45309; }
+  .focus-room-card.active .topic { color: var(--accent-line); }
+  .focus-room-card.vagrant.active .topic { color: var(--accent-manager-muted-fg); }
   .focus-room-card .leave {
     margin-left: auto; opacity: 0;
     background: transparent; border: 0; padding: 0 4px;
-    color: #9ca3af; cursor: pointer; font-size: 14px; line-height: 1;
+    color: var(--fg-faint); cursor: pointer; font-size: 14px; line-height: 1;
   }
   .focus-room-card:hover .leave { opacity: 0.7; }
-  .focus-room-card .leave:hover { opacity: 1; color: #dc2626; }
+  .focus-room-card .leave:hover { opacity: 1; color: var(--danger); }
 
-  .focus-join-bar { padding: 10px 12px; border-top: 1px solid #e5e7eb;
-                    background: #f6f7f9; }
+  .focus-join-bar { padding: 10px 12px; border-top: 1px solid var(--border);
+                    background: var(--bg-muted); }
   .focus-join-bar button {
     width: 100%; font-size: 11px; padding: 6px;
-    background: #fff; border: 1px solid #d1d5db; border-radius: 3px;
-    color: #374151; cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border-strong); border-radius: 3px;
+    color: var(--fg); cursor: pointer;
     transition: all 90ms ease;
   }
   .focus-join-bar button:hover {
-    border-color: #6366f1; color: #4338ca; background: #f5f3ff;
+    border-color: var(--accent); color: var(--accent); background: var(--accent-soft);
   }
   .focus-join-picker {
     padding: 10px 12px; font-size: 11px;
-    border-top: 1px solid #e5e7eb; background: #f6f7f9;
+    border-top: 1px solid var(--border); background: var(--bg-muted);
   }
   .focus-join-picker select {
     width: 100%; margin-bottom: 6px; padding: 4px;
-    border: 1px solid #d1d5db; border-radius: 3px; background: #fff;
+    border: 1px solid var(--border-strong); border-radius: 3px;
+    background: var(--bg-input); color: var(--fg);
   }
   .focus-join-picker .picker-actions { display: flex; gap: 4px; }
   .focus-join-picker .picker-actions button { padding: 4px 8px; }
   .focus-join-picker .picker-actions button.primary {
-    flex: 1; background: #4f46e5; color: #fff; border-color: #4338ca;
+    flex: 1; background: var(--accent); color: var(--accent-fg);
+    border-color: var(--accent-hover);
   }
   .focus-join-picker .picker-actions button.primary:hover {
-    background: #4338ca;
+    background: var(--accent-hover);
   }
 
   .focus-transcript-pane {
     display: flex; flex-direction: column; min-height: 0;
   }
   .focus-room-header {
-    padding: 12px 18px; border-bottom: 1px solid #e5e7eb;
-    background: #fff;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    background: var(--bg);
     display: flex; align-items: center; gap: 12px;
   }
   .focus-room-header .title {
-    font-size: 13px; font-weight: 700; color: #111827;
+    font-size: 13px; font-weight: 700; color: var(--fg);
     letter-spacing: -0.005em;
   }
   .focus-room-header .title::before {
-    content: "#"; color: #c7cdd6; margin-right: 4px;
+    content: "#"; color: var(--fg-faint); margin-right: 4px;
   }
   .focus-room-header .banner {
-    color: #9ca3af; font-size: 10px;
+    color: var(--fg-faint); font-size: 10px;
     margin-left: auto; letter-spacing: 0.04em;
   }
 
   #focus-transcript {
     flex: 1; overflow-y: auto; padding: 14px 18px;
-    background: #fff;
+    background: var(--bg);
     background-image:
-      linear-gradient(to bottom, rgba(99,102,241,0.02), transparent 80px);
+      linear-gradient(to bottom, var(--shadow-soft), transparent 80px);
   }
   #focus-transcript .post {
     margin-bottom: 10px; padding-bottom: 8px;
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid var(--border-dash);
     white-space: pre-wrap; word-break: break-word;
     font-size: 12px; line-height: 1.5;
+    color: var(--fg);
   }
-  #focus-transcript .post .author { font-weight: 700; color: #111827; }
+  #focus-transcript .post .author { font-weight: 700; color: var(--fg); }
   #focus-transcript .post .ts {
-    color: #c7cdd6; font-size: 10px; margin-left: 8px;
+    color: var(--fg-faint); font-size: 10px; margin-left: 8px;
     font-variant-numeric: tabular-nums;
   }
   #focus-transcript .post.kind-system,
   #focus-transcript .post.kind-join,
   #focus-transcript .post.kind-leave {
-    color: #9ca3af; font-style: italic; font-size: 11px;
+    color: var(--fg-faint); font-style: italic; font-size: 11px;
   }
-  #focus-transcript .post.kind-tool_use { color: #b45309; }
-  #focus-transcript .post.kind-tool_result { color: #1d4ed8; }
+  #focus-transcript .post.kind-tool_use { color: var(--accent-manager-muted-fg); }
+  #focus-transcript .post.kind-tool_result { color: var(--accent); }
   #focus-transcript .fanout-group {
     padding: 8px 10px; margin: 0 0 10px;
-    background: #f5f3ff;
-    border-left: 3px solid #6366f1;
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
     border-radius: 0 3px 3px 0;
     font-size: 11.5px; line-height: 1.5;
+    color: var(--accent-soft-fg);
   }
   #focus-transcript .fanout-group .fanout-head {
-    color: #4338ca; font-weight: 700; margin-bottom: 4px;
+    color: var(--accent-hover); font-weight: 700; margin-bottom: 4px;
     font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
   }
   #focus-transcript .fanout-group .topic {
-    color: #6b7280; font-size: 10px; margin-top: 4px;
+    color: var(--fg-muted); font-size: 10px; margin-top: 4px;
   }
 
   .focus-composer {
     padding: 10px 14px;
-    border-top: 1px solid #e5e7eb;
-    background: #fafbfc;
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
     display: flex; gap: 8px; align-items: stretch;
+    position: relative;
   }
   .focus-composer .recipient-hint {
     display: inline-flex; align-items: center;
-    font-size: 10px; color: #4338ca;
-    background: #eef2ff;
-    border: 1px solid #c7d2fe;
+    font-size: 10px; color: var(--accent-hover);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-soft-border);
     padding: 3px 8px; border-radius: 3px;
     letter-spacing: 0.04em; font-weight: 600;
     white-space: nowrap;
   }
   .focus-composer .recipient-hint.manager {
-    color: #92400e; background: #fef3c7; border-color: #fcd34d;
+    color: var(--accent-manager-fg);
+    background: var(--accent-manager-soft-strong);
+    border-color: var(--accent-manager-line);
   }
   .focus-composer .recipient-hint.empty {
-    color: #9ca3af; background: #f3f4f6; border-color: #e5e7eb;
+    color: var(--fg-faint); background: var(--bg-muted);
+    border-color: var(--border);
   }
   .focus-composer input[type=text] {
     flex: 1; padding: 7px 10px;
-    border: 1px solid #d1d5db; border-radius: 3px;
-    background: #fff; font: inherit; font-size: 12px;
+    border: 1px solid var(--border-strong); border-radius: 3px;
+    background: var(--bg-input); color: var(--fg);
+    font: inherit; font-size: 12px;
     transition: border-color 90ms ease, box-shadow 90ms ease;
   }
   .focus-composer input[type=text]:focus {
-    outline: none; border-color: #6366f1;
-    box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--shadow-focus);
   }
   .focus-composer input[type=text]:disabled {
-    background: #f3f4f6; color: #9ca3af;
+    background: var(--bg-muted); color: var(--fg-faint);
   }
-  .focus-composer button {
-    padding: 6px 16px; background: #4f46e5;
-    color: #fff; border: 1px solid #4338ca;
+  .focus-composer button.primary {
+    padding: 6px 16px; background: var(--accent);
+    color: var(--accent-fg); border: 1px solid var(--accent-hover);
     border-radius: 3px; cursor: pointer;
     font: inherit; font-weight: 600; letter-spacing: 0.04em;
     transition: background 90ms ease, transform 60ms ease;
   }
-  .focus-composer button:hover:not(:disabled) {
-    background: #4338ca;
+  .focus-composer button.primary:hover:not(:disabled) {
+    background: var(--accent-hover);
   }
-  .focus-composer button:active:not(:disabled) {
+  .focus-composer button.primary:active:not(:disabled) {
     transform: translateY(1px);
   }
-  .focus-composer button:disabled {
-    background: #d1d5db; cursor: not-allowed;
-    border-color: #d1d5db; color: #f9fafb;
+  .focus-composer button.primary:disabled {
+    background: var(--border-strong); cursor: not-allowed;
+    border-color: var(--border-strong); color: var(--bg-elevated);
+  }
+  .focus-composer button.ghost {
+    padding: 6px 10px; background: var(--bg);
+    color: var(--fg); border: 1px solid var(--border-strong);
+    border-radius: 3px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .focus-composer button.ghost:hover:not(:disabled) {
+    border-color: var(--accent); color: var(--accent);
+  }
+  /* Legacy unscoped composer button selector (kept until full M6 rollout). */
+  .focus-composer button:not(.primary):not(.ghost) {
+    padding: 6px 16px; background: var(--accent);
+    color: var(--accent-fg); border: 1px solid var(--accent-hover);
+    border-radius: 3px; cursor: pointer;
+    font: inherit; font-weight: 600; letter-spacing: 0.04em;
+  }
+  .focus-composer button:not(.primary):not(.ghost):hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .focus-composer button:not(.primary):not(.ghost):disabled {
+    background: var(--border-strong); cursor: not-allowed;
+    border-color: var(--border-strong); color: var(--bg-elevated);
+  }
+
+  /* Slash-command picker overlay (anchored above the composer). */
+  .focus-slash-panel {
+    position: absolute; left: 14px; right: 14px; bottom: 100%;
+    margin-bottom: 6px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    box-shadow: 0 -4px 16px var(--shadow-focus);
+    max-height: 280px; overflow-y: auto;
+    z-index: 20;
+  }
+  .focus-slash-panel[hidden] { display: none; }
+  .focus-slash-panel .slash-search {
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    color: var(--fg-muted); font-size: 11px;
+  }
+  .focus-slash-panel .slash-group {
+    padding: 4px 10px; font-size: 10px; color: var(--fg-muted);
+    background: var(--bg-muted); text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .focus-slash-panel .slash-row {
+    display: flex; gap: 8px; align-items: baseline;
+    padding: 6px 10px; cursor: pointer;
+    border-bottom: 1px solid var(--border-dash);
+    font-size: 12px; color: var(--fg);
+  }
+  .focus-slash-panel .slash-row:hover,
+  .focus-slash-panel .slash-row.cursor {
+    background: var(--accent-soft); color: var(--accent-soft-fg);
+  }
+  .focus-slash-panel .slash-row .name {
+    color: var(--accent); font-weight: 600;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .focus-slash-panel .slash-row .args {
+    color: var(--fg-faint); font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .focus-slash-panel .slash-row .desc {
+    color: var(--fg-muted); font-size: 11px;
+    margin-left: auto; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 55%;
+  }
+  .focus-slash-panel .slash-row .scopes {
+    color: var(--fg-faint); font-size: 10px;
+    margin-left: 4px;
+  }
+  .focus-slash-panel .slash-empty {
+    padding: 16px; text-align: center;
+    color: var(--fg-faint); font-style: italic; font-size: 11px;
+  }
+
+  /* Big PTT row, lives directly under the composer. */
+  .focus-ptt-row {
+    padding: 8px 14px 12px;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border-dash);
+  }
+  .focus-ptt {
+    width: 100%; min-height: 52px;
+    background: var(--accent-soft); border: 1px solid var(--accent-soft-border);
+    color: var(--accent-soft-fg);
+    border-radius: 6px; cursor: pointer;
+    font: inherit; font-weight: 700; font-size: 13px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    user-select: none;
+    transition: background 90ms ease, transform 60ms ease;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+  }
+  .focus-ptt:hover { background: var(--accent-soft-strong); }
+  .focus-ptt.active {
+    background: var(--accent); color: var(--accent-fg);
+    border-color: var(--accent-hover);
+    transform: translateY(1px);
+  }
+  .focus-ptt kbd {
+    background: var(--bg); border: 1px solid var(--border-strong);
+    border-radius: 3px; padding: 1px 6px; font-size: 11px;
+    color: var(--fg);
+  }
+  .focus-ptt.active kbd {
+    background: var(--accent-hover); color: var(--accent-fg);
+    border-color: var(--accent-hover);
   }
 
   /* Side panel: stacked sections with terminal-style headers */
   .focus-side > .focus-side-block { padding: 0 14px 14px; }
   #focus-agents-list, #focus-recipient { padding: 8px 14px 0; }
   #focus-agents-list .agent-card {
-    background: #fff; border: 1px solid #e5e7eb;
-    border-left: 2px solid #d1d5db;
+    background: var(--bg); border: 1px solid var(--border);
+    border-left: 2px solid var(--border-strong);
     border-radius: 0 3px 3px 0;
     margin: 0 0 6px; padding: 6px 8px;
-    font-size: 11px;
+    font-size: 11px; color: var(--fg);
   }
   #focus-agents-list .agent-card .scope {
-    font-weight: 700; color: #111827; font-size: 11px;
+    font-weight: 700; color: var(--fg); font-size: 11px;
   }
   #focus-agents-list .agent-card.manager {
-    border-left-color: #f59e0b; background: #fffbeb;
+    border-left-color: var(--accent-manager);
+    background: var(--accent-manager-soft);
   }
   #focus-agents-list .agent-card .manager-tag {
-    color: #92400e; background: #fef3c7; border: 1px solid #fcd34d;
+    color: var(--accent-manager-fg);
+    background: var(--accent-manager-soft-strong);
+    border: 1px solid var(--accent-manager-line);
     font-size: 9px; padding: 1px 5px; border-radius: 2px;
     margin-left: 4px; font-weight: 700; letter-spacing: 0.08em;
   }
 
   .focus-recipient { display: flex; flex-direction: column; gap: 4px; }
+  .focus-recipient .all-toggle {
+    align-self: flex-start;
+    background: var(--bg); color: var(--fg-muted);
+    border: 1px solid var(--border); border-radius: 3px;
+    font: inherit; font-size: 10px; padding: 3px 8px; cursor: pointer;
+    letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .focus-recipient .all-toggle:hover {
+    border-color: var(--accent); color: var(--accent);
+  }
   .focus-recipient label.chip {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 10px;
-    border: 1px solid #e5e7eb; border-radius: 3px;
+    border: 1px solid var(--border); border-radius: 3px;
     cursor: pointer; font-size: 11px;
-    background: #fff;
+    background: var(--bg); color: var(--fg);
     transition: all 90ms ease;
     position: relative;
   }
@@ -326,43 +566,76 @@
     width: 2px; background: transparent; border-radius: 3px 0 0 3px;
     transition: background 90ms ease;
   }
-  .focus-recipient label.chip:hover { background: #f9fafb; }
+  .focus-recipient label.chip:hover { background: var(--bg-muted); }
   .focus-recipient label.chip.checked {
-    background: #eef2ff; border-color: #6366f1;
-    color: #312e81; font-weight: 600;
+    background: var(--accent-soft); border-color: var(--accent);
+    color: var(--accent-soft-fg); font-weight: 600;
   }
-  .focus-recipient label.chip.checked::before { background: #4f46e5; }
+  .focus-recipient label.chip.checked::before { background: var(--accent); }
   .focus-recipient label.chip.checked.manager-chip {
-    background: #fef3c7; border-color: #f59e0b;
-    color: #78350f;
+    background: var(--accent-manager-soft-strong);
+    border-color: var(--accent-manager);
+    color: var(--accent-manager-fg);
   }
   .focus-recipient label.chip.checked.manager-chip::before {
-    background: #f59e0b;
+    background: var(--accent-manager);
   }
   .focus-recipient label.chip input {
     margin: 0;
-    /* Hide native radio; the chip itself signals selection. */
-    appearance: none; width: 0; height: 0; opacity: 0; position: absolute;
+    width: 14px; height: 14px; flex: 0 0 auto;
+    accent-color: var(--accent);
   }
   .focus-recipient label.chip .chip-label {
     flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .focus-recipient label.chip .badge {
-    color: #fff; font-size: 9px; padding: 1px 6px;
+    color: var(--accent-fg); font-size: 9px; padding: 1px 6px;
     border-radius: 8px; font-weight: 700; letter-spacing: 0.04em;
     line-height: 1.4;
+    background: var(--accent);
   }
-  .focus-recipient label.chip.workers .badge { background: #6366f1; }
-  .focus-recipient label.chip.manager-chip .badge { background: #f59e0b; }
+  .focus-recipient label.chip.manager-chip .badge { background: var(--accent-manager); }
+
+  /* Voice section folded into focus-side (M7). */
+  .focus-voice { padding: 8px 14px 14px;
+                 display: flex; flex-direction: column; gap: 6px; }
+  .focus-voice .vp-conn { color: var(--fg-muted); font-size: 11px; align-self: flex-end; }
+  .focus-voice .vp-conn.ok { color: var(--ok); }
+  .focus-voice .vp-conn.err { color: var(--danger); }
+  .focus-voice .vp-stage {
+    align-self: flex-start;
+    padding: 3px 8px; border-radius: 10px;
+    background: var(--bg-muted); color: var(--fg-muted);
+    font-size: 11px; border: 1px solid var(--border);
+  }
+  .focus-voice .vp-stage.listening { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-soft-border); }
+  .focus-voice .vp-stage.transcribing { background: var(--accent-soft); color: var(--accent-soft-fg); border-color: var(--accent-soft-border); }
+  .focus-voice .vp-stage.thinking { background: var(--accent-manager-soft-strong); color: var(--accent-manager-fg); border-color: var(--accent-manager-line); }
+  .focus-voice .vp-stage.responding { background: var(--accent-soft); color: var(--accent-soft-fg); border-color: var(--accent-soft-border); }
+  .focus-voice .vp-stage.speaking { background: var(--accent-soft-strong); color: var(--accent-soft-fg); border-color: var(--accent); }
+  .focus-voice .vp-stage.tool { background: var(--bg-muted); color: var(--fg-muted); border-color: var(--border); }
+  .focus-voice .vp-stage.error { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+  .focus-voice .vp-meter, .focus-voice .vp-latency { color: var(--fg-muted); font-size: 11px; }
+  .focus-voice .vp-input { display: flex; gap: 4px; }
+  .focus-voice .vp-input input {
+    flex: 1; min-width: 0; font: inherit; padding: 3px 4px;
+    background: var(--bg-input); color: var(--fg);
+    border: 1px solid var(--border-strong); border-radius: 3px;
+  }
+  .focus-voice .vp-volume {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--fg-muted); font-size: 11px;
+  }
+  .focus-voice .vp-volume input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
 
   .focus-empty {
-    padding: 40px 24px; color: #9ca3af; font-size: 11.5px;
+    padding: 40px 24px; color: var(--fg-faint); font-size: 11.5px;
     text-align: center; font-style: italic;
     letter-spacing: 0.02em;
   }
   .focus-empty::before {
-    content: "—"; display: block; color: #d1d5db;
+    content: "—"; display: block; color: var(--border-strong);
     margin-bottom: 8px; font-size: 14px;
   }
 </style>
@@ -376,7 +649,8 @@
   <a href="#/rooms" data-tab="rooms">rooms</a>
   <a href="#/room/" data-tab="room" id="nav-room" hidden>room</a>
   <span class="me" id="me"></span>
-  <span id="leader-badge" title="leadership state" style="margin-left:auto; font-size:11px; padding:2px 6px; border:1px solid #ccc; border-radius:3px;"></span>
+  <button id="theme-toggle" class="theme-toggle" type="button" title="toggle theme">☾</button>
+  <span id="leader-badge" title="leadership state"></span>
 </nav>
 
 <div class="shell">
@@ -415,16 +689,6 @@
       <div class="focus-rooms" id="focus-rooms-list">
         <div class="focus-empty">loading rooms…</div>
       </div>
-      <div class="focus-join-bar">
-        <button type="button" id="focus-join-toggle">+ join room</button>
-      </div>
-      <div class="focus-join-picker" id="focus-join-picker" hidden>
-        <select id="focus-join-select"><option value="">loading…</option></select>
-        <div class="picker-actions">
-          <button type="button" id="focus-join-confirm" class="primary">join</button>
-          <button type="button" id="focus-join-cancel">cancel</button>
-        </div>
-      </div>
     </aside>
 
     <main class="focus-transcript-pane">
@@ -436,18 +700,40 @@
         <div class="focus-empty">pick a room from the list, or join one</div>
       </div>
       <div class="focus-composer">
-        <span class="recipient-hint" id="focus-recipient-hint">→ ?</span>
-        <input type="text" id="focus-post-body" placeholder="message…" disabled />
-        <button type="button" id="focus-post-send" disabled>send</button>
+        <input type="text" id="focus-post-body" placeholder="message or /command" disabled autocomplete="off" />
+        <button type="button" id="focus-slash-btn" class="ghost" title="slash commands" disabled>/ ▾</button>
+        <button type="button" id="focus-post-send" class="primary" disabled>send</button>
+        <div class="focus-slash-panel" id="focus-slash-panel" hidden></div>
+      </div>
+      <div class="focus-ptt-row">
+        <button class="focus-ptt" id="vp-ptt" type="button">
+          Hold <kbd>SPACE</kbd> or this button to talk
+        </button>
       </div>
     </main>
 
     <aside class="focus-side">
       <div class="focus-side-header">Agents</div>
-      <div id="focus-agents-list"><em style="font-size:11px;color:#9ca3af">no room focused</em></div>
-      <div class="focus-side-header" style="margin-top:12px">Recipient</div>
+      <div id="focus-agents-list"><em style="font-size:11px;color:var(--fg-faint)">no room focused</em></div>
+      <div class="focus-side-header" style="margin-top:12px">Recipients</div>
       <div class="focus-recipient" id="focus-recipient">
-        <em style="font-size:11px;color:#9ca3af">no room focused</em>
+        <em style="font-size:11px;color:var(--fg-faint)">no room focused</em>
+      </div>
+      <div class="focus-side-header" style="margin-top:12px">Voice</div>
+      <div class="focus-voice">
+        <span class="vp-conn" id="vp-conn">connecting…</span>
+        <span class="vp-stage" id="vp-stage">idle</span>
+        <div class="vp-meter" id="vp-meter">mic: <span id="vp-meter-val">—</span></div>
+        <div class="vp-latency" id="vp-latency">STT —ms · first-token —ms · first-audio —ms</div>
+        <div class="vp-input">
+          <input type="text" id="vp-text" placeholder="type to voice agent…" />
+          <button id="vp-text-send" type="button">send</button>
+        </div>
+        <div class="vp-volume">
+          <label for="vp-vol">tts vol</label>
+          <input id="vp-vol" type="range" min="0" max="200" value="100" step="1">
+          <span id="vp-vol-val">100%</span>
+        </div>
       </div>
     </aside>
   </div>
@@ -529,41 +815,6 @@
   </div>
 </section>
 </main>
-
-<aside class="voice-panel" id="voice-panel">
-  <div class="vp-header">
-    <strong>voice</strong>
-    <span class="vp-conn" id="vp-conn">disconnected</span>
-  </div>
-  <div class="vp-stage" id="vp-stage">idle</div>
-  <button class="vp-ptt" id="vp-ptt" type="button">
-    Hold <kbd>SPACE</kbd> or this button to talk
-  </button>
-  <div class="vp-meter" id="vp-meter">mic: <span id="vp-meter-val">—</span></div>
-  <div class="vp-latency" id="vp-latency">STT —ms · first-token —ms · first-audio —ms</div>
-  <div class="vp-rooms">
-    <div class="vp-rooms-header">
-      <span>joined rooms</span>
-      <button id="vp-join-toggle" type="button">+ join</button>
-    </div>
-    <div class="vp-rooms-list" id="vp-rooms-list"><em>none</em></div>
-    <div class="vp-room-picker" id="vp-room-picker" hidden>
-      <select id="vp-room-select"><option value="">loading…</option></select>
-      <button id="vp-room-join" type="button">join</button>
-      <button id="vp-room-cancel" type="button">cancel</button>
-    </div>
-  </div>
-  <div class="vp-input">
-    <input type="text" id="vp-text" placeholder="type to voice agent…" />
-    <button id="vp-text-send" type="button">send</button>
-  </div>
-  <div class="vp-transcript" id="vp-transcript"></div>
-  <div class="vp-volume">
-    <label for="vp-vol">tts vol</label>
-    <input id="vp-vol" type="range" min="0" max="200" value="100" step="1">
-    <span id="vp-vol-val">100%</span>
-  </div>
-</aside>
 </div>
 
 <script>
@@ -596,6 +847,25 @@ let cfg = {
 const base = location.origin;
 
 document.getElementById("me").textContent = `as ${cfg.as}`;
+
+// ---- Theme toggle -------------------------------------------------------
+(function initTheme() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  function syncGlyph() {
+    const dark = document.documentElement.dataset.theme === "dark";
+    btn.textContent = dark ? "☀" : "☾";
+    btn.title = dark ? "switch to light" : "switch to dark";
+  }
+  syncGlyph();
+  btn.addEventListener("click", () => {
+    const dark = document.documentElement.dataset.theme === "dark";
+    const next = dark ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("awm.theme", next); } catch {}
+    syncGlyph();
+  });
+})();
 
 async function api(method, path, body) {
   const init = {
@@ -807,15 +1077,13 @@ function updateLeaderBadge(status) {
   if (!el || !status) return;
   if (status.leadership_state === "ACTIVE") {
     el.textContent = "ACTIVE";
-    el.style.background = "#dcfce7";
-    el.style.color = "#166534";
-    el.style.borderColor = "#86efac";
+    el.classList.remove("standby");
+    el.classList.add("active");
   } else {
     const leader = status.current_leader || "?";
     el.textContent = `STANDBY → ${leader}`;
-    el.style.background = "#f3f4f6";
-    el.style.color = "#374151";
-    el.style.borderColor = "#d1d5db";
+    el.classList.remove("active");
+    el.classList.add("standby");
   }
 }
 
@@ -1292,27 +1560,45 @@ let focusRoomId = null;
 let focusWs = null;
 let focusWsBackoff = 1000;
 let focusEarliestTs = null;
-let focusJoinedRooms = [];
+let focusJoinedRooms = [];           // room ids the vagrant scope participates in
+let focusRoomMeta = new Map();       // room_id -> {topic, status, ...} from /rooms
 let focusAgents = []; // last /rooms/{id}/agents response for the focused room
 
-// Per-room recipient choice persisted across reloads.
-// Stored as JSON: {"<room_id>": "<key>"} where key is one of:
-//   "manager" | "all-workers" | "scope:<identifier>"
+// Per-room recipient selection persisted across reloads.
+// Stored as JSON: {"<room_id>": ["<key>", …]} where each key is one of:
+//   "manager" | "scope:<identifier>"
+// Legacy schema (single string) is migrated on read.
 function loadFocusRecipients() {
-  try { return JSON.parse(localStorage.getItem("awm.focus.recipients") || "{}"); }
+  let raw;
+  try { raw = JSON.parse(localStorage.getItem("awm.focus.recipients") || "{}"); }
   catch { return {}; }
+  if (!raw || typeof raw !== "object") return {};
+  // Migrate legacy string values. "all-workers" expanded to scope:* lazily
+  // in activeRecipientKeys() since it depends on current room agents.
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (Array.isArray(v)) out[k] = v.filter(x => typeof x === "string");
+    else if (typeof v === "string") out[k] = [v];
+    else out[k] = [];
+  }
+  return out;
 }
 function saveFocusRecipients(map) {
   try { localStorage.setItem("awm.focus.recipients", JSON.stringify(map)); }
   catch {}
 }
-function getRecipientChoice(roomId) {
+function getRecipientChoices(roomId) {
   return loadFocusRecipients()[roomId] || null;
 }
-function setRecipientChoice(roomId, key) {
+function setRecipientChoices(roomId, keys) {
   const m = loadFocusRecipients();
-  m[roomId] = key;
+  m[roomId] = Array.from(new Set(keys));
   saveFocusRecipients(m);
+}
+function toggleRecipientChoice(roomId, key) {
+  const cur = new Set(getRecipientChoices(roomId) || []);
+  if (cur.has(key)) cur.delete(key); else cur.add(key);
+  setRecipientChoices(roomId, [...cur]);
 }
 
 function isVagrantRoom(roomId) {
@@ -1341,19 +1627,34 @@ async function enterFocusTab(roomId) {
 }
 
 async function refreshFocusRail() {
+  // Rail source of truth: rooms the vagrant scope is participating in.
+  // Voice-agent membership is reconciled silently against this list
+  // (see voice-panel.js), so the user doesn't manage room presence here.
+  focusRoomMeta = new Map();
   try {
-    const r = await api("GET", "/voice/state");
-    focusJoinedRooms = r.joined_rooms || [];
+    const params = new URLSearchParams({ status: "active" });
+    if (vagrantSession.scope_identifier) {
+      params.set("participating_scope", vagrantSession.scope_identifier);
+    }
+    const r = await api("GET", `/rooms?${params}`);
+    focusJoinedRooms = [];
+    for (const room of (r.rooms || [])) {
+      focusJoinedRooms.push(room.id);
+      focusRoomMeta.set(room.id, room);
+    }
   } catch (e) {
     focusJoinedRooms = [];
   }
-  // The vagrant home room must always be visible in the rail. It's the
-  // user's anchor (the "home" room) — pin it even if the voice agent
-  // hasn't been formally joined to it (it always is, but be defensive).
+  // Pin the vagrant home room even if filter missed it (always defensive).
   if (vagrantSession.room_id && !focusJoinedRooms.includes(vagrantSession.room_id)) {
     focusJoinedRooms = [vagrantSession.room_id, ...focusJoinedRooms];
   }
   renderFocusRail();
+  // Let voice-panel reconcile its joined_rooms set against the rail.
+  try {
+    window.dispatchEvent(new CustomEvent("awm-focus-rail-changed",
+                                         { detail: { rooms: focusJoinedRooms } }));
+  } catch {}
 }
 
 function renderFocusRail() {
@@ -1377,80 +1678,17 @@ function renderFocusRail() {
       (rid === focusRoomId ? " active" : "") +
       (isVag ? " vagrant" : "");
     const label = isVag ? "home" : rid;
+    const meta = focusRoomMeta.get(rid);
+    const subtitle = isVag
+      ? `manager · ${rid}`
+      : (meta && meta.topic ? meta.topic : rid);
     div.innerHTML =
-      `<div class="label-row">` +
-        `<span>${esc(label)}</span>` +
-        (!isVag
-          ? `<button class="leave" type="button" data-leave="${esc(rid)}" title="leave room">×</button>`
-          : "") +
-      `</div>` +
-      `<div class="topic">${esc(isVag ? "manager · " + rid : rid)}</div>`;
-    div.addEventListener("click", (e) => {
-      if (e.target.closest("[data-leave]")) return; // handled below
-      navigate(`/focus/${rid}`);
-    });
+      `<div class="label-row"><span>${esc(label)}</span></div>` +
+      `<div class="topic">${esc(subtitle)}</div>`;
+    div.addEventListener("click", () => navigate(`/focus/${rid}`));
     list.appendChild(div);
   }
-  list.querySelectorAll("[data-leave]").forEach(btn => {
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const rid = btn.dataset.leave;
-      if (!confirm(`Stop tracking room ${rid}?`)) return;
-      try {
-        await api("POST", `/voice/rooms/${encodeURIComponent(rid)}/leave`);
-        await refreshFocusRail();
-        if (focusRoomId === rid) {
-          // fall back to vagrant home
-          if (vagrantSession.room_id) navigate(`/focus/${vagrantSession.room_id}`);
-          else navigate("/focus");
-        }
-      } catch (err) {
-        setFocusBanner(`leave failed: ${err.message}`);
-      }
-    });
-  });
 }
-
-// Join picker — lists active rooms NOT already joined; calling join routes
-// the vagrant voice agent in as a participant (the manager-as-proxy model).
-document.getElementById("focus-join-toggle").addEventListener("click", async () => {
-  const picker = document.getElementById("focus-join-picker");
-  const sel = document.getElementById("focus-join-select");
-  picker.hidden = false;
-  sel.innerHTML = "<option value=''>loading…</option>";
-  try {
-    const r = await api("GET", "/rooms?status=active");
-    sel.innerHTML = "";
-    const joined = new Set(focusJoinedRooms);
-    let count = 0;
-    for (const room of (r.rooms || [])) {
-      if (joined.has(room.id)) continue;
-      const opt = document.createElement("option");
-      opt.value = room.id;
-      opt.textContent = `${room.id}${room.topic ? " — " + room.topic : ""}`;
-      sel.appendChild(opt);
-      count++;
-    }
-    if (!count) sel.innerHTML = "<option value=''>no other active rooms</option>";
-  } catch (e) {
-    sel.innerHTML = `<option value=''>error: ${esc(e.message)}</option>`;
-  }
-});
-document.getElementById("focus-join-cancel").addEventListener("click", () => {
-  document.getElementById("focus-join-picker").hidden = true;
-});
-document.getElementById("focus-join-confirm").addEventListener("click", async () => {
-  const rid = document.getElementById("focus-join-select").value;
-  if (!rid) return;
-  try {
-    await api("POST", `/voice/rooms/${encodeURIComponent(rid)}/join`);
-    document.getElementById("focus-join-picker").hidden = true;
-    await refreshFocusRail();
-    navigate(`/focus/${rid}`);
-  } catch (e) {
-    setFocusBanner(`join failed: ${e.message}`);
-  }
-});
 
 async function focusOnRoom(roomId) {
   if (focusRoomId === roomId && focusWs && focusWs.readyState === 1) return;
@@ -1460,6 +1698,10 @@ async function focusOnRoom(roomId) {
   document.getElementById("focus-transcript").innerHTML = "";
   renderFocusRail();
   setFocusComposerEnabled(true);
+  // Reconnects only the room-transcript WS; deliberately does NOT call
+  // /voice/{join,leave}. Voice presence is reconciled against the rail
+  // (see reconcileVoiceJoins in voice-panel.js), so focus changes are
+  // cheap and side-effect-free for the voice agent.
   closeFocusWs();
   await refreshFocusAgents();
   openFocusWs(roomId);
@@ -1474,6 +1716,8 @@ function setFocusBanner(text) {
 function setFocusComposerEnabled(yes) {
   document.getElementById("focus-post-body").disabled = !yes;
   document.getElementById("focus-post-send").disabled = !yes;
+  const sb = document.getElementById("focus-slash-btn");
+  if (sb) sb.disabled = !yes;
 }
 
 function openFocusWs(roomId) {
@@ -1639,26 +1883,34 @@ function nonManagerScopes() {
     .map(a => a.scope);
 }
 
-function defaultRecipientKey() {
+function defaultRecipientKeys() {
   // In vagrant home: address the manager.
-  // Elsewhere: address all workers.
-  if (!focusRoomId) return null;
-  if (isVagrantRoom(focusRoomId)) return "manager";
-  return nonManagerScopes().length ? "all-workers" : "manager";
+  // Elsewhere: address all workers (one key per worker scope).
+  if (!focusRoomId) return [];
+  if (isVagrantRoom(focusRoomId)) return ["manager"];
+  const workers = nonManagerScopes();
+  return workers.length ? workers.map(s => `scope:${s}`) : ["manager"];
 }
 
-function activeRecipientKey() {
-  if (!focusRoomId) return null;
-  let key = getRecipientChoice(focusRoomId) || defaultRecipientKey();
-  // Validate the persisted key still refers to a present scope.
-  if (key && key.startsWith("scope:")) {
-    const ident = key.slice("scope:".length);
-    if (!focusAgents.some(a => a.scope === ident)) {
-      key = defaultRecipientKey();
-    }
+function activeRecipientKeys() {
+  if (!focusRoomId) return [];
+  let keys = getRecipientChoices(focusRoomId);
+  if (keys === null) return defaultRecipientKeys();
+  // Migrate legacy "all-workers" sentinel by expanding to current workers.
+  if (keys.includes("all-workers")) {
+    const workers = nonManagerScopes().map(s => `scope:${s}`);
+    keys = keys.filter(k => k !== "all-workers").concat(workers);
+    keys = Array.from(new Set(keys));
+    setRecipientChoices(focusRoomId, keys);
   }
-  if (key === "all-workers" && !nonManagerScopes().length) key = "manager";
-  return key;
+  // Filter out scope: keys that no longer correspond to a present agent.
+  keys = keys.filter(k => {
+    if (k === "manager") return true;
+    if (!k.startsWith("scope:")) return false;
+    const ident = k.slice(6);
+    return focusAgents.some(a => a.scope === ident);
+  });
+  return keys;
 }
 
 function renderFocusRecipient() {
@@ -1666,76 +1918,91 @@ function renderFocusRecipient() {
   const hint = document.getElementById("focus-recipient-hint");
   box.innerHTML = "";
   if (!focusRoomId) {
-    box.innerHTML = `<em style="font-size:11px;color:#9ca3af">no room focused</em>`;
-    hint.textContent = "→ ?";
+    box.innerHTML = `<em style="font-size:11px;color:var(--fg-faint)">no room focused</em>`;
+    if (hint) hint.textContent = "→ ?";
     return;
   }
-  const choices = [];
   const workers = nonManagerScopes();
-  if (workers.length) {
-    choices.push({
-      key: "all-workers",
-      label: `all workers`,
-      badgeClass: "workers",
-      badge: `${workers.length}`,
-    });
-  }
-  // Manager option: only meaningful if vagrant agent is in the room.
   const hasManager = focusAgents.some(a => a.scope === vagrantSession.scope_identifier);
+
+  const chips = [];
   if (hasManager || isVagrantRoom(focusRoomId)) {
-    choices.push({
-      key: "manager",
-      label: `manager`,
-      badgeClass: "manager",
-      badge: "vagrant",
-    });
+    chips.push({ key: "manager", label: "manager",
+                 variant: "manager-chip", badge: "vagrant" });
   }
   for (const ident of workers) {
-    choices.push({
-      key: `scope:${ident}`,
-      label: ident,
-    });
+    chips.push({ key: `scope:${ident}`, label: ident, variant: "" });
   }
 
-  const activeKey = activeRecipientKey();
+  const activeSet = new Set(activeRecipientKeys());
 
-  for (const c of choices) {
+  // "All workers" toggle: select-all if any worker is unchecked, else clear.
+  if (workers.length > 1) {
+    const allKeys = workers.map(s => `scope:${s}`);
+    const allChecked = allKeys.every(k => activeSet.has(k));
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "all-toggle";
+    btn.textContent = allChecked
+      ? `clear ${workers.length} workers`
+      : `select all workers (${workers.length})`;
+    btn.addEventListener("click", () => {
+      const cur = new Set(activeRecipientKeys());
+      if (allChecked) {
+        for (const k of allKeys) cur.delete(k);
+      } else {
+        for (const k of allKeys) cur.add(k);
+      }
+      setRecipientChoices(focusRoomId, [...cur]);
+      renderFocusRecipient();
+      updateRecipientHint();
+      notifyVoiceFocusChange();
+    });
+    box.appendChild(btn);
+  }
+
+  for (const c of chips) {
+    const isChecked = activeSet.has(c.key);
     const lbl = document.createElement("label");
-    const variantClass =
-      c.key === "manager" ? "manager-chip" :
-      c.key === "all-workers" ? "workers" : "";
-    const isChecked = c.key === activeKey;
     lbl.className = "chip" +
-      (variantClass ? ` ${variantClass}` : "") +
+      (c.variant ? ` ${c.variant}` : "") +
       (isChecked ? " checked" : "");
     lbl.innerHTML =
-      `<input type="radio" name="focus-recip" value="${esc(c.key)}" ${isChecked ? "checked" : ""}/>` +
+      `<input type="checkbox" value="${esc(c.key)}" ${isChecked ? "checked" : ""}/>` +
       `<span class="chip-label">${esc(c.label)}</span>` +
       (c.badge ? `<span class="badge">${esc(c.badge)}</span>` : "");
     lbl.querySelector("input").addEventListener("change", () => {
-      setRecipientChoice(focusRoomId, c.key);
-      renderFocusRecipient(); // re-render to update checked styling
+      toggleRecipientChoice(focusRoomId, c.key);
+      renderFocusRecipient();
       updateRecipientHint();
       notifyVoiceFocusChange();
     });
     box.appendChild(lbl);
   }
-  if (!choices.length) {
-    box.innerHTML = `<em style="font-size:11px;color:#9ca3af">no recipients yet</em>`;
+  if (!chips.length) {
+    box.innerHTML = `<em style="font-size:11px;color:var(--fg-faint)">no recipients yet</em>`;
   }
   updateRecipientHint();
 }
 
 function updateRecipientHint() {
   const hint = document.getElementById("focus-recipient-hint");
-  const k = activeRecipientKey();
+  if (!hint) return;  // hint is removed once the slash selector (M6) lands
+  const keys = activeRecipientKeys();
   hint.className = "recipient-hint";
-  if (!k) { hint.textContent = "→ no recipient"; hint.classList.add("empty"); return; }
+  if (!keys.length) {
+    hint.textContent = "→ no recipient";
+    hint.classList.add("empty");
+    return;
+  }
+  if (keys.length > 1) {
+    hint.textContent = `→ ${keys.length} recipients`;
+    return;
+  }
+  const k = keys[0];
   if (k === "manager") {
     hint.textContent = "→ manager";
     hint.classList.add("manager");
-  } else if (k === "all-workers") {
-    hint.textContent = `→ all workers · ${nonManagerScopes().length}`;
   } else if (k.startsWith("scope:")) {
     hint.textContent = `→ ${k.slice(6)}`;
   } else {
@@ -1744,25 +2011,40 @@ function updateRecipientHint() {
   }
 }
 
-// Compose + send. Resolves the active recipient and either posts once
-// addressed (manager / single scope) or fans out N times (all workers).
+// Compose + send. Resolves the active recipient set and fans out one
+// post per selected scope (manager + every checked worker). Slash
+// commands take the dedicated /agents/{scope}/slash endpoint per scope.
 async function sendFocusPost() {
   const bodyEl = document.getElementById("focus-post-body");
   const body = bodyEl.value;
   if (!body.trim() || !focusRoomId) return;
-  const key = activeRecipientKey();
-  if (!key) { setFocusBanner("no recipient"); return; }
-  bodyEl.value = "";
+  const keys = activeRecipientKeys();
+  if (!keys.length) { setFocusBanner("no recipient"); return; }
 
-  let targets = [];
-  if (key === "manager") {
-    if (vagrantSession.scope_identifier) targets = [vagrantSession.scope_identifier];
-    else { setFocusBanner("manager scope unknown"); return; }
-  } else if (key === "all-workers") {
-    targets = nonManagerScopes();
-    if (!targets.length) { setFocusBanner("no workers in this room"); return; }
-  } else if (key.startsWith("scope:")) {
-    targets = [key.slice(6)];
+  const targets = resolveRecipientTargets(keys);
+  if (!targets.length) { setFocusBanner("no resolvable recipients"); return; }
+
+  const trimmed = body.trim();
+  bodyEl.value = "";
+  closeSlashPanel();
+
+  if (trimmed.startsWith("/")) {
+    const errs = [];
+    await Promise.all(targets.map(async (scope) => {
+      try {
+        await api(
+          "POST",
+          `/rooms/${encodeURIComponent(focusRoomId)}/agents/${encodeURIComponent(scope)}/slash`,
+          { cmd: trimmed },
+        );
+      } catch (e) {
+        errs.push(`${scope}: ${e.message}`);
+      }
+    }));
+    setFocusBanner(errs.length
+      ? `slash errors: ${errs.join("; ")}`
+      : `slash → ${targets.length} recipient${targets.length > 1 ? "s" : ""}`);
+    return;
   }
 
   // Fan-out grouping for transcript prettification (>1 recipient).
@@ -1783,10 +2065,283 @@ async function sendFocusPost() {
   else setFocusBanner("");
 }
 
+// Resolve a set of recipient keys to concrete scope identifiers.
+function resolveRecipientTargets(keys) {
+  const out = new Set();
+  for (const k of keys) {
+    if (k === "manager") {
+      if (vagrantSession.scope_identifier) out.add(vagrantSession.scope_identifier);
+    } else if (k.startsWith("scope:")) {
+      out.add(k.slice(6));
+    }
+  }
+  return [...out];
+}
+
 document.getElementById("focus-post-send").addEventListener("click", sendFocusPost);
+
+// ---- Slash-command selector --------------------------------------------
+//
+// Source: GET /rooms/{id}/agents/{scope}/slash-commands for each currently
+// checked recipient scope. Server commands have name+args+description;
+// claude-side commands are name-only. We dedupe by (name, args) and tag
+// each row with the supporting scopes. Cached per (room, scope) for 30s.
+
+const SLASH_TTL_MS = 30_000;
+const slashCache = new Map();  // key "<room>::<scope>" -> { fetchedAt, server, claude }
+let slashState = {
+  open: false,
+  rows: [],         // [{ name, args, description, scopes, source }]
+  cursor: 0,
+  filter: "",
+};
+
+function slashCacheKey(roomId, scope) { return `${roomId}::${scope}`; }
+
+async function fetchScopeSlash(roomId, scope) {
+  const key = slashCacheKey(roomId, scope);
+  const cached = slashCache.get(key);
+  if (cached && (Date.now() - cached.fetchedAt) < SLASH_TTL_MS) return cached;
+  try {
+    const r = await api(
+      "GET",
+      `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(scope)}/slash-commands`,
+    );
+    const entry = {
+      fetchedAt: Date.now(),
+      server: r.server || [],
+      claude: r.claude || [],
+    };
+    slashCache.set(key, entry);
+    return entry;
+  } catch (e) {
+    // Cache the failure briefly so we don't hammer a 404 endpoint.
+    const entry = { fetchedAt: Date.now(), server: [], claude: [], error: e.message };
+    slashCache.set(key, entry);
+    return entry;
+  }
+}
+
+async function loadSlashCatalog(scopes) {
+  // Returns merged rows: [{name, args, description, scopes:[scope, ...], source}]
+  const results = await Promise.all(scopes.map(s => fetchScopeSlash(focusRoomId, s)));
+  const byKey = new Map();  // `${source}:${name}:${args}` -> row
+  for (let i = 0; i < scopes.length; i++) {
+    const scope = scopes[i];
+    const entry = results[i];
+    for (const cmd of entry.server) {
+      const k = `server:${cmd.name}:${cmd.args || ""}`;
+      const existing = byKey.get(k);
+      if (existing) {
+        existing.scopes.push(scope);
+      } else {
+        byKey.set(k, {
+          name: cmd.name,
+          args: cmd.args || "",
+          description: cmd.description || "",
+          scopes: [scope],
+          source: "server",
+        });
+      }
+    }
+    for (const name of entry.claude) {
+      const cmdName = name.startsWith("/") ? name : "/" + name;
+      const k = `claude:${cmdName}:`;
+      const existing = byKey.get(k);
+      if (existing) {
+        existing.scopes.push(scope);
+      } else {
+        byKey.set(k, {
+          name: cmdName, args: "", description: "(claude)",
+          scopes: [scope], source: "claude",
+        });
+      }
+    }
+  }
+  return [...byKey.values()].sort((a, b) => {
+    if (a.source !== b.source) return a.source === "server" ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function bodyToFilter(s) {
+  // Match against everything after the leading slash up to the first space.
+  const m = s.match(/^\s*\/([^\s]*)/);
+  return m ? m[1].toLowerCase() : "";
+}
+
+function filteredSlashRows() {
+  const f = slashState.filter;
+  if (!f) return slashState.rows;
+  return slashState.rows.filter(r => {
+    const tail = r.name.startsWith("/") ? r.name.slice(1) : r.name;
+    return tail.toLowerCase().includes(f);
+  });
+}
+
+function renderSlashPanel() {
+  const panel = document.getElementById("focus-slash-panel");
+  if (!panel) return;
+  if (!slashState.open) { panel.hidden = true; panel.innerHTML = ""; return; }
+  panel.hidden = false;
+  const rows = filteredSlashRows();
+  if (!rows.length) {
+    panel.innerHTML = `<div class="slash-empty">no commands</div>`;
+    return;
+  }
+  const parts = [];
+  let lastSource = null;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.source !== lastSource) {
+      parts.push(`<div class="slash-group">${esc(r.source)}</div>`);
+      lastSource = r.source;
+    }
+    const scopesTag = r.scopes.length > 1
+      ? `<span class="scopes">(×${r.scopes.length})</span>`
+      : "";
+    const cursorClass = i === slashState.cursor ? " cursor" : "";
+    parts.push(
+      `<div class="slash-row${cursorClass}" data-idx="${i}">` +
+      `<span class="name">${esc(r.name)}</span>` +
+      (r.args ? `<span class="args">${esc(r.args)}</span>` : "") +
+      scopesTag +
+      (r.description ? `<span class="desc">${esc(r.description)}</span>` : "") +
+      `</div>`
+    );
+  }
+  panel.innerHTML = parts.join("");
+  panel.querySelectorAll(".slash-row").forEach(el => {
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();  // keep focus in the input
+      const idx = parseInt(el.dataset.idx, 10);
+      pickSlashRow(idx);
+    });
+  });
+  // Scroll cursor into view.
+  const cur = panel.querySelector(".slash-row.cursor");
+  if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+}
+
+async function openSlashPanel(triggerSource) {
+  if (!focusRoomId) return;
+  const scopes = resolveRecipientTargets(activeRecipientKeys());
+  if (!scopes.length) { setFocusBanner("pick a recipient first"); return; }
+  slashState.open = true;
+  slashState.cursor = 0;
+  slashState.filter = "";
+  const bodyEl = document.getElementById("focus-post-body");
+  if (bodyEl) slashState.filter = bodyToFilter(bodyEl.value);
+  // Show panel with cached data first if available, then refresh.
+  slashState.rows = [];
+  renderSlashPanel();
+  const panel = document.getElementById("focus-slash-panel");
+  if (panel) panel.innerHTML = `<div class="slash-empty">loading…</div>`;
+  panel.hidden = false;
+  try {
+    slashState.rows = await loadSlashCatalog(scopes);
+  } catch (e) {
+    slashState.rows = [];
+  }
+  // User may have closed it while we waited.
+  if (!slashState.open) return;
+  renderSlashPanel();
+  if (triggerSource === "button" && bodyEl && !bodyEl.value.trim()) {
+    bodyEl.value = "/";
+    bodyEl.focus();
+    slashState.filter = "";
+    renderSlashPanel();
+  }
+}
+
+function closeSlashPanel() {
+  slashState.open = false;
+  renderSlashPanel();
+}
+
+function pickSlashRow(idx) {
+  const rows = filteredSlashRows();
+  const row = rows[idx];
+  if (!row) return;
+  const bodyEl = document.getElementById("focus-post-body");
+  if (!bodyEl) return;
+  const insert = row.name + (row.args ? " " : " ");
+  bodyEl.value = insert;
+  bodyEl.focus();
+  bodyEl.setSelectionRange(bodyEl.value.length, bodyEl.value.length);
+  closeSlashPanel();
+}
+
+document.getElementById("focus-slash-btn").addEventListener("click", () => {
+  if (slashState.open) closeSlashPanel();
+  else openSlashPanel("button");
+});
+
+document.getElementById("focus-post-body").addEventListener("input", (e) => {
+  const val = e.target.value;
+  if (val.startsWith("/")) {
+    slashState.filter = bodyToFilter(val);
+    if (!slashState.open) openSlashPanel("type");
+    else { slashState.cursor = 0; renderSlashPanel(); }
+  } else if (slashState.open) {
+    closeSlashPanel();
+  }
+});
+
 document.getElementById("focus-post-body").addEventListener("keydown", (e) => {
+  if (slashState.open) {
+    const rows = filteredSlashRows();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashState.cursor = Math.min(rows.length - 1, slashState.cursor + 1);
+      renderSlashPanel();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashState.cursor = Math.max(0, slashState.cursor - 1);
+      renderSlashPanel();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSlashPanel();
+      return;
+    }
+    if (e.key === "Tab" && rows.length) {
+      e.preventDefault();
+      pickSlashRow(slashState.cursor);
+      return;
+    }
+    if (e.key === "Enter" && rows.length && !e.shiftKey) {
+      // If the input currently *is* a partial command (no trailing args
+      // typed), insert the highlighted command. Otherwise send.
+      const val = e.target.value;
+      const tail = val.match(/^\s*\/(\S*)/);
+      const onlyName = tail && val.trim() === "/" + tail[1];
+      if (onlyName) {
+        e.preventDefault();
+        pickSlashRow(slashState.cursor);
+        return;
+      }
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendFocusPost(); }
 });
+
+// Close panel on outside click.
+document.addEventListener("mousedown", (e) => {
+  if (!slashState.open) return;
+  const panel = document.getElementById("focus-slash-panel");
+  const input = document.getElementById("focus-post-body");
+  const btn = document.getElementById("focus-slash-btn");
+  if (panel && (panel.contains(e.target) || input.contains(e.target) || btn.contains(e.target))) return;
+  closeSlashPanel();
+});
+
+// Invalidate cached slash catalogs when leaving / changing rooms so stale
+// commands from a former room don't surface against new recipients.
+window.addEventListener("hashchange", () => { slashCache.clear(); });
 
 // Notify the voice panel (lives in voice-panel.js) that focus state
 // changed. The voice panel will forward this over its /voice/ws so the
@@ -1801,19 +2356,19 @@ function notifyVoiceFocusChange() {
 
 function buildRecipientDescriptor() {
   if (!focusRoomId) return null;
-  const key = activeRecipientKey();
-  if (!key) return null;
-  if (key === "manager") {
-    return { kind: "scope", scopes: vagrantSession.scope_identifier
-              ? [vagrantSession.scope_identifier] : [] };
-  }
-  if (key === "all-workers") {
-    return { kind: "all-workers", scopes: nonManagerScopes() };
-  }
-  if (key.startsWith("scope:")) {
-    return { kind: "scope", scopes: [key.slice(6)] };
-  }
-  return null;
+  const keys = activeRecipientKeys();
+  if (!keys.length) return null;
+  const scopes = resolveRecipientTargets(keys);
+  const includesManager = keys.includes("manager");
+  // Tag "all-workers" when every non-manager worker scope in this room is
+  // selected — voice agent treats this differently from a hand-picked set.
+  const workers = nonManagerScopes();
+  const allWorkers = workers.length > 0 && workers.every(s => keys.includes(`scope:${s}`));
+  let kind;
+  if (allWorkers && !includesManager) kind = "all-workers";
+  else if (keys.length === 1) kind = "scope";
+  else kind = "multi";
+  return { kind, scopes };
 }
 
 // Periodic agent refresh (catches model/effort changes, new participants).
