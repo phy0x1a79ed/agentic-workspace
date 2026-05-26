@@ -1,0 +1,129 @@
+# probe (binary)
+
+Single static Rust binary that runs on a friend's machine and opens an
+ephemeral pair-debug session against an awm operator over a WebRTC data
+channel. Downloaded to `/tmp` and exec'd directly — never installed to
+PATH.
+
+## Architecture (this phase)
+
+```
+  EMQX (signaling: SDP + ICE)
+       ▲          ▲
+       │          │
+  ┌────┴──┐   ┌───┴────┐
+  │ probe │   │ probe  │
+  │ (Rust)│   │_op.py  │
+  └───┬───┘   └────┬───┘
+      │            │
+      └─ WebRTC ───┘
+        (DataChannel,
+        DTLS-encrypted,
+        P2P shell I/O)
+```
+
+Signaling rides on a serverless EMQX broker
+(`wss://s12a68ff.ala.us-east-1.emqxsl.com:8084/mqtt`). Once the data
+channel opens, shell I/O is P2P — EMQX never sees command output.
+
+See [`PROTOCOL.md`](./PROTOCOL.md) for topic and frame schemas.
+
+## Prerequisites
+
+- Rust stable (`rust-toolchain.toml` pins). Install via:
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  . "$HOME/.cargo/env"
+  ```
+- Python 3.10+ with `aiortc` + `aiomqtt`:
+  ```sh
+  pip install -r ../tools/requirements.txt
+  ```
+- EMQX credentials in `../tools/.env.emqx` (copy `.env.emqx.example`).
+
+## Build
+
+```sh
+cargo build --release            # → target/release/probe
+cargo test                       # 21 unit tests
+```
+
+## Run (friend side, standalone)
+
+```sh
+./target/release/probe \
+    --name mybox \
+    --mqtt-url wss://s12a68ff.ala.us-east-1.emqxsl.com:8084/mqtt \
+    --mqtt-user probe \
+    --mqtt-pass <password>
+```
+
+The consent prompt blocks until you type `y`. After consent, the binary
+connects to EMQX and waits for an operator. Use `--no-consent` to skip
+the prompt (tests only).
+
+## Run (full install + operate UX)
+
+In one terminal, start the host server (serves the launcher + binary):
+
+```sh
+cd ..
+python3 tools/host_binary.py
+# listening on http://0.0.0.0:12110/
+```
+
+On the friend's machine:
+
+```sh
+curl -fsSL http://<host>:12110/probe | sh -s mybox
+# probe v0.0.1 — vagrant-shell pair-debug binary
+# probe is about to expose this shell to an awm operator.
+# Continue? [y/N] y
+# probe v0.0.1 starting (name=mybox)
+# code=mybox
+```
+
+On the operator's machine (after `pip install -r tools/requirements.txt`):
+
+```sh
+# one-shot
+python3 tools/probe_op.py mybox exec 'uname -a'
+
+# interactive REPL
+python3 tools/probe_op.py mybox
+# [connected to mybox] Ctrl-D to exit
+# > echo hello
+# hello
+# > <Ctrl-D>
+```
+
+## End-to-end test
+
+With `tools/.env.emqx` populated and a release build available:
+
+```sh
+cd ..
+python3 tools/test_e2e.py
+# === probe e2e: name=test-7f3a1b8c ===
+# ...
+# === results: 5 passed, 0 failed ===
+```
+
+## Tmp file lifecycle
+
+The launcher downloads the binary to `${TMPDIR:-/tmp}/probe-$(id -u)`
+and overwrites it on every invocation. No `~/.awm/bin`, no PATH
+modifications. After the binary exits, the only residue is that one
+file (cleared on reboot, or `rm` manually).
+
+## Phasing reminder
+
+- **Current**: WebRTC data channel + one-shot `Exec` frames. EMQX-based
+  signaling. Decoupled from awm.
+- **Next**: interactive pty (`PtySpawn`/`PtyData`/`PtyResize`/`PtyExit`
+  frames). Same transport.
+- **Then**: awm integration — `/vagrant/*` endpoints, browser SPA
+  operator, room creation, audit-mirror.
+
+See [`/home/tony/.claude/plans/based-on-that-plan-expressive-waterfall.md`](../../../../.claude/plans/based-on-that-plan-expressive-waterfall.md)
+for the full plan.
