@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from awm import config
 from awm.config import PROJECTS_DIR
 from awm.db import get_connection
 from awm.models import AgentSessionInfo
@@ -149,6 +150,13 @@ def _build_claude_argv(
         argv.extend(["--effort", effort])
     if resume_session_id:
         argv.extend(["--resume", resume_session_id])
+    # Pin MCP config to the exposed-server-written spawn-mcp.json so dev
+    # and prod can't bleed into each other and so the spawned Claude
+    # doesn't accidentally inherit chrome-devtools/ollama. Missing-file
+    # case (e.g. awm-mcp not on PATH) falls through with no flags.
+    spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
+    if spawn_mcp.exists():
+        argv.extend(["--strict-mcp-config", "--mcp-config", str(spawn_mcp)])
     return argv
 
 

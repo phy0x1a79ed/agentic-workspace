@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+log = logging.getLogger("awm.exposed")
 
 import uvicorn
 from fastapi import (
@@ -81,6 +85,50 @@ def _write_discovery_file() -> Path:
     return path
 
 
+def _write_spawn_mcp_config() -> Path | None:
+    """Write ``$AWM_DIR/spawn-mcp.json`` — the definitive MCP config for
+    ``agent_instances.create_session()`` spawns.
+
+    Spawned Claudes are launched with ``--strict-mcp-config --mcp-config
+    <this file>``, which makes them ignore the normal ``.mcp.json``
+    walk-up. That keeps dev and prod isolated by construction: each
+    workspace's exposed server writes its own values into its own file.
+
+    The file points at this exposed server's host/port/workspace, so the
+    awm-mcp proxy launched by Claude talks back to *us*. Manual ``claude``
+    CLI sessions are untouched — they don't pass the strict flag.
+
+    Returns the file path on success, or ``None`` if ``awm-mcp`` isn't on
+    PATH (auto-spawn still works in that case, just without awm tools).
+    """
+    awm_mcp = shutil.which("awm-mcp")
+    if awm_mcp is None:
+        log.warning("awm-mcp not on PATH; spawned agents will have no awm MCP tools")
+        return None
+    workspace = os.environ.get("AWM_WORKSPACE", str(config.WORKSPACE_ROOT))
+    spawn_cfg = {
+        "mcpServers": {
+            "awm": {
+                "command": awm_mcp,
+                "args": [],
+                "env": {
+                    "AWM_WORKSPACE": workspace,
+                    "AWM_EXPOSED_HOST": os.environ.get(
+                        "AWM_EXPOSED_HOST", "127.0.0.1"
+                    ),
+                    "AWM_EXPOSED_PORT": os.environ.get(
+                        "AWM_EXPOSED_PORT", "7820"
+                    ),
+                },
+            }
+        }
+    }
+    path = config.AWM_DIR / "spawn-mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(spawn_cfg, indent=2) + "\n")
+    return path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -96,6 +144,10 @@ async def lifespan(app: FastAPI):
 
     discovery_path = _write_discovery_file()
     print(f"[awm-exposed] discovery file: {discovery_path}")
+
+    spawn_mcp_path = _write_spawn_mcp_config()
+    if spawn_mcp_path is not None:
+        print(f"[awm-exposed] spawn-mcp.json → {spawn_mcp_path}")
 
     # Periodic sweep of expired one-shot login challenges.
     async def _challenges_sweeper() -> None:
