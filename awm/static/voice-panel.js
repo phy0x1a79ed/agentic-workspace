@@ -373,10 +373,20 @@
   let ws = null;
   let wsBackoff = 1000;
 
+  function currentRoomFromHash() {
+    // Hash-routed SPA: `#/room/{id}` → return `{id}`, else null.
+    const h = location.hash || "";
+    const m = h.match(/^#\/?room\/([^/?#]+)/);
+    return m ? m[1] : null;
+  }
+
   function connectWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     // Cookie carries auth; no subprotocol bearer needed.
-    ws = new WebSocket(`${proto}//${location.host}/voice/ws`);
+    // If the SPA is in a room, bind voice turns to that room's transcript.
+    const roomId = currentRoomFromHash();
+    const qs = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+    ws = new WebSocket(`${proto}//${location.host}/voice/ws${qs}`);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => { setConn("ok", "connected"); wsBackoff = 1000; };
     ws.onclose = (ev) => {

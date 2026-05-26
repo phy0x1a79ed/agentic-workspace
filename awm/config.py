@@ -42,6 +42,11 @@ SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
+# Sentinel project value reserved for vagrant scopes. Vagrant scopes live in
+# a unified bare repo at PROJECTS_DIR / VAGRANT_PROJECT / ".bare" with one
+# branch per scope, rather than belonging to a per-project repo.
+VAGRANT_PROJECT = "_vagrant"
+
 
 # ---------------------------------------------------------------------------
 # Server settings

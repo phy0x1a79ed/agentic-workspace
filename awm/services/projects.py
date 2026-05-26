@@ -12,6 +12,7 @@ from awm.config import (
     DATA_DIR,
     SKILLS_DIR,
     GITHUB_USER,
+    VAGRANT_PROJECT,
 )
 from awm.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.models import ProjectCreateRequest, ProjectCreateResponse
@@ -48,6 +49,11 @@ def _branch_exists(bare_dir: Path, branch: str) -> bool:
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     """Create a new project with bare repository, worktree, and data dirs."""
     validate_name(req.name, kind="project name")
+    if req.name == VAGRANT_PROJECT:
+        raise ValueError(
+            f"project name {req.name!r} is reserved for vagrant scopes; "
+            f"use `awm vagrant-init` to bootstrap the unified vagrant repo"
+        )
 
     bare_dir = PROJECTS_DIR / req.name / ".bare"
 
