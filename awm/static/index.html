@@ -950,7 +950,27 @@ document.querySelectorAll("nav a[data-tab]").forEach(a => {
 // Boot
 // ---------------------------------------------------------------------------
 
+async function bootstrapVagrantSession() {
+  // First connect: provision a vagrant scope + default room on the host
+  // peer and land in it. If the hash already pins a specific route, leave
+  // it alone — reloads keep the user where they were.
+  if (location.hash && location.hash !== "#" && location.hash !== "#/status") {
+    return;
+  }
+  try {
+    const r = await api("POST", "/vagrant/session");
+    if (r && r.room_id) {
+      navigate(`/room/${r.room_id}`);
+    }
+  } catch (err) {
+    // Server may not be bootstrapped yet (`awm vagrant-init` not run).
+    // Fall back to the default route silently.
+    console.warn("vagrant session bootstrap failed:", err);
+  }
+}
+
 (async () => {
+  await bootstrapVagrantSession();
   applyRoute();
 })();
 </script>

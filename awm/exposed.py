@@ -310,6 +310,7 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 
 from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
+from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
@@ -319,6 +320,7 @@ app.include_router(rooms_router)
 app.include_router(peer_router)
 app.include_router(repl_router)
 app.include_router(voice_router)
+app.include_router(vagrant_router)
 
 
 # ---------------------------------------------------------------------------

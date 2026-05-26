@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from awm.config import GITHUB_USER
 from awm.db import get_connection
 
 
@@ -32,3 +33,14 @@ def set_config(key: str, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def get_vagrant_scopes_repo_url() -> str:
+    """Resolve the GitHub URL for the unified vagrant-scopes bare repo.
+
+    Stored under the ``vagrant_scopes_repo_url`` config key so an operator
+    can repoint it at runtime (e.g. mirror, alternate account) via
+    ``set_config``.
+    """
+    default = f"git@github.com:{GITHUB_USER}/vagrant-scopes.git"
+    return get_config("vagrant_scopes_repo_url", default=default) or default

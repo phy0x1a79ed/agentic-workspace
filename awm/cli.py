@@ -970,6 +970,21 @@ def project_list():
     _print_json(r)
 
 
+@app.command("vagrant-init")
+def vagrant_init():
+    """Bootstrap the unified vagrant-scopes bare repo (one-shot, idempotent).
+
+    Creates ``projects/_vagrant/.bare``, the GitHub repo (if ``gh`` is on PATH),
+    seeds an initial ``main`` commit, and ensures matching data directories.
+    The GitHub remote URL is taken from the config key
+    ``vagrant_scopes_repo_url`` (default ``git@github.com:$AWM_GITHUB_USER/vagrant-scopes.git``).
+    """
+    from awm.services.scopes import ensure_vagrant_repo
+
+    bare = ensure_vagrant_repo()
+    typer.echo(f"vagrant-scopes bare repo ready at {bare}")
+
+
 # ---------------------------------------------------------------------------
 # Scope commands
 # ---------------------------------------------------------------------------

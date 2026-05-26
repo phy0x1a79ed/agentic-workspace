@@ -889,7 +889,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     — the daemon falls back to single-peer mode and replication is a no-op.
     """
     path = db_path or DB_PATH
-    conn = sqlite3.connect(str(path), timeout=30)
+    conn = sqlite3.connect(str(path), timeout=30, factory=_FinalizingConnection)
     # cr-sqlite must be loaded before any DDL/DML for CRR tables; load
     # eagerly on every connection so opt-in replication "just works".
     try:
@@ -903,6 +903,24 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+class _FinalizingConnection(sqlite3.Connection):
+    """sqlite3.Connection subclass that runs SELECT crsql_finalize() before
+    close. cr-sqlite leaks per-connection state (state.db + state.db-wal
+    FDs) unless finalized; this guarantees every get_connection() caller
+    releases those handles regardless of whether they call finalize()
+    explicitly. crsql_finalize is idempotent, so the few sites that also
+    call finalize() themselves (db.init_db, replication.sync) are safe.
+    """
+
+    def close(self):
+        try:
+            from awm.services.replication import schema as _repl_schema
+            _repl_schema.finalize(self)
+        except Exception:
+            pass
+        super().close()
 
 
 def _migrate(conn: sqlite3.Connection, current: int) -> None:
