@@ -140,5 +140,8 @@ async def voice_ws(websocket: WebSocket) -> None:
     if not auth.ok:
         return
     await websocket.accept(subprotocol=auth.subprotocol)
+    # Optional ?room_id=... binds the voice turn output to a room, so agent
+    # replies land in the room transcript alongside any human posts.
+    room_id = websocket.query_params.get("room_id") or None
     from awm.voice.registry import run_voice_ws_session
-    await run_voice_ws_session(websocket, auth.user_as)
+    await run_voice_ws_session(websocket, auth.user_as, room_id=room_id)

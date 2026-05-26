@@ -62,6 +62,7 @@ class TurnState:
     turn_id: int
     cancelled: bool = False
     text_buffer: str = ""
+    full_text: str = ""
     first_token_ts: Optional[float] = None
     first_audio_ts: Optional[float] = None
 
@@ -77,6 +78,10 @@ class VoiceAgent:
         )
         self.clients: set[WebSocket] = set()
         self.joined_rooms: set[str] = set()
+        # When a WS client attaches with ?room_id=, we mirror the agent's
+        # end-of-turn text into that room via rooms.post(). Last-write-wins
+        # across clients: the most recent attach decides the active room.
+        self.bound_room_id: Optional[str] = None
         self.pcm_chunks: list[bytes] = []
         self.recording_client: Optional[WebSocket] = None
         self.turn: Optional[TurnState] = None
@@ -261,6 +266,7 @@ class VoiceAgent:
                     if turn.cancelled:
                         continue
                     turn.text_buffer += body
+                    turn.full_text += body
                     sentences, tail = _split_sentences(turn.text_buffer)
                     turn.text_buffer = tail
                     for sent in sentences:
@@ -286,6 +292,9 @@ class VoiceAgent:
                     if turn is not None and turn.text_buffer.strip() and not turn.cancelled:
                         await self._speak(turn, turn.text_buffer.strip())
                         turn.text_buffer = ""
+                    if (turn is not None and self.bound_room_id
+                            and turn.full_text.strip() and not turn.cancelled):
+                        await self._post_turn_to_room(turn.full_text.strip())
                     await self.broadcast_json({"type": "agent_turn_end"})
                     await self._status("idle", "")
                     self.turn = None
@@ -297,6 +306,26 @@ class VoiceAgent:
                 await self.broadcast_json({"type": "error", "message": str(exc)})
             except Exception:
                 pass
+
+    async def _post_turn_to_room(self, text: str) -> None:
+        """Mirror a completed agent turn into the bound room transcript."""
+        room_id = self.bound_room_id
+        if not room_id:
+            return
+        try:
+            from awm.services import rooms as rooms_svc
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: rooms_svc.post(
+                    room_id,
+                    author=f"voice:{self.user_id}",
+                    body=text,
+                    kind="text",
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("failed to post voice turn into room %s", room_id)
 
     async def _speak(self, turn: TurnState, text: str) -> None:
         if turn.cancelled:
@@ -404,17 +433,28 @@ def get_registry() -> VoiceRegistry:
     return _registry
 
 
-async def run_voice_ws_session(websocket: WebSocket, user_as: str) -> None:
+async def run_voice_ws_session(
+    websocket: WebSocket,
+    user_as: str,
+    room_id: str | None = None,
+) -> None:
     """Drive a voice WS connection end-to-end.
 
     Owns the per-user agent acquisition, audio/text frame demux, and
     detach-on-exit. The API handler shrinks to ``auth + accept +
     delegate`` (matches the same split applied to /rooms/{id}/attach).
+
+    ``room_id``, if provided (e.g. from the SPA's ``?room_id=...``
+    query), binds completed agent turns to that room's transcript so
+    voice replies appear in the room alongside text posts. Last-write-
+    wins across concurrent clients of the same user.
     """
     from fastapi import WebSocketDisconnect
 
     reg = get_registry()
     agent = await reg.get_or_create(user_as)
+    if room_id:
+        agent.bound_room_id = room_id
     await reg.attach(agent, websocket)
     try:
         while True:
