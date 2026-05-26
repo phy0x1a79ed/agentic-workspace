@@ -349,6 +349,15 @@ def _vagrant_scope_name(user_as: str) -> str:
     return f"user-{safe}" if safe else "user-anon"
 
 
+def vagrant_scope_identifier(user_as: str) -> str:
+    """Return the ``project/scope`` identifier for ``user_as``'s vagrant scope.
+
+    Matches the ``scope`` field shape returned by ``GET /rooms/{id}/agents``,
+    so the web UI can identify which agent in a room is "the manager".
+    """
+    return f"{VAGRANT_PROJECT}/{_vagrant_scope_name(user_as)}"
+
+
 def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     """Ensure a vagrant scope and default room exist for ``user_as``.
 

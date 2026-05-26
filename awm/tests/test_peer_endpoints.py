@@ -94,9 +94,14 @@ class TestResolveOrder:
 
         # Clear the in-process preference cache between tests.
         federation._preferred_endpoint.clear()
+        # _resolve returns local auth.token (not the peer's stored token)
+        # because /peer/* routes use require_peer_bearer which expects
+        # the sender's own bearer + X-Awm-From. See federation._resolve
+        # docstring.
+        from awm.services import auth as auth_svc
         base, token = federation._resolve("p5")
         assert base == "https://10.0.0.5:7820"
-        assert token == "peer-token-xyz"
+        assert token == auth_svc.local_token()
         assert called_ssh == []
 
 

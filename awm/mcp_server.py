@@ -37,6 +37,7 @@ from mcp.types import TextContent, Tool
 
 from awm import config
 from awm.services import auth as auth_svc
+from awm.services._path import resolve_bin
 
 server = Server("awm")
 
@@ -143,17 +144,15 @@ def _ensure_core_running() -> None:
     if r.returncode == 0:
         return
     # Fallback: detached subprocess. stdio goes to /dev/null so the proxy
-    # doesn't inherit file handles.
-    try:
-        subprocess.Popen(
-            ["awm", "serve-exposed"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except FileNotFoundError:
-        pass  # no `awm` on PATH — propagate connection error to caller
+    # doesn't inherit file handles. resolve_bin extends PATH with
+    # ~/.local/bin and linuxbrew so this works under a systemd-user env.
+    subprocess.Popen(
+        [resolve_bin("awm"), "serve-exposed"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 # ---------------------------------------------------------------------------

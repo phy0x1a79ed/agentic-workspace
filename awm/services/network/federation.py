@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import httpx
 
+from awm.services import auth as auth_svc
 from awm.services.network import peers as peer_svc
 from awm.services.network import ssh_tunnel
 
@@ -58,6 +59,14 @@ _preferred_endpoint: dict[str, dict] = {}
 def _resolve(peer_id: str) -> tuple[str, str]:
     """Resolve a peer to ``(base_url, bearer_token)``.
 
+    The returned bearer is **our own local auth token**, not the peer's.
+    All ``/peer/*`` routes use ``require_peer_bearer`` which cross-checks
+    the bearer against the receiver's stored ``peers/<X-Awm-From>.token`` —
+    i.e. the sender's own auth token. Sending the peer's token instead
+    fails verify_peer_bearer (it'd match local_token on the receiver,
+    not peers/<sender>.token). Plain ``/peer`` (require_bearer) accepts
+    either token, so ping_peer keeps working.
+
     Iterates the peer's ``endpoints`` list in declared order; the first
     one that yields a reachable base URL wins and is cached as preferred
     for this process. Direct endpoints (``kind=direct``) are returned as
@@ -69,7 +78,7 @@ def _resolve(peer_id: str) -> tuple[str, str]:
     peer = peer_svc.get_peer(peer_id)
     if peer is None:
         raise UnknownPeerError(f"unknown peer: {peer_id}")
-    token = peer_svc.load_peer_token(peer_id)
+    token = auth_svc.local_token()
 
     # In-process cache: stick with the last working endpoint.
     cached = _preferred_endpoint.get(peer_id)

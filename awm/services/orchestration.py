@@ -36,7 +36,12 @@ async def _ensure_local_session(scope_key: str) -> None:
         return
     project, scope = scope_key.split("/", 1)
     try:
-        await agent_instances.create_session(project=project, scope=scope)
+        await agent_instances.create_session(
+            project=project, scope=scope,
+            # Workers need free MCP-tool access to call room_post etc.;
+            # see awm/api/vagrant.py for the same rationale.
+            permission_mode="bypassPermissions",
+        )
     except agent_instances.ScopeBusyError:
         return  # raced with another caller; that's fine
     except FileNotFoundError:

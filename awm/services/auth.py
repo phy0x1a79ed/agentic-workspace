@@ -346,7 +346,16 @@ def client_kwargs(*, timeout: float = 30.0) -> dict:
 
 
 def base_url() -> str:
-    """Canonical HTTPS base URL for the local daemon."""
+    """Canonical HTTPS base URL for the local daemon.
+
+    ``AWM_PUBLIC_BASE_URL`` overrides everything when the listener is
+    reachable from outside the host (e.g. ZeroTier-forwarded port range)
+    and the URL needs to be handed to a browser elsewhere on the network
+    — Discord-DM bootstrap link, ``/auth/mint`` JSON response.
+    """
+    override = os.environ.get("AWM_PUBLIC_BASE_URL")
+    if override:
+        return override.rstrip("/")
     host = config.EXPOSED_HOST
     if host == "0.0.0.0":
         host = "127.0.0.1"

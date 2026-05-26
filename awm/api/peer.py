@@ -143,6 +143,9 @@ def peer_agent_input(request: Request, body: dict):
         async def _spawn():
             return await agent_instances.create_session(
                 project=project, scope=scope_name,
+                # Federated worker needs free MCP-tool access; mirrors
+                # awm/api/vagrant.py and awm/services/orchestration.py.
+                permission_mode="bypassPermissions",
             )
         try:
             session = asyncio.run(_spawn())

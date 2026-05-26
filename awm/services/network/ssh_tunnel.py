@@ -4,7 +4,12 @@ Each registered peer gets a lazy, ControlMaster-pooled SSH tunnel that
 port-forwards a local 127.0.0.1 port to the peer's localhost-bound awm
 listener. The tunnel is the substrate for all federation HTTP and
 WebSocket traffic — `acquire_tunnel(peer_id)` returns a Tunnel whose
-`.local_url` is the http://127.0.0.1:<port> federation can hit.
+`.local_url` is the https://127.0.0.1:<port> federation can hit.
+
+Scheme: awm-exposed listens HTTPS-only (auto-bootstrapped self-signed
+cert in exposed.py:run_exposed_server). The SSH channel is already
+authenticated, so probes/clients use verify=False — matches the
+verify=False used in federation.py and peers.py.
 
 Design:
 - One ControlMaster per peer, socket at AWM_DIR/ssh/peer-<peer_id>.sock.
@@ -53,7 +58,7 @@ class Tunnel:
 
     @property
     def local_url(self) -> str:
-        return f"http://127.0.0.1:{self.local_port}"
+        return f"https://127.0.0.1:{self.local_port}"
 
 
 _lock = threading.Lock()
@@ -84,9 +89,10 @@ def _probe(local_port: int) -> bool:
     """Any HTTP response on /peer means the port-forward is live."""
     try:
         r = httpx.get(
-            f"http://127.0.0.1:{local_port}/peer",
+            f"https://127.0.0.1:{local_port}/peer",
             timeout=_PROBE_TIMEOUT,
             follow_redirects=False,
+            verify=False,
         )
         return r.status_code < 500 or r.status_code == 503
     except httpx.HTTPError:
