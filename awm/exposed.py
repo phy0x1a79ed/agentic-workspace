@@ -164,21 +164,19 @@ async def lifespan(app: FastAPI):
         leadership_task = None
         print("[awm-exposed] leadership: no peer identity — running ACTIVE single-node")
 
-    # Warm voice models in the background — first connection waits a few
+    # Warm STT model in the background — first connection waits a few
     # seconds rather than every connection paying full load cost. Failures
     # log but don't take down the listener.
     async def _warm_voice() -> None:
         loop = asyncio.get_running_loop()
         try:
             from awm.voice.stt import get_transcriber
-            from awm.voice.tts import get_synthesizer
             t0 = time.perf_counter()
             await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
-            await loop.run_in_executor(None, get_synthesizer()._ensure_loaded)
-            print(f"[awm-exposed] voice models ready in "
+            print(f"[awm-exposed] STT model ready in "
                   f"{time.perf_counter() - t0:.1f}s")
         except Exception as exc:  # noqa: BLE001
-            print(f"[awm-exposed] voice models unavailable: {exc}")
+            print(f"[awm-exposed] STT model unavailable: {exc}")
 
     warmup_task = asyncio.create_task(_warm_voice())
 

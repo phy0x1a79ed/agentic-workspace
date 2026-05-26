@@ -539,6 +539,12 @@
     font-size: 9px; padding: 1px 5px; border-radius: 2px;
     margin-left: 4px; font-weight: 700; letter-spacing: 0.08em;
   }
+  #focus-agents-list .agent-card .agent-hint {
+    color: var(--accent-manager-muted-fg);
+    font-size: 10px;
+    margin-top: 4px;
+    font-style: italic;
+  }
 
   .focus-recipient { display: flex; flex-direction: column; gap: 4px; }
   .focus-recipient .all-toggle {
@@ -609,25 +615,10 @@
     background: var(--bg-muted); color: var(--fg-muted);
     font-size: 11px; border: 1px solid var(--border);
   }
-  .focus-voice .vp-stage.listening { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-soft-border); }
+  .focus-voice .vp-stage.recording { background: var(--accent-manager-soft-strong); color: var(--accent-manager-fg); border-color: var(--accent-manager-line); }
   .focus-voice .vp-stage.transcribing { background: var(--accent-soft); color: var(--accent-soft-fg); border-color: var(--accent-soft-border); }
-  .focus-voice .vp-stage.thinking { background: var(--accent-manager-soft-strong); color: var(--accent-manager-fg); border-color: var(--accent-manager-line); }
-  .focus-voice .vp-stage.responding { background: var(--accent-soft); color: var(--accent-soft-fg); border-color: var(--accent-soft-border); }
-  .focus-voice .vp-stage.speaking { background: var(--accent-soft-strong); color: var(--accent-soft-fg); border-color: var(--accent); }
-  .focus-voice .vp-stage.tool { background: var(--bg-muted); color: var(--fg-muted); border-color: var(--border); }
   .focus-voice .vp-stage.error { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
-  .focus-voice .vp-meter, .focus-voice .vp-latency { color: var(--fg-muted); font-size: 11px; }
-  .focus-voice .vp-input { display: flex; gap: 4px; }
-  .focus-voice .vp-input input {
-    flex: 1; min-width: 0; font: inherit; padding: 3px 4px;
-    background: var(--bg-input); color: var(--fg);
-    border: 1px solid var(--border-strong); border-radius: 3px;
-  }
-  .focus-voice .vp-volume {
-    display: flex; align-items: center; gap: 6px;
-    color: var(--fg-muted); font-size: 11px;
-  }
-  .focus-voice .vp-volume input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .focus-voice .vp-meter { color: var(--fg-muted); font-size: 11px; }
 
   .focus-empty {
     padding: 40px 24px; color: var(--fg-faint); font-size: 11.5px;
@@ -639,7 +630,6 @@
     margin-bottom: 8px; font-size: 14px;
   }
 </style>
-<link rel="stylesheet" href="/ui/voice-panel.css">
 </head>
 <body>
 <nav>
@@ -724,16 +714,6 @@
         <span class="vp-conn" id="vp-conn">connecting…</span>
         <span class="vp-stage" id="vp-stage">idle</span>
         <div class="vp-meter" id="vp-meter">mic: <span id="vp-meter-val">—</span></div>
-        <div class="vp-latency" id="vp-latency">STT —ms · first-token —ms · first-audio —ms</div>
-        <div class="vp-input">
-          <input type="text" id="vp-text" placeholder="type to voice agent…" />
-          <button id="vp-text-send" type="button">send</button>
-        </div>
-        <div class="vp-volume">
-          <label for="vp-vol">tts vol</label>
-          <input id="vp-vol" type="range" min="0" max="200" value="100" step="1">
-          <span id="vp-vol-val">100%</span>
-        </div>
       </div>
     </aside>
   </div>
@@ -1628,8 +1608,6 @@ async function enterFocusTab(roomId) {
 
 async function refreshFocusRail() {
   // Rail source of truth: rooms the vagrant scope is participating in.
-  // Voice-agent membership is reconciled silently against this list
-  // (see voice-panel.js), so the user doesn't manage room presence here.
   focusRoomMeta = new Map();
   try {
     const params = new URLSearchParams({ status: "active" });
@@ -1650,11 +1628,6 @@ async function refreshFocusRail() {
     focusJoinedRooms = [vagrantSession.room_id, ...focusJoinedRooms];
   }
   renderFocusRail();
-  // Let voice-panel reconcile its joined_rooms set against the rail.
-  try {
-    window.dispatchEvent(new CustomEvent("awm-focus-rail-changed",
-                                         { detail: { rooms: focusJoinedRooms } }));
-  } catch {}
 }
 
 function renderFocusRail() {
@@ -1698,14 +1671,9 @@ async function focusOnRoom(roomId) {
   document.getElementById("focus-transcript").innerHTML = "";
   renderFocusRail();
   setFocusComposerEnabled(true);
-  // Reconnects only the room-transcript WS; deliberately does NOT call
-  // /voice/{join,leave}. Voice presence is reconciled against the rail
-  // (see reconcileVoiceJoins in voice-panel.js), so focus changes are
-  // cheap and side-effect-free for the voice agent.
   closeFocusWs();
   await refreshFocusAgents();
   openFocusWs(roomId);
-  notifyVoiceFocusChange();
 }
 
 function setFocusBanner(text) {
@@ -1859,12 +1827,16 @@ async function refreshFocusAgents() {
       const liveTxt = live
         ? `${esc(live.status || "?")} · ${esc(live.model || "default")}`
         : `<em>${a.kind === "shadow_peer" ? "remote" : "—"}</em>`;
+      const offlineHint = (isManager && !live)
+        ? `<div class="agent-hint">manager offline — restart with /restart or relaunch the vagrant Claude</div>`
+        : "";
       card.innerHTML =
         `<div class="scope">` +
           esc(a.scope) +
           (isManager ? `<span class="manager-tag">manager</span>` : "") +
         `</div>` +
-        `<div style="color:#6b7280;font-size:10px;margin-top:2px">${liveTxt}</div>`;
+        `<div style="color:#6b7280;font-size:10px;margin-top:2px">${liveTxt}</div>` +
+        offlineHint;
       out.appendChild(card);
     }
     if (!focusAgents.length) {
@@ -1956,7 +1928,6 @@ function renderFocusRecipient() {
       setRecipientChoices(focusRoomId, [...cur]);
       renderFocusRecipient();
       updateRecipientHint();
-      notifyVoiceFocusChange();
     });
     box.appendChild(btn);
   }
@@ -1975,7 +1946,6 @@ function renderFocusRecipient() {
       toggleRecipientChoice(focusRoomId, c.key);
       renderFocusRecipient();
       updateRecipientHint();
-      notifyVoiceFocusChange();
     });
     box.appendChild(lbl);
   }
@@ -2342,34 +2312,6 @@ document.addEventListener("mousedown", (e) => {
 // Invalidate cached slash catalogs when leaving / changing rooms so stale
 // commands from a former room don't surface against new recipients.
 window.addEventListener("hashchange", () => { slashCache.clear(); });
-
-// Notify the voice panel (lives in voice-panel.js) that focus state
-// changed. The voice panel will forward this over its /voice/ws so the
-// voice agent knows where to direct its room_post tool calls.
-function notifyVoiceFocusChange() {
-  const detail = {
-    room_id: focusRoomId,
-    recipient: buildRecipientDescriptor(),
-  };
-  window.dispatchEvent(new CustomEvent("awm-focus-change", { detail }));
-}
-
-function buildRecipientDescriptor() {
-  if (!focusRoomId) return null;
-  const keys = activeRecipientKeys();
-  if (!keys.length) return null;
-  const scopes = resolveRecipientTargets(keys);
-  const includesManager = keys.includes("manager");
-  // Tag "all-workers" when every non-manager worker scope in this room is
-  // selected — voice agent treats this differently from a hand-picked set.
-  const workers = nonManagerScopes();
-  const allWorkers = workers.length > 0 && workers.every(s => keys.includes(`scope:${s}`));
-  let kind;
-  if (allWorkers && !includesManager) kind = "all-workers";
-  else if (keys.length === 1) kind = "scope";
-  else kind = "multi";
-  return { kind, scopes };
-}
 
 // Periodic agent refresh (catches model/effort changes, new participants).
 setInterval(() => {
