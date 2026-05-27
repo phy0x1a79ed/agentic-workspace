@@ -21,6 +21,7 @@
   import Pill from '$lib/primitives/Pill.svelte';
   import PanelLabel from '$lib/primitives/PanelLabel.svelte';
   import Tooltip from '$lib/primitives/Tooltip.svelte';
+  import { agentDisplayName, agentProjectLabel } from '$lib/utils/scope';
 
   type Rail = 'manager' | 'peer' | 'plain' | 'none';
 
@@ -109,16 +110,56 @@
       {@const mgr = isManager(a.scope)}
       {@const ctl = isControllable(a)}
       {@const open = !!expanded[a.scope]}
+      {@const displayName = agentDisplayName(a.scope)}
+      {@const projectLabel = agentProjectLabel(a.scope)}
       <Card rail={kindRail(a)} flash={committing[a.scope]} {open}>
-        <header class="row">
-          <button
-            class="bracket"
-            type="button"
-            aria-pressed={isRecipient(a.scope)}
-            aria-label="recipient toggle"
-            title="send messages to this scope"
-            onclick={() => toggleRecipient(a.scope)}
-          >[{isRecipient(a.scope) ? 'x' : ' '}]</button>
+        <header class="head">
+          <div class="meta">
+            <button
+              class="bracket"
+              type="button"
+              aria-pressed={isRecipient(a.scope)}
+              aria-label="recipient toggle"
+              title="send messages to this scope"
+              onclick={() => toggleRecipient(a.scope)}
+            >[{isRecipient(a.scope) ? 'x' : ' '}]</button>
+
+            {#if projectLabel}
+              <PanelLabel>{projectLabel}</PanelLabel>
+            {/if}
+
+            <span class="status">
+              {#if a.live?.status}
+                <StatusTag status={a.live.status} />
+              {/if}
+            </span>
+
+            <span class="spacer"></span>
+
+            {#if ctl && roomId}
+              <span class="hdr-actions">
+                <Pill
+                  disabled={!!busyAction[a.scope]}
+                  title="not supported in headless mode"
+                  onclick={() => fire(a.scope, '/compact')}
+                >{busyAction[a.scope] === '/compact' ? '…' : 'compact'}</Pill>
+                <Pill
+                  disabled={!!busyAction[a.scope]}
+                  title="wipe conversation context"
+                  onclick={() => fire(a.scope, '/clear')}
+                >{busyAction[a.scope] === '/clear' ? '…' : 'clear'}</Pill>
+              </span>
+            {/if}
+
+            <button
+              class="chev"
+              type="button"
+              aria-label={open ? 'collapse' : 'expand'}
+              onclick={() => toggleExpand(a.scope)}
+            >
+              <span class="chev-glyph" class:open>▸</span>
+            </button>
+          </div>
 
           <button
             class="ident"
@@ -129,7 +170,7 @@
           >
             <Tooltip content={a.scope}>
               {#snippet trigger({ props })}
-                <span class="scope mono" {...props}>{a.scope}</span>
+                <span class="name mono" {...props}>{displayName}</span>
               {/snippet}
             </Tooltip>
             {#if mgr}
@@ -137,36 +178,6 @@
             {:else if !ctl}
               <PanelLabel tone={kindTone(a)}>{a.kind}</PanelLabel>
             {/if}
-          </button>
-
-          <span class="status">
-            {#if a.live?.status}
-              <StatusTag status={a.live.status} />
-            {/if}
-          </span>
-
-          {#if ctl && roomId}
-            <span class="hdr-actions">
-              <Pill
-                disabled={!!busyAction[a.scope]}
-                title="not supported in headless mode"
-                onclick={() => fire(a.scope, '/compact')}
-              >{busyAction[a.scope] === '/compact' ? '…' : 'compact'}</Pill>
-              <Pill
-                disabled={!!busyAction[a.scope]}
-                title="wipe conversation context"
-                onclick={() => fire(a.scope, '/clear')}
-              >{busyAction[a.scope] === '/clear' ? '…' : 'clear'}</Pill>
-            </span>
-          {/if}
-
-          <button
-            class="chev"
-            type="button"
-            aria-label={open ? 'collapse' : 'expand'}
-            onclick={() => toggleExpand(a.scope)}
-          >
-            <span class="chev-glyph" class:open>▸</span>
           </button>
         </header>
 
@@ -208,13 +219,19 @@
   em.dim { color: var(--text3); font-style: italic; padding: 6px 4px; font-size: 11px; }
   .mono { font-family: var(--mono); }
 
-  .row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-    align-items: center;
-    gap: 6px;
-    min-height: 28px;
+  /* Two-row header: meta chrome on top, large agent name below. */
+  .head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
   }
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 24px;
+  }
+  .spacer { flex: 1 1 auto; min-width: 0; }
 
   /* recipient bracket toggle */
   .bracket {
@@ -231,7 +248,7 @@
   .bracket[aria-pressed="true"] { color: var(--atomizer); }
   .bracket:hover { color: var(--text); }
 
-  /* scope+kind clickable label */
+  /* name+kind clickable label — own row, wraps freely. */
   .ident {
     background: transparent;
     border: 0;
@@ -240,17 +257,18 @@
     cursor: pointer;
     display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
     gap: var(--space-3);
-    min-width: 0;
+    width: 100%;
     text-align: left;
   }
-  .ident:hover .scope { color: var(--text); }
-  .scope {
-    font-size: 12px;
+  .ident:hover .name { color: var(--text); }
+  .name {
+    font-size: 14px;
     color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.2;
+    white-space: normal;
+    word-break: break-word;
     transition: color 140ms var(--ease-mech);
   }
 
@@ -301,7 +319,7 @@
   .srow .v.dim { color: var(--text3); font-style: italic; }
 
   @media (max-width: 720px) {
-    .row { gap: var(--space-1); }
+    .meta { gap: var(--space-1); }
     .bracket, .chev { min-height: 32px; display: inline-flex; align-items: center; }
   }
 </style>
