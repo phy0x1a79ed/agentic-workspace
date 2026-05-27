@@ -13,9 +13,11 @@
   import Transcript    from '$lib/components/Transcript.svelte';
   import Composer      from '$lib/components/Composer.svelte';
   import PttButton     from '$lib/components/PttButton.svelte';
+  import VoicePanel    from '$lib/components/VoicePanel.svelte';
   import Sheet         from '$lib/components/Sheet.svelte';
   import { recipients } from '$lib/state/recipients.svelte';
   import { ui } from '$lib/state/ui.svelte';
+  import { voice } from '$lib/state/voice.svelte';
 
   let rooms       = $state<Room[]>([]);
   let activeId    = $state<string | null>(null);
@@ -26,6 +28,7 @@
 
   const ws = new RoomWs();
   let unsubWs: (() => void) | null = null;
+  let unsubVoice: (() => void) | null = null;
 
   // Sync active room id from URL on navigation. Route is
   // /ui/focus/<id> (optional param).
@@ -40,6 +43,16 @@
 
   onMount(async () => {
     unsubWs = ws.on(handleEvent);
+    // STT result → append to composer + auto-send. Mirrors legacy
+    // appendTranscript + autoSend semantics: speaking IS the send.
+    unsubVoice = voice.onResult((text) => {
+      const cur = composerText;
+      const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+      const next = (cur + sep + text).trim();
+      composerText = next;
+      onSend(next);
+      composerText = '';
+    });
     await refreshRooms();
     const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
     if (fromUrl) attachTo(fromUrl);
@@ -49,6 +62,7 @@
   onDestroy(() => {
     unsubWs?.();
     ws.close();
+    unsubVoice?.();
   });
 
   async function refreshRooms() {
@@ -122,6 +136,7 @@
       <span class="topic">{activeRoom?.topic ?? ''}</span>
       <span class="banner mono">{banner}</span>
       <span class="spacer"></span>
+      <VoicePanel />
       <button class="sheet-toggle right" type="button" aria-label="details" onclick={() => ui.openRight()}>@</button>
     </header>
 
@@ -129,7 +144,11 @@
       <Transcript {posts} />
       <Composer disabled={!activeId} bind:text={composerText} onsubmit={onSend} onslashopen={() => ui.slashOpen = !ui.slashOpen} />
       <div class="ptt-row">
-        <PttButton disabled={!activeId} />
+        <PttButton
+          disabled={!activeId}
+          onpttdown={() => voice.start()}
+          onpttup={() => voice.end()}
+        />
       </div>
     {:else}
       <div class="empty-state">

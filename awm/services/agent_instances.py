@@ -91,6 +91,10 @@ class AgentInstance:
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
+        # Set by _input_pump once stdin is verified open. create_session
+        # awaits this so callers can't dispatch posts before the pump task
+        # is actually scheduled and reading from the queue.
+        self.stdin_ready: asyncio.Event = asyncio.Event()
         # Stdin frames audit-log for tests (mirror of what gets written).
         self.stdin_frames_log = log_path.parent / "agent.log"
         # Spawn-time flags + captured claude session id (from init event).
@@ -288,6 +292,33 @@ async def create_session(*, project: str, scope: str,
     session.reader_task = asyncio.create_task(_reader_loop(session))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
+    # Wait for the pump to reach its first await on input_queue.get(). Without
+    # this, the very first enqueue_input() (often from a system join post
+    # dispatched immediately after we return) races the scheduler and can
+    # land before the pump is even running. The pump sets stdin_ready as
+    # soon as it verifies proc.stdin is usable.
+    try:
+        await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        try:
+            session.proc.kill()
+        except ProcessLookupError:
+            pass
+        async with _registry_lock:
+            _by_scope.pop(key, None)
+            _registry.pop(session_id, None)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE agent_sessions SET status='exited', exited_at=?, exit_code=-1 WHERE id=?",
+                (_now(), session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        raise RuntimeError(
+            f"input pump never signaled stdin-ready for {key} within 10s"
+        )
     return session
 
 
@@ -306,6 +337,13 @@ def get_session(session_id: int) -> AgentInstance | None:
 async def _input_pump(session: AgentInstance) -> None:
     """Drain ``input_queue`` and write each frame to stdin as one stream-json
     user message with ``[room:X from:Y]`` framing."""
+    # Signal readiness to create_session. We set the event unconditionally
+    # (even on a broken stdin) so the caller never deadlocks on wait_for —
+    # the subsequent return below handles the broken case.
+    session.stdin_ready.set()
+    if (session.proc is None or session.proc.stdin is None
+            or session.proc.stdin.is_closing()):
+        return
     while True:
         try:
             room_id, post = await session.input_queue.get()
@@ -821,6 +859,13 @@ def reconcile_on_startup() -> None:
                 conn.execute(
                     "UPDATE agent_sessions SET status='orphaned' WHERE id=?",
                     (row["id"],),
+                )
+            elif row["project"] == "_vagrant":
+                # Vagrant managers are ephemeral; a dead one is just trash
+                # that the partial unique index would otherwise look at on
+                # the next spawn for the same user. Delete it outright.
+                conn.execute(
+                    "DELETE FROM agent_sessions WHERE id=?", (row["id"],)
                 )
             else:
                 conn.execute(
