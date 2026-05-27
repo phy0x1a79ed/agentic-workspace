@@ -34,7 +34,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from awm import __version__, config
 from awm.access_log import record as record_access
@@ -363,7 +363,6 @@ from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
@@ -483,7 +482,25 @@ async def auth_logout(_request: Request):
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
+    # mic-worklet.js) are served directly; anything else under /ui/ falls
+    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
+    # etc.) survive hard reloads.
+    @app.get("/ui")
+    @app.get("/ui/")
+    @app.get("/ui/{full_path:path}")
+    async def _spa(full_path: str = ""):
+        # login.html stays its own page (server-rendered single-purpose entry).
+        if full_path:
+            # Resolve safely — reject any path that escapes the static dir.
+            candidate = (_STATIC_DIR / full_path).resolve()
+            try:
+                candidate.relative_to(_STATIC_DIR.resolve())
+            except ValueError:
+                return FileResponse(_STATIC_DIR / "index.html")
+            if candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 # ---------------------------------------------------------------------------

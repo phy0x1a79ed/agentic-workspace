@@ -16,6 +16,8 @@ lives next to this file and is gitignored.
 ./run.sh reset          # wipe state and re-seed (prompts first)
 ./run.sh login          # one-line CLI form of the login URL
 ./run.sh logs           # tail uvicorn log
+./run.sh frontend       # Vite dev server for ../frontend (HTTP, port 12103)
+./run.sh build          # production SvelteKit build → ../awm/static/
 ```
 
 ## Two processes
@@ -71,6 +73,26 @@ AWM_WORKSPACE=$(pwd) awm scope list             # alternative — reads dev/.awm
 
 The harness itself uses the loopback bearer in `.awm/auth.token` directly,
 so it never needs the operator's CLI.
+
+## Frontend (SvelteKit)
+
+The web UI source lives in `../frontend/` — a SvelteKit 2 + Svelte 5 + Tailwind
+v4 + bits-ui project. The production build is emitted to `../awm/static/` and
+served by uvicorn at `/ui/`. See `../frontend/` for component layout and design
+tokens (DM Sans/Mono, dark-only, `--atomizer` blue accent).
+
+- `./run.sh frontend` — runs Vite dev on `0.0.0.0:12103` with API/WS proxied
+  to the currently-running uvicorn. Vite runs over HTTP, so cookies set
+  with `Secure=True` will not flow through — visit the production URL once
+  to mint a session before relying on the dev server for authed calls.
+- `./run.sh build` — `cd ../frontend && npm install && npm run build`. The
+  cutover replaces `awm/static/{index.html, _app/, mic-worklet.js, favicon.svg}`
+  on every build; `awm/static/login.html` is server-rendered and must be
+  preserved by hand if you wipe the directory.
+
+The backend SPA fallback lives in `awm/exposed.py` next to the static dir
+declaration: it serves real assets directly and falls back to `index.html`
+for any unknown `/ui/<path>` so deep links survive hard reloads.
 
 ## Don't use this directory as an agent CWD
 

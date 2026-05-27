@@ -270,6 +270,33 @@ do_reset() {
   esac
 }
 
+FRONTEND_DIR="$REPO_ROOT/frontend"
+NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
+
+do_frontend() {
+  if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "[dev] no frontend/ directory — nothing to run"
+    exit 1
+  fi
+  if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+    echo "[dev] installing frontend deps…"
+    (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund)
+  fi
+  echo "[dev] vite dev → https://10.74.81.110:12103/ui/  (proxies API/WS to uvicorn at $AWM_EXPOSED_PORT)"
+  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" \
+      AWM_API_TARGET="https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}" \
+      npm run dev -- --host 0.0.0.0 --port 12103)
+}
+
+do_build() {
+  if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "[dev] no frontend/ directory — nothing to build"
+    exit 1
+  fi
+  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
+  echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
+}
+
 case "$cmd" in
   start)    do_start ;;
   stop)     do_stop ;;
@@ -279,8 +306,10 @@ case "$cmd" in
   reset)    do_reset ;;
   login)    do_login ;;
   logs)     tail -n 200 -F "$LOG_FILE" ;;
+  frontend) do_frontend ;;
+  build)    do_build ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs}"
+    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs|frontend|build}"
     exit 2
     ;;
 esac
