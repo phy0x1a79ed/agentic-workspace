@@ -34,6 +34,20 @@ html, body {
   overflow: hidden;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface3) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--surface3);
+  border: 2px solid var(--bg);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--border2); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
 button, input, select, textarea {
   font: inherit;
   color: inherit;
@@ -77,14 +91,14 @@ kbd {
 }
 
 /* ─── PANEL CHROME ─── */
-.left, .right {
+.chrome > .left, .chrome > .right {
   background: var(--surface);
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.left  { border-right: 1px solid var(--border); }
-.right { border-left:  1px solid var(--border); }
+.chrome > .left  { border-right: 1px solid var(--border); }
+.chrome > .right { border-left:  1px solid var(--border); }
 
 .main {
   background: var(--bg);

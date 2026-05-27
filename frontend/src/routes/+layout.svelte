@@ -7,6 +7,7 @@
   import { base } from '$app/paths';
   import { api, coreStatus, ensureVagrantSession, ApiError } from '$lib/api/client';
   import { ui } from '$lib/state/ui.svelte';
+  import { voice } from '$lib/state/voice.svelte';
 
   let { children } = $props();
 
@@ -19,8 +20,12 @@
     }
     pollLeader();
     bootstrapManager();
+    voice.connect();
     const t = setInterval(pollLeader, 5000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      voice.disconnect();
+    };
   });
 
   async function bootstrapManager() {

@@ -13,7 +13,6 @@
   import Transcript    from '$lib/components/Transcript.svelte';
   import Composer      from '$lib/components/Composer.svelte';
   import PttButton     from '$lib/components/PttButton.svelte';
-  import VoicePanel    from '$lib/components/VoicePanel.svelte';
   import Sheet         from '$lib/components/Sheet.svelte';
   import { recipients } from '$lib/state/recipients.svelte';
   import { ui } from '$lib/state/ui.svelte';
@@ -173,13 +172,16 @@
 
   <main class="main">
     <header class="rh">
-      <button class="sheet-toggle" type="button" aria-label="rooms" onclick={() => ui.openLeft()}>≡</button>
+      <button class="sheet-toggle" type="button" aria-label="rooms" onclick={() => ui.openLeft()}>
+        <span class="bracket">[</span><span class="glyph">≡</span><span class="word">ROOMS</span><span class="bracket">]</span>
+      </button>
       <span class="title mono">{activeRoom?.id ?? 'no room focused'}</span>
       <span class="topic">{activeRoom?.topic ?? ''}</span>
       <span class="banner mono">{banner}</span>
       <span class="spacer"></span>
-      <VoicePanel />
-      <button class="sheet-toggle right" type="button" aria-label="details" onclick={() => ui.openRight()}>@</button>
+      <button class="sheet-toggle right" type="button" aria-label="details" onclick={() => ui.openRight()}>
+        <span class="bracket">[</span><span class="word">AGENTS</span><span class="glyph">@</span><span class="bracket">]</span>
+      </button>
     </header>
 
     {#if activeId}
@@ -271,19 +273,33 @@
 
   .sheet-toggle {
     display: none;
+    align-items: center;
+    gap: 4px;
     background: var(--surface2);
     border: 1px solid var(--border);
     color: var(--text2);
     font-family: var(--mono);
-    font-size: 18px;
+    font-size: 11px;
     line-height: 1;
-    width: 36px;
-    height: 36px;
-    border-radius: 4px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    height: 44px;
+    padding: 0 10px;
+    border-radius: 3px;
     cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
   }
-  .sheet-toggle:hover { background: var(--surface3); }
+  .sheet-toggle:hover,
+  .sheet-toggle:focus-visible {
+    background: var(--surface3);
+    border-color: color-mix(in oklab, var(--atomizer) 50%, var(--border));
+    color: var(--text);
+    outline: none;
+  }
   .sheet-toggle.right { margin-left: auto; }
+  .sheet-toggle .bracket { color: var(--text3); font-size: 13px; }
+  .sheet-toggle .glyph   { font-size: 16px; color: var(--text); }
+  .sheet-toggle .word    { display: inline-block; }
 
   .ptt-row { padding: 10px 14px 14px; background: var(--surface); border-top: 1px solid var(--border); }
   .dim     { color: var(--text3); }
@@ -291,7 +307,11 @@
   @media (max-width: 1024px) {
     .focus, .focus.with-details { grid-template-columns: 1fr; }
     .left, .right { display: none; }
-    .sheet-toggle { display: inline-flex; align-items: center; justify-content: center; }
+    .sheet-toggle { display: inline-flex; }
+  }
+  @media (max-width: 480px) {
+    .sheet-toggle { padding: 0 8px; gap: 0; }
+    .sheet-toggle .word { display: none; }
   }
   @media (max-width: 720px) {
     .rh { padding: 8px 10px; }

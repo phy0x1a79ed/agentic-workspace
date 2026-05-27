@@ -2,9 +2,9 @@
  * Voice/PTT state — mic capture, WS streaming, STT auto-send.
  *
  * Ported from dev/awm/static/voice-panel.js (276-line IIFE) into a rune-based
- * singleton so any component can `import { voice }` and react. The on-screen
- * piece (VoicePanel.svelte) is intentionally thin: it renders the status badge
- * and VU meter from this store. PttButton drives start()/end()/cancel().
+ * singleton so any component can `import { voice }` and react. Lifecycle is
+ * driven by +layout.svelte (one connect() per tab). LiveIndicator reads the
+ * connection/stage to drive its waveform; PttButton drives start()/end()/cancel().
  *
  * Connection model:
  *   - One WebSocket to /voice/ws (cookie auth, no subprotocol needed). Auto-

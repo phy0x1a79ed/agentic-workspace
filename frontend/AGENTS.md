@@ -30,21 +30,21 @@ src/
 │   │   ├── config.ts          # wsUrl() helper, feature flags
 │   │   └── ws.svelte.ts       # RoomWsPool — one socket per rail room, kept alive across focus
 │   ├── components/
-│   │   ├── Header.svelte           # 44px top bar
+│   │   ├── Header.svelte           # 44px top bar; mounts LiveIndicator
+│   │   ├── LiveIndicator.svelte     # oscilloscope-style ws + voice indicator (replaces WsDot + leader badge + voice tag)
 │   │   ├── BottomNav.svelte         # mobile only (≤1024px)
 │   │   ├── Sheet.svelte             # left/right slide-in overlay
 │   │   ├── UnifiedSidebar.svelte    # /focus rooms rail
-│   │   ├── DetailsPanel.svelte      # /focus right rail (agents + recipients + voice)
+│   │   ├── DetailsPanel.svelte      # /focus right rail (single 'agents' section; recipients/voice folded into AgentList)
 │   │   ├── Transcript.svelte       # also renders 🔊 replay button on agent/user text posts
 │   │   ├── Composer.svelte         # hosts SlashPicker over the input when slashOpen
 │   │   ├── SlashPicker.svelte      # filterable server + claude command list (keyboard nav)
 │   │   ├── PttButton.svelte         # visual + spacebar binding only (voice STT deferred)
-│   │   ├── RecipientChips.svelte
-│   │   ├── AgentList.svelte          # per-row card; mounts AgentControls on manager
-│   │   ├── AgentControls.svelte      # restart/compact/clear/kill buttons → /slash
+│   │   ├── AgentList.svelte          # per-scope card: recipient toggle + compact/clear + collapsible body
+│   │   ├── AgentControls.svelte      # config form (mode/effort/model Select) + restart + kill
+│   │   ├── Select.svelte            # themed dropdown — replacement for native <select>
 │   │   ├── RoomCard.svelte          # mobile rooms list item
-│   │   ├── StatusTag.svelte         # uppercase mono pill with status colour
-│   │   └── WsDot.svelte             # pulsing connection indicator
+│   │   └── StatusTag.svelte         # uppercase mono pill with status colour
 │   ├── state/
 │   │   ├── ui.svelte.ts             # sheet open-state, leader badge, ws kind, managerScope
 │   │   └── recipients.svelte.ts     # per-room recipient selection (localStorage)
@@ -55,7 +55,7 @@ src/
 │   └── voice/
 │       └── tts.ts                   # mock replay() stub; real /voice/tts WS port is deferred
 └── routes/
-    ├── +layout.svelte               # shell: Header + slot + BottomNav
+    ├── +layout.svelte               # shell: Header + slot + BottomNav; owns voice.connect() lifecycle
     ├── +layout.ts                   # ssr: false, prerender: false
     ├── +page.svelte                 # → /focus redirect
     ├── status/+page.svelte

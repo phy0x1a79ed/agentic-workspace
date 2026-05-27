@@ -1,8 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
   import { page } from '$app/stores';
-  import WsDot from './WsDot.svelte';
-  import { ui } from '$lib/state/ui.svelte';
+  import LiveIndicator from './LiveIndicator.svelte';
   import { awmAs } from '$lib/api/client';
 
   const tabs = [
@@ -23,8 +22,6 @@
 <header class="header">
   <span class="logo">AWM</span>
 
-  <span class="tag tag-ws"><WsDot /> <span>ws</span></span>
-
   <nav class="tabs">
     {#each tabs as t}
       <a class="tab" class:active={activeId($page.url) === t.id} href={t.href}>{t.label}</a>
@@ -34,8 +31,8 @@
   <span class="spacer"></span>
 
   <span class="meta">
-    <span>{awmAs().replace(/^user:/, '')}</span>
-    <span class="leader" class:active={ui.leaderActive}>{ui.leaderBadge}</span>
+    <span class="user">{awmAs().replace(/^user:/, '')}</span>
+    <LiveIndicator />
   </span>
 </header>
 
@@ -81,24 +78,14 @@
     align-items: center;
     gap: 12px;
   }
-  .meta span { display: flex; align-items: center; gap: 5px; }
-  .leader {
-    padding: 2px 6px;
-    border: 1px solid var(--text3);
-    border-radius: 3px;
-    color: var(--text3);
-    letter-spacing: 1px;
-  }
-  .leader.active {
-    color: var(--ok);
-    border-color: color-mix(in oklab, var(--ok) 40%, transparent);
-    background: color-mix(in oklab, var(--ok) 10%, transparent);
-  }
+  .meta .user { display: inline-flex; align-items: center; }
 
+  @media (max-width: 1024px) {
+    .tabs { display: none; }
+  }
   @media (max-width: 720px) {
     .header { padding: 0 12px; gap: 10px; }
     .logo { font-size: 14px; letter-spacing: 2px; }
-    .tabs { display: none; }
-    .meta { font-size: 9px; }
+    .meta { font-size: 9px; gap: 8px; }
   }
 </style>
