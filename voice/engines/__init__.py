@@ -11,7 +11,13 @@ voice/engines/{stt,tts,llm}/ and add an import line below.
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import importlib.util
 import logging
+import os
+import sys
+from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -190,3 +196,102 @@ def _bootstrap() -> None:
 
 
 _bootstrap()
+
+
+# ── hot-load from data dir ─────────────────────────────────────────────
+# Engines dropped into ``$AWM_DATA_DIR/voice/engines/{stt,tts,llm}/*.py``
+# are picked up without restarting the service. A background asyncio loop
+# scans every 2s and (re)registers modules whose mtime changed; files that
+# disappear unregister their engine id.
+
+_DYNAMIC_REGISTERS: dict[str, Callable[[Any], None]] = {
+    "stt": register_stt,
+    "tts": register_tts,
+    "llm": register_llm,
+}
+# Track filename → (kind, engine_id, mtime_ns). Used to detect change /
+# removal and to map files back to the engine they registered.
+_DYNAMIC: dict[Path, tuple[str, str, int]] = {}
+
+
+def _data_engines_root() -> Path:
+    base = os.environ.get("AWM_DATA_DIR") or "data/awm"
+    return Path(base) / "voice" / "engines"
+
+
+def _unregister(kind: str, engine_id: str) -> None:
+    _REGISTRIES.get(kind, {}).pop(engine_id, None)
+
+
+def _load_module(path: Path) -> Any:
+    # Use a unique module name per file so importlib.reload-style replacement
+    # works without touching the regular `voice.engines.*` namespace.
+    mod_name = f"voice_engines_dynamic.{path.parent.name}.{path.stem}"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot spec {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _scan_dynamic_once() -> None:
+    root = _data_engines_root()
+    if not root.is_dir():
+        return
+    seen: set[Path] = set()
+    for kind, register in _DYNAMIC_REGISTERS.items():
+        kdir = root / kind
+        if not kdir.is_dir():
+            continue
+        for path in kdir.glob("*.py"):
+            if path.name.startswith("_"):
+                continue
+            seen.add(path)
+            try:
+                mtime = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            prev = _DYNAMIC.get(path)
+            if prev is not None and prev[2] == mtime:
+                continue
+            try:
+                mod = _load_module(path)
+                register(mod)
+                engine_id = getattr(mod, "ENGINE_ID", path.stem)
+                # If reloading and the engine id changed, clear the stale one.
+                if prev is not None and prev[1] != engine_id:
+                    _unregister(prev[0], prev[1])
+                _DYNAMIC[path] = (kind, engine_id, mtime)
+                log.info("hot-loaded %s engine %r from %s", kind, engine_id, path)
+            except Exception:
+                # Stamp the failure with this mtime so the watcher doesn't
+                # retry every tick — user re-saves the file to retry.
+                _DYNAMIC[path] = (kind, prev[1] if prev else f"<broken:{path.stem}>", mtime)
+                log.exception("failed to hot-load %s", path)
+    # Drop entries whose files have disappeared.
+    for stale in [p for p in _DYNAMIC if p not in seen]:
+        kind, engine_id, _ = _DYNAMIC.pop(stale)
+        _unregister(kind, engine_id)
+        log.info("hot-unloaded %s engine %r (file gone: %s)", kind, engine_id, stale)
+
+
+async def _watch_dynamic(interval: float = 2.0) -> None:
+    """Background poller — call from the FastAPI lifespan."""
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            _scan_dynamic_once()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("dynamic engine watcher iteration failed")
+
+
+# Initial sweep so engines are visible on the very first /engines call without
+# having to wait for the watcher to tick.
+try:
+    _scan_dynamic_once()
+except Exception:
+    log.exception("initial dynamic engine scan failed")

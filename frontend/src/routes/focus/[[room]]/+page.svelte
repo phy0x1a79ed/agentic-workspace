@@ -1,94 +1,43 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
   import {
-    listRooms, getRoomAgents, postToRoom, runAgentSlash,
-    type Room, type RoomAgent, type Post
+    listRooms, getRoomAgents,
+    type Room, type RoomAgent,
   } from '$lib/api/client';
-  import { RoomWsPool, type RoomEvent } from '$lib/api/ws.svelte';
-  import UnifiedSidebar from '$lib/components/UnifiedSidebar.svelte';
-  import DetailsPanel  from '$lib/components/DetailsPanel.svelte';
-  import ChatHistory   from '$lib/components/ChatHistory.svelte';
-  import ChatInput     from '$lib/components/ChatInput.svelte';
-  import PttButton     from '$lib/components/PttButton.svelte';
-  import Sheet         from '$lib/components/Sheet.svelte';
+  import UnifiedSidebar     from '$lib/components/UnifiedSidebar.svelte';
+  import DetailsPanel       from '$lib/components/DetailsPanel.svelte';
+  import VoiceConversation  from '$lib/components/VoiceConversation.svelte';
+  import Sheet              from '$lib/components/Sheet.svelte';
   import { recipients } from '$lib/state/recipients.svelte';
   import { ui } from '$lib/state/ui.svelte';
-  import { voice } from '$lib/state/voice.svelte';
 
   let rooms        = $state<Room[]>([]);
   let activeId     = $state<string | null>(null);
   let agentsByRoom = $state<Record<string, RoomAgent[]>>({});
-  let postsByRoom  = $state<Record<string, Post[]>>({});
-  let composerText = $state<string>('');
   let errorBanner  = $state<string>('');
 
-  const pool = new RoomWsPool();
-  const wsUnsubs = new Map<string, () => void>();
-  let unsubVoice: (() => void) | null = null;
-
-  // Derived: posts + agents for the currently focused room.
-  const posts    = $derived<Post[]>(activeId ? (postsByRoom[activeId] ?? []) : []);
-  const agents   = $derived<RoomAgent[]>(activeId ? (agentsByRoom[activeId] ?? []) : []);
-  const banner   = $derived<string>(errorBanner || (activeId ? pool.bannerOf(activeId) : ''));
+  const agents = $derived<RoomAgent[]>(activeId ? (agentsByRoom[activeId] ?? []) : []);
 
   // Route effect is the SINGLE writer of `activeId`. Sidebar clicks call
   // `gotoRoom()` which only updates the URL — the effect below then sees the
-  // new $page.params.room and switches focus. No WS churn — the room's
-  // socket either already exists or gets opened once and stays open.
+  // new $page.params.room and switches focus.
   $effect(() => {
     const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
     if (fromUrl && fromUrl !== activeId) focusRoom(fromUrl);
   });
 
-  // Auto-pick the first room when landing on bare /focus. Separated from the
-  // route effect so it doesn't depend on activeId.
+  // Auto-pick the first room when landing on bare /focus.
   $effect(() => {
     if (!$page.params.room && !activeId && rooms.length) {
       goto(`${base}/focus/${encodeURIComponent(rooms[0].id)}`, { replaceState: true });
     }
   });
 
-  // Keep one open socket per room in the visible rail. Switching focus is
-  // pure UI — sockets stay open in the background so posts accumulate.
-  $effect(() => {
-    const want = new Set(rooms.map(r => r.id));
-    for (const id of want) {
-      if (!wsUnsubs.has(id)) {
-        wsUnsubs.set(id, pool.on(id, (ev) => handleEvent(id, ev)));
-      }
-    }
-    for (const id of Array.from(wsUnsubs.keys())) {
-      if (!want.has(id)) {
-        wsUnsubs.get(id)?.();
-        wsUnsubs.delete(id);
-        pool.detach(id);
-      }
-    }
-  });
-
   onMount(async () => {
-    // STT result → append to composer + auto-send. Mirrors legacy
-    // appendTranscript + autoSend semantics: speaking IS the send.
-    unsubVoice = voice.onResult((text) => {
-      const cur = composerText;
-      const sep = cur && !/\s$/.test(cur) ? ' ' : '';
-      const next = (cur + sep + text).trim();
-      composerText = next;
-      onSend(next);
-      composerText = '';
-    });
     await refreshRooms();
-    // Effects handle WS attach and initial navigation.
-  });
-
-  onDestroy(() => {
-    for (const u of wsUnsubs.values()) u();
-    wsUnsubs.clear();
-    pool.closeAll();
-    unsubVoice?.();
   });
 
   async function refreshRooms() {
@@ -98,17 +47,13 @@
 
   function gotoRoom(roomId: string) {
     if (roomId === activeId) return;
-    // Just navigate; the route effect picks it up. Don't touch state here.
     goto(`${base}/focus/${encodeURIComponent(roomId)}`);
     ui.closeAll();
   }
 
   async function focusRoom(roomId: string) {
     activeId = roomId;
-    composerText = '';
     errorBanner = '';
-    // Ensure an agent list exists for this room — refresh on each focus to
-    // pick up scope/agent changes that happened in the background.
     await refreshAgents(roomId);
   }
 
@@ -117,52 +62,13 @@
     catch (e) { errorBanner = (e as Error).message; agentsByRoom[roomId] = []; }
   }
 
-  function handleEvent(roomId: string, ev: RoomEvent) {
-    switch (ev.type) {
-      case 'history':
-        if ('posts' in ev && Array.isArray(ev.posts)) postsByRoom[roomId] = ev.posts;
-        break;
-      case 'post':
-        if ('post' in ev) {
-          const cur = postsByRoom[roomId] ?? [];
-          postsByRoom[roomId] = [...cur, ev.post as Post];
-        }
-        break;
-      case 'participant_joined':
-      case 'participant_left':
-        refreshAgents(roomId);
-        break;
-    }
-  }
-
-  async function onSend(text: string) {
-    if (!activeId) return;
-    const selected = recipients.get(activeId);
-    const scopes = selected.filter(k => k.startsWith('scope:')).map(k => k.slice('scope:'.length));
-    try {
-      if (scopes.length === 0) {
-        await postToRoom(activeId, { body: text });
-      } else {
-        // Fan out to each selected scope. Backend echoes via WS; no local insert.
-        await Promise.all(scopes.map(s => postToRoom(activeId!, { body: text, to_scope: s })));
-      }
-    } catch (e) { errorBanner = (e as Error).message; }
-  }
-
-  // Slash picker → POST /slash. The backend posts the slash echo to the
-  // transcript itself, so we don't insert anything locally.
-  async function onSlashPick(cmd: string, _autorun: boolean) {
-    if (!activeId) return;
-    const scope = ui.managerScope;
-    if (!scope) { errorBanner = 'no manager scope — bootstrap missing'; return; }
-    try {
-      const res = await runAgentSlash(activeId, scope, cmd);
-      if (res.result) errorBanner = res.result;
-    } catch (e) { errorBanner = (e as Error).message; }
-  }
-
   const activeRoom = $derived(rooms.find(r => r.id === activeId));
   const selectedKeys = $derived(activeId ? recipients.get(activeId) : []);
+  // VoiceConversation accepts a single ``toScope`` — pick the first selected
+  // scope recipient (the previous fan-out across multiple was a niche path).
+  const primaryToScope = $derived(
+    selectedKeys.filter(k => k.startsWith('scope:')).map(k => k.slice('scope:'.length))[0] ?? null
+  );
 </script>
 
 <div class="focus chrome" class:with-details={activeId}>
@@ -177,7 +83,7 @@
       </button>
       <span class="title mono">{activeRoom?.id ?? 'no room focused'}</span>
       <span class="topic">{activeRoom?.topic ?? ''}</span>
-      <span class="banner mono">{banner}</span>
+      <span class="banner mono">{errorBanner}</span>
       <span class="spacer"></span>
       <button class="sheet-toggle right" type="button" aria-label="details" onclick={() => ui.openRight()}>
         <span class="bracket">[</span><span class="word">AGENTS</span><span class="glyph">@</span><span class="bracket">]</span>
@@ -185,23 +91,15 @@
     </header>
 
     {#if activeId}
-      <ChatHistory {posts} />
-      <ChatInput
-        disabled={!activeId}
-        bind:text={composerText}
-        bind:slashOpen={ui.slashOpen}
+      <VoiceConversation
         roomId={activeId}
-        scope={ui.managerScope}
-        onsubmit={onSend}
-        onslashpick={onSlashPick}
+        toScope={primaryToScope}
+        managerScope={ui.managerScope}
+        sttIntoComposer
+        sendToRoom
+        onresult={(m) => errorBanner = m}
+        onagents={(a) => { if (activeId) agentsByRoom[activeId] = a; }}
       />
-      <div class="ptt-row">
-        <PttButton
-          disabled={!activeId}
-          onpttdown={() => voice.start()}
-          onpttup={() => voice.end()}
-        />
-      </div>
     {:else}
       <div class="empty-state">
         <div class="empty-icon">◇</div>
@@ -301,8 +199,7 @@
   .sheet-toggle .glyph   { font-size: 16px; color: var(--text); }
   .sheet-toggle .word    { display: inline-block; }
 
-  .ptt-row { padding: 10px 14px 14px; background: var(--surface); border-top: 1px solid var(--border); }
-  .dim     { color: var(--text3); }
+  .dim { color: var(--text3); }
 
   @media (max-width: 1024px) {
     .focus, .focus.with-details { grid-template-columns: 1fr; }
@@ -315,6 +212,5 @@
   }
   @media (max-width: 720px) {
     .rh { padding: 8px 10px; }
-    .ptt-row { padding: 8px 10px 10px; }
   }
 </style>

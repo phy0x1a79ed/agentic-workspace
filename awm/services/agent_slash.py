@@ -116,6 +116,20 @@ async def _h_effort(scope_key: str, args: list[str]) -> str:
     return f"respawned {scope_key} on effort={sess.effort}"
 
 
+async def _h_cli(scope_key: str, args: list[str]) -> str:
+    supported = sorted(agent_instances._SUPPORTED_CLIS)
+    if not args:
+        return f"usage: /cli <{'|'.join(supported)}>"
+    target = args[0]
+    if target not in agent_instances._SUPPORTED_CLIS:
+        return (
+            f"unsupported agent cli {target!r}; "
+            f"choices: {supported}"
+        )
+    sess = await agent_instances.respawn_session(scope_key, agent_cli=target)
+    return f"respawned {scope_key} on cli={sess.agent_cli}"
+
+
 async def _h_compact(scope_key: str, args: list[str]) -> str:
     # claude's /compact is a REPL command — it isn't honored by the headless
     # `--print --input-format=stream-json` pipeline that runs every agent
@@ -165,6 +179,7 @@ _COMMANDS: list[SlashCommand] = [
     SlashCommand("/yolo", "", "Shortcut for /mode bypassPermissions.", _h_yolo),
     SlashCommand("/model", "<name>", "Respawn with --model. e.g. opus, sonnet, haiku, or full id.", _h_model),
     SlashCommand("/effort", "<level>", "Respawn with --effort. Choices: low, medium, high, xhigh, max.", _h_effort),
+    SlashCommand("/cli", "<name>", "Respawn under a different agent CLI (e.g. claude). Listed in /cli with no args.", _h_cli),
     SlashCommand("/compact", "", "Not supported in headless mode — claude /compact is REPL-only.", _h_compact),
     SlashCommand("/clear", "", "Wipe conversation context: respawn without --resume.", _h_clear),
     SlashCommand("/help", "", "Echo this catalog plus the scope's claude commands.", _h_help),

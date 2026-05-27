@@ -680,6 +680,7 @@ async def respawn_session(
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
     effort: Optional[str] = None,
+    agent_cli: Optional[str] = None,
     clear_history: bool = False,
 ) -> AgentInstance:
     """Kill the current AgentInstance for ``scope_key`` and spawn a fresh one
@@ -700,6 +701,7 @@ async def respawn_session(
         new_mode = permission_mode if permission_mode is not None else current.permission_mode
         new_model = model if model is not None else current.model
         new_effort = effort if effort is not None else current.effort
+        new_cli = agent_cli if agent_cli is not None else current.agent_cli
         resume_sid = None if clear_history else current.claude_session_id
         project, scope = current.project, current.scope
 
@@ -724,6 +726,7 @@ async def respawn_session(
 
     return await create_session(
         project=project, scope=scope,
+        agent_cli=new_cli,
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
         fresh=clear_history,

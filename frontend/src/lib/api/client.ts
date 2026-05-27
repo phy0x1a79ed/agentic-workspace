@@ -236,5 +236,20 @@ export const loadEngine = (kind: string, id: string, params: Record<string, unkn
   api<LoadedEngine>('POST', `/voice/engines/${encodeURIComponent(kind)}/load`, { id, params });
 export const unloadEngine = (kind: string) =>
   api<{ unloaded: boolean }>('POST', `/voice/engines/${encodeURIComponent(kind)}/unload`);
+/** Fetch synth audio blob (audio/wav). 409 = no tts engine loaded. */
+export async function ttsSpeakBlob(text: string): Promise<Blob> {
+  const r = await fetch('/voice/tts/speak', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-Awm-As': awmAs() },
+    body: JSON.stringify({ text }),
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new ApiError(`tts ${r.status}${detail ? ': ' + detail.slice(0, 200) : ''}`, r.status, detail);
+  }
+  return r.blob();
+}
 export const getSlashCommands = (id: string, scope: string) =>
   api<SlashCommandsResponse>('GET', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash-commands`);

@@ -31,6 +31,11 @@
   // also accepts a full id (e.g. claude-haiku-4-5-20251001) but those are
   // niche — keep the dropdown to the three names everyone uses.
   const MODEL_CHOICES  = ['opus', 'sonnet', 'haiku'] as const;
+  // Agent harness CLIs. Backend keeps the supported set in
+  // ``agent_instances._SUPPORTED_CLIS`` (claude-only today). Adding more
+  // entries here without growing that set just makes the slash handler
+  // reject the selection.
+  const CLI_CHOICES    = ['claude'] as const;
 
   // Local form state — re-seeded from `live` on mount and whenever the
   // backend poll surfaces a new pid/mode/model/effort signature, so the
@@ -38,6 +43,7 @@
   let modeVal   = $state<string>('default');
   let modelVal  = $state<string>('');
   let effortVal = $state<string>('medium');
+  let cliVal    = $state<string>('claude');
   let lastSeenLive = $state<string>('');
 
   $effect(() => {
@@ -47,12 +53,13 @@
       modeVal   = live?.permission_mode ?? 'default';
       modelVal  = live?.model ?? '';
       effortVal = live?.effort ?? 'medium';
+      cliVal    = live?.agent_cli ?? 'claude';
     }
   });
 
   function serializeLive(l: LiveAgent | null | undefined): string {
     if (!l) return '';
-    return `${l.permission_mode ?? ''}|${l.model ?? ''}|${l.effort ?? ''}`;
+    return `${l.permission_mode ?? ''}|${l.model ?? ''}|${l.effort ?? ''}|${l.agent_cli ?? ''}`;
   }
 
   let busy = $state<boolean>(false);
@@ -63,6 +70,10 @@
     try {
       const changes: string[] = [];
 
+      if (cliVal && cliVal !== (live?.agent_cli ?? '')) {
+        await fire(`/cli ${cliVal}`);
+        changes.push(`cli=${cliVal}`);
+      }
       if (modelVal && modelVal !== (live?.model ?? '')) {
         await fire(`/model ${shellQuote(modelVal)}`);
         changes.push(`model=${modelVal}`);
@@ -146,6 +157,15 @@
       disabled={busy}
       placeholder="—"
       onchange={(v) => modelVal = v}
+    />
+  </div>
+  <div class="row">
+    <span class="k"><PanelLabel>cli</PanelLabel></span>
+    <Select
+      value={cliVal}
+      options={CLI_CHOICES}
+      disabled={busy}
+      onchange={(v) => cliVal = v}
     />
   </div>
 

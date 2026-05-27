@@ -2,14 +2,14 @@
   import { onMount } from 'svelte';
   import {
     peerInfo, listPeers, listProjects, listScopes, coreStatus, pingPeer,
-    listVoiceEngines, getLoadedEngines, loadEngine,
+    listVoiceEngines, getLoadedEngines,
     type Peer, type Project, type Scope, type CoreStatus,
     type EnginesByKind, type LoadedEnginesByKind,
   } from '$lib/api/client';
   import Button from '$lib/primitives/Button.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
   import CollapsibleSection from '$lib/primitives/CollapsibleSection.svelte';
   import ConfigStats, { type StatRow } from '$lib/components/ConfigStats.svelte';
+  import VoiceControlPanel from '$lib/components/VoiceControlPanel.svelte';
 
   // ── Status (existing stats) ────────────────────────────────────────────
   let whoami     = $state<Peer | null>(null);
@@ -28,7 +28,6 @@
   let engines       = $state<EnginesByKind | null>(null);
   let enginesErr    = $state<string>('');
   let loaded        = $state<LoadedEnginesByKind>({});
-  let loadingKind   = $state<string>('');
 
   // Sections open by default: only Status, to keep the page short on first paint.
   let statusOpen = $state(true);
@@ -88,18 +87,6 @@
     } catch (e) {
       enginesErr = (e as Error).message;
       engines = null;
-    }
-  }
-
-  async function pickEngine(kind: string, id: string) {
-    loadingKind = kind;
-    try {
-      const r = await loadEngine(kind, id, {});
-      loaded = { ...loaded, [kind]: r };
-    } catch (e) {
-      enginesErr = (e as Error).message;
-    } finally {
-      loadingKind = '';
     }
   }
 
@@ -238,36 +225,11 @@
     {:else if engines === null}
       <div class="empty mono">loading engines…</div>
     {:else}
-      {#each ['stt', 'tts', 'llm'] as kind (kind)}
-        <CollapsibleSection
-          label="{kind}{loaded[kind] ? ' · ' + loaded[kind]?.id : ''}"
-          rail="none"
-          compact
-        >
-          <div class="engine-row">
-            {#each Object.keys(engines[kind] ?? {}) as eid (eid)}
-              {@const active = loaded[kind]?.id === eid}
-              <Button
-                kind={active ? 'primary' : 'ghost'}
-                disabled={loadingKind === kind}
-                onclick={() => pickEngine(kind, eid)}
-              >{active ? '● ' : ''}{eid}</Button>
-            {/each}
-          </div>
-          {#if loaded[kind]}
-            <ConfigStats
-              rows={Object.entries(loaded[kind]!.params).map(([k, v]) => ({
-                label: k, value: typeof v === 'object' ? JSON.stringify(v) : String(v), mono: true
-              }))}
-              compact
-            />
-          {/if}
-        </CollapsibleSection>
-      {/each}
-      <div class="hint mono">
-        full TTS/STT/conversation testing UI ships next.
-        load an engine here and use /focus to exercise the voice WS.
-      </div>
+      <VoiceControlPanel
+        {engines}
+        bind:loaded
+        onerror={(m) => enginesErr = m}
+      />
     {/if}
   </CollapsibleSection>
 
@@ -316,12 +278,6 @@
     color: var(--text3);
     font-size: 10px;
     font-style: italic;
-  }
-  .engine-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-    padding: var(--space-1) 0;
   }
   .mono { font-family: var(--mono); }
 

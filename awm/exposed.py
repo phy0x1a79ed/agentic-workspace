@@ -238,11 +238,25 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] voice registry init failed: {exc}")
 
+    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts,llm}/``.
+    # Lazy import so engine bootstrap (which can pull large models) doesn't
+    # run unless the user actually visits the voice surface.
+    engines_watcher_task: asyncio.Task | None = None
+    try:
+        import voice.engines as _voice_engines  # type: ignore[import-not-found]
+        engines_watcher_task = asyncio.create_task(
+            _voice_engines._watch_dynamic(), name="voice-engines-watcher",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engines watcher disabled: {exc}")
+
     yield
 
     challenges_sweeper_task.cancel()
     warmup_task.cancel()
     replication_task.cancel()
+    if engines_watcher_task is not None:
+        engines_watcher_task.cancel()
     if leadership_task is not None:
         leadership_task.cancel()
     try:

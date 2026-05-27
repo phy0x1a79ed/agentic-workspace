@@ -70,6 +70,7 @@ class PendingCall:
 _calls: dict[str, PendingCall] = {}
 _active: dict[str, Conn] = {}
 _reaper_task: asyncio.Task | None = None
+_watcher_task: asyncio.Task | None = None
 
 
 async def _reaper_loop() -> None:
@@ -106,9 +107,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.exception("default-engine warmup failed (non-fatal)")
     _reaper_task = asyncio.create_task(_reaper_loop())
+    global _watcher_task
+    _watcher_task = asyncio.create_task(engines_registry._watch_dynamic())
     yield
     if _reaper_task:
         _reaper_task.cancel()
+    if _watcher_task:
+        _watcher_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
