@@ -45,7 +45,7 @@ AWM is available as an MCP server. The `.mcp.json` at the workspace root registe
 | Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
 | Agents | `agent_spawn` |
-| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh` |
+| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `awm_mcp_sync` |
 
 ## Quick Start
 

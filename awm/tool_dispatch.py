@@ -544,6 +544,12 @@ TOOL_DEFINITIONS: list[Tool] = [
         description="Get AWM server status: workspace root, active locks, scopes, shared edits, and core process info.",
         inputSchema={"type": "object", "properties": {}},
     ),
+    # MCP-config fan-out
+    Tool(
+        name="awm_mcp_sync",
+        description="Read workspace .mcp.json and regenerate backend-specific MCP configs (opencode, …) under .awm/.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -941,6 +947,11 @@ def handle_tool(name: str, args: dict) -> str:
     # Status
     if name == "awm_status":
         return _awm_status()
+
+    # MCP-config fan-out
+    if name == "awm_mcp_sync":
+        from awm.exports import sync_mcp_configs
+        return _serialize(sync_mcp_configs())
 
     raise ValueError(f"Unknown tool: {name}")
 
