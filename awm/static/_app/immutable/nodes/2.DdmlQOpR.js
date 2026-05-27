@@ -1,0 +1,1 @@
+import"../chunks/CWj6FrbW.js";import{i as a}from"../chunks/017IbW8h.js";import{aR as t,aM as p,aO as r}from"../chunks/B2klwM74.js";import{g as s,b as e}from"../chunks/vzv-ecV8.js";function u(i,o){t(o,!1),p(()=>{s(`${e}/focus`,{replaceState:!0})}),a(),r()}export{u as component};

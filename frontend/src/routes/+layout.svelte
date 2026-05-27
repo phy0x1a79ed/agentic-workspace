@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
-  import { api, coreStatus, ensureVagrantSession, ApiError } from '$lib/api/client';
+  import { ensureVagrantSession } from '$lib/api/client';
   import { ui } from '$lib/state/ui.svelte';
   import { voice } from '$lib/state/voice.svelte';
 
@@ -18,12 +18,11 @@
       const target = h.slice(1);
       goto(`${base}${target}`, { replaceState: true });
     }
-    pollLeader();
+    ui.startPing();
     bootstrapManager();
     voice.connect();
-    const t = setInterval(pollLeader, 5000);
     return () => {
-      clearInterval(t);
+      ui.stopPing();
       voice.disconnect();
     };
   });
@@ -38,22 +37,6 @@
       ui.managerScope = r.scope_identifier;
     } catch {
       // Non-fatal — user can still browse other rooms.
-    }
-  }
-
-  async function pollLeader() {
-    try {
-      const r = await coreStatus();
-      if (r.leadership_state === 'ACTIVE') {
-        ui.leaderBadge = 'ACTIVE';
-        ui.leaderActive = true;
-      } else {
-        ui.leaderBadge = `STANDBY → ${r.current_leader || '?'}`;
-        ui.leaderActive = false;
-      }
-      ui.wsKind = 'on';
-    } catch (e) {
-      ui.wsKind = e instanceof ApiError && e.status === 401 ? 'off' : 'err';
     }
   }
 </script>
