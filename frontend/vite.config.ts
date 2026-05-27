@@ -19,6 +19,8 @@ export default defineConfig({
       '/scopes':   { target: API_TARGET, changeOrigin: true, secure: false },
       '/status':   { target: API_TARGET, changeOrigin: true, secure: false },
       '/rooms':    { target: API_TARGET, changeOrigin: true, secure: false },
+      '/vagrant':  { target: API_TARGET, changeOrigin: true, secure: false },
+      '/voice':    { target: API_TARGET, changeOrigin: true, secure: false, ws: true },
       '/ws':       { target: API_TARGET, changeOrigin: true, secure: false, ws: true }
     }
   },

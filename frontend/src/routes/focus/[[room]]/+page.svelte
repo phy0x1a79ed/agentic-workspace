@@ -10,8 +10,8 @@
   import { RoomWsPool, type RoomEvent } from '$lib/api/ws.svelte';
   import UnifiedSidebar from '$lib/components/UnifiedSidebar.svelte';
   import DetailsPanel  from '$lib/components/DetailsPanel.svelte';
-  import Transcript    from '$lib/components/Transcript.svelte';
-  import Composer      from '$lib/components/Composer.svelte';
+  import ChatHistory   from '$lib/components/ChatHistory.svelte';
+  import ChatInput     from '$lib/components/ChatInput.svelte';
   import PttButton     from '$lib/components/PttButton.svelte';
   import Sheet         from '$lib/components/Sheet.svelte';
   import { recipients } from '$lib/state/recipients.svelte';
@@ -185,8 +185,8 @@
     </header>
 
     {#if activeId}
-      <Transcript {posts} />
-      <Composer
+      <ChatHistory {posts} />
+      <ChatInput
         disabled={!activeId}
         bind:text={composerText}
         bind:slashOpen={ui.slashOpen}

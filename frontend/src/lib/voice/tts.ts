@@ -3,7 +3,7 @@
  *
  * The kyutai pocket-tts backend port (mirroring vagrant-shell/awm/voice/tts.py
  * into web-ui's awm/voice/ + a /voice/tts WS endpoint) is deferred. This
- * module exists so the Transcript replay button has somewhere to call —
+ * module exists so the ChatHistory replay button has somewhere to call —
  * when the real service lands, swap the implementation here and every
  * caller picks it up automatically.
  */

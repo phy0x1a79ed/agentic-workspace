@@ -93,7 +93,7 @@ async def _reaper_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _reaper_task
-    log.info("voice service starting; engines=%s", engines_registry.list_engines())
+    log.info("voice service starting; engines=%s", engines_registry.list_engine_ids())
     # Warm the default engines so the first call doesn't pay model-load latency.
     cfg = from_env(default_config())
     loop = asyncio.get_running_loop()
@@ -129,7 +129,7 @@ async def index() -> FileResponse:
 
 
 @app.get("/engines")
-async def list_engines() -> dict[str, list[str]]:
+async def list_engines() -> dict[str, dict[str, dict[str, Any]]]:
     return engines_registry.list_engines()
 
 
@@ -148,7 +148,7 @@ async def call_start(request: Request, body: CallStartRequest) -> dict[str, Any]
         raise HTTPException(400, f"bad config: {exc}")
 
     # 2. Validate engine selections by trying to look them up.
-    available = engines_registry.list_engines()
+    available = engines_registry.list_engine_ids()
     if cfg.stt.engine not in available["stt"]:
         raise HTTPException(400, f"unknown stt engine {cfg.stt.engine!r}; available: {available['stt']}")
     if cfg.tts.engine not in available["tts"]:

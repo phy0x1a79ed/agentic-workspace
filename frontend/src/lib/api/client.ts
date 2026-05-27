@@ -176,6 +176,19 @@ export interface VagrantSessionResponse {
   manager_live: boolean;
 }
 
+export interface EngineSpec {
+  schema: { properties?: Record<string, unknown>; [k: string]: unknown };
+  defaults: Record<string, unknown>;
+}
+export type EnginesByKind = Record<string, Record<string, EngineSpec>>;
+
+export interface LoadedEngine {
+  id: string;
+  params: Record<string, unknown>;
+  instance_id: string;
+}
+export type LoadedEnginesByKind = Record<string, LoadedEngine | null>;
+
 /* ─── Convenience helpers ────────────────────────────────────────────── */
 
 export const peerInfo      = ()                          => api<Peer>('GET', '/peer');
@@ -212,5 +225,16 @@ export const runAgentSlash = (id: string, scope: string, cmd: string) =>
   api<AgentSlashResponse>('POST', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash`, { cmd });
 export const ensureVagrantSession = () =>
   api<VagrantSessionResponse>('POST', '/vagrant/session');
+export const ensureVagrantVoiceTests = () =>
+  api<VagrantSessionResponse>('POST', '/vagrant/voice-tests');
+
+export const listVoiceEngines = () =>
+  api<EnginesByKind>('GET', '/voice/engines');
+export const getLoadedEngines = () =>
+  api<LoadedEnginesByKind>('GET', '/voice/engines/loaded');
+export const loadEngine = (kind: string, id: string, params: Record<string, unknown> = {}) =>
+  api<LoadedEngine>('POST', `/voice/engines/${encodeURIComponent(kind)}/load`, { id, params });
+export const unloadEngine = (kind: string) =>
+  api<{ unloaded: boolean }>('POST', `/voice/engines/${encodeURIComponent(kind)}/unload`);
 export const getSlashCommands = (id: string, scope: string) =>
   api<SlashCommandsResponse>('GET', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash-commands`);

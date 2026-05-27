@@ -18,7 +18,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
+from pydantic import BaseModel, Field
 
 from awm.middleware_auth import require_bearer
 from awm.ws_auth import authenticate_room_ws
@@ -62,3 +65,46 @@ async def voice_ws(websocket: WebSocket) -> None:
     await websocket.accept(subprotocol=auth.subprotocol)
     from awm.voice.registry import run_voice_ws_session
     await run_voice_ws_session(websocket, auth.user_as)
+
+
+# ── Engine registry surface ─────────────────────────────────────────────
+# Bridges to the orchestrator's pluggable engine registry (the `voice`
+# package at the repo root). Import is deferred to first hit so the awm
+# process doesn't pay engine-bootstrap latency at startup.
+
+
+def _engines_registry():
+    import voice.engines as registry  # type: ignore[import-not-found]
+    return registry
+
+
+@router.get("/engines", dependencies=[Depends(require_bearer)])
+async def engines_list() -> dict[str, Any]:
+    """`{kind: {engine_id: {schema, defaults}}}` for dynamic UI forms."""
+    return _engines_registry().list_engines()
+
+
+@router.get("/engines/loaded", dependencies=[Depends(require_bearer)])
+async def engines_loaded() -> dict[str, Any]:
+    return _engines_registry().loaded()
+
+
+class EngineLoadRequest(BaseModel):
+    id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/engines/{kind}/load", dependencies=[Depends(require_bearer)])
+async def engines_load(kind: str, body: EngineLoadRequest) -> dict[str, Any]:
+    try:
+        return _engines_registry().load(kind, body.id, body.params)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/engines/{kind}/unload", dependencies=[Depends(require_bearer)])
+async def engines_unload(kind: str) -> dict[str, bool]:
+    try:
+        return {"unloaded": _engines_registry().unload(kind)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
