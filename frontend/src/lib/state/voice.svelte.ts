@@ -53,6 +53,11 @@ class VoiceState {
   private recording = false;
   private pcmBuf: Uint8Array[] = [];
   private pcmBytes = 0;
+  // Stuck-key guard: if PTT is started but the matching `end()` never fires
+  // (page loses focus while spacebar is held, browser tab hidden, etc.) we
+  // cancel the recording so the mic doesn't stay live indefinitely.
+  private blurHandler: (() => void) | null = null;
+  private visibilityHandler: (() => void) | null = null;
 
   private listeners = new Set<ResultListener>();
 
@@ -76,6 +81,7 @@ class VoiceState {
     if (this.wsWant) return;
     this.wsWant = true;
     this.openWs();
+    this.installFocusGuards();
   }
 
   /** Close WS and release the mic. Call from onDestroy. */
@@ -85,8 +91,33 @@ class VoiceState {
       try { this.ws.close(); } catch { /* ignore */ }
       this.ws = null;
     }
+    this.removeFocusGuards();
     this.releaseMic();
     this.connection = 'disconnected';
+  }
+
+  private installFocusGuards(): void {
+    if (typeof window === 'undefined') return;
+    if (this.blurHandler || this.visibilityHandler) return;
+    const guard = () => { if (this.recording) this.cancel(); };
+    this.blurHandler = guard;
+    this.visibilityHandler = () => {
+      if (typeof document !== 'undefined' && document.hidden) guard();
+    };
+    window.addEventListener('blur', this.blurHandler);
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+  }
+
+  private removeFocusGuards(): void {
+    if (typeof window === 'undefined') return;
+    if (this.blurHandler) {
+      window.removeEventListener('blur', this.blurHandler);
+      this.blurHandler = null;
+    }
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
   }
 
   private openWs(): void {
@@ -246,15 +277,22 @@ class VoiceState {
     this.recording = false;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: 'end' })); } catch { /* ignore */ }
+      // Frames already in flight; the mic itself isn't needed to receive the
+      // stt_result message back. Release now so the LED goes off promptly.
+      this.releaseMic();
       return;
     }
     // HTTP fallback.
     const pcm = this.takePcm();
     if (!pcm) {
+      this.releaseMic();
       this.setStage('idle', 'idle');
       return;
     }
     this.setStage('transcribing', 'transcribing…');
+    // Release mic before the network round-trip — the bytes are already in
+    // `pcm` and don't need the live stream anymore.
+    this.releaseMic();
     try {
       const text = await this.postPcm(pcm);
       if (text) this.fireResult(text);
@@ -272,8 +310,10 @@ class VoiceState {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: 'cancel' })); } catch { /* ignore */ }
     }
+    this.releaseMic();
     this.setStage('idle', 'idle');
   }
+
 
   // --- helpers ----------------------------------------------------------
 

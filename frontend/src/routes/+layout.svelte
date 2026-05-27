@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
-  import { api, coreStatus, ApiError } from '$lib/api/client';
+  import { api, coreStatus, ensureVagrantSession, ApiError } from '$lib/api/client';
   import { ui } from '$lib/state/ui.svelte';
 
   let { children } = $props();
@@ -18,9 +18,23 @@
       goto(`${base}${target}`, { replaceState: true });
     }
     pollLeader();
+    bootstrapManager();
     const t = setInterval(pollLeader, 5000);
     return () => clearInterval(t);
   });
+
+  async function bootstrapManager() {
+    // POST /vagrant/session is idempotent: provisions the user's vagrant
+    // scope + room and (re)spawns the manager Claude if there's no live
+    // session. Persist the scope identifier so the details panel can mark
+    // which agent row is "yours" and target its slash commands.
+    try {
+      const r = await ensureVagrantSession();
+      ui.managerScope = r.scope_identifier;
+    } catch {
+      // Non-fatal — user can still browse other rooms.
+    }
+  }
 
   async function pollLeader() {
     try {

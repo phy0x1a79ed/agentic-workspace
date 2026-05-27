@@ -1,9 +1,19 @@
 <script lang="ts">
   import type { RoomAgent } from '$lib/api/client';
   import StatusTag from './StatusTag.svelte';
+  import AgentControls from './AgentControls.svelte';
+  import { ui } from '$lib/state/ui.svelte';
 
-  interface Props { agents: RoomAgent[] }
-  let { agents }: Props = $props();
+  interface Props {
+    agents: RoomAgent[];
+    roomId?: string | null;
+    onresult?: (msg: string) => void;
+  }
+  let { agents, roomId = null, onresult }: Props = $props();
+
+  function isManager(scope: string): boolean {
+    return !!ui.managerScope && ui.managerScope === scope;
+  }
 </script>
 
 <div class="list">
@@ -11,10 +21,10 @@
     <em class="dim">no agent participants</em>
   {:else}
     {#each agents as a}
-      <article class="card">
+      <article class="card" class:manager={isManager(a.scope)}>
         <header>
           <span class="scope">{a.scope}</span>
-          <span class="kind">{a.kind}</span>
+          <span class="kind">{isManager(a.scope) ? 'manager' : a.kind}</span>
         </header>
         {#if a.live}
           <div class="row mono">
@@ -36,6 +46,9 @@
             {a.kind === 'shadow_peer' ? 'remote (peer)' : 'no live session'}
           </div>
         {/if}
+        {#if isManager(a.scope) && roomId}
+          <AgentControls {roomId} scope={a.scope} {onresult} />
+        {/if}
       </article>
     {/each}
   {/if}
@@ -52,6 +65,10 @@
     flex-direction: column;
     gap: 4px;
   }
+  .card.manager {
+    border-color: color-mix(in oklab, var(--atomizer) 50%, var(--border));
+  }
+  .card.manager .kind { color: var(--atomizer); }
   header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .scope { font-family: var(--mono); font-size: 12px; color: var(--text); }
   .kind  { font-family: var(--mono); font-size: 9px; color: var(--text3); letter-spacing: 1px; text-transform: uppercase; }

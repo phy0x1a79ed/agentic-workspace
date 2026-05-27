@@ -4,7 +4,7 @@
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
   import {
-    listRooms, getRoomAgents, getRoomHistory, postToRoom,
+    listRooms, getRoomAgents, postToRoom,
     type Room, type RoomAgent, type Post
   } from '$lib/api/client';
   import { RoomWs, type RoomEvent } from '$lib/api/ws.svelte';
@@ -30,12 +30,23 @@
   let unsubWs: (() => void) | null = null;
   let unsubVoice: (() => void) | null = null;
 
-  // Sync active room id from URL on navigation. Route is
-  // /ui/focus/<id> (optional param).
+  // Route effect is the SINGLE writer of `activeId`. Sidebar clicks call
+  // `gotoRoom()` which only updates the URL — the effect below then sees the
+  // new $page.params.room and runs `loadRoom()`. Mixing direct state writes
+  // with goto() in the same handler caused the prior flicker-and-revert
+  // (effect re-ran with stale params snapshot and bounced back to the old
+  // room).
   $effect(() => {
     const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
-    if (fromUrl && fromUrl !== activeId) attachTo(fromUrl);
-    if (!fromUrl && !activeId && rooms.length) attachTo(rooms[0].id);
+    if (fromUrl && fromUrl !== activeId) loadRoom(fromUrl);
+  });
+
+  // Auto-pick the first room when landing on bare /focus. Separated from the
+  // route effect so it doesn't depend on activeId.
+  $effect(() => {
+    if (!$page.params.room && !activeId && rooms.length) {
+      goto(`${base}/focus/${encodeURIComponent(rooms[0].id)}`, { replaceState: true });
+    }
   });
 
   // Track banner from WS state.
@@ -54,9 +65,7 @@
       composerText = '';
     });
     await refreshRooms();
-    const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
-    if (fromUrl) attachTo(fromUrl);
-    else if (rooms.length) attachTo(rooms[0].id);
+    // Effect handles initial navigation — nothing else to do here.
   });
 
   onDestroy(() => {
@@ -70,20 +79,22 @@
     catch (e) { banner = (e as Error).message; rooms = []; }
   }
 
-  async function attachTo(roomId: string) {
-    if (activeId === roomId) return;
+  function gotoRoom(roomId: string) {
+    if (roomId === activeId) return;
+    // Just navigate; the route effect picks it up. Don't touch state here.
+    goto(`${base}/focus/${encodeURIComponent(roomId)}`);
+    ui.closeAll();
+  }
+
+  async function loadRoom(roomId: string) {
     activeId = roomId;
     posts = [];
     composerText = '';
-    ui.closeAll();
-    // Update URL without dropping the WS or remount.
-    goto(`${base}/focus/${encodeURIComponent(roomId)}`, { replaceState: false, keepFocus: true, noScroll: true });
+    banner = `attaching to ${roomId}…`;
     await refreshAgents(roomId);
+    // WS sends a `history` frame right after attach (rooms.py:770) — that's
+    // our source of truth, so no separate REST history fetch here.
     ws.connect(roomId);
-    try {
-      const r = await getRoomHistory(roomId, { limit: '100' });
-      posts = r.posts ?? [];
-    } catch (e) { banner = (e as Error).message; }
   }
 
   async function refreshAgents(roomId: string) {
@@ -126,7 +137,7 @@
 
 <div class="focus chrome" class:with-details={activeId}>
   <div class="left">
-    <UnifiedSidebar {rooms} {activeId} onpick={attachTo} />
+    <UnifiedSidebar {rooms} {activeId} onpick={gotoRoom} />
   </div>
 
   <main class="main">
@@ -162,22 +173,26 @@
     {#if activeId}
       <DetailsPanel
         {agents}
+        roomId={activeId}
         recipients={selectedKeys}
         onrecipients={(keys) => activeId && recipients.set(activeId, keys)}
+        onagentresult={(m) => banner = m}
       />
     {/if}
   </div>
 
   <Sheet bind:open={ui.leftSheetOpen} side="left">
-    <UnifiedSidebar {rooms} {activeId} onpick={(id) => { attachTo(id); ui.closeAll(); }} />
+    <UnifiedSidebar {rooms} {activeId} onpick={(id) => { gotoRoom(id); ui.closeAll(); }} />
   </Sheet>
 
   <Sheet bind:open={ui.rightSheetOpen} side="right">
     {#if activeId}
       <DetailsPanel
         {agents}
+        roomId={activeId}
         recipients={selectedKeys}
         onrecipients={(keys) => activeId && recipients.set(activeId, keys)}
+        onagentresult={(m) => banner = m}
       />
     {/if}
   </Sheet>

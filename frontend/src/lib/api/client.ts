@@ -160,6 +160,15 @@ export interface RoomHistoryResponse { posts: Post[] }
 export interface SlashCommand { name: string; description?: string }
 export interface SlashCommandsResponse { commands: SlashCommand[] }
 
+export interface AgentSlashResponse { handled: boolean; result: string }
+
+export interface VagrantSessionResponse {
+  scope_uuid: string;
+  room_id: string;
+  scope_identifier: string;
+  manager_live: boolean;
+}
+
 /* ─── Convenience helpers ────────────────────────────────────────────── */
 
 export const peerInfo      = ()                          => api<Peer>('GET', '/peer');
@@ -192,7 +201,9 @@ export const closeRoom   = (id: string, kill_agents = false) =>
 export const archiveRoom = (id: string)               => api<{ ok: true }>('POST', `/rooms/${encodeURIComponent(id)}/archive`);
 export const inviteToRoom = (id: string, scope: string) =>
   api<{ ok: true }>('POST', `/rooms/${encodeURIComponent(id)}/invite`, { scope });
-export const slashAgent = (id: string, scope: string, body: { text: string }) =>
-  api<{ ok: true }>('POST', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash`, body);
+export const runAgentSlash = (id: string, scope: string, cmd: string) =>
+  api<AgentSlashResponse>('POST', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash`, { cmd });
+export const ensureVagrantSession = () =>
+  api<VagrantSessionResponse>('POST', '/vagrant/session');
 export const getSlashCommands = (id: string, scope: string) =>
   api<SlashCommandsResponse>('GET', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash-commands`);

@@ -39,12 +39,13 @@ src/
 │   │   ├── Composer.svelte
 │   │   ├── PttButton.svelte         # visual + spacebar binding only (voice STT deferred)
 │   │   ├── RecipientChips.svelte
-│   │   ├── AgentList.svelte
+│   │   ├── AgentList.svelte          # per-row card; mounts AgentControls on manager
+│   │   ├── AgentControls.svelte      # restart/compact/clear/kill buttons → /slash
 │   │   ├── RoomCard.svelte          # mobile rooms list item
 │   │   ├── StatusTag.svelte         # uppercase mono pill with status colour
 │   │   └── WsDot.svelte             # pulsing connection indicator
 │   ├── state/
-│   │   ├── ui.svelte.ts             # sheet open-state, leader badge, ws kind
+│   │   ├── ui.svelte.ts             # sheet open-state, leader badge, ws kind, managerScope
 │   │   └── recipients.svelte.ts     # per-room recipient selection (localStorage)
 │   ├── theme/
 │   │   └── colors.ts                # statusColor() → CSS variable
@@ -105,6 +106,19 @@ hidden at ≥ 1025px via media query.
 ./run.sh build                    # production build → ../awm/static/
 ```
 
+**Build cache gotcha**: SvelteKit chunk hashes are content-derived, but Vite
+caches compiled artifacts under `frontend/.svelte-kit/`. If a code change
+doesn't appear in the rebuilt bundle (same hash filenames, browser keeps
+running stale logic), nuke the cache:
+
+```bash
+rm -rf frontend/.svelte-kit awm/static/_app && (cd dev && ./run.sh build)
+```
+
+Then hard-reload the browser. Symptoms: edits to a Svelte component compile
+without errors but `grep` on the new bundle shows the expected strings while
+the page still renders the old behavior.
+
 Dev mode is HTTP-only (12103), so session cookies (`Secure=True`) won't
 flow. For authed feature work, mint a token via `./run.sh login` and visit
 the production URL once, OR work against the production build (`build`
@@ -126,6 +140,32 @@ the proxy list when porting new endpoints.
   error rather than bouncing to a URL that doesn't exist on :12103.
 - Backend field names: `Post` uses `author` + `body` + `to_scope` (not
   `from`, `text`, `to`). Same for `postToRoom({ body, to_scope })`.
+- The agent-slash endpoint takes `{ cmd: "/restart ..." }`, NOT
+  `{ text: ... }`. See `runAgentSlash` in `client.ts`.
+
+## Transcript grouping
+
+`Transcript.svelte` groups posts before rendering. Consecutive posts with
+`kind in {"join","leave"}` collapse to a single muted membership line;
+consecutive `tool_use`/`tool_result` from the same author collapse to a
+`⚙ N tool calls` block with an expand toggle. Anything else renders as a
+standalone card.
+
+Author tokens are `kind:identifier`, but be aware: subscriber participants
+(every browser tab attach) are emitted as `subscriber:ws:<wsid>:user:<name>`
+— the leading kind is `subscriber:`, not `ws:`. The summary collapses these
+to a count (`12 subscribers joined`) and keeps the named agent joins
+verbatim.
+
+## SPA bootstrap
+
+`+layout.svelte` POSTs `/vagrant/session` on mount (`ensureVagrantSession`).
+This is idempotent server-side: it (re)spawns the user's vagrant manager
+Claude process if it's not live, and returns `scope_identifier` which gets
+stashed in `ui.managerScope`. The DetailsPanel uses that to mark which
+agent row is "yours" and render `<AgentControls>` for it. Without this
+bootstrap, the SvelteKit rewrite (pre-fix) had no way to spawn or address
+a per-user manager.
 
 ## Deferred
 

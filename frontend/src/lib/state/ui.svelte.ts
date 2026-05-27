@@ -12,6 +12,10 @@ class UiState {
   leaderBadge     = $state<string>('STANDBY');
   leaderActive    = $state(false);
   wsKind          = $state<WsKind>('off');
+  // Scope identifier (e.g. "_vagrant/user-user-dev") of the user's own
+  // vagrant manager. Returned by POST /vagrant/session; used to mark which
+  // agent row in the details panel is "yours" and to target slash commands.
+  managerScope    = $state<string | null>(null);
 
   openLeft()  { this.leftSheetOpen  = true;  this.rightSheetOpen = false; }
   openRight() { this.rightSheetOpen = true;  this.leftSheetOpen  = false; }

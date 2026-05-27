@@ -6,7 +6,9 @@
   interface Props {
     agents: RoomAgent[];
     recipients: string[];
+    roomId?: string | null;
     onrecipients?: (keys: string[]) => void;
+    onagentresult?: (msg: string) => void;
     voiceStage?: string;
     voiceConn?:  string;
     voiceMeter?: string;
@@ -14,7 +16,9 @@
   let {
     agents,
     recipients,
+    roomId = null,
     onrecipients,
+    onagentresult,
     voiceStage = 'idle',
     voiceConn  = 'disconnected',
     voiceMeter = '—'
@@ -24,7 +28,7 @@
 <aside class="panel">
   <section>
     <header class="ph"><span class="panel-label">agents</span></header>
-    <AgentList {agents} />
+    <AgentList {agents} {roomId} onresult={(m) => onagentresult?.(m)} />
   </section>
 
   <section>
