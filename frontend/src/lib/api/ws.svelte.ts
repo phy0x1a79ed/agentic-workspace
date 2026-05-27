@@ -1,12 +1,18 @@
 /**
- * Room WebSocket attachment + event stream. Ported from awm/static/index.html
- * lines 1313–1352 plus the focus-tab variant at 1693+. Single class so both
- * routes (focus + room) share the same connect/reconnect/event-fanout logic.
+ * Room WebSocket transport.
  *
  * Auth is cookie-based — no subprotocol bearer header. The path is
  *   wss://<host>/rooms/<room_id>/attach
  *
- * Reconnect uses the same exponential backoff (1s → 15s cap) as legacy.
+ * The WS is *pure UI transport*: opening one does NOT make the user a
+ * participant of the room (server-side fix in awm/services/rooms.py removed
+ * the subscribe-as-participant behaviour). Switching the focused room
+ * should NOT tear down and reopen sockets — it's only a view change. So
+ * the page holds a `RoomWsPool` that owns one socket per room currently
+ * visible in the left rail. `attach(roomId)` is idempotent; `detach`
+ * closes a single room's socket; `closeAll` runs on page teardown.
+ *
+ * Each socket carries its own backoff (1s → 15s cap) and event listeners.
  */
 
 import { wsUrl } from './config';
@@ -21,27 +27,22 @@ export type RoomEvent =
 export type WsState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 export type Listener = (ev: RoomEvent) => void;
 
-export class RoomWs {
+class RoomSocket {
   state = $state<WsState>('idle');
   banner = $state<string>('');
 
   private socket: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private backoff = 1000;
-  private currentRoom: string | null = null;
-  private wantConnected = false;
+  private wantConnected = true;
+
+  constructor(private readonly roomId: string) {
+    this._open();
+  }
 
   on(fn: Listener): () => void {
     this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-
-  connect(roomId: string): void {
-    if (this.currentRoom === roomId && this.socket && this.socket.readyState === WebSocket.OPEN) return;
-    this.close();
-    this.currentRoom = roomId;
-    this.wantConnected = true;
-    this._open(roomId);
+    return () => { this.listeners.delete(fn); };
   }
 
   close(): void {
@@ -50,19 +51,19 @@ export class RoomWs {
       try { this.socket.close(); } catch { /* ignore */ }
       this.socket = null;
     }
+    this.listeners.clear();
     this.state = 'idle';
-    this.currentRoom = null;
   }
 
-  private _open(roomId: string): void {
+  private _open(): void {
     this.state = 'connecting';
-    const url = wsUrl(`/rooms/${encodeURIComponent(roomId)}/attach`);
+    const url = wsUrl(`/rooms/${encodeURIComponent(this.roomId)}/attach`);
     const sock = new WebSocket(url);
     this.socket = sock;
 
     sock.onopen = () => {
       this.state = 'open';
-      this.banner = `attached to ${roomId}`;
+      this.banner = `attached to ${this.roomId}`;
       this.backoff = 1000;
     };
     sock.onmessage = (e) => {
@@ -75,17 +76,45 @@ export class RoomWs {
     sock.onclose = (ev) => {
       this.state = 'closed';
       this.banner = `disconnected (${ev.code})${this.wantConnected ? '; reconnecting…' : ''}`;
-      if (this.wantConnected && this.currentRoom === roomId) {
+      if (this.wantConnected) {
         const delay = this.backoff;
         this.backoff = Math.min(this.backoff * 2, 15000);
-        setTimeout(() => {
-          if (this.wantConnected && this.currentRoom === roomId) this._open(roomId);
-        }, delay);
+        setTimeout(() => { if (this.wantConnected) this._open(); }, delay);
       }
     };
     sock.onerror = () => {
       this.state = 'error';
       this.banner = 'ws error';
     };
+  }
+}
+
+export class RoomWsPool {
+  private sockets = new Map<string, RoomSocket>();
+
+  attach(roomId: string): void {
+    if (this.sockets.has(roomId)) return;
+    this.sockets.set(roomId, new RoomSocket(roomId));
+  }
+
+  detach(roomId: string): void {
+    const s = this.sockets.get(roomId);
+    if (!s) return;
+    s.close();
+    this.sockets.delete(roomId);
+  }
+
+  on(roomId: string, fn: Listener): () => void {
+    this.attach(roomId);
+    return this.sockets.get(roomId)!.on(fn);
+  }
+
+  bannerOf(roomId: string): string {
+    return this.sockets.get(roomId)?.banner ?? '';
+  }
+
+  closeAll(): void {
+    for (const s of this.sockets.values()) s.close();
+    this.sockets.clear();
   }
 }

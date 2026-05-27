@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Post } from '$lib/api/client';
   import { tick } from 'svelte';
+  import { replay, ttsEnabled } from '$lib/voice/tts';
 
   interface Props {
     posts: Post[];
@@ -101,6 +102,16 @@
     // tool_use body is "[tool_use: name]"; tool_result body is the truncated payload.
     return p.body ?? '';
   }
+
+  // Speakable posts: agent or user text (not subscriber, not system, not
+  // tool_use/tool_result). The TTS service itself is mocked; this gates the
+  // affordance per user intent ("speak agent text, but not tool calls").
+  function isSpeakable(p: Post): boolean {
+    const k = p.kind ?? 'text';
+    if (k !== 'text') return false;
+    const a = p.author ?? '';
+    return a.startsWith('agent:') || a.startsWith('user:');
+  }
 </script>
 
 <div class="transcript" bind:this={scrollEl}>
@@ -142,6 +153,15 @@
         <article class="post kind-{g.post.kind ?? 'text'}">
           <header>
             <span class="author">{g.post.author}</span>
+            {#if ttsEnabled && isSpeakable(g.post)}
+              <button
+                class="tts-btn"
+                type="button"
+                title="replay"
+                aria-label="replay"
+                onclick={() => replay(g.post.body ?? '')}
+              >🔊</button>
+            {/if}
             <span class="ts mono">{shortTs(g.post.ts)}</span>
           </header>
           <div class="body">{g.post.body ?? ''}</div>
@@ -186,7 +206,18 @@
     gap: 10px;
   }
   .author { font-family: var(--mono); font-size: 11px; color: var(--atomizer); letter-spacing: 0.3px; }
-  .ts     { font-size: 10px; color: var(--text3); }
+  .ts     { font-size: 10px; color: var(--text3); margin-left: auto; }
+  .tts-btn {
+    background: transparent;
+    border: 0;
+    padding: 0 4px;
+    color: var(--text3);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    opacity: 0.6;
+  }
+  .tts-btn:hover { opacity: 1; color: var(--atomizer); }
   .body   { color: var(--text); white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; }
 
   .post.kind-system .author { color: var(--text3); }

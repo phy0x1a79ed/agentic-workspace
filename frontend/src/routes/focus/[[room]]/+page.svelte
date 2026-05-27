@@ -4,10 +4,10 @@
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
   import {
-    listRooms, getRoomAgents, postToRoom,
+    listRooms, getRoomAgents, postToRoom, runAgentSlash,
     type Room, type RoomAgent, type Post
   } from '$lib/api/client';
-  import { RoomWs, type RoomEvent } from '$lib/api/ws.svelte';
+  import { RoomWsPool, type RoomEvent } from '$lib/api/ws.svelte';
   import UnifiedSidebar from '$lib/components/UnifiedSidebar.svelte';
   import DetailsPanel  from '$lib/components/DetailsPanel.svelte';
   import Transcript    from '$lib/components/Transcript.svelte';
@@ -19,26 +19,29 @@
   import { ui } from '$lib/state/ui.svelte';
   import { voice } from '$lib/state/voice.svelte';
 
-  let rooms       = $state<Room[]>([]);
-  let activeId    = $state<string | null>(null);
-  let agents      = $state<RoomAgent[]>([]);
-  let posts       = $state<Post[]>([]);
-  let banner      = $state<string>('');
+  let rooms        = $state<Room[]>([]);
+  let activeId     = $state<string | null>(null);
+  let agentsByRoom = $state<Record<string, RoomAgent[]>>({});
+  let postsByRoom  = $state<Record<string, Post[]>>({});
   let composerText = $state<string>('');
+  let errorBanner  = $state<string>('');
 
-  const ws = new RoomWs();
-  let unsubWs: (() => void) | null = null;
+  const pool = new RoomWsPool();
+  const wsUnsubs = new Map<string, () => void>();
   let unsubVoice: (() => void) | null = null;
+
+  // Derived: posts + agents for the currently focused room.
+  const posts    = $derived<Post[]>(activeId ? (postsByRoom[activeId] ?? []) : []);
+  const agents   = $derived<RoomAgent[]>(activeId ? (agentsByRoom[activeId] ?? []) : []);
+  const banner   = $derived<string>(errorBanner || (activeId ? pool.bannerOf(activeId) : ''));
 
   // Route effect is the SINGLE writer of `activeId`. Sidebar clicks call
   // `gotoRoom()` which only updates the URL — the effect below then sees the
-  // new $page.params.room and runs `loadRoom()`. Mixing direct state writes
-  // with goto() in the same handler caused the prior flicker-and-revert
-  // (effect re-ran with stale params snapshot and bounced back to the old
-  // room).
+  // new $page.params.room and switches focus. No WS churn — the room's
+  // socket either already exists or gets opened once and stays open.
   $effect(() => {
     const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
-    if (fromUrl && fromUrl !== activeId) loadRoom(fromUrl);
+    if (fromUrl && fromUrl !== activeId) focusRoom(fromUrl);
   });
 
   // Auto-pick the first room when landing on bare /focus. Separated from the
@@ -49,11 +52,25 @@
     }
   });
 
-  // Track banner from WS state.
-  $effect(() => { banner = ws.banner; });
+  // Keep one open socket per room in the visible rail. Switching focus is
+  // pure UI — sockets stay open in the background so posts accumulate.
+  $effect(() => {
+    const want = new Set(rooms.map(r => r.id));
+    for (const id of want) {
+      if (!wsUnsubs.has(id)) {
+        wsUnsubs.set(id, pool.on(id, (ev) => handleEvent(id, ev)));
+      }
+    }
+    for (const id of Array.from(wsUnsubs.keys())) {
+      if (!want.has(id)) {
+        wsUnsubs.get(id)?.();
+        wsUnsubs.delete(id);
+        pool.detach(id);
+      }
+    }
+  });
 
   onMount(async () => {
-    unsubWs = ws.on(handleEvent);
     // STT result → append to composer + auto-send. Mirrors legacy
     // appendTranscript + autoSend semantics: speaking IS the send.
     unsubVoice = voice.onResult((text) => {
@@ -65,18 +82,19 @@
       composerText = '';
     });
     await refreshRooms();
-    // Effect handles initial navigation — nothing else to do here.
+    // Effects handle WS attach and initial navigation.
   });
 
   onDestroy(() => {
-    unsubWs?.();
-    ws.close();
+    for (const u of wsUnsubs.values()) u();
+    wsUnsubs.clear();
+    pool.closeAll();
     unsubVoice?.();
   });
 
   async function refreshRooms() {
     try { rooms = (await listRooms('active')).rooms; }
-    catch (e) { banner = (e as Error).message; rooms = []; }
+    catch (e) { errorBanner = (e as Error).message; rooms = []; }
   }
 
   function gotoRoom(roomId: string) {
@@ -86,33 +104,34 @@
     ui.closeAll();
   }
 
-  async function loadRoom(roomId: string) {
+  async function focusRoom(roomId: string) {
     activeId = roomId;
-    posts = [];
     composerText = '';
-    banner = `attaching to ${roomId}…`;
+    errorBanner = '';
+    // Ensure an agent list exists for this room — refresh on each focus to
+    // pick up scope/agent changes that happened in the background.
     await refreshAgents(roomId);
-    // WS sends a `history` frame right after attach (rooms.py:770) — that's
-    // our source of truth, so no separate REST history fetch here.
-    ws.connect(roomId);
   }
 
   async function refreshAgents(roomId: string) {
-    try { agents = (await getRoomAgents(roomId)).agents; }
-    catch (e) { banner = (e as Error).message; agents = []; }
+    try { agentsByRoom[roomId] = (await getRoomAgents(roomId)).agents; }
+    catch (e) { errorBanner = (e as Error).message; agentsByRoom[roomId] = []; }
   }
 
-  function handleEvent(ev: RoomEvent) {
+  function handleEvent(roomId: string, ev: RoomEvent) {
     switch (ev.type) {
       case 'history':
-        if ('posts' in ev && Array.isArray(ev.posts)) posts = ev.posts;
+        if ('posts' in ev && Array.isArray(ev.posts)) postsByRoom[roomId] = ev.posts;
         break;
       case 'post':
-        if ('post' in ev) posts = [...posts, ev.post as Post];
+        if ('post' in ev) {
+          const cur = postsByRoom[roomId] ?? [];
+          postsByRoom[roomId] = [...cur, ev.post as Post];
+        }
         break;
       case 'participant_joined':
       case 'participant_left':
-        if (activeId) refreshAgents(activeId);
+        refreshAgents(roomId);
         break;
     }
   }
@@ -128,7 +147,19 @@
         // Fan out to each selected scope. Backend echoes via WS; no local insert.
         await Promise.all(scopes.map(s => postToRoom(activeId!, { body: text, to_scope: s })));
       }
-    } catch (e) { banner = (e as Error).message; }
+    } catch (e) { errorBanner = (e as Error).message; }
+  }
+
+  // Slash picker → POST /slash. The backend posts the slash echo to the
+  // transcript itself, so we don't insert anything locally.
+  async function onSlashPick(cmd: string, _autorun: boolean) {
+    if (!activeId) return;
+    const scope = ui.managerScope;
+    if (!scope) { errorBanner = 'no manager scope — bootstrap missing'; return; }
+    try {
+      const res = await runAgentSlash(activeId, scope, cmd);
+      if (res.result) errorBanner = res.result;
+    } catch (e) { errorBanner = (e as Error).message; }
   }
 
   const activeRoom = $derived(rooms.find(r => r.id === activeId));
@@ -153,7 +184,15 @@
 
     {#if activeId}
       <Transcript {posts} />
-      <Composer disabled={!activeId} bind:text={composerText} onsubmit={onSend} onslashopen={() => ui.slashOpen = !ui.slashOpen} />
+      <Composer
+        disabled={!activeId}
+        bind:text={composerText}
+        bind:slashOpen={ui.slashOpen}
+        roomId={activeId}
+        scope={ui.managerScope}
+        onsubmit={onSend}
+        onslashpick={onSlashPick}
+      />
       <div class="ptt-row">
         <PttButton
           disabled={!activeId}
@@ -176,7 +215,7 @@
         roomId={activeId}
         recipients={selectedKeys}
         onrecipients={(keys) => activeId && recipients.set(activeId, keys)}
-        onagentresult={(m) => banner = m}
+        onagentresult={(m) => errorBanner = m}
       />
     {/if}
   </div>
@@ -192,7 +231,7 @@
         roomId={activeId}
         recipients={selectedKeys}
         onrecipients={(keys) => activeId && recipients.set(activeId, keys)}
-        onagentresult={(m) => banner = m}
+        onagentresult={(m) => errorBanner = m}
       />
     {/if}
   </Sheet>

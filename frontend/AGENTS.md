@@ -28,15 +28,16 @@ src/
 │   ├── api/
 │   │   ├── client.ts          # fetch wrapper + typed endpoints (peer, rooms, etc.)
 │   │   ├── config.ts          # wsUrl() helper, feature flags
-│   │   └── ws.svelte.ts       # RoomWs class — connect/reconnect with backoff
+│   │   └── ws.svelte.ts       # RoomWsPool — one socket per rail room, kept alive across focus
 │   ├── components/
 │   │   ├── Header.svelte           # 44px top bar
 │   │   ├── BottomNav.svelte         # mobile only (≤1024px)
 │   │   ├── Sheet.svelte             # left/right slide-in overlay
 │   │   ├── UnifiedSidebar.svelte    # /focus rooms rail
 │   │   ├── DetailsPanel.svelte      # /focus right rail (agents + recipients + voice)
-│   │   ├── Transcript.svelte
-│   │   ├── Composer.svelte
+│   │   ├── Transcript.svelte       # also renders 🔊 replay button on agent/user text posts
+│   │   ├── Composer.svelte         # hosts SlashPicker over the input when slashOpen
+│   │   ├── SlashPicker.svelte      # filterable server + claude command list (keyboard nav)
 │   │   ├── PttButton.svelte         # visual + spacebar binding only (voice STT deferred)
 │   │   ├── RecipientChips.svelte
 │   │   ├── AgentList.svelte          # per-row card; mounts AgentControls on manager
@@ -51,7 +52,8 @@ src/
 │   │   └── colors.ts                # statusColor() → CSS variable
 │   ├── utils/
 │   │   └── cn.ts                    # clsx + tailwind-merge
-│   └── voice/                       # (reserved for STT port)
+│   └── voice/
+│       └── tts.ts                   # mock replay() stub; real /voice/tts WS port is deferred
 └── routes/
     ├── +layout.svelte               # shell: Header + slot + BottomNav
     ├── +layout.ts                   # ssr: false, prerender: false
@@ -151,11 +153,12 @@ consecutive `tool_use`/`tool_result` from the same author collapse to a
 `⚙ N tool calls` block with an expand toggle. Anything else renders as a
 standalone card.
 
-Author tokens are `kind:identifier`, but be aware: subscriber participants
-(every browser tab attach) are emitted as `subscriber:ws:<wsid>:user:<name>`
-— the leading kind is `subscriber:`, not `ws:`. The summary collapses these
-to a count (`12 subscribers joined`) and keeps the named agent joins
-verbatim.
+Author tokens are `kind:identifier`. Subscriber WS attach/detach is **not**
+a participant event — `run_subscriber_session` keeps the WS queue-only and
+does not insert join/leave posts or broadcast participant_joined/left, so
+focus changes, tab refreshes, and second tabs no longer pollute the
+transcript. The legacy `subscriber:` collapse logic in `Transcript.svelte`
+is retained as a safety net for historical posts.
 
 ## SPA bootstrap
 
@@ -167,14 +170,43 @@ agent row is "yours" and render `<AgentControls>` for it. Without this
 bootstrap, the SvelteKit rewrite (pre-fix) had no way to spawn or address
 a per-user manager.
 
+## Focus state model
+
+`/focus/[[room]]` holds per-room state in `postsByRoom` and `agentsByRoom`
+records keyed by roomId. `activeId` selects which one renders. The
+`RoomWsPool` opens one socket per room in the visible rail and keeps it
+alive across focus changes — switching rooms is pure UI, sockets only
+close when a room leaves the rail. Posts arriving on background sockets
+accumulate into their room's bucket; refocusing shows them instantly.
+
+## Slash commands
+
+The composer's `/` button (or typing `/` first into an empty input) opens
+`SlashPicker`. The picker calls `getSlashCommands(roomId, scope)` and
+renders server + claude entries with keyboard nav. Argless commands
+(`/restart`, `/kill`, `/compact`, `/clear`, `/help`, `/plan`, `/yolo`)
+autorun via `runAgentSlash`; anything with `<arg>` or `[arg]` prefills the
+composer for editing.
+
+Server-side caveats baked into the catalog (`awm/services/agent_slash.py`):
+
+- `/clear` does **not** call claude's REPL `/clear` — that's not supported
+  in `--print --input-format=stream-json` mode. Instead it calls
+  `respawn_session(scope_key, clear_history=True)` which spawns a fresh
+  process without `--resume`, giving a truly wiped context.
+- `/compact` is similarly REPL-only and returns an explicit "not
+  supported, use /clear or /restart" message rather than silently failing.
+- All other commands (`/restart`, `/kill`, `/mode`, `/plan`, `/yolo`,
+  `/model`, `/effort`) are pure server-side respawns and work on dead
+  agents too.
+
 ## Deferred
 
 - Full STT/PTT port — voice-panel.js is a 276-line DOM-driven IIFE that
   needs proper componentization (WS to /voice/ws, mic-worklet pipeline,
   auto-send into Composer state). `mic-worklet.js` already ships in
   `static/` so the port doesn't need to re-add it.
-- Slash command picker — the `/` button currently toggles `ui.slashOpen`
-  but no picker UI is rendered yet. Wire bits-ui Popover (≥721) / Drawer
-  (≤720) and `getSlashCommands(roomId, scope)`.
+- Real TTS backend — `lib/voice/tts.ts` is a mock that just `console.log`s;
+  swap its `replay()` body when the kyutai pocket-tts port lands.
 - Federated peer subscriber lists in DetailsPanel (legacy had Subscribers
   and Federated Peers panels — folded into Agents for now).

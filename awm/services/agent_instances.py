@@ -169,9 +169,15 @@ async def create_session(*, project: str, scope: str,
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
-                         resume_session_id: Optional[str] = None) -> AgentInstance:
+                         resume_session_id: Optional[str] = None,
+                         fresh: bool = False) -> AgentInstance:
     """Spawn a claude subprocess and register it. Raises ScopeBusyError
-    if the scope already has an active session."""
+    if the scope already has an active session.
+
+    When ``fresh=True``, skip the auto-recovery of a prior
+    ``claude_session_id`` from the DB — used by /clear to start with a wiped
+    conversation context.
+    """
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Live sessions require: {sorted(_SUPPORTED_CLIS)}"
@@ -206,8 +212,9 @@ async def create_session(*, project: str, scope: str,
         try:
             # If no resume id was passed, recover the most recent one this
             # scope captured in a prior life. Lets re-invite-after-death
-            # still pass --resume even though _by_scope was reaped.
-            if resume_session_id is None:
+            # still pass --resume even though _by_scope was reaped. The
+            # `fresh` flag suppresses recovery so /clear actually clears.
+            if resume_session_id is None and not fresh:
                 row = conn.execute(
                     "SELECT claude_session_id FROM agent_sessions "
                     "WHERE project=? AND scope=? AND claude_session_id IS NOT NULL "
@@ -673,6 +680,7 @@ async def respawn_session(
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
     effort: Optional[str] = None,
+    clear_history: bool = False,
 ) -> AgentInstance:
     """Kill the current AgentInstance for ``scope_key`` and spawn a fresh one
     with ``--resume <claude_session_id>`` so conversation context is
@@ -680,7 +688,9 @@ async def respawn_session(
 
     Any of permission_mode/model/effort that aren't passed inherit the
     current session's values. ``force=True`` uses SIGKILL; otherwise
-    SIGTERM with a short drain wait.
+    SIGTERM with a short drain wait. ``clear_history=True`` skips both the
+    in-memory and DB-recovered resume id so the new session starts with a
+    wiped conversation — the implementation of /clear.
     """
     current = _by_scope.get(scope_key)
     if current is None:
@@ -690,7 +700,7 @@ async def respawn_session(
         new_mode = permission_mode if permission_mode is not None else current.permission_mode
         new_model = model if model is not None else current.model
         new_effort = effort if effort is not None else current.effort
-        resume_sid = current.claude_session_id
+        resume_sid = None if clear_history else current.claude_session_id
         project, scope = current.project, current.scope
 
         # Tear down the old subprocess and wait for the waiter loop to
@@ -716,6 +726,7 @@ async def respawn_session(
         project=project, scope=scope,
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
+        fresh=clear_history,
     )
 
 

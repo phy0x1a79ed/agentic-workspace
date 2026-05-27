@@ -754,16 +754,13 @@ async def run_subscriber_session(
         await websocket.close(code=1008, reason="no such room")
         return
 
+    # The WS is pure UI transport — it is NOT a room participant.
+    # `subscribe_room` plugs the queue into the broadcast fanout; that's the
+    # only side-effect a transcript viewer should have. Logging subscribe /
+    # unsubscribe as join/leave posts pollutes the transcript every time a
+    # tab refreshes or focuses a different room.
     queue: asyncio.Queue = asyncio.Queue(maxsize=_WS_QUEUE_MAX)
-    subscriber_id = f"ws:{id(websocket)}:{user_as}"
     await subscribe_room(room_id, queue)
-    try:
-        add_participant(room_id, "subscriber", subscriber_id)
-    except RoomClosed:
-        await websocket.send_text(json.dumps(env.error(f"room {room_id} is closed")))
-        await websocket.close(code=1008, reason="room closed")
-        await unsubscribe_room(room_id, queue)
-        return
 
     # Send transcript backlog.
     backlog = history(room_id, limit_chars=4096)
@@ -840,7 +837,6 @@ async def run_subscriber_session(
         writer_task.cancel()
         reader_task.cancel()
         await unsubscribe_room(room_id, queue)
-        remove_participant(room_id, "subscriber", subscriber_id)
         try:
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()

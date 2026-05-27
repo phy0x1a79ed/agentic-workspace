@@ -157,8 +157,15 @@ export interface Post {
 }
 export interface RoomHistoryResponse { posts: Post[] }
 
-export interface SlashCommand { name: string; description?: string }
-export interface SlashCommandsResponse { commands: SlashCommand[] }
+export interface SlashCommandInfo {
+  name: string;          // leading slash, e.g. "/restart"
+  args: string;          // display string, e.g. "[mode]"
+  description: string;
+}
+export interface SlashCommandsResponse {
+  server: SlashCommandInfo[];
+  claude: string[];      // bare claude command names (no leading slash)
+}
 
 export interface AgentSlashResponse { handled: boolean; result: string }
 
