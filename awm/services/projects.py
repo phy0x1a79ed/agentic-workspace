@@ -124,11 +124,12 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
 
-    # Write per-worktree AGENTS.md from the scope-agents template
-    scope_agents_template = _find_template("scope-agents")
-    if scope_agents_template and worktree_dir.exists():
-        content = scope_agents_template.read_text().replace("{project}", req.name)
-        (worktree_dir / "AGENTS.md").write_text(content)
+    # Write per-worktree AGENTS.md from the scope-agents template + wire
+    # the harness auto-load (CLAUDE.md symlink, @.awm/context.md import
+    # if a sibling .awm/context.md is present).
+    if worktree_dir.exists():
+        from awm.services.scopes import _ensure_harness_context
+        _ensure_harness_context(worktree_dir, project_name=req.name)
 
     return ProjectCreateResponse(
         name=req.name,

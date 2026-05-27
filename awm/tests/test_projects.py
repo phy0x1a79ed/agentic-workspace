@@ -1,7 +1,28 @@
 """Tests for awm.services.projects helpers."""
 from pathlib import Path
 
+import awm.services.projects as projects_mod
 from awm.services.projects import _find_template
+
+
+_TEMPLATE_PATH = (
+    Path(projects_mod.__file__).parent.parent
+    / "skills" / "templates" / "scope-agents.md.template"
+)
+
+
+def test_scope_agents_template_ends_with_context_import():
+    """Newly-created projects/scopes ship the @.awm/context.md import so
+    both Claude Code (recursive @-imports) and OpenCode (AGENTS.md walk-up)
+    auto-load the scope ritual. If this trailing line is lost, harness
+    setup silently regresses for every new project."""
+    body = _TEMPLATE_PATH.read_text()
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    assert lines, "scope-agents template is empty"
+    assert lines[-1] == "@.awm/context.md", (
+        f"last non-empty template line is {lines[-1]!r}, "
+        "expected '@.awm/context.md'"
+    )
 
 
 def test_find_template_matches_by_stem(tmp_path, monkeypatch):

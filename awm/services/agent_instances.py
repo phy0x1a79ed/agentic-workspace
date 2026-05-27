@@ -44,7 +44,7 @@ from awm.services import rooms as rooms_svc
 from awm.services._path import resolve_bin
 
 
-_SUPPORTED_CLIS = {"claude"}
+_SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
 
 _ACTIVE_STATUSES = ("starting", "running", "stopping", "orphaned")
@@ -151,12 +151,28 @@ def _build_claude_argv(
     if resume_session_id:
         argv.extend(["--resume", resume_session_id])
     # Pin MCP config to the exposed-server-written spawn-mcp.json so dev
-    # and prod can't bleed into each other and so the spawned Claude
-    # doesn't accidentally inherit chrome-devtools/ollama. Missing-file
-    # case (e.g. awm-mcp not on PATH) falls through with no flags.
+    # and prod can't bleed into each other and so spawned agents see the
+    # canonical MCP catalog. Missing-file case (awm-exposed never ran)
+    # falls through with no flags.
     spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
     if spawn_mcp.exists():
         argv.extend(["--strict-mcp-config", "--mcp-config", str(spawn_mcp)])
+    return argv
+
+
+def _build_opencode_argv(
+    *, workspace_dir: Path, permission_mode: str, model: Optional[str],
+) -> list[str]:
+    # Stdin/event bridging for opencode is a follow-up (see plan
+    # ``we-want-to-update-humble-clarke``). The argv below launches the
+    # CLI correctly; full room-driven I/O parity with the claude harness
+    # is not wired here.
+    argv = [resolve_bin("opencode"), "run", "--format", "json",
+            "--dir", str(workspace_dir)]
+    if permission_mode == "bypassPermissions":
+        argv.append("--dangerously-skip-permissions")
+    if model:
+        argv.extend(["--model", model])
     return argv
 
 
@@ -230,11 +246,25 @@ async def create_session(*, project: str, scope: str,
         finally:
             conn.close()
 
-        # Spawn the subprocess.
-        argv = _build_claude_argv(
-            permission_mode=permission_mode, model=model, effort=effort,
-            resume_session_id=resume_session_id,
-        )
+        # Spawn the subprocess. Harness selection is per-session via the
+        # ``agent_cli`` column. opencode reads MCP config from
+        # ``<workspace>/.awm/mcp-opencode.json`` via ``OPENCODE_CONFIG`` —
+        # written by the opencode exporter under the same .mcp.json
+        # fan-out that produces spawn-mcp.json for claude.
+        spawn_env: dict[str, str] | None = None
+        if agent_cli == "opencode":
+            argv = _build_opencode_argv(
+                workspace_dir=workspace_dir,
+                permission_mode=permission_mode, model=model,
+            )
+            opencode_cfg = config.AWM_DIR / "mcp-opencode.json"
+            if opencode_cfg.exists():
+                spawn_env = {**os.environ, "OPENCODE_CONFIG": str(opencode_cfg)}
+        else:
+            argv = _build_claude_argv(
+                permission_mode=permission_mode, model=model, effort=effort,
+                resume_session_id=resume_session_id,
+            )
         log_fp = open(log_path, "ab")
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -244,6 +274,7 @@ async def create_session(*, project: str, scope: str,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=log_fp,
                 start_new_session=True,
+                env=spawn_env,
             )
         except FileNotFoundError as exc:
             log_fp.close()
@@ -256,7 +287,7 @@ async def create_session(*, project: str, scope: str,
                 conn.commit()
             finally:
                 conn.close()
-            raise RuntimeError(f"claude binary not on PATH: {exc}") from exc
+            raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
         finally:
             log_fp.close()
 

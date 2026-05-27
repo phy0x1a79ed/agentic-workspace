@@ -547,7 +547,7 @@ TOOL_DEFINITIONS: list[Tool] = [
     # MCP-config fan-out
     Tool(
         name="awm_mcp_sync",
-        description="Read workspace .mcp.json and regenerate backend-specific MCP configs (opencode, …) under .awm/.",
+        description="Read workspace .mcp.json and regenerate backend-specific MCP configs (claude-spawn, opencode) under .awm/.",
         inputSchema={"type": "object", "properties": {}},
     ),
 ]

@@ -422,6 +422,124 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     return scope_uuid, room.id
 
 
+_CONTEXT_IMPORT_LINE = "@.awm/context.md"
+
+
+def _is_workspace_shared_agents(worktree_dir: Path, project_name: str) -> bool:
+    """True if this worktree's AGENTS.md is the shared workspace orchestrator file.
+
+    Only projects/awm/<scope> worktrees can hit this: they're worktrees of
+    the same .bare as the workspace root, so a tracked AGENTS.md at the
+    worktree root is literally the workspace file on a different branch.
+    Modifying it diverges across branches and leaks the @-import into
+    workspace-root AGENTS.md on merge, where ``.awm/context.md`` does
+    not exist. See [[awm_project_is_workspace_worktree]].
+    """
+    if project_name != "awm":
+        return False
+    res = subprocess.run(
+        ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", "AGENTS.md"],
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _ensure_harness_context(worktree_dir: Path, *, project_name: str) -> dict:
+    """Make a worktree harness-ready for both Claude Code and OpenCode.
+
+    Idempotent. Three steps:
+
+    1. If ``AGENTS.md`` is missing, copy from the scope-agents template
+       (substituting ``{project}``). Existing AGENTS.md is never
+       overwritten — for projects/awm/* worktrees the file is the
+       tracked workspace orchestrator and must stay intact.
+    2. If a sibling ``.awm/context.md`` exists and AGENTS.md does not
+       already import it, append ``@.awm/context.md`` so Claude Code
+       (recursive @-imports) and OpenCode (AGENTS.md walk-up) both
+       pick up the scope ritual without further instruction.
+    3. If ``CLAUDE.md`` is missing, create a relative symlink to
+       ``AGENTS.md`` so Claude Code's native CLAUDE.md walk-up finds
+       the same file OpenCode reads natively.
+
+    Returns a dict describing what changed (for ``awm scope heal`` reporting).
+    """
+    from awm.services.projects import _find_template
+
+    actions: dict[str, str | None] = {
+        "agents_md": None, "import_line": None, "claude_symlink": None,
+    }
+
+    agents_path = worktree_dir / "AGENTS.md"
+    if not agents_path.exists():
+        tmpl = _find_template("scope-agents")
+        if tmpl is not None:
+            agents_path.write_text(
+                tmpl.read_text().replace("{project}", project_name)
+            )
+            actions["agents_md"] = "created"
+
+    context_path = worktree_dir / ".awm" / "context.md"
+    workspace_shared = _is_workspace_shared_agents(worktree_dir, project_name)
+    if agents_path.exists() and context_path.exists() and not workspace_shared:
+        body = agents_path.read_text()
+        if _CONTEXT_IMPORT_LINE not in body:
+            sep = "" if body.endswith("\n") else "\n"
+            agents_path.write_text(body + sep + "\n" + _CONTEXT_IMPORT_LINE + "\n")
+            actions["import_line"] = "appended"
+    elif workspace_shared:
+        actions["import_line"] = "skipped:workspace-shared"
+
+    claude_path = worktree_dir / "CLAUDE.md"
+    if not claude_path.exists() and not claude_path.is_symlink() and agents_path.exists():
+        claude_path.symlink_to("AGENTS.md")  # relative target
+        actions["claude_symlink"] = "created"
+
+    return actions
+
+
+def heal_scopes(project: str | None = None) -> list[dict]:
+    """Apply ``_ensure_harness_context`` to every active scope worktree.
+
+    Back-fills CLAUDE.md symlinks and the ``@.awm/context.md`` import
+    line for scopes created before this wiring landed. Idempotent — only
+    missing pieces are added; existing AGENTS.md content is never edited.
+    """
+    conn = get_connection()
+    try:
+        sql = "SELECT project, scope, worktree FROM scopes WHERE status='active'"
+        params: list = []
+        if project:
+            sql += " AND project=?"
+            params.append(project)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    report: list[dict] = []
+    for row in rows:
+        worktree = Path(row["worktree"])
+        if not worktree.exists():
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": False,
+                "error": "worktree missing",
+            })
+            continue
+        try:
+            actions = _ensure_harness_context(worktree, project_name=row["project"])
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": True, "actions": actions,
+            })
+        except OSError as exc:
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return report
+
+
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata directory."""
     validate_name(req.project, kind="project name")
@@ -494,7 +612,15 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     (awm_dir / "history.md").write_text(_generate_history_md(req.project, req.scope))
     (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(req.project, req.scope))
 
-    # 6. Record in DB
+    # 6. Wire harness auto-load. Claude Code reads CLAUDE.md (walk-up);
+    # opencode reads AGENTS.md natively. We point both at the same file
+    # via a CLAUDE.md symlink and pull in the scope ritual via the
+    # @.awm/context.md import. For projects/awm/* worktrees, AGENTS.md
+    # is the tracked workspace orchestrator file — we only append the
+    # import (idempotent) and add the symlink.
+    _ensure_harness_context(repo_dir, project_name=req.project)
+
+    # 7. Record in DB
     now = _now_iso()
     conn = get_connection()
     try:

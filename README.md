@@ -12,6 +12,15 @@ AWM supports a **two-level agent hierarchy** — a workspace agent that triages 
 
 This creates an `awm` mamba environment, installs the package, initializes the database, and adds `awm` and `awm-mcp` to your PATH.
 
+## Harness Integration
+
+AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The setup skill at [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md) (also discoverable from inside an agent via `skills_get path="awm/harness-setup.md"`) covers:
+
+- Wiring `CLAUDE.md` / `AGENTS.md` / `.awm/context.md` so both harnesses auto-load workspace + project + scope context, whether launched by AWM or run manually inside a scope dir.
+- The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
+- Per-session harness selection via the `agent_cli` column on `agent_sessions`.
+- Healing existing scopes that pre-date the wiring: `awm scope heal`.
+
 ## Manual Install
 
 ```bash

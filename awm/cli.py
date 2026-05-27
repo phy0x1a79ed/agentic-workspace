@@ -1034,6 +1034,21 @@ def scope_delete(
     _print_json(r)
 
 
+@scope_app.command("heal")
+def scope_heal(
+    project: Optional[str] = typer.Option(None, "--project", help="Limit healing to one project"),
+):
+    """Back-fill CLAUDE.md symlinks and @.awm/context.md imports for existing scopes.
+
+    Idempotent. Existing AGENTS.md content is never edited; only missing
+    wiring is added. Run after upgrading awm to pick up the harness
+    context-injection feature.
+    """
+    from awm.services.scopes import heal_scopes
+    report = heal_scopes(project=project)
+    _print_json(report)
+
+
 @scope_app.command("list")
 def scope_list(
     status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/deleted/all)"),
