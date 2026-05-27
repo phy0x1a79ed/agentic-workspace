@@ -2,6 +2,7 @@
   import type { Room } from '$lib/api/client';
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
 
   interface Props {
     rooms: Room[];
@@ -19,7 +20,7 @@
 
 <aside class="sidebar">
   <header class="sb-header">
-    <span class="panel-label">{title}</span>
+    <PanelLabel>{title}</PanelLabel>
     <span class="count mono">{rooms.length}</span>
   </header>
   <div class="rooms">

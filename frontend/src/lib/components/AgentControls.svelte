@@ -12,6 +12,8 @@
    */
   import { runAgentSlash, ApiError, type LiveAgent } from '$lib/api/client';
   import Select from './Select.svelte';
+  import Button from '$lib/primitives/Button.svelte';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
 
   interface Props {
     roomId: string;
@@ -119,7 +121,7 @@
 
 <form class="cfg" onsubmit={(e) => { e.preventDefault(); commit(); }}>
   <div class="row">
-    <span class="k mono">mode:</span>
+    <span class="k"><PanelLabel>mode</PanelLabel></span>
     <Select
       value={modeVal}
       options={MODE_CHOICES}
@@ -128,7 +130,7 @@
     />
   </div>
   <div class="row">
-    <span class="k mono">effort:</span>
+    <span class="k"><PanelLabel>effort</PanelLabel></span>
     <Select
       value={effortVal}
       options={EFFORT_CHOICES}
@@ -137,7 +139,7 @@
     />
   </div>
   <div class="row">
-    <span class="k mono">model:</span>
+    <span class="k"><PanelLabel>model</PanelLabel></span>
     <Select
       value={modelVal}
       options={MODEL_CHOICES}
@@ -148,12 +150,12 @@
   </div>
 
   <div class="actions">
-    <button class="btn restart" type="submit" disabled={busy}>
+    <Button size="sm" kind="ghost" type="submit" disabled={busy}>
       {busy ? '…' : 'restart'}
-    </button>
-    <button class="btn kill" type="button" disabled={busy} onclick={kill}>
+    </Button>
+    <Button size="sm" kind="danger" disabled={busy} onclick={kill}>
       kill
-    </button>
+    </Button>
   </div>
 </form>
 
@@ -173,13 +175,7 @@
     gap: 8px;
     min-height: 22px;
   }
-  .k {
-    color: var(--text3);
-    font-size: 10px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    text-align: right;
-  }
+  .k { text-align: right; }
 
   .actions {
     display: flex;
@@ -187,27 +183,4 @@
     gap: 6px;
     margin-top: 8px;
   }
-  .btn {
-    background: var(--surface3);
-    color: var(--text2);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 4px 12px;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-  }
-  .btn:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--atomizer) 18%, var(--surface3));
-    border-color: color-mix(in oklab, var(--atomizer) 50%, var(--border));
-    color: var(--text);
-  }
-  .btn.kill:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--danger) 18%, var(--surface3));
-    border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
-  }
-  .btn:disabled { opacity: 0.5; cursor: default; }
 </style>

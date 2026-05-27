@@ -1,25 +1,29 @@
 <script lang="ts">
-  import { statusColor } from '$lib/theme/colors';
+  /**
+   * Status string → themed <Tag>. Maps the lowercase status to a primitive
+   * tone; falls back to neutral. Used by the rooms list, agent rail, etc.
+   */
+  import Tag from '$lib/primitives/Tag.svelte';
+
   interface Props { status: string }
   let { status }: Props = $props();
-  const color = $derived(statusColor(status));
+
+  function toneFor(s: string): 'neutral' | 'ok' | 'warn' | 'danger' | 'atomizer' | 'mgr' {
+    switch ((s || '').toLowerCase()) {
+      case 'active':
+      case 'running':    return 'atomizer';
+      case 'verifying':  return 'warn';
+      case 'completed':
+      case 'done':       return 'ok';
+      case 'failed':
+      case 'cancelled':  return 'danger';
+      case 'recording':
+      case 'planning':   return 'mgr';
+      default:           return 'neutral';
+    }
+  }
+
+  const tone = $derived(toneFor(status));
 </script>
 
-<span class="status-tag" style="color: {color}; border-color: color-mix(in oklab, {color} 40%, transparent); background: color-mix(in oklab, {color} 10%, transparent);">
-  {status}
-</span>
-
-<style>
-  .status-tag {
-    font-family: var(--mono);
-    font-size: 8px;
-    letter-spacing: 1px;
-    padding: 3px 8px;
-    border-radius: 3px;
-    text-transform: uppercase;
-    border: 1px solid;
-    display: inline-flex;
-    align-items: center;
-    white-space: nowrap;
-  }
-</style>
+<Tag {tone}>{status}</Tag>

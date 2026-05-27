@@ -48,6 +48,14 @@ src/
 │   ├── state/
 │   │   ├── ui.svelte.ts             # sheet open-state, leader badge, ws kind, managerScope
 │   │   └── recipients.svelte.ts     # per-room recipient selection (localStorage)
+│   ├── primitives/                  # API-thin chrome library — see ## Primitives
+│   │   ├── Button.svelte            # kind: primary | ghost | danger; size: sm | md
+│   │   ├── Pill.svelte              # uppercase mono chip; tone: neutral | atomizer | danger
+│   │   ├── Tag.svelte               # status badge; tone: neutral | ok | warn | danger | atomizer | mgr
+│   │   ├── Input.svelte             # single-line text/search input (bindable value)
+│   │   ├── PanelLabel.svelte        # 9px uppercase micro-label; tone: dim | atomizer | mgr | peer
+│   │   ├── Card.svelte              # rack-unit card; rail: manager | peer | plain | warn | none
+│   │   └── Tooltip.svelte           # bits-ui Tooltip wrapper; pass content + trigger snippet
 │   ├── theme/
 │   │   └── colors.ts                # statusColor() → CSS variable
 │   ├── utils/
@@ -86,6 +94,34 @@ Adopted from `phy0x1a79ed/spark/lib/roma-ui`. Operator-terminal aesthetic:
 When adding new colours, add a CSS variable in `app.css` rather than hex
 literals in components, and a mapping in `lib/theme/colors.ts` if it's
 tied to a status string.
+
+## Primitives
+
+`src/lib/primitives/` is the shared chrome layer. Every primitive is
+API-thin: a single file, scoped `<style>`, explicit string-enum variant
+props (no class-name passthrough), and tokens-only colours
+(`--atomizer`, `--ok`, `--warn`, `--danger`, `--mgr`, `--text3`, etc.).
+
+| Primitive    | Variant prop(s)                                       | Use for                                                  |
+|--------------|--------------------------------------------------------|----------------------------------------------------------|
+| `<Button>`   | `kind: primary \| ghost \| danger`, `size: sm \| md`  | All clickable text actions. `sm` = uppercase 10px chip. |
+| `<Pill>`     | `tone: neutral \| atomizer \| danger`                 | Compact header actions (compact/clear on AgentList).    |
+| `<Tag>`      | `tone: neutral \| ok \| warn \| danger \| atomizer \| mgr` | Status/state badges. `StatusTag` wraps this.        |
+| `<Input>`    | `type: text \| search`                                 | Single-line inputs. Composer textarea is its own case.  |
+| `<PanelLabel>` | `tone: dim \| atomizer \| mgr \| peer`              | 9px uppercase micro-labels above fields/sections.       |
+| `<Card>`     | `rail: manager \| peer \| plain \| warn \| none`, `flash`, `open` | Rack-unit card with coloured 3px left rail. |
+| `<Tooltip>`  | `side`, `delay`; pass `content` + `trigger` snippet   | Hover hint (bits-ui-backed). Wraps any element.         |
+
+Rule: **before adding a new visual chrome class, check if a primitive
+exists; if a pattern hits a third copy, extract it to
+`lib/primitives/`.** The old `lib/components/Select.svelte` predates
+the layer and remains a regular component — once a `<Select>` primitive
+backed by bits-ui lands, migrate to it. Same for `Sheet` and
+`SlashPicker` (round-2 candidates).
+
+The spacing/radius/ease tokens used inside primitives:
+`--space-0..6`, `--radius-sm/md/lg`, `--ease-mech`. Prefer these to
+literals in any new component.
 
 ## Mobile breakpoints
 

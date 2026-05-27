@@ -3,6 +3,7 @@
   import { archiveRoom, type Room } from '$lib/api/client';
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
+  import Button from '$lib/primitives/Button.svelte';
 
   interface Props {
     room: Room;
@@ -36,8 +37,8 @@
     {#if room.created_at}<span>{room.created_at}</span>{/if}
   </div>
   <div class="actions">
-    <button class="btn primary" onclick={open}>open</button>
-    <button class="btn ghost"   onclick={archive} disabled={busy}>archive</button>
+    <Button kind="primary" onclick={open}>open</Button>
+    <Button kind="ghost"   onclick={archive} disabled={busy}>archive</Button>
     {#if err}<span class="err">{err}</span>{/if}
   </div>
 </div>

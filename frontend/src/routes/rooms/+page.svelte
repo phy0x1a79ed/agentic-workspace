@@ -8,6 +8,12 @@
   import { goto } from '$app/navigation';
   import StatusTag from '$lib/components/StatusTag.svelte';
   import RoomCard from '$lib/components/RoomCard.svelte';
+  import Button from '$lib/primitives/Button.svelte';
+  import Input from '$lib/primitives/Input.svelte';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import Select from '$lib/components/Select.svelte';
+
+  const STATUS_OPTS = ['active', 'closed', 'archived', 'all'] as const;
 
   let status = $state<'active' | 'closed' | 'archived' | 'all'>('active');
   let peer   = $state<string>('');
@@ -76,37 +82,39 @@
 <div class="rooms">
   <header class="filter-bar">
     <div class="filters">
-      <label class="field">
-        <span class="panel-label">status</span>
-        <select class="input mono-input" bind:value={status} onchange={refresh}>
-          <option value="active">active</option>
-          <option value="closed">closed</option>
-          <option value="archived">archived</option>
-          <option value="all">all</option>
-        </select>
-      </label>
-      <label class="field">
-        <span class="panel-label">peer</span>
-        <select class="input mono-input" bind:value={peer} onchange={refresh}>
-          <option value="">local</option>
-          {#each peers as p}
-            <option value={p}>{p}</option>
-          {/each}
-          {#if peers.length}<option value="all">all peers</option>{/if}
-        </select>
-      </label>
-      <label class="field grow">
-        <span class="panel-label">search</span>
+      <div class="field">
+        <PanelLabel>status</PanelLabel>
+        <Select
+          value={status}
+          options={STATUS_OPTS}
+          onchange={(v) => { status = v as typeof status; refresh(); }}
+        />
+      </div>
+      <div class="field">
+        <PanelLabel>peer</PanelLabel>
+        <Select
+          value={peer || 'local'}
+          options={['local', ...peers, ...(peers.length ? ['all peers'] : [])]}
+          onchange={(v) => {
+            peer = v === 'local' ? '' : v === 'all peers' ? 'all' : v;
+            refresh();
+          }}
+        />
+      </div>
+      <div class="field grow">
+        <PanelLabel>search</PanelLabel>
         <div class="search-row">
-          <input class="input" type="search" placeholder="topic / transcript" bind:value={query} onkeydown={(e) => e.key === 'Enter' && doSearch()} />
-          <button class="btn ghost" onclick={doSearch}>search</button>
-          <button class="btn ghost" onclick={refresh}>refresh</button>
+          <div class="search-input">
+            <Input type="search" placeholder="topic / transcript" bind:value={query} onkeydown={(e) => e.key === 'Enter' && doSearch()} />
+          </div>
+          <Button kind="ghost" onclick={doSearch}>search</Button>
+          <Button kind="ghost" onclick={refresh}>refresh</Button>
         </div>
-      </label>
+      </div>
     </div>
-    <button class="btn primary" onclick={() => showNew = !showNew}>
+    <Button kind="primary" onclick={() => showNew = !showNew}>
       {showNew ? 'cancel' : '+ new room'}
-    </button>
+    </Button>
   </header>
 
   {#if banner}<div class="banner">{banner}</div>{/if}
@@ -114,24 +122,24 @@
   {#if showNew}
     <form class="new-form" onsubmit={submitNew}>
       <label>
-        <span class="panel-label">topic</span>
-        <input class="input" type="text" bind:value={newTopic} />
+        <PanelLabel>topic</PanelLabel>
+        <Input type="text" bind:value={newTopic} />
       </label>
       <label>
-        <span class="panel-label">scopes (comma-separated, e.g. <code>awm/dev,awm/api@crux</code>)</span>
-        <input class="input" type="text" bind:value={newScopes} />
+        <PanelLabel>scopes (comma-separated, e.g. <code>awm/dev,awm/api@crux</code>)</PanelLabel>
+        <Input type="text" bind:value={newScopes} />
       </label>
       <label>
-        <span class="panel-label">prompts (JSON map scope→prompt)</span>
-        <textarea class="input ta" rows="3" bind:value={newPrompts}></textarea>
+        <PanelLabel>prompts (JSON map scope→prompt)</PanelLabel>
+        <textarea class="ta" rows="3" bind:value={newPrompts}></textarea>
       </label>
       <label class="cb">
         <input type="checkbox" bind:checked={newCloseOnExit} />
         <span>close_on_exit</span>
       </label>
       <div class="form-actions">
-        <button type="submit" class="btn primary">create</button>
-        <button type="button" class="btn ghost" onclick={() => showNew = false}>cancel</button>
+        <Button type="submit" kind="primary">create</Button>
+        <Button kind="ghost" onclick={() => showNew = false}>cancel</Button>
       </div>
     </form>
   {/if}
@@ -157,8 +165,8 @@
                 <td>{r.host_peer_id ?? ''}</td>
                 <td>{r.created_at ?? ''}</td>
                 <td class="row-actions">
-                  <button class="btn ghost" onclick={() => goto(`${base}/room/${encodeURIComponent(r.id)}`)}>open</button>
-                  <button class="btn ghost" onclick={() => archive(r.id)}>archive</button>
+                  <Button kind="ghost" onclick={() => goto(`${base}/room/${encodeURIComponent(r.id)}`)}>open</Button>
+                  <Button kind="ghost" onclick={() => archive(r.id)}>archive</Button>
                 </td>
               </tr>
             {/each}
@@ -198,11 +206,10 @@
     flex: 1;
     flex-wrap: wrap;
   }
-  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
   .field.grow { flex: 1; min-width: 220px; }
-  .mono-input { font-family: var(--mono); font-size: 12px; min-height: unset; }
-  .search-row { display: flex; gap: 6px; }
-  .search-row .input { flex: 1; }
+  .search-row { display: flex; gap: 6px; align-items: stretch; }
+  .search-input { flex: 1; display: flex; }
   .banner {
     font-family: var(--mono);
     font-size: 11px;
@@ -223,7 +230,20 @@
   }
   .new-form label { display: flex; flex-direction: column; gap: 4px; }
   .new-form code  { font-family: var(--mono); font-size: 10px; color: var(--text2); }
-  .new-form .ta   { font-family: var(--mono); font-size: 11px; resize: vertical; }
+  .new-form .ta   {
+    width: 100%;
+    padding: var(--space-2) var(--space-4);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    outline: none;
+    resize: vertical;
+    transition: border-color 120ms var(--ease-mech);
+  }
+  .new-form .ta:focus { border-color: var(--atomizer); }
   .new-form .cb   { flex-direction: row; align-items: center; gap: 8px; color: var(--text2); font-family: var(--mono); font-size: 11px; }
   .form-actions   { display: flex; gap: 8px; }
 

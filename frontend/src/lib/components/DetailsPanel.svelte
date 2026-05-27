@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RoomAgent } from '$lib/api/client';
   import AgentList from './AgentList.svelte';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
 
   interface Props {
     agents: RoomAgent[];
@@ -20,7 +21,7 @@
 
 <aside class="panel">
   <header class="ph">
-    <span class="panel-label mono">agents</span>
+    <PanelLabel>agents</PanelLabel>
   </header>
   <AgentList
     {agents}
@@ -43,11 +44,4 @@
     height: 100%;
   }
   .ph { display: flex; align-items: baseline; justify-content: space-between; }
-  .panel-label {
-    color: var(--text3);
-    font-size: 9px;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
-  .mono { font-family: var(--mono); }
 </style>

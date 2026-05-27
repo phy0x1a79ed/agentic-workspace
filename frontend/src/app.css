@@ -23,6 +23,12 @@ body.is-resizing, body.is-resizing * { user-select: none !important; }
 
   --mono:      'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans:      'DM Sans', system-ui, sans-serif;
+
+  /* spacing scale — used by primitives, parents continue to compose px directly */
+  --space-0: 2px;  --space-1: 4px;  --space-2: 6px;  --space-3: 8px;
+  --space-4: 10px; --space-5: 14px; --space-6: 20px;
+  --radius-sm: 2px; --radius-md: 3px; --radius-lg: 4px;
+  --ease-mech: cubic-bezier(0.7, 0, 0.3, 1);
 }
 
 html, body {
@@ -108,87 +114,11 @@ kbd {
   min-width: 0;
 }
 
-/* ─── PANEL LABELS ─── */
-.panel-label {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 2px;
-  color: var(--text3);
-  text-transform: uppercase;
-  font-weight: 500;
-}
-
-/* ─── TAGS ─── */
-.tag {
-  font-family: var(--mono);
-  font-size: 8px;
-  letter-spacing: 1px;
-  padding: 3px 8px;
-  border-radius: 3px;
-  text-transform: uppercase;
-  border: 1px solid var(--text3);
-  color: var(--text3);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.tag.ok      { color: var(--ok);       border-color: color-mix(in oklab, var(--ok)       40%, transparent); background: color-mix(in oklab, var(--ok)       10%, transparent); }
-.tag.warn    { color: var(--warn);     border-color: color-mix(in oklab, var(--warn)     40%, transparent); background: color-mix(in oklab, var(--warn)     10%, transparent); }
-.tag.danger  { color: var(--danger);   border-color: color-mix(in oklab, var(--danger)   40%, transparent); background: color-mix(in oklab, var(--danger)   10%, transparent); }
-.tag.active  { color: var(--atomizer); border-color: color-mix(in oklab, var(--atomizer) 40%, transparent); background: color-mix(in oklab, var(--atomizer) 10%, transparent); }
-.tag.mgr     { color: var(--mgr);      border-color: color-mix(in oklab, var(--mgr)      40%, transparent); background: color-mix(in oklab, var(--mgr)      10%, transparent); }
-
 /* ─── WS DOT ─── */
 .ws-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--atomizer); animation: wsdot 3s ease-in-out infinite; }
 .ws-dot.off { background: var(--text3); animation: none; }
 .ws-dot.err { background: var(--danger); animation: none; }
 @keyframes wsdot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.2;transform:scale(.65)} }
-
-/* ─── BUTTONS ─── */
-.btn {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
-}
-.btn:hover { background: var(--surface3); border-color: var(--border2); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn.primary { background: color-mix(in oklab, var(--atomizer) 18%, var(--surface2)); border-color: color-mix(in oklab, var(--atomizer) 50%, var(--border)); color: var(--text); }
-.btn.primary:hover { background: color-mix(in oklab, var(--atomizer) 28%, var(--surface2)); }
-.btn.ghost { background: transparent; border-color: var(--border); }
-.btn.ghost:hover { background: var(--surface2); }
-.btn.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 40%, var(--border)); }
-
-@media (max-width: 720px) {
-  .btn { min-height: 44px; padding: 10px 14px; font-size: 12px; }
-}
-
-/* ─── INPUTS ─── */
-.input {
-  width: 100%;
-  padding: 6px 10px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  outline: none;
-  transition: border-color 0.12s;
-}
-.input:focus { border-color: var(--atomizer); }
-.input::placeholder { color: var(--text3); }
-
-@media (max-width: 720px) {
-  .input { min-height: 44px; font-size: 16px; }
-}
 
 /* ─── TABLE ─── */
 table.data {

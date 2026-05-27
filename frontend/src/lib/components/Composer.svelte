@@ -1,5 +1,7 @@
 <script lang="ts">
   import SlashPicker from './SlashPicker.svelte';
+  import Button from '$lib/primitives/Button.svelte';
+  import Input from '$lib/primitives/Input.svelte';
 
   interface Props {
     disabled?: boolean;
@@ -20,7 +22,7 @@
     scope = null,
   }: Props = $props();
 
-  let inputEl: HTMLInputElement | undefined = $state();
+  let inputEl: Input | undefined = $state();
 
   function send(e?: Event) {
     e?.preventDefault();
@@ -47,8 +49,8 @@
       text = cmd + ' ';
       await Promise.resolve();
       inputEl?.focus();
-      // Move caret to end.
-      try { inputEl?.setSelectionRange(text.length, text.length); } catch { /* noop */ }
+      // Move caret to end via the underlying DOM node.
+      try { inputEl?.el_()?.setSelectionRange(text.length, text.length); } catch { /* noop */ }
     }
   }
 
@@ -65,25 +67,25 @@
     />
   {/if}
   <form class="composer" onsubmit={send}>
-    <input
-      bind:this={inputEl}
-      class="input field"
-      type="text"
-      autocomplete="off"
-      placeholder="message or /command"
-      bind:value={text}
-      onkeydown={onKey}
-      {disabled} />
-    <button
-      type="button"
-      class="btn ghost slash"
-      class:active={slashOpen}
+    <div class="field">
+      <Input
+        bind:this={inputEl}
+        bind:value={text}
+        type="text"
+        autocomplete="off"
+        placeholder="message or /command"
+        onkeydown={onKey}
+        {disabled}
+      />
+    </div>
+    <Button
+      kind={slashOpen ? 'primary' : 'ghost'}
       onclick={() => (slashOpen = !slashOpen)}
       {disabled}
       title="slash commands">
       / <span class="caret">▾</span>
-    </button>
-    <button type="submit" class="btn primary" {disabled}>send</button>
+    </Button>
+    <Button kind="primary" type="submit" {disabled}>send</Button>
   </form>
 </div>
 
@@ -99,12 +101,7 @@
     border-top: 1px solid var(--border);
     background: var(--surface);
   }
-  .field { flex: 1; }
-  .slash { white-space: nowrap; }
-  .slash.active {
-    background: color-mix(in oklab, var(--atomizer) 18%, transparent);
-    color: var(--atomizer);
-  }
+  .field { flex: 1; display: flex; }
   .caret { font-size: 9px; color: var(--text3); }
 
   @media (max-width: 720px) {

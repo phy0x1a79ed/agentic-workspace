@@ -4,6 +4,8 @@
     peerInfo, listPeers, listProjects, listScopes, coreStatus, pingPeer,
     type Peer, type Project, type Scope, type CoreStatus
   } from '$lib/api/client';
+  import Button from '$lib/primitives/Button.svelte';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
 
   let whoami     = $state<string>('loading…');
   let peers      = $state<Peer[]>([]);
@@ -65,16 +67,16 @@
 <div class="status">
   <section>
     <header class="sec-header">
-      <span class="panel-label">whoami</span>
-      <button class="btn ghost" onclick={refreshWhoami}>refresh</button>
+      <PanelLabel>whoami</PanelLabel>
+      <Button kind="ghost" onclick={refreshWhoami}>refresh</Button>
     </header>
     <pre class="block">{whoami}</pre>
   </section>
 
   <section>
     <header class="sec-header">
-      <span class="panel-label">peers</span>
-      <button class="btn ghost" onclick={refreshPeers}>refresh</button>
+      <PanelLabel>peers</PanelLabel>
+      <Button kind="ghost" onclick={refreshPeers}>refresh</Button>
     </header>
     {#if peersErr}
       <div class="err">{peersErr}</div>
@@ -91,7 +93,7 @@
                 <td>{p.remote_port ?? ''}</td>
                 <td>{p.last_seen ?? ''}</td>
                 <td>
-                  <button class="btn ghost" onclick={() => ping(p.peer_id)}>ping</button>
+                  <Button kind="ghost" onclick={() => ping(p.peer_id)}>ping</Button>
                   <span class="ping">{pingResult[p.peer_id] ?? ''}</span>
                 </td>
               </tr>
@@ -107,8 +109,8 @@
 
   <section>
     <header class="sec-header">
-      <span class="panel-label">projects</span>
-      <button class="btn ghost" onclick={refreshProjects}>refresh</button>
+      <PanelLabel>projects</PanelLabel>
+      <Button kind="ghost" onclick={refreshProjects}>refresh</Button>
     </header>
     {#if projErr}
       <div class="err">{projErr}</div>
@@ -128,8 +130,8 @@
 
   <section>
     <header class="sec-header">
-      <span class="panel-label">active scopes</span>
-      <button class="btn ghost" onclick={refreshScopes}>refresh</button>
+      <PanelLabel>active scopes</PanelLabel>
+      <Button kind="ghost" onclick={refreshScopes}>refresh</Button>
     </header>
     {#if scopesErr}
       <div class="err">{scopesErr}</div>
@@ -158,8 +160,8 @@
 
   <section>
     <header class="sec-header">
-      <span class="panel-label">core</span>
-      <button class="btn ghost" onclick={refreshCore}>refresh</button>
+      <PanelLabel>core</PanelLabel>
+      <Button kind="ghost" onclick={refreshCore}>refresh</Button>
     </header>
     <pre class="block">{core}</pre>
   </section>

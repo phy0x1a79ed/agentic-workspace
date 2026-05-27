@@ -17,6 +17,12 @@
   import StatusTag from './StatusTag.svelte';
   import AgentControls from './AgentControls.svelte';
   import { ui } from '$lib/state/ui.svelte';
+  import Card from '$lib/primitives/Card.svelte';
+  import Pill from '$lib/primitives/Pill.svelte';
+  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import Tooltip from '$lib/primitives/Tooltip.svelte';
+
+  type Rail = 'manager' | 'peer' | 'plain' | 'none';
 
   interface Props {
     agents: RoomAgent[];
@@ -83,10 +89,15 @@
     setTimeout(() => { committing[scope] = false; }, 250);
   }
 
-  function kindRailClass(a: RoomAgent): string {
-    if (isManager(a.scope)) return 'rail-manager';
-    if (a.kind === 'shadow_peer') return 'rail-peer';
-    return 'rail-plain';
+  function kindRail(a: RoomAgent): Rail {
+    if (isManager(a.scope)) return 'manager';
+    if (a.kind === 'shadow_peer') return 'peer';
+    return 'plain';
+  }
+  function kindTone(a: RoomAgent): 'atomizer' | 'peer' | 'dim' {
+    if (isManager(a.scope)) return 'atomizer';
+    if (a.kind === 'shadow_peer') return 'peer';
+    return 'dim';
   }
 </script>
 
@@ -98,11 +109,7 @@
       {@const mgr = isManager(a.scope)}
       {@const ctl = isControllable(a)}
       {@const open = !!expanded[a.scope]}
-      <article
-        class="card {kindRailClass(a)}"
-        class:committing={committing[a.scope]}
-        class:open
-      >
+      <Card rail={kindRail(a)} flash={committing[a.scope]} {open}>
         <header class="row">
           <button
             class="bracket"
@@ -120,11 +127,15 @@
             aria-expanded={open}
             aria-controls="agent-body-{a.scope}"
           >
-            <span class="scope mono">{a.scope}</span>
+            <Tooltip content={a.scope}>
+              {#snippet trigger({ props })}
+                <span class="scope mono" {...props}>{a.scope}</span>
+              {/snippet}
+            </Tooltip>
             {#if mgr}
-              <span class="kind mono">manager</span>
+              <PanelLabel tone="atomizer">manager</PanelLabel>
             {:else if !ctl}
-              <span class="kind mono">{a.kind}</span>
+              <PanelLabel tone={kindTone(a)}>{a.kind}</PanelLabel>
             {/if}
           </button>
 
@@ -136,20 +147,16 @@
 
           {#if ctl && roomId}
             <span class="hdr-actions">
-              <button
-                class="pill"
-                type="button"
+              <Pill
                 disabled={!!busyAction[a.scope]}
                 title="not supported in headless mode"
                 onclick={() => fire(a.scope, '/compact')}
-              >{busyAction[a.scope] === '/compact' ? '…' : 'compact'}</button>
-              <button
-                class="pill"
-                type="button"
+              >{busyAction[a.scope] === '/compact' ? '…' : 'compact'}</Pill>
+              <Pill
                 disabled={!!busyAction[a.scope]}
                 title="wipe conversation context"
                 onclick={() => fire(a.scope, '/clear')}
-              >{busyAction[a.scope] === '/clear' ? '…' : 'clear'}</button>
+              >{busyAction[a.scope] === '/clear' ? '…' : 'clear'}</Pill>
             </span>
           {/if}
 
@@ -167,16 +174,16 @@
           <div class="body" id="agent-body-{a.scope}">
             <div class="stats">
               {#if a.live}
-                <div class="srow"><span class="k">pid:</span><span class="v">{a.live.pid ?? '?'}</span></div>
-                <div class="srow"><span class="k">cli:</span><span class="v">{a.live.agent_cli ?? '?'}</span></div>
+                <div class="srow"><span class="k"><PanelLabel>pid</PanelLabel></span><span class="v">{a.live.pid ?? '?'}</span></div>
+                <div class="srow"><span class="k"><PanelLabel>cli</PanelLabel></span><span class="v">{a.live.agent_cli ?? '?'}</span></div>
                 {#if a.live.started_at}
-                  <div class="srow"><span class="k">started:</span><span class="v">{a.live.started_at}</span></div>
+                  <div class="srow"><span class="k"><PanelLabel>started</PanelLabel></span><span class="v">{a.live.started_at}</span></div>
                 {/if}
                 {#if a.live.exited_at}
-                  <div class="srow"><span class="k">exited:</span><span class="v">{a.live.exited_at} (code {a.live.exit_code})</span></div>
+                  <div class="srow"><span class="k"><PanelLabel>exited</PanelLabel></span><span class="v">{a.live.exited_at} (code {a.live.exit_code})</span></div>
                 {/if}
               {:else}
-                <div class="srow"><span class="k">state:</span><span class="v dim">{a.kind === 'shadow_peer' ? 'remote (peer)' : 'no live session'}</span></div>
+                <div class="srow"><span class="k"><PanelLabel>state</PanelLabel></span><span class="v dim">{a.kind === 'shadow_peer' ? 'remote (peer)' : 'no live session'}</span></div>
               {/if}
             </div>
 
@@ -191,7 +198,7 @@
             {/if}
           </div>
         {/if}
-      </article>
+      </Card>
     {/each}
   {/if}
 </div>
@@ -200,22 +207,6 @@
   .list { display: flex; flex-direction: column; gap: 6px; }
   em.dim { color: var(--text3); font-style: italic; padding: 6px 4px; font-size: 11px; }
   .mono { font-family: var(--mono); }
-
-  .card {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-left-width: 3px;
-    border-radius: 4px;
-    padding: 6px 10px 6px 8px;
-    display: flex;
-    flex-direction: column;
-    transition: border-left-color 200ms ease, background 180ms ease;
-  }
-  .rail-manager { border-left-color: var(--atomizer); }
-  .rail-peer    { border-left-color: var(--recording); }
-  .rail-plain   { border-left-color: var(--text3); }
-  .card.committing { border-left-color: var(--warn); }
-  .card.open       { background: color-mix(in oklab, var(--surface3) 50%, var(--surface2)); }
 
   .row {
     display: grid;
@@ -232,10 +223,10 @@
     color: var(--text3);
     font-family: var(--mono);
     font-size: 12px;
-    padding: 4px 2px;
+    padding: var(--space-1) var(--space-0);
     cursor: pointer;
     letter-spacing: 0;
-    transition: color 140ms ease;
+    transition: color 140ms var(--ease-mech);
   }
   .bracket[aria-pressed="true"] { color: var(--atomizer); }
   .bracket:hover { color: var(--text); }
@@ -245,11 +236,11 @@
     background: transparent;
     border: 0;
     color: inherit;
-    padding: 2px 0;
+    padding: var(--space-0) 0;
     cursor: pointer;
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--space-3);
     min-width: 0;
     text-align: left;
   }
@@ -260,47 +251,19 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    transition: color 140ms ease;
+    transition: color 140ms var(--ease-mech);
   }
-  .kind {
-    font-size: 9px;
-    color: var(--text3);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    flex-shrink: 0;
-  }
-  .card.rail-manager .kind { color: var(--atomizer); }
-  .card.rail-peer    .kind { color: var(--recording); }
 
   .status { display: inline-flex; align-items: center; }
 
-  .hdr-actions { display: inline-flex; gap: 4px; }
-  .pill {
-    background: var(--surface3);
-    color: var(--text2);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 3px 8px;
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
-  }
-  .pill:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--atomizer) 18%, var(--surface3));
-    border-color: color-mix(in oklab, var(--atomizer) 45%, var(--border));
-    color: var(--text);
-  }
-  .pill:disabled { opacity: 0.5; cursor: default; }
+  .hdr-actions { display: inline-flex; gap: var(--space-1); }
 
   /* expand chevron — notched cubic-bezier rotate */
   .chev {
     background: transparent;
     border: 0;
     color: var(--text3);
-    padding: 4px 2px 4px 6px;
+    padding: var(--space-1) var(--space-0) var(--space-1) var(--space-2);
     cursor: pointer;
     line-height: 1;
   }
@@ -309,42 +272,36 @@
     display: inline-block;
     font-family: var(--mono);
     font-size: 11px;
-    transition: transform 160ms cubic-bezier(0.7, 0, 0.3, 1), color 140ms ease;
+    transition: transform 160ms var(--ease-mech), color 140ms var(--ease-mech);
   }
   .chev-glyph.open { transform: rotate(90deg); }
 
   /* collapsible body */
   .body {
-    padding: 6px 0 4px 0;
+    padding: var(--space-2) 0 var(--space-1) 0;
     display: flex;
     flex-direction: column;
   }
   .stats {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 2px;
-    padding: 4px 0;
+    gap: var(--space-0);
+    padding: var(--space-1) 0;
   }
   .srow {
     display: grid;
     grid-template-columns: 56px 1fr;
-    gap: 8px;
+    gap: var(--space-3);
     align-items: baseline;
     font-family: var(--mono);
     font-size: 10px;
   }
-  .srow .k {
-    color: var(--text3);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    text-align: right;
-  }
+  .srow .k { text-align: right; }
   .srow .v { color: var(--text2); word-break: break-all; }
   .srow .v.dim { color: var(--text3); font-style: italic; }
 
   @media (max-width: 720px) {
-    .row { gap: 4px; }
+    .row { gap: var(--space-1); }
     .bracket, .chev { min-height: 32px; display: inline-flex; align-items: center; }
-    .pill { padding: 5px 8px; }
   }
 </style>
