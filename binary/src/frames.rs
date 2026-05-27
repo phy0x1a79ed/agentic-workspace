@@ -34,6 +34,9 @@ pub enum Frame {
         id: u64,
         message: String,
     },
+    Chat {
+        message: String,
+    },
 }
 
 impl Frame {
@@ -149,6 +152,13 @@ mod tests {
     }
 
     #[test]
+    fn chat_roundtrip() {
+        roundtrip(Frame::Chat {
+            message: "hey check ~/.ssh/config".into(),
+        });
+    }
+
+    #[test]
     fn json_field_layout() {
         let f = Frame::Exec {
             id: 42,
@@ -158,5 +168,15 @@ mod tests {
         assert!(json.contains(r#""type":"exec""#));
         assert!(json.contains(r#""id":42"#));
         assert!(json.contains(r#""cmd":"ls""#));
+    }
+
+    #[test]
+    fn chat_json_field_layout() {
+        let f = Frame::Chat {
+            message: "hello friend".into(),
+        };
+        let json = f.to_json().unwrap();
+        assert!(json.contains(r#""type":"chat""#));
+        assert!(json.contains(r#""message":"hello friend""#));
     }
 }

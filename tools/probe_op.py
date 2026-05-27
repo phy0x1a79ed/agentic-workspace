@@ -156,6 +156,7 @@ class Session:
         # so they can assert on the bytes without scraping a subprocess pipe.
         self.stream_to_stdio = stream_to_stdio
         self._published_candidates: set[str] = set()
+        self.chat_callback = None
 
     async def setup_pc(self):
         ice_servers, turn_payload = self._build_ice_servers()
@@ -269,6 +270,12 @@ class Session:
                 entry["event"].set()
             elif self.stream_to_stdio:
                 sys.stderr.write(f"[probe error] {msg}\n")
+        elif ftype == "chat":
+            msg = frame.get("message", "")
+            if self.chat_callback:
+                self.chat_callback(msg)
+            elif self.stream_to_stdio:
+                sys.stderr.write(f"[friend] {msg}\n")
         else:
             logger.warning("unexpected frame type: %s", ftype)
 
@@ -376,6 +383,12 @@ class Session:
             self.in_flight.pop(fid, None)
         return entry["code"], bytes(entry["stdout"]), bytes(entry["stderr"])
 
+    def send_chat(self, message: str):
+        """Send a Chat frame to the friend over the data channel."""
+        if self.channel and self.channel.readyState == "open":
+            frame = json.dumps({"type": "chat", "message": message})
+            self.channel.send(frame)
+
     async def send_bye(self):
         topic = f"probe/{self.args.name}/from-operator/bye"
         try:
@@ -411,6 +424,7 @@ class RelaySession:
         self.in_flight: dict = {}
         self.stream_to_stdio = stream_to_stdio
         self._reader_task: asyncio.Task | None = None
+        self.chat_callback = None
 
     async def setup_pc(self):
         # Subscribe to the friend's data + bye topics. No PC to build —
@@ -474,6 +488,12 @@ class RelaySession:
                 entry["event"].set()
             elif self.stream_to_stdio:
                 sys.stderr.write(f"[probe error] {msg}\n")
+        elif ftype == "chat":
+            msg = frame.get("message", "")
+            if self.chat_callback:
+                self.chat_callback(msg)
+            elif self.stream_to_stdio:
+                sys.stderr.write(f"[friend] {msg}\n")
         else:
             logger.warning("unexpected frame type: %s", ftype)
 
@@ -508,6 +528,12 @@ class RelaySession:
         finally:
             self.in_flight.pop(fid, None)
         return entry["code"], bytes(entry["stdout"]), bytes(entry["stderr"])
+
+    def send_chat(self, message: str):
+        """Send a Chat frame to the friend over MQTT relay."""
+        frame = json.dumps({"type": "chat", "message": message}).encode()
+        topic = f"probe/{self.args.name}/from-operator/data"
+        asyncio.ensure_future(self.mqtt.publish(topic, frame, qos=1))
 
     async def send_bye(self):
         topic = f"probe/{self.args.name}/from-operator/bye"

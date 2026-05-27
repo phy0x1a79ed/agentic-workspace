@@ -303,6 +303,11 @@ async fn handle_inbound_frame(frame: Frame, dc: Arc<RTCDataChannel>) {
         Frame::Stdin { .. } | Frame::StdinClose { .. } => {
             // reserved; v1 ignores
         }
+        Frame::Chat { message } => {
+            // Print operator's chat message to friend's stderr so the friend
+            // can see what the operator is saying.
+            eprintln!("[operator] {message}");
+        }
         other => {
             tracing::warn!("unexpected inbound frame at friend: {other:?}");
         }

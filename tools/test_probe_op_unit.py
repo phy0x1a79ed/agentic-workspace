@@ -48,6 +48,13 @@ class FrameContractTests(unittest.TestCase):
         self.assertEqual(decoded["type"], "error")
         self.assertEqual(decoded["message"], "spawn failed: ENOENT")
 
+    def test_chat_frame_shape(self):
+        frame = {"type": "chat", "message": "hey check ~/.ssh/config"}
+        encoded = json.dumps(frame)
+        decoded = json.loads(encoded)
+        self.assertEqual(decoded["type"], "chat")
+        self.assertEqual(decoded["message"], "hey check ~/.ssh/config")
+
 
 class EnvFileTests(unittest.TestCase):
     def test_basic_kv(self):

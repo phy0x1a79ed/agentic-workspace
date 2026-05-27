@@ -1,3 +1,4 @@
 aiomqtt==2.3.0
 aiortc==1.9.0
 cryptography>=42
+prompt-toolkit>=3.0

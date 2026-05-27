@@ -120,6 +120,7 @@ execs (v1 uses sequential ids per session: 1, 2, 3, …).
 {"type":"exec",        "id":1, "cmd":"echo hello"}     // spawn `sh -c <cmd>`
 {"type":"stdin",       "id":1, "data":"<base64>"}      // reserved; v1 ignores
 {"type":"stdin_close", "id":1}                          // reserved; v1 ignores
+{"type":"chat",                 "message":"hello"}      // human-readable chat from operator
 ```
 
 ### friend → operator
@@ -130,7 +131,15 @@ execs (v1 uses sequential ids per session: 1, 2, 3, …).
 {"type":"exit",   "id":1, "code":0,    "signal":null}              // normal exit
 {"type":"exit",   "id":1, "code":null, "signal":15}                // killed by SIGTERM
 {"type":"error",  "id":1, "message":"spawn failed: ENOENT"}        // spawn or io failure
+{"type":"chat",                "message":"ok checking now"}         // human-readable chat from friend
 ```
+
+### Chat frame
+
+`Chat` frames carry human-readable messages between operator and friend. They
+are not bound to any exec `id`. The friend prints `[operator] <message>` to
+stderr when it receives one; the operator displays incoming chat messages via
+the TUI or prints `[friend] <message>` to stderr in REPL mode.
 
 ### Ordering guarantees
 
