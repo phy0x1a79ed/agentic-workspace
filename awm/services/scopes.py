@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from awm.config import (
     PROJECTS_DIR,
     DATA_DIR,
     SKILLS_DIR,
+    GITHUB_USER,
+    VAGRANT_PROJECT,
 )
 from awm.db import get_connection
 from awm.git_utils import run_git, detect_default_branch
@@ -22,6 +25,22 @@ from awm.models import (
     ScopeListResponse,
     ScopeActionResponse,
 )
+from awm.services._validation import validate_name
+from awm.services.replication.schema import new_uuid, next_legacy_id
+
+
+def _local_peer_id() -> str:
+    """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
+    Used to stamp origin_peer on new scope rows so post-replication peers
+    can identify which peer minted each row."""
+    try:
+        from awm.services.network.peers import get_local_identity
+        ident = get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
 
 
 def _now_iso() -> str:
@@ -99,15 +118,21 @@ def _generate_history_md(project: str, scope: str) -> str:
             (project, scope),
         ).fetchall()
 
-        # Open sessions (unresolved)
+        # Open sessions (unresolved). Alias legacy_id → id so the markdown
+        # formatter doesn't need to know about the v32 column rename.
         open_sessions = conn.execute(
-            "SELECT * FROM session_logs WHERE project=? AND resolved_at IS NULL ORDER BY logged_at DESC LIMIT 50",
+            "SELECT legacy_id AS id, title, summary, scope, skill_path, "
+            "       outcome, deviations, suggestions "
+            "FROM session_logs WHERE project=? AND resolved_at IS NULL "
+            "ORDER BY logged_at DESC LIMIT 50",
             (project,),
         ).fetchall()
 
         # Resolved sessions
         resolved_sessions = conn.execute(
-            "SELECT id, title, summary FROM session_logs WHERE project=? AND resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT 50",
+            "SELECT legacy_id AS id, title, summary FROM session_logs "
+            "WHERE project=? AND resolved_at IS NOT NULL "
+            "ORDER BY resolved_at DESC LIMIT 50",
             (project,),
         ).fetchall()
     finally:
@@ -201,6 +226,8 @@ def _generate_artifacts_md(project: str, scope: str) -> str:
 
 def refresh_history(project: str, scope: str) -> str:
     """Regenerate .awm/history.md for a scope. Returns the content written."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_history_md(project, scope)
@@ -213,6 +240,8 @@ def refresh_history(project: str, scope: str) -> str:
 
 def refresh_artifacts(project: str, scope: str) -> str:
     """Regenerate .awm/artifacts.md for a scope. Returns the content written."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_artifacts_md(project, scope)
@@ -223,6 +252,8 @@ def refresh_artifacts(project: str, scope: str) -> str:
 
 def awm_refresh(project: str, scope: str) -> dict:
     """Refresh both history.md and artifacts.md for a scope."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     h = refresh_history(project, scope)
     a = refresh_artifacts(project, scope)
     return {
@@ -232,10 +263,181 @@ def awm_refresh(project: str, scope: str) -> dict:
     }
 
 
+def ensure_vagrant_repo() -> Path:
+    """Bootstrap the unified vagrant-scopes bare repo + matching data dirs.
+
+    Idempotent: safe to run on every peer that wants to host vagrant scopes.
+    Mirrors the fresh-repo path in :func:`awm.services.projects.create_project`
+    but creates the bare repo under the reserved ``_vagrant`` project name and
+    points ``origin`` at the runtime-configurable
+    ``vagrant_scopes_repo_url`` (default ``git@github.com:{GITHUB_USER}/vagrant-scopes.git``).
+
+    Returns the bare repo Path.
+    """
+    from awm.services.config_service import get_vagrant_scopes_repo_url
+
+    bare_dir = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
+    project_dir = bare_dir.parent
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    bare_exists = bare_dir.exists()
+    if not bare_exists:
+        r = run_git(["git", "init", "--bare", str(bare_dir)])
+        if r.returncode != 0:
+            raise RuntimeError(f"git init --bare failed: {r.stderr}")
+
+    repo_url = get_vagrant_scopes_repo_url()
+
+    # Create the GitHub repo if `gh` is available and it doesn't exist yet.
+    # Tolerate "already exists" errors — the remote may have been pre-created
+    # or a previous bootstrap may have made it.
+    if shutil.which("gh"):
+        # `gh repo view {GITHUB_USER}/vagrant-scopes` is cheaper than `create`
+        # for the common case where the repo already exists.
+        repo_slug = f"{GITHUB_USER}/vagrant-scopes"
+        view = run_git(["gh", "repo", "view", repo_slug])
+        if view.returncode != 0:
+            create = run_git(["gh", "repo", "create", repo_slug, "--private"])
+            # Tolerate the "already exists" failure mode; surface anything else.
+            if create.returncode != 0 and "already exists" not in (create.stderr or ""):
+                raise RuntimeError(f"gh repo create failed: {create.stderr}")
+
+    # Ensure origin remote is set / matches the configured URL.
+    existing = run_git(["git", "-C", str(bare_dir), "remote", "get-url", "origin"])
+    if existing.returncode != 0:
+        run_git(["git", "-C", str(bare_dir), "remote", "add", "origin", repo_url])
+    elif (existing.stdout or "").strip() != repo_url:
+        run_git(["git", "-C", str(bare_dir), "remote", "set-url", "origin", repo_url])
+
+    # If the bare repo is brand-new (no refs), seed an empty `main` and push.
+    has_main = run_git(["git", "-C", str(bare_dir), "rev-parse", "--verify",
+                        "refs/heads/main"])
+    if has_main.returncode != 0:
+        with tempfile.TemporaryDirectory() as tmp:
+            init_dir = Path(tmp) / "init"
+            run_git(["git", "clone", str(bare_dir), str(init_dir)])
+            run_git(["git", "-C", str(init_dir), "checkout", "-b", "main"])
+            run_git(["git", "-C", str(init_dir), "commit", "--allow-empty",
+                     "-m", "Initial commit for vagrant-scopes"])
+            # Push to the local bare; pushing to GitHub is best-effort so a
+            # missing network or auth doesn't block local provisioning.
+            run_git(["git", "-C", str(init_dir), "push", "origin", "main"])
+            if shutil.which("gh"):
+                run_git(["git", "-C", str(bare_dir), "push", "origin", "main"])
+
+    # `git init --bare` may leave HEAD pointing at refs/heads/master (depending
+    # on git's init.defaultBranch). Make sure HEAD tracks main so callers like
+    # detect_default_branch resolve correctly.
+    run_git(["git", "-C", str(bare_dir), "symbolic-ref", "HEAD",
+             "refs/heads/main"])
+
+    # Ensure data dirs exist so the data symlink in each vagrant worktree
+    # has a valid target.
+    for d in [
+        DATA_DIR / VAGRANT_PROJECT / "raw",
+        DATA_DIR / VAGRANT_PROJECT / "staged",
+    ]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    return bare_dir
+
+
+def _vagrant_scope_name(user_as: str) -> str:
+    """Slugify a ``user_as`` identifier into a valid vagrant scope name.
+
+    The trailing ``-handler`` suffix encodes the role; the UI strips it
+    (and the ``_vagrant`` project) to render the card as just "handler".
+    """
+    import re
+    bare = user_as.removeprefix("user:") if user_as.startswith("user:") else user_as
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", bare).strip("-")
+    return f"{safe}-handler" if safe else "anon-handler"
+
+
+def vagrant_scope_identifier(user_as: str) -> str:
+    """Return the ``project/scope`` identifier for ``user_as``'s vagrant scope.
+
+    Matches the ``scope`` field shape returned by ``GET /rooms/{id}/agents``,
+    so the web UI can identify which agent in a room is "the manager".
+    """
+    return f"{VAGRANT_PROJECT}/{_vagrant_scope_name(user_as)}"
+
+
+def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
+    """Ensure a vagrant scope and default room exist for ``user_as``.
+
+    Idempotent. The scope name is derived from ``user_as`` so each
+    authenticated user lands in their own room (e.g. ``user:operator``
+    → scope ``user-user-operator`` under project ``_vagrant``). The
+    room id is pinned in the ``config`` table under
+    ``vagrant_session_room:<scope_name>`` so re-connects find the same
+    room; if the pinned room is gone or closed, a fresh one is created.
+
+    Returns ``(scope_uuid, room_id)``.
+    """
+    from awm.services.config_service import get_config, set_config
+    from awm.services import rooms as rooms_svc
+
+    scope_name = _vagrant_scope_name(user_as)
+    bare_dir = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
+    if not bare_dir.exists():
+        raise FileNotFoundError(
+            f"Vagrant-scopes repo not initialized at {bare_dir}. "
+            f"Run `awm vagrant-init` first."
+        )
+
+    # 1. Ensure scope row + worktree.
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
+            (VAGRANT_PROJECT, scope_name),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        create_scope(ScopeCreateRequest(project=VAGRANT_PROJECT, scope=scope_name))
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
+                (VAGRANT_PROJECT, scope_name),
+            ).fetchone()
+        finally:
+            conn.close()
+    scope_uuid = row["uuid"]
+
+    # 2. Ensure default room. Track binding in the config table so re-connects
+    #    find the same room without scanning.
+    pointer_key = f"vagrant_session_room:{scope_name}"
+    room_id = get_config(pointer_key)
+    if room_id:
+        existing = rooms_svc.get_room(room_id)
+        if existing is not None and existing.status == "active":
+            return scope_uuid, room_id
+
+    scope_identifier = f"{VAGRANT_PROJECT}/{scope_name}"
+    room = rooms_svc.create_room(
+        topic=f"vagrant session for {user_as}",
+        scopes=[scope_identifier],
+        opener=user_as,
+        close_on_exit=False,
+    )
+    set_config(pointer_key, room.id)
+    return scope_uuid, room.id
+
+
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata directory."""
+    validate_name(req.project, kind="project name")
+    validate_name(req.scope, kind="scope name")
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
+        if req.project == VAGRANT_PROJECT:
+            raise FileNotFoundError(
+                f"Vagrant-scopes repo not initialized at {bare_dir}. "
+                f"Run `awm vagrant-init` first."
+            )
         raise FileNotFoundError(f"Project '{req.project}' not found (expected {bare_dir})")
 
     from_branch = req.from_branch or detect_default_branch(bare_dir)
@@ -252,7 +454,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         session_num = (row["max_session"] or 0) + 1 if row and row["max_session"] else 1
 
         active = conn.execute(
-            "SELECT id FROM scopes WHERE project=? AND scope=? AND status='active'",
+            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
             (req.project, req.scope),
         ).fetchone()
         if active:
@@ -301,9 +503,16 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     now = _now_iso()
     conn = get_connection()
     try:
+        origin = _local_peer_id()
+        legacy = next_legacy_id(conn, "scopes", origin)
         conn.execute(
-            "INSERT INTO scopes (project, scope, status, branch, worktree, repo_path, session, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?)",
-            (req.project, req.scope, feature_branch, str(repo_dir), str(repo_dir), session_num, now, now),
+            "INSERT INTO scopes "
+            "(uuid, legacy_id, origin_peer, project, scope, status, branch, "
+            " worktree, repo_path, session, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+            (new_uuid(), legacy, origin, req.project, req.scope,
+             feature_branch, str(repo_dir), str(repo_dir), session_num,
+             now, now),
         )
         conn.commit()
     finally:
@@ -320,6 +529,8 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
 
 def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActionResponse:
     """Complete a scope."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
 
@@ -367,6 +578,8 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
 def delete_scope(project: str, scope: str) -> ScopeActionResponse:
     """Delete a scope — clean up worktree, branch, and mark as deleted in DB."""
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
     feature_branch = f"feat/{scope}"
@@ -377,7 +590,9 @@ def delete_scope(project: str, scope: str) -> ScopeActionResponse:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT id, status FROM scopes WHERE project=? AND scope=? AND status IN ('active', 'completed') ORDER BY updated_at DESC LIMIT 1",
+            "SELECT uuid, status FROM scopes "
+            "WHERE project=? AND scope=? AND status IN ('active', 'completed') "
+            "ORDER BY updated_at DESC LIMIT 1",
             (project, scope),
         ).fetchone()
         if row is None:
@@ -387,8 +602,8 @@ def delete_scope(project: str, scope: str) -> ScopeActionResponse:
 
         now = _now_iso()
         conn.execute(
-            "UPDATE scopes SET status='deleted', updated_at=? WHERE id=?",
-            (now, row["id"]),
+            "UPDATE scopes SET status='deleted', updated_at=? WHERE uuid=?",
+            (now, row["uuid"]),
         )
         conn.commit()
     finally:

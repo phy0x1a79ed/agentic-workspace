@@ -15,6 +15,11 @@ class StatusResponse(BaseModel):
     active_locks: int = 0
     active_scopes: int = 0
     active_shared_edits: int = 0
+    # Leadership state — populated by the exposed listener; the local-only
+    # core (port 7819) leaves these at defaults.
+    leadership_state: str = "ACTIVE"      # "ACTIVE" | "STANDBY"
+    current_leader: str | None = None     # peer_id self thinks is leader
+    peer_priority: int = 100              # self priority
 
 
 # ---------------------------------------------------------------------------
@@ -32,8 +37,6 @@ class ProjectCreateResponse(BaseModel):
     bare_dir: str
     worktree_dir: str
     data_dir: str
-    results_dir: str
-    reports_dir: str
     mode: str
 
 
@@ -109,6 +112,11 @@ class ArtifactInfo(BaseModel):
     tags: str | None
     status: str
     created_at: str
+    # v34: peer that owns the on-disk file. Empty string = pre-federation
+    # local. Callers consult this before reading ``path`` directly so they
+    # know whether to GET /artifacts/{id}/content (which federates) instead
+    # of opening the local file.
+    origin_peer: str = ""
 
 
 class ArtifactSearchResponse(BaseModel):
@@ -231,7 +239,6 @@ class SessionLogEntry(BaseModel):
     file_path: str = ""
     git_commit: str | None = None
     logged_at: str
-    summary: str
     title: str | None = None
     agent_id: str
     skill_path: str | None = None
@@ -244,6 +251,8 @@ class SessionLogEntry(BaseModel):
 
 
 class SessionLogPreview(BaseModel):
+    """Lightweight session row. `summary` is at most ~240 chars; check
+    `summary_truncated` to know if the underlying row had more."""
     id: int
     project: str
     scope: str
@@ -254,6 +263,7 @@ class SessionLogPreview(BaseModel):
     skill_path: str | None = None
     outcome: str | None = None
     resolved_at: str | None = None
+    summary_truncated: bool = False
 
 
 class SessionLogListResponse(BaseModel):
@@ -392,12 +402,13 @@ class RoomInfo(BaseModel):
     created_at: str
     closed_at: str | None = None
     topic: str | None = None
-    status: str  # active|closed
+    status: str  # active|closed|archived
+    close_on_exit: bool = False
 
 
 class ParticipantInfo(BaseModel):
     room_id: str
-    kind: str  # scope|subscriber|shadow_peer
+    kind: str  # scope|subscriber|shadow_peer|voice
     identifier: str
     joined_at: str
     left_at: str | None = None
@@ -459,3 +470,108 @@ class RoomActionResponse(BaseModel):
     room: RoomInfo | None = None
     post: PostInfo | None = None
     participant: ParticipantInfo | None = None
+
+
+class RoomArchiveBlockedResponse(BaseModel):
+    """Body for the 409 returned when ``POST /rooms/{id}/archive`` is
+    refused due to remaining active scope participants."""
+    error: str = "room_archive_blocked"
+    room_id: str
+    blocking_scopes: list[str]
+
+
+class LiveAgentState(BaseModel):
+    pid: int | None = None
+    status: str | None = None
+    started_at: str | None = None
+    exited_at: str | None = None
+    exit_code: int | None = None
+    agent_cli: str | None = None
+    permission_mode: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    claude_session_id: str | None = None
+    context_used: int | None = None
+    context_max: int | None = None
+
+
+class RoomAgentInfo(BaseModel):
+    scope: str
+    kind: str  # 'scope' (local) | 'shadow_peer' (remote)
+    identifier: str
+    joined_at: str
+    live: LiveAgentState | None = None  # None for shadow_peer
+
+
+class RoomAgentsResponse(BaseModel):
+    agents: list[RoomAgentInfo]
+
+
+# ---------------------------------------------------------------------------
+# Agent slash-command surface
+# ---------------------------------------------------------------------------
+
+class SlashCommandInfo(BaseModel):
+    name: str          # leading slash, e.g. "/restart"
+    args: str          # display string, e.g. "[mode]"
+    description: str
+
+
+class AgentSlashCatalog(BaseModel):
+    server: list[SlashCommandInfo]
+    claude: list[str]  # bare claude command names (no leading slash)
+
+
+class AgentSlashRequest(BaseModel):
+    cmd: str           # full command line including leading slash
+
+
+class AgentSlashResponse(BaseModel):
+    handled: bool      # True = server command; False = forwarded to claude
+    result: str        # result message (empty for forwarded)
+
+
+# ---------------------------------------------------------------------------
+# Peers (control-center surface)
+# ---------------------------------------------------------------------------
+
+class PeerInfo(BaseModel):
+    peer_id: str
+    ssh_alias: str | None = None
+    remote_port: int | None = None
+    friendly_name: str | None = None
+    last_seen: str | None = None
+    added_at: str | None = None
+    peer_priority: int = 100
+    endpoints: list[dict] | None = None
+    tls_fingerprint: str | None = None
+
+
+class PeerListResponse(BaseModel):
+    peers: list[PeerInfo]
+
+
+class PeerPingResponse(BaseModel):
+    peer_id: str
+    ok: bool
+    rtt_ms: float | None = None
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Projects (control-center surface — list)
+# ---------------------------------------------------------------------------
+
+class ProjectScopeCounts(BaseModel):
+    active: int = 0
+    completed: int = 0
+    deleted: int = 0
+
+
+class ProjectListInfo(BaseModel):
+    name: str
+    scope_counts: ProjectScopeCounts
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectListInfo]

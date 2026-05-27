@@ -78,7 +78,15 @@ if [[ ! -d "$ENV_PREFIX" ]]; then
 elif [[ "$UPDATE_MODE" -eq 0 ]]; then
     echo "=== env '$ENV_NAME' exists; reusing (pass --update to refresh) ==="
 else
-    echo "=== env '$ENV_NAME' exists; --update mode (skipping recreate) ==="
+    echo "=== env '$ENV_NAME' exists; --update mode — refreshing deps ==="
+    # New dependencies (e.g. discord.py for the operator-login bot) land in
+    # environment.yml from time to time. Pull them into the existing env so
+    # the bot doesn't fail with ImportError on startup.
+    if [[ -x "$MAMBA_BIN" ]]; then
+        "$MAMBA_BIN" env update -n "$ENV_NAME" -f "$SRC/environment.yml" --prune
+    else
+        "$CONDA_BIN" env update -n "$ENV_NAME" -f "$SRC/environment.yml" --prune
+    fi
 fi
 
 echo "=== installing awm package (editable) ==="

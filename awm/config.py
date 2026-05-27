@@ -37,9 +37,15 @@ PID_FILE = AWM_DIR / "awm.pid"
 LOG_FILE = AWM_DIR / "awm.log"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
-MAIN_DIR = WORKSPACE_ROOT / "main"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
+
+# Sentinel project value reserved for vagrant scopes. Vagrant scopes live in
+# a unified bare repo at PROJECTS_DIR / VAGRANT_PROJECT / ".bare" with one
+# branch per scope, rather than belonging to a per-project repo.
+VAGRANT_PROJECT = "_vagrant"
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +71,11 @@ EXPOSED_PORT = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
 EXPOSED_PID_FILE = AWM_DIR / "awm-exposed.pid"
 EXPOSED_LOG_FILE = AWM_DIR / "awm-exposed.log"
 
-TLS_CERT = os.environ.get("AWM_TLS_CERT")
-TLS_KEY = os.environ.get("AWM_TLS_KEY")
+# TLS — auto-bootstrapped to $AWM_DIR/tls/{cert,key}.pem on daemon start.
+# Override paths via AWM_TLS_CERT / AWM_TLS_KEY if a real cert lives elsewhere.
+TLS_DIR = AWM_DIR / "tls"
+TLS_CERT = Path(os.environ.get("AWM_TLS_CERT", str(TLS_DIR / "cert.pem")))
+TLS_KEY = Path(os.environ.get("AWM_TLS_KEY", str(TLS_DIR / "key.pem")))
 
 AUTH_TOKEN_ENV = "AWM_AUTH_TOKEN"
 AUTH_TOKEN_FILE = Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(AWM_DIR / "auth.token")))

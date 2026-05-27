@@ -102,7 +102,6 @@ SESSION_OPERATIONS: list[Operation] = [
                 Column(key="agent_id", header="AGENT", width=15),
                 Column(key="logged_at", header="LOGGED AT", width=28),
                 Column(key="title", header="TITLE", width=30, max_len=30),
-                Column(key="summary", header="SUMMARY", width=40, max_len=40),
             ],
         ),
         params=[

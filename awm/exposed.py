@@ -17,11 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+log = logging.getLogger("awm.exposed")
 
 import uvicorn
 from fastapi import (
@@ -30,7 +34,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from awm import __version__, config
 from awm.access_log import record as record_access
@@ -38,26 +42,229 @@ from awm.db import init_db
 from awm.middleware_auth import require_bearer
 from awm.middleware_gate import require_destructive
 from awm.server import app as core_app
-from awm.services import sessions_live
+from awm.services import agent_instances, auth as auth_svc
 
 
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
+def _write_discovery_file() -> Path:
+    """Write ``$AWM_DIR/exposed.json`` so CLI/MCP can discover the live
+    listener's scheme, host, port, and token-file path without guessing.
+
+    Eliminates the silent config drift between launchers documented in
+    inbox bugs #160/#161/#166. Also carries the current leadership view
+    so CLI / MCP / operators can see who's ACTIVE without polling /status.
+    """
+    have_tls = config.TLS_CERT.exists() and config.TLS_KEY.exists()
+    leadership_state = "ACTIVE"
+    current_leader: str | None = None
+    self_priority = 100
+    try:
+        from awm.services.leadership import state as _ldr_state
+        s = _ldr_state.get_state()
+        leadership_state = s.leadership
+        current_leader = s.current_leader
+        self_priority = s.self_priority
+    except Exception:
+        pass
+    discovery = {
+        "scheme": "https" if have_tls else "http",
+        "host": config.EXPOSED_HOST,
+        "port": config.EXPOSED_PORT,
+        "token_file": str(config.AUTH_TOKEN_FILE),
+        "pid": os.getpid(),
+        "leadership_state": leadership_state,
+        "current_leader": current_leader,
+        "peer_priority": self_priority,
+    }
+    path = config.AWM_DIR / "exposed.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(discovery, indent=2) + "\n")
+    return path
+
+
+def _write_spawn_mcp_config() -> Path | None:
+    """Write ``$AWM_DIR/spawn-mcp.json`` — the definitive MCP config for
+    ``agent_instances.create_session()`` spawns.
+
+    Spawned Claudes are launched with ``--strict-mcp-config --mcp-config
+    <this file>``, which makes them ignore the normal ``.mcp.json``
+    walk-up. That keeps dev and prod isolated by construction: each
+    workspace's exposed server writes its own values into its own file.
+
+    The file points at this exposed server's host/port/workspace, so the
+    awm-mcp proxy launched by Claude talks back to *us*. Manual ``claude``
+    CLI sessions are untouched — they don't pass the strict flag.
+
+    Returns the file path on success, or ``None`` if ``awm-mcp`` isn't on
+    PATH (auto-spawn still works in that case, just without awm tools).
+    """
+    awm_mcp = shutil.which("awm-mcp")
+    if awm_mcp is None:
+        log.warning("awm-mcp not on PATH; spawned agents will have no awm MCP tools")
+        return None
+    workspace = os.environ.get("AWM_WORKSPACE", str(config.WORKSPACE_ROOT))
+    spawn_cfg = {
+        "mcpServers": {
+            "awm": {
+                "command": awm_mcp,
+                "args": [],
+                "env": {
+                    "AWM_WORKSPACE": workspace,
+                    "AWM_EXPOSED_HOST": os.environ.get(
+                        "AWM_EXPOSED_HOST", "127.0.0.1"
+                    ),
+                    "AWM_EXPOSED_PORT": os.environ.get(
+                        "AWM_EXPOSED_PORT", "7820"
+                    ),
+                },
+            }
+        }
+    }
+    path = config.AWM_DIR / "spawn-mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(spawn_cfg, indent=2) + "\n")
+    return path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    sessions_live.reconcile_on_startup()
+    info = auth_svc.bootstrap()
+    print(
+        f"[awm-exposed] auth ready: token={info['token_file']} "
+        f"cert={info['tls_cert']} fp={info['tls_fingerprint'][:16]}…"
+    )
+    agent_instances.reconcile_on_startup()
 
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
+    discovery_path = _write_discovery_file()
+    print(f"[awm-exposed] discovery file: {discovery_path}")
+
+    spawn_mcp_path = _write_spawn_mcp_config()
+    if spawn_mcp_path is not None:
+        print(f"[awm-exposed] spawn-mcp.json → {spawn_mcp_path}")
+
+    # Periodic sweep of expired one-shot login challenges.
+    async def _challenges_sweeper() -> None:
+        while True:
+            try:
+                await asyncio.sleep(30)
+                auth_svc.sweep_challenges()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+    challenges_sweeper_task = asyncio.create_task(_challenges_sweeper())
+
+    # Discord bot — opt-in. Started iff $AWM_DIR/discord.toml is present
+    # and parseable. Operators are whitelisted via the discord_operators
+    # table (see `awm discord add-operator`). Lifecycle is now driven by
+    # the leadership state machine: only the ACTIVE peer holds the gateway.
+    try:
+        from awm.services.discord import config as discord_config
+        dc = discord_config.load()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] discord disabled: {exc}")
+        dc = None
+    from awm.services.leadership import discord as ldr_discord
+    ldr_discord.set_config(dc)
+    if dc is not None:
+        print(
+            f"[awm-exposed] discord bot configured "
+            f"(account={dc.account_name or '?'}) — will connect when ACTIVE"
+        )
+
+    # cr-sqlite replication pull loop. Started unconditionally; the loop
+    # itself no-ops when the extension binary is missing.
+    from awm.services.replication import sync as repl_sync
+    replication_task = asyncio.create_task(
+        repl_sync.run_sync_loop(), name="replication-sync",
+    )
+
+    # Leadership state machine. Configure self from peers-table self-row;
+    # register Discord start/stop callbacks; spin up the probe loop. Initial
+    # state is STANDBY — the first poll round promotes if nobody outranks us.
+    from awm.services.leadership import state as ldr_state
+    from awm.services.leadership import poll as ldr_poll
+    from awm.services.network import peers as _peer_svc
+    self_ident = _peer_svc.get_local_identity()
+    if self_ident:
+        self_peer_id = self_ident["peer_id"]
+        self_row = _peer_svc.get_peer(self_peer_id)
+        self_priority = int((self_row or {}).get("peer_priority", 100))
+        ldr_state.configure(self_peer_id, self_priority)
+        ldr_state.on_promote(ldr_discord.start_bot)
+        ldr_state.on_demote(ldr_discord.stop_bot)
+        leadership_task = asyncio.create_task(
+            ldr_poll.run_poll_loop(), name="leadership-poll"
+        )
+        print(
+            f"[awm-exposed] leadership: self={self_peer_id} "
+            f"priority={self_priority} (probe interval={ldr_poll.POLL_INTERVAL_S}s)"
+        )
+    else:
+        # Pre-federation single-node operation: no peer identity, no poll
+        # loop. Treat self as ACTIVE so the UI mounts unconditionally.
+        ldr_state.configure("local", 0)
+        await ldr_state.promote("local")
+        leadership_task = None
+        print("[awm-exposed] leadership: no peer identity — running ACTIVE single-node")
+
+    # Warm STT model in the background — first connection waits a few
+    # seconds rather than every connection paying full load cost. Failures
+    # log but don't take down the listener.
+    async def _warm_voice() -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            from awm.voice.stt import get_transcriber
+            t0 = time.perf_counter()
+            await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
+            print(f"[awm-exposed] STT model ready in "
+                  f"{time.perf_counter() - t0:.1f}s")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[awm-exposed] STT model unavailable: {exc}")
+
+    warmup_task = asyncio.create_task(_warm_voice())
+
+    try:
+        from awm.voice.registry import get_registry
+        get_registry().start_reaper()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice registry init failed: {exc}")
+
     yield
+
+    challenges_sweeper_task.cancel()
+    warmup_task.cancel()
+    replication_task.cancel()
+    if leadership_task is not None:
+        leadership_task.cancel()
+    try:
+        await ldr_discord.stop_bot()
+    except Exception:
+        pass
+    try:
+        from awm.voice.registry import get_registry
+        await get_registry().shutdown()
+    except Exception:
+        pass
 
     if config.EXPOSED_PID_FILE.exists():
         try:
             config.EXPOSED_PID_FILE.unlink()
+        except OSError:
+            pass
+
+    discovery_path = config.AWM_DIR / "exposed.json"
+    if discovery_path.exists():
+        try:
+            discovery_path.unlink()
         except OSError:
             pass
 
@@ -151,15 +358,149 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 # rooms.
 # ---------------------------------------------------------------------------
 
+from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
+from awm.api.vagrant import router as vagrant_router  # noqa: E402
+from awm.services.replication.endpoint import router as repl_router  # noqa: E402
+from awm.voice.router import router as voice_router  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
+app.include_router(peer_router)
+app.include_router(repl_router)
+app.include_router(voice_router)
+app.include_router(vagrant_router)
+
+
+# ---------------------------------------------------------------------------
+# Web UI auth — one-shot login flow (Discord DM or `awm login` CLI)
+# ---------------------------------------------------------------------------
+
+def _is_loopback(request: Request) -> bool:
+    """Reject ``/auth/mint`` from anywhere but the loopback interface.
+
+    The CLI and the in-process Discord bot both call /auth/mint over
+    loopback, so we don't need a separate auth layer for it. Non-loopback
+    callers (browser, federated peers) can not mint challenges — they go
+    through the Discord bot UX or the CLI.
+
+    ``testclient`` is Starlette TestClient's sentinel host string —
+    accept it so unit tests can exercise this route directly. The
+    sentinel is unreachable in production (no real socket binds to it).
+    """
+    if request.client is None:
+        return False
+    host = request.client.host
+    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+@app.post("/auth/mint")
+async def auth_mint(request: Request, _auth: None = Depends(require_bearer)):
+    """Mint a one-shot login challenge.
+
+    Loopback-only. Body: ``{"awm_user": "<name>"}``. Returns
+    ``{"nonce": "...", "url": "https://.../auth/bootstrap?ot=..."}``. The
+    operator opens the URL in a browser; ``/auth/bootstrap`` consumes the
+    nonce and sets the bearer as an HttpOnly cookie.
+    """
+    if not _is_loopback(request):
+        raise HTTPException(403, "/auth/mint is loopback-only")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    awm_user = (body.get("awm_user") if isinstance(body, dict) else None) or "operator"
+    awm_user = str(awm_user).strip() or "operator"
+
+    nonce = auth_svc.mint_challenge(awm_user)
+    url = f"{auth_svc.base_url()}/auth/bootstrap?ot={nonce}"
+    return JSONResponse({
+        "nonce": nonce,
+        "url": url,
+        "awm_user": awm_user,
+        "expires_in_s": auth_svc.CHALLENGE_TTL_SECONDS,
+    })
+
+
+@app.get("/auth/bootstrap")
+async def auth_bootstrap(request: Request):
+    """Consume a one-shot nonce and set the bearer cookie.
+
+    The bearer itself is stored verbatim in the HttpOnly ``awm_session``
+    cookie — no server-side session state. A non-HttpOnly ``awm_as``
+    cookie carries the operator's display name so the SPA can populate
+    ``X-Awm-As``.
+    """
+    nonce = request.query_params.get("ot", "")
+    awm_user = auth_svc.consume_challenge(nonce)
+    if awm_user is None:
+        raise HTTPException(401, "challenge expired or invalid — request a new login")
+
+    try:
+        bearer = auth_svc.local_token(generate_if_missing=False)
+    except auth_svc.TokenMissing:
+        raise HTTPException(500, "daemon token not initialized")
+
+    response = Response(status_code=302, headers={"Location": "/ui/"})
+    response.set_cookie(
+        key=auth_svc.SESSION_COOKIE,
+        value=bearer,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    response.set_cookie(
+        key=auth_svc.AS_COOKIE,
+        value=awm_user,
+        httponly=False,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/whoami")
+async def auth_whoami(request: Request, _auth: None = Depends(require_bearer)):
+    """Return the operator display name (from ``awm_as`` cookie).
+
+    Used by ``/ui/login.html`` to poll for completion after the operator
+    clicks a DM'd bootstrap link in another tab.
+    """
+    awm_user = request.cookies.get(auth_svc.AS_COOKIE) or "operator"
+    return JSONResponse({"awm_user": awm_user})
+
+
+@app.delete("/auth/session")
+async def auth_logout(_request: Request):
+    """Clear the bearer cookie. Operator must re-login via Discord or CLI."""
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
+    response.delete_cookie(auth_svc.AS_COOKIE, path="/")
+    return response
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
+    # mic-worklet.js) are served directly; anything else under /ui/ falls
+    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
+    # etc.) survive hard reloads.
+    @app.get("/ui")
+    @app.get("/ui/")
+    @app.get("/ui/{full_path:path}")
+    async def _spa(full_path: str = ""):
+        # login.html stays its own page (server-rendered single-purpose entry).
+        if full_path:
+            # Resolve safely — reject any path that escapes the static dir.
+            candidate = (_STATIC_DIR / full_path).resolve()
+            try:
+                candidate.relative_to(_STATIC_DIR.resolve())
+            except ValueError:
+                return FileResponse(_STATIC_DIR / "index.html")
+            if candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +538,22 @@ def _is_destructive(method: str, path: str) -> bool:
     return False
 
 
+_STANDBY_GATED_PREFIXES = ("/ui/", "/ui")
+_STANDBY_GATED_PATHS = ("/auth/mint", "/auth/bootstrap")
+
+
+def _is_standby_gated(path: str) -> bool:
+    """Routes that should 503+Location when the local peer is STANDBY:
+    the SPA itself and the login-flow entry points. ``/auth/whoami`` and
+    ``/auth/session`` stay reachable so an already-cookied browser can
+    finish its current request and clear state cleanly."""
+    if path in _STANDBY_GATED_PATHS:
+        return True
+    if path == "/ui" or path.startswith("/ui/"):
+        return True
+    return False
+
+
 @app.middleware("http")
 async def gate_and_auth_for_core(request: Request, call_next):
     """Enforce auth + destructive gate for routes that fall through to the
@@ -208,26 +565,56 @@ async def gate_and_auth_for_core(request: Request, call_next):
     peer-id, ``request.state.from_peer`` is populated so /inbox can prefix
     the stored sender. Unknown peer-ids are 4xx'd rather than silently
     accepted, to avoid spoofing of un-registered origins.
+
+    Leadership gate: when the local peer is STANDBY and the request targets
+    the UI or the login-flow entry, redirect (or 503-without-Location if no
+    leader is known yet) so operators land on the ACTIVE peer.
     """
     path = request.url.path
 
+    # Leadership gate runs first — STANDBY peers must not serve UI even if
+    # the caller has a valid cookie. /peer/*, /status, and the rest of the
+    # federation surface stay open in STANDBY.
+    if _is_standby_gated(path):
+        try:
+            from awm.services.leadership import state as _ldr_state
+            s = _ldr_state.get_state()
+            if s.leadership == "STANDBY":
+                leader = _ldr_state.current_leader_base_url()
+                if leader:
+                    return Response(
+                        status_code=503,
+                        headers={"Location": f"{leader}{path}"},
+                        content=b"standby; redirecting to active leader",
+                    )
+                return Response(
+                    status_code=503,
+                    content=b"standby; no active leader known yet",
+                )
+        except Exception:
+            # Leadership service not configured — fall through (single-node).
+            pass
+
     # Routes mounted directly on the exposed app (with their own
     # Depends(require_bearer)) skip middleware-level auth to avoid
-    # double work. /ui is intentionally unauthenticated — the static
-    # HTML pulls its bearer from the URL hash and uses it for /rooms
-    # API calls.
-    if path.startswith("/rooms") or path.startswith("/ui"):
+    # double work. /ui and /auth/exchange are intentionally
+    # unauthenticated at the middleware level: /ui is static HTML;
+    # /auth/exchange validates its own bearer to mint a session cookie.
+    if (path.startswith("/rooms") or path.startswith("/ui")
+            or path.startswith("/voice")
+            or path.startswith("/peer/")
+            or path.startswith("/auth/")):
         return await call_next(request)
 
-    # Auth check
+    # Auth check — local-token bearer, peer-token bearer, or the
+    # awm_session cookie (which carries the bearer verbatim).
     auth = request.headers.get("authorization", "")
     token: str | None = None
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
-    from awm.middleware_auth import load_token
-    import hmac as _hmac
-    expected = load_token()
-    if not expected or not token or not _hmac.compare_digest(token, expected):
+    if not token:
+        token = request.cookies.get(auth_svc.SESSION_COOKIE)
+    if not auth_svc.verify_bearer(token):
         return JSONResponse(status_code=401, content={"detail": "unauthorized"})
 
     # Peer-origin identification. We trust the bearer; X-Awm-From is the
@@ -270,24 +657,17 @@ app.mount("/", core_app)
 # ---------------------------------------------------------------------------
 
 def run_exposed_server() -> None:
-    """Start the network-exposed uvicorn listener with optional TLS."""
+    """Start the HTTPS listener. TLS is mandatory and auto-bootstrapped."""
     config.EXPOSED_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    cert, key = auth_svc.bootstrap_tls(generate_if_missing=True)
 
+    import ssl
     kwargs: dict = {
         "host": config.EXPOSED_HOST,
         "port": config.EXPOSED_PORT,
         "log_level": "info",
+        "ssl_certfile": str(cert),
+        "ssl_keyfile": str(key),
+        "ssl_version": ssl.PROTOCOL_TLS_SERVER,
     }
-    if config.TLS_CERT and config.TLS_KEY:
-        kwargs["ssl_certfile"] = config.TLS_CERT
-        kwargs["ssl_keyfile"] = config.TLS_KEY
-        # Minimum TLS 1.2 per objectives.md hygiene.
-        import ssl
-        kwargs["ssl_version"] = ssl.PROTOCOL_TLS_SERVER
-    else:
-        print(
-            "[awm-exposed] WARNING: no TLS cert configured "
-            "(set AWM_TLS_CERT and AWM_TLS_KEY). Starting plaintext."
-        )
-
     uvicorn.run(app, **kwargs)

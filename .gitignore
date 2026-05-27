@@ -1,9 +1,16 @@
 # AWM runtime state
 .awm/
 
+# Local, scope-specific dev context (see .awm/context.md)
+# AGENTS.md is the canonical source; CLAUDE.md is a symlink to it.
+AGENTS.md
+CLAUDE.md
+
+# Machine identity — per-host
+NAME.md
+
 # Workspace runtime directories (not tracked)
 data/
-main/
 projects/
 
 # Python

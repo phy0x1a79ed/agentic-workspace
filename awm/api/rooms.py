@@ -10,8 +10,6 @@ forward_room_* helpers in ``awm.services.network.federation``.
 
 from __future__ import annotations
 
-import asyncio
-import json
 from typing import Optional
 
 from fastapi import (
@@ -21,15 +19,20 @@ from fastapi import (
     Query,
     Request,
     WebSocket,
-    WebSocketDisconnect,
 )
 
-from awm import ws_envelope as env
 from awm.middleware_auth import require_bearer
 from awm.models import (
+    AgentSlashCatalog,
+    AgentSlashRequest,
+    AgentSlashResponse,
+    LiveAgentState,
     ParticipantInfo,
     PostInfo,
     RoomActionResponse,
+    RoomAgentInfo,
+    RoomAgentsResponse,
+    RoomArchiveBlockedResponse,
     RoomCloseRequest,
     RoomCreateRequest,
     RoomDetail,
@@ -39,8 +42,9 @@ from awm.models import (
     RoomListResponse,
     RoomPostRequest,
     RoomRemoveRequest,
+    SlashCommandInfo,
 )
-from awm.services import orchestration, rooms as rooms_svc
+from awm.services import agent_slash, orchestration, rooms as rooms_svc
 from awm.ws_auth import authenticate_room_ws
 
 
@@ -64,14 +68,13 @@ def _participant_info(p: rooms_svc.Participant) -> ParticipantInfo:
 
 
 def _opener_from_request(request: Request) -> str:
-    """Resolve the post author from request headers — X-Awm-From peer claim
-    and X-Awm-As user claim. Defaults to ``user:operator``."""
-    from_peer = getattr(request.state, "from_peer", None) or \
-        request.headers.get("x-awm-from")
-    user_as = request.headers.get("x-awm-as") or "user:operator"
-    if from_peer and "@" not in user_as:
-        user_as = f"{user_as}@{from_peer}"
-    return user_as
+    """Resolve the post author from the operator's ``X-Awm-As`` claim.
+
+    User-facing routes intentionally ignore ``X-Awm-From``; that header is
+    only consumed by peer-facing routes under ``/peer/...``. Defaults to
+    ``user:operator``.
+    """
+    return request.headers.get("x-awm-as") or "user:operator"
 
 
 # ---------------------------------------------------------------------------
@@ -236,76 +239,8 @@ def remove_from_room(room_id: str, req: RoomRemoveRequest):
     return RoomActionResponse(message="removed")
 
 
-# ---------------------------------------------------------------------------
-# Cross-peer (M3) receiving endpoints — invoked by federation.forward_*
-# from another peer over an SSH tunnel.
-# ---------------------------------------------------------------------------
-
-@router.post("/{room_id}/shadow-join", dependencies=[Depends(require_bearer)])
-def shadow_join(room_id: str, request: Request):
-    """A remote peer is announcing itself as a shadow_peer for this room.
-    The remote peer is identified by ``X-Awm-From`` (validated by the
-    exposed middleware to be a known peer)."""
-    from_peer = request.headers.get("x-awm-from")
-    if not from_peer:
-        raise HTTPException(400, "X-Awm-From required")
-    try:
-        participant = rooms_svc.add_participant(room_id, "shadow_peer", from_peer)
-    except rooms_svc.RoomNotFound:
-        raise HTTPException(404, f"no such room: {room_id}")
-    except rooms_svc.RoomClosed:
-        raise HTTPException(409, f"room {room_id} is closed")
-    return {"ok": True, "participant": participant.to_dict()}
-
-
-@router.post("/{room_id}/shadow-leave", dependencies=[Depends(require_bearer)])
-def shadow_leave(room_id: str, request: Request):
-    from_peer = request.headers.get("x-awm-from")
-    if not from_peer:
-        raise HTTPException(400, "X-Awm-From required")
-    rooms_svc.remove_participant(room_id, "shadow_peer", from_peer)
-    return {"ok": True}
-
-
-@router.post("/internal/agent-input", dependencies=[Depends(require_bearer)])
-def receive_agent_input(request: Request, body: dict):
-    """Remote peer is pushing an input frame for a scope that lives here."""
-    from_peer = request.headers.get("x-awm-from")
-    if not from_peer:
-        raise HTTPException(400, "X-Awm-From required")
-    scope = body.get("scope")
-    room_id = body.get("room_id")
-    text = body.get("body", "")
-    author = body.get("author", f"user:operator@{from_peer}")
-    if not scope or not room_id:
-        raise HTTPException(400, "scope and room_id required")
-
-    # Synthesize an input frame for the local LiveSession.
-    from awm.services import sessions_live
-    session = sessions_live._by_scope.get(scope)
-    if session is None:
-        # Spawn-on-demand for cross-host agent inputs.
-        try:
-            project, scope_name = scope.split("/", 1)
-        except ValueError:
-            raise HTTPException(400, f"invalid scope: {scope}")
-
-        import asyncio
-        async def _spawn():
-            return await sessions_live.create_session(
-                project=project, scope=scope_name,
-            )
-        try:
-            session = asyncio.run(_spawn())
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(500, f"could not spawn session: {exc}")
-
-    fake_post = rooms_svc.Post(
-        id=0, room_id=room_id, author=author, body=text, kind="text",
-        ts="(cross-peer)",
-    )
-    sessions_live.enqueue_input(session, room_id, fake_post)
-    return {"ok": True}
+# Cross-peer (M3) receivers live on ``awm/api/peer.py`` under the /peer/
+# router; this file no longer hosts dual-mode handlers.
 
 
 @router.post("/{room_id}/close", response_model=RoomActionResponse,
@@ -318,12 +253,173 @@ def close_room(room_id: str, req: RoomCloseRequest):
     return RoomActionResponse(message="closed", room=_room_info(room))
 
 
+@router.post("/{room_id}/archive", response_model=RoomActionResponse,
+             dependencies=[Depends(require_bearer)],
+             responses={409: {"model": RoomArchiveBlockedResponse}})
+def archive_room(room_id: str):
+    """Soft-archive a room. 409 with ``blocking_scopes`` if any agent
+    (kind='scope') participants are still active."""
+    try:
+        room = rooms_svc.archive_room(room_id)
+    except rooms_svc.RoomNotFound:
+        raise HTTPException(404, f"no such room: {room_id}")
+    except rooms_svc.RoomArchiveBlocked as exc:
+        raise HTTPException(409, detail={
+            "error": "room_archive_blocked",
+            "room_id": exc.room_id,
+            "blocking_scopes": exc.blocking_scopes,
+        })
+    return RoomActionResponse(message="archived", room=_room_info(room))
+
+
+@router.get("/{room_id}/agents", response_model=RoomAgentsResponse,
+            dependencies=[Depends(require_bearer)])
+def get_room_agents(room_id: str):
+    """Per-agent panel data — list scope/shadow_peer participants and,
+    for local scopes, attach their agent-instance state from
+    ``agent_instances._by_scope``."""
+    room = rooms_svc.get_room(room_id)
+    if room is None:
+        raise HTTPException(404, f"no such room: {room_id}")
+    from awm.services import agent_instances
+
+    agents: list[RoomAgentInfo] = []
+    for p in rooms_svc.list_participants(room_id, active_only=False):
+        if p.kind not in ("scope", "shadow_peer"):
+            continue
+        live: LiveAgentState | None = None
+        if p.kind == "scope":
+            base_scope, peer = rooms_svc._split_scope(p.identifier)
+            if peer is None:
+                session = agent_instances._by_scope.get(base_scope)
+                if session is not None:
+                    live = LiveAgentState(
+                        pid=getattr(session.proc, "pid", None),
+                        status=session.status,
+                        started_at=session.started_at,
+                        exited_at=session.exited_at,
+                        exit_code=session.exit_code,
+                        agent_cli=session.agent_cli,
+                        permission_mode=session.permission_mode,
+                        model=session.model,
+                        effort=session.effort,
+                        claude_session_id=session.claude_session_id,
+                        context_used=session.context_used,
+                        context_max=session.context_max,
+                    )
+        agents.append(RoomAgentInfo(
+            scope=p.identifier, kind=p.kind, identifier=p.identifier,
+            joined_at=p.joined_at, live=live,
+        ))
+    return RoomAgentsResponse(agents=agents)
+
+
 # ---------------------------------------------------------------------------
-# WebSocket attach
+# Agent slash-command surface
 # ---------------------------------------------------------------------------
 
-_WS_QUEUE_MAX = 256
+def _require_local_scope_participant(room_id: str, scope: str) -> None:
+    """Reject if scope isn't a local scope participant in the room.
 
+    Slash commands are agent-control and must be ``to:``-targeted; broadcast
+    or untargeted slashes are refused at the API edge.
+    """
+    room = rooms_svc.get_room(room_id)
+    if room is None:
+        raise HTTPException(404, f"no such room: {room_id}")
+    base_scope, peer = rooms_svc._split_scope(scope)
+    if peer is not None:
+        raise HTTPException(
+            400, f"slash commands on remote scopes are not yet supported: {scope!r}"
+        )
+    for p in rooms_svc.list_participants(room_id, active_only=True):
+        if p.kind == "scope" and p.identifier == scope:
+            return
+    raise HTTPException(
+        404, f"scope {scope!r} is not an active participant of room {room_id!r}"
+    )
+
+
+@router.get(
+    "/{room_id}/agents/{scope:path}/slash-commands",
+    response_model=AgentSlashCatalog,
+    dependencies=[Depends(require_bearer)],
+)
+def get_agent_slash_commands(room_id: str, scope: str) -> AgentSlashCatalog:
+    """Catalog of slash commands for the given scope.
+
+    Returns server-controlled commands plus any commands the scope's live
+    claude reported in its init event (claude-specific list).
+    """
+    _require_local_scope_participant(room_id, scope)
+    from awm.services import agent_instances
+    sess = agent_instances._by_scope.get(scope)
+    claude_cmds = list(sess.claude_slash_commands) if sess is not None else []
+    return AgentSlashCatalog(
+        server=[SlashCommandInfo(**c) for c in agent_slash.server_catalog()],
+        claude=claude_cmds,
+    )
+
+
+@router.post(
+    "/{room_id}/agents/{scope:path}/slash",
+    response_model=AgentSlashResponse,
+    dependencies=[Depends(require_bearer)],
+)
+async def post_agent_slash(
+    room_id: str, scope: str, req: AgentSlashRequest, request: Request,
+) -> AgentSlashResponse:
+    """Run a slash command against a scope's agent.
+
+    If the leading token matches a server command, the registered handler
+    runs and its message is posted to the room as ``system``. Otherwise
+    the line is forwarded unframed to the scope's claude stdin so /clear,
+    /compact, plugin commands etc. still work.
+
+    Either way the original command is recorded in the room transcript as
+    kind=``slash`` (authored by the caller) for audit.
+    """
+    _require_local_scope_participant(room_id, scope)
+    line = (req.cmd or "").strip()
+    if not line.startswith("/"):
+        raise HTTPException(400, "slash commands must start with '/'")
+
+    author = _opener_from_request(request)
+    # Audit-log the invocation in the room first.
+    try:
+        rooms_svc.post(room_id, author=author, body=line, kind="slash",
+                       to_scope=scope)
+    except rooms_svc.RoomError as exc:
+        raise HTTPException(409, str(exc))
+
+    try:
+        handled, message = await agent_slash.dispatch(scope, line)
+    except agent_slash.SlashParseError as exc:
+        raise HTTPException(400, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    if handled:
+        # Post the server response as a system message so all subscribers
+        # see what happened.
+        try:
+            rooms_svc.post(room_id, author="system", body=message, kind="system")
+        except rooms_svc.RoomError:
+            pass
+        return AgentSlashResponse(handled=True, result=message)
+
+    # Unknown server command — forward raw to the scope's claude stdin.
+    from awm.services import agent_instances
+    try:
+        await agent_instances.send_slash(scope, line)
+    except agent_instances.NoSessionError as exc:
+        raise HTTPException(409, str(exc))
+    return AgentSlashResponse(handled=False, result="")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket attach — thin: auth + accept + delegate to services.rooms
+# ---------------------------------------------------------------------------
 
 @router.websocket("/{room_id}/attach")
 async def attach_ws(websocket: WebSocket, room_id: str):
@@ -331,102 +427,4 @@ async def attach_ws(websocket: WebSocket, room_id: str):
     if not auth.ok:
         return
     await websocket.accept(subprotocol=auth.subprotocol)
-
-    room = rooms_svc.get_room(room_id)
-    if room is None:
-        await websocket.send_text(json.dumps(env.error(f"no such room: {room_id}")))
-        await websocket.close(code=1008, reason="no such room")
-        return
-
-    queue: asyncio.Queue = asyncio.Queue(maxsize=_WS_QUEUE_MAX)
-    subscriber_id = f"ws:{id(websocket)}:{auth.user_as}"
-    await rooms_svc.subscribe_room(room_id, queue)
-    try:
-        rooms_svc.add_participant(room_id, "subscriber", subscriber_id)
-    except rooms_svc.RoomClosed:
-        await websocket.send_text(json.dumps(env.error(f"room {room_id} is closed")))
-        await websocket.close(code=1008, reason="room closed")
-        await rooms_svc.unsubscribe_room(room_id, queue)
-        return
-
-    # Send transcript backlog.
-    backlog = rooms_svc.history(room_id, limit_chars=4096)
-    await websocket.send_text(json.dumps(
-        env.history([_post_info(p).model_dump() for p in backlog])
-    ))
-
-    async def writer():
-        while True:
-            ev = await queue.get()
-            if env.is_lagged(ev):
-                try:
-                    await websocket.send_text(json.dumps(ev))
-                except Exception:
-                    return
-                # Drop the connection — caller should reconnect.
-                await websocket.close(code=1011, reason="lagged")
-                return
-            try:
-                await websocket.send_text(json.dumps(ev))
-            except Exception:
-                return
-
-    async def reader():
-        while True:
-            try:
-                raw = await websocket.receive_text()
-            except WebSocketDisconnect:
-                return
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                await websocket.send_text(json.dumps(env.error("invalid JSON")))
-                continue
-            mtype = msg.get("type")
-            if mtype == "post":
-                body = msg.get("body", "")
-                kind = msg.get("kind", "text")
-                to_scope = msg.get("to") or None
-                try:
-                    rooms_svc.post(room_id, author=auth.user_as, body=body,
-                                   kind=kind, to_scope=to_scope)
-                except rooms_svc.RoomError as exc:
-                    await websocket.send_text(json.dumps(env.error(str(exc))))
-            elif mtype == "control":
-                action = msg.get("action")
-                if action == "close":
-                    try:
-                        rooms_svc.close_room(room_id)
-                    except rooms_svc.RoomError as exc:
-                        await websocket.send_text(json.dumps(env.error(str(exc))))
-                elif action == "kill":
-                    try:
-                        rooms_svc.close_room(room_id, kill_agents=True)
-                    except rooms_svc.RoomError as exc:
-                        await websocket.send_text(json.dumps(env.error(str(exc))))
-                else:
-                    await websocket.send_text(json.dumps(
-                        env.error(f"unknown control action: {action}")))
-            elif mtype == "ping":
-                await websocket.send_text(json.dumps(env.pong()))
-            else:
-                await websocket.send_text(json.dumps(
-                    env.error(f"unknown envelope type: {mtype}")))
-
-    writer_task = asyncio.create_task(writer())
-    reader_task = asyncio.create_task(reader())
-    try:
-        done, _pending = await asyncio.wait(
-            {writer_task, reader_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        writer_task.cancel()
-        reader_task.cancel()
-        await rooms_svc.unsubscribe_room(room_id, queue)
-        rooms_svc.remove_participant(room_id, "subscriber", subscriber_id)
-        try:
-            if websocket.client_state.name != "DISCONNECTED":
-                await websocket.close()
-        except Exception:
-            pass
+    await rooms_svc.run_subscriber_session(websocket, room_id, auth.user_as)

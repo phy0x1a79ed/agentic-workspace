@@ -35,9 +35,21 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from awm.config import BASE_URL
+from awm import config
+from awm.services import auth as auth_svc
+from awm.services._path import resolve_bin
 
 server = Server("awm")
+
+
+def _base_url() -> str:
+    """HTTPS base URL of the local awm daemon (the exposed listener)."""
+    return auth_svc.base_url()
+
+
+def _client_kwargs() -> dict:
+    """Auth + TLS kwargs for outbound httpx calls."""
+    return auth_svc.client_kwargs(timeout=60.0)
 
 
 # ---------------------------------------------------------------------------
@@ -86,18 +98,20 @@ async def _request_with_retry(
     json_body: dict | None = None,
     max_wait: float = 10.0,
 ) -> dict[str, Any]:
-    """Make an HTTP request to the core, reconnecting across core restarts.
+    """Make an HTTPS request to the local awm daemon, reconnecting across
+    restarts.
 
-    When the core is bounced (``systemctl restart``), the first call sees a
-    ``ConnectError``; we nudge systemd and retry for up to ``max_wait`` seconds
-    so the caller's request succeeds transparently. Shared between the
-    ``list_tools`` and ``call_tool`` paths so both benefit from the same
-    wakeup + retry logic.
+    Auth and TLS verification kwargs come from
+    :func:`awm.services.auth.client_kwargs`. On a transport error the first
+    attempt nudges systemd to start the daemon, then we retry for up to
+    ``max_wait`` seconds so the caller's request transparently survives a
+    ``systemctl restart``.
     """
     deadline = time.monotonic() + max_wait
     last_err: Exception | None = None
     first_attempt = True
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=60.0) as client:
+    kwargs = _client_kwargs()
+    async with httpx.AsyncClient(base_url=_base_url(), **kwargs) as client:
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body)
@@ -111,34 +125,34 @@ async def _request_with_retry(
                     _ensure_core_running()
                     first_attempt = False
                 await asyncio.sleep(0.3)
-    raise RuntimeError(f"awm core unreachable after {max_wait}s: {last_err}")
+    raise RuntimeError(f"awm daemon unreachable after {max_wait}s: {last_err}")
 
 
 def _ensure_core_running() -> None:
-    """Start the core via systemd if it's not already up.
+    """Start the awm daemon via systemd if it's not already up.
 
-    Best-effort — if systemd isn't available (e.g. the user hasn't enabled
-    the unit yet) we fall back to spawning ``awm serve`` as a detached
-    subprocess so the proxy still works in dev setups.
+    Starts both ``awm.service`` (core, in-process state) and
+    ``awm-exposed.service`` (HTTPS listener) so the MCP proxy can reach
+    the catalog endpoints. Best-effort — falls back to detached
+    ``awm serve-exposed`` in dev setups without systemd.
     """
     r = subprocess.run(
-        ["systemctl", "--user", "start", "awm.service"],
+        ["systemctl", "--user", "start",
+         "awm.service", "awm-exposed.service"],
         capture_output=True, text=True,
     )
     if r.returncode == 0:
         return
     # Fallback: detached subprocess. stdio goes to /dev/null so the proxy
-    # doesn't inherit file handles.
-    try:
-        subprocess.Popen(
-            ["awm", "serve"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except FileNotFoundError:
-        pass  # no `awm` on PATH — propagate connection error to caller
+    # doesn't inherit file handles. resolve_bin extends PATH with
+    # ~/.local/bin and linuxbrew so this works under a systemd-user env.
+    subprocess.Popen(
+        [resolve_bin("awm"), "serve-exposed"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 # ---------------------------------------------------------------------------

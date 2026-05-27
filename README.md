@@ -256,6 +256,14 @@ The server listens on `127.0.0.1:7819`. Key endpoints:
 | POST | `/sessions` | Log a session entry |
 | GET | `/sessions` | List session logs (query: `project`, `scope`, `limit`) |
 | GET | `/sessions/{id}` | Get session with full content |
+| GET | `/peers` | List registered remote peers (control-center) |
+| GET | `/peers/{id}/ping` | Probe peer via SSH tunnel, report rtt |
+| GET | `/projects` | List projects with per-status scope counts |
+| GET | `/voice/state` | Current user's voice agent status (joined rooms, connected tabs) |
+| POST | `/voice/text` | Send typed input to the voice agent (no-mic alternative) |
+| POST | `/voice/rooms/{id}/join` | Voice agent joins a room as a `voice:<user>` participant |
+| POST | `/voice/rooms/{id}/leave` | Voice agent leaves a room |
+| WS | `/voice/ws` | Per-user voice WebSocket (PTT audio, transcripts, TTS playback) |
 
 ## Network-Exposed Listener
 
@@ -286,17 +294,77 @@ awm exposed status
 
 ### Auth
 
+A bearer token is **a key — proof of possession, nothing more**. Auth is
+not identity: any caller who can present a valid bearer is authenticated;
+*who* they are is a separate claim carried by `X-Awm-As` (user) and
+`X-Awm-From` (peer-origin) headers.
+
 Every request needs `Authorization: Bearer <token>`. Token sources, in
-order: `$AWM_AUTH_TOKEN` env, file at `$AWM_AUTH_TOKEN_FILE`
-(default `~/.awm/auth.token`). Rotation is `echo newtoken >
-~/.awm/auth.token` — the listener mtime-caches and picks up the change
-on the next request, no restart.
+order: `$AWM_AUTH_TOKEN` env var, file at `$WORKSPACE_ROOT/.awm/auth.token`.
+Rotation is `echo newtoken > $WORKSPACE_ROOT/.awm/auth.token` — the
+listener re-reads the file on every request, no restart and no in-memory
+cache to flush.
+
+Valid bearers come from two sources, both pure files on disk:
+
+- The local-daemon token at `$WORKSPACE_ROOT/.awm/auth.token` (the
+  operator key on this host).
+- Per-peer tokens at `$WORKSPACE_ROOT/.awm/peers/<peer_id>.token`
+  (installed by `awm peer add --bootstrap-via-ssh ...`, which fetches
+  the remote's `~/.awm/auth.token` over SSH).
+
+`/peer/*` routes additionally cross-check: the presented bearer must
+match the *specific* peer's token file matching the `X-Awm-From` header.
+This prevents peer A from impersonating peer B.
+
+> **Note on the legacy `~/.awm/` path.** Earlier deploys (and the
+> `deploy/install.sh` script) placed the token at `~/.awm/auth.token`
+> so it survived workspace re-inits. The canonical location is now
+> `$WORKSPACE_ROOT/.awm/auth.token` — the listener reads only the
+> workspace path. If a stale `~/.awm/auth.token` is still present and
+> a client uses it, `verify_bearer` logs a one-shot WARNING
+> ("bearer matches stale ~/.awm/auth.token …") so the misconfiguration
+> is visible. Either delete the home-dir file or symlink it to the
+> workspace one.
+
+**Browser bootstrap.** The web UI does not accept a bearer in the URL
+hash. Instead, the operator triggers a one-shot login flow:
+
+- **`/login` slash command** on the per-peer Discord bot (if
+  `[discord]` section configured) — the bot DMs a URL that sets the
+  bearer as an HttpOnly cookie on click. Operators eligible for `/login`
+  are listed in the `discord_operators` table (`awm discord
+  add-operator <discord_user_id> <awm_user>`). The bot depends on
+  `discord.py>=2.3` (declared in `environment.yml` / `pyproject.toml`);
+  for existing deploys, refresh via
+  `mamba env update -n awm -f environment.yml --prune` — without it,
+  `awm/services/discord/bot.py` falls back to a no-op import and the
+  operator must use the CLI-based `awm login` instead.
+- **`awm login [--as <user>]`** on the daemon host — prints the same
+  URL for the operator to open in a browser.
+
+Either path mints a single-use nonce (60s TTL, in-memory), redeemed at
+`/auth/bootstrap?ot=<nonce>` which sets `awm_session=<bearer>;
+HttpOnly; Secure; SameSite=Strict` and redirects to `/ui/`. The
+long-lived bearer never leaves the daemon.
+
+**TLS.** The daemon binds a self-signed cert (CN=awm-daemon) auto-
+bootstrapped at `$WORKSPACE_ROOT/.awm/tls/{cert,key}.pem`. Internal
+httpx callers pass `verify=False` to disable TLS server-cert
+verification (the chain is unknown to public CAs) — not to disable auth.
+The trust boundary is the transport (loopback for CLI/MCP, SSH tunnel
+for peer-to-peer), not the cert chain.
+
+**Discovery.** `serve-exposed` writes `$WORKSPACE_ROOT/.awm/exposed.json`
+at startup with `{scheme, host, port, token_file, pid}`. CLI and MCP
+read this as the source of truth for the live listener, eliminating the
+config drift previously seen across `awm exposed status`, `awm peer
+ping`, etc.
 
 WebSocket clients authenticate via the
 `Sec-WebSocket-Protocol: bearer.<token>` subprotocol (browsers can't set
-arbitrary headers on the WS handshake) or a `?token=<token>` query
-string. The optional `X-Awm-From` (peer-origin claim) and `X-Awm-As`
-(user identity claim) headers tag federated requests for audit.
+arbitrary headers on the WS handshake), the `awm_session` HttpOnly
+cookie, or a `?token=<token>` query string.
 
 ### Destructive operations
 
@@ -337,6 +405,8 @@ participant is serialized into the agent's stdin with
 | POST   | `/rooms/{id}/invite`            | Add a scope (spawns agent if needed)   |
 | POST   | `/rooms/{id}/remove`            | Remove a scope (agent keeps running)   |
 | POST   | `/rooms/{id}/close`             | Close (optionally `--kill-agents`)     |
+| POST   | `/rooms/{id}/archive`           | Soft-archive (409 if active scope participants remain) |
+| GET    | `/rooms/{id}/agents`            | Per-agent panel data (scope/shadow_peer + live session state) |
 | WS     | `/rooms/{id}/attach`            | Subscriber WS — JSON envelope protocol |
 
 Room names are auto-generated `verb-noun` pairs (`babbling-brook`,
@@ -359,6 +429,8 @@ awm room post   <name>[@peer] <text> [--to <scope>]
 awm room invite <name>[@peer] --scope <scope> [--prompt ...]
 awm room remove <name>[@peer] --scope <scope>
 awm room close  <name>[@peer] [--kill-agents]
+awm room archive <name>           # 409 if active scope participants remain
+awm room agents  <name>           # list participants + live session state
 awm room join   <name>[@peer]   # terminal-attached WS
 awm room one-off --scope <scope> --prompt "..."   # create + close-on-exit
 ```
@@ -368,10 +440,46 @@ without `@` hit the local exposed listener.
 
 ### Browser UI
 
-`http://<host>:7820/ui/room.html#token=<bearer>&as=<user>&peer=<id>` —
-single-file vanilla-JS dashboard for searching rooms, joining one,
-reading the transcript live, and posting/inviting. Token + identity
-go in the URL hash so they never reach server logs.
+`http://<host>:7820/ui/index.html#token=<bearer>&as=<user>&peer=<id>` —
+single-file vanilla-JS control center with hash-routed tabs:
+
+- `#/status` — local peer, registered peers (ping), projects, scopes, core status
+- `#/rooms` — search / create / archive; filter by status (active|closed|archived|all) or peer
+- `#/room/<id>` — chat transcript + composer + collapsible per-agent panels (PID, status, agent_cli)
+
+Token + identity go in the URL hash so they never reach server logs. The
+legacy `/ui/room.html` URL redirects into `#/room/<id>` for backwards
+compatibility with existing bookmarks.
+
+### Voice side panel
+
+The control center has an always-visible voice side panel on the right
+of every tab. Push-to-talk (mouse on the PTT button or hold `Space`
+outside text fields), faster-whisper STT, a persistent `claude`
+subprocess as the voice agent, kyutai pocket-tts for playback, and a
+`show()` MCP side channel that renders code / paths / links / text into
+the transcript without speaking them.
+
+- **Per-user singleton, cross-window sync.** One voice agent per
+  identified user (keyed off the `X-Awm-As` header / hash). Multiple
+  browser tabs of the same user share that agent — PTT in window A
+  streams the transcript and TTS to every tab in real time. The agent
+  persists across tab close/reload; idle for `VOICE_IDLE_SEC` (30 min
+  default) with no connected clients releases it.
+- **Joins rooms as a real participant.** Click **+ join** in the side
+  panel to register the voice agent into an active room with kind
+  `voice` and identifier `<user>`. The agent's claude has MCP access to
+  the `awm` rooms tools (`room_list`, `room_get`, `room_post`,
+  `room_history`, `room_invite`, `room_search`) and posts as
+  `voice:<user>` in the joined room's transcript.
+- **HTTPS / mic access.** Browsers gate `getUserMedia` to secure
+  contexts. `localhost` is exempt; for ZeroTier / LAN access, configure
+  `AWM_TLS_CERT`/`AWM_TLS_KEY` on the exposed listener.
+- **First-run model download.** Whisper `small.en` + pocket-tts weights
+  + the default voice (`VOICE_NAME=jean`) total ~700 MB on first launch
+  (cached under `~/.cache/huggingface/`). The exposed listener starts
+  immediately and warms the models in the background — first PTT may
+  wait a few seconds while loading completes.
 
 ## Federation: Networked Workspaces
 
@@ -477,6 +585,49 @@ The exposed listener trusts whatever bearer it accepts for that host;
 receiver verifies the claimed peer-id is in its registry — unknown
 peer-ids get a 400. Audit lines (`~/.awm/access.log`) tag federated
 calls with `peer_id`, operator calls with `peer_id: null`.
+
+### Leadership / failover
+
+The exposed listener does application-layer leader election so only one
+peer at a time mounts the operator-facing UI and holds the Discord bot
+gateway. Each peer has an integer `peer_priority` (lower wins; ties
+broken by `peer_id`); the lowest-priority reachable peer is ACTIVE,
+others are STANDBY.
+
+```bash
+# Set priorities — lower number = higher precedence.
+awm peer set-priority self 10                       # this peer is the primary
+awm peer set-priority xps 20                        # xps is the fallback
+```
+
+In STANDBY, `/ui/*`, `/auth/mint`, and `/auth/bootstrap` return
+`503 + Location: <leader>/...` so operators land on whichever peer is
+currently ACTIVE. `/peer/*` federation, `/status`, and `/auth/whoami`
+stay reachable on every peer. The Discord bot (Shape A: single shared
+token in each peer's `$AWM_DIR/discord.toml`) only connects from the
+ACTIVE peer; Discord's one-gateway-per-token rule means failover is
+clean — the new ACTIVE peer's reconnect succeeds within ~30s.
+
+State machine: K=3 consecutive `/status` failures from every
+higher-priority peer to promote (~9s @ 3s interval); a single success
+from any of them demotes immediately. Current leader is gossiped via
+`/status` and surfaced in `$AWM_DIR/exposed.json` and the control-center
+status-tab badge.
+
+### DB replication (cr-sqlite)
+
+Replicable tables (`rooms`, `room_participants`, `peers`,
+`discord_operators` today; the rest in follow-up PRs as each
+INTEGER→UUID migration lands) are marked CRR via the
+vendored cr-sqlite extension at `awm/_native/crsqlite.so`. The exposed
+listener runs a pull loop every 5s that asks each remote peer
+`GET /peer/db-sync?since=<cursor>` and applies the binary changeset
+locally. Per-peer cursor lives in `peer_sync_state` (local-only). Locks
+and agent_sessions stay per-peer-local.
+
+The extension is loaded automatically in `db.get_connection()`; if the
+binary is missing the daemon logs a warning and runs in single-peer
+mode (replication is a no-op, the rest of AWM works fine).
 
 ### Sync source between peers during development
 

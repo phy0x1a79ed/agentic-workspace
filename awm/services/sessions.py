@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from datetime import datetime, timezone
 
-from awm.config import MAIN_DIR, SKILLS_DIR
+from awm.config import SKILLS_DIR
 from awm.db import get_connection
 from awm.models import (
     SessionLogCreateRequest,
@@ -17,6 +16,22 @@ from awm.models import (
     SessionLogPreview,
     SessionSearchResponse,
 )
+from awm.services.network import peers as peer_svc
+from awm.services.replication.schema import new_uuid, next_legacy_id
+
+_SUMMARY_PREVIEW_CHARS = 240
+
+
+def _local_peer_id() -> str:
+    """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
+    Used to stamp origin_peer on new session_log rows."""
+    try:
+        ident = peer_svc.get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
 
 
 def _now_iso() -> str:
@@ -40,13 +55,12 @@ def _get_skills_git_hash() -> str | None:
 
 def _row_to_entry(row) -> SessionLogEntry:
     return SessionLogEntry(
-        id=row["id"],
+        id=row["legacy_id"],
         project=row["project"],
         scope=row["scope"],
         file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
         logged_at=row["logged_at"],
-        summary=row["summary"],
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
@@ -127,22 +141,27 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
 
     conn = get_connection()
     try:
+        origin = _local_peer_id()
+        legacy = next_legacy_id(conn, "session_logs", origin)
+        uid = new_uuid()
         conn.execute(
             """
             INSERT INTO session_logs
-                (project, scope, file_path, git_commit, logged_at, summary,
+                (uuid, legacy_id, origin_peer,
+                 project, scope, file_path, git_commit, logged_at, summary,
                  title, agent_id, metadata, content, skill_path,
                  outcome, deviations, suggestions, skill_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (req.project, req.scope, "", None, logged_at,
+            (uid, legacy, origin,
+             req.project, req.scope, "", None, logged_at,
              req.summary, req.title, req.agent_id, metadata, content,
              req.skill_path, req.outcome, req.deviations, req.suggestions,
              skill_version),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = last_insert_rowid()"
+            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
         ).fetchone()
         entry = _row_to_entry(row)
     finally:
@@ -168,7 +187,12 @@ def list_sessions(
     """Query session logs with optional filters."""
     conn = get_connection()
     try:
-        query = "SELECT * FROM session_logs WHERE 1=1"
+        query = (
+            "SELECT legacy_id, project, scope, file_path, git_commit, logged_at, "
+            "title, agent_id, skill_path, outcome, deviations, suggestions, "
+            "skill_version, resolved_at, resolution "
+            "FROM session_logs WHERE 1=1"
+        )
         params: list = []
         if project:
             query += " AND project = ?"
@@ -193,12 +217,17 @@ def list_sessions(
         conn.close()
 
 
-def get_session(session_id: int) -> SessionLogContentResponse:
-    """Look up a session by ID and return metadata + content from DB."""
+def get_session(session_id: int | str) -> SessionLogContentResponse:
+    """Look up a session by its public ``legacy_id``. Accepts ``42`` or
+    ``'42@<peer>'`` to disambiguate same-legacy_id rows from different
+    peers post-replication."""
+    legacy_id, peer = peer_svc.parse_id_ref(session_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT * FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
@@ -246,36 +275,46 @@ def _display_title(row) -> str:
 
 
 def _row_to_preview(row) -> SessionLogPreview:
+    raw_len = row["summary_len"] or 0
+    truncated = raw_len > _SUMMARY_PREVIEW_CHARS
+    summary = row["summary_preview"] or ""
+    if truncated:
+        summary = summary + "…"
     return SessionLogPreview(
-        id=row["id"],
+        id=row["legacy_id"],
         project=row["project"],
         scope=row["scope"],
         logged_at=row["logged_at"],
-        summary=row["summary"],
+        summary=summary,
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
         outcome=row["outcome"],
         resolved_at=row["resolved_at"],
+        summary_truncated=truncated,
     )
 
 
-def resolve_session(session_id: int, resolution: str) -> SessionLogEntry:
-    """Mark a session log entry as resolved."""
+def resolve_session(session_id: int | str, resolution: str) -> SessionLogEntry:
+    """Mark a session log entry as resolved. Accepts ``42`` or ``'42@<peer>'``."""
+    legacy_id, peer = peer_svc.parse_id_ref(session_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT uuid FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
+        uid = row["uuid"]
         conn.execute(
-            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE id = ?",
-            (_now_iso(), resolution, session_id),
+            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE uuid = ?",
+            (_now_iso(), resolution, uid),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE id = ?", (session_id,)
+            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
         ).fetchone()
         return _row_to_entry(row)
     finally:
@@ -293,8 +332,14 @@ def search_sessions(
     """Search session logs, returning previews (no content)."""
     conn = get_connection()
     try:
-        sql = "SELECT * FROM session_logs WHERE 1=1"
-        params: list = []
+        sql = (
+            "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
+            "skill_path, outcome, resolved_at, "
+            "SUBSTR(summary, 1, ?) AS summary_preview, "
+            "LENGTH(summary) AS summary_len "
+            "FROM session_logs WHERE 1=1"
+        )
+        params: list = [_SUMMARY_PREVIEW_CHARS]
         if project:
             sql += " AND project = ?"
             params.append(project)
@@ -321,213 +366,3 @@ def search_sessions(
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Experiences.md migration
-# ---------------------------------------------------------------------------
-
-
-def migrate_experiences() -> dict:
-    """Migrate experiences.md files into the database.
-
-    Returns stats: {imported, skipped, files_processed}
-    """
-    imported = 0
-    skipped = 0
-    files_processed = 0
-
-    conn = get_connection()
-    try:
-        # Search both old (*/tasks/*/experiences.md) and new layouts
-        exp_files = list(MAIN_DIR.glob("*/tasks/*/experiences.md"))
-        exp_files.extend(MAIN_DIR.glob("*/scopes/*/experiences.md"))
-
-        for exp_file in exp_files:
-            scope_name = exp_file.parent.name
-            project_name = exp_file.parent.parent.parent.name
-
-            text = exp_file.read_text(encoding="utf-8").strip()
-            if not text:
-                continue
-
-            files_processed += 1
-
-            # Strip header
-            text = re.sub(
-                r"^#\s+Experiences\s+--\s+\S+\s*\n*(?:##\s+Log\s*\n*)?", "", text
-            )
-            # Strip completion footer
-            text = re.sub(r"\n*##\s+Completed:.*$", "", text, flags=re.DOTALL)
-            text = text.strip()
-
-            if not text:
-                continue
-
-            # Split entries on --- separator
-            chunks = re.split(r"\n---\n", text)
-
-            for chunk in chunks:
-                chunk = chunk.strip()
-                if not chunk:
-                    continue
-
-                entry_data = _parse_structured_entry(chunk, project_name, scope_name)
-
-                if entry_data is None:
-                    # Free-form entry
-                    first_line = chunk.split("\n")[0].strip()
-                    if first_line.startswith("#"):
-                        first_line = first_line.lstrip("#").strip()
-                    entry_data = {
-                        "project": project_name,
-                        "scope": scope_name,
-                        "logged_at": _now_iso(),
-                        "summary": first_line[:200],
-                        "agent_id": "unknown",
-                        "content": chunk,
-                        "metadata": None,
-                    }
-
-                # Dedup check
-                existing = conn.execute(
-                    "SELECT id FROM session_logs WHERE project=? AND scope=? AND logged_at=? AND agent_id=?",
-                    (
-                        entry_data["project"],
-                        entry_data["scope"],
-                        entry_data["logged_at"],
-                        entry_data["agent_id"],
-                    ),
-                ).fetchone()
-
-                if existing:
-                    skipped += 1
-                    continue
-
-                conn.execute(
-                    """INSERT INTO session_logs
-                        (project, scope, file_path, git_commit, logged_at, summary, agent_id, metadata, content)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        entry_data["project"],
-                        entry_data["scope"],
-                        "",
-                        None,
-                        entry_data["logged_at"],
-                        entry_data["summary"],
-                        entry_data["agent_id"],
-                        entry_data["metadata"],
-                        entry_data["content"],
-                    ),
-                )
-                imported += 1
-
-        # Backfill content for existing DB rows that have empty content
-        rows = conn.execute(
-            "SELECT id, project, scope, summary, metadata FROM session_logs WHERE content IS NULL OR content = ''"
-        ).fetchall()
-        for row in rows:
-            meta: dict = {}
-            if row["metadata"]:
-                try:
-                    meta = json.loads(row["metadata"])
-                except json.JSONDecodeError:
-                    pass
-
-            parts = [row["summary"]]
-            if meta.get("decisions"):
-                parts.append(
-                    "\nDecisions:\n"
-                    + "\n".join(f"- {d}" for d in meta["decisions"])
-                )
-            if meta.get("issues"):
-                parts.append(
-                    "\nIssues:\n" + "\n".join(f"- {i}" for i in meta["issues"])
-                )
-            if meta.get("next_steps"):
-                parts.append(
-                    "\nNext steps:\n"
-                    + "\n".join(f"- [ ] {s}" for s in meta["next_steps"])
-                )
-
-            backfill_content = "\n".join(parts)
-            conn.execute(
-                "UPDATE session_logs SET content=? WHERE id=?",
-                (backfill_content, row["id"]),
-            )
-
-        conn.commit()
-    finally:
-        conn.close()
-
-    return {
-        "imported": imported,
-        "skipped": skipped,
-        "files_processed": files_processed,
-    }
-
-
-def _parse_structured_entry(
-    chunk: str, project: str, scope: str
-) -> dict | None:
-    """Parse a structured entry (from _format_entry). Returns None if not structured."""
-    date_match = re.search(r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})", chunk)
-    if not date_match:
-        return None
-
-    date_str = date_match.group(1)
-    logged_at = f"{date_str}T00:00:00+00:00"
-
-    agent_match = re.search(r"\*\*Agent:\*\*\s*(\S+)", chunk)
-    agent_id = agent_match.group(1) if agent_match else "unknown"
-
-    summary_match = re.search(
-        r"##\s+Session Summary\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
-    )
-    summary = summary_match.group(1).strip() if summary_match else chunk[:200]
-
-    decisions: list[str] = []
-    decisions_match = re.search(
-        r"##\s+Decisions Made\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
-    )
-    if decisions_match:
-        for line in decisions_match.group(1).strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- "):
-                decisions.append(line[2:])
-
-    issues: list[str] = []
-    issues_match = re.search(
-        r"##\s+Gotchas\s*/\s*Issues\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
-    )
-    if issues_match:
-        for line in issues_match.group(1).strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- "):
-                issues.append(line[2:])
-
-    next_steps: list[str] = []
-    next_match = re.search(
-        r"##\s+Next Steps\s*\n+(.*?)(?=\n##|\Z)", chunk, re.DOTALL
-    )
-    if next_match:
-        for line in next_match.group(1).strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- [ ] "):
-                next_steps.append(line[6:])
-            elif line.startswith("- "):
-                next_steps.append(line[2:])
-
-    metadata = None
-    if decisions or issues or next_steps:
-        metadata = json.dumps(
-            {"decisions": decisions, "issues": issues, "next_steps": next_steps}
-        )
-
-    return {
-        "project": project,
-        "scope": scope,
-        "logged_at": logged_at,
-        "summary": summary,
-        "agent_id": agent_id,
-        "content": chunk,
-        "metadata": metadata,
-    }

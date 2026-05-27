@@ -14,6 +14,7 @@ cannot drift. If/when operations migrate to the ``awm.registry`` framework the
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -406,7 +407,11 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="room_post",
-        description="Post a message into a room. Agents that participate receive it as a framed stdin input.",
+        description=(
+            "Post a message into a room. Agents that participate receive it as a framed stdin input. "
+            "Posts starting with '/' and addressed via 'to:' are intercepted server-side as agent-control "
+            "commands — prefer the agent_control tool for those."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -455,11 +460,83 @@ TOOL_DEFINITIONS: list[Tool] = [
             "required": ["room_id"],
         },
     ),
+    Tool(
+        name="room_archive",
+        description="Soft-archive a room; refused if it still has active scope participants.",
+        inputSchema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string"}},
+            "required": ["room_id"],
+        },
+    ),
+    Tool(
+        name="room_agents",
+        description="List a room's scope/shadow_peer participants with attached live agent state.",
+        inputSchema={
+            "type": "object",
+            "properties": {"room_id": {"type": "string"}},
+            "required": ["room_id"],
+        },
+    ),
+    Tool(
+        name="agent_control",
+        description=(
+            "Send a harness control command to a live agent participating in a room. "
+            "Wraps the server slash-command catalog: /compact, /clear, /restart, /yolo, /plan, "
+            "/mode <mode>, /model <name>, /effort <level>, /kill, /help. "
+            "Call with command='/help' to list commands and their args for that scope. "
+            "The result is also posted into the room as a system message for audit. "
+            "Example: agent_control(room_id='r-abc', scope='awm/dev', command='/yolo')."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string", "description": "Room containing the target scope as a participant"},
+                "scope": {"type": "string", "description": "Target agent scope, e.g. 'awm/dev'"},
+                "command": {"type": "string", "description": "Slash command line, e.g. '/compact' or '/mode plan'"},
+            },
+            "required": ["room_id", "scope", "command"],
+        },
+    ),
+    # Peers (control-center)
+    Tool(
+        name="peers_list",
+        description="List registered remote awm peers.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="peer_ping",
+        description="Probe a registered peer via its SSH tunnel; reports reachability and round-trip ms.",
+        inputSchema={
+            "type": "object",
+            "properties": {"peer_id": {"type": "string"}},
+            "required": ["peer_id"],
+        },
+    ),
+    Tool(
+        name="project_list",
+        description="List projects derived from the scopes table, with per-status scope counts.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # Restart
     Tool(
         name="awm_restart",
-        description="Restart the AWM core service via systemd. MCP clients reconnect transparently on the next tool call.",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "Restart AWM systemd units. ``target='core'`` restarts only the "
+            "core daemon (default historical behavior); ``'exposed'`` "
+            "restarts only awm-exposed; ``'all'`` (default) restarts both."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["core", "exposed", "all"],
+                    "description": "Which unit(s) to restart.",
+                    "default": "all",
+                },
+            },
+        },
     ),
     # Status
     Tool(
@@ -481,107 +558,238 @@ def _serialize(obj: Any) -> str:
     return json.dumps(obj, indent=2, default=str)
 
 
-def _exposed_url_and_token() -> tuple[str, str]:
-    """Resolve the local exposed URL + bearer token for /rooms tool calls."""
-    import os
-    from pathlib import Path
-    from awm import config
-    host = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-    port = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
-    token_env = os.environ.get("AWM_AUTH_TOKEN")
-    if token_env:
-        return f"http://{host}:{port}", token_env.strip()
-    token_path = Path(
-        os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))
-    )
-    if not token_path.exists():
-        raise RuntimeError(
-            f"auth token not found at {token_path}; run `awm exposed init-token`"
-        )
-    return f"http://{host}:{port}", token_path.read_text().strip()
-
-
 def _dispatch_room_tool(name: str, args: dict) -> str:
-    """Route a room_* MCP tool to the local awm-exposed /rooms surface."""
-    import httpx
-    base, token = _exposed_url_and_token()
-    headers = {"Authorization": f"Bearer {token}"}
+    """Dispatch a ``room_*`` / ``agent_control`` MCP tool in-process.
 
-    def _do(method: str, path: str, **kw):
-        try:
-            r = httpx.request(
-                method, f"{base}{path}", headers=headers, timeout=30, **kw,
-            )
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"could not reach awm-exposed: {exc}") from exc
-        if r.status_code >= 400:
-            raise RuntimeError(f"{method} {path} → {r.status_code}: {r.text[:300]}")
-        return r.json()
+    Routes go through the same services modules the FastAPI router uses
+    (``rooms_svc``, ``orchestration``, ``agent_slash``, federation), so
+    the MCP surface stays consistent with the HTTP surface even when no
+    daemon is reachable. Closes inbox #160/#161.
+    """
+    from awm.services import (
+        agent_slash as agent_slash_svc,
+        orchestration,
+        rooms as rooms_svc,
+    )
+    from awm.services.network import federation, peers as peer_svc
+
+    author = args.get("author") or "user:operator"
+
+    def _peer_ids(spec: str) -> list[str]:
+        if spec == "all":
+            return [p["peer_id"] for p in peer_svc.list_peers()]
+        return [spec]
 
     if name == "room_create":
-        body = {
-            "topic": args.get("topic"),
-            "scopes": args.get("scopes", []),
-            "prompts": args.get("prompts", {}),
-            "close_on_exit": args.get("close_on_exit", False),
-        }
-        return json.dumps(_do("POST", "/rooms", json=body), indent=2)
+        # orchestration.create_room_with_scopes is async; run it on a
+        # fresh loop because handle_tool is called from sync MCP handlers.
+        room = asyncio.run(
+            orchestration.create_room_with_scopes(
+                topic=args.get("topic"),
+                scopes=args.get("scopes", []) or [],
+                prompts=args.get("prompts", {}) or {},
+                opener=author,
+                close_on_exit=bool(args.get("close_on_exit", False)),
+            )
+        )
+        return json.dumps(room.to_dict(), indent=2, default=str)
+
     if name == "room_list":
-        params = {"status": args.get("status", "active"),
-                  "limit": args.get("limit", 100)}
-        if args.get("participating_scope"):
-            params["participating_scope"] = args["participating_scope"]
-        if args.get("peer"):
-            params["peer"] = args["peer"]
-        return json.dumps(_do("GET", "/rooms", params=params), indent=2)
+        status = args.get("status", "active")
+        participating_scope = args.get("participating_scope")
+        limit = int(args.get("limit", 100))
+        local_rows = [
+            r.to_dict() for r in rooms_svc.list_rooms(
+                status=status,
+                participating_scope=participating_scope,
+                limit=limit,
+            )
+        ]
+        merged = list(local_rows)
+        if (peer := args.get("peer")) and peer != "local":
+            for pid in _peer_ids(peer):
+                try:
+                    remote = federation.forward_room_list(
+                        pid, status=status,
+                        participating_scope=participating_scope, limit=limit,
+                    )
+                    merged.extend(remote.get("rooms", []))
+                except federation.FederationError:
+                    continue
+        return json.dumps({"rooms": merged, "total": len(merged)},
+                          indent=2, default=str)
+
     if name == "room_get":
-        return json.dumps(_do("GET", f"/rooms/{args['room_id']}"), indent=2)
+        room = rooms_svc.get_room(args["room_id"])
+        if room is None:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        participants = rooms_svc.list_participants(args["room_id"], active_only=False)
+        recent = rooms_svc.history(args["room_id"], limit_chars=1024)
+        return json.dumps({
+            "room": room.to_dict(),
+            "participants": [p.to_dict() for p in participants],
+            "recent": [p.to_dict() for p in recent],
+        }, indent=2, default=str)
+
     if name == "room_history":
-        params: dict = {"limit_chars": args.get("limit_chars", 4096)}
-        if args.get("before_ts"):
-            params["before_ts"] = args["before_ts"]
+        limit_chars = int(args.get("limit_chars", 4096))
+        before_ts = args.get("before_ts")
+        try:
+            posts = rooms_svc.history(
+                args["room_id"], limit_chars=limit_chars, before_ts=before_ts,
+            )
+        except rooms_svc.RoomNotFound:
+            raise RuntimeError(f"no such room: {args['room_id']}")
         return json.dumps(
-            _do("GET", f"/rooms/{args['room_id']}/history", params=params),
-            indent=2,
+            {"posts": [p.to_dict() for p in posts], "total": len(posts)},
+            indent=2, default=str,
         )
+
     if name == "room_search":
-        params = {"query": args["query"], "limit": args.get("limit", 20)}
-        if args.get("peer"):
-            params["peer"] = args["peer"]
+        query = args["query"]
+        limit = int(args.get("limit", 20))
+        local_hits = [r.to_dict() for r in rooms_svc.search_rooms(query, limit=limit)]
+        degraded: list[dict] = []
+        if (peer := args.get("peer")) and peer != "local":
+            for pid in _peer_ids(peer):
+                try:
+                    remote = federation.forward_room_search(pid, query, limit=limit)
+                    local_hits.extend(remote.get("rooms", []))
+                except federation.FederationError as exc:
+                    degraded.append({"peer_id": pid, "reason": str(exc)})
         return json.dumps(
-            _do("GET", "/rooms/search",
-                params={"q": args["query"], **({"peer": args["peer"]} if args.get("peer") else {}),
-                        "limit": args.get("limit", 20)}),
-            indent=2,
+            {"rooms": local_hits, "total": len(local_hits), "degraded": degraded},
+            indent=2, default=str,
         )
+
     if name == "room_post":
-        body = {"body": args["body"], "kind": args.get("kind", "text")}
-        if args.get("to"):
-            body["to"] = args["to"]
-        return json.dumps(
-            _do("POST", f"/rooms/{args['room_id']}/posts", json=body),
-            indent=2,
-        )
+        try:
+            post = rooms_svc.post(
+                args["room_id"], author=author, body=args["body"],
+                kind=args.get("kind", "text"), to_scope=args.get("to"),
+            )
+        except rooms_svc.RoomNotFound:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        except rooms_svc.RoomClosed:
+            raise RuntimeError(f"room {args['room_id']} is closed")
+        return json.dumps({"message": "posted", "post": post.to_dict()},
+                          indent=2, default=str)
+
     if name == "room_invite":
-        body = {"scope": args["scope"], "prompt": args.get("prompt")}
+        try:
+            participant = asyncio.run(
+                orchestration.invite_scope_to_room(
+                    args["room_id"], args["scope"],
+                    prompt=args.get("prompt"), opener=author,
+                )
+            )
+        except rooms_svc.RoomNotFound:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        except rooms_svc.RoomClosed:
+            raise RuntimeError(f"room {args['room_id']} is closed")
+        except rooms_svc.ScopeBusyError:
+            participant = rooms_svc.add_participant(
+                args["room_id"], "scope", args["scope"],
+            )
         return json.dumps(
-            _do("POST", f"/rooms/{args['room_id']}/invite", json=body),
-            indent=2,
+            {"message": "invited", "participant": participant.to_dict()},
+            indent=2, default=str,
         )
+
     if name == "room_remove":
-        return json.dumps(
-            _do("POST", f"/rooms/{args['room_id']}/remove",
-                json={"scope": args["scope"]}),
-            indent=2,
-        )
+        ok = rooms_svc.remove_participant(args["room_id"], "scope", args["scope"])
+        if not ok:
+            raise RuntimeError("participant not found or already left")
+        return json.dumps({"message": "removed"}, indent=2)
+
     if name == "room_close":
-        return json.dumps(
-            _do("POST", f"/rooms/{args['room_id']}/close",
-                json={"kill_agents": args.get("kill_agents", False)}),
-            indent=2,
-        )
+        try:
+            room = rooms_svc.close_room(
+                args["room_id"], kill_agents=bool(args.get("kill_agents", False)),
+            )
+        except rooms_svc.RoomNotFound:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        return json.dumps({"message": "closed", "room": room.to_dict()},
+                          indent=2, default=str)
+
+    if name == "room_archive":
+        try:
+            room = rooms_svc.archive_room(args["room_id"])
+        except rooms_svc.RoomNotFound:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        except rooms_svc.RoomArchiveBlocked as exc:
+            raise RuntimeError(
+                f"room_archive_blocked: room={exc.room_id} "
+                f"blocking_scopes={exc.blocking_scopes}"
+            )
+        return json.dumps({"message": "archived", "room": room.to_dict()},
+                          indent=2, default=str)
+
+    if name == "room_agents":
+        from awm.services import agent_instances
+        room = rooms_svc.get_room(args["room_id"])
+        if room is None:
+            raise RuntimeError(f"no such room: {args['room_id']}")
+        agents: list[dict] = []
+        for p in rooms_svc.list_participants(args["room_id"], active_only=False):
+            if p.kind not in ("scope", "shadow_peer"):
+                continue
+            live: dict | None = None
+            if p.kind == "scope":
+                base_scope, peer = rooms_svc._split_scope(p.identifier)
+                if peer is None:
+                    sess = agent_instances._by_scope.get(base_scope)
+                    if sess is not None:
+                        live = {
+                            "pid": getattr(sess.proc, "pid", None),
+                            "status": sess.status,
+                            "started_at": sess.started_at,
+                            "exited_at": sess.exited_at,
+                            "exit_code": sess.exit_code,
+                            "agent_cli": sess.agent_cli,
+                            "permission_mode": sess.permission_mode,
+                            "model": sess.model,
+                            "effort": sess.effort,
+                            "claude_session_id": sess.claude_session_id,
+                            "context_used": sess.context_used,
+                            "context_max": sess.context_max,
+                        }
+            agents.append({
+                "scope": p.identifier, "kind": p.kind,
+                "identifier": p.identifier, "joined_at": p.joined_at,
+                "live": live,
+            })
+        return json.dumps({"agents": agents}, indent=2, default=str)
+
+    if name == "agent_control":
+        room_id = args["room_id"]
+        scope = args["scope"]
+        line = (args.get("command") or "").strip()
+        if not line.startswith("/"):
+            raise RuntimeError("slash commands must start with '/'")
+        try:
+            rooms_svc.post(room_id, author=author, body=line, kind="slash",
+                           to_scope=scope)
+        except rooms_svc.RoomError as exc:
+            raise RuntimeError(str(exc))
+        try:
+            handled, message = asyncio.run(agent_slash_svc.dispatch(scope, line))
+        except agent_slash_svc.SlashParseError as exc:
+            raise RuntimeError(str(exc))
+        if handled:
+            try:
+                rooms_svc.post(room_id, author="system", body=message, kind="system")
+            except rooms_svc.RoomError:
+                pass
+            return json.dumps({"handled": True, "result": message}, indent=2)
+        # Fall through to claude stdin for unknown slash commands.
+        from awm.services import agent_instances
+        try:
+            asyncio.run(agent_instances.send_slash(scope, line))
+        except agent_instances.NoSessionError as exc:
+            raise RuntimeError(str(exc))
+        return json.dumps({"handled": False, "result": ""}, indent=2)
+
     raise RuntimeError(f"unhandled room tool: {name}")
 
 
@@ -684,13 +892,51 @@ def handle_tool(name: str, args: dict) -> str:
     if name in (
         "room_create", "room_list", "room_get", "room_history",
         "room_search", "room_post", "room_invite", "room_remove",
-        "room_close",
+        "room_close", "room_archive", "room_agents", "agent_control",
     ):
         return _dispatch_room_tool(name, args)
 
+    # Peers (control-center surface)
+    if name == "peers_list":
+        from awm.services.network import peers as peer_svc
+        rows = peer_svc.list_peers()
+        return json.dumps({"peers": rows, "total": len(rows)}, indent=2, default=str)
+    if name == "peer_ping":
+        import time as _time
+        from awm.services.network import peers as peer_svc
+        t0 = _time.monotonic()
+        result = peer_svc.ping_peer(args["peer_id"])
+        rtt_ms = (_time.monotonic() - t0) * 1000.0
+        ok = bool(result.get("ok"))
+        return json.dumps({
+            "peer_id": args["peer_id"],
+            "ok": ok,
+            "rtt_ms": round(rtt_ms, 2) if ok else None,
+            "error": None if ok else (result.get("reason") or "ping failed"),
+        }, indent=2)
+    if name == "project_list":
+        from awm.db import get_connection
+        conn = get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT project, status, COUNT(*) AS n FROM scopes "
+                "GROUP BY project, status ORDER BY project"
+            ).fetchall()
+        finally:
+            conn.close()
+        by_project: dict = {}
+        for r in rows:
+            counts = by_project.setdefault(r["project"], {"active": 0, "completed": 0, "deleted": 0})
+            if r["status"] in counts:
+                counts[r["status"]] = r["n"]
+        return json.dumps({
+            "projects": [{"name": n, "scope_counts": c} for n, c in by_project.items()],
+        }, indent=2)
+
     # Restart
     if name == "awm_restart":
-        return _serialize(core.restart_core())
+        target = args.get("target", "all")
+        return _serialize(core.restart_core(target=target))
 
     # Status
     if name == "awm_status":
@@ -705,6 +951,7 @@ def _awm_status() -> str:
     import sys
     import time
 
+    from awm import config
     from awm.config import WORKSPACE_ROOT
     from awm.db import get_connection
 
@@ -722,6 +969,28 @@ def _awm_status() -> str:
     core_start = getattr(_awm_status, "_core_start_time", None)
     uptime = int(time.time() - core_start) if core_start else None
 
+    # Exposed-process info (separate systemd unit; check pid file + liveness).
+    exposed_pid: int | None = None
+    exposed_alive = False
+    try:
+        if config.EXPOSED_PID_FILE.exists():
+            exposed_pid = int(config.EXPOSED_PID_FILE.read_text().strip() or "0") or None
+            if exposed_pid:
+                try:
+                    os.kill(exposed_pid, 0)
+                    exposed_alive = True
+                except (ProcessLookupError, PermissionError):
+                    exposed_alive = False
+    except (OSError, ValueError):
+        exposed_pid = None
+
+    exposed_info: dict[str, Any] = {
+        "pid": exposed_pid,
+        "alive": exposed_alive,
+        "port": getattr(config, "EXPOSED_PORT", None),
+        "scheme": "https" if getattr(config, "TLS_CERT", None) and config.TLS_CERT.exists() else "http",
+    }
+
     return json.dumps({
         "status": "ok",
         "workspace_root": str(WORKSPACE_ROOT),
@@ -733,6 +1002,7 @@ def _awm_status() -> str:
         "core_workspace_root": os.environ.get("AWM_WORKSPACE"),
         "core_python": sys.executable,
         "core_sys_path_head": sys.path[:3],
+        "exposed": exposed_info,
     }, indent=2)
 
 

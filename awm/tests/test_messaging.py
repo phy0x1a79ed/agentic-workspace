@@ -32,11 +32,15 @@ def seeded_messages(_init_messaging, db_conn):
         ("scope:proj-a/scope-1", "workspace", "scope_assignment", "Implement feature X", "See the spec below", '{"priority": "high"}', "unread", now, None),
         ("scope:proj-a/scope-1", "workspace", "plan", "Execution plan", "Step 1: do the thing", None, "read", now, now),
     ]
-    for r in rows:
+    from awm.services.replication.schema import new_uuid
+    for i, r in enumerate(rows, start=1):
         db_conn.execute(
-            "INSERT INTO messages (scope, sender, msg_type, subject, body, metadata, status, created_at, read_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            r,
+            "INSERT INTO messages "
+            "(uuid, legacy_id, origin_peer, "
+            " scope, sender, msg_type, subject, body, metadata, status, "
+            " created_at, read_at) "
+            "VALUES (?, ?, '', ?,?,?,?,?,?,?,?,?)",
+            (new_uuid(), i, *r),
         )
     db_conn.commit()
     return rows

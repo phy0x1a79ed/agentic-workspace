@@ -33,6 +33,8 @@ peer_app = typer.Typer(help="Federation: manage remote awm peers", no_args_is_he
 inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_help=True)
 room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
 
+discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
+
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
 app.add_typer(lock_app, name="lock")
@@ -42,6 +44,7 @@ app.add_typer(exposed_app, name="exposed")
 app.add_typer(peer_app, name="peer")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
+app.add_typer(discord_app, name="discord")
 
 
 # ---------------------------------------------------------------------------
@@ -102,28 +105,51 @@ def _print_json(r: httpx.Response):
 
 
 def _exposed_base_and_token() -> tuple[str, str]:
-    """Resolve the local exposed URL + bearer token for /rooms calls."""
-    from awm import config
-    host = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-    port = int(os.environ.get("AWM_EXPOSED_PORT", "7820"))
-    base = f"http://{host}:{port}"
-    token_env = os.environ.get("AWM_AUTH_TOKEN")
-    if token_env:
-        return base, token_env.strip()
-    candidates = [
-        Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(config.AUTH_TOKEN_FILE))),
-        Path.home() / ".awm" / "auth.token",
-        config.AUTH_TOKEN_FILE,
-    ]
-    for token_path in candidates:
-        if token_path.exists():
-            return base, token_path.read_text().strip()
-    raise typer.BadParameter(
-        f"auth token not found in any of: {[str(p) for p in candidates]}; "
-        f"run `awm exposed init-token`"
-    )
+    """Resolve the local exposed URL + bearer token for /rooms calls.
+
+    Returns ``(base_url, token)``. Resolution order:
+
+      1. ``AWM_EXPOSED_HOST`` / ``AWM_EXPOSED_PORT`` env vars (dev escape
+         hatch).
+      2. ``$AWM_DIR/exposed.json`` written by ``serve-exposed`` lifespan
+         (the source-of-truth discovery file — eliminates the config
+         drift in inbox bugs #160/#161/#166).
+      3. Hardcoded fallback ``https://127.0.0.1:7820`` if neither is
+         present (e.g. before the daemon has ever run).
+
+    Operators never see a ``--token`` flag — the auth/TLS ritual lives in
+    :mod:`awm.services.auth`.
+    """
+    from awm.services import auth as _auth
+    try:
+        token = _auth.local_token(generate_if_missing=False)
+    except _auth.TokenMissing as exc:
+        raise typer.BadParameter(str(exc))
+
+    env_host = os.environ.get("AWM_EXPOSED_HOST")
+    env_port = os.environ.get("AWM_EXPOSED_PORT")
+    if env_host or env_port:
+        host = env_host or "127.0.0.1"
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        port = int(env_port) if env_port else 7820
+        return f"https://{host}:{port}", token
+
+    discovery_path = AWM_DIR / "exposed.json"
+    if discovery_path.exists():
+        try:
+            import json as _json
+            data = _json.loads(discovery_path.read_text())
+            scheme = data.get("scheme", "https")
+            host = data.get("host") or "127.0.0.1"
+            if host == "0.0.0.0":
+                host = "127.0.0.1"
+            port = int(data.get("port") or 7820)
+            return f"{scheme}://{host}:{port}", token
+        except (OSError, ValueError):
+            pass
+
+    return "https://127.0.0.1:7820", token
 
 
 def _split_remote(name: str) -> tuple[str, str | None]:
@@ -148,34 +174,39 @@ def _exposed_api(method: str, path: str, *,
         params = kwargs.pop("params", {}) or {}
         params["peer"] = peer
         kwargs["params"] = params
-    r = httpx.request(method, f"{base}{path}", headers=headers, timeout=30, **kwargs)
+    # Self-signed TLS on loopback — bearer is the trust boundary.
+    r = httpx.request(
+        method, f"{base}{path}", headers=headers, timeout=30, verify=False,
+        **kwargs,
+    )
     return r
 
 
 def _peer_direct_api(method: str, peer_id: str, path: str, **kwargs) -> httpx.Response:
-    """Hit a peer's awm-exposed endpoint *directly* through an SSH tunnel.
+    """Hit a peer's HTTPS endpoint directly via the peer-client resolver.
 
-    Use this for ``room@peer`` semantics where we want the remote peer to
-    own the operation (e.g. ``awm room post name@xaw`` should make the
-    post land on xaw's transcript, not be forwarded via our local rooms
-    service)."""
-    from awm.services.network import ssh_tunnel
-    from awm.services.network import peers as peer_svc
+    Honors the peer's ``endpoints`` list (direct → SSH fallback) configured
+    via ``awm peer add --endpoint ...``. The bearer is the peer-token
+    installed under ``$AWM_DIR/peers/<peer_id>.token``; ``X-Awm-From`` is
+    our local peer id so the remote tags the post correctly.
+
+    Use this for ``room@peer`` semantics where the remote peer owns the
+    operation (``awm room post name@xps`` lands on xps's transcript).
+    """
+    from awm.services.network import federation, peers as _peers
     try:
-        tun = ssh_tunnel.acquire_tunnel(peer_id)
-    except ssh_tunnel.TunnelError as exc:
-        raise typer.BadParameter(f"could not tunnel to {peer_id}: {exc}")
-    try:
-        token = peer_svc.load_peer_token(peer_id)
-    except (FileNotFoundError, KeyError, ValueError) as exc:
+        base_url, token = federation._resolve(peer_id)
+    except federation.FederationError as exc:
         raise typer.BadParameter(str(exc))
     headers = kwargs.pop("headers", {}) or {}
     headers["Authorization"] = f"Bearer {token}"
-    from awm.services.network import peers as _peers
     local = _peers.get_local_identity()
     if local:
         headers["X-Awm-From"] = local["peer_id"]
-    r = httpx.request(method, f"{tun.local_url}{path}", headers=headers, timeout=30, **kwargs)
+    r = httpx.request(
+        method, f"{base_url}{path}", headers=headers, timeout=30,
+        verify=False, **kwargs,
+    )
     return r
 
 
@@ -261,27 +292,42 @@ def exposed_init_token(
 
 @exposed_app.command("status")
 def exposed_status():
-    """Check the exposed listener via /status (no auth required for ping)."""
-    from awm import config as _config
+    """Check the exposed listener via /status.
+
+    Reads ``$AWM_DIR/exposed.json`` (written by the live daemon) for
+    scheme/host/port so we don't guess. Falls back to env vars +
+    hardcoded defaults if the discovery file is missing.
+    """
     import json as _json
-
-    # Try TLS first if cert configured, else plain.
-    scheme = "https" if _config.TLS_CERT else "http"
-    url = f"{scheme}://{_config.EXPOSED_HOST}:{_config.EXPOSED_PORT}/status"
-    token_env = os.environ.get(_config.AUTH_TOKEN_ENV)
-    token_file = _config.AUTH_TOKEN_FILE
-    token = None
-    if token_env:
-        token = token_env.strip()
-    elif token_file.exists():
-        token = token_file.read_text().strip()
-
+    import ssl as _ssl
+    base, token = _exposed_base_and_token()
+    url = f"{base}/status"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    def _try(target_url: str):
+        return httpx.get(target_url, headers=headers, timeout=5, verify=False)
+
     try:
-        r = httpx.get(url, headers=headers, timeout=5, verify=False)
+        r = _try(url)
     except httpx.HTTPError as exc:
-        typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
-        raise typer.Exit(1)
+        # If exposed.json said HTTPS but the listener is actually a hand-rolled
+        # plain-HTTP one, the TLS handshake will surface as SSLError wrapped in
+        # an httpx.ConnectError. Try HTTP once before giving up.
+        is_ssl = isinstance(exc.__cause__, _ssl.SSLError) or isinstance(exc, _ssl.SSLError)
+        if base.startswith("https://") and is_ssl:
+            fallback = "http://" + base[len("https://"):]
+            try:
+                r = _try(f"{fallback}/status")
+            except httpx.HTTPError as exc2:
+                typer.echo(
+                    f"Could not reach exposed listener at {url} "
+                    f"(also tried {fallback}/status): {exc2}",
+                    err=True,
+                )
+                raise typer.Exit(1)
+        else:
+            typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
+            raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -328,24 +374,91 @@ def peer_add(
                                   help="SSH host alias (omit/empty = loopback mode: peer already reachable on 127.0.0.1:--remote-port via an out-of-band reverse forward)"),
     remote_port: int = typer.Option(7820, "--remote-port",
                                     help="Port to reach the peer's awm-exposed on (default 7820); in loopback mode this is the local 127.0.0.1 port"),
-    token_file: str = typer.Option(..., "--token-file",
-                                    help="Path to the bearer token file (copied to canonical location)"),
+    token_file: Optional[str] = typer.Option(
+        None, "--token-file",
+        help="Path to the bearer token file (copied to canonical location). "
+             "Mutually exclusive with --bootstrap-via-ssh.",
+    ),
+    bootstrap_via_ssh: bool = typer.Option(
+        False, "--bootstrap-via-ssh",
+        help="Fetch the peer's bearer over SSH using --ssh-alias "
+             "(reads ~/.awm/auth.token on the remote).",
+    ),
     friendly_name: str = typer.Option(None, "--name", help="Optional friendly name"),
+    endpoint: list[str] = typer.Option(
+        None, "--endpoint",
+        help=(
+            "Repeatable. ``--endpoint direct=https://10.x.y.z:7820`` or "
+            "``--endpoint ssh=alias:port``. Listed-first endpoints are "
+            "tried first; the SSH-alias pair is a synthesized last fallback."
+        ),
+    ),
+    tls_fingerprint: str = typer.Option(
+        None, "--tls-fingerprint",
+        help="SHA-256 of the remote daemon's TLS cert (optional pinning).",
+    ),
 ):
-    """Register a remote awm peer reachable via an SSH alias.
+    """Register a remote awm peer reachable via one or more endpoints.
 
-    The local peer opens a port-forwarded SSH ControlMaster on first use;
-    all federation HTTP and WebSocket traffic runs through it.
+    Each ``--endpoint`` can be:
+
+      ``direct=https://10.147.20.5:7820``  — direct HTTPS to a known IP.
+
+      ``ssh=capella:7820``  — SSH-tunneled (alias passed to OpenSSH).
+
+    The legacy ``--ssh-alias`` + ``--remote-port`` pair is preserved as a
+    trailing fallback entry when no explicit ``--endpoint`` is given.
     """
     from awm.services.network import peers as peer_svc
+
+    parsed: list[dict] = []
+    for raw in endpoint or []:
+        if "=" not in raw:
+            typer.echo(f"error: --endpoint must be kind=spec; got {raw!r}", err=True)
+            raise typer.Exit(2)
+        kind, spec = raw.split("=", 1)
+        kind = kind.strip()
+        spec = spec.strip()
+        if kind == "direct":
+            parsed.append({"kind": "direct", "url": spec})
+        elif kind == "ssh":
+            if ":" not in spec:
+                typer.echo(f"error: ssh endpoint must be alias:port; got {spec!r}", err=True)
+                raise typer.Exit(2)
+            alias, port_s = spec.rsplit(":", 1)
+            try:
+                port_v = int(port_s)
+            except ValueError:
+                typer.echo(f"error: ssh endpoint port must be int; got {port_s!r}", err=True)
+                raise typer.Exit(2)
+            parsed.append({"kind": "ssh", "alias": alias, "port": port_v})
+        else:
+            typer.echo(f"error: unknown endpoint kind {kind!r}", err=True)
+            raise typer.Exit(2)
+
+    if bootstrap_via_ssh and token_file:
+        typer.echo("error: --bootstrap-via-ssh and --token-file are mutually exclusive", err=True)
+        raise typer.Exit(2)
+    if not bootstrap_via_ssh and not token_file:
+        typer.echo("error: pass either --token-file <path> or --bootstrap-via-ssh", err=True)
+        raise typer.Exit(2)
+    if bootstrap_via_ssh and not ssh_alias:
+        typer.echo("error: --bootstrap-via-ssh requires --ssh-alias", err=True)
+        raise typer.Exit(2)
+
     try:
-        peer_svc.install_peer_token(peer_id, token_file)
+        if bootstrap_via_ssh:
+            peer_svc.install_peer_token_via_ssh(peer_id, ssh_alias)
+        else:
+            peer_svc.install_peer_token(peer_id, token_file)
         entry = peer_svc.add_peer(
             peer_id, ssh_alias,
             remote_port=remote_port,
             friendly_name=friendly_name,
+            endpoints=parsed or None,
+            tls_fingerprint=tls_fingerprint,
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2)
     import json as _json
@@ -368,6 +481,64 @@ def peer_remove(peer_id: str = typer.Argument(...)):
         typer.echo(f"no such peer: {peer_id}", err=True)
         raise typer.Exit(1)
     typer.echo(f"removed peer: {peer_id}")
+
+
+@peer_app.command("set-priority")
+def peer_set_priority(
+    peer_id: str = typer.Argument(..., help="peer_id (or 'self' to update the local self-row)"),
+    priority: int = typer.Argument(..., help="integer priority; lower = higher precedence; 0 wins"),
+):
+    """Set ``peer_priority`` for leader election.
+
+    Each peer in the cluster should have a unique integer. Lower-numbered
+    peers win leadership when reachable; higher-numbered peers stand by.
+    """
+    from awm.services.network import peers as peer_svc
+    target_id = peer_id
+    if peer_id == "self":
+        ident = peer_svc.get_local_identity()
+        if ident is None:
+            typer.echo("error: no local peer identity; run `awm peer init` first", err=True)
+            raise typer.Exit(2)
+        target_id = ident["peer_id"]
+    try:
+        updated = peer_svc.set_peer_priority(target_id, priority)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    if updated is None:
+        typer.echo(f"no such peer: {target_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{target_id}: peer_priority = {priority}")
+
+
+@peer_app.command("refresh-token")
+def peer_refresh_token(
+    peer_id: str = typer.Argument(...),
+    ssh_alias: Optional[str] = typer.Option(
+        None, "--ssh-alias",
+        help="SSH host alias. Defaults to the alias stored at `awm peer add` time.",
+    ),
+):
+    """Re-fetch a peer's bearer token over SSH after the remote rotated it."""
+    from awm.services.network import peers as peer_svc
+    entry = peer_svc.get_peer(peer_id)
+    if entry is None:
+        typer.echo(f"no such peer: {peer_id}", err=True)
+        raise typer.Exit(1)
+    alias = ssh_alias or entry.get("ssh_alias") or ""
+    if not alias:
+        typer.echo(
+            f"error: peer {peer_id} has no ssh_alias on file — pass --ssh-alias",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        path = peer_svc.install_peer_token_via_ssh(peer_id, alias)
+    except (ValueError, RuntimeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    typer.echo(f"refreshed token for {peer_id} via ssh {alias} -> {path}")
 
 
 @peer_app.command("ping")
@@ -559,6 +730,20 @@ def room_close(
     r = _api_for_room(
         "POST", name, "/close", json={"kill_agents": kill_agents},
     )
+    _print_json(r)
+
+
+@room_app.command("archive")
+def room_archive(name: str = typer.Argument(...)):
+    """Soft-archive a room. Refused (409) if active scope participants remain."""
+    r = _api_for_room("POST", name, "/archive")
+    _print_json(r)
+
+
+@room_app.command("agents")
+def room_agents(name: str = typer.Argument(...)):
+    """List room participants with live agent state (PID, status)."""
+    r = _api_for_room("GET", name, "/agents")
     _print_json(r)
 
 
@@ -776,6 +961,28 @@ def project_create(
         payload["fork_url"] = fork
     r = _api("POST", "/projects", json=payload)
     _print_json(r)
+
+
+@project_app.command("list")
+def project_list():
+    """List projects with per-status scope counts."""
+    r = _api("GET", "/projects")
+    _print_json(r)
+
+
+@app.command("vagrant-init")
+def vagrant_init():
+    """Bootstrap the unified vagrant-scopes bare repo (one-shot, idempotent).
+
+    Creates ``projects/_vagrant/.bare``, the GitHub repo (if ``gh`` is on PATH),
+    seeds an initial ``main`` commit, and ensures matching data directories.
+    The GitHub remote URL is taken from the config key
+    ``vagrant_scopes_repo_url`` (default ``git@github.com:$AWM_GITHUB_USER/vagrant-scopes.git``).
+    """
+    from awm.services.scopes import ensure_vagrant_repo
+
+    bare = ensure_vagrant_repo()
+    typer.echo(f"vagrant-scopes bare repo ready at {bare}")
 
 
 # ---------------------------------------------------------------------------
@@ -1101,15 +1308,85 @@ _session_groups = register_cli_commands(app, SESSION_OPERATIONS, _api)
 _session_app = _session_groups["session"]
 
 
-@_session_app.command("migrate-experiences")
-def session_migrate_experiences():
-    """Migrate experiences.md files into the database."""
+
+# ---------------------------------------------------------------------------
+# Discord operator whitelist
+# ---------------------------------------------------------------------------
+
+@discord_app.command("add-operator")
+def discord_add_operator(
+    discord_user_id: str = typer.Argument(..., help="Discord user ID (snowflake)"),
+    awm_user: str = typer.Argument(..., help="awm_user name to map to (e.g. 'tony')"),
+):
+    """Whitelist a Discord user to run the /login slash command."""
     from awm.db import init_db
+    from awm.services.discord import operators
 
     init_db()
-    from awm.services import sessions
+    try:
+        entry = operators.add_operator(discord_user_id, awm_user)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2)
+    import json as _json
+    typer.echo(_json.dumps(entry, indent=2))
 
-    stats = sessions.migrate_experiences()
-    typer.echo(f"Files processed: {stats['files_processed']}")
-    typer.echo(f"Imported: {stats['imported']}")
-    typer.echo(f"Skipped (already in DB): {stats['skipped']}")
+
+@discord_app.command("remove-operator")
+def discord_remove_operator(
+    discord_user_id: str = typer.Argument(...),
+):
+    """Remove a Discord operator from the whitelist."""
+    from awm.db import init_db
+    from awm.services.discord import operators
+
+    init_db()
+    if not operators.remove_operator(discord_user_id):
+        typer.echo(f"no such operator: {discord_user_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"removed: {discord_user_id}")
+
+
+@discord_app.command("list-operators")
+def discord_list_operators():
+    """List whitelisted Discord operators."""
+    from awm.db import init_db
+    from awm.services.discord import operators
+
+    init_db()
+    import json as _json
+    typer.echo(_json.dumps(operators.list_operators(), indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Browser sign-in fallback (no Discord required)
+# ---------------------------------------------------------------------------
+
+@app.command()
+def login(
+    as_user: str = typer.Option("operator", "--as", help="awm_user identity to claim"),
+):
+    """Mint a one-shot sign-in URL and print it.
+
+    Open the URL in a browser to drop the bearer into an HttpOnly cookie
+    and land at ``/ui/``. The nonce expires in 60s and is single-use.
+    """
+    base, token = _exposed_base_and_token()
+    try:
+        r = httpx.post(
+            f"{base}/auth/mint",
+            json={"awm_user": as_user},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            verify=False,
+        )
+    except httpx.HTTPError as exc:
+        typer.echo(f"could not reach exposed listener at {base}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    data = r.json()
+    typer.echo(data["url"])
+    typer.echo(f"# open this in your browser — expires in {data['expires_in_s']}s",
+               err=True)

@@ -1,112 +1,142 @@
-"""Bearer-token auth for the exposed listener.
+"""Bearer-token auth dependencies for the HTTPS listener.
 
-Token sources (first non-empty wins):
-1. ``$AWM_AUTH_TOKEN`` env var
-2. File at ``AUTH_TOKEN_FILE`` (default: ``$AWM_DIR/auth.token``)
+All auth resolution delegates to :mod:`awm.services.auth`. A bearer is
+just a key — proof of possession, nothing more. Tokens come from either
+the local-daemon token file, a registered peer's token file, or the
+``awm_session`` HttpOnly cookie (which carries the bearer verbatim, with
+no session indirection).
 
-File is mtime-cached and re-read on change, so rotation is a single file
-rewrite — no server restart needed.
+WS handshakes accept the same bearer in a ``Sec-WebSocket-Protocol``
+value of the form ``bearer.<token>`` (preferred — browsers can not set
+arbitrary headers on the WS handshake), the ``awm_session`` cookie, or
+as a fallback ``?token=`` query string.
 
-HTTP requests: ``Authorization: Bearer <token>``.
-WebSocket: ``Sec-WebSocket-Protocol: bearer.<token>`` (preferred) or
-``?token=<token>`` query string (documented as second-class — browsers can
-not set arbitrary headers on the WS handshake).
+Identity (which user, which peer) is a separate claim: routes that need
+it read ``X-Awm-As`` / ``X-Awm-From``. ``/peer/*`` routes use
+:func:`require_peer_bearer` so the bearer is cross-checked against the
+claimed peer in ``X-Awm-From``.
 """
 
 from __future__ import annotations
 
-import hmac
-import os
+import logging
 from pathlib import Path
 
 from fastapi import Header, HTTPException, Query, Request, WebSocket, status
 
-from awm import config
+from awm.services import auth as auth_svc
+
+log = logging.getLogger("awm.middleware_auth")
 
 
-_cached_token: str | None = None
-_cached_mtime: float | None = None
+def _warn_if_legacy_home_token(presented: str | None) -> None:
+    """If a presented bearer matches a stale ``~/.awm/auth.token`` (the
+    pre-WORKSPACE_ROOT location) but not the active token, log a single
+    WARNING so an operator notices they're using the wrong file."""
+    if not presented:
+        return
+    legacy = Path.home() / ".awm" / "auth.token"
+    try:
+        if not legacy.is_file():
+            return
+        stale = legacy.read_text().strip()
+    except OSError:
+        return
+    if stale and stale == presented:
+        log.warning(
+            "bearer matches stale ~/.awm/auth.token; the active token "
+            "lives under $WORKSPACE_ROOT/.awm/auth.token — update your "
+            "client config to point at the workspace path."
+        )
 
 
 def load_token() -> str | None:
-    """Return the current valid token, or None if none is configured.
-
-    The env var takes priority. The file is re-read whenever its mtime
-    changes, so rotation is `echo newtoken > ~/.awm/auth.token`.
-    """
-    global _cached_token, _cached_mtime
-
-    env_tok = os.environ.get(config.AUTH_TOKEN_ENV)
-    if env_tok:
-        return env_tok.strip() or None
-
-    path: Path = config.AUTH_TOKEN_FILE
-    if not path.exists():
+    """Back-compat shim. Returns the canonical local-daemon token, or
+    None when unavailable (so older code paths that compared by string
+    keep working during the migration to verify_bearer)."""
+    try:
+        return auth_svc.local_token(generate_if_missing=False)
+    except auth_svc.TokenMissing:
         return None
 
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return _cached_token
 
-    if _cached_token is None or _cached_mtime != mtime:
-        try:
-            _cached_token = path.read_text(encoding="utf-8").strip() or None
-            _cached_mtime = mtime
-        except OSError:
-            return _cached_token
-
-    return _cached_token
-
-
-def _check(token_supplied: str | None) -> None:
-    expected = load_token()
-    if not expected:
-        # No token configured — refuse all requests. Default-deny.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="unauthorized",
-        )
-    if not token_supplied or not hmac.compare_digest(token_supplied, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="unauthorized",
-        )
+def _token_from_request(request: Request) -> str | None:
+    """Extract the bearer token from an HTTP request: Authorization
+    header → ``awm_session`` cookie."""
+    auth_hdr = request.headers.get("authorization", "")
+    if auth_hdr.lower().startswith("bearer "):
+        token = auth_hdr[7:].strip()
+        if token:
+            return token
+    cookie = request.cookies.get(auth_svc.SESSION_COOKIE)
+    if cookie:
+        return cookie
+    return None
 
 
 def require_bearer(
+    request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    """FastAPI dependency for HTTP routes. 401 on missing/bad token."""
-    token = None
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    _check(token)
+    """FastAPI dependency for HTTP routes. 401 on missing/bad token.
+
+    Pure-key check: any valid bearer (local or peer) is accepted.
+    Returns None — handlers read identity from ``X-Awm-As`` /
+    ``X-Awm-From`` if they need it, not from this dependency.
+    """
+    token = _token_from_request(request)
+    if not auth_svc.verify_bearer(token):
+        _warn_if_legacy_home_token(token)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+        )
+
+
+def require_peer_bearer(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> str:
+    """FastAPI dependency for ``/peer/*`` routes.
+
+    Enforces both:
+
+      1. ``X-Awm-From`` is present (the claimed origin peer id).
+      2. The presented bearer matches the *specific* peer's token file.
+
+    Prevents peer A from impersonating peer B by passing its own bearer
+    with ``X-Awm-From: B``. Returns the verified peer id so handlers can
+    use it without re-reading the header.
+    """
+    token = _token_from_request(request)
+    claimed_peer = request.headers.get("x-awm-from", "").strip()
+    if not claimed_peer:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Awm-From required",
+        )
+    if not auth_svc.verify_peer_bearer(token, claimed_peer):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="unauthorized",
+        )
+    request.state.from_peer = claimed_peer
+    return claimed_peer
 
 
 async def authenticate_websocket(
     websocket: WebSocket,
     token: str | None = Query(default=None),
 ) -> str | None:
-    """Validate a WebSocket handshake and return the subprotocol to accept.
+    """Validate a WS handshake. Returns the subprotocol to echo back, or
+    None when none was used. Closes with 1008 on failure.
 
-    Checks subprotocols first (preferred). Looks for any value of the form
-    ``bearer.<token>`` in the requested subprotocol list. Falls back to the
-    ``?token=`` query string.
-
-    Returns the subprotocol value to echo back in ``websocket.accept()`` (or
-    None if none was used), so the caller can do:
-
-        sub = await authenticate_websocket(ws)
-        await ws.accept(subprotocol=sub)
-
-    Closes the socket with 1008 (policy violation) on auth failure.
+    Order: ``Sec-WebSocket-Protocol: bearer.<token>`` → ``awm_session``
+    cookie → ``?token=`` query.
     """
-    expected = load_token()
-    supplied: str | None = None
     chosen_sub: str | None = None
+    supplied: str | None = None
 
-    # Subprotocol path
     subs = websocket.headers.get("sec-websocket-protocol", "")
     for raw in [s.strip() for s in subs.split(",") if s.strip()]:
         if raw.startswith("bearer."):
@@ -114,11 +144,15 @@ async def authenticate_websocket(
             chosen_sub = raw
             break
 
-    # Query-string fallback
+    if supplied is None:
+        cookie = websocket.cookies.get(auth_svc.SESSION_COOKIE)
+        if cookie:
+            supplied = cookie
+
     if supplied is None and token:
         supplied = token
 
-    if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+    if not auth_svc.verify_bearer(supplied):
         await websocket.close(code=1008, reason="unauthorized")
         return None
 

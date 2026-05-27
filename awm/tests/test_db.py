@@ -108,6 +108,45 @@ class TestInitDB:
         assert "scopes" in tables
         conn.close()
 
+    def test_migration_v26_to_v27_adds_peer_priority(self, tmp_path, monkeypatch):
+        """A v26-shape DB with rows in peers gets peer_priority added with the
+        default 100, and the rows are preserved."""
+        db_path = tmp_path / "v26.db"
+        monkeypatch.setattr("awm.db.AWM_DIR", tmp_path)
+        # Build a v26-shape DB with the peers table at the pre-v27 column set.
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE peers (
+                peer_id TEXT PRIMARY KEY,
+                ssh_alias TEXT NOT NULL,
+                remote_port INTEGER NOT NULL DEFAULT 7820,
+                friendly_name TEXT,
+                last_seen TEXT,
+                added_at TEXT NOT NULL,
+                endpoints TEXT,
+                tls_fingerprint TEXT
+            );
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (26);
+            INSERT INTO peers (peer_id, ssh_alias, added_at) VALUES
+                ('capella', 'capella-host', '2026-01-01T00:00:00Z'),
+                ('xps', 'self', '2026-01-01T00:00:00Z');
+        """)
+        conn.commit()
+        conn.close()
+
+        init_db(db_path)
+
+        conn = get_connection(db_path)
+        v = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert v == SCHEMA_VERSION
+        rows = {r["peer_id"]: dict(r) for r in conn.execute(
+            "SELECT peer_id, peer_priority FROM peers ORDER BY peer_id"
+        ).fetchall()}
+        conn.close()
+        assert rows["capella"]["peer_priority"] == 100
+        assert rows["xps"]["peer_priority"] == 100
+
     def test_missing_migration_raises(self, tmp_path, monkeypatch):
         """_migrate should raise if no migration path exists."""
         from awm.db import MIGRATIONS

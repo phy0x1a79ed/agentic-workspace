@@ -14,6 +14,7 @@ dependencies = [
     "mcp[cli]",
     "pyyaml",
     "websockets",
+    "discord.py>=2.3",
 ]
 
 [tool.setuptools.packages.find]
@@ -22,6 +23,7 @@ include = ["awm*"]
 [tool.setuptools.package-data]
 "awm.skills" = ["**/*.md", "**/*.template"]
 "awm.static" = ["*.html", "*.css", "*.js"]
+"awm.services" = ["_room_names_data/*.txt"]
 
 [project.optional-dependencies]
 test = [
@@ -36,3 +38,4 @@ awm-mcp = "awm.mcp_server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["awm/tests"]
+asyncio_mode = "auto"

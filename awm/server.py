@@ -24,6 +24,9 @@ from awm.models import (
     StatusResponse,
     ProjectCreateRequest,
     ProjectCreateResponse,
+    ProjectListInfo,
+    ProjectListResponse,
+    ProjectScopeCounts,
     ScopeCreateRequest,
     ScopeUpdateRequest,
     ScopeListResponse,
@@ -36,6 +39,9 @@ from awm.models import (
     SharedEditActionResponse,
     SkillListResponse,
     SkillContentResponse,
+    PeerInfo,
+    PeerListResponse,
+    PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import register_fastapi_routes
@@ -152,11 +158,28 @@ def get_status():
 
     scope_result = scopes.list_scopes(status="active")
 
+    # Leadership view — only meaningful when reached via the exposed listener.
+    # When the singleton hasn't been configured (core-only / pre-lifespan),
+    # default to ACTIVE so single-node deployments keep their UI reachable.
+    try:
+        from awm.services.leadership import state as ldr_state
+        s = ldr_state.get_state()
+        leadership_state = s.leadership
+        current_leader = s.current_leader
+        peer_priority = s.self_priority
+    except Exception:
+        leadership_state = "ACTIVE"
+        current_leader = None
+        peer_priority = 100
+
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
         active_scopes=scope_result.total,
         active_shared_edits=active_edits,
+        leadership_state=leadership_state,
+        current_leader=current_leader,
+        peer_priority=peer_priority,
     )
 
 
@@ -179,32 +202,73 @@ def get_peer_identity():
     return ident
 
 
+@app.get("/peers", response_model=PeerListResponse)
+def list_peers_endpoint():
+    """List registered remote peers (control-center surface)."""
+    from awm.services.network import peers as peer_svc
+    rows = peer_svc.list_peers()
+    return PeerListResponse(peers=[PeerInfo(**r) for r in rows])
+
+
+@app.get("/peers/{peer_id}/ping", response_model=PeerPingResponse)
+def ping_peer_endpoint(peer_id: str):
+    """Probe a registered peer via its SSH tunnel; reports reachability
+    and round-trip ms."""
+    from awm.services.network import peers as peer_svc
+    t0 = time.monotonic()
+    result = peer_svc.ping_peer(peer_id)
+    rtt_ms = (time.monotonic() - t0) * 1000.0
+    ok = bool(result.get("ok"))
+    return PeerPingResponse(
+        peer_id=peer_id,
+        ok=ok,
+        rtt_ms=round(rtt_ms, 2) if ok else None,
+        error=None if ok else (result.get("reason") or "ping failed"),
+    )
+
+
+@app.get("/projects", response_model=ProjectListResponse)
+def list_projects_endpoint():
+    """List projects derived from the scopes table, with per-status counts."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT project, status, COUNT(*) AS n FROM scopes "
+            "GROUP BY project, status ORDER BY project"
+        ).fetchall()
+    finally:
+        conn.close()
+    by_project: dict[str, ProjectScopeCounts] = {}
+    for r in rows:
+        counts = by_project.setdefault(r["project"], ProjectScopeCounts())
+        if r["status"] == "active":
+            counts.active = r["n"]
+        elif r["status"] == "completed":
+            counts.completed = r["n"]
+        elif r["status"] == "deleted":
+            counts.deleted = r["n"]
+    return ProjectListResponse(projects=[
+        ProjectListInfo(name=name, scope_counts=counts)
+        for name, counts in by_project.items()
+    ])
+
+
 # ---------------------------------------------------------------------------
 # Inbox (federated entry point — remote peers POST here)
 # ---------------------------------------------------------------------------
 
 @app.post("/inbox")
 def post_inbox(request: Request, payload: dict):
-    """Receive a federated message from a remote peer.
-
-    The remote awm forwards a MessageSendRequest body here; the local
-    inbox stores it after rewriting the sender to include the origin
-    peer_id (extracted from X-Awm-From by middleware).
-    """
-    from awm.services import messaging
+    """User-facing inbox-send. Stores a message with the sender from the
+    request body verbatim — federated cross-peer sends go through
+    ``POST /peer/inbox`` instead (which prefixes the origin peer id)."""
     from awm.models import MessageSendRequest
-
-    origin_peer = getattr(request.state, "from_peer", None)
-    body = dict(payload)
-    if origin_peer:
-        original_sender = body.get("sender", "unknown")
-        body["sender"] = f"peer:{origin_peer}/{original_sender}"
+    from awm.services import messaging
 
     try:
-        req = MessageSendRequest(**body)
+        req = MessageSendRequest(**payload)
     except Exception as exc:
         raise HTTPException(400, f"invalid message body: {exc}")
-
     try:
         return messaging.send_message(req)
     except ValueError as exc:
@@ -411,6 +475,33 @@ def get_skill_endpoint(path: str):
 # ---------------------------------------------------------------------------
 
 register_fastapi_routes(app, SESSION_OPERATIONS)
+
+
+# ---------------------------------------------------------------------------
+# Artifact content (phase 6 — federates when origin_peer != self)
+# ---------------------------------------------------------------------------
+
+@app.get("/artifacts/{artifact_ref}/content")
+def get_artifact_content(artifact_ref: str):
+    """Return the bytes of an artifact. ``artifact_ref`` is the public
+    legacy_id (``42``) or a peer-scoped ref (``42@capella``). Remote-
+    origin rows transparently proxy to the owning peer via /peer/."""
+    from fastapi.responses import Response as _Response
+    from awm.services import artifacts
+
+    # parse_id_ref also accepts plain ints; the path arg arrives as str.
+    try:
+        # Try int first for compactness; falls back to str grammar.
+        ref: int | str = int(artifact_ref)
+    except ValueError:
+        ref = artifact_ref
+    try:
+        data = artifacts.get_content(ref)
+    except artifacts.ArtifactNotFound as exc:
+        raise HTTPException(404, str(exc))
+    except artifacts.ArtifactContentUnavailable as exc:
+        raise HTTPException(502, str(exc))
+    return _Response(content=data, media_type="application/octet-stream")
 
 
 # ---------------------------------------------------------------------------

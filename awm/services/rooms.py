@@ -11,10 +11,10 @@ to a single host peer (the one that created it), and owns:
 - A **transcript**: append-only rows in ``room_posts``.
 
 The room service is the *fan-out hub*: when a post arrives at the host
-peer, it dispatches to local scopes (via their LiveSession input queue),
+peer, it dispatches to local scopes (via their AgentInstance input queue),
 remote scopes (POST to that peer's agent input endpoint), local
 subscribers (their WS-out queue), and shadow peers (POST to that peer's
-room posts endpoint). LiveSession wiring and the WS multiplex layer live
+room posts endpoint). AgentInstance wiring and the WS multiplex layer live
 in M1 / M3; this module is the data + dispatch core.
 
 In-process event delivery uses an asyncio-friendly subscriber registry
@@ -34,6 +34,7 @@ from typing import Any, Callable, Iterable
 from awm.db import get_connection
 from awm.services import rooms_names
 from awm.services.network import peers as peer_svc
+from awm.services.replication.schema import new_uuid, next_legacy_id
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +54,20 @@ class RoomClosed(RoomError):
 
 
 class ScopeBusyError(RoomError):
-    """A second LiveSession spawn for an already-running scope was attempted."""
+    """A second AgentInstance spawn for an already-running scope was attempted."""
+
+
+class RoomArchiveBlocked(RoomError):
+    """``archive_room`` refused because the room still has active scope
+    participants. Inspect ``.blocking_scopes`` for the identifiers."""
+
+    def __init__(self, room_id: str, blocking_scopes: list[str]):
+        self.room_id = room_id
+        self.blocking_scopes = blocking_scopes
+        super().__init__(
+            f"room {room_id} has {len(blocking_scopes)} active scope "
+            f"participant(s): {', '.join(blocking_scopes)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +110,7 @@ class Room:
 @dataclass
 class Participant:
     room_id: str
-    kind: str           # 'scope' | 'subscriber' | 'shadow_peer'
+    kind: str           # 'scope' | 'subscriber' | 'shadow_peer' | 'voice'
     identifier: str
     joined_at: str
     left_at: str | None
@@ -148,9 +162,29 @@ def _row_to_participant(row) -> Participant:
 
 def _row_to_post(row) -> Post:
     return Post(
-        id=row["id"], room_id=row["room_id"], author=row["author"],
+        id=row["legacy_id"], room_id=row["room_id"], author=row["author"],
         body=row["body"], kind=row["kind"], ts=row["ts"],
     )
+
+
+def _insert_post(conn, *, room_id: str, author: str, body: str,
+                 kind: str, ts: str) -> str:
+    """Insert a row into ``room_posts`` with a freshly minted uuid PK and
+    per-peer monotonic ``legacy_id``. Returns the uuid so callers can
+    re-fetch the row when they need the full Post object.
+
+    The conn must be inside an active transaction; uuid/legacy_id minting
+    relies on WAL serializing writers."""
+    origin = _local_peer_id()
+    uid = new_uuid()
+    legacy = next_legacy_id(conn, "room_posts", origin)
+    conn.execute(
+        "INSERT INTO room_posts "
+        "(uuid, legacy_id, origin_peer, room_id, author, body, kind, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (uid, legacy, origin, room_id, author, body, kind, ts),
+    )
+    return uid
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +233,10 @@ def _broadcast(room_id: str, event: dict) -> None:
 # ---------------------------------------------------------------------------
 # Agent-input dispatch hooks
 # ---------------------------------------------------------------------------
-# The rooms service stays free of LiveSession's concrete shape so it can
+# The rooms service stays free of AgentInstance's concrete shape so it can
 # be unit-tested without the agent runtime. M1 registers a callable here
 # that takes (room_id, scope, post) and enqueues into the matching
-# LiveSession.input_queue.
+# AgentInstance.input_queue.
 
 _local_scope_dispatcher: Callable[[str, str, Post], None] | None = None
 _remote_scope_dispatcher: Callable[[str, str, str, Post], None] | None = None
@@ -210,7 +244,7 @@ _shadow_peer_dispatcher: Callable[[str, str, Post], None] | None = None
 
 
 def set_local_scope_dispatcher(fn: Callable[[str, str, Post], None] | None) -> None:
-    """``fn(room_id, scope_key, post)`` — push to a local LiveSession."""
+    """``fn(room_id, scope_key, post)`` — push to a local AgentInstance."""
     global _local_scope_dispatcher
     _local_scope_dispatcher = fn
 
@@ -285,17 +319,11 @@ def create_room(*, topic: str | None = None,
                 "VALUES (?, 'scope', ?, ?)",
                 (name, s, now),
             )
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, 'system', ?)",
-            (name, "system", f"room opened by {opener}", now),
-        )
+        _insert_post(conn, room_id=name, author="system",
+                     body=f"room opened by {opener}", kind="system", ts=now)
         for s in scopes:
-            conn.execute(
-                "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-                "VALUES (?, ?, ?, 'join', ?)",
-                (name, f"agent:{s}", f"scope:{s} joined", now),
-            )
+            _insert_post(conn, room_id=name, author=f"agent:{s}",
+                         body=f"scope:{s} joined", kind="join", ts=now)
         conn.commit()
         row = conn.execute("SELECT * FROM rooms WHERE id = ?", (name,)).fetchone()
     finally:
@@ -372,11 +400,8 @@ def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
             "UPDATE rooms SET status = 'closed', closed_at = ? WHERE id = ?",
             (now, room_id),
         )
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, 'system', 'room closed', 'system', ?)",
-            (room_id, now),
-        )
+        _insert_post(conn, room_id=room_id, author="system",
+                     body="room closed", kind="system", ts=now)
         conn.commit()
         row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
     finally:
@@ -390,6 +415,48 @@ def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
                 cb(room_id)
             except Exception:  # noqa: BLE001
                 pass
+    return _row_to_room(row)
+
+
+def archive_room(room_id: str) -> Room:
+    """Soft-archive a room: flip status to 'archived' so it drops out of
+    default listings. Refuses if any participant with ``kind='scope'`` is
+    still active (``left_at IS NULL``) — raise :class:`RoomArchiveBlocked`
+    carrying the blocking scope identifiers.
+
+    Closed rooms and active rooms with no remaining scope participants
+    are both archivable. Already-archived rooms return unchanged."""
+    room = get_room(room_id)
+    if room is None:
+        raise RoomNotFound(f"no such room: {room_id}")
+    if room.status == "archived":
+        return room
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT identifier FROM room_participants "
+            "WHERE room_id = ? AND kind = 'scope' AND left_at IS NULL",
+            (room_id,),
+        ).fetchall()
+        blocking = [r["identifier"] for r in rows]
+        if blocking:
+            raise RoomArchiveBlocked(room_id, blocking)
+        now = _now()
+        # Preserve closed_at if already set; stamp it for active→archived.
+        if room.closed_at is None:
+            conn.execute(
+                "UPDATE rooms SET status = 'archived', closed_at = ? WHERE id = ?",
+                (now, room_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE rooms SET status = 'archived' WHERE id = ?",
+                (room_id,),
+            )
+        conn.commit()
+        row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
+    finally:
+        conn.close()
     return _row_to_room(row)
 
 
@@ -421,7 +488,7 @@ def list_participants(room_id: str, *, active_only: bool = True) -> list[Partici
 
 
 def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
-    if kind not in ("scope", "subscriber", "shadow_peer"):
+    if kind not in ("scope", "subscriber", "shadow_peer", "voice"):
         raise ValueError(f"invalid participant kind: {kind!r}")
     room = get_room(room_id)
     if room is None:
@@ -457,11 +524,8 @@ def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
                 "SELECT * FROM room_participants WHERE room_id = ? AND kind = ? AND identifier = ?",
                 (room_id, kind, identifier),
             ).fetchone()
-        conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, 'join', ?)",
-            (room_id, f"{kind}:{identifier}", f"{kind}:{identifier} joined", now),
-        )
+        _insert_post(conn, room_id=room_id, author=f"{kind}:{identifier}",
+                     body=f"{kind}:{identifier} joined", kind="join", ts=now)
         conn.commit()
     finally:
         conn.close()
@@ -481,11 +545,10 @@ def remove_participant(room_id: str, kind: str, identifier: str) -> bool:
             (now, room_id, kind, identifier),
         )
         if cur.rowcount > 0:
-            conn.execute(
-                "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-                "VALUES (?, ?, ?, 'leave', ?)",
-                (room_id, f"{kind}:{identifier}", f"{kind}:{identifier} left", now),
-            )
+            _insert_post(conn, room_id=room_id,
+                         author=f"{kind}:{identifier}",
+                         body=f"{kind}:{identifier} left",
+                         kind="leave", ts=now)
         conn.commit()
     finally:
         conn.close()
@@ -507,7 +570,7 @@ def post(room_id: str, *, author: str, body: str, kind: str = "text",
 
     Dispatch rules:
     - All live subscribers (local WS + shadow peers) receive the post.
-    - Local scope participants receive it as a LiveSession input frame
+    - Local scope participants receive it as a AgentInstance input frame
       iff the author is non-agent OR ``to_scope`` matches the scope.
     - Remote scope participants are forwarded via the remote_scope
       dispatcher (M3).
@@ -522,14 +585,11 @@ def post(room_id: str, *, author: str, body: str, kind: str = "text",
     now = _now()
     conn = get_connection()
     try:
-        cur = conn.execute(
-            "INSERT INTO room_posts (room_id, author, body, kind, ts) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (room_id, author, body, kind, now),
-        )
+        uid = _insert_post(conn, room_id=room_id, author=author,
+                           body=body, kind=kind, ts=now)
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM room_posts WHERE id = ?", (cur.lastrowid,),
+            "SELECT * FROM room_posts WHERE uuid = ?", (uid,),
         ).fetchone()
     finally:
         conn.close()
@@ -591,7 +651,7 @@ def history(room_id: str, *, limit_chars: int = 1024,
     if before_ts is not None:
         sql += " AND ts < ?"
         params.append(before_ts)
-    sql += " ORDER BY ts DESC, id DESC"
+    sql += " ORDER BY ts DESC, uuid DESC"
     conn = get_connection()
     try:
         rows = conn.execute(sql, params).fetchall()
@@ -611,7 +671,7 @@ def history(room_id: str, *, limit_chars: int = 1024,
 def auto_close_for_scope(scope_key: str) -> list[str]:
     """Close any active ``close_on_exit`` rooms whose participating scopes
     are all gone after ``scope_key`` left. Returns the list of room IDs
-    that were closed. Called from sessions_live._waiter_loop."""
+    that were closed. Called from agent_instances._waiter_loop."""
     closed: list[str] = []
     conn = get_connection()
     try:
@@ -644,12 +704,141 @@ def auto_close_for_scope(scope_key: str) -> list[str]:
     return closed
 
 
-def get_post(post_id: int) -> Post | None:
+def get_post(post_id: int | str) -> Post | None:
+    """Return a post by its public ``legacy_id``. Accepts ``42`` or
+    ``'42@<peer>'``; bare ints resolve to the local peer."""
+    legacy_id, peer = peer_svc.parse_id_ref(post_id)
+    origin = peer if peer is not None else _local_peer_id()
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM room_posts WHERE id = ?", (post_id,),
+            "SELECT * FROM room_posts WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
         ).fetchone()
     finally:
         conn.close()
     return _row_to_post(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# WS subscriber pump
+# ---------------------------------------------------------------------------
+
+_WS_QUEUE_MAX = 256
+
+
+async def run_subscriber_session(
+    websocket,
+    room_id: str,
+    user_as: str,
+) -> None:
+    """Drive a fully-attached WS subscriber for ``room_id``.
+
+    Owns the queue/subscriber/broadcast loop: subscribes the socket to
+    the room's event stream, registers a ``subscriber`` participant,
+    streams transcript backlog, and spawns the reader + writer tasks.
+    The API handler that calls into this function should already have
+    authenticated and ``await websocket.accept(...)``ed before calling.
+
+    Anything WS-protocol-shaped (envelope serialization, ``X-Awm-As`` →
+    author rewriting) is owned here, NOT by the API layer. The API
+    handler shrinks to ``auth + accept + delegate``.
+    """
+    # Imported here so the services layer doesn't grow a runtime dep on
+    # the API package's envelope module shape (it's free-standing).
+    from awm import ws_envelope as env
+
+    room = get_room(room_id)
+    if room is None:
+        await websocket.send_text(json.dumps(env.error(f"no such room: {room_id}")))
+        await websocket.close(code=1008, reason="no such room")
+        return
+
+    # The WS is pure UI transport — it is NOT a room participant.
+    # `subscribe_room` plugs the queue into the broadcast fanout; that's the
+    # only side-effect a transcript viewer should have. Logging subscribe /
+    # unsubscribe as join/leave posts pollutes the transcript every time a
+    # tab refreshes or focuses a different room.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_WS_QUEUE_MAX)
+    await subscribe_room(room_id, queue)
+
+    # Send transcript backlog.
+    backlog = history(room_id, limit_chars=4096)
+    await websocket.send_text(json.dumps(
+        env.history([p.to_dict() for p in backlog])
+    ))
+
+    async def writer():
+        while True:
+            ev = await queue.get()
+            if env.is_lagged(ev):
+                try:
+                    await websocket.send_text(json.dumps(ev))
+                except Exception:
+                    return
+                await websocket.close(code=1011, reason="lagged")
+                return
+            try:
+                await websocket.send_text(json.dumps(ev))
+            except Exception:
+                return
+
+    async def reader():
+        from fastapi import WebSocketDisconnect
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                return
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps(env.error("invalid JSON")))
+                continue
+            mtype = msg.get("type")
+            if mtype == "post":
+                body = msg.get("body", "")
+                kind = msg.get("kind", "text")
+                to_scope = msg.get("to") or None
+                try:
+                    post(room_id, author=user_as, body=body,
+                         kind=kind, to_scope=to_scope)
+                except RoomError as exc:
+                    await websocket.send_text(json.dumps(env.error(str(exc))))
+            elif mtype == "control":
+                action = msg.get("action")
+                if action == "close":
+                    try:
+                        close_room(room_id)
+                    except RoomError as exc:
+                        await websocket.send_text(json.dumps(env.error(str(exc))))
+                elif action == "kill":
+                    try:
+                        close_room(room_id, kill_agents=True)
+                    except RoomError as exc:
+                        await websocket.send_text(json.dumps(env.error(str(exc))))
+                else:
+                    await websocket.send_text(json.dumps(
+                        env.error(f"unknown control action: {action}")))
+            elif mtype == "ping":
+                await websocket.send_text(json.dumps(env.pong()))
+            else:
+                await websocket.send_text(json.dumps(
+                    env.error(f"unknown envelope type: {mtype}")))
+
+    writer_task = asyncio.create_task(writer())
+    reader_task = asyncio.create_task(reader())
+    try:
+        await asyncio.wait(
+            {writer_task, reader_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        writer_task.cancel()
+        reader_task.cancel()
+        await unsubscribe_room(room_id, queue)
+        try:
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close()
+        except Exception:
+            pass

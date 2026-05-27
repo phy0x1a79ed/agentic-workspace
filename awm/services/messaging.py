@@ -15,6 +15,19 @@ from awm.models import (
     MessageActionResponse,
 )
 from awm.services import scopes as scope_svc
+from awm.services.network import peers as peer_svc
+from awm.services.replication.schema import new_uuid, next_legacy_id
+
+
+def _local_peer_id() -> str:
+    """Local peer id from PEER_FILE, '' if not initialized."""
+    try:
+        ident = peer_svc.get_local_identity()
+    except Exception:
+        return ""
+    if ident is None:
+        return ""
+    return ident.get("peer_id") or ""
 
 # Valid scope patterns. Optional ``@<peer-id>`` suffix routes the operation
 # to a remote awm instance registered via `awm peer add`.
@@ -38,20 +51,17 @@ def _split_peer(scope: str) -> tuple[str, str | None]:
 
 
 def _validate_scope(scope: str) -> None:
-    """Validate the *local* scope shape (no @peer suffix allowed)."""
-    base, peer = _split_peer(scope)
-    if peer is not None:
-        raise ValueError(
-            f"Cross-host fetch/search to '{scope}' is not yet supported. "
-            f"Either query the remote peer directly (e.g. `ssh ... awm inbox "
-            f"fetch {base}`), or wait for federated read fan-out to land for "
-            f"messaging."
-        )
+    """Validate the local scope shape. Post-v33 cross-host fetch/search
+    is supported: the ``@peer`` suffix narrows the local query to rows
+    whose ``origin_peer`` matches, because CRR replication means every
+    peer already has a copy."""
+    # _split_peer raises on bad shapes; we don't need the result.
+    _split_peer(scope)
 
 
 def _row_to_info(row) -> MessageInfo:
     return MessageInfo(
-        id=row["id"],
+        id=row["legacy_id"],
         scope=row["scope"],
         sender=row["sender"],
         msg_type=row["msg_type"],
@@ -66,7 +76,7 @@ def _row_to_info(row) -> MessageInfo:
 
 def _row_to_preview(row) -> MessagePreview:
     return MessagePreview(
-        id=row["id"],
+        id=row["legacy_id"],
         scope=row["scope"],
         sender=row["sender"],
         msg_type=row["msg_type"],
@@ -104,13 +114,21 @@ def send_message(req: MessageSendRequest) -> MessageActionResponse:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        cur = conn.execute(
-            "INSERT INTO messages (scope, sender, msg_type, subject, body, metadata, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'unread', ?)",
-            (base_scope, req.sender, req.msg_type, req.subject, req.body, req.metadata, now),
+        origin = _local_peer_id()
+        legacy = next_legacy_id(conn, "messages", origin)
+        uid = new_uuid()
+        conn.execute(
+            "INSERT INTO messages "
+            "(uuid, legacy_id, origin_peer, scope, sender, msg_type, "
+            " subject, body, metadata, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?)",
+            (uid, legacy, origin, base_scope, req.sender, req.msg_type,
+             req.subject, req.body, req.metadata, now),
         )
         conn.commit()
-        row = conn.execute("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM messages WHERE uuid = ?", (uid,),
+        ).fetchone()
     finally:
         conn.close()
     return MessageActionResponse(
@@ -136,8 +154,12 @@ def search_messages(
         params: list = []
         if scope:
             _validate_scope(scope)
+            base, peer = _split_peer(scope)
             sql += " AND scope = ?"
-            params.append(scope)
+            params.append(base)
+            if peer is not None:
+                sql += " AND origin_peer = ?"
+                params.append(peer)
         if status:
             sql += " AND status = ?"
             params.append(status)
@@ -171,11 +193,15 @@ def fetch_messages(
     ``read`` in the same transaction and the returned rows reflect the new state.
     """
     _validate_scope(scope)
+    base, peer = _split_peer(scope)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         sql = "SELECT * FROM messages WHERE scope = ?"
-        params: list = [scope]
+        params: list = [base]
+        if peer is not None:
+            sql += " AND origin_peer = ?"
+            params.append(peer)
         if status:
             sql += " AND status = ?"
             params.append(status)
@@ -188,20 +214,54 @@ def fetch_messages(
 
         marked = 0
         if mark_read and rows:
-            unread_ids = [r["id"] for r in rows if r["status"] == "unread"]
-            if unread_ids:
-                placeholders = ",".join("?" * len(unread_ids))
+            unread_uuids = [r["uuid"] for r in rows if r["status"] == "unread"]
+            if unread_uuids:
+                placeholders = ",".join("?" * len(unread_uuids))
                 conn.execute(
-                    f"UPDATE messages SET status = 'read', read_at = ? WHERE id IN ({placeholders})",
-                    [now, *unread_ids],
+                    f"UPDATE messages SET status = 'read', read_at = ? "
+                    f"WHERE uuid IN ({placeholders})",
+                    [now, *unread_uuids],
                 )
                 conn.commit()
-                marked = len(unread_ids)
+                marked = len(unread_uuids)
                 rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     msgs = [_row_to_info(r) for r in rows]
     return MessageFetchResponse(messages=msgs, total=len(msgs), marked_read_count=marked)
+
+
+def mark_read(message_id: int | str) -> MessageActionResponse:
+    """Flip a single message's status to ``read``. Accepts ``42`` for the
+    local row or ``'42@peer'`` to target a row that originated on a remote
+    peer (which post-replication exists locally too)."""
+    legacy_id, peer = peer_svc.parse_id_ref(message_id)
+    origin = peer if peer is not None else _local_peer_id()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM messages WHERE legacy_id = ? AND origin_peer = ?",
+            (legacy_id, origin),
+        ).fetchone()
+        if row is None:
+            return MessageActionResponse(
+                message=f"No message {message_id} found", msg=None,
+            )
+        conn.execute(
+            "UPDATE messages SET status = 'read', read_at = ? WHERE uuid = ?",
+            (now, row["uuid"]),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM messages WHERE uuid = ?", (row["uuid"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    return MessageActionResponse(
+        message=f"Marked {message_id} as read",
+        msg=_row_to_info(row),
+    )
 
 
 def list_recipients() -> list[str]:
