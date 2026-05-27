@@ -29,11 +29,15 @@
   .syn-row select, .syn-row input[type=range] { background: #111; color: #ddd; border: 1px solid #333;
                                                   border-radius: 4px; padding: 3px; font: inherit; }
   .syn-row input[type=range] { width: 120px; }
-  #syn-btn { background: #2b6e8f; color: white; border: none; border-radius: 4px;
+  .syn-btn { background: #2b6e8f; color: white; border: none; border-radius: 4px;
               padding: 6px 14px; cursor: pointer; font: inherit; }
-  #syn-btn:hover { background: #3690b8; }
-  #syn-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  #syn-pitch-val { font-family: monospace; min-width: 40px; }
+  .syn-btn:hover { background: #3690b8; }
+  .syn-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #syn-stop-btn { background: #555; }
+  #syn-stop-btn:hover { background: #777; }
+  #syn-stop-btn.active { background: #b33; }
+  #syn-stop-btn.active:hover { background: #d44; }
+  #syn-pitch-val, #syn-speed-val { font-family: monospace; min-width: 40px; }
   .syn-status { font-size: 11px; color: #888; margin-top: 0.5em; font-family: monospace; }
   .source-card[data-src] { display: none; }
   .source-card.active { display: block; }
@@ -61,7 +65,10 @@ to A/B against a pre-rendered source.</p>
     <label>RVC voice <select id="syn-rvc"><option>loading…</option></select></label>
     <label>Pitch <input id="syn-pitch" type="range" min="-12" max="12" value="0" step="1">
       <span id="syn-pitch-val">0 st</span></label>
-    <button id="syn-btn">Stream ▶</button>
+    <label>Speed <input id="syn-speed" type="range" min="0.5" max="2.0" value="1.0" step="0.05">
+      <span id="syn-speed-val">1.0x</span></label>
+    <button id="syn-stream-btn" class="syn-btn">Stream ▶</button>
+    <button id="syn-stop-btn" class="syn-btn">Stop</button>
   </div>
   <div id="syn-status" class="syn-status">loading voices…</div>
 </div>

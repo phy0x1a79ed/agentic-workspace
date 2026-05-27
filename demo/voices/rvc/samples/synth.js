@@ -9,13 +9,30 @@
     // Override via ?sidecar=https://host:port
     const params = new URLSearchParams(location.search);
     const SIDECAR_URL = params.get("sidecar") ||
-        `${location.protocol}//${location.hostname}:12103`;
+        `${location.protocol}//${location.hostname}:12123`;
 
-    let audioCtx = null;       // lazily created on first click
-    let nextStartTime = 0;     // schedule time for the next chunk
-    let activeAbort = null;    // current AbortController, if any
+    let audioCtx = null;          // lazily created on first click
+    let nextStartTime = 0;        // schedule time for the next chunk
+    let activeSources = [];       // AudioBufferSourceNodes currently playing
+    let activeAbort = null;       // AbortController for the current HTTP stream
+    let streamGen = 0;            // incremented each new stream, guards stale callbacks
 
     const $ = (sel) => document.querySelector(sel);
+
+    function stopPlayback() {
+        if (activeAbort) {
+            activeAbort.abort();
+            activeAbort = null;
+        }
+        for (const src of activeSources) {
+            try { src.stop(); } catch (_) {}
+            try { src.disconnect(); } catch (_) {}
+        }
+        activeSources = [];
+        nextStartTime = 0;
+        $("#syn-stop-btn").classList.remove("active");
+        $("#syn-status").textContent = "stopped";
+    }
 
     // --- Voice loading --------------------------------------------------
 
@@ -82,25 +99,29 @@
     // --- Streaming player ------------------------------------------------
 
     async function streamSynth() {
-        if (activeAbort) { activeAbort.abort(); activeAbort = null; }
+        // Kill any previous playback.
+        stopPlayback();
+
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         else if (audioCtx.state === "suspended") await audioCtx.resume();
         nextStartTime = audioCtx.currentTime;
 
         const text = $("#syn-text").value.trim();
         if (!text) return;
+        const myGen = ++streamGen;
 
         const body = {
             text,
             tts_voice: $("#syn-tts").value,
             rvc_label: $("#syn-rvc").value || null,
             pitch: parseInt($("#syn-pitch").value, 10) || 0,
+            speed: parseFloat($("#syn-speed").value) || 1.0,
         };
         const ac = new AbortController();
         activeAbort = ac;
         const t0 = performance.now();
         $("#syn-status").textContent = "streaming…";
-        $("#syn-btn").disabled = true;
+        $("#syn-stop-btn").classList.add("active");
 
         let resp;
         try {
@@ -111,14 +132,18 @@
                 signal: ac.signal,
             });
         } catch (err) {
-            $("#syn-status").textContent = `fetch failed: ${err.message}`;
-            $("#syn-btn").disabled = false;
+            if (activeAbort === ac) activeAbort = null;
+            if (err.name !== "AbortError") {
+                $("#syn-status").textContent = `fetch failed: ${err.message}`;
+            }
+            $("#syn-stop-btn").classList.remove("active");
             return;
         }
         if (!resp.ok) {
+            if (activeAbort === ac) activeAbort = null;
             const err = await resp.text();
             $("#syn-status").textContent = `${resp.status}: ${err.slice(0, 200)}`;
-            $("#syn-btn").disabled = false;
+            $("#syn-stop-btn").classList.remove("active");
             return;
         }
         const sr = parseInt(resp.headers.get("X-Sample-Rate") || "24000", 10);
@@ -128,6 +153,7 @@
         let firstAudioMs = null;
         let chunkCount = 0;
         let totalSamples = 0;
+        let streamDone = false;  // becomes true when the HTTP stream ends
 
         // Helper: read exactly n bytes from the stream, returns null at EOF.
         async function readN(n) {
@@ -145,10 +171,12 @@
 
         try {
             while (true) {
-                const lenBytes = await readN(4);
-                if (!lenBytes) break;
-                const len = new DataView(lenBytes.buffer, lenBytes.byteOffset, 4)
-                    .getUint32(0, true);
+                const hdrBytes = await readN(12);
+                if (!hdrBytes) break;
+                const hdrView = new DataView(hdrBytes.buffer, hdrBytes.byteOffset, 12);
+                const len = hdrView.getUint32(0, true);
+                const headOverlap = hdrView.getUint32(4, true);
+                const tailOverlap = hdrView.getUint32(8, true);
                 if (len === 0) continue;
                 const payload = await readN(len);
                 if (!payload) break;
@@ -158,6 +186,17 @@
                 const f32 = new Float32Array(i16.length);
                 for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
 
+                // Fade-in head_overlap samples (matches previous frame's
+                // fade-out tail — they overlap in playback time and sum to 1).
+                // Fade-out tail_overlap samples (matches next frame's fade-in).
+                const headFade = Math.min(headOverlap, f32.length);
+                for (let i = 0; i < headFade; i++) f32[i] *= i / headFade;
+                const tailFade = Math.min(tailOverlap, f32.length - headFade);
+                for (let i = 0; i < tailFade; i++) {
+                    f32[f32.length - 1 - i] *= i / tailFade;
+                }
+                const tailFadeSec = tailFade / sr;
+
                 const ab = audioCtx.createBuffer(1, f32.length, sr);
                 ab.copyToChannel(f32, 0);
                 const src = audioCtx.createBufferSource();
@@ -165,7 +204,17 @@
                 src.connect(audioCtx.destination);
                 const startAt = Math.max(nextStartTime, audioCtx.currentTime);
                 src.start(startAt);
-                nextStartTime = startAt + ab.duration;
+                src.onended = () => {
+                    const idx = activeSources.indexOf(src);
+                    if (idx !== -1) activeSources.splice(idx, 1);
+                    if (activeSources.length === 0 && streamGen === myGen && streamDone) {
+                        stopPlayback();
+                    }
+                };
+                activeSources.push(src);
+                // Schedule next frame so its head_overlap fade-in region
+                // overlaps this frame's tail_overlap fade-out region in time.
+                nextStartTime = startAt + ab.duration - tailFadeSec;
 
                 chunkCount++;
                 totalSamples += f32.length;
@@ -186,23 +235,77 @@
                 console.error(err);
             }
         } finally {
-            $("#syn-btn").disabled = false;
-            activeAbort = null;
+            streamDone = true;
+            if (activeAbort === ac) activeAbort = null;
+            if (activeSources.length === 0) {
+                stopPlayback();
+            }
         }
     }
+
+    // --- persistence ----------------------------------------------------
+
+    const KEYS = { tts: "syn_tts", rvc: "syn_rvc", pitch: "syn_pitch", speed: "syn_speed", text: "syn_text" };
+
+    function saveSelections() {
+        try {
+            localStorage.setItem(KEYS.tts, $("#syn-tts").value);
+            localStorage.setItem(KEYS.rvc, $("#syn-rvc").value);
+            localStorage.setItem(KEYS.pitch, $("#syn-pitch").value);
+            localStorage.setItem(KEYS.speed, $("#syn-speed").value);
+            localStorage.setItem(KEYS.text, $("#syn-text").value);
+        } catch (_) {}
+    }
+
+    function restoreSelections() {
+        try {
+            const tts = localStorage.getItem(KEYS.tts);
+            const rvc = localStorage.getItem(KEYS.rvc);
+            const speed = localStorage.getItem(KEYS.speed);
+            const pitch = localStorage.getItem(KEYS.pitch);
+            const text = localStorage.getItem(KEYS.text);
+            if (tts && $("#syn-tts").querySelector(`option[value="${CSS.escape(tts)}"]`))
+                $("#syn-tts").value = tts;
+            if (rvc && $("#syn-rvc").querySelector(`option[value="${CSS.escape(rvc)}"]`))
+                $("#syn-rvc").value = rvc;
+            if (speed) {
+                $("#syn-speed").value = speed;
+                $("#syn-speed-val").textContent = `${speed}x`;
+            }
+            if (pitch) {
+                $("#syn-pitch").value = pitch;
+                $("#syn-pitch-val").textContent = `${pitch} st`;
+            }
+            if (text) $("#syn-text").value = text;
+        } catch (_) {}
+    }
+
+    // Also save when the Stream button is clicked so the latest text is captured.
+    const _origStream = streamSynth;
+    streamSynth = function () {
+        saveSelections();
+        return _origStream.apply(this, arguments);
+    };
 
     // --- wiring ---------------------------------------------------------
 
     function init() {
-        $("#syn-btn").addEventListener("click", streamSynth);
+        $("#syn-stream-btn").addEventListener("click", streamSynth);
+        $("#syn-stop-btn").addEventListener("click", stopPlayback);
         $("#syn-pitch").addEventListener("input", e => {
             $("#syn-pitch-val").textContent = `${e.target.value} st`;
+            saveSelections();
         });
+        $("#syn-speed").addEventListener("input", e => {
+            $("#syn-speed-val").textContent = `${e.target.value}x`;
+            saveSelections();
+        });
+        $("#syn-tts").addEventListener("change", saveSelections);
+        $("#syn-rvc").addEventListener("change", saveSelections);
         $("#syn-text").addEventListener("keydown", e => {
-            // Ctrl/Cmd+Enter triggers synthesis
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") streamSynth();
         });
-        loadVoices();
+        loadVoices().then(restoreSelections);
     }
 
     if (document.readyState === "loading") {

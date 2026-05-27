@@ -69,10 +69,9 @@ class RVCWrapper:
                  time.monotonic() - t0, f0_method, index_rate)
 
     def infer_pcm(self, pcm: bytes, source_sr: int, pitch: int = 0) -> bytes:
-        """Run PCM through RVC. Returns int16 PCM at OUTPUT_SR."""
+        """Run PCM through RVC via file-based temp path. Returns int16 PCM at OUTPUT_SR."""
         if self._rvc is None:
             raise RuntimeError("model not loaded")
-        # Use a tmpfs path to avoid disk I/O.
         with tempfile.TemporaryDirectory(dir="/dev/shm" if Path("/dev/shm").exists() else None) as td:
             in_path = Path(td) / "in.wav"
             out_path = Path(td) / "out.wav"
@@ -88,6 +87,55 @@ class RVCWrapper:
                     log.warning("unexpected output sr %d", r.getframerate())
                 frames = r.readframes(r.getnframes())
                 return frames
+
+    def infer_pcm_direct(self, pcm: bytes, source_sr: int, pitch: int = 0) -> tuple[bytes, int]:
+        """Run PCM through RVC in-memory — no WAV file I/O.
+
+        Returns (int16 PCM bytes at model's native output SR, output sample rate).
+
+        Reseeds torch's global RNG before each call. Some op inside rvc-python's
+        pipeline reads from torch.default_generator (~22% nrms run-to-run jitter
+        without this), and the jitter is large enough that the streaming
+        sliding-window stitcher cannot crossfade across it.
+        """
+        if self._rvc is None:
+            raise RuntimeError("model not loaded")
+        import torch  # noqa: PLC0415
+        torch.manual_seed(0)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(0)
+
+        # Use the model's index file (if any) from the model info dict.
+        model_info = self._rvc.models.get(self._rvc.current_model or "", {})
+        file_index = model_info.get("index", "")
+
+        audio_int16 = np.frombuffer(pcm, dtype=np.int16)
+
+        self._rvc.set_params(f0up_key=pitch)
+
+        result = self._rvc.vc.vc_single(
+            sid=0,
+            input_audio_path=(source_sr, audio_int16),
+            f0_up_key=self._rvc.f0up_key,
+            f0_method=self._rvc.f0method,
+            file_index=file_index,
+            file_index2="",
+            index_rate=self._rvc.index_rate,
+            filter_radius=self._rvc.filter_radius,
+            resample_sr=self._rvc.resample_sr,
+            rms_mix_rate=self._rvc.rms_mix_rate,
+            protect=self._rvc.protect,
+            f0_file="",
+        )
+
+        # vc_single returns a numpy int16 array on success, or
+        # (error_string, (None, None)) on failure.
+        if isinstance(result, tuple):
+            err_msg = result[0] if result[0] else "unknown rvc error"
+            raise RuntimeError(f"vc_single failed: {err_msg}")
+
+        out_sr = int(self._rvc.vc.tgt_sr)
+        return result.tobytes(), out_sr
 
 
 app = FastAPI()
