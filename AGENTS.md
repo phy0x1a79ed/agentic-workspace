@@ -53,6 +53,7 @@ AWM is available as an MCP server. The `.mcp.json` at the workspace root registe
 awm scope list                                      # list active scopes
 awm project create <name> [--clone <url>]            # create a new project
 awm scope create <project> <scope> [--from <branch>] # create a scope
+awm scope sync <project> <scope> [--strategy merge|rebase] [--from <branch>] # bring feat/{scope} up to date with base
 awm scope complete <project> <scope> [--merge]       # complete a scope
 awm session log <project> <scope> --summary "..."     # log a session (supports --outcome, --deviations, --suggestions)
 awm skill search <query>                             # search skills (keyword + semantic)

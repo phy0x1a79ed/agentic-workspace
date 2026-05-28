@@ -27,6 +27,7 @@ from awm.models import (
     ProjectCreateRequest,
     ScopeCreateRequest,
     ScopeUpdateRequest,
+    ScopeSyncRequest,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm.registry import dispatch_operation, operations_to_mcp_tools
@@ -132,6 +133,20 @@ TOOL_DEFINITIONS: list[Tool] = [
             "properties": {
                 "project": {"type": "string"},
                 "scope": {"type": "string"},
+            },
+            "required": ["project", "scope"],
+        },
+    ),
+    Tool(
+        name="scope_sync",
+        description="Sync a scope's feature branch with its base branch (merge by default, or rebase). Refuses if the worktree is dirty. Does not fetch — pull the base branch first if upstream commits are wanted.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+                "strategy": {"type": "string", "enum": ["merge", "rebase"], "default": "merge"},
+                "from_branch": {"type": "string", "description": "Base branch (default: project's default branch)"},
             },
             "required": ["project", "scope"],
         },
@@ -835,6 +850,12 @@ def handle_tool(name: str, args: dict) -> str:
         return _serialize(scopes.update_scope(args["project"], args["scope"], req))
     if name == "scope_delete":
         return _serialize(scopes.delete_scope(args["project"], args["scope"]))
+    if name == "scope_sync":
+        req = ScopeSyncRequest(
+            strategy=args.get("strategy", "merge"),
+            from_branch=args.get("from_branch"),
+        )
+        return _serialize(scopes.sync_scope(args["project"], args["scope"], req))
 
     # Artifacts
     if name == "artifact_register":

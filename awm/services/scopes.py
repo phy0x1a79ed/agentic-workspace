@@ -21,6 +21,7 @@ from awm.git_utils import run_git, detect_default_branch
 from awm.models import (
     ScopeCreateRequest,
     ScopeUpdateRequest,
+    ScopeSyncRequest,
     ScopeInfo,
     ScopeListResponse,
     ScopeActionResponse,
@@ -694,6 +695,92 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
     return ScopeActionResponse(
         project=project, scope=scope, status="completed",
         message=f"Scope completed{merge_msg}",
+    )
+
+
+def sync_scope(project: str, scope: str, req: ScopeSyncRequest) -> ScopeActionResponse:
+    """Bring a scope's feature branch up to date with its base branch.
+
+    Merges (default) or rebases the base branch into feat/{scope} inside the
+    scope's existing worktree. Refuses if the worktree is dirty. Does not fetch
+    — caller pulls the base branch first if upstream commits are wanted.
+    """
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    repo_dir = PROJECTS_DIR / project / scope
+    feature_branch = f"feat/{scope}"
+
+    if not bare_dir.exists():
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
+    if not repo_dir.exists():
+        raise FileNotFoundError(f"Worktree not found at {repo_dir}")
+
+    base = req.from_branch or detect_default_branch(bare_dir)
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
+            (project, scope),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise FileNotFoundError(f"No active scope '{scope}' found in project '{project}'")
+
+    # Dirty-tree gate
+    r = run_git(["git", "-C", str(repo_dir), "status", "--porcelain"])
+    if r.returncode != 0:
+        raise RuntimeError(f"git status failed: {r.stderr}")
+    if r.stdout.strip():
+        raise RuntimeError(
+            f"Worktree has uncommitted changes — refusing to sync:\n{r.stdout}"
+        )
+
+    # Confirm HEAD is on feature_branch
+    r = run_git(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"])
+    if r.returncode != 0:
+        raise RuntimeError(f"git rev-parse failed: {r.stderr}")
+    current = r.stdout.strip()
+    if current != feature_branch:
+        raise RuntimeError(
+            f"Worktree HEAD is on '{current}', expected '{feature_branch}'. "
+            f"Check out the feature branch before syncing."
+        )
+
+    # Run the sync
+    if req.strategy == "merge":
+        r = run_git([
+            "git", "-C", str(repo_dir), "merge", base,
+            "-m", f"Sync {base} into {feature_branch}",
+        ])
+    else:  # rebase
+        r = run_git(["git", "-C", str(repo_dir), "rebase", base])
+
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"{req.strategy} failed: {r.stderr or r.stdout}\n"
+            f"Worktree left mid-{req.strategy}; resolve and re-run, "
+            f"or `git {req.strategy} --abort` to undo."
+        )
+
+    now = _now_iso()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE scopes SET updated_at=? WHERE project=? AND scope=? AND status='active'",
+            (now, project, scope),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return ScopeActionResponse(
+        project=project,
+        scope=scope,
+        status="active",
+        message=f"Synced {feature_branch} with {base} via {req.strategy}",
     )
 
 

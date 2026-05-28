@@ -1034,6 +1034,21 @@ def scope_delete(
     _print_json(r)
 
 
+@scope_app.command("sync")
+def scope_sync(
+    project: str = typer.Argument(..., help="Project name"),
+    scope: str = typer.Argument(..., help="Scope name"),
+    strategy: str = typer.Option("merge", "--strategy", help="merge or rebase"),
+    from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch (default: project default)"),
+):
+    """Sync scope's feature branch with its base branch."""
+    payload: dict = {"strategy": strategy}
+    if from_branch:
+        payload["from_branch"] = from_branch
+    r = _api("POST", f"/scopes/{project}/{scope}/sync", json=payload)
+    _print_json(r)
+
+
 @scope_app.command("heal")
 def scope_heal(
     project: Optional[str] = typer.Option(None, "--project", help="Limit healing to one project"),
