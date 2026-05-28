@@ -196,6 +196,33 @@ async fn run(args: Args) -> Result<()> {
                     }
                 }
             }
+            // UI events (Enter to send chat, Esc/Ctrl-D to disconnect). Must
+            // be in the select! rather than a try_recv after the signaling
+            // arm — otherwise the loop blocks indefinitely on
+            // `handles.events.recv()` between MQTT events, and chat keystrokes
+            // sit in the queue until the next signaling message wakes us up.
+            ui_evt = ui_rx.recv(), if tui_alive => {
+                match ui_evt {
+                    Some(UiEvent::SendChat(msg)) => {
+                        let _ = msg_tx
+                            .send(TuiMsg::Chat {
+                                from: Who::Friend,
+                                message: msg.clone(),
+                            })
+                            .await;
+                        handler.send_chat(msg).await;
+                    }
+                    Some(UiEvent::Disconnect) => {
+                        let _ = msg_tx.send(TuiMsg::Status(Status::Ended)).await;
+                        break;
+                    }
+                    None => {
+                        // TUI task has dropped its UiEvent sender — stop
+                        // polling this arm so select! doesn't busy-spin.
+                        tui_alive = false;
+                    }
+                }
+            }
             _ = &mut shutdown => {
                 let _ = msg_tx
                     .send(TuiMsg::System("ctrl-c received; disconnecting...".into()))
@@ -206,29 +233,6 @@ async fn run(args: Args) -> Result<()> {
                 }).await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 break;
-            }
-        }
-
-        // Poll UI events non-blockingly to avoid flooding when TUI is dead.
-        if tui_alive {
-            match ui_rx.try_recv() {
-                Ok(UiEvent::SendChat(msg)) => {
-                    let _ = msg_tx
-                        .send(TuiMsg::Chat {
-                            from: Who::Friend,
-                            message: msg.clone(),
-                        })
-                        .await;
-                    handler.send_chat(msg).await;
-                }
-                Ok(UiEvent::Disconnect) => {
-                    let _ = msg_tx.send(TuiMsg::Status(Status::Ended)).await;
-                    break;
-                }
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    tui_alive = false;
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {}
             }
         }
     }

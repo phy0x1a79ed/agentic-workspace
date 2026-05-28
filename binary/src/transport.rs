@@ -319,14 +319,25 @@ async fn attach_data_channel(
         })
     }));
 
+    let dc_for_close = dc.clone();
+    let dc_store_for_close = dc_store.clone();
     let display_tx_close = display_tx.clone();
     dc.on_close(Box::new(move || {
+        let dc = dc_for_close.clone();
+        let store = dc_store_for_close.clone();
         let display_tx = display_tx_close.clone();
         Box::pin(async move {
             let _ = display_tx
                 .send(TuiMsg::System("data channel closed".into()))
                 .await;
             let _ = display_tx.send(TuiMsg::Status(Status::Ended)).await;
+            // Clear the stored handle so the next reconnect doesn't see a
+            // stale closed DC. Only clobber if the slot still points at us —
+            // a newer DC may already have written itself in.
+            let mut slot = store.lock().await;
+            if slot.as_ref().map(|s| Arc::ptr_eq(s, &dc)).unwrap_or(false) {
+                *slot = None;
+            }
         })
     }));
 }
