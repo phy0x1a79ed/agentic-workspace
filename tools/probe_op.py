@@ -16,10 +16,13 @@ import base64
 import json
 import logging
 import os
+import signal
 import sys
+import tempfile
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 import aiomqtt
@@ -57,6 +60,10 @@ def parse_args() -> argparse.Namespace:
     sub = p.add_subparsers(dest="mode")
     exec_p = sub.add_parser("exec", help="run one command and exit")
     exec_p.add_argument("cmd", help="shell command (passed to sh -c)")
+    sub.add_parser("daemon", help="hold the channel open, accept commands over a unix socket")
+    send_p = sub.add_parser("send", help="submit one command to a running daemon")
+    send_p.add_argument("cmd", help="shell command (passed to sh -c)")
+    sub.add_parser("stop", help="ask a running daemon to shut down")
     p.add_argument("--mqtt-url", default=None)
     p.add_argument("--mqtt-user", default=None)
     p.add_argument("--mqtt-pass", default=None)
@@ -88,18 +95,20 @@ def parse_args() -> argparse.Namespace:
     args.cf_turn_id = args.cf_turn_id or os.environ.get("CF_TURN_TOKEN_ID") or env.get("CF_TURN_TOKEN_ID")
     args.cf_turn_token = args.cf_turn_token or os.environ.get("CF_TURN_API_TOKEN") or env.get("CF_TURN_API_TOKEN")
 
-    missing = [
-        name for name, val in [
-            ("EMQX_URL", args.mqtt_url),
-            ("EMQX_USER", args.mqtt_user),
-            ("EMQX_PASS", args.mqtt_pass),
-        ] if not val
-    ]
-    if missing:
-        p.error(
-            f"missing EMQX config: {', '.join(missing)}\n"
-            f"set in env or {ENV_FILE} (see .env.probe.example)"
-        )
+    # send/stop are pure local IPC clients — no broker creds needed.
+    if args.mode not in ("send", "stop"):
+        missing = [
+            name for name, val in [
+                ("EMQX_URL", args.mqtt_url),
+                ("EMQX_USER", args.mqtt_user),
+                ("EMQX_PASS", args.mqtt_pass),
+            ] if not val
+        ]
+        if missing:
+            p.error(
+                f"missing EMQX config: {', '.join(missing)}\n"
+                f"set in env or {ENV_FILE} (see .env.probe.example)"
+            )
     return args
 
 
@@ -250,16 +259,22 @@ class Session:
         entry = self.in_flight.get(fid)
         if ftype == "stdout":
             data = base64.b64decode(frame["data"])
+            sink = entry.get("on_stdout") if entry else None
             if entry is not None:
                 entry["stdout"].extend(data)
-            if self.stream_to_stdio:
+            if sink is not None:
+                sink(data)
+            elif self.stream_to_stdio:
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
         elif ftype == "stderr":
             data = base64.b64decode(frame["data"])
+            sink = entry.get("on_stderr") if entry else None
             if entry is not None:
                 entry["stderr"].extend(data)
-            if self.stream_to_stdio:
+            if sink is not None:
+                sink(data)
+            elif self.stream_to_stdio:
                 sys.stderr.buffer.write(data)
                 sys.stderr.buffer.flush()
         elif ftype == "exit":
@@ -351,18 +366,24 @@ class Session:
         self.next_id += 1
         return self.next_id
 
-    async def exec_one(self, cmd: str, timeout: float) -> tuple[int, bytes, bytes]:
+    async def exec_one(self, cmd: str, timeout: float,
+                       on_stdout: Optional[Callable[[bytes], None]] = None,
+                       on_stderr: Optional[Callable[[bytes], None]] = None,
+                       ) -> tuple[int, bytes, bytes]:
         """Send an Exec frame and await the exit. Returns (code, stdout, stderr).
 
         stdout/stderr are always buffered into the returned bytes. If
-        ``stream_to_stdio`` is True (default), they are also written to
-        sys.stdout/stderr as they arrive — so the CLI mode is unchanged and
-        tests can ignore the buffers, or use ``stream_to_stdio=False`` to
-        suppress streaming entirely and assert only on the returned bytes.
+        per-exec sinks are passed, each chunk is forwarded there as it
+        arrives; otherwise — if ``stream_to_stdio`` is True (default) —
+        chunks are written to sys.stdout/stderr. Sinks take precedence so
+        the daemon can fan output to a single client without dumping it on
+        its own terminal.
         """
         if not self.channel_open.is_set():
             msg = b"[operator] channel not open\n"
-            if self.stream_to_stdio:
+            if on_stderr is not None:
+                on_stderr(msg)
+            elif self.stream_to_stdio:
                 sys.stderr.buffer.write(msg)
             return 4, b"", msg
         fid = self._alloc_id()
@@ -371,6 +392,8 @@ class Session:
             "code": 1,
             "stdout": bytearray(),
             "stderr": bytearray(),
+            "on_stdout": on_stdout,
+            "on_stderr": on_stderr,
         }
         self.in_flight[fid] = entry
         frame = json.dumps({"type": "exec", "id": fid, "cmd": cmd})
@@ -479,16 +502,22 @@ class RelaySession:
         entry = self.in_flight.get(fid)
         if ftype == "stdout":
             data = base64.b64decode(frame["data"])
+            sink = entry.get("on_stdout") if entry else None
             if entry is not None:
                 entry["stdout"].extend(data)
-            if self.stream_to_stdio:
+            if sink is not None:
+                sink(data)
+            elif self.stream_to_stdio:
                 sys.stdout.buffer.write(data)
                 sys.stdout.buffer.flush()
         elif ftype == "stderr":
             data = base64.b64decode(frame["data"])
+            sink = entry.get("on_stderr") if entry else None
             if entry is not None:
                 entry["stderr"].extend(data)
-            if self.stream_to_stdio:
+            if sink is not None:
+                sink(data)
+            elif self.stream_to_stdio:
                 sys.stderr.buffer.write(data)
                 sys.stderr.buffer.flush()
         elif ftype == "exit":
@@ -520,13 +549,18 @@ class RelaySession:
         self.next_id += 1
         return self.next_id
 
-    async def exec_one(self, cmd: str, timeout: float) -> tuple[int, bytes, bytes]:
+    async def exec_one(self, cmd: str, timeout: float,
+                       on_stdout: Optional[Callable[[bytes], None]] = None,
+                       on_stderr: Optional[Callable[[bytes], None]] = None,
+                       ) -> tuple[int, bytes, bytes]:
         fid = self._alloc_id()
         entry = {
             "event": asyncio.Event(),
             "code": 1,
             "stdout": bytearray(),
             "stderr": bytearray(),
+            "on_stdout": on_stdout,
+            "on_stderr": on_stderr,
         }
         self.in_flight[fid] = entry
         payload = json.dumps({"type": "exec", "id": fid, "cmd": cmd}).encode()
@@ -599,12 +633,224 @@ def _read_input(prompt: str) -> str:
     return input()
 
 
+def _socket_path(name: str) -> Path:
+    """Per-(name, uid) unix-socket path. Prefer XDG_RUNTIME_DIR (tmpfs,
+    cleared on logout), fall back to the system tempdir."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return Path(base) / f"probe-{name}-{os.getuid()}.sock"
+
+
+async def _daemon_alive(path: Path) -> bool:
+    """True iff *some* peer is currently accepting connections at path."""
+    if not path.exists():
+        return False
+    try:
+        _, writer = await asyncio.open_unix_connection(str(path))
+    except (OSError, ConnectionRefusedError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        pass
+    return True
+
+
+async def run_daemon(session, args) -> int:
+    """Hold the WebRTC/MQTT-relay channel open and serve exec/stop requests
+    over a unix socket. Returns when SIGINT/SIGTERM fires, the friend Byes,
+    or a client requests `stop`. Caller handles send_bye + session close."""
+    path = _socket_path(args.name)
+    if await _daemon_alive(path):
+        sys.stderr.write(
+            f"[daemon] another daemon already serving probe '{args.name}' at {path}\n"
+        )
+        return 5
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+    stop_event = asyncio.Event()
+
+    async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            line = await reader.readline()
+            if not line:
+                return
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError as e:
+                writer.write(json.dumps(
+                    {"type": "error", "message": f"bad json: {e}"}
+                ).encode() + b"\n")
+                await writer.drain()
+                return
+            rtype = req.get("type")
+            if rtype == "stop":
+                writer.write(json.dumps({"type": "ack"}).encode() + b"\n")
+                await writer.drain()
+                stop_event.set()
+                return
+            if rtype != "exec":
+                writer.write(json.dumps(
+                    {"type": "error", "message": f"unknown request type: {rtype!r}"}
+                ).encode() + b"\n")
+                await writer.drain()
+                return
+            cmd = req.get("cmd", "")
+            timeout = float(req.get("timeout", args.timeout))
+
+            def make_sink(kind: str):
+                def cb(data: bytes):
+                    payload = {"type": kind, "data": base64.b64encode(data).decode()}
+                    try:
+                        writer.write(json.dumps(payload).encode() + b"\n")
+                    except Exception:
+                        pass
+                return cb
+
+            rc, _, _ = await session.exec_one(
+                cmd, timeout,
+                on_stdout=make_sink("stdout"),
+                on_stderr=make_sink("stderr"),
+            )
+            try:
+                await writer.drain()
+            except Exception:
+                pass
+            writer.write(json.dumps({"type": "exit", "code": rc}).encode() + b"\n")
+            try:
+                await writer.drain()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("daemon client handler error: %s", e)
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    server = await asyncio.start_unix_server(handle_client, path=str(path))
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+    loop = asyncio.get_event_loop()
+    installed_sigs: list[int] = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+            installed_sigs.append(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    sys.stderr.write(f"[daemon] probe '{args.name}' listening on {path}\n")
+
+    async def dead_watcher():
+        await session.connection_dead.wait()
+        sys.stderr.write("[daemon] friend connection dead; shutting down\n")
+        stop_event.set()
+
+    watcher_task = asyncio.create_task(dead_watcher())
+    try:
+        await stop_event.wait()
+    finally:
+        for sig in installed_sigs:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError):
+                pass
+        server.close()
+        try:
+            await server.wait_closed()
+        except Exception:
+            pass
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    return 0
+
+
+async def run_client(args) -> int:
+    """Thin unix-socket client. Submits one request to a running daemon and
+    proxies stdout/stderr/exit back to the calling shell."""
+    path = _socket_path(args.name)
+    if not path.exists():
+        sys.stderr.write(f"no daemon for probe '{args.name}' (expected {path})\n")
+        return 4
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(path))
+    except (OSError, ConnectionRefusedError) as e:
+        sys.stderr.write(f"no daemon for probe '{args.name}': {e}\n")
+        return 4
+
+    if args.mode == "stop":
+        req = {"type": "stop"}
+    else:
+        req = {"type": "exec", "cmd": args.cmd, "timeout": args.timeout}
+    writer.write(json.dumps(req).encode() + b"\n")
+    try:
+        await writer.drain()
+    except Exception as e:
+        sys.stderr.write(f"[send] daemon hung up before request: {e}\n")
+        return 4
+
+    rc = 1
+    try:
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ftype = frame.get("type")
+            if ftype == "stdout":
+                sys.stdout.buffer.write(base64.b64decode(frame["data"]))
+                sys.stdout.buffer.flush()
+            elif ftype == "stderr":
+                sys.stderr.buffer.write(base64.b64decode(frame["data"]))
+                sys.stderr.buffer.flush()
+            elif ftype == "exit":
+                rc = int(frame.get("code", 1))
+                break
+            elif ftype == "ack":
+                rc = 0
+                break
+            elif ftype == "error":
+                sys.stderr.write(f"[daemon error] {frame.get('message', '')}\n")
+                rc = 5
+                break
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+    return rc
+
+
 async def amain() -> int:
     args = parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="[%(levelname)s %(name)s] %(message)s",
     )
+
+    # send/stop are local unix-socket clients — never touch MQTT.
+    if args.mode in ("send", "stop"):
+        return await run_client(args)
 
     url = urlparse(args.mqtt_url)
     hostname = url.hostname
@@ -665,6 +911,8 @@ async def amain() -> int:
 
             if args.mode == "exec":
                 rc, _, _ = await session.exec_one(args.cmd, args.timeout)
+            elif args.mode == "daemon":
+                rc = await run_daemon(session, args)
             else:
                 await repl(session)
                 rc = 0

@@ -41,7 +41,15 @@ from pathlib import Path
 SCOPE_ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = SCOPE_ROOT / "installer" / "install.sh"
 BINARY_RELEASE = SCOPE_ROOT / "binary" / "target" / "release" / "probe"
+BINARY_DARWIN_X86 = SCOPE_ROOT / "binary" / "target" / "x86_64-apple-darwin" / "release" / "probe"
+BINARY_DARWIN_ARM = SCOPE_ROOT / "binary" / "target" / "aarch64-apple-darwin" / "release" / "probe"
 BINARY_STUB = SCOPE_ROOT / "binary" / "stub.sh"
+
+ARCH_ROUTES = {
+    "linux-x86_64": BINARY_RELEASE,
+    "darwin-x86_64": BINARY_DARWIN_X86,
+    "darwin-aarch64": BINARY_DARWIN_ARM,
+}
 ENV_FILE = SCOPE_ROOT / "tools" / ".env.probe"
 DEFAULT_PORT = 12110
 DEFAULT_HOST = "0.0.0.0"
@@ -65,14 +73,15 @@ def resolve_emqx_pass() -> str:
     return os.environ.get("EMQX_PASS") or file_env.get("EMQX_PASS", "")
 
 
-def resolve_binary() -> tuple[Path, str]:
-    if BINARY_RELEASE.is_file():
-        return BINARY_RELEASE, "application/octet-stream"
-    if BINARY_STUB.is_file():
+def resolve_binary(arch: str = "linux-x86_64") -> tuple[Path, str]:
+    target = ARCH_ROUTES.get(arch)
+    if target is not None and target.is_file():
+        return target, "application/octet-stream"
+    if arch == "linux-x86_64" and BINARY_STUB.is_file():
         return BINARY_STUB, "application/x-sh"
     raise FileNotFoundError(
-        f"neither {BINARY_RELEASE} nor {BINARY_STUB} exists — "
-        "cannot serve /probe/linux-x86_64"
+        f"no pre-built binary available for arch={arch!r}; "
+        f"expected one of {[str(p) for p in ARCH_ROUTES.values()]}"
     )
 
 
@@ -119,9 +128,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/probe":
             self._serve_install()
             return
-        if path == "/probe/linux-x86_64" or path == "/probe-linux-x86_64":
-            self._serve_binary()
-            return
+        # Asset routes: both `/probe-<arch>` and `/probe/<arch>` work, so the
+        # installer's `${PROBE_BINARY_URL:-.../probe-<arch>}` autodetect lands.
+        for arch in ARCH_ROUTES:
+            if path == f"/probe-{arch}" or path == f"/probe/{arch}":
+                self._serve_binary(arch)
+                return
         self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
     def _serve_install(self) -> None:
@@ -132,14 +144,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._send(200, body, "text/x-shellscript; charset=utf-8")
 
-    def _serve_binary(self) -> None:
+    def _serve_binary(self, arch: str = "linux-x86_64") -> None:
         try:
-            binary_path, ctype = resolve_binary()
+            binary_path, ctype = resolve_binary(arch)
         except FileNotFoundError as e:
             self._send(503, f"{e}\n".encode(), "text/plain; charset=utf-8")
             return
         data = binary_path.read_bytes()
-        source = "release" if binary_path == BINARY_RELEASE else "stub"
+        if binary_path == BINARY_STUB:
+            source = "stub"
+        else:
+            source = arch
         self._send(200, data, ctype, extra_headers={"X-Probe-Source": source})
 
     def log_message(self, fmt: str, *args) -> None:
