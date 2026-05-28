@@ -37,6 +37,10 @@ pub enum Frame {
     Chat {
         message: String,
     },
+    Hello {
+        scope: Option<String>,
+        operator: Option<String>,
+    },
 }
 
 impl Frame {
@@ -168,6 +172,22 @@ mod tests {
         assert!(json.contains(r#""type":"exec""#));
         assert!(json.contains(r#""id":42"#));
         assert!(json.contains(r#""cmd":"ls""#));
+    }
+
+    #[test]
+    fn hello_roundtrip() {
+        roundtrip(Frame::Hello {
+            scope: Some("demo-scope".into()),
+            operator: Some("alice".into()),
+        });
+    }
+
+    #[test]
+    fn hello_roundtrip_nulls() {
+        roundtrip(Frame::Hello {
+            scope: None,
+            operator: None,
+        });
     }
 
     #[test]

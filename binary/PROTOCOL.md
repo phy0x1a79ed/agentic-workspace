@@ -121,7 +121,19 @@ execs (v1 uses sequential ids per session: 1, 2, 3, …).
 {"type":"stdin",       "id":1, "data":"<base64>"}      // reserved; v1 ignores
 {"type":"stdin_close", "id":1}                          // reserved; v1 ignores
 {"type":"chat",                 "message":"hello"}      // human-readable chat from operator
+{"type":"hello", "scope":"capella-shell-scopes/alice-2026-05-27",
+                 "operator":"alice"}                      // session metadata for friend's TUI
 ```
+
+### Hello frame
+
+`Hello` SHOULD be the first frame the operator sends after the data
+channel opens (operator → friend only). It carries human-readable
+metadata about the session — the vagrant scope the probe has been
+attached to on the operator side, and an optional operator display
+name. The friend's TUI renders the scope name in its header until then
+it shows `—`. Both fields are optional; an operator that doesn't have a
+scope name yet MAY omit the frame entirely.
 
 ### friend → operator
 

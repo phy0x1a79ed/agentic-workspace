@@ -3,6 +3,7 @@ mod frames;
 mod mqtt_relay;
 mod signaling;
 mod transport;
+mod tui;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -10,47 +11,35 @@ use signaling::{ByeMessage, SignalingConfig};
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tui::{HeaderInit, Status, TuiMsg, UiEvent, Who};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// Baked-in signaling broker config. URL + USER are operational config that
-// rarely change; rotating them requires a rebuild + release. Password stays
-// as a runtime flag/env var so it can be rotated without rebuilding.
 const BUILTIN_MQTT_URL: &str = "wss://s12a68ff.ala.us-east-1.emqxsl.com:8084/mqtt";
 const BUILTIN_MQTT_USER: &str = "awm_probe";
 
 #[derive(Parser, Debug)]
 #[command(name = "probe", version = VERSION, about = "ephemeral pair-debug shell")]
 struct Args {
-    /// Name advertised on the signaling broker (operator uses this to find this probe).
     #[arg(long, short = 'n')]
     name: String,
 
-    /// EMQX broker URL (override compiled-in default)
     #[arg(long, default_value = BUILTIN_MQTT_URL)]
     mqtt_url: String,
 
-    /// MQTT username (override compiled-in default)
     #[arg(long, default_value = BUILTIN_MQTT_USER)]
     mqtt_user: String,
 
-    /// MQTT password (or set EMQX_PASS)
     #[arg(long, env = "EMQX_PASS")]
     mqtt_pass: String,
 
-    /// Operator display name for the consent prompt
     #[arg(long, default_value = "an awm operator")]
     operator: String,
 
-    /// Skip the interactive consent prompt (TESTS ONLY)
     #[arg(long, default_value_t = false)]
     no_consent: bool,
 
-    /// Route data frames through the MQTT broker instead of WebRTC.
-    /// Use on UDP-blocked networks (HPC nodes, restrictive corp egress)
-    /// where WebRTC cannot establish a data channel. The broker sees all
-    /// command stdout/stderr — no P2P privacy. Operator must also pass
-    /// --mqtt-relay.
     #[arg(long, default_value_t = false)]
     mqtt_relay: bool,
 }
@@ -62,7 +51,7 @@ async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -80,9 +69,6 @@ async fn main() -> ExitCode {
             }
         }
     }
-
-    eprintln!("probe v{VERSION} starting (name={})", args.name);
-    eprintln!("code={}", args.name);
 
     match run(args).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -119,6 +105,24 @@ fn prompt_consent(operator: &str) -> ConsentResult {
 }
 
 async fn run(args: Args) -> Result<()> {
+    let (msg_tx, msg_rx) = mpsc::channel::<TuiMsg>(1024);
+    let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(64);
+
+    let header_init = HeaderInit {
+        name: args.name.clone(),
+        transport: if args.mqtt_relay {
+            "MQTT-relay"
+        } else {
+            "WebRTC"
+        },
+    };
+
+    let tui_handle = tokio::spawn(tui::run_tui(header_init, msg_rx, ui_tx));
+
+    let _ = msg_tx
+        .send(TuiMsg::System("connecting to broker...".into()))
+        .await;
+
     let client_id = format!("probe-friend-{}-{}", args.name, rand_suffix());
     let cfg = SignalingConfig {
         url: args.mqtt_url,
@@ -129,24 +133,44 @@ async fn run(args: Args) -> Result<()> {
     };
 
     let mut handles = signaling::connect(cfg).await.context("signaling connect failed")?;
-    tracing::info!("connected to broker; subscribed");
+    let _ = msg_tx
+        .send(TuiMsg::System("subscribed; waiting for operator...".into()))
+        .await;
 
     enum Handler {
         Webrtc(transport::Transport),
         MqttRelay(mqtt_relay::MqttRelay),
     }
 
+    impl Handler {
+        async fn send_chat(&self, message: String) {
+            match self {
+                Handler::Webrtc(t) => t.send_chat(message).await,
+                Handler::MqttRelay(r) => r.send_chat(message).await,
+            }
+        }
+    }
+
     let handler = if args.mqtt_relay {
-        tracing::info!("mqtt-relay mode: data frames will go through the broker");
-        Handler::MqttRelay(mqtt_relay::MqttRelay::new(handles.publisher.clone()))
+        // Relay mode has no separate "channel open" — being subscribed is
+        // as open as it gets. Flip the status to live now so the friend
+        // sees the right state.
+        let _ = msg_tx.send(TuiMsg::Status(Status::Live)).await;
+        Handler::MqttRelay(mqtt_relay::MqttRelay::new(
+            handles.publisher.clone(),
+            msg_tx.clone(),
+        ))
     } else {
-        Handler::Webrtc(transport::Transport::new(handles.publisher.clone()))
+        Handler::Webrtc(transport::Transport::new(
+            handles.publisher.clone(),
+            msg_tx.clone(),
+        ))
     };
 
-    // Main event loop: forward signaling events to the active handler.
-    // Also listen for Ctrl-C for graceful shutdown.
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
+
+    let mut tui_alive = true;
 
     loop {
         tokio::select! {
@@ -158,22 +182,53 @@ async fn run(args: Args) -> Result<()> {
                             Handler::MqttRelay(r) => r.handle_event(event).await,
                         };
                         if let Err(e) = res {
-                            tracing::warn!("handle_event failed: {e:#}");
+                            let _ = msg_tx
+                                .send(TuiMsg::Error(format!("handle_event failed: {e:#}")))
+                                .await;
                         }
                     }
                     None => {
-                        tracing::info!("signaling event channel closed");
+                        let _ = msg_tx
+                            .send(TuiMsg::System("signaling stream ended".into()))
+                            .await;
+                        let _ = msg_tx.send(TuiMsg::Status(Status::Ended)).await;
                         break;
                     }
                 }
             }
             _ = &mut shutdown => {
-                tracing::info!("ctrl-c received; sending bye");
+                let _ = msg_tx
+                    .send(TuiMsg::System("ctrl-c received; disconnecting...".into()))
+                    .await;
+                let _ = msg_tx.send(TuiMsg::Status(Status::Ended)).await;
                 let _ = handles.publisher.publish_bye(&ByeMessage {
                     reason: "user requested".into(),
                 }).await;
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 break;
+            }
+        }
+
+        // Poll UI events non-blockingly to avoid flooding when TUI is dead.
+        if tui_alive {
+            match ui_rx.try_recv() {
+                Ok(UiEvent::SendChat(msg)) => {
+                    let _ = msg_tx
+                        .send(TuiMsg::Chat {
+                            from: Who::Friend,
+                            message: msg.clone(),
+                        })
+                        .await;
+                    handler.send_chat(msg).await;
+                }
+                Ok(UiEvent::Disconnect) => {
+                    let _ = msg_tx.send(TuiMsg::Status(Status::Ended)).await;
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    tui_alive = false;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
             }
         }
     }
@@ -182,11 +237,12 @@ async fn run(args: Args) -> Result<()> {
         let _ = t.close().await;
     }
     handles.eventloop.abort();
+    drop(msg_tx);
+    tui_handle.abort();
     Ok(())
 }
 
 fn rand_suffix() -> String {
-    // Cheap unique suffix without pulling in `rand`: nanos since epoch.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())

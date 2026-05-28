@@ -177,8 +177,7 @@ pub async fn connect(cfg: SignalingConfig) -> Result<SignalingHandles> {
                     }
                 }
                 Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!("mqtt eventloop error: {e}; sleeping 2s");
+                Err(_) => {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }

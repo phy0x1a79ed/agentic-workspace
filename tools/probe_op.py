@@ -70,6 +70,10 @@ def parse_args() -> argparse.Namespace:
                    help="Route frames through the MQTT broker instead of WebRTC. "
                         "Use on UDP-blocked friends (HPC, restrictive corp). "
                         "Probe binary must also be started with --mqtt-relay.")
+    p.add_argument("--scope", default=None,
+                   help="Vagrant scope name to display in the friend's TUI header.")
+    p.add_argument("--operator-name", default=None,
+                   help="Operator display name sent in the Hello frame.")
     p.add_argument("--timeout", type=float, default=30.0,
                    help="exec deadline in seconds")
     p.add_argument("--connect-timeout", type=float, default=20.0,
@@ -389,6 +393,17 @@ class Session:
             frame = json.dumps({"type": "chat", "message": message})
             self.channel.send(frame)
 
+    def send_hello(self, scope: str | None, operator: str | None):
+        """Send a Hello frame as the first post-open frame.
+
+        Carries human-readable session metadata for the friend's TUI
+        header (vagrant scope, operator display name). Fire-and-forget;
+        no ack expected. See binary/PROTOCOL.md for the full spec.
+        """
+        if self.channel and self.channel.readyState == "open":
+            frame = json.dumps({"type": "hello", "scope": scope, "operator": operator})
+            self.channel.send(frame)
+
     async def send_bye(self):
         topic = f"probe/{self.args.name}/from-operator/bye"
         try:
@@ -535,6 +550,12 @@ class RelaySession:
         topic = f"probe/{self.args.name}/from-operator/data"
         asyncio.ensure_future(self.mqtt.publish(topic, frame, qos=1))
 
+    def send_hello(self, scope: str | None, operator: str | None):
+        """Send a Hello frame as the first post-open frame (relay path)."""
+        frame = json.dumps({"type": "hello", "scope": scope, "operator": operator}).encode()
+        topic = f"probe/{self.args.name}/from-operator/data"
+        asyncio.ensure_future(self.mqtt.publish(topic, frame, qos=1))
+
     async def send_bye(self):
         topic = f"probe/{self.args.name}/from-operator/bye"
         try:
@@ -637,6 +658,10 @@ async def amain() -> int:
                 state = getattr(getattr(session, "pc", None), "connectionState", "n/a")
                 sys.stderr.write(f"[operator] pc state {state}\n")
                 return 4
+
+            # Greet the friend with session metadata so their TUI header
+            # can show the scope name + operator name.
+            session.send_hello(args.scope, args.operator_name)
 
             if args.mode == "exec":
                 rc, _, _ = await session.exec_one(args.cmd, args.timeout)

@@ -3,9 +3,11 @@ use crate::frames::Frame;
 use crate::signaling::{
     IceMessage, IceServerEntry, SdpMessage, SdpType, SignalingEvent, SignalingPublisher,
 };
+use crate::tui::{OutKind, Status, TuiMsg, Who};
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
+use tokio::sync::Mutex as TokioMutex;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -26,10 +28,6 @@ fn default_ice_servers() -> Vec<RTCIceServer> {
     }]
 }
 
-/// Translate a wire-format IceServerEntry into webrtc-rs's RTCIceServer.
-/// webrtc-rs's default credential_type is Unspecified, which it then refuses
-/// on any turn:/turns: URL with ErrTurnCredentials — so set it to Password
-/// whenever creds are present (Cloudflare's TURN uses long-term-credential).
 pub(crate) fn map_ice_server(entry: IceServerEntry) -> RTCIceServer {
     let username = entry.username.unwrap_or_default();
     let credential = entry.credential.unwrap_or_default();
@@ -46,20 +44,37 @@ pub(crate) fn map_ice_server(entry: IceServerEntry) -> RTCIceServer {
     }
 }
 
-/// Friend-side transport: holds at most one live RTCPeerConnection. Each new
-/// operator session (signaled by a fresh SDP Offer) replaces the previous pc.
 pub struct Transport {
     publisher: SignalingPublisher,
-    current: Mutex<Option<Arc<RTCPeerConnection>>>,
-    ice_servers: Mutex<Vec<RTCIceServer>>,
+    current: TokioMutex<Option<Arc<RTCPeerConnection>>>,
+    ice_servers: TokioMutex<Vec<RTCIceServer>>,
+    data_channel: Arc<TokioMutex<Option<Arc<RTCDataChannel>>>>,
+    display_tx: mpsc::Sender<TuiMsg>,
 }
 
 impl Transport {
-    pub fn new(publisher: SignalingPublisher) -> Self {
+    pub fn new(publisher: SignalingPublisher, display_tx: mpsc::Sender<TuiMsg>) -> Self {
         Self {
             publisher,
-            current: Mutex::new(None),
-            ice_servers: Mutex::new(default_ice_servers()),
+            current: TokioMutex::new(None),
+            ice_servers: TokioMutex::new(default_ice_servers()),
+            data_channel: Arc::new(TokioMutex::new(None)),
+            display_tx,
+        }
+    }
+
+    pub async fn send_chat(&self, message: String) {
+        let dc = self.data_channel.lock().await.clone();
+        if let Some(dc) = dc {
+            let frame = Frame::Chat { message };
+            if let Ok(json) = frame.to_json() {
+                if let Err(e) = dc.send_text(json).await {
+                    let _ = self
+                        .display_tx
+                        .send(TuiMsg::Error(format!("send chat failed: {e}")))
+                        .await;
+                }
+            }
         }
     }
 
@@ -67,7 +82,6 @@ impl Transport {
         match event {
             SignalingEvent::OperatorSdp(sdp) => {
                 if matches!(sdp.kind, SdpType::Answer) {
-                    tracing::warn!("ignoring SDP answer from operator (we're the answerer)");
                     return Ok(());
                 }
                 let prev = self.current.lock().await.take();
@@ -75,7 +89,7 @@ impl Transport {
                     let _ = p.close().await;
                 }
                 let ice_servers = self.ice_servers.lock().await.clone();
-                let pc = build_pc(self.publisher.clone(), ice_servers).await?;
+                let pc = self.build_pc(ice_servers).await?;
                 let desc = RTCSessionDescription::offer(sdp.sdp)?;
                 pc.set_remote_description(desc).await?;
                 let answer = pc.create_answer(None).await?;
@@ -88,6 +102,10 @@ impl Transport {
                     })
                     .await?;
                 *self.current.lock().await = Some(pc);
+                let _ = self
+                    .display_tx
+                    .send(TuiMsg::System("WebRTC connection established".into()))
+                    .await;
             }
             SignalingEvent::OperatorIce(ice) => {
                 let pc_opt = self.current.lock().await.clone();
@@ -99,32 +117,42 @@ impl Transport {
                         username_fragment: None,
                     };
                     if let Err(e) = pc.add_ice_candidate(init).await {
-                        tracing::warn!("add_ice_candidate failed: {e}");
+                        let _ = self
+                            .display_tx
+                            .send(TuiMsg::Error(format!("add ICE candidate failed: {e}")))
+                            .await;
                     }
-                } else {
-                    tracing::warn!("ICE candidate arrived before SDP offer; dropping");
                 }
             }
             SignalingEvent::OperatorBye(b) => {
-                tracing::info!("operator sent bye: {}", b.reason);
+                let _ = self
+                    .display_tx
+                    .send(TuiMsg::System(format!("operator disconnected: {}", b.reason)))
+                    .await;
+                let _ = self.display_tx.send(TuiMsg::Status(Status::Ended)).await;
                 let prev = self.current.lock().await.take();
                 if let Some(p) = prev {
                     let _ = p.close().await;
                 }
             }
             SignalingEvent::OperatorData(_) => {
-                tracing::warn!(
-                    "ignoring 'data' frame in WebRTC mode (operator should not \
-                     send on the data topic unless in mqtt-relay mode)"
-                );
+                let _ = self
+                    .display_tx
+                    .send(TuiMsg::System(
+                        "ignoring 'data' frame in WebRTC mode".into(),
+                    ))
+                    .await;
             }
             SignalingEvent::OperatorTurn(turn) => {
                 let mapped: Vec<RTCIceServer> =
                     turn.ice_servers.into_iter().map(map_ice_server).collect();
-                tracing::info!(
-                    "received TURN config from operator ({} server(s))",
-                    mapped.len()
-                );
+                let _ = self
+                    .display_tx
+                    .send(TuiMsg::System(format!(
+                        "received TURN config ({} server(s))",
+                        mapped.len()
+                    )))
+                    .await;
                 *self.ice_servers.lock().await = mapped;
             }
         }
@@ -138,104 +166,63 @@ impl Transport {
         }
         Ok(())
     }
-}
 
-async fn build_pc(
-    publisher: SignalingPublisher,
-    ice_servers: Vec<RTCIceServer>,
-) -> Result<Arc<RTCPeerConnection>> {
-    let mut me = MediaEngine::default();
-    me.register_default_codecs()?;
-    let mut registry = Registry::new();
-    registry = register_default_interceptors(registry, &mut me)?;
-    let api = APIBuilder::new()
-        .with_media_engine(me)
-        .with_interceptor_registry(registry)
-        .build();
-    let config = RTCConfiguration {
-        ice_servers,
-        ..Default::default()
-    };
-    let pc = Arc::new(api.new_peer_connection(config).await?);
+    async fn build_pc(&self, ice_servers: Vec<RTCIceServer>) -> Result<Arc<RTCPeerConnection>> {
+        let mut me = MediaEngine::default();
+        me.register_default_codecs()?;
+        let mut registry = Registry::new();
+        registry = register_default_interceptors(registry, &mut me)?;
+        let api = APIBuilder::new()
+            .with_media_engine(me)
+            .with_interceptor_registry(registry)
+            .build();
+        let config = RTCConfiguration {
+            ice_servers,
+            ..Default::default()
+        };
+        let pc = Arc::new(api.new_peer_connection(config).await?);
 
-    pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-        Box::pin(async move {
-            attach_data_channel(dc).await;
-        })
-    }));
+        let display_tx = self.display_tx.clone();
+        let dc_store = self.data_channel.clone();
+        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let display_tx = display_tx.clone();
+            let dc_store = dc_store.clone();
+            Box::pin(async move {
+                attach_data_channel(dc, display_tx, dc_store).await;
+            })
+        }));
 
-    let pub_for_ice = publisher.clone();
-    pc.on_ice_candidate(Box::new(move |cand| {
-        let publisher = pub_for_ice.clone();
-        Box::pin(async move {
-            let Some(cand) = cand else { return };
-            let init = match cand.to_json() {
-                Ok(i) => i,
-                Err(e) => {
-                    tracing::warn!("local ICE candidate to_json failed: {e}");
-                    return;
+        let pub_for_ice = self.publisher.clone();
+        let display_tx_ice = self.display_tx.clone();
+        pc.on_ice_candidate(Box::new(move |cand| {
+            let publisher = pub_for_ice.clone();
+            let display_tx = display_tx_ice.clone();
+            Box::pin(async move {
+                let Some(cand) = cand else { return };
+                let init = match cand.to_json() {
+                    Ok(i) => i,
+                    Err(e) => {
+                        let _ = display_tx
+                            .send(TuiMsg::Error(format!("ICE candidate to_json failed: {e}")))
+                            .await;
+                        return;
+                    }
+                };
+                let msg = IceMessage {
+                    candidate: init.candidate,
+                    sdp_mid: init.sdp_mid,
+                    sdp_mline_index: init.sdp_mline_index,
+                };
+                if let Err(e) = publisher.publish_ice(&msg).await {
+                    let _ = display_tx
+                        .send(TuiMsg::Error(format!("publish ICE candidate failed: {e}")))
+                        .await;
                 }
-            };
-            let msg = IceMessage {
-                candidate: init.candidate,
-                sdp_mid: init.sdp_mid,
-                sdp_mline_index: init.sdp_mline_index,
-            };
-            if let Err(e) = publisher.publish_ice(&msg).await {
-                tracing::warn!("publish local ICE candidate failed: {e}");
-            }
-        })
-    }));
+            })
+        }));
 
-    pc.on_peer_connection_state_change(Box::new(move |state| {
-        Box::pin(async move {
-            tracing::info!("peer connection state: {state:?}");
-        })
-    }));
-
-    pc.on_ice_connection_state_change(Box::new(move |state| {
-        Box::pin(async move {
-            tracing::info!("ICE connection state: {state:?}");
-        })
-    }));
-
-    Ok(pc)
-}
-
-async fn attach_data_channel(dc: Arc<RTCDataChannel>) {
-    let label = dc.label().to_string();
-    tracing::info!("data channel '{label}' incoming");
-
-    dc.on_open(Box::new(|| {
-        Box::pin(async move {
-            tracing::info!("data channel open");
-        })
-    }));
-
-    let dc_for_msg = dc.clone();
-    dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let dc = dc_for_msg.clone();
-        Box::pin(async move {
-            let Ok(text) = std::str::from_utf8(&msg.data) else {
-                tracing::warn!("non-utf8 data channel message ignored");
-                return;
-            };
-            let frame = match Frame::from_json(text) {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!("frame parse error: {e}; raw={text}");
-                    return;
-                }
-            };
-            handle_inbound_frame(frame, dc).await;
-        })
-    }));
-
-    dc.on_close(Box::new(|| {
-        Box::pin(async move {
-            tracing::info!("data channel closed");
-        })
-    }));
+        Ok(pc)
+    }
 }
 
 #[cfg(test)]
@@ -253,8 +240,10 @@ mod tests {
         assert_eq!(mapped.urls.len(), 1);
         assert_eq!(mapped.username, "u");
         assert_eq!(mapped.credential, "c");
-        // Must be Password for webrtc-rs to accept turn URLs.
-        assert!(matches!(mapped.credential_type, RTCIceCredentialType::Password));
+        assert!(matches!(
+            mapped.credential_type,
+            RTCIceCredentialType::Password
+        ));
     }
 
     #[test]
@@ -267,7 +256,10 @@ mod tests {
         let mapped = map_ice_server(entry);
         assert_eq!(mapped.username, "");
         assert_eq!(mapped.credential, "");
-        assert!(matches!(mapped.credential_type, RTCIceCredentialType::Unspecified));
+        assert!(matches!(
+            mapped.credential_type,
+            RTCIceCredentialType::Unspecified
+        ));
     }
 
     #[test]
@@ -279,37 +271,145 @@ mod tests {
     }
 }
 
-async fn handle_inbound_frame(frame: Frame, dc: Arc<RTCDataChannel>) {
+async fn attach_data_channel(
+    dc: Arc<RTCDataChannel>,
+    display_tx: mpsc::Sender<TuiMsg>,
+    dc_store: Arc<TokioMutex<Option<Arc<RTCDataChannel>>>>,
+) {
+    let label = dc.label().to_string();
+    let _ = display_tx
+        .send(TuiMsg::System(format!("data channel '{label}' incoming")))
+        .await;
+
+    let dc_for_open = dc.clone();
+    let dc_store_for_open = dc_store.clone();
+    let display_tx_open = display_tx.clone();
+    dc.on_open(Box::new(move || {
+        let dc = dc_for_open.clone();
+        let store = dc_store_for_open.clone();
+        let display_tx = display_tx_open.clone();
+        Box::pin(async move {
+            *store.lock().await = Some(dc);
+            let _ = display_tx.send(TuiMsg::Status(Status::Live)).await;
+        })
+    }));
+
+    let dc_for_msg = dc.clone();
+    let display_tx_msg = display_tx.clone();
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let dc = dc_for_msg.clone();
+        let display_tx = display_tx_msg.clone();
+        Box::pin(async move {
+            let Ok(text) = std::str::from_utf8(&msg.data) else {
+                let _ = display_tx
+                    .send(TuiMsg::System("non-utf8 data channel message".into()))
+                    .await;
+                return;
+            };
+            let frame = match Frame::from_json(text) {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = display_tx
+                        .send(TuiMsg::Error(format!("frame parse error: {e}")))
+                        .await;
+                    return;
+                }
+            };
+            handle_inbound_frame(frame, dc, display_tx).await;
+        })
+    }));
+
+    let display_tx_close = display_tx.clone();
+    dc.on_close(Box::new(move || {
+        let display_tx = display_tx_close.clone();
+        Box::pin(async move {
+            let _ = display_tx
+                .send(TuiMsg::System("data channel closed".into()))
+                .await;
+            let _ = display_tx.send(TuiMsg::Status(Status::Ended)).await;
+        })
+    }));
+}
+
+async fn handle_inbound_frame(
+    frame: Frame,
+    dc: Arc<RTCDataChannel>,
+    display_tx: mpsc::Sender<TuiMsg>,
+) {
     match frame {
         Frame::Exec { id, cmd } => {
-            tracing::info!("exec id={id} cmd={cmd:?}");
+            let _ = display_tx
+                .send(TuiMsg::ExecStarted {
+                    id,
+                    cmd: cmd.clone(),
+                })
+                .await;
             let dc_for_pump = dc.clone();
+            let display_tx_pump = display_tx.clone();
             tokio::spawn(async move {
                 let (tx, mut rx) = mpsc::channel::<Frame>(64);
                 tokio::spawn(executor::run_exec(id, cmd, tx));
                 while let Some(f) = rx.recv().await {
+                    let display_msg = match &f {
+                        Frame::Stdout { data, .. } => {
+                            let text = String::from_utf8_lossy(data).to_string();
+                            Some(TuiMsg::ExecOutput {
+                                id,
+                                kind: OutKind::Stdout,
+                                text,
+                            })
+                        }
+                        Frame::Stderr { data, .. } => {
+                            let text = String::from_utf8_lossy(data).to_string();
+                            Some(TuiMsg::ExecOutput {
+                                id,
+                                kind: OutKind::Stderr,
+                                text,
+                            })
+                        }
+                        Frame::Exit { code, .. } => Some(TuiMsg::ExecExit { id, code: *code }),
+                        Frame::Error { message, .. } => {
+                            Some(TuiMsg::Error(message.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(m) = display_msg {
+                        let _ = display_tx_pump.send(m).await;
+                    }
                     match f.to_json() {
                         Ok(json) => {
                             if let Err(e) = dc_for_pump.send_text(json).await {
-                                tracing::warn!("send_text failed: {e}");
+                                let _ = display_tx_pump
+                                    .send(TuiMsg::Error(format!("send_text failed: {e}")))
+                                    .await;
                                 break;
                             }
                         }
-                        Err(e) => tracing::warn!("frame encode failed: {e}"),
+                        Err(e) => {
+                            let _ = display_tx_pump
+                                .send(TuiMsg::Error(format!("frame encode failed: {e}")))
+                                .await;
+                        }
                     }
                 }
             });
         }
-        Frame::Stdin { .. } | Frame::StdinClose { .. } => {
-            // reserved; v1 ignores
-        }
+        Frame::Stdin { .. } | Frame::StdinClose { .. } => {}
         Frame::Chat { message } => {
-            // Print operator's chat message to friend's stderr so the friend
-            // can see what the operator is saying.
-            eprintln!("[operator] {message}");
+            let _ = display_tx
+                .send(TuiMsg::Chat {
+                    from: Who::Operator,
+                    message,
+                })
+                .await;
+        }
+        Frame::Hello { scope, .. } => {
+            let _ = display_tx.send(TuiMsg::Scope(scope)).await;
         }
         other => {
-            tracing::warn!("unexpected inbound frame at friend: {other:?}");
+            let _ = display_tx
+                .send(TuiMsg::System(format!("unexpected frame: {other:?}")))
+                .await;
         }
     }
 }
