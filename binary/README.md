@@ -92,28 +92,55 @@ curl -fsSL http://<host>:12110/probe | sh -s mybox
 On the operator's machine (after `pip install -r tools/requirements.txt`):
 
 ```sh
-# one-shot
+# one-shot — fresh channel per call (full SDP/ICE handshake each time;
+# the friend exits after Bye)
 python3 tools/probe_op.py mybox exec 'uname -a'
 
-# interactive REPL
+# interactive REPL — one persistent channel, multiple commands
 python3 tools/probe_op.py mybox
 # [connected to mybox] Ctrl-D to exit
 # > echo hello
 # hello
 # > <Ctrl-D>
+
+# Persistent daemon + shell-friendly `send` (recommended for repeat use):
+# one terminal:
+python3 tools/probe_op.py mybox daemon                 # holds the channel open
+# any other shell — no broker creds needed, pure local IPC over a unix socket:
+python3 tools/probe_op.py mybox send 'uname -a'        # streams stdout/stderr,
+                                                       # exits with friend's code
+python3 tools/probe_op.py mybox send 'cd /etc && ls'   # each send is one sh -c
+python3 tools/probe_op.py mybox stop                   # graceful shutdown
 ```
 
-## End-to-end test
+The daemon listens on `${XDG_RUNTIME_DIR:-/tmp}/probe-<name>-<uid>.sock`
+(mode 0600). `send` opens that socket, ships one Exec, and proxies
+stdout/stderr/exit back. Multiple back-to-back `send` calls reuse one
+SDP/ICE handshake on the wire — no friend respawn between commands.
 
-With `tools/.env.probe` populated and a release build available:
+## End-to-end tests
+
+Run the whole local suite (cargo + four python e2e harnesses) in one
+shot. Requires `tmux` on PATH and `tools/.env.probe` populated:
 
 ```sh
 cd ..
-python3 tools/test_e2e.py
-# === probe e2e: name=test-7f3a1b8c ===
+tools/test_local.sh
+# === stage 1: build + cargo test ===
 # ...
-# === results: 5 passed, 0 failed ===
+# === stage 6: tools/test_repl_mode.py ===
+# === all local tests passed ===
 ```
+
+Or run individual stages:
+
+| script | what it covers |
+| --- | --- |
+| `tools/test_e2e.py` | one-shot exec over WebRTC |
+| `tools/test_e2e_relay.py` | one-shot exec over MQTT-relay |
+| `tools/test_e2e_daemon.py` | persistent daemon + `send`, both flavors |
+| `tools/test_chat_friend_to_operator.py` | friend TUI chat composer + daemon-reconnect regression (drives the TUI via tmux send-keys) |
+| `tools/test_repl_mode.py` | operator REPL mode |
 
 ## Tmp file lifecycle
 

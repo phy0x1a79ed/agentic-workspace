@@ -60,18 +60,12 @@ def spawn_probe(name: str, env: dict) -> subprocess.Popen:
 
 
 def wait_for_probe_ready(proc: subprocess.Popen, name: str, timeout: float = 10.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            return False
-        line = proc.stderr.readline().decode("utf-8", errors="replace")
-        if line:
-            print(f"  [probe] {line.rstrip()}")
-            if f"code={name}" in line:
-                return True
-        else:
-            time.sleep(0.05)
-    return False
+    """Brief sleep + liveness check. The Rust binary no longer prints
+    `code=<name>` on startup (the TUI consumes it); MQTT subscription is
+    established within ~2 s. Real readiness is the operator's first
+    publish/recv on the relay topic."""
+    time.sleep(3.0)
+    return proc.poll() is None
 
 
 def drain_probe_stderr_background(proc: subprocess.Popen):

@@ -72,20 +72,12 @@ def spawn_probe(name: str, env: dict) -> subprocess.Popen:
 
 
 def wait_for_probe_ready(proc: subprocess.Popen, name: str, timeout: float = 15.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            stderr_dump = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-            print(f"  probe died early; stderr:\n{stderr_dump}")
-            return False
-        line = proc.stderr.readline().decode("utf-8", errors="replace") if proc.stderr else ""
-        if line:
-            print(f"  [probe] {line.rstrip()}")
-            if f"code={name}" in line:
-                return True
-        else:
-            time.sleep(0.05)
-    return False
+    """Brief sleep + liveness check. The Rust binary no longer prints a
+    `code=<name>` line on startup (the TUI consumes it); the subscription is
+    typically established within ~2 s. The actual readiness check is the
+    SDP-offer/answer dance performed by the in-process operator Session."""
+    time.sleep(3.0)
+    return proc.poll() is None
 
 
 def drain_probe_stderr_background(proc: subprocess.Popen):
