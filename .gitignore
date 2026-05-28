@@ -1,6 +1,9 @@
 # AWM runtime state
 .awm/
 
+# Per-worktree dev sandbox env override (port pins, AWM_API_TARGET, etc.)
+dev/.env
+
 # Machine identity — per-host; see AGENTS.md
 NAME.md
 
