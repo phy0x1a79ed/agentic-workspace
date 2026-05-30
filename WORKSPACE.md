@@ -52,6 +52,61 @@ Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this conv
 
 The dev surface that backs the `comp-*` family lives at `/dev/components/[name]` (see `infra-dev-components`).
 
+## Component Dev Architecture
+
+The frontend has two complementary seams that contain UI complexity and turn composition bugs into autonomous test failures.
+
+### Per-component dev surface (`infra-dev-components`)
+
+Each component owns a sibling `<Name>.fixtures.ts` file that declares variants. No central registry — Vite globs them at build time.
+
+```ts
+// frontend/src/lib/components/StatusTag.fixtures.ts
+import type { ComponentProps } from 'svelte';
+import Component from './StatusTag.svelte';
+
+const fixtures: Record<string, ComponentProps<typeof Component>> = {
+  active:    { status: 'active' },
+  failed:    { status: 'failed' },
+  // ...
+};
+export { Component as component };
+export default fixtures;
+```
+
+The dev routes mount one fixture at a time:
+
+- `/dev/components` — auto-generated index of every `*.fixtures.ts` under `src/lib/components/`.
+- `/dev/components/[slug]?v=<variant>` — single-component view with variant switcher.
+- The root `+layout.svelte` skips app chrome and the backend bootstrap on `/dev/*`, so dev pages never call `/voice`, `/rooms`, `/peers`, or `/vagrant`.
+
+`npm run test` runs `vitest` + `jsdom`. A single generic runner (`src/lib/dev/fixtures.test.ts`) globs the same fixture set and mounts every variant — crash-on-mount bugs surface in CI without anyone opening a browser. Adding a fixture needs zero changes to the runner.
+
+**Bind-prop wrapper pattern.** For `$bindable` props whose bug lives at the parent's bind direction, the fixture points at a thin wrapper Svelte file that wires the bind from local state. For `AgentList`, the parent itself is the wrapper, so no extra file is needed — the failing variants in `AgentList.fixtures.ts` reproduce the composition-seam crash autonomously.
+
+### Typed seam (`infra-typed-seams`)
+
+`npm run gen-types` spawns a one-shot Python process in the `awm` mamba env that imports `awm.exposed:app` and calls `app.openapi()` directly. No live uvicorn required, no auth wall. Output goes to `frontend/src/lib/api/generated.ts` (committed). Spawn cwd + `sys.path` are pinned to the worktree root so `import awm` resolves to the worktree's source, not the editable install (see memory `awm_two_source_trees`).
+
+Hand-written interfaces in `client.ts` get progressively replaced by re-exports from `generated.ts`. The first proof-of-seam is `VagrantSessionResponse`. The migration is intentionally narrow — types that match 1:1 swap immediately; types that diverge in shape stay hand-written until the backend tightens its `response_model` declarations.
+
+Engine `CONFIG_SCHEMA` JSON Schemas escape this pipeline (FastAPI types their envelope as `dict[str, Any]` → `unknown`). Fixtures for engine forms hand-shape JSON Schema blobs; if drift becomes a real problem, a future `infra-engine-schema-snapshot` scope can close it.
+
+### Workflow
+
+```bash
+# Visual: see fixtures in the browser
+cd frontend && npm install
+npm run dev      # http://localhost:12103/ui/dev
+
+# Autonomous: fail CI on crash-on-mount bugs
+npm run test
+
+# Regenerate types after Pydantic model changes
+npm run gen-types
+npm run check
+```
+
 ## Skills System
 
 Skills are dynamic protocols that improve with use:
