@@ -37,6 +37,21 @@ Scopes access project data via `.awm/data/`. All scopes in the same project shar
 4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
 5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
 
+## Scope Naming Convention
+
+New scopes use a prefix family to signal what kind of work they own. Names are flat (slashes are rejected — see `awm/services/_validation.py`), so the family is encoded as a hyphen-prefix.
+
+| Prefix | Family | What it owns |
+|--------|--------|-------------|
+| `comp-*` | component | A single frontend component + its fixtures (one slug under `/dev/components/`). |
+| `svc-*`  | service   | A backend service contract — endpoints, models, the Pydantic surface for an area. |
+| `feat-*` | feature   | End-to-end integration that wires components, services, and external engines together (e.g. `feat-stt`, `feat-rooms`). |
+| `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners. |
+
+Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
+
+The dev surface that backs the `comp-*` family lives at `/dev/components/[name]` (see `infra-dev-components`).
+
 ## Skills System
 
 Skills are dynamic protocols that improve with use:

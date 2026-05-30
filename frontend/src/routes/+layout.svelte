@@ -5,14 +5,18 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
+  import { page } from '$app/stores';
   import { ensureVagrantSession } from '$lib/api/client';
   import { ui } from '$lib/state/ui.svelte';
   import { voice } from '$lib/state/voice.svelte';
 
   let { children } = $props();
 
-  // Stale hash bookmarks (#/focus etc.) → history routes.
+  // `/dev/*` is the isolated component dev surface — no backend, no app shell.
+  const isDev = $derived($page.url.pathname.startsWith(`${base}/dev`) || $page.url.pathname.startsWith('/dev'));
+
   onMount(() => {
+    if (isDev) return;
     const h = location.hash;
     if (h && h.startsWith('#/')) {
       const target = h.slice(1);
@@ -28,10 +32,6 @@
   });
 
   async function bootstrapManager() {
-    // POST /vagrant/session is idempotent: provisions the user's vagrant
-    // scope + room and (re)spawns the manager Claude if there's no live
-    // session. Persist the scope identifier so the details panel can mark
-    // which agent row is "yours" and target its slash commands.
     try {
       const r = await ensureVagrantSession();
       ui.managerScope = r.scope_identifier;
@@ -41,13 +41,17 @@
   }
 </script>
 
-<div class="shell">
-  <Header />
-  <main class="content">
-    {@render children()}
-  </main>
-  <BottomNav />
-</div>
+{#if isDev}
+  {@render children()}
+{:else}
+  <div class="shell">
+    <Header />
+    <main class="content">
+      {@render children()}
+    </main>
+    <BottomNav />
+  </div>
+{/if}
 
 <style>
   .shell {
