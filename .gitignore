@@ -1,9 +1,9 @@
 # AWM runtime state
 .awm/
 
-# Local, scope-specific dev context (see .awm/context.md)
-# AGENTS.md is the canonical source; CLAUDE.md is a symlink to it.
-AGENTS.md
+# Per-host orientation symlink. AGENTS.md is the canonical tracked source;
+# CLAUDE.md is a host-local symlink to it (see .awm/context.md for the
+# per-scope override layer).
 CLAUDE.md
 
 # Machine identity — per-host
