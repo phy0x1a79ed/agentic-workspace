@@ -112,6 +112,44 @@ async def engines_unload(kind: str) -> dict[str, bool]:
         raise HTTPException(400, str(exc))
 
 
+# ── Global engine selection (persisted) ─────────────────────────────────
+# STT and TTS choices live in the ``config`` k/v table so they survive
+# uvicorn restarts. There is no LLM voice engine — chat replies come
+# from the room's agent_instance.
+
+
+_GLOBAL_KINDS = {"stt", "tts"}
+
+
+@router.get("/engines/global", dependencies=[Depends(require_bearer)])
+async def engines_global_get() -> dict[str, Any]:
+    from awm.services import voice_engine_config
+    return voice_engine_config.get_global()
+
+
+class EngineGlobalRequest(BaseModel):
+    engine_id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.put("/engines/{kind}/global", dependencies=[Depends(require_bearer)])
+async def engines_global_put(kind: str, body: EngineGlobalRequest) -> dict[str, Any]:
+    if kind not in _GLOBAL_KINDS:
+        raise HTTPException(400, f"unknown voice engine kind {kind!r}; expected one of {sorted(_GLOBAL_KINDS)}")
+    registry = _engines_registry()
+    available = registry.list_engine_ids().get(kind, [])
+    if body.engine_id not in available:
+        raise HTTPException(400, f"unknown {kind} engine {body.engine_id!r}; available: {available}")
+    from awm.services import voice_engine_config
+    voice_engine_config.set_global(kind, body.engine_id, body.params)
+    try:
+        registry.load(kind, body.engine_id, body.params)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("engine load after persist failed")
+        raise HTTPException(500, f"persisted but load failed: {exc}")
+    return voice_engine_config.get_global()
+
+
 # ── TTS speak (one-shot synth) ──────────────────────────────────────────
 
 

@@ -225,8 +225,6 @@ export const runAgentSlash = (id: string, scope: string, cmd: string) =>
   api<AgentSlashResponse>('POST', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash`, { cmd });
 export const ensureVagrantSession = () =>
   api<VagrantSessionResponse>('POST', '/vagrant/session');
-export const ensureVagrantVoiceTests = () =>
-  api<VagrantSessionResponse>('POST', '/vagrant/voice-tests');
 
 export const listVoiceEngines = () =>
   api<EnginesByKind>('GET', '/voice/engines');
@@ -236,6 +234,14 @@ export const loadEngine = (kind: string, id: string, params: Record<string, unkn
   api<LoadedEngine>('POST', `/voice/engines/${encodeURIComponent(kind)}/load`, { id, params });
 export const unloadEngine = (kind: string) =>
   api<{ unloaded: boolean }>('POST', `/voice/engines/${encodeURIComponent(kind)}/unload`);
+
+/** Persisted global engine selection: ``{stt: {engine_id, params} | null, tts: ...}``. */
+export interface GlobalEngineSelection { engine_id: string; params: Record<string, unknown> }
+export type GlobalEnginesByKind = Record<string, GlobalEngineSelection | null>;
+export const getGlobalEngines = () =>
+  api<GlobalEnginesByKind>('GET', '/voice/engines/global');
+export const putGlobalEngine = (kind: string, engine_id: string, params: Record<string, unknown> = {}) =>
+  api<GlobalEnginesByKind>('PUT', `/voice/engines/${encodeURIComponent(kind)}/global`, { engine_id, params });
 /** Fetch synth audio blob (audio/wav). 409 = no tts engine loaded. */
 export async function ttsSpeakBlob(text: string): Promise<Blob> {
   const r = await fetch('/voice/tts/speak', {

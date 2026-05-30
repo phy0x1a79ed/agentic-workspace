@@ -19,11 +19,8 @@ from awm.middleware_auth import require_bearer
 from awm.services import agent_instances
 from awm.services.scopes import (
     _vagrant_scope_name,
-    _voice_tests_scope_name,
     ensure_vagrant_session,
-    ensure_voice_tests_session,
     vagrant_scope_identifier,
-    voice_tests_scope_identifier,
 )
 
 
@@ -87,46 +84,5 @@ async def session(request: Request) -> VagrantSessionResponse:
         scope_uuid=scope_uuid,
         room_id=room_id,
         scope_identifier=vagrant_scope_identifier(user_as),
-        manager_live=manager_live,
-    )
-
-
-@router.post(
-    "/voice-tests",
-    response_model=VagrantSessionResponse,
-    dependencies=[Depends(require_bearer)],
-)
-async def voice_tests(request: Request) -> VagrantSessionResponse:
-    """Provision the user's ``<user>-voice-tests`` sibling vagrant scope.
-
-    Same shape as ``/vagrant/session`` but targets the voice-tests scope —
-    a dedicated harness for the control panel's Voice section to drive.
-    """
-    user_as = _user_from_request(request)
-    try:
-        scope_uuid, room_id = ensure_voice_tests_session(user_as)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-
-    scope_name = _voice_tests_scope_name(user_as)
-    manager_live = True
-    if agent_instances.get_session_by_scope(VAGRANT_PROJECT, scope_name) is None:
-        try:
-            await agent_instances.create_session(
-                project=VAGRANT_PROJECT,
-                scope=scope_name,
-                agent_cli="claude",
-                permission_mode="bypassPermissions",
-            )
-        except agent_instances.ScopeBusyError:
-            pass
-        except Exception:  # noqa: BLE001
-            log.exception("voice-tests manager spawn failed for %s", user_as)
-            manager_live = False
-
-    return VagrantSessionResponse(
-        scope_uuid=scope_uuid,
-        room_id=room_id,
-        scope_identifier=voice_tests_scope_identifier(user_as),
         manager_live=manager_live,
     )

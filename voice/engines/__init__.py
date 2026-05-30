@@ -30,7 +30,6 @@ log = logging.getLogger("voice.engines")
 _REGISTRIES: dict[str, dict[str, tuple[type[BaseModel], Callable[[Any], Any]]]] = {
     "stt": {},
     "tts": {},
-    "llm": {},
 }
 
 
@@ -39,7 +38,6 @@ _REGISTRIES: dict[str, dict[str, tuple[type[BaseModel], Callable[[Any], Any]]]] 
 _LOADED: dict[str, dict[str, Any]] = {
     "stt": {},
     "tts": {},
-    "llm": {},
 }
 
 
@@ -55,10 +53,6 @@ def register_stt(module) -> None:
 
 def register_tts(module) -> None:
     _register("tts", module.ENGINE_ID, module.CONFIG_SCHEMA, module.make)
-
-
-def register_llm(module) -> None:
-    _register("llm", module.ENGINE_ID, module.CONFIG_SCHEMA, module.make)
 
 
 def _make(kind: str, ref: EngineRef):
@@ -78,10 +72,6 @@ def make_stt(ref: EngineRef):
 
 def make_tts(ref: EngineRef):
     return _make("tts", ref)
-
-
-def make_llm(ref: EngineRef):
-    return _make("llm", ref)
 
 
 def load(kind: str, engine_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -187,12 +177,10 @@ def list_engines() -> dict[str, dict[str, dict[str, Any]]]:
 def _bootstrap() -> None:
     from voice.engines.stt import whisper, sherpa, whisper_stream  # noqa: F401
     from voice.engines.tts import piper, pocket, kokoro_rvc, f5tts, gptsovits, sbv2  # noqa: F401
-    from voice.engines.llm import openrouter, claude  # noqa: F401
 
     register_stt(whisper); register_stt(sherpa); register_stt(whisper_stream)
     register_tts(piper); register_tts(pocket); register_tts(kokoro_rvc)
     register_tts(f5tts); register_tts(gptsovits); register_tts(sbv2)
-    register_llm(openrouter); register_llm(claude)
 
 
 _bootstrap()
@@ -207,7 +195,6 @@ _bootstrap()
 _DYNAMIC_REGISTERS: dict[str, Callable[[Any], None]] = {
     "stt": register_stt,
     "tts": register_tts,
-    "llm": register_llm,
 }
 # Track filename → (kind, engine_id, mtime_ns). Used to detect change /
 # removal and to map files back to the engine they registered.

@@ -139,6 +139,29 @@ async def lifespan(app: FastAPI):
     )
     agent_instances.reconcile_on_startup()
 
+    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
+    # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
+    # 503 with a clear message, the rest of the app keeps running.
+    try:
+        from awm.services.scopes import ensure_vagrant_repo
+        bare = ensure_vagrant_repo()
+        print(f"[awm-exposed] vagrant-scopes ready: {bare}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] vagrant-scopes disabled: {exc}")
+
+    # Restore persisted voice engine selections. Non-fatal: a broken engine
+    # leaves voice unloaded until the operator picks something else.
+    try:
+        from awm.services import voice_engine_config
+        from voice import engines as _voice_engines
+        for _kind, _sel in voice_engine_config.get_global().items():
+            if _sel is None:
+                continue
+            _voice_engines.load(_kind, _sel["engine_id"], _sel["params"])
+        print(f"[awm-exposed] voice engines restored: {voice_engine_config.get_global()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engine restore failed: {exc}")
+
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
@@ -238,7 +261,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] voice registry init failed: {exc}")
 
-    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts,llm}/``.
+    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts}/``.
     # Lazy import so engine bootstrap (which can pull large models) doesn't
     # run unless the user actually visits the voice surface.
     engines_watcher_task: asyncio.Task | None = None

@@ -2,14 +2,11 @@
   import { onMount } from 'svelte';
   import {
     peerInfo, listPeers, listProjects, listScopes, coreStatus, pingPeer,
-    listVoiceEngines, getLoadedEngines,
     type Peer, type Project, type Scope, type CoreStatus,
-    type EnginesByKind, type LoadedEnginesByKind,
   } from '$lib/api/client';
   import Button from '$lib/primitives/Button.svelte';
   import CollapsibleSection from '$lib/primitives/CollapsibleSection.svelte';
   import ConfigStats, { type StatRow } from '$lib/components/ConfigStats.svelte';
-  import VoiceControlPanel from '$lib/components/VoiceControlPanel.svelte';
 
   // ── Status (existing stats) ────────────────────────────────────────────
   let whoami     = $state<Peer | null>(null);
@@ -24,14 +21,8 @@
   let coreErr    = $state<string>('');
   let pingResult = $state<Record<string, string>>({});
 
-  // ── Voice (engines) ────────────────────────────────────────────────────
-  let engines       = $state<EnginesByKind | null>(null);
-  let enginesErr    = $state<string>('');
-  let loaded        = $state<LoadedEnginesByKind>({});
-
   // Sections open by default: only Status, to keep the page short on first paint.
   let statusOpen = $state(true);
-  let voiceOpen  = $state(false);
   let agentsOpen = $state(false);
 
   onMount(() => { refreshAll(); });
@@ -77,23 +68,6 @@
       pingResult[id] = r.ok ? `ok ${r.rtt_ms}ms` : `ERR ${r.error ?? ''}`;
     } catch (e) { pingResult[id] = (e as Error).message; }
   }
-
-  async function refreshEngines() {
-    enginesErr = '';
-    try {
-      const [list, ld] = await Promise.all([listVoiceEngines(), getLoadedEngines()]);
-      engines = list;
-      loaded = ld;
-    } catch (e) {
-      enginesErr = (e as Error).message;
-      engines = null;
-    }
-  }
-
-  // Open Voice lazily — first expand triggers the engine fetch.
-  $effect(() => {
-    if (voiceOpen && engines === null && !enginesErr) refreshEngines();
-  });
 
   // ── Row builders ───────────────────────────────────────────────────────
   function peerRows(p: Peer): StatRow[] {
@@ -213,24 +187,6 @@
         <ConfigStats rows={coreRows(core)} compact />
       {/if}
     </CollapsibleSection>
-  </CollapsibleSection>
-
-  <CollapsibleSection label="voice" bind:open={voiceOpen} rail="peer">
-    {#snippet actions()}
-      <Button kind="ghost" onclick={refreshEngines}>refresh</Button>
-    {/snippet}
-
-    {#if enginesErr}
-      <div class="err mono">{enginesErr}</div>
-    {:else if engines === null}
-      <div class="empty mono">loading engines…</div>
-    {:else}
-      <VoiceControlPanel
-        {engines}
-        bind:loaded
-        onerror={(m) => enginesErr = m}
-      />
-    {/if}
   </CollapsibleSection>
 
   <CollapsibleSection label="agents" bind:open={agentsOpen} rail="plain">

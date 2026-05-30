@@ -363,24 +363,6 @@ def vagrant_scope_identifier(user_as: str) -> str:
     return f"{VAGRANT_PROJECT}/{_vagrant_scope_name(user_as)}"
 
 
-def _voice_tests_scope_name(user_as: str) -> str:
-    """Vagrant-sibling scope dedicated to driving the voice test harness.
-
-    Shares the slug rules with :func:`_vagrant_scope_name` but with a
-    ``-voice-tests`` suffix instead of ``-handler``. Sits alongside the
-    user's regular handler so voice experiments don't pollute the
-    handler's conversation history.
-    """
-    import re
-    bare = user_as.removeprefix("user:") if user_as.startswith("user:") else user_as
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", bare).strip("-")
-    return f"{safe}-voice-tests" if safe else "anon-voice-tests"
-
-
-def voice_tests_scope_identifier(user_as: str) -> str:
-    return f"{VAGRANT_PROJECT}/{_voice_tests_scope_name(user_as)}"
-
-
 def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     """Ensure a vagrant scope and default room exist for ``user_as``.
 
@@ -437,61 +419,6 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     scope_identifier = f"{VAGRANT_PROJECT}/{scope_name}"
     room = rooms_svc.create_room(
         topic=f"vagrant session for {user_as}",
-        scopes=[scope_identifier],
-        opener=user_as,
-        close_on_exit=False,
-    )
-    set_config(pointer_key, room.id)
-    return scope_uuid, room.id
-
-
-def ensure_voice_tests_session(user_as: str) -> tuple[str, str]:
-    """Provision ``user_as``'s voice-tests vagrant scope + pinned default room.
-
-    Idempotent in the same way as :func:`ensure_vagrant_session` — the
-    room id is pinned under ``vagrant_voice_tests_room:<scope_name>``.
-    """
-    from awm.services.config_service import get_config, set_config
-    from awm.services import rooms as rooms_svc
-
-    scope_name = _voice_tests_scope_name(user_as)
-    bare_dir = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
-    if not bare_dir.exists():
-        raise FileNotFoundError(
-            f"Vagrant-scopes repo not initialized at {bare_dir}. "
-            f"Run `awm vagrant-init` first."
-        )
-
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
-            (VAGRANT_PROJECT, scope_name),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        create_scope(ScopeCreateRequest(project=VAGRANT_PROJECT, scope=scope_name))
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
-                (VAGRANT_PROJECT, scope_name),
-            ).fetchone()
-        finally:
-            conn.close()
-    scope_uuid = row["uuid"]
-
-    pointer_key = f"vagrant_voice_tests_room:{scope_name}"
-    room_id = get_config(pointer_key)
-    if room_id:
-        existing = rooms_svc.get_room(room_id)
-        if existing is not None and existing.status == "active":
-            return scope_uuid, room_id
-
-    scope_identifier = f"{VAGRANT_PROJECT}/{scope_name}"
-    room = rooms_svc.create_room(
-        topic=f"voice tests for {user_as}",
         scopes=[scope_identifier],
         opener=user_as,
         close_on_exit=False,
