@@ -1432,13 +1432,42 @@ def login(
 def hub_register(
     name: str = typer.Option(..., "--name", help="Service name (must be unique)"),
     prefix: str = typer.Option(..., "--prefix", help="URL prefix to claim (e.g. /demo)"),
-    url: str = typer.Option(..., "--url", help="Local URL the service listens on"),
+    url: str | None = typer.Option(
+        None, "--url",
+        help="Local URL the service listens on (kind=url). "
+             "Mutually exclusive with --dir.",
+    ),
+    dir: str | None = typer.Option(
+        None, "--dir",
+        help="Local directory to serve at the prefix (kind=static). "
+             "Mutually exclusive with --url.",
+    ),
+    entry: str | None = typer.Option(
+        None, "--entry",
+        help="Relative path to the ESM entry script. Used for the auto-shell "
+             "when --dir has no index.html.",
+    ),
+    css: list[str] = typer.Option(
+        None, "--css",
+        help="Relative path to a stylesheet (repeatable). "
+             "Injected into the auto-shell.",
+    ),
+    mount_id: str = typer.Option(
+        "app", "--mount-id",
+        help="DOM id of the mount node in the auto-shell.",
+    ),
 ):
     """Register a service and hold a WS lease until interrupted.
 
     On Ctrl-C the lease closes and the hub evicts the registration on
     the next event-loop tick. Re-running this command after eviction
     re-registers from scratch.
+
+    Two flavours:
+
+    \b
+      --url http://127.0.0.1:5173        # forward HTTP/WS to a local process
+      --dir ./dist [--entry main.js …]   # serve a built directory at the prefix
     """
     import asyncio as _asyncio
     import json as _json
@@ -1446,11 +1475,36 @@ def hub_register(
 
     import websockets as _ws
 
+    if bool(url) == bool(dir):
+        typer.echo("exactly one of --url or --dir must be provided", err=True)
+        raise typer.Exit(2)
+    if url and (entry or css or mount_id != "app"):
+        typer.echo("--entry/--css/--mount-id only apply with --dir", err=True)
+        raise typer.Exit(2)
+
+    if dir:
+        from pathlib import Path as _Path
+        dir_abs = str(_Path(dir).expanduser().resolve())
+        payload = {
+            "name": name,
+            "prefix": prefix,
+            "static": {
+                "dir": dir_abs,
+                "entry": entry,
+                "css": list(css or []),
+                "mount_id": mount_id,
+            },
+        }
+        summary = f"dir={dir_abs}"
+    else:
+        payload = {"name": name, "prefix": prefix, "url": url}
+        summary = f"url={url}"
+
     base, token = _exposed_base_and_token()
     try:
         r = httpx.post(
             f"{base}/hub/register",
-            json={"name": name, "prefix": prefix, "url": url},
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
             timeout=10,
             verify=False,
@@ -1464,7 +1518,7 @@ def hub_register(
     body = r.json()
     service_id = body["service_id"]
     lease_path = body["lease_ws_path"]
-    typer.echo(f"registered {name} → {url} (id={service_id})")
+    typer.echo(f"registered {name} → {summary} (id={service_id})")
     typer.echo(f"holding lease at wss://...{lease_path} (Ctrl-C to evict)")
 
     ws_base = base.replace("https://", "wss://").replace("http://", "ws://")

@@ -624,6 +624,10 @@ app.mount("/", core_app)
 
 from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
 from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+from awm.services.hub.static import (  # noqa: E402
+    close_ws_unsupported as _ws_close_unsupported,
+    serve_static as _serve_static,
+)
 
 
 class HubRoutingMiddleware:
@@ -645,6 +649,14 @@ class HubRoutingMiddleware:
         rec = registry.longest_match(path)
         if rec is None:
             return await self.app(scope, receive, send)
+        if rec.kind == "static":
+            if scope["type"] == "websocket":
+                await _ws_close_unsupported(scope, receive, send)
+                return
+            request = Request(scope, receive=receive)
+            response = await _serve_static(request, rec)
+            await response(scope, receive, send)
+            return
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
             response = await proxy_http(request, rec.url)

@@ -79,7 +79,7 @@ mamba run -n <project-env> pip install <package>
 
 ## Service Hub
 
-`awm.exposed:app` (port 7820) is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, `/voice`, …). A few path prefixes are *registered* by external services at runtime; matched requests are forwarded to those services with hub-as-peer auth.
+`awm.exposed:app` (port 7820) is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, `/voice`, …). A few path prefixes are *registered* at runtime; matched requests are either forwarded to an external service or served from a registered directory.
 
 ### When to make a `svc-*` scope
 
@@ -87,31 +87,50 @@ Use a `svc-*` worktree when a stripe needs to **own** a path prefix end-to-end: 
 
 ### Registration lifecycle
 
+Two registration kinds share the same CLI + lease lifecycle.
+
+**URL forward** — for `svc-*` processes that own a prefix end-to-end:
+
 ```bash
 # in the svc-* worktree, with the service running on a chosen port:
 awm hub register --name <svc> --prefix </owned-path> --url http://127.0.0.1:<port>
 ```
 
-`register` POSTs to `/hub/register`, then holds a WS lease at `/hub/lease/<id>` until you Ctrl-C. Lease close → eviction within the next event-loop tick. No file-based config, no heartbeat tuning. Re-running re-registers from scratch.
+**Static dir** — for frontend slices that compile a bundle and want it reachable on the hub origin without running a dev server through the hub:
+
+```bash
+# in the comp-* worktree, after building (e.g. vite build → ./dist):
+awm hub register --name <comp> --prefix </comp-path> --dir ./dist \
+  [--entry main.js] [--css style.css] [--mount-id app]
+```
+
+If the registered directory has no `index.html`, the hub renders a minimal ESM shell at the prefix root: an empty `<div id="<mount-id>"></div>`, optional CSS `<link>`s, and a `<script type="module" src="<prefix>/<entry>">`. Drop an `index.html` into the directory to take over entirely.
+
+Both forms POST to `/hub/register`, then hold a WS lease at `/hub/lease/<id>` until you Ctrl-C. Lease close → eviction within the next event-loop tick. No file-based config, no heartbeat tuning. Re-running re-registers from scratch.
 
 Other commands:
-- `awm hub list` — show current registrations.
+- `awm hub list` — show current registrations (includes `kind: url|static`).
 - `awm hub deregister <name>` — admin force-evict.
-- `awm hub trust-self` — install the local auth token at `$AWM_DIR/peers/<self>.token` so the hub's forwarded requests pass `require_peer_bearer` on the service side. Run once per node.
+- `awm hub trust-self` — install the local auth token at `$AWM_DIR/peers/<self>.token` so the hub's forwarded requests pass `require_peer_bearer` on the service side. Run once per node. Only needed for URL-kind registrations.
 
 ### Auth model
 
-Hub → service is degenerate peer auth. The hub injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>` on every forwarded request; the user's bearer (`Authorization` header / `awm_session` cookie) is stripped. `X-Awm-As` is preserved verbatim. Services gate routes with `from awm.middleware_auth import require_peer_bearer` — one import, no new bearer concept.
+Hub → service is degenerate peer auth (URL kind only). The hub injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>` on every forwarded request; the user's bearer (`Authorization` header / `awm_session` cookie) is stripped. `X-Awm-As` is preserved verbatim. Services gate routes with `from awm.middleware_auth import require_peer_bearer` — one import, no new bearer concept.
+
+Static-kind registrations don't proxy, so there's no second-hop auth — bytes are served by the hub directly, subject to whatever middleware sits in front of the hub itself. WS connections to a static prefix are closed with code 1003.
 
 ### What `comp-*` and frontend slices need to know
 
-**Nothing.** The hub IS `awm.exposed:app` on :7820; no new origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm.
+**Nothing about consuming the hub.** The hub IS `awm.exposed:app` on :7820; no new origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm.
 
-### Demo
+To **publish** a built component through the hub: `awm hub register --dir <dist>` after building. No need to wire up a port or a dev server — the hub serves the files.
 
-`awm/demos/echo_svc.py` is a 60-line FastAPI smoke test — copy it as the starting point for a real `svc-*`.
+### Demos
+
+- `awm/demos/echo_svc.py` — 60-line FastAPI smoke test; copy as the starting point for a real `svc-*`.
+- `awm/demos/static_demo/` — naked `main.js` + `style.css` bundle; copy as the starting point for a `comp-*` registration. README has the one-liner.
 
 ### Constraints
 
 - **Never run two hubs on one node.** Both would bind :7820 and one would fail.
-- The hub control plane (`/hub/*`) is exempt from forwarding even if a prefix would shadow it — the lease socket has to stay reachable.
+- The hub control plane (`/hub/*`) is exempt from forwarding and rejected at registration — `--prefix /hub` and `/hub/*` return 409. The lease socket has to stay reachable.
