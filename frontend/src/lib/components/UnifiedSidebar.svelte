@@ -2,7 +2,7 @@
   import type { Room } from '$lib/api/client';
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
 
   interface Props {
     rooms: Room[];
