@@ -34,6 +34,7 @@ inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_
 room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
+hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
 
 context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
 
@@ -48,6 +49,7 @@ app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
 app.add_typer(context_app, name="context")
+app.add_typer(hub_app, name="hub")
 
 
 # ---------------------------------------------------------------------------
@@ -1456,3 +1458,136 @@ def login(
     typer.echo(data["url"])
     typer.echo(f"# open this in your browser — expires in {data['expires_in_s']}s",
                err=True)
+
+
+# ---------------------------------------------------------------------------
+# Service hub — register a foreground process as a routed service
+# ---------------------------------------------------------------------------
+
+@hub_app.command("register")
+def hub_register(
+    name: str = typer.Option(..., "--name", help="Service name (must be unique)"),
+    prefix: str = typer.Option(..., "--prefix", help="URL prefix to claim (e.g. /demo)"),
+    url: str = typer.Option(..., "--url", help="Local URL the service listens on"),
+):
+    """Register a service and hold a WS lease until interrupted.
+
+    On Ctrl-C the lease closes and the hub evicts the registration on
+    the next event-loop tick. Re-running this command after eviction
+    re-registers from scratch.
+    """
+    import asyncio as _asyncio
+    import json as _json
+    import ssl as _ssl
+
+    import websockets as _ws
+
+    base, token = _exposed_base_and_token()
+    try:
+        r = httpx.post(
+            f"{base}/hub/register",
+            json={"name": name, "prefix": prefix, "url": url},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            verify=False,
+        )
+    except httpx.HTTPError as exc:
+        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    body = r.json()
+    service_id = body["service_id"]
+    lease_path = body["lease_ws_path"]
+    typer.echo(f"registered {name} → {url} (id={service_id})")
+    typer.echo(f"holding lease at wss://...{lease_path} (Ctrl-C to evict)")
+
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_base}{lease_path}"
+
+    ssl_ctx = _ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+    async def _hold():
+        async with _ws.connect(
+            ws_url,
+            subprotocols=[f"bearer.{token}"],
+            ssl=ssl_ctx if ws_url.startswith("wss://") else None,
+            max_size=None,
+            open_timeout=10,
+        ) as wsconn:
+            # First frame is {"type":"ready",...} — print it then idle.
+            try:
+                first = await wsconn.recv()
+                try:
+                    typer.echo(f"hub: {_json.loads(first)}")
+                except Exception:
+                    typer.echo(f"hub: {first!r}")
+            except Exception:
+                pass
+            # Idle forever; the hub's eviction is triggered by close.
+            try:
+                async for _ in wsconn:
+                    pass
+            except _ws.WebSocketException:
+                return
+
+    try:
+        _asyncio.run(_hold())
+    except KeyboardInterrupt:
+        typer.echo("lease closed — service evicted")
+
+
+@hub_app.command("list")
+def hub_list():
+    """List currently registered services."""
+    r = _exposed_api("GET", "/hub/services")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    _print_json(r)
+
+
+@hub_app.command("deregister")
+def hub_deregister(name: str = typer.Argument(..., help="Service name to evict")):
+    """Force-evict a service by name (independent of its lease holder)."""
+    r = _exposed_api("DELETE", f"/hub/services/{name}")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    _print_json(r)
+
+
+@hub_app.command("trust-self")
+def hub_trust_self():
+    """Install the local auth token at ``$AWM_DIR/peers/<self>.token``.
+
+    Services authenticate hub→service requests via ``require_peer_bearer``,
+    which checks the bearer against the peer-token file for the claimed
+    ``X-Awm-From`` peer. The hub forwards as ITSELF, so the local peer's
+    own token has to be present in the peers/ directory. Idempotent.
+    """
+    from awm.services.network import peers as _peers
+    from awm.services import auth as _auth
+    try:
+        token = _auth.local_token(generate_if_missing=False)
+    except _auth.TokenMissing as exc:
+        typer.echo(f"local auth token missing: {exc}", err=True)
+        raise typer.Exit(1)
+    local = _peers.get_local_identity()
+    if local is None:
+        typer.echo("no local peer identity — run `awm peer init` first",
+                   err=True)
+        raise typer.Exit(1)
+    peer_id = local["peer_id"]
+    peers_dir = AWM_DIR / "peers"
+    peers_dir.mkdir(parents=True, exist_ok=True)
+    target = peers_dir / f"{peer_id}.token"
+    target.write_text(token + "\n")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    typer.echo(f"trust-self: wrote {target}")

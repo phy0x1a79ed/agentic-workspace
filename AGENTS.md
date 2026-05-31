@@ -69,3 +69,12 @@ PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run check
 - **`feat/infra-dev-components`** has the dev routes, vitest config, and the generic runner. Anything you add a fixture for shows up here.
 - **`feat/infra-typed-seams`** has the `gen-types` script and `generated.ts`.
 - **`feat/comp-*`** branches carry only the fixture file for their component. To verify a `comp-*` fixture, either merge `feat/infra-dev-components` into the comp branch (and `feat/infra-typed-seams` if the component needs generated types), or use the `verify/integration` branch that octopus-merges all five.
+
+## Scope-Agent Orientation
+
+- **`awm` IS `awm.exposed:app` on port 7820.** Always one process per node — never spawn a second hub.
+- **`svc-*` / `web-*` scopes are FastAPI processes** that own a path prefix and register at runtime via `awm hub register …`. The hub forwards matched paths to them.
+- **`comp-*` and frontend slices are unaware of the hub.** Same origin, same port; behavior is byte-identical when the registry is empty.
+- **Reuse `require_peer_bearer`** (`awm/middleware_auth.py`) for svc-side auth — the hub authenticates to services as the local peer. Do not invent a new bearer.
+- **Run `awm hub trust-self` once per node** so the hub's own bearer is recognized by `require_peer_bearer` on the service side.
+- See `WORKSPACE.md § Service Hub` for the full lifecycle and `awm/demos/echo_svc.py` for a starter template.
