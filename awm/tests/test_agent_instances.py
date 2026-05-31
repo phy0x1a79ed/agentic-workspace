@@ -335,10 +335,17 @@ def stub_subprocess(monkeypatch):
 
     async def _noop(_session): return None
 
+    async def _stdin_ready_pump(session):
+        # The real _input_pump verifies proc.stdin is usable, then sets
+        # stdin_ready so create_session can return. Mirror that single
+        # behavior so the unconditional `stdin_ready.wait()` at the end
+        # of create_session doesn't time out (and try to kill the fake).
+        session.stdin_ready.set()
+
     monkeypatch.setattr(ai_mod.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(ai_mod, "_reader_loop", _noop)
     monkeypatch.setattr(ai_mod, "_waiter_loop", _noop)
-    monkeypatch.setattr(ai_mod, "_input_pump", _noop)
+    monkeypatch.setattr(ai_mod, "_input_pump", _stdin_ready_pump)
     monkeypatch.setattr(ai_mod, "resolve_bin",
                         lambda name: f"/fake/bin/{name}")
     # PROJECTS_DIR and config.AWM_DIR were name-imported / module-attr-read
