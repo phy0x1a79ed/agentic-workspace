@@ -1110,11 +1110,17 @@ def context_emit(
     """
     cwd = cwd.resolve()
 
+    # Walk to the OUTERMOST WORKSPACE.md, not the innermost. The .bare
+    # worktree-sharing topology means a scope worktree under projects/awm/*
+    # has its own WORKSPACE.md copy at root (committed on the dev branch);
+    # the workspace's WORKSPACE.md lives at agentic_workspace/. Picking the
+    # outermost keeps workspace_root pinned at the true workspace, so the
+    # `cwd != workspace_root` guard below correctly emits the agents block
+    # for awm-dev scopes.
     workspace_root: Path | None = None
     for p in (cwd, *cwd.parents):
         if (p / "WORKSPACE.md").is_file():
             workspace_root = p
-            break
     if workspace_root is None:
         raise typer.Exit(code=0)
 
