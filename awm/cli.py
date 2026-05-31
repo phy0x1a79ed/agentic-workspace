@@ -35,6 +35,8 @@ room_app = typer.Typer(help="Rooms: multi-participant conversations with agents"
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
 
+context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
+
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
 app.add_typer(lock_app, name="lock")
@@ -45,6 +47,7 @@ app.add_typer(peer_app, name="peer")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
+app.add_typer(context_app, name="context")
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +997,7 @@ def scope_create(
     project: str = typer.Argument(..., help="Project name"),
     scope: str = typer.Argument(..., help="Scope name"),
     from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch"),
-    context: Optional[str] = typer.Option(None, "--context", help="Seed context text for AGENTS.md"),
+    context: Optional[str] = typer.Option(None, "--context", help="Seed body for `.awm/context.md`"),
     context_file: Optional[Path] = typer.Option(None, "--context-file", help="Read context from file"),
 ):
     """Create a scope worktree."""
@@ -1052,16 +1055,49 @@ def scope_sync(
 @scope_app.command("heal")
 def scope_heal(
     project: Optional[str] = typer.Option(None, "--project", help="Limit healing to one project"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report intended actions without mutating"),
 ):
-    """Back-fill CLAUDE.md symlinks and @.awm/context.md imports for existing scopes.
+    """Enforce tier-3 = ``.awm/`` only across active scope worktrees.
 
-    Idempotent. Existing AGENTS.md content is never edited; only missing
-    wiring is added. Run after upgrading awm to pick up the harness
-    context-injection feature.
+    For each active scope: strip any leaked ``@.awm/context.md`` line from a
+    tracked ``AGENTS.md`` (project-tier doc), delete untracked scope-level
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink, and
+    back-fill ``.awm/context.md`` if missing. Idempotent. Use ``--dry-run``
+    to sanity-check the report before mutating.
     """
     from awm.services.scopes import heal_scopes
-    report = heal_scopes(project=project)
-    _print_json(report)
+    import json as _json
+    report = heal_scopes(project=project, dry_run=dry_run)
+    typer.echo(_json.dumps(report, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Scope context — emit .awm/context.md for harness SessionStart hooks
+# ---------------------------------------------------------------------------
+
+
+@context_app.command("emit")
+def context_emit(
+    cwd: Path = typer.Option(
+        Path.cwd(), "--cwd",
+        help="Worktree root to resolve `.awm/context.md` from",
+    ),
+):
+    """Emit ``<cwd>/.awm/context.md`` wrapped in a ``<scope-context>`` block.
+
+    Designed for harness SessionStart hooks (Claude Code ``hooks.SessionStart``
+    additionalContext). If no ``.awm/context.md`` exists, exits silently with
+    no output — never errors, so the hook never fails. History and artifacts
+    are intentionally NOT emitted (too large; load-on-demand only).
+    """
+    target = cwd / ".awm" / "context.md"
+    if not target.is_file():
+        raise typer.Exit(code=0)
+    body = target.read_text()
+    rel = target.relative_to(cwd) if target.is_relative_to(cwd) else target
+    typer.echo(f'<scope-context path="{rel}">')
+    typer.echo(body if body.endswith("\n") else body + "\n", nl=False)
+    typer.echo("</scope-context>")
 
 
 @scope_app.command("list")

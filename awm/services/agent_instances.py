@@ -247,17 +247,25 @@ async def create_session(*, project: str, scope: str,
             conn.close()
 
         # Spawn the subprocess. Harness selection is per-session via the
-        # ``agent_cli`` column. opencode reads MCP config from
-        # ``<workspace>/.awm/mcp-opencode.json`` via ``OPENCODE_CONFIG`` —
-        # written by the opencode exporter under the same .mcp.json
-        # fan-out that produces spawn-mcp.json for claude.
+        # ``agent_cli`` column. opencode reads MCP config + scope
+        # ``instructions`` from a per-scope ``<worktree>/.awm/mcp-opencode.json``
+        # (written at scope-create time by ``_write_scope_opencode_config``),
+        # which inlines ``instructions: [".awm/context.md"]`` so opencode
+        # auto-loads the scope's context. Falls back to the workspace-level
+        # ``<workspace>/.awm/mcp-opencode.json`` for sessions outside scopes
+        # (or pre-heal worktrees).
         spawn_env: dict[str, str] | None = None
         if agent_cli == "opencode":
             argv = _build_opencode_argv(
                 workspace_dir=workspace_dir,
                 permission_mode=permission_mode, model=model,
             )
-            opencode_cfg = config.AWM_DIR / "mcp-opencode.json"
+            scope_opencode_cfg = awm_dir / "mcp-opencode.json"
+            workspace_opencode_cfg = config.AWM_DIR / "mcp-opencode.json"
+            opencode_cfg = (
+                scope_opencode_cfg if scope_opencode_cfg.exists()
+                else workspace_opencode_cfg
+            )
             if opencode_cfg.exists():
                 spawn_env = {**os.environ, "OPENCODE_CONFIG": str(opencode_cfg)}
         else:

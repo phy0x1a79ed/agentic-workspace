@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -426,84 +427,137 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
 _CONTEXT_IMPORT_LINE = "@.awm/context.md"
 
 
-def _is_workspace_shared_agents(worktree_dir: Path, project_name: str) -> bool:
-    """True if this worktree's AGENTS.md is the shared workspace orchestrator file.
+def _write_scope_opencode_config(awm_dir: Path) -> None:
+    """Write ``<awm_dir>/mcp-opencode.json`` for opencode SessionStart wiring.
 
-    Only projects/awm/<scope> worktrees can hit this: they're worktrees of
-    the same .bare as the workspace root, so a tracked AGENTS.md at the
-    worktree root is literally the workspace file on a different branch.
-    Modifying it diverges across branches and leaks the @-import into
-    workspace-root AGENTS.md on merge, where ``.awm/context.md`` does
-    not exist. See [[awm_project_is_workspace_worktree]].
+    Starts from the workspace-level ``<WORKSPACE_ROOT>/.awm/mcp-opencode.json``
+    (produced by the OpencodeExporter) if it exists — preserves the full MCP
+    catalog — and overlays ``instructions: [".awm/context.md"]`` so opencode
+    loads the scope's context.md natively on startup. Idempotent.
     """
-    if project_name != "awm":
-        return False
+    import json
+    out: dict
+    workspace_cfg = WORKSPACE_ROOT / ".awm" / "mcp-opencode.json"
+    if workspace_cfg.is_file():
+        try:
+            out = json.loads(workspace_cfg.read_text())
+        except (OSError, json.JSONDecodeError):
+            out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+    else:
+        out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+    # Relative path — opencode resolves it against cwd (worktree root).
+    out["instructions"] = [".awm/context.md"]
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    (awm_dir / "mcp-opencode.json").write_text(json.dumps(out, indent=2) + "\n")
+
+
+def _is_tracked(worktree_dir: Path, path: str) -> bool:
+    """True if ``path`` is tracked by git in ``worktree_dir``."""
     res = subprocess.run(
-        ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", "AGENTS.md"],
+        ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", path],
         capture_output=True,
     )
     return res.returncode == 0
 
 
-def _ensure_harness_context(worktree_dir: Path, *, project_name: str) -> dict:
-    """Make a worktree harness-ready for both Claude Code and OpenCode.
+def _strip_context_import(text: str) -> tuple[str, bool]:
+    """Remove a trailing ``@.awm/context.md`` line from ``text``.
 
-    Idempotent. Three steps:
-
-    1. If ``AGENTS.md`` is missing, copy from the scope-agents template
-       (substituting ``{project}``). Existing AGENTS.md is never
-       overwritten — for projects/awm/* worktrees the file is the
-       tracked workspace orchestrator and must stay intact.
-    2. If a sibling ``.awm/context.md`` exists and AGENTS.md does not
-       already import it, append ``@.awm/context.md`` so Claude Code
-       (recursive @-imports) and OpenCode (AGENTS.md walk-up) both
-       pick up the scope ritual without further instruction.
-    3. If ``CLAUDE.md`` is missing, create a relative symlink to
-       ``AGENTS.md`` so Claude Code's native CLAUDE.md walk-up finds
-       the same file OpenCode reads natively.
-
-    Returns a dict describing what changed (for ``awm scope heal`` reporting).
+    Returns ``(new_text, changed)``. Trims one trailing blank line left
+    behind by the removal so the file ends with a single newline.
     """
-    from awm.services.projects import _find_template
+    lines = text.splitlines(keepends=True)
+    changed = False
+    while lines and lines[-1].strip() == _CONTEXT_IMPORT_LINE:
+        lines.pop()
+        changed = True
+        # Eat at most one orphan blank line left behind.
+        if lines and lines[-1].strip() == "":
+            lines.pop()
+    if not changed:
+        return text, False
+    new = "".join(lines)
+    if new and not new.endswith("\n"):
+        new += "\n"
+    return new, True
 
+
+def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: bool) -> dict:
+    """Bring a single worktree to the canonical tier-3 state.
+
+    Tier-3 must only contain ``.awm/``. This function:
+
+    1. Strips any trailing ``@.awm/context.md`` import line from a
+       tracked ``AGENTS.md`` (the leak that #216 cleaned up across 37
+       worktrees; the recurrence vector is closed here).
+    2. Deletes ``AGENTS.md`` if untracked (template-created scope-local
+       chrome from the old harness-context wiring).
+    3. Deletes ``CLAUDE.md`` if it is a symlink to ``AGENTS.md`` or is
+       otherwise untracked.
+    4. Generates ``.awm/context.md`` via ``_default_context`` if missing.
+
+    ``dry_run=True`` reports what would happen without mutating files.
+    """
     actions: dict[str, str | None] = {
-        "agents_md": None, "import_line": None, "claude_symlink": None,
+        "import_line": None, "agents_md": None,
+        "claude_md": None, "context_md": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
-    if not agents_path.exists():
-        tmpl = _find_template("scope-agents")
-        if tmpl is not None:
-            agents_path.write_text(
-                tmpl.read_text().replace("{project}", project_name)
-            )
-            actions["agents_md"] = "created"
-
-    context_path = worktree_dir / ".awm" / "context.md"
-    workspace_shared = _is_workspace_shared_agents(worktree_dir, project_name)
-    if agents_path.exists() and context_path.exists() and not workspace_shared:
-        body = agents_path.read_text()
-        if _CONTEXT_IMPORT_LINE not in body:
-            sep = "" if body.endswith("\n") else "\n"
-            agents_path.write_text(body + sep + "\n" + _CONTEXT_IMPORT_LINE + "\n")
-            actions["import_line"] = "appended"
-    elif workspace_shared:
-        actions["import_line"] = "skipped:workspace-shared"
+    if agents_path.is_file() and not agents_path.is_symlink():
+        if _is_tracked(worktree_dir, "AGENTS.md"):
+            body = agents_path.read_text()
+            new_body, changed = _strip_context_import(body)
+            if changed:
+                actions["import_line"] = "stripped"
+                if not dry_run:
+                    agents_path.write_text(new_body)
+        else:
+            actions["agents_md"] = "deleted:untracked"
+            if not dry_run:
+                agents_path.unlink()
 
     claude_path = worktree_dir / "CLAUDE.md"
-    if not claude_path.exists() and not claude_path.is_symlink() and agents_path.exists():
-        claude_path.symlink_to("AGENTS.md")  # relative target
-        actions["claude_symlink"] = "created"
+    if claude_path.is_symlink():
+        try:
+            target = os.readlink(str(claude_path))
+        except OSError:
+            target = ""
+        if target == "AGENTS.md":
+            actions["claude_md"] = "deleted:symlink"
+            if not dry_run:
+                claude_path.unlink()
+        elif not _is_tracked(worktree_dir, "CLAUDE.md"):
+            actions["claude_md"] = "deleted:untracked-symlink"
+            if not dry_run:
+                claude_path.unlink()
+    elif claude_path.exists():
+        if not _is_tracked(worktree_dir, "CLAUDE.md"):
+            actions["claude_md"] = "deleted:untracked"
+            if not dry_run:
+                claude_path.unlink()
+
+    awm_dir = worktree_dir / ".awm"
+    context_path = awm_dir / "context.md"
+    if not context_path.exists():
+        actions["context_md"] = "created"
+        if not dry_run:
+            awm_dir.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(_default_context(project, scope))
 
     return actions
 
 
-def heal_scopes(project: str | None = None) -> list[dict]:
-    """Apply ``_ensure_harness_context`` to every active scope worktree.
+def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]:
+    """Cleanup pass: enforce tier-3 = ``.awm/`` only across active scopes.
 
-    Back-fills CLAUDE.md symlinks and the ``@.awm/context.md`` import
-    line for scopes created before this wiring landed. Idempotent — only
-    missing pieces are added; existing AGENTS.md content is never edited.
+    For each active scope worktree: strip any leaked ``@.awm/context.md``
+    line from a tracked ``AGENTS.md``, remove untracked scope-level
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink,
+    and back-fill ``.awm/context.md`` if missing. Idempotent.
+
+    With ``dry_run=True`` the report shows intended actions without
+    mutating files — use this before bulk runs to sanity-check.
     """
     conn = get_connection()
     try:
@@ -527,10 +581,14 @@ def heal_scopes(project: str | None = None) -> list[dict]:
             })
             continue
         try:
-            actions = _ensure_harness_context(worktree, project_name=row["project"])
+            actions = _heal_worktree(
+                worktree, project=row["project"], scope=row["scope"],
+                dry_run=dry_run,
+            )
             report.append({
                 "project": row["project"], "scope": row["scope"],
-                "worktree": str(worktree), "ok": True, "actions": actions,
+                "worktree": str(worktree), "ok": True,
+                "dry_run": dry_run, "actions": actions,
             })
         except OSError as exc:
             report.append({
@@ -613,13 +671,11 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     (awm_dir / "history.md").write_text(_generate_history_md(req.project, req.scope))
     (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(req.project, req.scope))
 
-    # 6. Wire harness auto-load. Claude Code reads CLAUDE.md (walk-up);
-    # opencode reads AGENTS.md natively. We point both at the same file
-    # via a CLAUDE.md symlink and pull in the scope ritual via the
-    # @.awm/context.md import. For projects/awm/* worktrees, AGENTS.md
-    # is the tracked workspace orchestrator file — we only append the
-    # import (idempotent) and add the symlink.
-    _ensure_harness_context(repo_dir, project_name=req.project)
+    # 6. Per-scope opencode config — pulls in .awm/context.md via
+    # `instructions` so opencode loads scope orientation natively without
+    # any tier-3 file at the worktree root. Claude Code gets the same
+    # bytes via the SessionStart hook (awm context emit).
+    _write_scope_opencode_config(awm_dir)
 
     # 7. Record in DB
     now = _now_iso()

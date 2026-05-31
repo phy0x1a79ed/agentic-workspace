@@ -421,3 +421,26 @@ class TestCreateSessionDispatch:
         assert argv[0] == "/fake/bin/claude"
         # Claude harness inherits parent env (env=None).
         assert stub_subprocess["env"] is None
+
+    @pytest.mark.asyncio
+    async def test_opencode_prefers_per_scope_config(
+        self, awm_workspace, stub_subprocess,
+    ):
+        # Per-scope `<worktree>/.awm/mcp-opencode.json` wins over the
+        # workspace-level fallback — that's how `instructions` for the
+        # current scope's `.awm/context.md` reach opencode.
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+        scope_awm = ws / ".awm"
+        scope_awm.mkdir()
+        scope_cfg = scope_awm / "mcp-opencode.json"
+        scope_cfg.write_text('{"mcp": {}, "instructions": [".awm/context.md"]}')
+        # Workspace fallback also present — should NOT be used.
+        workspace_cfg = awm_workspace["awm_dir"] / "mcp-opencode.json"
+        workspace_cfg.write_text('{"mcp": {"awm": {"type": "local"}}}')
+
+        await create_session(project="p", scope="s", agent_cli="opencode")
+
+        env = stub_subprocess["env"]
+        assert env is not None
+        assert env["OPENCODE_CONFIG"] == str(scope_cfg)
