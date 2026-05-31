@@ -13,7 +13,7 @@ Environment=AWM_TLS_CERT=%h/.awm/tls/cert.pem
 Environment=AWM_TLS_KEY=%h/.awm/tls/key.pem
 Environment=AWM_AUTH_TOKEN_FILE=%h/.awm/auth.token
 # Set AWM_ALLOW_DESTRUCTIVE=1 only if you trust every caller. Default off.
-ExecStart=/home/tony/miniforge3/envs/awm/bin/awm serve-exposed
+ExecStart=/home/tony/lib/miniforge3/envs/awm/bin/awm serve-exposed
 Restart=on-failure
 RestartSec=2
 StandardOutput=append:%h/agentic_workspace/.awm/awm-exposed.log

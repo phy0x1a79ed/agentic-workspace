@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "show": {
+      "command": "mamba",
+      "args": [
+        "run", "-n", "awm",
+        "python", "/home/tony/agentic_workspace/projects/awm/voice/demo/show_mcp.py"
+      ]
+    }
+  }
+}

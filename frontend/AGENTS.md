@@ -1,0 +1,248 @@
+# Web UI (SvelteKit)
+
+Operator console SPA. Serves at `https://<host>/ui/` via uvicorn — the
+production build is emitted to `../awm/static/` by `adapter-static`.
+
+## Stack
+
+- **SvelteKit 2** + **Svelte 5** (runes: `$state`, `$effect`, `$derived`,
+  `$props`, `$bindable`)
+- `@sveltejs/adapter-static` with `fallback: 'index.html'`
+- **Tailwind CSS v4** via `@tailwindcss/postcss`
+- **bits-ui** for headless primitives
+- **TypeScript** strict
+- `marked` + `dompurify` for transcript markdown (when needed)
+
+Runes in non-component files require the `.svelte.ts` filename suffix
+(see `src/lib/api/ws.svelte.ts`, `src/lib/state/*.svelte.ts`). A plain
+`.ts` file using `$state` will throw at runtime.
+
+## Layout
+
+```
+src/
+├── app.html       # HTML shell + DM Sans/Mono preconnects + theme-color
+├── app.css        # design tokens (--bg, --atomizer, --recording, ...) + global styles
+├── app.d.ts
+├── lib/
+│   ├── api/
+│   │   ├── client.ts          # fetch wrapper + typed endpoints (peer, rooms, etc.)
+│   │   ├── config.ts          # wsUrl() helper, feature flags
+│   │   └── ws.svelte.ts       # RoomWsPool — one socket per rail room, kept alive across focus
+│   ├── components/
+│   │   ├── Header.svelte           # 44px top bar; mounts LiveIndicator
+│   │   ├── LiveIndicator.svelte     # oscilloscope-style ws + voice indicator (replaces WsDot + leader badge + voice tag)
+│   │   ├── BottomNav.svelte         # mobile only (≤1024px)
+│   │   ├── Sheet.svelte             # left/right slide-in overlay
+│   │   ├── UnifiedSidebar.svelte    # /focus rooms rail
+│   │   ├── DetailsPanel.svelte      # /focus right rail (single 'agents' section; recipients/voice folded into AgentList)
+│   │   ├── Transcript.svelte       # also renders 🔊 replay button on agent/user text posts
+│   │   ├── Composer.svelte         # hosts SlashPicker over the input when slashOpen
+│   │   ├── SlashPicker.svelte      # filterable server + claude command list (keyboard nav)
+│   │   ├── PttButton.svelte         # visual + spacebar binding only (voice STT deferred)
+│   │   ├── AgentList.svelte          # per-scope card: recipient toggle + compact/clear + collapsible body
+│   │   ├── AgentControls.svelte      # config form (mode/effort/model Select) + restart + kill
+│   │   ├── Select.svelte            # themed dropdown — replacement for native <select>
+│   │   ├── RoomCard.svelte          # mobile rooms list item
+│   │   └── StatusTag.svelte         # uppercase mono pill with status colour
+│   ├── state/
+│   │   ├── ui.svelte.ts             # sheet open-state, leader badge, ws kind, managerScope
+│   │   └── recipients.svelte.ts     # per-room recipient selection (localStorage)
+│   ├── primitives/                  # API-thin chrome library — see ## Primitives
+│   │   ├── Button.svelte            # kind: primary | ghost | danger; size: sm | md
+│   │   ├── Pill.svelte              # uppercase mono chip; tone: neutral | atomizer | danger
+│   │   ├── Tag.svelte               # status badge; tone: neutral | ok | warn | danger | atomizer | mgr
+│   │   ├── Input.svelte             # single-line text/search input (bindable value)
+│   │   ├── PanelLabel.svelte        # 9px uppercase micro-label; tone: dim | atomizer | mgr | peer
+│   │   ├── Card.svelte              # rack-unit card; rail: manager | peer | plain | warn | none
+│   │   └── Tooltip.svelte           # bits-ui Tooltip wrapper; pass content + trigger snippet
+│   ├── theme/
+│   │   └── colors.ts                # statusColor() → CSS variable
+│   ├── utils/
+│   │   └── cn.ts                    # clsx + tailwind-merge
+│   └── voice/
+│       └── tts.ts                   # mock replay() stub; real /voice/tts WS port is deferred
+└── routes/
+    ├── +layout.svelte               # shell: Header + slot + BottomNav; owns voice.connect() lifecycle
+    ├── +layout.ts                   # ssr: false, prerender: false
+    ├── +page.svelte                 # → /focus redirect
+    ├── status/+page.svelte
+    ├── focus/[[room]]/+page.svelte  # optional param — both /focus and /focus/<id>
+    ├── rooms/+page.svelte
+    └── room/[id]/+page.svelte       # → /focus/<id> redirect (legacy bookmark)
+
+static/
+├── favicon.svg
+└── mic-worklet.js                   # MUST be unbundled (AudioWorklet.addModule URL)
+```
+
+## Design flavour
+
+Adopted from `phy0x1a79ed/spark/lib/roma-ui`. Operator-terminal aesthetic:
+
+- Dark only. `--bg #0e0e10`, `--surface #17171a`, `--border #2a2a30`
+- `--atomizer #3b82f6` — single primary accent ("active" everywhere)
+- `--recording #a855f7` — PTT live / streaming purple
+- Status palette: `--ok #10b981`, `--warn #eab308`, `--danger #ef4444`
+- Fonts: **DM Sans** body 13px (mobile 14px), **DM Mono** for labels /
+  tabs / tags / numeric data
+- Micro-labels: uppercase, 9–10px, 1–2px letter-spacing
+- Thin 1px borders, no rounded panels (3–4px radius on inputs/badges only)
+- Use `color-mix(in oklab, var(--X) 10%, transparent)` for status-tinted
+  backgrounds — preserves the colour identity across themes
+
+When adding new colours, add a CSS variable in `app.css` rather than hex
+literals in components, and a mapping in `lib/theme/colors.ts` if it's
+tied to a status string.
+
+## Primitives
+
+`src/lib/primitives/` is the shared chrome layer. Every primitive is
+API-thin: a single file, scoped `<style>`, explicit string-enum variant
+props (no class-name passthrough), and tokens-only colours
+(`--atomizer`, `--ok`, `--warn`, `--danger`, `--mgr`, `--text3`, etc.).
+
+| Primitive    | Variant prop(s)                                       | Use for                                                  |
+|--------------|--------------------------------------------------------|----------------------------------------------------------|
+| `<Button>`   | `kind: primary \| ghost \| danger`, `size: sm \| md`  | All clickable text actions. `sm` = uppercase 10px chip. |
+| `<Pill>`     | `tone: neutral \| atomizer \| danger`                 | Compact header actions (compact/clear on AgentList).    |
+| `<Tag>`      | `tone: neutral \| ok \| warn \| danger \| atomizer \| mgr` | Status/state badges. `StatusTag` wraps this.        |
+| `<Input>`    | `type: text \| search`                                 | Single-line inputs. Composer textarea is its own case.  |
+| `<PanelLabel>` | `tone: dim \| atomizer \| mgr \| peer`              | 9px uppercase micro-labels above fields/sections.       |
+| `<Card>`     | `rail: manager \| peer \| plain \| warn \| none`, `flash`, `open` | Rack-unit card with coloured 3px left rail. |
+| `<Tooltip>`  | `side`, `delay`; pass `content` + `trigger` snippet   | Hover hint (bits-ui-backed). Wraps any element.         |
+
+Rule: **before adding a new visual chrome class, check if a primitive
+exists; if a pattern hits a third copy, extract it to
+`lib/primitives/`.** The old `lib/components/Select.svelte` predates
+the layer and remains a regular component — once a `<Select>` primitive
+backed by bits-ui lands, migrate to it. Same for `Sheet` and
+`SlashPicker` (round-2 candidates).
+
+The spacing/radius/ease tokens used inside primitives:
+`--space-0..6`, `--radius-sm/md/lg`, `--ease-mech`. Prefer these to
+literals in any new component.
+
+## Mobile breakpoints
+
+- **≤ 720px** — phone. Bottom nav, sheet drawers for rails, 16px inputs
+  (iOS zoom guard), 44px min touch targets, "Hold to talk" replaces SPACE
+  hint on PTT.
+- **721–1024px** — tablet / narrow desktop. Right rail collapses to a
+  sheet; rooms rail stays.
+- **≥ 1025px** — desktop. Full `.chrome` grid (rooms / chat / details).
+
+The `<Sheet>` component slides in from left or right and is automatically
+hidden at ≥ 1025px via media query.
+
+## Dev workflow
+
+```bash
+# From ../dev/
+./run.sh start                    # uvicorn (the API + WS backend)
+./run.sh frontend                 # Vite dev on :12103 with proxy to backend
+./run.sh build                    # production build → ../awm/static/
+```
+
+**Build cache gotcha**: SvelteKit chunk hashes are content-derived, but Vite
+caches compiled artifacts under `frontend/.svelte-kit/`. If a code change
+doesn't appear in the rebuilt bundle (same hash filenames, browser keeps
+running stale logic), nuke the cache:
+
+```bash
+rm -rf frontend/.svelte-kit awm/static/_app && (cd dev && ./run.sh build)
+```
+
+Then hard-reload the browser. Symptoms: edits to a Svelte component compile
+without errors but `grep` on the new bundle shows the expected strings while
+the page still renders the old behavior.
+
+Dev mode is HTTP-only (12103), so session cookies (`Secure=True`) won't
+flow. For authed feature work, mint a token via `./run.sh login` and visit
+the production URL once, OR work against the production build (`build`
+then reload).
+
+The Vite proxy at the bottom of `vite.config.ts` forwards `/auth/*`,
+`/invoke`, `/peer*`, `/projects`, `/scopes`, `/status`, `/rooms`, `/ws`
+to the uvicorn at `127.0.0.1:12101`. Add new top-level backend paths to
+the proxy list when porting new endpoints.
+
+## API client conventions
+
+- Bearer is an HttpOnly cookie set by `/auth/bootstrap`. Always send
+  `credentials: 'include'`.
+- The `X-Awm-As` header carries `user:<name>` identity (read from the
+  `awm_as` cookie at boot).
+- 401 in **production** redirects to `/ui/login.html`; in **dev**
+  (`import.meta.env.DEV`) the 401 propagates so the layout can show an
+  error rather than bouncing to a URL that doesn't exist on :12103.
+- Backend field names: `Post` uses `author` + `body` + `to_scope` (not
+  `from`, `text`, `to`). Same for `postToRoom({ body, to_scope })`.
+- The agent-slash endpoint takes `{ cmd: "/restart ..." }`, NOT
+  `{ text: ... }`. See `runAgentSlash` in `client.ts`.
+
+## Transcript grouping
+
+`Transcript.svelte` groups posts before rendering. Consecutive posts with
+`kind in {"join","leave"}` collapse to a single muted membership line;
+consecutive `tool_use`/`tool_result` from the same author collapse to a
+`⚙ N tool calls` block with an expand toggle. Anything else renders as a
+standalone card.
+
+Author tokens are `kind:identifier`. Subscriber WS attach/detach is **not**
+a participant event — `run_subscriber_session` keeps the WS queue-only and
+does not insert join/leave posts or broadcast participant_joined/left, so
+focus changes, tab refreshes, and second tabs no longer pollute the
+transcript. The legacy `subscriber:` collapse logic in `Transcript.svelte`
+is retained as a safety net for historical posts.
+
+## SPA bootstrap
+
+`+layout.svelte` POSTs `/vagrant/session` on mount (`ensureVagrantSession`).
+This is idempotent server-side: it (re)spawns the user's vagrant manager
+Claude process if it's not live, and returns `scope_identifier` which gets
+stashed in `ui.managerScope`. The DetailsPanel uses that to mark which
+agent row is "yours" and render `<AgentControls>` for it. Without this
+bootstrap, the SvelteKit rewrite (pre-fix) had no way to spawn or address
+a per-user manager.
+
+## Focus state model
+
+`/focus/[[room]]` holds per-room state in `postsByRoom` and `agentsByRoom`
+records keyed by roomId. `activeId` selects which one renders. The
+`RoomWsPool` opens one socket per room in the visible rail and keeps it
+alive across focus changes — switching rooms is pure UI, sockets only
+close when a room leaves the rail. Posts arriving on background sockets
+accumulate into their room's bucket; refocusing shows them instantly.
+
+## Slash commands
+
+The composer's `/` button (or typing `/` first into an empty input) opens
+`SlashPicker`. The picker calls `getSlashCommands(roomId, scope)` and
+renders server + claude entries with keyboard nav. Argless commands
+(`/restart`, `/kill`, `/compact`, `/clear`, `/help`, `/plan`, `/yolo`)
+autorun via `runAgentSlash`; anything with `<arg>` or `[arg]` prefills the
+composer for editing.
+
+Server-side caveats baked into the catalog (`awm/services/agent_slash.py`):
+
+- `/clear` does **not** call claude's REPL `/clear` — that's not supported
+  in `--print --input-format=stream-json` mode. Instead it calls
+  `respawn_session(scope_key, clear_history=True)` which spawns a fresh
+  process without `--resume`, giving a truly wiped context.
+- `/compact` is similarly REPL-only and returns an explicit "not
+  supported, use /clear or /restart" message rather than silently failing.
+- All other commands (`/restart`, `/kill`, `/mode`, `/plan`, `/yolo`,
+  `/model`, `/effort`) are pure server-side respawns and work on dead
+  agents too.
+
+## Deferred
+
+- Full STT/PTT port — voice-panel.js is a 276-line DOM-driven IIFE that
+  needs proper componentization (WS to /voice/ws, mic-worklet pipeline,
+  auto-send into Composer state). `mic-worklet.js` already ships in
+  `static/` so the port doesn't need to re-add it.
+- Real TTS backend — `lib/voice/tts.ts` is a mock that just `console.log`s;
+  swap its `replay()` body when the kyutai pocket-tts port lands.
+- Federated peer subscriber lists in DetailsPanel (legacy had Subscribers
+  and Federated Peers panels — folded into Agents for now).

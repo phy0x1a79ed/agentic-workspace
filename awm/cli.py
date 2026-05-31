@@ -34,6 +34,9 @@ inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_
 room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
+hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
+
+context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
 
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
@@ -45,6 +48,8 @@ app.add_typer(peer_app, name="peer")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
+app.add_typer(context_app, name="context")
+app.add_typer(hub_app, name="hub")
 
 
 # ---------------------------------------------------------------------------
@@ -994,7 +999,7 @@ def scope_create(
     project: str = typer.Argument(..., help="Project name"),
     scope: str = typer.Argument(..., help="Scope name"),
     from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch"),
-    context: Optional[str] = typer.Option(None, "--context", help="Seed context text for AGENTS.md"),
+    context: Optional[str] = typer.Option(None, "--context", help="Seed body for `.awm/context.md`"),
     context_file: Optional[Path] = typer.Option(None, "--context-file", help="Read context from file"),
 ):
     """Create a scope worktree."""
@@ -1032,6 +1037,69 @@ def scope_delete(
         typer.confirm(f"Delete scope '{scope}' in project '{project}'? This removes the worktree and branch.", abort=True)
     r = _api("DELETE", f"/scopes/{project}/{scope}")
     _print_json(r)
+
+
+@scope_app.command("sync")
+def scope_sync(
+    project: str = typer.Argument(..., help="Project name"),
+    scope: str = typer.Argument(..., help="Scope name"),
+    strategy: str = typer.Option("merge", "--strategy", help="merge or rebase"),
+    from_branch: Optional[str] = typer.Option(None, "--from", help="Base branch (default: project default)"),
+):
+    """Sync scope's feature branch with its base branch."""
+    payload: dict = {"strategy": strategy}
+    if from_branch:
+        payload["from_branch"] = from_branch
+    r = _api("POST", f"/scopes/{project}/{scope}/sync", json=payload)
+    _print_json(r)
+
+
+@scope_app.command("heal")
+def scope_heal(
+    project: Optional[str] = typer.Option(None, "--project", help="Limit healing to one project"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report intended actions without mutating"),
+):
+    """Enforce tier-3 = ``.awm/`` only across active scope worktrees.
+
+    For each active scope: strip any leaked ``@.awm/context.md`` line from a
+    tracked ``AGENTS.md`` (project-tier doc), delete untracked scope-level
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink, and
+    back-fill ``.awm/context.md`` if missing. Idempotent. Use ``--dry-run``
+    to sanity-check the report before mutating.
+    """
+    from awm.services.scopes import heal_scopes
+    import json as _json
+    report = heal_scopes(project=project, dry_run=dry_run)
+    typer.echo(_json.dumps(report, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Scope context — emit .awm/context.md for harness SessionStart hooks
+# ---------------------------------------------------------------------------
+
+
+@context_app.command("emit")
+def context_emit(
+    cwd: Path = typer.Option(
+        Path.cwd(), "--cwd",
+        help="Worktree root to resolve `.awm/context.md` from",
+    ),
+):
+    """Emit ``<cwd>/.awm/context.md`` wrapped in a ``<scope-context>`` block.
+
+    Designed for harness SessionStart hooks (Claude Code ``hooks.SessionStart``
+    additionalContext). If no ``.awm/context.md`` exists, exits silently with
+    no output — never errors, so the hook never fails. History and artifacts
+    are intentionally NOT emitted (too large; load-on-demand only).
+    """
+    target = cwd / ".awm" / "context.md"
+    if not target.is_file():
+        raise typer.Exit(code=0)
+    body = target.read_text()
+    rel = target.relative_to(cwd) if target.is_relative_to(cwd) else target
+    typer.echo(f'<scope-context path="{rel}">')
+    typer.echo(body if body.endswith("\n") else body + "\n", nl=False)
+    typer.echo("</scope-context>")
 
 
 @scope_app.command("list")
@@ -1390,3 +1458,190 @@ def login(
     typer.echo(data["url"])
     typer.echo(f"# open this in your browser — expires in {data['expires_in_s']}s",
                err=True)
+
+
+# ---------------------------------------------------------------------------
+# Service hub — register a foreground process as a routed service
+# ---------------------------------------------------------------------------
+
+@hub_app.command("register")
+def hub_register(
+    name: str = typer.Option(..., "--name", help="Service name (must be unique)"),
+    prefix: str = typer.Option(..., "--prefix", help="URL prefix to claim (e.g. /demo)"),
+    url: str | None = typer.Option(
+        None, "--url",
+        help="Local URL the service listens on (kind=url). "
+             "Mutually exclusive with --dir.",
+    ),
+    dir: str | None = typer.Option(
+        None, "--dir",
+        help="Local directory to serve at the prefix (kind=static). "
+             "Mutually exclusive with --url.",
+    ),
+    entry: str | None = typer.Option(
+        None, "--entry",
+        help="Relative path to the ESM entry script. Used for the auto-shell "
+             "when --dir has no index.html.",
+    ),
+    css: list[str] = typer.Option(
+        None, "--css",
+        help="Relative path to a stylesheet (repeatable). "
+             "Injected into the auto-shell.",
+    ),
+    mount_id: str = typer.Option(
+        "app", "--mount-id",
+        help="DOM id of the mount node in the auto-shell.",
+    ),
+):
+    """Register a service and hold a WS lease until interrupted.
+
+    On Ctrl-C the lease closes and the hub evicts the registration on
+    the next event-loop tick. Re-running this command after eviction
+    re-registers from scratch.
+
+    Two flavours:
+
+    \b
+      --url http://127.0.0.1:5173        # forward HTTP/WS to a local process
+      --dir ./dist [--entry main.js …]   # serve a built directory at the prefix
+    """
+    import asyncio as _asyncio
+    import json as _json
+    import ssl as _ssl
+
+    import websockets as _ws
+
+    if bool(url) == bool(dir):
+        typer.echo("exactly one of --url or --dir must be provided", err=True)
+        raise typer.Exit(2)
+    if url and (entry or css or mount_id != "app"):
+        typer.echo("--entry/--css/--mount-id only apply with --dir", err=True)
+        raise typer.Exit(2)
+
+    if dir:
+        from pathlib import Path as _Path
+        dir_abs = str(_Path(dir).expanduser().resolve())
+        payload = {
+            "name": name,
+            "prefix": prefix,
+            "static": {
+                "dir": dir_abs,
+                "entry": entry,
+                "css": list(css or []),
+                "mount_id": mount_id,
+            },
+        }
+        summary = f"dir={dir_abs}"
+    else:
+        payload = {"name": name, "prefix": prefix, "url": url}
+        summary = f"url={url}"
+
+    base, token = _exposed_base_and_token()
+    try:
+        r = httpx.post(
+            f"{base}/hub/register",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+            verify=False,
+        )
+    except httpx.HTTPError as exc:
+        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    body = r.json()
+    service_id = body["service_id"]
+    lease_path = body["lease_ws_path"]
+    typer.echo(f"registered {name} → {summary} (id={service_id})")
+    typer.echo(f"holding lease at wss://...{lease_path} (Ctrl-C to evict)")
+
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_base}{lease_path}"
+
+    ssl_ctx = _ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+    async def _hold():
+        async with _ws.connect(
+            ws_url,
+            subprotocols=[f"bearer.{token}"],
+            ssl=ssl_ctx if ws_url.startswith("wss://") else None,
+            max_size=None,
+            open_timeout=10,
+        ) as wsconn:
+            # First frame is {"type":"ready",...} — print it then idle.
+            try:
+                first = await wsconn.recv()
+                try:
+                    typer.echo(f"hub: {_json.loads(first)}")
+                except Exception:
+                    typer.echo(f"hub: {first!r}")
+            except Exception:
+                pass
+            # Idle forever; the hub's eviction is triggered by close.
+            try:
+                async for _ in wsconn:
+                    pass
+            except _ws.WebSocketException:
+                return
+
+    try:
+        _asyncio.run(_hold())
+    except KeyboardInterrupt:
+        typer.echo("lease closed — service evicted")
+
+
+@hub_app.command("list")
+def hub_list():
+    """List currently registered services."""
+    r = _exposed_api("GET", "/hub/services")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    _print_json(r)
+
+
+@hub_app.command("deregister")
+def hub_deregister(name: str = typer.Argument(..., help="Service name to evict")):
+    """Force-evict a service by name (independent of its lease holder)."""
+    r = _exposed_api("DELETE", f"/hub/services/{name}")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    _print_json(r)
+
+
+@hub_app.command("trust-self")
+def hub_trust_self():
+    """Install the local auth token at ``$AWM_DIR/peers/<self>.token``.
+
+    Services authenticate hub→service requests via ``require_peer_bearer``,
+    which checks the bearer against the peer-token file for the claimed
+    ``X-Awm-From`` peer. The hub forwards as ITSELF, so the local peer's
+    own token has to be present in the peers/ directory. Idempotent.
+    """
+    from awm.services.network import peers as _peers
+    from awm.services import auth as _auth
+    try:
+        token = _auth.local_token(generate_if_missing=False)
+    except _auth.TokenMissing as exc:
+        typer.echo(f"local auth token missing: {exc}", err=True)
+        raise typer.Exit(1)
+    local = _peers.get_local_identity()
+    if local is None:
+        typer.echo("no local peer identity — run `awm peer init` first",
+                   err=True)
+        raise typer.Exit(1)
+    peer_id = local["peer_id"]
+    peers_dir = AWM_DIR / "peers"
+    peers_dir.mkdir(parents=True, exist_ok=True)
+    target = peers_dir / f"{peer_id}.token"
+    target.write_text(token + "\n")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass
+    typer.echo(f"trust-self: wrote {target}")

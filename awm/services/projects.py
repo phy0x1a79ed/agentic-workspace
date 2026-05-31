@@ -124,12 +124,6 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
 
-    # Write per-worktree AGENTS.md from the scope-agents template
-    scope_agents_template = _find_template("scope-agents")
-    if scope_agents_template and worktree_dir.exists():
-        content = scope_agents_template.read_text().replace("{project}", req.name)
-        (worktree_dir / "AGENTS.md").write_text(content)
-
     return ProjectCreateResponse(
         name=req.name,
         bare_dir=str(bare_dir),

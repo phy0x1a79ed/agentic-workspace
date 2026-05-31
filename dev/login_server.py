@@ -43,6 +43,11 @@ EXPOSED_PORT = int(os.environ.get("AWM_EXPOSED_PORT", "7821"))
 LOGIN_HOST = os.environ.get("AWM_DEV_LOGIN_HOST", "127.0.0.1")
 LOGIN_PORT = int(os.environ.get("AWM_DEV_LOGIN_PORT", "7822"))
 LOGIN_USER = os.environ.get("AWM_DEV_USER", "dev")
+# When the bookmark page is reached from a non-loopback browser (e.g. over
+# ZeroTier), /auth/mint must still be called via loopback (it 403s otherwise),
+# but the rendered bootstrap URL needs the publicly-reachable host. Set
+# AWM_DEV_PUBLIC_HOST to the address the browser will use.
+PUBLIC_HOST = os.environ.get("AWM_DEV_PUBLIC_HOST", "")
 
 
 # Self-signed cert on the main server — skip verification for this loopback
@@ -82,6 +87,12 @@ def _mint_url() -> tuple[str | None, str | None]:
     url = payload.get("url")
     if not url:
         return None, f"/auth/mint returned no url: {payload!r}"
+    if PUBLIC_HOST:
+        url = url.replace(
+            f"https://{EXPOSED_HOST}:{EXPOSED_PORT}/",
+            f"https://{PUBLIC_HOST}:{EXPOSED_PORT}/",
+            1,
+        )
     return url, None
 
 

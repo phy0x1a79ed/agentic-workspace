@@ -1,6 +1,7 @@
 """Tests for awm.services.projects helpers."""
 from pathlib import Path
 
+import awm.services.projects as projects_mod
 from awm.services.projects import _find_template
 
 

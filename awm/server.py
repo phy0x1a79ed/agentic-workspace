@@ -29,6 +29,7 @@ from awm.models import (
     ProjectScopeCounts,
     ScopeCreateRequest,
     ScopeUpdateRequest,
+    ScopeSyncRequest,
     ScopeListResponse,
     ScopeActionResponse,
     LockAcquireRequest,
@@ -381,6 +382,16 @@ def delete_scope(project: str, scope: str):
         raise HTTPException(404, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
+
+
+@app.post("/scopes/{project}/{scope}/sync", response_model=ScopeActionResponse)
+def sync_scope_endpoint(project: str, scope: str, req: ScopeSyncRequest):
+    try:
+        return scopes.sync_scope(project, scope, req)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
 
 
 # ---------------------------------------------------------------------------

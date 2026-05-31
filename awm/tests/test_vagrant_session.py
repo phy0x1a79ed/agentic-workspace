@@ -33,7 +33,7 @@ def test_ensure_vagrant_session_creates_scope_and_room(vagrant_bootstrap):
     # Scope row exists under the sentinel project.
     listed = scopes_svc.list_scopes(project=VAGRANT_PROJECT)
     assert len(listed.scopes) == 1
-    assert listed.scopes[0].scope == "user-user-alice"
+    assert listed.scopes[0].scope == "alice-handler"
 
     # Room exists and is active.
     room = rooms_svc.get_room(room_id)
@@ -106,8 +106,17 @@ def test_post_vagrant_session_requires_auth(exposed_client, good_token):
 
 
 def test_post_vagrant_session_returns_503_when_not_bootstrapped(
-    exposed_client, good_token
+    exposed_workspace, exposed_client, good_token,
 ):
+    # The exposed lifespan auto-bootstraps vagrant scopes on startup
+    # (awm/exposed.py:120 ensure_vagrant_repo). Tear the bare repo down
+    # AFTER startup so the request-time ensure_vagrant_session hits the
+    # missing-bare-dir branch and returns 503.
+    import shutil
+    from awm.config import PROJECTS_DIR
+    bare = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
+    if bare.exists():
+        shutil.rmtree(bare)
     r = exposed_client.post(
         "/vagrant/session",
         headers={"Authorization": f"Bearer {good_token}"},

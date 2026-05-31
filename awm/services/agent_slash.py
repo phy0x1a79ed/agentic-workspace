@@ -116,20 +116,42 @@ async def _h_effort(scope_key: str, args: list[str]) -> str:
     return f"respawned {scope_key} on effort={sess.effort}"
 
 
+async def _h_cli(scope_key: str, args: list[str]) -> str:
+    supported = sorted(agent_instances._SUPPORTED_CLIS)
+    if not args:
+        return f"usage: /cli <{'|'.join(supported)}>"
+    target = args[0]
+    if target not in agent_instances._SUPPORTED_CLIS:
+        return (
+            f"unsupported agent cli {target!r}; "
+            f"choices: {supported}"
+        )
+    sess = await agent_instances.respawn_session(scope_key, agent_cli=target)
+    return f"respawned {scope_key} on cli={sess.agent_cli}"
+
+
 async def _h_compact(scope_key: str, args: list[str]) -> str:
-    sess = agent_instances._by_scope.get(scope_key)
-    if sess is None:
-        return f"no active session for {scope_key}"
-    await agent_instances.send_slash(scope_key, "/compact")
-    return f"sent /compact to {scope_key}; summary will appear in transcript"
+    # claude's /compact is a REPL command — it isn't honored by the headless
+    # `--print --input-format=stream-json` pipeline that runs every agent
+    # here, so injecting it into stdin just shows up as user text. Be
+    # explicit instead of silently failing.
+    return (
+        "/compact is not supported in headless stream-json mode "
+        "(claude REPL only). Use /clear to wipe context, or /restart to "
+        "respawn while preserving conversation."
+    )
 
 
 async def _h_clear(scope_key: str, args: list[str]) -> str:
     sess = agent_instances._by_scope.get(scope_key)
     if sess is None:
         return f"no active session for {scope_key}"
-    await agent_instances.send_slash(scope_key, "/clear")
-    return f"sent /clear to {scope_key}"
+    new = await agent_instances.respawn_session(scope_key, clear_history=True)
+    return (
+        f"cleared {scope_key} (pid={new.proc.pid}, "
+        f"mode={new.permission_mode}, model={new.model or 'default'}); "
+        f"conversation context wiped"
+    )
 
 
 async def _h_help(scope_key: str, args: list[str]) -> str:
@@ -157,8 +179,9 @@ _COMMANDS: list[SlashCommand] = [
     SlashCommand("/yolo", "", "Shortcut for /mode bypassPermissions.", _h_yolo),
     SlashCommand("/model", "<name>", "Respawn with --model. e.g. opus, sonnet, haiku, or full id.", _h_model),
     SlashCommand("/effort", "<level>", "Respawn with --effort. Choices: low, medium, high, xhigh, max.", _h_effort),
-    SlashCommand("/compact", "", "Trigger claude's auto-compaction on the agent (preserves session, summarizes context).", _h_compact),
-    SlashCommand("/clear", "", "Clear the agent's conversation context (claude /clear).", _h_clear),
+    SlashCommand("/cli", "<name>", "Respawn under a different agent CLI (e.g. claude). Listed in /cli with no args.", _h_cli),
+    SlashCommand("/compact", "", "Not supported in headless mode — claude /compact is REPL-only.", _h_compact),
+    SlashCommand("/clear", "", "Wipe conversation context: respawn without --resume.", _h_clear),
     SlashCommand("/help", "", "Echo this catalog plus the scope's claude commands.", _h_help),
 ]
 

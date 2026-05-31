@@ -57,6 +57,11 @@ class ScopeUpdateRequest(BaseModel):
     cleanup: bool = False
 
 
+class ScopeSyncRequest(BaseModel):
+    strategy: str = Field(default="merge", pattern="^(merge|rebase)$")
+    from_branch: str | None = None
+
+
 class ScopeInfo(BaseModel):
     project: str
     scope: str

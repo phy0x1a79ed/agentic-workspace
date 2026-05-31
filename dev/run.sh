@@ -31,6 +31,24 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 
+# Per-worktree env overrides (gitignored). Sourced before computing port
+# defaults so .env can pin AWM_EXPOSED_PORT etc. without env exports.
+if [ -f "$HERE/.env" ]; then
+  # shellcheck disable=SC1091
+  set -a; . "$HERE/.env"; set +a
+fi
+
+# Scope-aware default port band — each worktree (dev/web-ui/web-backend/…)
+# gets a unique band so three sandboxes can run side-by-side. Override by
+# setting AWM_EXPOSED_PORT / AWM_DEV_LOGIN_PORT / VITE_PORT explicitly (env
+# or dev/.env).
+case "$(basename "$(realpath "$REPO_ROOT")")" in
+  dev)         _PORT_BASE=782; _VITE_PORT=12103 ;;
+  web-ui)      _PORT_BASE=783; _VITE_PORT=12113 ;;
+  web-backend) _PORT_BASE=784; _VITE_PORT=12123 ;;
+  *)           _PORT_BASE=785; _VITE_PORT=12153 ;;
+esac
+
 PID_FILE="$HERE/.awm/dev.pid"
 LOG_FILE="$HERE/.awm/dev.log"
 LOGIN_PID_FILE="$HERE/.awm/login.pid"
@@ -39,10 +57,11 @@ CERT_FILE="$HERE/.awm/tls/cert.pem"
 KEY_FILE="$HERE/.awm/tls/key.pem"
 
 export AWM_WORKSPACE="$HERE"
-export AWM_EXPOSED_PORT="${AWM_EXPOSED_PORT:-7821}"
+export AWM_EXPOSED_PORT="${AWM_EXPOSED_PORT:-${_PORT_BASE}1}"
 export AWM_EXPOSED_HOST="${AWM_EXPOSED_HOST:-127.0.0.1}"
-export AWM_DEV_LOGIN_PORT="${AWM_DEV_LOGIN_PORT:-7822}"
+export AWM_DEV_LOGIN_PORT="${AWM_DEV_LOGIN_PORT:-${_PORT_BASE}2}"
 export AWM_DEV_LOGIN_HOST="${AWM_DEV_LOGIN_HOST:-127.0.0.1}"
+export VITE_PORT="${VITE_PORT:-$_VITE_PORT}"
 export AWM_ALLOW_DESTRUCTIVE=1
 export AWM_IDLE_SHUTDOWN=999999
 export AWM_GITHUB_USER="${AWM_GITHUB_USER:-dev-sandbox}"
@@ -270,6 +289,50 @@ do_reset() {
   esac
 }
 
+FRONTEND_DIR="$REPO_ROOT/frontend"
+NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
+
+do_frontend() {
+  if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "[dev] no frontend/ directory — nothing to run"
+    exit 1
+  fi
+  if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+    echo "[dev] installing frontend deps…"
+    (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund)
+  fi
+  # AWM_API_TARGET defaults to this worktree's own uvicorn; override to point
+  # Vite at a different scope's backend (e.g. web-backend's uvicorn on 7841).
+  local api_target="${AWM_API_TARGET:-https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}}"
+  echo "[dev] vite dev → http://0.0.0.0:${VITE_PORT}/ui/  (proxies API/WS to ${api_target})"
+  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" \
+      AWM_API_TARGET="$api_target" VITE_PORT="$VITE_PORT" \
+      npm run dev -- --host 0.0.0.0 --port "$VITE_PORT")
+}
+
+do_build() {
+  if [ ! -d "$FRONTEND_DIR" ]; then
+    echo "[dev] no frontend/ directory — nothing to build"
+    exit 1
+  fi
+  # adapter-static empties awm/static/ before writing the SPA, which wipes
+  # the server-rendered login.html (operator lockout risk). Preserve it
+  # across the build by copy-aside-then-restore.
+  local login_src="$REPO_ROOT/awm/static/login.html"
+  local login_bak=""
+  if [ -f "$login_src" ]; then
+    login_bak="$(mktemp)"
+    cp "$login_src" "$login_bak"
+  fi
+  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
+  if [ -n "$login_bak" ]; then
+    cp "$login_bak" "$login_src"
+    rm -f "$login_bak"
+    echo "[dev] preserved login.html across build"
+  fi
+  echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
+}
+
 case "$cmd" in
   start)    do_start ;;
   stop)     do_stop ;;
@@ -279,8 +342,10 @@ case "$cmd" in
   reset)    do_reset ;;
   login)    do_login ;;
   logs)     tail -n 200 -F "$LOG_FILE" ;;
+  frontend) do_frontend ;;
+  build)    do_build ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs}"
+    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs|frontend|build}"
     exit 2
     ;;
 esac

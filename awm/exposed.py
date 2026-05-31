@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +33,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from awm import __version__, config
 from awm.access_log import record as record_access
@@ -85,48 +84,23 @@ def _write_discovery_file() -> Path:
     return path
 
 
-def _write_spawn_mcp_config() -> Path | None:
-    """Write ``$AWM_DIR/spawn-mcp.json`` — the definitive MCP config for
-    ``agent_instances.create_session()`` spawns.
+def _sync_mcp_configs_on_startup() -> list[dict]:
+    """Run every registered MCP-config exporter against the canonical
+    ``<workspace>/.mcp.json``.
 
     Spawned Claudes are launched with ``--strict-mcp-config --mcp-config
-    <this file>``, which makes them ignore the normal ``.mcp.json``
-    walk-up. That keeps dev and prod isolated by construction: each
-    workspace's exposed server writes its own values into its own file.
+    <spawn-mcp.json>``, so they ignore the normal ``.mcp.json`` walk-up.
+    The claude-spawn exporter writes that file with the canonical MCP
+    catalog plus a runtime-overridden ``awm`` entry pointing at *this*
+    exposed server. The opencode exporter writes its own backend config
+    so externally-launched opencode in this workspace sees the same
+    catalog. See ``awm/exports/backends/`` for the registered exporters.
 
-    The file points at this exposed server's host/port/workspace, so the
-    awm-mcp proxy launched by Claude talks back to *us*. Manual ``claude``
-    CLI sessions are untouched — they don't pass the strict flag.
-
-    Returns the file path on success, or ``None`` if ``awm-mcp`` isn't on
-    PATH (auto-spawn still works in that case, just without awm tools).
+    Returns the per-exporter report (path, bytes, ok/error) for logging.
     """
-    awm_mcp = shutil.which("awm-mcp")
-    if awm_mcp is None:
-        log.warning("awm-mcp not on PATH; spawned agents will have no awm MCP tools")
-        return None
-    workspace = os.environ.get("AWM_WORKSPACE", str(config.WORKSPACE_ROOT))
-    spawn_cfg = {
-        "mcpServers": {
-            "awm": {
-                "command": awm_mcp,
-                "args": [],
-                "env": {
-                    "AWM_WORKSPACE": workspace,
-                    "AWM_EXPOSED_HOST": os.environ.get(
-                        "AWM_EXPOSED_HOST", "127.0.0.1"
-                    ),
-                    "AWM_EXPOSED_PORT": os.environ.get(
-                        "AWM_EXPOSED_PORT", "7820"
-                    ),
-                },
-            }
-        }
-    }
-    path = config.AWM_DIR / "spawn-mcp.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(spawn_cfg, indent=2) + "\n")
-    return path
+    from awm.exports.mcp import sync_mcp_configs
+
+    return sync_mcp_configs()
 
 
 @asynccontextmanager
@@ -139,15 +113,41 @@ async def lifespan(app: FastAPI):
     )
     agent_instances.reconcile_on_startup()
 
+    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
+    # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
+    # 503 with a clear message, the rest of the app keeps running.
+    try:
+        from awm.services.scopes import ensure_vagrant_repo
+        bare = ensure_vagrant_repo()
+        print(f"[awm-exposed] vagrant-scopes ready: {bare}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] vagrant-scopes disabled: {exc}")
+
+    # Restore persisted voice engine selections. Non-fatal: a broken engine
+    # leaves voice unloaded until the operator picks something else.
+    try:
+        from awm.services import voice_engine_config
+        from voice import engines as _voice_engines
+        for _kind, _sel in voice_engine_config.get_global().items():
+            if _sel is None:
+                continue
+            _voice_engines.load(_kind, _sel["engine_id"], _sel["params"])
+        print(f"[awm-exposed] voice engines restored: {voice_engine_config.get_global()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engine restore failed: {exc}")
+
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
     discovery_path = _write_discovery_file()
     print(f"[awm-exposed] discovery file: {discovery_path}")
 
-    spawn_mcp_path = _write_spawn_mcp_config()
-    if spawn_mcp_path is not None:
-        print(f"[awm-exposed] spawn-mcp.json → {spawn_mcp_path}")
+    for entry in _sync_mcp_configs_on_startup():
+        name = entry.get("name", "?")
+        if entry.get("ok"):
+            print(f"[awm-exposed] mcp-sync {name} → {entry.get('path')}")
+        else:
+            print(f"[awm-exposed] mcp-sync {name} FAILED: {entry.get('error')}")
 
     # Periodic sweep of expired one-shot login challenges.
     async def _challenges_sweeper() -> None:
@@ -238,11 +238,25 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] voice registry init failed: {exc}")
 
+    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts}/``.
+    # Lazy import so engine bootstrap (which can pull large models) doesn't
+    # run unless the user actually visits the voice surface.
+    engines_watcher_task: asyncio.Task | None = None
+    try:
+        import voice.engines as _voice_engines  # type: ignore[import-not-found]
+        engines_watcher_task = asyncio.create_task(
+            _voice_engines._watch_dynamic(), name="voice-engines-watcher",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engines watcher disabled: {exc}")
+
     yield
 
     challenges_sweeper_task.cancel()
     warmup_task.cancel()
     replication_task.cancel()
+    if engines_watcher_task is not None:
+        engines_watcher_task.cancel()
     if leadership_task is not None:
         leadership_task.cancel()
     try:
@@ -358,12 +372,12 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 # rooms.
 # ---------------------------------------------------------------------------
 
+from awm.api.hub import router as hub_router  # noqa: E402
 from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
@@ -371,6 +385,7 @@ app.include_router(peer_router)
 app.include_router(repl_router)
 app.include_router(voice_router)
 app.include_router(vagrant_router)
+app.include_router(hub_router)
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +498,25 @@ async def auth_logout(_request: Request):
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
+    # mic-worklet.js) are served directly; anything else under /ui/ falls
+    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
+    # etc.) survive hard reloads.
+    @app.get("/ui")
+    @app.get("/ui/")
+    @app.get("/ui/{full_path:path}")
+    async def _spa(full_path: str = ""):
+        # login.html stays its own page (server-rendered single-purpose entry).
+        if full_path:
+            # Resolve safely — reject any path that escapes the static dir.
+            candidate = (_STATIC_DIR / full_path).resolve()
+            try:
+                candidate.relative_to(_STATIC_DIR.resolve())
+            except ValueError:
+                return FileResponse(_STATIC_DIR / "index.html")
+            if candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +666,62 @@ async def gate_and_auth_for_core(request: Request, call_next):
 # exposed listener. Our own lifespan handles DB init + PID file.
 
 app.mount("/", core_app)
+
+
+# ---------------------------------------------------------------------------
+# Hub forwarding middleware (S4/S5 of infra-service-hub)
+# ---------------------------------------------------------------------------
+# Sits OUTERMOST: empty registry → byte-identical pass-through. On a
+# prefix match, the request never reaches the in-process routers; the
+# hub forwards it to the registered service URL with hub-as-peer auth.
+# Raw ASGI so both HTTP and WebSocket scopes are handled.
+
+from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
+from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+from awm.services.hub.static import (  # noqa: E402
+    close_ws_unsupported as _ws_close_unsupported,
+    serve_static as _serve_static,
+)
+
+
+class HubRoutingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        registry = _get_hub_registry()
+        if registry.is_empty():
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        # Never forward the hub control plane itself, even if a registered
+        # prefix would shadow it. Defensive — registration validation
+        # could also reject these prefixes, but cheap to enforce here too.
+        if path == "/hub" or path.startswith("/hub/"):
+            return await self.app(scope, receive, send)
+        rec = registry.longest_match(path)
+        if rec is None:
+            return await self.app(scope, receive, send)
+        if rec.kind == "static":
+            if scope["type"] == "websocket":
+                await _ws_close_unsupported(scope, receive, send)
+                return
+            request = Request(scope, receive=receive)
+            response = await _serve_static(request, rec)
+            await response(scope, receive, send)
+            return
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            response = await proxy_http(request, rec.url)
+            await response(scope, receive, send)
+        else:
+            from fastapi import WebSocket as _WS
+            ws = _WS(scope, receive=receive, send=send)
+            await proxy_ws(ws, rec.url)
+
+
+app.add_middleware(HubRoutingMiddleware)
 
 
 # ---------------------------------------------------------------------------

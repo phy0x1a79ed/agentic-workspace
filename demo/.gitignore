@@ -1,0 +1,29 @@
+# runtime logs
+*.log
+
+# captured audio diagnostics
+last_utterance.wav
+smoke.wav
+
+# TLS material — self-signed dev cert
+*.key
+*.crt
+*.pem
+
+# downloaded model assets
+voices/**
+vits/
+models/
+# but track the comparison page + sidecar manifest + batch script (code/config, not models).
+# Requires re-including the parent directories so the file-level un-ignores can take effect.
+!voices/
+!voices/rvc/
+!voices/rvc/samples/
+!voices/rvc/samples/synth.js
+!voices/rvc/samples/index.html
+!voices/rvc/batch_sample.py
+!voices/rvc/manifest.json
+
+# python
+__pycache__/
+*.pyc

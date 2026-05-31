@@ -1,0 +1,20 @@
+# Style-Bert-VITS2 sidecar env.
+#
+# Setup:
+#   mamba env create -f demo/env-sbv2.yml
+#   mamba run -n awm-sbv2 pip install --extra-index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchaudio==2.2.2
+#   mamba run -n awm-sbv2 pip install style-bert-vits2 fastapi 'uvicorn[standard]' huggingface_hub
+#
+# Run:
+#   mamba run -n awm-sbv2 python demo/tts_sbv2_service.py --port 7843
+#
+# Model download (GLaDOS checkpoint, on first run):
+#   handled by the sidecar via huggingface_hub.snapshot_download into demo/voices/native-eval/_models/sbv2-glados/
+name: awm-sbv2
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - 'pip<24.1'

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,7 @@ from awm.git_utils import run_git, detect_default_branch
 from awm.models import (
     ScopeCreateRequest,
     ScopeUpdateRequest,
+    ScopeSyncRequest,
     ScopeInfo,
     ScopeListResponse,
     ScopeActionResponse,
@@ -343,10 +345,15 @@ def ensure_vagrant_repo() -> Path:
 
 
 def _vagrant_scope_name(user_as: str) -> str:
-    """Slugify a ``user_as`` identifier into a valid vagrant scope name."""
+    """Slugify a ``user_as`` identifier into a valid vagrant scope name.
+
+    The trailing ``-handler`` suffix encodes the role; the UI strips it
+    (and the ``_vagrant`` project) to render the card as just "handler".
+    """
     import re
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", user_as).strip("-")
-    return f"user-{safe}" if safe else "user-anon"
+    bare = user_as.removeprefix("user:") if user_as.startswith("user:") else user_as
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", bare).strip("-")
+    return f"{safe}-handler" if safe else "anon-handler"
 
 
 def vagrant_scope_identifier(user_as: str) -> str:
@@ -422,6 +429,181 @@ def ensure_vagrant_session(user_as: str) -> tuple[str, str]:
     return scope_uuid, room.id
 
 
+_CONTEXT_IMPORT_LINE = "@.awm/context.md"
+
+
+def _write_scope_opencode_config(awm_dir: Path) -> None:
+    """Write ``<awm_dir>/mcp-opencode.json`` for opencode SessionStart wiring.
+
+    Starts from the workspace-level ``<WORKSPACE_ROOT>/.awm/mcp-opencode.json``
+    (produced by the OpencodeExporter) if it exists — preserves the full MCP
+    catalog — and overlays ``instructions: [".awm/context.md"]`` so opencode
+    loads the scope's context.md natively on startup. Idempotent.
+    """
+    import json
+    out: dict
+    workspace_cfg = WORKSPACE_ROOT / ".awm" / "mcp-opencode.json"
+    if workspace_cfg.is_file():
+        try:
+            out = json.loads(workspace_cfg.read_text())
+        except (OSError, json.JSONDecodeError):
+            out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+    else:
+        out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+    # Relative path — opencode resolves it against cwd (worktree root).
+    out["instructions"] = [".awm/context.md"]
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    (awm_dir / "mcp-opencode.json").write_text(json.dumps(out, indent=2) + "\n")
+
+
+def _is_tracked(worktree_dir: Path, path: str) -> bool:
+    """True if ``path`` is tracked by git in ``worktree_dir``."""
+    res = subprocess.run(
+        ["git", "-C", str(worktree_dir), "ls-files", "--error-unmatch", path],
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _strip_context_import(text: str) -> tuple[str, bool]:
+    """Remove a trailing ``@.awm/context.md`` line from ``text``.
+
+    Returns ``(new_text, changed)``. Trims one trailing blank line left
+    behind by the removal so the file ends with a single newline.
+    """
+    lines = text.splitlines(keepends=True)
+    changed = False
+    while lines and lines[-1].strip() == _CONTEXT_IMPORT_LINE:
+        lines.pop()
+        changed = True
+        # Eat at most one orphan blank line left behind.
+        if lines and lines[-1].strip() == "":
+            lines.pop()
+    if not changed:
+        return text, False
+    new = "".join(lines)
+    if new and not new.endswith("\n"):
+        new += "\n"
+    return new, True
+
+
+def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: bool) -> dict:
+    """Bring a single worktree to the canonical tier-3 state.
+
+    Tier-3 must only contain ``.awm/``. This function:
+
+    1. Strips any trailing ``@.awm/context.md`` import line from a
+       tracked ``AGENTS.md`` (the leak that #216 cleaned up across 37
+       worktrees; the recurrence vector is closed here).
+    2. Deletes ``AGENTS.md`` if untracked (template-created scope-local
+       chrome from the old harness-context wiring).
+    3. Deletes ``CLAUDE.md`` if it is a symlink to ``AGENTS.md`` or is
+       otherwise untracked.
+    4. Generates ``.awm/context.md`` via ``_default_context`` if missing.
+
+    ``dry_run=True`` reports what would happen without mutating files.
+    """
+    actions: dict[str, str | None] = {
+        "import_line": None, "agents_md": None,
+        "claude_md": None, "context_md": None,
+    }
+
+    agents_path = worktree_dir / "AGENTS.md"
+    if agents_path.is_file() and not agents_path.is_symlink():
+        if _is_tracked(worktree_dir, "AGENTS.md"):
+            body = agents_path.read_text()
+            new_body, changed = _strip_context_import(body)
+            if changed:
+                actions["import_line"] = "stripped"
+                if not dry_run:
+                    agents_path.write_text(new_body)
+        else:
+            actions["agents_md"] = "deleted:untracked"
+            if not dry_run:
+                agents_path.unlink()
+
+    claude_path = worktree_dir / "CLAUDE.md"
+    if claude_path.is_symlink():
+        try:
+            target = os.readlink(str(claude_path))
+        except OSError:
+            target = ""
+        if target == "AGENTS.md":
+            actions["claude_md"] = "deleted:symlink"
+            if not dry_run:
+                claude_path.unlink()
+        elif not _is_tracked(worktree_dir, "CLAUDE.md"):
+            actions["claude_md"] = "deleted:untracked-symlink"
+            if not dry_run:
+                claude_path.unlink()
+    elif claude_path.exists():
+        if not _is_tracked(worktree_dir, "CLAUDE.md"):
+            actions["claude_md"] = "deleted:untracked"
+            if not dry_run:
+                claude_path.unlink()
+
+    awm_dir = worktree_dir / ".awm"
+    context_path = awm_dir / "context.md"
+    if not context_path.exists():
+        actions["context_md"] = "created"
+        if not dry_run:
+            awm_dir.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(_default_context(project, scope))
+
+    return actions
+
+
+def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]:
+    """Cleanup pass: enforce tier-3 = ``.awm/`` only across active scopes.
+
+    For each active scope worktree: strip any leaked ``@.awm/context.md``
+    line from a tracked ``AGENTS.md``, remove untracked scope-level
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink,
+    and back-fill ``.awm/context.md`` if missing. Idempotent.
+
+    With ``dry_run=True`` the report shows intended actions without
+    mutating files — use this before bulk runs to sanity-check.
+    """
+    conn = get_connection()
+    try:
+        sql = "SELECT project, scope, worktree FROM scopes WHERE status='active'"
+        params: list = []
+        if project:
+            sql += " AND project=?"
+            params.append(project)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    report: list[dict] = []
+    for row in rows:
+        worktree = Path(row["worktree"])
+        if not worktree.exists():
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": False,
+                "error": "worktree missing",
+            })
+            continue
+        try:
+            actions = _heal_worktree(
+                worktree, project=row["project"], scope=row["scope"],
+                dry_run=dry_run,
+            )
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": True,
+                "dry_run": dry_run, "actions": actions,
+            })
+        except OSError as exc:
+            report.append({
+                "project": row["project"], "scope": row["scope"],
+                "worktree": str(worktree), "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return report
+
+
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata directory."""
     validate_name(req.project, kind="project name")
@@ -494,7 +676,13 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     (awm_dir / "history.md").write_text(_generate_history_md(req.project, req.scope))
     (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(req.project, req.scope))
 
-    # 6. Record in DB
+    # 6. Per-scope opencode config — pulls in .awm/context.md via
+    # `instructions` so opencode loads scope orientation natively without
+    # any tier-3 file at the worktree root. Claude Code gets the same
+    # bytes via the SessionStart hook (awm context emit).
+    _write_scope_opencode_config(awm_dir)
+
+    # 7. Record in DB
     now = _now_iso()
     conn = get_connection()
     try:
@@ -568,6 +756,92 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
     return ScopeActionResponse(
         project=project, scope=scope, status="completed",
         message=f"Scope completed{merge_msg}",
+    )
+
+
+def sync_scope(project: str, scope: str, req: ScopeSyncRequest) -> ScopeActionResponse:
+    """Bring a scope's feature branch up to date with its base branch.
+
+    Merges (default) or rebases the base branch into feat/{scope} inside the
+    scope's existing worktree. Refuses if the worktree is dirty. Does not fetch
+    — caller pulls the base branch first if upstream commits are wanted.
+    """
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    repo_dir = PROJECTS_DIR / project / scope
+    feature_branch = f"feat/{scope}"
+
+    if not bare_dir.exists():
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
+    if not repo_dir.exists():
+        raise FileNotFoundError(f"Worktree not found at {repo_dir}")
+
+    base = req.from_branch or detect_default_branch(bare_dir)
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT uuid FROM scopes WHERE project=? AND scope=? AND status='active'",
+            (project, scope),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise FileNotFoundError(f"No active scope '{scope}' found in project '{project}'")
+
+    # Dirty-tree gate
+    r = run_git(["git", "-C", str(repo_dir), "status", "--porcelain"])
+    if r.returncode != 0:
+        raise RuntimeError(f"git status failed: {r.stderr}")
+    if r.stdout.strip():
+        raise RuntimeError(
+            f"Worktree has uncommitted changes — refusing to sync:\n{r.stdout}"
+        )
+
+    # Confirm HEAD is on feature_branch
+    r = run_git(["git", "-C", str(repo_dir), "rev-parse", "--abbrev-ref", "HEAD"])
+    if r.returncode != 0:
+        raise RuntimeError(f"git rev-parse failed: {r.stderr}")
+    current = r.stdout.strip()
+    if current != feature_branch:
+        raise RuntimeError(
+            f"Worktree HEAD is on '{current}', expected '{feature_branch}'. "
+            f"Check out the feature branch before syncing."
+        )
+
+    # Run the sync
+    if req.strategy == "merge":
+        r = run_git([
+            "git", "-C", str(repo_dir), "merge", base,
+            "-m", f"Sync {base} into {feature_branch}",
+        ])
+    else:  # rebase
+        r = run_git(["git", "-C", str(repo_dir), "rebase", base])
+
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"{req.strategy} failed: {r.stderr or r.stdout}\n"
+            f"Worktree left mid-{req.strategy}; resolve and re-run, "
+            f"or `git {req.strategy} --abort` to undo."
+        )
+
+    now = _now_iso()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE scopes SET updated_at=? WHERE project=? AND scope=? AND status='active'",
+            (now, project, scope),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return ScopeActionResponse(
+        project=project,
+        scope=scope,
+        status="active",
+        message=f"Synced {feature_branch} with {base} via {req.strategy}",
     )
 
 

@@ -1,6 +1,14 @@
 # AWM runtime state
 .awm/
 
+# Per-worktree dev sandbox env override (port pins, AWM_API_TARGET, etc.)
+dev/.env
+
+# Per-host orientation symlink. AGENTS.md is the canonical tracked source;
+# CLAUDE.md is a host-local symlink to it (see .awm/context.md for the
+# per-scope override layer).
+CLAUDE.md
+
 # Machine identity — per-host; see AGENTS.md
 NAME.md
 
