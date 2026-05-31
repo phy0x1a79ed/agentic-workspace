@@ -91,6 +91,10 @@ class AgentInstance:
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
+        # Set by _input_pump once stdin is verified open. create_session
+        # awaits this so callers can't dispatch posts before the pump task
+        # is actually scheduled and reading from the queue.
+        self.stdin_ready: asyncio.Event = asyncio.Event()
         # Stdin frames audit-log for tests (mirror of what gets written).
         self.stdin_frames_log = log_path.parent / "agent.log"
         # Spawn-time flags + captured claude session id (from init event).
@@ -181,9 +185,15 @@ async def create_session(*, project: str, scope: str,
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
-                         resume_session_id: Optional[str] = None) -> AgentInstance:
+                         resume_session_id: Optional[str] = None,
+                         fresh: bool = False) -> AgentInstance:
     """Spawn a claude subprocess and register it. Raises ScopeBusyError
-    if the scope already has an active session."""
+    if the scope already has an active session.
+
+    When ``fresh=True``, skip the auto-recovery of a prior
+    ``claude_session_id`` from the DB — used by /clear to start with a wiped
+    conversation context.
+    """
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Live sessions require: {sorted(_SUPPORTED_CLIS)}"
@@ -218,8 +228,9 @@ async def create_session(*, project: str, scope: str,
         try:
             # If no resume id was passed, recover the most recent one this
             # scope captured in a prior life. Lets re-invite-after-death
-            # still pass --resume even though _by_scope was reaped.
-            if resume_session_id is None:
+            # still pass --resume even though _by_scope was reaped. The
+            # `fresh` flag suppresses recovery so /clear actually clears.
+            if resume_session_id is None and not fresh:
                 row = conn.execute(
                     "SELECT claude_session_id FROM agent_sessions "
                     "WHERE project=? AND scope=? AND claude_session_id IS NOT NULL "
@@ -327,6 +338,33 @@ async def create_session(*, project: str, scope: str,
     session.reader_task = asyncio.create_task(_reader_loop(session))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
+    # Wait for the pump to reach its first await on input_queue.get(). Without
+    # this, the very first enqueue_input() (often from a system join post
+    # dispatched immediately after we return) races the scheduler and can
+    # land before the pump is even running. The pump sets stdin_ready as
+    # soon as it verifies proc.stdin is usable.
+    try:
+        await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
+    except asyncio.TimeoutError:
+        try:
+            session.proc.kill()
+        except ProcessLookupError:
+            pass
+        async with _registry_lock:
+            _by_scope.pop(key, None)
+            _registry.pop(session_id, None)
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE agent_sessions SET status='exited', exited_at=?, exit_code=-1 WHERE id=?",
+                (_now(), session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        raise RuntimeError(
+            f"input pump never signaled stdin-ready for {key} within 10s"
+        )
     return session
 
 
@@ -345,6 +383,13 @@ def get_session(session_id: int) -> AgentInstance | None:
 async def _input_pump(session: AgentInstance) -> None:
     """Drain ``input_queue`` and write each frame to stdin as one stream-json
     user message with ``[room:X from:Y]`` framing."""
+    # Signal readiness to create_session. We set the event unconditionally
+    # (even on a broken stdin) so the caller never deadlocks on wait_for —
+    # the subsequent return below handles the broken case.
+    session.stdin_ready.set()
+    if (session.proc is None or session.proc.stdin is None
+            or session.proc.stdin.is_closing()):
+        return
     while True:
         try:
             room_id, post = await session.input_queue.get()
@@ -674,6 +719,8 @@ async def respawn_session(
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
     effort: Optional[str] = None,
+    agent_cli: Optional[str] = None,
+    clear_history: bool = False,
 ) -> AgentInstance:
     """Kill the current AgentInstance for ``scope_key`` and spawn a fresh one
     with ``--resume <claude_session_id>`` so conversation context is
@@ -681,7 +728,9 @@ async def respawn_session(
 
     Any of permission_mode/model/effort that aren't passed inherit the
     current session's values. ``force=True`` uses SIGKILL; otherwise
-    SIGTERM with a short drain wait.
+    SIGTERM with a short drain wait. ``clear_history=True`` skips both the
+    in-memory and DB-recovered resume id so the new session starts with a
+    wiped conversation — the implementation of /clear.
     """
     current = _by_scope.get(scope_key)
     if current is None:
@@ -691,7 +740,8 @@ async def respawn_session(
         new_mode = permission_mode if permission_mode is not None else current.permission_mode
         new_model = model if model is not None else current.model
         new_effort = effort if effort is not None else current.effort
-        resume_sid = current.claude_session_id
+        new_cli = agent_cli if agent_cli is not None else current.agent_cli
+        resume_sid = None if clear_history else current.claude_session_id
         project, scope = current.project, current.scope
 
         # Tear down the old subprocess and wait for the waiter loop to
@@ -715,8 +765,10 @@ async def respawn_session(
 
     return await create_session(
         project=project, scope=scope,
+        agent_cli=new_cli,
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
+        fresh=clear_history,
     )
 
 
@@ -860,6 +912,13 @@ def reconcile_on_startup() -> None:
                 conn.execute(
                     "UPDATE agent_sessions SET status='orphaned' WHERE id=?",
                     (row["id"],),
+                )
+            elif row["project"] == "_vagrant":
+                # Vagrant managers are ephemeral; a dead one is just trash
+                # that the partial unique index would otherwise look at on
+                # the next spawn for the same user. Delete it outright.
+                conn.execute(
+                    "DELETE FROM agent_sessions WHERE id=?", (row["id"],)
                 )
             else:
                 conn.execute(

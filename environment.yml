@@ -11,4 +11,7 @@ dependencies:
     - httpx
     - mcp[cli]
     - pyyaml
+    - faster-whisper
+    - pocket-tts
+    - numpy
     - discord.py>=2.3

@@ -345,10 +345,15 @@ def ensure_vagrant_repo() -> Path:
 
 
 def _vagrant_scope_name(user_as: str) -> str:
-    """Slugify a ``user_as`` identifier into a valid vagrant scope name."""
+    """Slugify a ``user_as`` identifier into a valid vagrant scope name.
+
+    The trailing ``-handler`` suffix encodes the role; the UI strips it
+    (and the ``_vagrant`` project) to render the card as just "handler".
+    """
     import re
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", user_as).strip("-")
-    return f"user-{safe}" if safe else "user-anon"
+    bare = user_as.removeprefix("user:") if user_as.startswith("user:") else user_as
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", bare).strip("-")
+    return f"{safe}-handler" if safe else "anon-handler"
 
 
 def vagrant_scope_identifier(user_as: str) -> str:

@@ -33,7 +33,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from awm import __version__, config
 from awm.access_log import record as record_access
@@ -112,6 +112,29 @@ async def lifespan(app: FastAPI):
         f"cert={info['tls_cert']} fp={info['tls_fingerprint'][:16]}…"
     )
     agent_instances.reconcile_on_startup()
+
+    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
+    # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
+    # 503 with a clear message, the rest of the app keeps running.
+    try:
+        from awm.services.scopes import ensure_vagrant_repo
+        bare = ensure_vagrant_repo()
+        print(f"[awm-exposed] vagrant-scopes ready: {bare}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] vagrant-scopes disabled: {exc}")
+
+    # Restore persisted voice engine selections. Non-fatal: a broken engine
+    # leaves voice unloaded until the operator picks something else.
+    try:
+        from awm.services import voice_engine_config
+        from voice import engines as _voice_engines
+        for _kind, _sel in voice_engine_config.get_global().items():
+            if _sel is None:
+                continue
+            _voice_engines.load(_kind, _sel["engine_id"], _sel["params"])
+        print(f"[awm-exposed] voice engines restored: {voice_engine_config.get_global()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engine restore failed: {exc}")
 
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
@@ -215,11 +238,25 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] voice registry init failed: {exc}")
 
+    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts}/``.
+    # Lazy import so engine bootstrap (which can pull large models) doesn't
+    # run unless the user actually visits the voice surface.
+    engines_watcher_task: asyncio.Task | None = None
+    try:
+        import voice.engines as _voice_engines  # type: ignore[import-not-found]
+        engines_watcher_task = asyncio.create_task(
+            _voice_engines._watch_dynamic(), name="voice-engines-watcher",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] voice engines watcher disabled: {exc}")
+
     yield
 
     challenges_sweeper_task.cancel()
     warmup_task.cancel()
     replication_task.cancel()
+    if engines_watcher_task is not None:
+        engines_watcher_task.cancel()
     if leadership_task is not None:
         leadership_task.cancel()
     try:
@@ -340,7 +377,6 @@ from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
 from awm.voice.router import router as voice_router  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
@@ -460,7 +496,25 @@ async def auth_logout(_request: Request):
 
 _STATIC_DIR = _Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
-    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
+    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
+    # mic-worklet.js) are served directly; anything else under /ui/ falls
+    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
+    # etc.) survive hard reloads.
+    @app.get("/ui")
+    @app.get("/ui/")
+    @app.get("/ui/{full_path:path}")
+    async def _spa(full_path: str = ""):
+        # login.html stays its own page (server-rendered single-purpose entry).
+        if full_path:
+            # Resolve safely — reject any path that escapes the static dir.
+            candidate = (_STATIC_DIR / full_path).resolve()
+            try:
+                candidate.relative_to(_STATIC_DIR.resolve())
+            except ValueError:
+                return FileResponse(_STATIC_DIR / "index.html")
+            if candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(_STATIC_DIR / "index.html")
 
 
 # ---------------------------------------------------------------------------

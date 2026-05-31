@@ -1,0 +1,20 @@
+# F5-TTS sidecar env.
+#
+# Setup:
+#   mamba env create -f demo/env-f5tts.yml
+#   mamba run -n awm-f5tts pip install --extra-index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchaudio==2.2.2
+#   mamba run -n awm-f5tts pip install f5-tts fastapi 'uvicorn[standard]' huggingface_hub
+#
+# Model weights (~1.4 GB, auto-downloaded on first inference from SWivid/F5-TTS).
+#
+# Run:
+#   mamba run -n awm-f5tts python demo/tts_f5tts_service.py --port 7842
+name: awm-f5tts
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - ffmpeg
+  - pip:
+      - 'pip<24.1'

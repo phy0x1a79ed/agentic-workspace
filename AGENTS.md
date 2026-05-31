@@ -1,81 +1,71 @@
-# Agentic Workspace
+# AWM Scope Agent
 
-@WORKSPACE.md
+You are working in a scope worktree of the `awm` project. This file is the tracked, branch-shared orientation for scope agents. The per-scope override layer lives in `.awm/context.md` (gitignored).
 
-Universal entry point for CLI-based agents (Claude Code, Codex, OpenCode).
+For the full architectural reference, see `WORKSPACE.md` — especially § "Component Dev Architecture" and § "Scope Naming Convention".
 
-## Workspace Agent Persona
+## Web-UI Dev
 
-You are the **workspace agent** — the top-level orchestrator for this multi-project workspace.
+The frontend has two complementary seams that contain UI complexity and turn composition bugs into autonomous test failures. **Do this work in a worktree that has `feat/infra-dev-components` merged in** (every `comp-*` and `infra-typed-seams` branch carries the doc but not the runtime — see § "Where to run" below).
 
-### Startup Ritual
+### Per-component dev surface (`infra-dev-components`)
 
-1. Check this machine's identity: `cat NAME.md` (workspace-root file naming this awm node: capella, crux, mira, …; gitignored)
-2. Check workspace health: `awm_status`
-3. Check your inbox: `inbox_search scope=workspace`
-4. Review active scopes: `scope_list`
-5. Review active locks: `lock_list`
-6. Address any unread messages before taking new requests
+Each component owns a sibling `<Name>.fixtures.ts` file declaring variants. No central registry — Vite globs them at build time.
 
-### Core Responsibilities
+```ts
+// frontend/src/lib/components/StatusTag.fixtures.ts
+import type { ComponentProps } from 'svelte';
+import Component from './StatusTag.svelte';
 
-- **Triage**: Receive user requests and route them to the right project/scope
-- **Delegate**: Create scopes and spawn agents — never do implementation work directly
-- **Monitor**: Check inbox for status updates and reflections from scope agents
-- **Coordinate**: Resolve cross-project dependencies and conflicts
-
-### Delegation Flow
-
-1. Identify or create the target project and scope
-2. Spawn a scope agent: `agent_spawn project=X scope=Y prompt="..."`
-3. The prompt is sent to the scope inbox automatically
-4. Check back on the next startup for completion status
-
-## MCP Integration
-
-AWM is available as an MCP server. The `.mcp.json` at the workspace root registers the `awm` MCP server:
-
-| Category | Tools |
-|----------|-------|
-| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
-| Sessions | `session_log`, `session_list`, `session_get` |
-| Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
-| Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
-| Projects | `project_create` |
-| Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
-| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
-| Agents | `agent_spawn` |
-| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `awm_mcp_sync` |
-
-## Quick Start
-
-```bash
-awm scope list                                      # list active scopes
-awm project create <name> [--clone <url>]            # create a new project
-awm scope create <project> <scope> [--from <branch>] # create a scope
-awm scope sync <project> <scope> [--strategy merge|rebase] [--from <branch>] # bring feat/{scope} up to date with base
-awm scope complete <project> <scope> [--merge]       # complete a scope
-awm session log <project> <scope> --summary "..."     # log a session (supports --outcome, --deviations, --suggestions)
-awm skill search <query>                             # search skills (keyword + semantic)
+const fixtures: Record<string, ComponentProps<typeof Component>> = {
+  active: { status: 'active' },
+  failed: { status: 'failed' },
+};
+export { Component as component };
+export default fixtures;
 ```
 
-## Skill Discovery
+Dev surface routes:
+
+- `/dev/components` — auto-generated index of every `*.fixtures.ts` under `src/lib/components/`.
+- `/dev/components/[slug]?v=<variant>` — single-component view with variant switcher.
+- Root `+layout.svelte` skips app chrome and the backend bootstrap on `/dev/*`, so dev pages never call `/voice`, `/rooms`, `/peers`, or `/vagrant`.
+
+`npm run test` runs `vitest` + `jsdom`. A single generic runner (`src/lib/dev/fixtures.test.ts`) globs the same fixture set and mounts every variant — **crash-on-mount bugs surface in CI without anyone opening a browser**. Adding a fixture requires zero changes to the runner.
+
+### Bind-prop wrapper pattern
+
+For `$bindable` props whose bug lives at the parent's bind direction, the fixture points at a thin wrapper Svelte file that wires the bind from local state. For `AgentList`, the parent itself is the wrapper, so no extra file is needed — the failing variants in `AgentList.fixtures.ts` reproduce the composition-seam crash autonomously.
+
+### Typed seam (`infra-typed-seams`)
+
+`npm run gen-types` spawns a one-shot Python process in the `awm` mamba env that imports `awm.exposed:app` and calls `app.openapi()` directly. No live uvicorn required, no auth wall. Output goes to `frontend/src/lib/api/generated.ts` (committed). Spawn cwd + `sys.path` are pinned to the worktree root so `import awm` resolves to the worktree's source, not the editable install.
+
+Hand-written interfaces in `client.ts` get progressively replaced by re-exports from `generated.ts`. The first proof-of-seam is `VagrantSessionResponse`. The migration is intentionally narrow — types that match 1:1 swap immediately; types that diverge in shape stay hand-written until the backend tightens its `response_model` declarations.
+
+Engine `CONFIG_SCHEMA` JSON Schemas escape this pipeline (FastAPI types their envelope as `dict[str, Any]` → `unknown`). Fixtures for engine forms hand-shape JSON Schema blobs.
+
+## Workflow
+
+`node`/`npm` live in the `awm` mamba env, not on the default PATH. Prefix as shown:
 
 ```bash
-awm skill list                        # all skills with metadata
-awm skill list --type protocol        # filter by type
-awm skill search "HPC annotation"     # hybrid keyword + semantic search
-awm skill get awm/debrief.md          # read a specific skill
-awm skill reindex                     # regenerate skills/_index.md + embeddings
+cd frontend
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm install
+
+# Visual: see fixtures in the browser
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run dev   # http://localhost:12103/ui/dev
+
+# Autonomous: fail CI on crash-on-mount bugs
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run test
+
+# Regenerate types after Pydantic model changes
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run gen-types
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run check
 ```
 
-## Existing Projects
+### Where to run
 
-| Project | Source | Default Branch | Upstream |
-|---------|--------|---------------|----------|
-| metasmith | phy0x1a79ed/Metasmith | release | hallamlab/Metasmith |
-| metasmith-libraries | phy0x1a79ed/MetasmithLibraries | main | hallamlab/MetasmithLibraries |
-| cyanoverse | phy0x1a79ed/cyanoverse | main | -- |
-| awm | clone of workspace repo | dev (release for stable) | -- |
-| self-improvement | local | main | -- |
-| synclust | local | main | -- |
+- **`feat/infra-dev-components`** has the dev routes, vitest config, and the generic runner. Anything you add a fixture for shows up here.
+- **`feat/infra-typed-seams`** has the `gen-types` script and `generated.ts`.
+- **`feat/comp-*`** branches carry only the fixture file for their component. To verify a `comp-*` fixture, either merge `feat/infra-dev-components` into the comp branch (and `feat/infra-typed-seams` if the component needs generated types), or use the `verify/integration` branch that octopus-merges all five.
