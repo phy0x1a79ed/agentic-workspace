@@ -195,6 +195,28 @@ def test_emit_cwd_agents_md_emitted_for_scope(tmp_path: Path) -> None:
     assert '<scope-context path=".awm/context.md">' in result.stdout
 
 
+def test_emit_outermost_workspace_wins_when_nested(tmp_path: Path) -> None:
+    # Models the .bare-worktree-sharing topology: awm-dev scope at
+    # projects/awm/dev/ has its own WORKSPACE.md (committed on dev branch),
+    # AND the workspace at agentic_workspace/ has WORKSPACE.md. Emit must
+    # pick the OUTERMOST one so cwd != workspace_root and the agents block
+    # emits correctly for the awm-dev scope.
+    (tmp_path / "WORKSPACE.md").write_text("OUTER_WS\n")
+    inner = tmp_path / "projects" / "awm" / "dev"
+    inner.mkdir(parents=True)
+    (inner / "WORKSPACE.md").write_text("INNER_WS\n")
+    (inner / "AGENTS.md").write_text("AGENTS_SENTINEL\n")
+
+    result = runner.invoke(app, ["context", "emit", "--cwd", str(inner)])
+
+    assert result.exit_code == 0
+    # The OUTER workspace content wins.
+    assert "OUTER_WS" in result.stdout
+    # The agents block emits because cwd != outer workspace_root.
+    assert "<agents-context" in result.stdout
+    assert "AGENTS_SENTINEL" in result.stdout
+
+
 def test_emit_no_agents_md_no_block(tmp_path: Path) -> None:
     # Scope has .awm/context.md but no cwd-local AGENTS.md — workspace
     # and scope blocks emit, agents block does not.
