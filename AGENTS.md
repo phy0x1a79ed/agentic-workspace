@@ -1,56 +1,8 @@
-# AWM Scope Agent
+# AWM Internal Architecture
 
-You are working in a scope worktree of the `awm` project. This file is the tracked, branch-shared orientation for **all** scope agents in this workspace. The per-scope override layer lives in `.awm/context.md` (gitignored, auto-loaded by the `SessionStart` hook).
+*Internal architecture reference for agents working ON awm itself: Service Hub protocol, vertical-stripe component dev infra, Python/env conventions. Auto-injected only when the agent's cwd contains this file at its root — `projects/awm/*` scopes inherit it via .bare-worktree sharing; other projects' agents never see it. **Do not merge into WORKSPACE.md** — that file is universal, this one is awm-private; keeping them separate is what keeps non-awm agents' contexts uncluttered.*
 
-## Workspace Layout
-
-| Path | Purpose |
-|------|---------|
-| `awm/` | AWM service package (Python) + skills catalog |
-| `data/` | Shared data (per-project; raw, staged, outputs) |
-| `projects/` | Project bare repos + git worktrees (agents work here) |
-
-### Per-Scope Layout
-
-Agents land directly in the git worktree. All AWM metadata lives in a `.awm/` dotdir inside:
-
-```
-projects/{project}/
-  .bare/                         # bare git repo
-  {scope}/                       # git worktree — agent CWD
-    .awm/                        # AWM metadata (gitignored)
-      context.md                 # scope instructions (auto-loaded)
-      history.md                 # auto-generated: open/resolved session history
-      artifacts.md               # auto-generated: project artifact index
-      data -> ../../../data/{project}/  # symlink to shared project data
-      skills -> ../../../awm/skills/    # symlink to skill catalog
-    [code files...]              # the actual repo content
-```
-
-Scopes access project data via `.awm/data/`. All scopes in the same project share the same data directory.
-
-## Scope Lifecycle
-
-1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
-2. **Startup**: Agent reads `.awm/context.md` (auto-loaded), runs `awm_refresh`, reads `history.md` + `artifacts.md`.
-3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
-4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
-5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
-
-## Scope Naming Convention
-
-New scopes use a prefix family to signal what kind of work they own. Names are flat (slashes are rejected — see `awm/services/_validation.py`), so the family is encoded as a hyphen-prefix.
-
-| Prefix | Family | What it owns |
-|--------|--------|-------------|
-| `comp-*` | component | A single frontend component + its fixtures (one slug under `/dev/components/`). |
-| `svc-*`  | service   | A backend service contract — endpoints, models, the Pydantic surface for an area. |
-| `feat-*` | feature   | End-to-end integration that wires components, services, and external engines together (e.g. `feat-stt`, `feat-rooms`). |
-| `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners. |
-
-Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
-
-The dev surface that backs the `comp-*` family lives at `/dev/components/[name]` (see `infra-dev-components`).
+For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
 ## Component Dev Architecture
 
@@ -260,42 +212,21 @@ Static-kind registrations don't proxy, so there's no second-hop auth — bytes a
 - **Vite dev server vs static dir.** During hot-reload iteration, register `--url http://127.0.0.1:<vite-port>` instead of `--dir` — point at the dev server directly. Switch to `--dir ./dist` once you're past the rebuild loop.
 - **Never run two `awm.exposed` on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are explicitly supported and how dev parallelism works.
 
-## Skills System
+## Awm Editable Install Gotcha
 
-Skills are dynamic protocols that improve with use:
+General Python env rules (use `mamba run -n awm`, never `pip` / `python` / `mamba activate` directly) live in `WORKSPACE.md`. The awm-specific wrinkle:
 
-- **AWM skills** (`skills/awm/`): workspace procedures that drive the MCP tool surface (create-project, create-scope, debrief, skill-update)
-- **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly)
-- Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy
-- `skills_search` combines keyword + semantic search (sentence-transformers embeddings)
-- **Session logs** can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `session_log`
-- A dedicated `awm/skill-improvement` scope periodically reads session logs and revises skills
+The editable install at `/home/tony/lib/miniforge3/envs/awm/lib/python3.14/site-packages/__editable___awm_0_1_0_finder.py` maps `awm` → `/home/tony/agentic_workspace/awm` (the **release** worktree). When iterating on dev-tree code, `import awm` from the conda env silently resolves to release code, not the dev tree. Workarounds:
 
-## Git Model
+- Run with explicit `PYTHONPATH=<dev-worktree>` to shadow the editable mapping, OR
+- Spawn a Python subprocess with cwd + `sys.path[0]` pinned to the dev worktree (this is how `npm run gen-types` does it — see `frontend/scripts/gen-types.py`), OR
+- Merge dev → release to advance the editable mapping's target (what the deploy step does).
 
-Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
-
-- Branch naming: `feat/{scope}`
-- PRs created from feature branches
-- See `skills/tools/git.md` for details
-
-## Python Environment Rules
-
-System Python is externally managed (PEP 668) — `pip install` is blocked.
-
-**Do NOT use:** `python`, `python3`, `pip`, or `pip3` directly.
-**Do NOT use:** `conda activate` or `mamba activate` (requires interactive shell init).
-
-**Always use:**
-```bash
-mamba run -n <project-env> python script.py
-mamba run -n <project-env> pip install <package>
-```
+See memory `[[awm_two_source_trees]]` for the full failure mode.
 
 ## Agent Rules
 
-1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
-3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
-4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
-5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.
+1. **Keep WORKSPACE.md and AGENTS.md audience-pure** — workspace-structural goes in `WORKSPACE.md`, awm-internal goes here. If you find yourself adding path tables or MCP catalogs to this file, they belong in `WORKSPACE.md` instead.
+2. **The `awm/skills/awm/debrief.md` skill is mandatory at end-of-session** — it's the mechanism that keeps `.awm/history.md` and `.awm/artifacts.md` accurate across all scopes.
+3. **`awm scope heal` is idempotent and safe** — run with `--dry-run` first to preview, then for real. Enforces tier-3 = `.awm/` only.
+4. **Don't break the SessionStart hook contract** — `awm context emit` must exit 0 with empty stdout when no relevant files exist. Hooks that error block session start.
