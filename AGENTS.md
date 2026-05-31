@@ -79,3 +79,12 @@ awm skill reindex                     # regenerate skills/_index.md + embeddings
 | awm | clone of workspace repo | dev (release for stable) | -- |
 | self-improvement | local | main | -- |
 | synclust | local | main | -- |
+
+## Scope-Agent Orientation
+
+- **`awm` IS `awm.exposed:app` on port 7820.** Always one process per node — never spawn a second hub.
+- **`svc-*` scopes are FastAPI processes** that own a path prefix and register at runtime via `awm hub register …`. The hub forwards matched paths to them.
+- **`comp-*` and frontend slices are unaware of the hub.** Same origin, same port; behavior is byte-identical when the registry is empty.
+- **Reuse `require_peer_bearer`** (`awm/middleware_auth.py`) for svc-side auth — the hub authenticates to services as the local peer. Do not invent a new bearer.
+- **Run `awm hub trust-self` once per node** so the hub's own bearer is recognized by `require_peer_bearer` on the service side.
+- See `WORKSPACE.md § Service Hub` for the full lifecycle and `awm/demos/echo_svc.py` for a starter template.

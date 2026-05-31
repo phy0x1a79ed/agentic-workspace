@@ -76,3 +76,42 @@ mamba run -n <project-env> pip install <package>
 3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
 4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
 5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.
+
+## Service Hub
+
+`awm.exposed:app` (port 7820) is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, `/voice`, …). A few path prefixes are *registered* by external services at runtime; matched requests are forwarded to those services with hub-as-peer auth.
+
+### When to make a `svc-*` scope
+
+Use a `svc-*` worktree when a stripe needs to **own** a path prefix end-to-end: ship its own routes, run as its own process, iterate without rebuilding the monolith. PTT V2 (audio + WS + STT) is the first customer. Pure shared-library refactors stay in `awm/`.
+
+### Registration lifecycle
+
+```bash
+# in the svc-* worktree, with the service running on a chosen port:
+awm hub register --name <svc> --prefix </owned-path> --url http://127.0.0.1:<port>
+```
+
+`register` POSTs to `/hub/register`, then holds a WS lease at `/hub/lease/<id>` until you Ctrl-C. Lease close → eviction within the next event-loop tick. No file-based config, no heartbeat tuning. Re-running re-registers from scratch.
+
+Other commands:
+- `awm hub list` — show current registrations.
+- `awm hub deregister <name>` — admin force-evict.
+- `awm hub trust-self` — install the local auth token at `$AWM_DIR/peers/<self>.token` so the hub's forwarded requests pass `require_peer_bearer` on the service side. Run once per node.
+
+### Auth model
+
+Hub → service is degenerate peer auth. The hub injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>` on every forwarded request; the user's bearer (`Authorization` header / `awm_session` cookie) is stripped. `X-Awm-As` is preserved verbatim. Services gate routes with `from awm.middleware_auth import require_peer_bearer` — one import, no new bearer concept.
+
+### What `comp-*` and frontend slices need to know
+
+**Nothing.** The hub IS `awm.exposed:app` on :7820; no new origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm.
+
+### Demo
+
+`awm/demos/echo_svc.py` is a 60-line FastAPI smoke test — copy it as the starting point for a real `svc-*`.
+
+### Constraints
+
+- **Never run two hubs on one node.** Both would bind :7820 and one would fail.
+- The hub control plane (`/hub/*`) is exempt from forwarding even if a prefix would shadow it — the lease socket has to stay reachable.

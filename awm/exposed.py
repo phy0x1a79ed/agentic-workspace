@@ -335,6 +335,7 @@ async def http_exc_handler(request: Request, exc: HTTPException) -> JSONResponse
 # rooms.
 # ---------------------------------------------------------------------------
 
+from awm.api.hub import router as hub_router  # noqa: E402
 from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
@@ -348,6 +349,7 @@ app.include_router(peer_router)
 app.include_router(repl_router)
 app.include_router(voice_router)
 app.include_router(vagrant_router)
+app.include_router(hub_router)
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +612,50 @@ async def gate_and_auth_for_core(request: Request, call_next):
 # exposed listener. Our own lifespan handles DB init + PID file.
 
 app.mount("/", core_app)
+
+
+# ---------------------------------------------------------------------------
+# Hub forwarding middleware (S4/S5 of infra-service-hub)
+# ---------------------------------------------------------------------------
+# Sits OUTERMOST: empty registry → byte-identical pass-through. On a
+# prefix match, the request never reaches the in-process routers; the
+# hub forwards it to the registered service URL with hub-as-peer auth.
+# Raw ASGI so both HTTP and WebSocket scopes are handled.
+
+from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
+from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+
+
+class HubRoutingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        registry = _get_hub_registry()
+        if registry.is_empty():
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        # Never forward the hub control plane itself, even if a registered
+        # prefix would shadow it. Defensive — registration validation
+        # could also reject these prefixes, but cheap to enforce here too.
+        if path == "/hub" or path.startswith("/hub/"):
+            return await self.app(scope, receive, send)
+        rec = registry.longest_match(path)
+        if rec is None:
+            return await self.app(scope, receive, send)
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            response = await proxy_http(request, rec.url)
+            await response(scope, receive, send)
+        else:
+            from fastapi import WebSocket as _WS
+            ws = _WS(scope, receive=receive, send=send)
+            await proxy_ws(ws, rec.url)
+
+
+app.add_middleware(HubRoutingMiddleware)
 
 
 # ---------------------------------------------------------------------------
