@@ -315,22 +315,11 @@ do_build() {
     echo "[dev] no frontend/ directory — nothing to build"
     exit 1
   fi
-  # adapter-static empties awm/static/ before writing the SPA, which wipes
-  # the server-rendered login.html (operator lockout risk). Preserve it
-  # across the build by copy-aside-then-restore.
-  local login_src="$REPO_ROOT/awm/static/login.html"
-  local login_bak=""
-  if [ -f "$login_src" ]; then
-    login_bak="$(mktemp)"
-    cp "$login_src" "$login_bak"
-  fi
   (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
-  if [ -n "$login_bak" ]; then
-    cp "$login_bak" "$login_src"
-    rm -f "$login_bak"
-    echo "[dev] preserved login.html across build"
-  fi
-  echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
+  echo "[dev] build output → $REPO_ROOT/build/"
+  echo "[dev] register with the hub:"
+  echo "      AWM_EXPOSED_PORT=${AWM_EXPOSED_PORT} awm hub register \\"
+  echo "        --name web-ptt-ui --prefix /ui/web-ptt --dir $REPO_ROOT/build"
 }
 
 case "$cmd" in

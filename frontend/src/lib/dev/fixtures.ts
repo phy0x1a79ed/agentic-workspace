@@ -25,10 +25,19 @@ export interface FixtureEntry {
   module: FixtureModule;
 }
 
-const modules = import.meta.glob<FixtureModule>(
-  '/src/lib/components/*.fixtures.ts',
-  { eager: true },
-);
+// Globs cover both the legacy in-frontend components location and the
+// scope-owned ``ptt/components/`` tree at the worktree root. Adding more
+// scope dirs later means appending another glob and merging the result.
+const modules: Record<string, FixtureModule> = {
+  ...import.meta.glob<FixtureModule>(
+    '/src/lib/components/*.fixtures.ts',
+    { eager: true },
+  ),
+  ...import.meta.glob<FixtureModule>(
+    '/../ptt/components/*.fixtures.ts',
+    { eager: true },
+  ),
+};
 
 function deriveName(path: string): string {
   const file = path.split('/').pop() ?? path;

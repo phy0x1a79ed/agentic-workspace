@@ -9,6 +9,9 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 12103,
     strictPort: true,
+    // Allow Vite to read files from the scope-owned tree at the worktree
+    // root (e.g. ../ptt/components/*) — needed by the fixtures glob.
+    fs: { allow: ['..'] },
     proxy: {
       // Backend endpoints — anything that isn't a SvelteKit route or asset.
       '/auth':     { target: API_TARGET, changeOrigin: true, secure: false },
@@ -21,6 +24,7 @@ export default defineConfig({
       '/rooms':    { target: API_TARGET, changeOrigin: true, secure: false },
       '/vagrant':  { target: API_TARGET, changeOrigin: true, secure: false },
       '/voice':    { target: API_TARGET, changeOrigin: true, secure: false, ws: true },
+      '/ptt':      { target: API_TARGET, changeOrigin: true, secure: false, ws: true },
       '/ws':       { target: API_TARGET, changeOrigin: true, secure: false, ws: true }
     }
   },

@@ -6,13 +6,13 @@ The hub (`awm.exposed:app` on :7820) registers this service against the
 
 Run::
 
-    python -m awm.services.ptt --port 7853
+    python -m ptt.backend --port 7853
 
 Register with the hub once both are up::
 
     awm hub register --name ptt --prefix /ptt --url http://127.0.0.1:7853
 """
 
-from awm.services.ptt.app import build_app
+from ptt.backend.app import build_app
 
 __all__ = ["build_app"]

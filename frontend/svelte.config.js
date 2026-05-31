@@ -6,14 +6,14 @@ const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter({
-      pages: '../awm/static',
-      assets: '../awm/static',
+      pages: '../build',
+      assets: '../build',
       fallback: 'index.html',
       precompress: false,
       strict: false
     }),
     paths: {
-      base: '/ui'
+      base: '/ui/web-ptt'
     },
     prerender: { entries: [] }
   }
