@@ -144,6 +144,6 @@ def test_list_scopes_filters_vagrant_distinct_from_resident(
 # ---------------------------------------------------------------------------
 
 def test_vagrant_scope_name_slug():
-    assert scopes_svc._vagrant_scope_name("user:operator") == "user-user-operator"
-    assert scopes_svc._vagrant_scope_name("user:tony@host") == "user-user-tony-host"
-    assert scopes_svc._vagrant_scope_name("") == "user-anon"
+    assert scopes_svc._vagrant_scope_name("user:operator") == "operator-handler"
+    assert scopes_svc._vagrant_scope_name("user:tony@host") == "tony-host-handler"
+    assert scopes_svc._vagrant_scope_name("") == "anon-handler"

@@ -33,6 +33,14 @@ run side-by-side:
 | `projects/awm/web-backend/` (`feat/web-backend`) | `7841` | `7842` | `12123` |
 | any other scope (fallback) | `7851` | `7852` | `12153` |
 
+**The uvicorn port IS the service-hub origin for this sandbox.** `AGENTS.md`
+§ "Service Hub" documents the hub at `:7820` (the production default — the
+systemd-managed `awm.exposed` on this node). When you're consuming or
+registering against the hub *from inside a dev sandbox*, use this worktree's
+uvicorn port instead. The hub control plane lives at
+`https://127.0.0.1:<uvicorn>/hub/` (e.g. `https://127.0.0.1:7821/hub/register`
+for the `dev/` sandbox).
+
 Each worktree's `dev/.awm/`, `dev/projects/`, `dev/data/` are gitignored —
 state is fully isolated. `./run.sh start` in three different worktrees Just
 Works.

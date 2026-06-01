@@ -1,14 +1,21 @@
-# Workspace Reference
+# AWM Workspace
 
-Shared context for all agents in this workspace.
+*Structural orientation for any agent operating in a scope worktree of this AWM workspace. Documents the workspace's paths (`.awm/`, `data/`, `skills/`), MCP tool catalog, project layout, scope lifecycle, and the startup ritual that every scope agent inherits. Loaded into scope-agent context via the harness's native mechanism — Claude Code Reads this file at session start per its global instructions (`~/.claude/CLAUDE.md`); OpenCode auto-injects it via the per-scope `mcp-opencode.json` `instructions` array. **Do not merge into AGENTS.md** (awm-internal, narrower audience) **or README.md** (human setup, different audience) — keeping the three files audience-pure is what lets each one stay legible.*
+
+Context is assembled general → specific: this file first, then the cwd-local `AGENTS.md` (the project's hand-maintained brief), then `.awm/context.md` (the scope's per-task ritual).
 
 ## Workspace Layout
 
 | Path | Purpose |
 |------|---------|
+| `WORKSPACE.md` | This file — loaded by every scope agent via harness-native mechanism (CC Reads per global instructions; OC auto-injects via per-scope opencode config) |
+| `AGENTS.md` | AWM-internal architecture (loaded when cwd has it locally — CC Reads via walk-up, OC walks it natively) |
+| `README.md` | Human setup/usage guide (never auto-injected) |
 | `awm/` | AWM service package (Python) + skills catalog |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
 | `projects/` | Project bare repos + git worktrees (agents work here) |
+| `.awm/` | Workspace runtime state (`spawn-mcp.json`, `mcp-opencode.json`, peer tokens) |
+| `.mcp.json` | Canonical MCP server registry — fans out via the exporter framework |
 
 ### Per-Scope Layout
 
@@ -19,7 +26,7 @@ projects/{project}/
   .bare/                         # bare git repo
   {scope}/                       # git worktree — agent CWD
     .awm/                        # AWM metadata (gitignored)
-      context.md                 # scope instructions
+      context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       artifacts.md               # auto-generated: project artifact index
       data -> ../../../data/{project}/  # symlink to shared project data
@@ -29,10 +36,80 @@ projects/{project}/
 
 Scopes access project data via `.awm/data/`. All scopes in the same project share the same data directory.
 
+## Existing Projects
+
+```
+projects/
+  _vagrant/              # sentinel: per-user vagrant-scope handlers
+  awm/                   # AWM itself (dev, web-ui, comp-*, infra-*, voice, sentry, …)
+  container_builds/      # apptainer image recipes
+  cyanoverse/            # cyanobacteria genomics figures + analyses
+  drawio/                # diagrams + poster integration
+  market_monitor/        # trading data pipelines
+  metasmith/             # metasmith dev (caching, cancellation, hints, mcp, …)
+  metasmith-libraries/   # per-pipeline libraries (eukaryotic-assembly, fabfos, phyloflash, …)
+  mitacs-purify/         # bioreactor work
+  research/              # biofilms, ecological-modelling, functional-decomposition
+  scadc/                 # figures + analyses for the SCADC paper
+  scratch/               # one-off sandboxes (endfield, minecraft-turtles, network_debug)
+  self-improvement/      # factorio-learning-environment, opencode
+  spanish-lakes/         # spanish-lakes metagenomics
+  synclust/              # synclust dev
+  threejs-scene-manager/ # scene manager dev
+  tools/                 # misc tooling
+  vpn_bounce/            # vpn relay experiments
+```
+
+Each project has one or more scope worktrees under it; `awm scope list --project <p>` enumerates them live.
+
+## Startup Ritual
+
+Every scope agent runs this on session start (the `.awm/context.md` for newly-created scopes embeds the boilerplate; agents in long-lived scopes can re-run it any time to refresh):
+
+1. `mcp__awm__awm_refresh project=<p> scope=<s>` — re-renders `.awm/history.md` and `.awm/artifacts.md` from the DB.
+2. Read `.awm/history.md` — open + resolved session log for this scope and its siblings.
+3. Read `.awm/artifacts.md` — registered artifacts (data files, model outputs, figures) from sibling scopes.
+4. `mcp__awm__skills_search query="<your task description>"` — finds the relevant procedural skill before you start.
+5. `mcp__awm__inbox_search status=unread scope=scope:<p>/<s>` (and optionally `scope=workspace`) — anything addressed to you or the workspace that's waiting.
+
+`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use `awm_refresh`, `session_log`, and `artifact_register` MCP tools.
+
+## MCP Tools
+
+The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The tool surface, by category:
+
+| Category | Tools |
+|---|---|
+| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
+| Sessions | `session_log`, `session_list`, `session_get`, `session_search`, `session_resolve` |
+| Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
+| Projects | `project_create`, `project_list` |
+| Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
+| Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
+| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
+| Rooms | `room_create`, `room_list`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
+| Peers | `peers_list`, `peer_ping` |
+| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `agent_control` |
+
+Each tool has a JSON Schema accessible via your MCP client. New tools land here automatically when `awm-mcp` reloads.
+
+## Skills Discovery
+
+Skills are dynamic protocols that improve with use:
+
+- **AWM skills** (`skills/awm/`): workspace procedures that drive the MCP tool surface (create-project, create-scope, debrief, skill-update, harness-setup, …)
+- **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly, chrome-devtools)
+- Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy.
+- `skills_search` combines keyword + semantic search (sentence-transformers embeddings).
+- Session logs can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `session_log`.
+- A dedicated `awm/skill-improvement` scope periodically reads session logs and revises skills.
+
+When you don't know the procedure for a verb (e.g. "create scope", "debrief", "register artifact"), **search skills before guessing** — the answer is almost always already written.
+
 ## Scope Lifecycle
 
 1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
-2. **Startup**: Agent reads `.awm/context.md`, runs `awm_refresh`, reads `history.md` + `artifacts.md`.
+2. **Startup**: Agent reads `.awm/context.md` (auto-injected), runs the Startup Ritual above.
 3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
 4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
 5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
@@ -50,157 +127,51 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
-The dev surface that backs the `comp-*` family lives at `/dev/components/[name]` (see `infra-dev-components`).
-
-## Component Dev Architecture
-
-The frontend has two complementary seams that contain UI complexity and turn composition bugs into autonomous test failures.
-
-### Per-component dev surface (`infra-dev-components`)
-
-Each component owns a sibling `<Name>.fixtures.ts` file that declares variants. No central registry — Vite globs them at build time.
-
-```ts
-// frontend/src/lib/components/StatusTag.fixtures.ts
-import type { ComponentProps } from 'svelte';
-import Component from './StatusTag.svelte';
-
-const fixtures: Record<string, ComponentProps<typeof Component>> = {
-  active:    { status: 'active' },
-  failed:    { status: 'failed' },
-  // ...
-};
-export { Component as component };
-export default fixtures;
-```
-
-The dev routes mount one fixture at a time:
-
-- `/dev/components` — auto-generated index of every `*.fixtures.ts` under `src/lib/components/`.
-- `/dev/components/[slug]?v=<variant>` — single-component view with variant switcher.
-- The root `+layout.svelte` skips app chrome and the backend bootstrap on `/dev/*`, so dev pages never call `/voice`, `/rooms`, `/peers`, or `/vagrant`.
-
-`npm run test` runs `vitest` + `jsdom`. A single generic runner (`src/lib/dev/fixtures.test.ts`) globs the same fixture set and mounts every variant — crash-on-mount bugs surface in CI without anyone opening a browser. Adding a fixture needs zero changes to the runner.
-
-**Bind-prop wrapper pattern.** For `$bindable` props whose bug lives at the parent's bind direction, the fixture points at a thin wrapper Svelte file that wires the bind from local state. For `AgentList`, the parent itself is the wrapper, so no extra file is needed — the failing variants in `AgentList.fixtures.ts` reproduce the composition-seam crash autonomously.
-
-### Typed seam (`infra-typed-seams`)
-
-`npm run gen-types` spawns a one-shot Python process in the `awm` mamba env that imports `awm.exposed:app` and calls `app.openapi()` directly. No live uvicorn required, no auth wall. Output goes to `frontend/src/lib/api/generated.ts` (committed). Spawn cwd + `sys.path` are pinned to the worktree root so `import awm` resolves to the worktree's source, not the editable install (see memory `awm_two_source_trees`).
-
-Hand-written interfaces in `client.ts` get progressively replaced by re-exports from `generated.ts`. The first proof-of-seam is `VagrantSessionResponse`. The migration is intentionally narrow — types that match 1:1 swap immediately; types that diverge in shape stay hand-written until the backend tightens its `response_model` declarations.
-
-Engine `CONFIG_SCHEMA` JSON Schemas escape this pipeline (FastAPI types their envelope as `dict[str, Any]` → `unknown`). Fixtures for engine forms hand-shape JSON Schema blobs; if drift becomes a real problem, a future `infra-engine-schema-snapshot` scope can close it.
-
-### Workflow
-
-```bash
-# Visual: see fixtures in the browser
-cd frontend && npm install
-npm run dev      # http://localhost:12103/ui/dev
-
-# Autonomous: fail CI on crash-on-mount bugs
-npm run test
-
-# Regenerate types after Pydantic model changes
-npm run gen-types
-npm run check
-```
-
-## Skills System
-
-Skills are dynamic protocols that improve with use:
-
-- **AWM skills** (`skills/awm/`): workspace procedures that drive the MCP tool surface (create-project, create-scope, debrief, skill-update)
-- **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly)
-- Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy
-- `skills_search` combines keyword + semantic search (sentence-transformers embeddings)
-- **Session logs** can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `session_log`
-- A dedicated `awm/skill-improvement` scope periodically reads session logs and revises skills
-
 ## Git Model
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
 
-- Branch naming: `feat/{scope}`
-- PRs created from feature branches
-- See `skills/tools/git.md` for details
+- Branch naming: `feat/{scope}` (or flat keyword for legacy scopes).
+- PRs created from feature branches into `main` / `release` as appropriate.
+- See `skills_get path="tools/git.md"` for the worktree-bare flow in detail.
 
-## Python Environment Rules
+## CLI Quick Reference
 
-System Python is externally managed (PEP 668) — `pip install` is blocked.
+`awm <command> --help` for full options on any of these. The MCP tools above are usually more ergonomic from inside an agent — the CLI is for shell-level work.
 
-**Do NOT use:** `python`, `python3`, `pip`, or `pip3` directly.
-**Do NOT use:** `conda activate` or `mamba activate` (requires interactive shell init).
-
-**Always use:**
-```bash
-mamba run -n <project-env> python script.py
-mamba run -n <project-env> pip install <package>
-```
+| Command | Purpose |
+|---|---|
+| `awm status` / `awm serve` / `awm stop` / `awm restart` | Core lifecycle |
+| `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
+| `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
+| `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
+| `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
+| `awm lock acquire <path> --holder <id>` / `awm lock release / list / reap` | File / folder locks (heartbeat every 30s) |
+| `awm skill list / search / get / reindex` | Skill catalog |
+| `awm hub register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
+| `awm context emit --cwd <path>` | Render the 3-tier context as XML blocks (utility for awm tooling that bundles context into spawned sessions; no harness hook calls it) |
+| `awm peer add / list / ping / whoami` | Federation setup (see README.md) |
 
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
 2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
-3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — these are auto-generated. Use MCP tools.
+3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — auto-generated. Use MCP tools.
 4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
 5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.
 
-## Service Hub
+## Python Environment Rules
 
-`awm.exposed:app` (port 7820) is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, `/voice`, …). A few path prefixes are *registered* at runtime; matched requests are either forwarded to an external service or served from a registered directory.
+System Python is externally managed (PEP 668) — `pip install` is blocked.
 
-### When to make a `svc-*` scope
+**Do NOT use:** `python`, `python3`, `pip`, `pip3` directly.
+**Do NOT use:** `conda activate` / `mamba activate` (requires interactive shell init).
 
-Use a `svc-*` worktree when a stripe needs to **own** a path prefix end-to-end: ship its own routes, run as its own process, iterate without rebuilding the monolith. PTT V2 (audio + WS + STT) is the first customer. Pure shared-library refactors stay in `awm/`.
-
-### Registration lifecycle
-
-Two registration kinds share the same CLI + lease lifecycle.
-
-**URL forward** — for `svc-*` processes that own a prefix end-to-end:
+**Always use:**
 
 ```bash
-# in the svc-* worktree, with the service running on a chosen port:
-awm hub register --name <svc> --prefix </owned-path> --url http://127.0.0.1:<port>
+mamba run -n <project-env> python script.py
+mamba run -n <project-env> pip install <package>
 ```
 
-**Static dir** — for frontend slices that compile a bundle and want it reachable on the hub origin without running a dev server through the hub:
-
-```bash
-# in the comp-* worktree, after building (e.g. vite build → ./dist):
-awm hub register --name <comp> --prefix </comp-path> --dir ./dist \
-  [--entry main.js] [--css style.css] [--mount-id app]
-```
-
-If the registered directory has no `index.html`, the hub renders a minimal ESM shell at the prefix root: an empty `<div id="<mount-id>"></div>`, optional CSS `<link>`s, and a `<script type="module" src="<prefix>/<entry>">`. Drop an `index.html` into the directory to take over entirely.
-
-Both forms POST to `/hub/register`, then hold a WS lease at `/hub/lease/<id>` until you Ctrl-C. Lease close → eviction within the next event-loop tick. No file-based config, no heartbeat tuning. Re-running re-registers from scratch.
-
-Other commands:
-- `awm hub list` — show current registrations (includes `kind: url|static`).
-- `awm hub deregister <name>` — admin force-evict.
-- `awm hub trust-self` — install the local auth token at `$AWM_DIR/peers/<self>.token` so the hub's forwarded requests pass `require_peer_bearer` on the service side. Run once per node. Only needed for URL-kind registrations.
-
-### Auth model
-
-Hub → service is degenerate peer auth (URL kind only). The hub injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>` on every forwarded request; the user's bearer (`Authorization` header / `awm_session` cookie) is stripped. `X-Awm-As` is preserved verbatim. Services gate routes with `from awm.middleware_auth import require_peer_bearer` — one import, no new bearer concept.
-
-Static-kind registrations don't proxy, so there's no second-hop auth — bytes are served by the hub directly, subject to whatever middleware sits in front of the hub itself. WS connections to a static prefix are closed with code 1003.
-
-### What `comp-*` and frontend slices need to know
-
-**Nothing about consuming the hub.** The hub IS `awm.exposed:app` on :7820; no new origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm.
-
-To **publish** a built component through the hub: `awm hub register --dir <dist>` after building. No need to wire up a port or a dev server — the hub serves the files.
-
-### Demos
-
-- `awm/demos/echo_svc.py` — 60-line FastAPI smoke test; copy as the starting point for a real `svc-*`.
-- `awm/demos/static_demo/` — naked `main.js` + `style.css` bundle; copy as the starting point for a `comp-*` registration. README has the one-liner.
-
-### Constraints
-
-- **Never run two hubs on one node.** Both would bind :7820 and one would fail.
-- The hub control plane (`/hub/*`) is exempt from forwarding and rejected at registration — `--prefix /hub` and `/hub/*` return 409. The lease socket has to stay reachable.
+For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `./setup.sh`).

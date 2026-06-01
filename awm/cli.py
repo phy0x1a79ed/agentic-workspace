@@ -1063,9 +1063,11 @@ def scope_heal(
 
     For each active scope: strip any leaked ``@.awm/context.md`` line from a
     tracked ``AGENTS.md`` (project-tier doc), delete untracked scope-level
-    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink, and
-    back-fill ``.awm/context.md`` if missing. Idempotent. Use ``--dry-run``
-    to sanity-check the report before mutating.
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink,
+    back-fill ``.awm/context.md`` if missing, and refresh the per-scope
+    ``.awm/mcp-opencode.json`` ``instructions`` array to the current
+    canonical shape (workspace ``WORKSPACE.md`` + scope ``.awm/context.md``).
+    Idempotent. Use ``--dry-run`` to sanity-check the report before mutating.
     """
     from awm.services.scopes import heal_scopes
     import json as _json
@@ -1082,24 +1084,65 @@ def scope_heal(
 def context_emit(
     cwd: Path = typer.Option(
         Path.cwd(), "--cwd",
-        help="Worktree root to resolve `.awm/context.md` from",
+        help="Worktree root to resolve context layers from (walks up to find WORKSPACE.md)",
     ),
 ):
-    """Emit ``<cwd>/.awm/context.md`` wrapped in a ``<scope-context>`` block.
+    """Emit the 3-tier context block for harness SessionStart hooks.
 
-    Designed for harness SessionStart hooks (Claude Code ``hooks.SessionStart``
-    additionalContext). If no ``.awm/context.md`` exists, exits silently with
-    no output — never errors, so the hook never fails. History and artifacts
-    are intentionally NOT emitted (too large; load-on-demand only).
+    Walks up from ``cwd`` to find the workspace root (marked by
+    ``WORKSPACE.md``) and emits, in general → specific order:
+
+    1. ``<workspace-context path="…WORKSPACE.md">…</workspace-context>``
+       — universal structural orientation for every scope agent.
+    2. ``<agents-context path="AGENTS.md">…</agents-context>`` — only if
+       ``<cwd>/AGENTS.md`` exists AND ``cwd != workspace_root``. The cwd-only
+       rule + workspace-root exclusion routes awm-internal docs to awm-dev
+       scopes (which share .bare with the workspace, so the file IS the same)
+       and lets non-awm projects opt in by placing their own ``AGENTS.md`` at
+       the scope root, without ever leaking the workspace-level awm-internal
+       file into non-awm contexts.
+    3. ``<scope-context path=".awm/context.md">…</scope-context>`` — the
+       scope's per-task ritual brief.
+
+    Designed for the Claude Code ``hooks.SessionStart`` additionalContext.
+    If ``cwd`` is outside any workspace (no ``WORKSPACE.md`` upstream), exits
+    silently with no output — never errors, so the hook never fails. Missing
+    individual layers are skipped silently. History and artifacts are
+    intentionally NOT emitted (too large; load-on-demand only).
     """
-    target = cwd / ".awm" / "context.md"
-    if not target.is_file():
+    cwd = cwd.resolve()
+
+    # Walk to the OUTERMOST WORKSPACE.md, not the innermost. The .bare
+    # worktree-sharing topology means a scope worktree under projects/awm/*
+    # has its own WORKSPACE.md copy at root (committed on the dev branch);
+    # the workspace's WORKSPACE.md lives at agentic_workspace/. Picking the
+    # outermost keeps workspace_root pinned at the true workspace, so the
+    # `cwd != workspace_root` guard below correctly emits the agents block
+    # for awm-dev scopes.
+    workspace_root: Path | None = None
+    for p in (cwd, *cwd.parents):
+        if (p / "WORKSPACE.md").is_file():
+            workspace_root = p
+    if workspace_root is None:
         raise typer.Exit(code=0)
-    body = target.read_text()
-    rel = target.relative_to(cwd) if target.is_relative_to(cwd) else target
-    typer.echo(f'<scope-context path="{rel}">')
+
+    _emit_context_block("workspace-context", workspace_root / "WORKSPACE.md", base=cwd)
+
+    agents_md = cwd / "AGENTS.md"
+    if cwd != workspace_root and agents_md.is_file():
+        _emit_context_block("agents-context", agents_md, base=cwd)
+
+    scope_ctx = cwd / ".awm" / "context.md"
+    if scope_ctx.is_file():
+        _emit_context_block("scope-context", scope_ctx, base=cwd)
+
+
+def _emit_context_block(tag: str, path: Path, *, base: Path) -> None:
+    body = path.read_text()
+    rel = path.relative_to(base) if path.is_relative_to(base) else path
+    typer.echo(f'<{tag} path="{rel}">')
     typer.echo(body if body.endswith("\n") else body + "\n", nl=False)
-    typer.echo("</scope-context>")
+    typer.echo(f"</{tag}>")
 
 
 @scope_app.command("list")
