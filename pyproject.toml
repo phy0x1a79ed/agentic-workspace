@@ -6,6 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "awm"
 version = "0.1.0"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Tony X. Liu", email = "contacttonyliu@gmail.com" },
+    { name = "Opal 0x1a79ed", email = "phyberosis0x1a79ed@gmail.com" },
+]
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
