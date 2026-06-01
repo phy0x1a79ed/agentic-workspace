@@ -275,10 +275,13 @@ When a stripe declares a backend, the hub:
 
 stdout + stderr land in `$AWM_DIR/logs/stripes/<service_id>.log`. **No auto-restart** in dev — crashes stay loud so you notice. No env mutation outside the `env` map. No file watching — rebuild + re-register (lease re-attach) to pick up changes.
 
+**Caller identity.** Every proxied request (HTTP and WebSocket) carries `X-Awm-As: <operator>` when the browser session is authenticated, and *no* `X-Awm-As` header at all when anonymous. The hub mints the header at the proxy edge from the `awm_as` cookie — your backend does not read cookies, does not validate bearers, does not call `/auth/whoami`. The header is forge-resistant: the hub overwrites any inbound `X-Awm-As` the client supplied. Bind to `127.0.0.1` (the supervisor already does); that's the trust boundary. If you need finer-grained policy, enforce it yourself against the header value.
+
 ### Authoring a frontend stripe
 
 - **Use relative URLs for backend calls.** `fetch('./_api/echo')`, not `fetch('/hello/_api/echo')`. The same bundle then works at any prefix (`/hello`, `/hello-rework`, `/dev-stuff/hello`, …) without rebuilding.
 - **`@awm/bus` is the cross-stripe pub/sub.** Import the singleton: `import { bus } from '@awm/bus'`. Channels are plain strings; payloads are `unknown` — narrow at the subscribe site. Use `replayLast: true` for late-mounting consumers of single-slot state.
+- **Read the operator with `getOperator()` from `@awm/bus`.** It's a cached fetch to `/auth/whoami` — one round-trip per page load no matter how many components call it. Don't build `X-Awm-As` yourself on outgoing fetches; the hub will inject (and overwrite) it for you, so your value is silently ignored. `awm_as` is HttpOnly so you can't read it from JS anyway.
 - **Sibling wiring goes through props/emitters**, not the bus. The bus is for events that cross stripe boundaries; component-to-component within a composite stripe stays explicit so the data flow is local to the parent.
 - **Frontend bundles are pure static.** No SSR, no API routes — that's what the backend is for.
 
@@ -345,6 +348,7 @@ If you genuinely need a second hub (working on `awm.exposed` itself, or testing 
 - **No port collision recovery.** If the backend logs ECONNREFUSED on its own port or "address in use", the supervisor doesn't retry — kill and re-register. The port pool advances past in-use ports on the next allocation.
 - **`awm stripe sync` blocks.** It holds every lease in one process. Running it directly (rather than through `./dev/run.sh`) means Ctrl-C tears everything down, which is what you want when iterating on the sync itself.
 - **Vite-dev for hot reload.** The hub serves what's on disk; for the rebuild-on-save loop, register the stripe with `awm hub register --url http://127.0.0.1:<vite-port>` instead of via the package — same trick as `comp-*`.
+- **Setting `X-Awm-As` manually on a `fetch` is a no-op.** The hub overwrites it from the `awm_as` cookie on every stripe proxy hop, so the value you sent is dropped. If you need to act on behalf of a different operator, that's peer federation (see § Service Hub), not a stripe concern.
 
 ## Awm Editable Install Gotcha
 

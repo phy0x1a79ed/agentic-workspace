@@ -46,13 +46,51 @@ _BACKEND_SRC = textwrap.dedent(
                 return
             if self.path.startswith("/echo"):
                 msg = self.path.split("=",1)[1] if "=" in self.path else "hi"
-                body = json.dumps({"echoed": msg, "port": PORT}).encode()
+                # X-Awm-As echoed so tests can assert the hub minted it.
+                body = json.dumps({
+                    "echoed": msg,
+                    "port": PORT,
+                    "xAwmAs": self.headers.get("X-Awm-As"),
+                }).encode()
                 self.send_response(200); self.send_header("content-type","application/json"); self.end_headers()
                 self.wfile.write(body)
                 return
             self.send_response(404); self.end_headers()
 
     HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    """
+)
+
+
+# WS-capable backend (for the WS-injection test). websockets.serve hosts
+# both modes: process_request answers the /healthz HTTP poll the
+# supervisor uses to mark the stripe ready; handler() runs on a successful
+# Upgrade and echoes the X-Awm-As it saw on the handshake.
+_BACKEND_SRC_WS = textwrap.dedent(
+    """
+    import asyncio, json, os
+    from websockets.asyncio.server import serve
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    PORT = int(os.environ["AWM_SERVICE_PORT"])
+
+    async def handler(ws):
+        x_awm_as = ws.request.headers.get("X-Awm-As")
+        await ws.send(json.dumps({"xAwmAs": x_awm_as}))
+
+    def process_request(connection, request):
+        if request.path == "/healthz":
+            h = Headers()
+            h["content-type"] = "text/plain"
+            return Response(200, "OK", h, b"ok")
+        return None  # everything else proceeds as a WS upgrade attempt
+
+    async def main():
+        async with serve(handler, "127.0.0.1", PORT, process_request=process_request):
+            await asyncio.Future()
+
+    asyncio.run(main())
     """
 )
 
@@ -66,6 +104,12 @@ def _write_backend(tmp_path: Path, port_via_argv: bool = False) -> Path:
         )
     bp = tmp_path / "backend.py"
     bp.write_text(src)
+    return bp
+
+
+def _write_ws_backend(tmp_path: Path) -> Path:
+    bp = tmp_path / "ws_backend.py"
+    bp.write_text(_BACKEND_SRC_WS)
     return bp
 
 
@@ -399,3 +443,122 @@ class TestStripeRegistration:
             raise AssertionError(
                 f"backend on :{port} still answering after deregister"
             )
+
+
+# ---------------------------------------------------------------------------
+# Identity injection: hub mints X-Awm-As from the awm_as cookie on the
+# proxy hop, overrides any inbound forge, omits the header when there's
+# no cookie. WS path verified separately.
+# ---------------------------------------------------------------------------
+
+def _register_demo(hub_client, good_token, tmp_path, backend_path):
+    front = tmp_path / "front"
+    front.mkdir()
+    (front / "index.html").write_text("hi")
+    r = hub_client.post(
+        "/hub/register",
+        json={
+            "name": "demo-stripe",
+            "prefix": "/demo",
+            "stripe": {
+                "dir": str(front),
+                "backend": {
+                    "cmd": [sys.executable, str(backend_path)],
+                    "health": "/healthz",
+                },
+            },
+        },
+        headers={"Authorization": f"Bearer {good_token}"},
+    )
+    assert r.status_code == 200, r.text
+    _wait_ready(hub_client, good_token, "demo-stripe")
+
+
+class TestStripeIdentityInjection:
+    def test_stripe_proxy_injects_x_awm_as_from_cookie(
+        self, hub_client, good_token, tmp_path,
+    ):
+        backend = _write_backend(tmp_path)
+        _register_demo(hub_client, good_token, tmp_path, backend)
+
+        hub_client.cookies.set("awm_as", "alice")
+        r = hub_client.get(
+            "/demo/_api/echo?msg=hi",
+            headers={"Authorization": f"Bearer {good_token}"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["xAwmAs"] == "alice"
+
+    def test_stripe_proxy_overrides_inbound_x_awm_as(
+        self, hub_client, good_token, tmp_path,
+    ):
+        backend = _write_backend(tmp_path)
+        _register_demo(hub_client, good_token, tmp_path, backend)
+
+        hub_client.cookies.set("awm_as", "alice")
+        r = hub_client.get(
+            "/demo/_api/echo?msg=hi",
+            headers={
+                "Authorization": f"Bearer {good_token}",
+                "X-Awm-As": "evil",
+            },
+        )
+        assert r.status_code == 200, r.text
+        # Cookie wins; the inbound forge was stripped before _hub_headers
+        # appended the cookie-derived value.
+        assert r.json()["xAwmAs"] == "alice"
+
+    def test_stripe_proxy_omits_x_awm_as_when_no_cookie(
+        self, hub_client, good_token, tmp_path,
+    ):
+        backend = _write_backend(tmp_path)
+        _register_demo(hub_client, good_token, tmp_path, backend)
+
+        # Make sure the test client doesn't carry a leftover cookie.
+        hub_client.cookies.clear()
+        r = hub_client.get(
+            "/demo/_api/echo?msg=hi",
+            headers={"Authorization": f"Bearer {good_token}"},
+        )
+        assert r.status_code == 200, r.text
+        # No cookie → no X-Awm-As header at all → BaseHTTPRequestHandler
+        # returns None for an absent header.
+        assert r.json()["xAwmAs"] is None
+
+    def test_stripe_proxy_ws_injects_x_awm_as_from_cookie(
+        self, hub_client, good_token, tmp_path,
+    ):
+        backend = _write_ws_backend(tmp_path)
+        front = tmp_path / "front"
+        front.mkdir()
+        (front / "index.html").write_text("hi")
+        r = hub_client.post(
+            "/hub/register",
+            json={
+                "name": "ws-stripe",
+                "prefix": "/ws-demo",
+                "stripe": {
+                    "dir": str(front),
+                    "backend": {
+                        "cmd": [sys.executable, str(backend)],
+                        "health": "/healthz",
+                    },
+                },
+            },
+            headers={"Authorization": f"Bearer {good_token}"},
+        )
+        assert r.status_code == 200, r.text
+        _wait_ready(hub_client, good_token, "ws-stripe")
+
+        hub_client.cookies.set("awm_as", "alice")
+        # The WS backend captures X-Awm-As from the upstream Upgrade
+        # headers and echoes it as the first frame. Receiving "alice"
+        # proves the hub minted the header on the Upgrade hop.
+        with hub_client.websocket_connect(
+            "/ws-demo/_api/ws",
+            headers={"Authorization": f"Bearer {good_token}"},
+            subprotocols=[f"bearer.{good_token}"],
+        ) as ws:
+            first = ws.receive_text()
+        import json as _json
+        assert _json.loads(first)["xAwmAs"] == "alice"

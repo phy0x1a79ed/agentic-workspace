@@ -68,6 +68,21 @@ body {
   cursor: pointer;
 }
 #refresh:hover { color: var(--fg); }
+#operator-row {
+  margin: 8px 14px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+#operator-row .label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+#operator { color: var(--accent); font-weight: 500; }
 #stage { position: relative; }
 #empty {
   padding: 40px;

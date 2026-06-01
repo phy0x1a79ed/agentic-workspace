@@ -91,3 +91,33 @@ export const bus = {
 };
 
 export type Bus = typeof bus;
+
+
+// ---------------------------------------------------------------------------
+// Operator identity
+//
+// Stripes get caller identity for free: the hub injects X-Awm-As on every
+// proxied request from the awm_as cookie, so backends already know who's
+// calling. Frontends still need to *display* the operator (and don't have
+// cookie access since awm_as is HttpOnly), so we expose a cached fetch
+// to /auth/whoami here. One round-trip per page load, regardless of how
+// many call sites ask. Lives alongside the bus because every stripe
+// already imports from @awm/bus — one well-known module for cross-cutting
+// concerns beats a separate @awm/identity package.
+// ---------------------------------------------------------------------------
+
+let operatorCache: Promise<string> | null = null;
+
+export function getOperator(): Promise<string> {
+  if (operatorCache !== null) return operatorCache;
+  operatorCache = fetch("/auth/whoami", { credentials: "include" })
+    .then((r) => r.ok ? r.json() : { awm_user: "operator" })
+    .then((j) => (j && typeof j.awm_user === "string") ? j.awm_user : "operator")
+    .catch(() => "operator");
+  return operatorCache;
+}
+
+/** Test-only: drop the cached whoami fetch. */
+export function _resetOperatorCache(): void {
+  operatorCache = null;
+}

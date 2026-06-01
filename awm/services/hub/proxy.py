@@ -59,20 +59,37 @@ def _client() -> httpx.AsyncClient:
     return cli
 
 
-def _hub_headers(request_headers) -> list[tuple[str, str]]:
+def _hub_headers(
+    request_headers,
+    extra_headers: list[tuple[str, str]] | None = None,
+) -> list[tuple[str, str]]:
     """Build the outgoing header list: drop hop-by-hop + client bearer,
-    inject hub's bearer + X-Awm-From, preserve X-Awm-As."""
+    inject hub's bearer + X-Awm-From, preserve X-Awm-As.
+
+    ``extra_headers`` are appended last AND their keys are also stripped
+    from the inbound iteration, so the hub-provided value overrides
+    anything the caller sent. That's the forge-prevention seam stripe
+    routing uses to mint X-Awm-As from the awm_as cookie.
+    """
+    extras = list(extra_headers or [])
+    strip_extra = {k.lower() for k, _ in extras}
     out: list[tuple[str, str]] = []
     for k, v in request_headers.items():
-        if k.lower() in _STRIP_REQUEST:
+        kl = k.lower()
+        if kl in _STRIP_REQUEST or kl in strip_extra:
             continue
         out.append((k, v))
     out.append(("Authorization", f"Bearer {auth_svc.local_token()}"))
     out.append(("X-Awm-From", _local_peer_id()))
+    out.extend(extras)
     return out
 
 
-async def proxy_http(request: Request, target_base: str) -> StreamingResponse:
+async def proxy_http(
+    request: Request,
+    target_base: str,
+    extra_headers: list[tuple[str, str]] | None = None,
+) -> StreamingResponse:
     """Forward ``request`` to ``target_base + request.url.path`` and
     stream the response back. Body and response are streamed; no
     materialization."""
@@ -80,7 +97,7 @@ async def proxy_http(request: Request, target_base: str) -> StreamingResponse:
     if request.url.query:
         url = f"{url}?{request.url.query}"
 
-    headers = _hub_headers(request.headers)
+    headers = _hub_headers(request.headers, extra_headers=extra_headers)
 
     req = _client().build_request(
         method=request.method,
@@ -113,14 +130,18 @@ async def proxy_http(request: Request, target_base: str) -> StreamingResponse:
 # WebSocket
 # ---------------------------------------------------------------------------
 
-async def proxy_ws(client_ws: WebSocket, target_base: str) -> None:
+async def proxy_ws(
+    client_ws: WebSocket,
+    target_base: str,
+    extra_headers: list[tuple[str, str]] | None = None,
+) -> None:
     """Bridge a client WS to ``target_base + path`` via websockets.connect.
 
     Authenticates the inbound handshake (bearer.<token> subprotocol or
     awm_session cookie), accepts the client, then opens the upstream
     connection using the HUB's own bearer + peer headers (G5). The
     client's bearer never reaches the service. ``X-Awm-As`` is forwarded
-    verbatim (G6).
+    verbatim (G6) unless overridden via ``extra_headers``.
     """
     from awm.middleware_auth import authenticate_websocket
 
@@ -134,12 +155,16 @@ async def proxy_ws(client_ws: WebSocket, target_base: str) -> None:
     if query:
         ws_target = f"{ws_target}?{query}"
 
-    extra_headers = [
+    overrides = list(extra_headers or [])
+    override_keys = {k.lower() for k, _ in overrides}
+
+    outgoing_headers: list[tuple[str, str]] = [
         ("X-Awm-From", _local_peer_id()),
     ]
     x_as = client_ws.headers.get("x-awm-as")
-    if x_as:
-        extra_headers.append(("X-Awm-As", x_as))
+    if x_as and "x-awm-as" not in override_keys:
+        outgoing_headers.append(("X-Awm-As", x_as))
+    outgoing_headers.extend(overrides)
 
     token = auth_svc.local_token()
     subprotocols = [f"bearer.{token}"]
@@ -148,7 +173,7 @@ async def proxy_ws(client_ws: WebSocket, target_base: str) -> None:
         upstream = await websockets.connect(
             ws_target,
             subprotocols=subprotocols,
-            additional_headers=extra_headers,
+            additional_headers=outgoing_headers,
             max_size=None,
             open_timeout=10,
         )
