@@ -127,6 +127,8 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
+For component+backend stripes packaged as workspace packages (one `packages/<name>/` per stripe, auto-discovered by the hub at sandbox start), see § *Developing a vertical stripe* in `projects/awm/dev/AGENTS.md`. New stripes prefer that flow over the inline `comp-*` + `svc-*` registration.
+
 ## Git Model
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
