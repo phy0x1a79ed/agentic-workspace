@@ -1,0 +1,11 @@
+{
+  "name": "@awm/dev-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browse + mount registered stripes for isolated testing. Always registered at the canonical dev prefix; lists every other stripe in /hub/stripes and mounts the selected one in an iframe (cheap isolation; the leaf stripe's own bundle handles its DOM).",
+  "type": "module",
+  "stripe": {
+    "frontend": "dist/",
+    "prefix": "/dev"
+  }
+}

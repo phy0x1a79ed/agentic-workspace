@@ -1,0 +1,9 @@
+{
+  "name": "awm-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vertical-stripe packages workspace. Each packages/<name> is a stripe (frontend + optional backend) or a shared library, registered with the hub at dev-time. The SvelteKit app under frontend/ is intentionally NOT a workspace member — it's the legacy monolith being progressively decomposed into stripes.",
+  "workspaces": [
+    "packages/*"
+  ]
+}
