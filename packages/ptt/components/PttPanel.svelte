@@ -16,6 +16,7 @@
   let entries = $state<string[]>([]);
   let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
   let statusText = $state('');
+  let loginUrl = $state<string | null>(null);
 
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
@@ -24,27 +25,11 @@
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let recording = false;
 
-  function getToken(): string | null {
-    if (typeof window === 'undefined') return null;
-    let t = window.localStorage.getItem('awm.token');
-    if (!t) {
-      t = window.prompt('AWM bearer token (dev-only):') ?? '';
-      if (t) window.localStorage.setItem('awm.token', t);
-    }
-    return t || null;
-  }
-
   function openSocket() {
-    const token = getToken();
-    if (!token) {
-      status = 'error';
-      statusText = 'no token — set localStorage["awm.token"]';
-      return;
-    }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}${base}/_api/stream`;
     try {
-      ws = new WebSocket(url, [`bearer.${token}`]);
+      ws = new WebSocket(url);
     } catch (err) {
       status = 'error';
       statusText = `ws open failed: ${(err as Error).message}`;
@@ -60,9 +45,18 @@
   }
 
   let reconnectDelay = 1000;
-  function onWsClose() {
+  function onWsClose(ev: CloseEvent) {
     ws = null;
     if (mockEntries) return;
+    if (ev.code === 1008) {
+      // Unauthorized: no awm_session cookie. Browser won't gain one by
+      // reconnecting — surface a login link instead of looping.
+      status = 'error';
+      statusText = 'not logged in';
+      const port = Number(location.port) || (location.protocol === 'https:' ? 443 : 80);
+      loginUrl = `http://${location.hostname}:${port + 1}/`;
+      return;
+    }
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
       openSocket();
@@ -148,7 +142,12 @@
   <TranscriptHistory {entries} />
   <div class="status mono" data-status={status}>
     <span class="dot" class:active={status === 'recording'}></span>
-    <span class="txt">{status}{statusText ? ` · ${statusText}` : ''}</span>
+    <span class="txt">
+      {status}{statusText ? ` · ${statusText}` : ''}
+      {#if loginUrl}
+        · <a href={loginUrl} target="_blank" rel="noopener">log in</a>
+      {/if}
+    </span>
   </div>
   <PttButton onpttdown={onDown} onpttup={onUp} />
 </section>
