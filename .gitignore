@@ -16,6 +16,9 @@ NAME.md
 data/
 projects/
 
+# npm workspace artifacts
+node_modules/
+
 # Python
 __pycache__/
 *.pyc
