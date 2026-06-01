@@ -165,7 +165,7 @@
                 <td>{r.host_peer_id ?? ''}</td>
                 <td>{r.created_at ?? ''}</td>
                 <td class="row-actions">
-                  <Button kind="ghost" onclick={() => goto(`${base}/room/${encodeURIComponent(r.id)}`)}>open</Button>
+                  <Button kind="ghost" onclick={() => goto(`${base}/room?id=${encodeURIComponent(r.id)}`)}>open</Button>
                   <Button kind="ghost" onclick={() => archive(r.id)}>archive</Button>
                 </td>
               </tr>

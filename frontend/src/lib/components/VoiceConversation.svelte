@@ -4,7 +4,7 @@
    * single room. Owns the WS subscription for that room and (optionally) the
    * STT→composer bridge and auto-speak playback for incoming agent posts.
    *
-   * Used by both ``routes/focus/[[room]]`` and the ``/status`` Voice control
+   * Used by both ``routes/focus`` and the ``/status`` Voice control
    * panel so the conversation flow is identical in both surfaces.
    */
   import { onMount, onDestroy } from 'svelte';

@@ -5,11 +5,12 @@
   import { page } from '$app/stores';
 
   // The legacy SPA had a separate "single room" tab. In the new app it's
-  // /focus/<id> — same components, same WS. Redirect to keep deep links
-  // (and any external integrations posting room links) working.
+  // /focus?room=<id> — same components, same WS. Redirect to keep deep
+  // links (and any external integrations posting room links) working.
   onMount(() => {
-    const id = $page.params.id;
-    goto(`${base}/focus/${encodeURIComponent(id)}`, { replaceState: true });
+    const id = $page.url.searchParams.get('id');
+    if (id) goto(`${base}/focus?room=${encodeURIComponent(id)}`, { replaceState: true });
+    else goto(`${base}/focus`, { replaceState: true });
   });
 </script>
 
