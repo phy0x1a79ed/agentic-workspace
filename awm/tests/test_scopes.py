@@ -263,6 +263,50 @@ class TestHealWorktree:
         body = (wt / ".awm" / "context.md").read_text()
         assert "proj-a/s1" in body
 
+    def test_refreshes_stale_opencode_config(self, tmp_path, awm_workspace):
+        # Existing .awm/mcp-opencode.json with a stale `instructions` array
+        # gets rewritten to the canonical shape.
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _git_init_tracked_agents(wt)
+        (awm_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+        awm = wt / ".awm"
+        awm.mkdir()
+        (awm / "mcp-opencode.json").write_text(
+            '{"$schema":"x","mcp":{},"instructions":["legacy.md"]}\n'
+        )
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+
+        assert actions["opencode_config"] == "rewritten"
+        import json
+        cfg = json.loads((awm / "mcp-opencode.json").read_text())
+        assert cfg["instructions"] == [
+            str(awm_workspace["workspace"] / "WORKSPACE.md"),
+            ".awm/context.md",
+        ]
+
+    def test_creates_missing_opencode_config(self, tmp_path, awm_workspace):
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _git_init_tracked_agents(wt)
+        (awm_workspace["workspace"] / "WORKSPACE.md").write_text("# orient\n")
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=False)
+
+        assert actions["opencode_config"] == "created"
+        assert (wt / ".awm" / "mcp-opencode.json").is_file()
+
+    def test_opencode_config_dry_run_reports_would_create(self, tmp_path, awm_workspace):
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _git_init_tracked_agents(wt)
+
+        actions = _heal_worktree(wt, project="proj-a", scope="s1", dry_run=True)
+
+        assert actions["opencode_config"] == "would-create"
+        assert not (wt / ".awm" / "mcp-opencode.json").exists()
+
     def test_leaves_existing_context_md_alone(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
@@ -311,6 +355,7 @@ class TestHealWorktree:
         assert second == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
+            "opencode_config": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
         assert (wt / ".awm" / "context.md").read_text() == ctx_after
@@ -422,4 +467,5 @@ class TestHealScopes:
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
+            "opencode_config": None,
         }
