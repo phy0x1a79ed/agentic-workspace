@@ -1,24 +1,59 @@
-@import '../src/app.css';
+@import './tokens.css';
+
+html, body { height: 100%; margin: 0; }
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.toc {
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+.toc .count {
+  color: var(--text3);
+  font-size: 10px;
+  margin-bottom: 8px;
+}
+.jumps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+.jumps a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  color: var(--text2);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.jumps a:hover {
+  color: var(--text);
+  background: var(--surface3);
+  border-color: var(--border);
+}
 
 .page {
-  max-width: 1080px;
-  margin: 0 auto;
+  overflow-y: auto;
+  scroll-snap-type: y proximity;
+  scroll-behavior: smooth;
   padding: 32px 24px 64px;
   display: flex;
   flex-direction: column;
   gap: 24px;
-}
-
-.hdr {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-.hdr .count {
-  color: var(--text3);
-  font-size: 10px;
 }
 
 .missing {
@@ -30,13 +65,14 @@
   font-size: 11px;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+.list {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
+  max-width: 880px;
 }
 
-.card {
+.list > .card {
   border: 1px solid var(--border);
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -45,8 +81,10 @@
   flex-direction: column;
   gap: 12px;
   min-height: 140px;
+  scroll-snap-align: start;
+  scroll-margin-top: 16px;
 }
-.card .name {
+.list > .card .name {
   font-size: 11px;
   letter-spacing: 1.5px;
   color: var(--text2);

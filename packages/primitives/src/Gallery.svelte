@@ -1,26 +1,26 @@
 <script lang="ts">
   import type { Component } from 'svelte';
-  import Button from '../src/lib/components/primitives/Button.svelte';
-  import Card from '../src/lib/components/primitives/Card.svelte';
-  import CollapsibleSection from '../src/lib/components/primitives/CollapsibleSection.svelte';
-  import Input from '../src/lib/components/primitives/Input.svelte';
-  import PanelLabel from '../src/lib/components/primitives/PanelLabel.svelte';
-  import Pill from '../src/lib/components/primitives/Pill.svelte';
-  import Tag from '../src/lib/components/primitives/Tag.svelte';
-  import Tooltip from '../src/lib/components/primitives/Tooltip.svelte';
+  import Button from './Button.svelte';
+  import Card from './Card.svelte';
+  import CollapsibleSection from './CollapsibleSection.svelte';
+  import Input from './Input.svelte';
+  import PanelLabel from './PanelLabel.svelte';
+  import Pill from './Pill.svelte';
+  import Tag from './Tag.svelte';
+  import Tooltip from './Tooltip.svelte';
 
-  // Glob the primitives dir so the index stays auto-discovered. Each card uses
+  // Glob sibling primitives so the index stays auto-discovered. Each card uses
   // a hand-authored renderer below — primitives have heterogeneous prop
   // shapes (some need bound state, Tooltip needs a trigger snippet), so a
-  // single default-props map can't render them all. The glob is the
-  // ground truth for "what should be in the gallery"; missing renderers
-  // surface as a banner so adding a primitive without a renderer is loud.
-  const found = import.meta.glob<{ default: Component }>(
-    '../src/lib/components/primitives/*.svelte',
-    { eager: true },
-  );
+  // single default-props map can't render them all. The glob is ground truth
+  // for "what should be in the gallery"; missing renderers surface as a
+  // banner so adding a primitive without a renderer is loud.
+  const found = import.meta.glob<{ default: Component }>('./*.svelte', {
+    eager: true,
+  });
   const foundNames = Object.keys(found)
     .map((p) => p.split('/').pop()!.replace(/\.svelte$/, ''))
+    .filter((n) => n !== 'Gallery')
     .sort();
 
   const renderers = [
@@ -39,21 +39,27 @@
   let sectionOpen = $state(true);
 </script>
 
-<main class="page">
-  <header class="hdr">
+<div class="shell">
+  <nav class="toc">
     <PanelLabel>primitives</PanelLabel>
     <span class="count mono">{foundNames.length} components</span>
-  </header>
+    <ul class="jumps mono">
+      {#each renderers as r}
+        <li><a href="#p-{r}">{r}</a></li>
+      {/each}
+    </ul>
+  </nav>
 
-  {#if missing.length}
-    <aside class="missing mono">
-      missing renderer for: {missing.join(', ')} — add a card in
-      gallery/Gallery.svelte.
-    </aside>
-  {/if}
+  <main class="page">
+    {#if missing.length}
+      <aside class="missing mono">
+        missing renderer for: {missing.join(', ')} — add a card in
+        gallery/Gallery.svelte.
+      </aside>
+    {/if}
 
-  <section class="grid">
-    <article class="card">
+    <section class="list">
+    <article class="card" id="p-Button">
       <h2 class="name mono">Button</h2>
       <div class="stage row">
         <Button kind="primary">primary</Button>
@@ -63,7 +69,7 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-Card">
       <h2 class="name mono">Card</h2>
       <div class="stage col">
         <Card rail="manager">
@@ -78,7 +84,7 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-CollapsibleSection">
       <h2 class="name mono">CollapsibleSection</h2>
       <div class="stage col">
         <CollapsibleSection
@@ -91,14 +97,14 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-Input">
       <h2 class="name mono">Input</h2>
       <div class="stage">
         <Input bind:value={inputValue} placeholder="type here…" />
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-PanelLabel">
       <h2 class="name mono">PanelLabel</h2>
       <div class="stage row wrap">
         <PanelLabel>dim</PanelLabel>
@@ -108,7 +114,7 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-Pill">
       <h2 class="name mono">Pill</h2>
       <div class="stage row wrap">
         <Pill>neutral</Pill>
@@ -118,7 +124,7 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-Tag">
       <h2 class="name mono">Tag</h2>
       <div class="stage row wrap">
         <Tag>neutral</Tag>
@@ -130,7 +136,7 @@
       </div>
     </article>
 
-    <article class="card">
+    <article class="card" id="p-Tooltip">
       <h2 class="name mono">Tooltip</h2>
       <div class="stage">
         <Tooltip content="hover-activated tooltip">
@@ -140,5 +146,6 @@
         </Tooltip>
       </div>
     </article>
-  </section>
-</main>
+    </section>
+  </main>
+</div>
