@@ -14,7 +14,7 @@
 
   function pick(id: string) {
     if (onpick) onpick(id);
-    else goto(`${base}/focus/${encodeURIComponent(id)}`);
+    else goto(`${base}/focus?room=${encodeURIComponent(id)}`);
   }
 </script>
 

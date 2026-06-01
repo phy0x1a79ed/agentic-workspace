@@ -14,7 +14,7 @@
   let busy = $state(false);
   let err  = $state('');
 
-  function open() { goto(`${base}/room/${encodeURIComponent(room.id)}`); }
+  function open() { goto(`${base}/room?id=${encodeURIComponent(room.id)}`); }
 
   async function archive() {
     busy = true; err = '';

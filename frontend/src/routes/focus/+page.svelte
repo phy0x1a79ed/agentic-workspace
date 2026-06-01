@@ -23,16 +23,16 @@
 
   // Route effect is the SINGLE writer of `activeId`. Sidebar clicks call
   // `gotoRoom()` which only updates the URL — the effect below then sees the
-  // new $page.params.room and switches focus.
+  // new ?room= query and switches focus.
   $effect(() => {
-    const fromUrl = $page.params.room ? decodeURIComponent($page.params.room) : null;
+    const fromUrl = $page.url.searchParams.get('room');
     if (fromUrl && fromUrl !== activeId) focusRoom(fromUrl);
   });
 
   // Auto-pick the first room when landing on bare /focus.
   $effect(() => {
-    if (!$page.params.room && !activeId && rooms.length) {
-      goto(`${base}/focus/${encodeURIComponent(rooms[0].id)}`, { replaceState: true });
+    if (!$page.url.searchParams.get('room') && !activeId && rooms.length) {
+      goto(`${base}/focus?room=${encodeURIComponent(rooms[0].id)}`, { replaceState: true });
     }
   });
 
@@ -47,7 +47,7 @@
 
   function gotoRoom(roomId: string) {
     if (roomId === activeId) return;
-    goto(`${base}/focus/${encodeURIComponent(roomId)}`);
+    goto(`${base}/focus?room=${encodeURIComponent(roomId)}`);
     ui.closeAll();
   }
 
