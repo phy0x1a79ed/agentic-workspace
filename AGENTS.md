@@ -157,7 +157,8 @@ Each refresh mints a fresh single-use 60s-TTL `/auth/bootstrap?ot=…` URL; clic
    ```
 
    - If `./dist` has an `index.html`, the hub serves it verbatim.
-   - If not, the hub renders an ESM auto-shell: empty `<div id="<mount-id>"></div>`, `<link>` for each `--css`, `<script type="module" src=".../<entry>">`.
+   - **Canonical paths only.** `kind=static` serves what is on disk: either the file at the exact path, or a directory's `index.html` (the universal static-server default). No `Accept`-conditional fallback, no SPA shell synthesis, no extension sniffing — a miss is a 404. For deep-link refresh in a SvelteKit / React Router bundle, prerender every route so each URL has a real `index.html` on disk (`prerender = true` and `trailingSlash = 'always'` in the layout, so SvelteKit emits `<route>/index.html`; runtime state in query params, not path segments). For routing the server can't enumerate at build time, register the upstream as `kind=url` and let it answer.
+   - If `./dist` has no `index.html`, the hub renders an ESM auto-shell at the prefix root only: empty `<div id="<mount-id>"></div>`, `<link>` for each `--css`, `<script type="module" src=".../<entry>">`. Subpaths under that root still 404 unless they exist on disk.
    - WS connections to a static prefix are closed (code 1003).
    - No second-hop auth — bytes are served by the hub directly.
 
@@ -211,6 +212,121 @@ Static-kind registrations don't proxy, so there's no second-hop auth — bytes a
 - **`AWM_WORKSPACE` matters.** Without it, the CLI uses the global discovery file and may target the prod `:7820` instead of your sandbox. `./dev/run.sh` exports it for its own children; if you shell out separately, export it yourself.
 - **Vite dev server vs static dir.** During hot-reload iteration, register `--url http://127.0.0.1:<vite-port>` instead of `--dir` — point at the dev server directly. Switch to `--dir ./dist` once you're past the rebuild loop.
 - **Never run two `awm.exposed` on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are explicitly supported and how dev parallelism works.
+
+## Developing a vertical stripe
+
+A *vertical stripe* is one feature packaged together as a workspace package under `projects/awm/dev/packages/<name>/`: a static frontend bundle plus (optionally) one long-running backend process. The hub discovers stripes by walking `packages/*/package.json` at sandbox start, registers each as `kind=stripe`, supervises the backends, and the dev-shell at `/dev/` lets you mount any of them in isolation for testing.
+
+This complements the older `svc-*` + `comp-*` flow (§ Stripe-presentation protocol). The packaged form is preferred for **new** components: one directory, one manifest, no separate registration boilerplate, scope worktrees inherit the whole monorepo automatically.
+
+### Anatomy
+
+```
+packages/<name>/
+  package.json     ← declares the stripe via a `stripe` field
+  dist/            ← frontend bundle (whatever the package builds to)
+    index.html     ← served at the prefix root
+    main.js, …
+  server.js        ← backend entry (optional; any executable)
+```
+
+The hub serves `dist/` at `<prefix>/` (canonical paths only — see § Stripe-presentation protocol for what that means) and proxies `<prefix>/_api/*` to the supervised backend at the port the hub allocated.
+
+### `stripe` field in package.json
+
+```jsonc
+{
+  "name": "@awm/hello",
+  "stripe": {
+    "frontend": "dist/",            // path to the bundle dir (relative to package.json)
+    "prefix": "/hello",             // optional — defaults to "/" + bare-name (no @scope/)
+    "backend": {                    // optional — omit for frontend-only stripes
+      "cmd": ["node", "server.js", "${AWM_SERVICE_PORT}"],
+      "env": {},                    // merged under hub-injected vars (hub wins on conflict)
+      "health": "/healthz",         // path the hub polls until 200
+      "cwd": "."                    // optional — defaults to the frontend dir
+    }
+  }
+}
+```
+
+Packages **without** a `stripe` field are libraries (e.g. `@awm/bus`); `awm stripe sync` ignores them.
+
+### Backend contract
+
+When a stripe declares a backend, the hub:
+
+1. Allocates a free port from `AWM_STRIPE_PORT_POOL` (default `7900-7999`).
+2. Spawns `cmd` with `AWM_SERVICE_PORT=<port>` in env, and substitutes any `${AWM_SERVICE_PORT}` token in `cmd` args verbatim (no shell — argv form only).
+3. Polls `http://127.0.0.1:<port><health>` every 500ms, up to 30s. First 2xx → `backend_status: ready`; timeout → `down`.
+4. Routes `<prefix>/_api/*` to the backend once ready (503 + Retry-After before that).
+5. SIGTERMs the process group on lease close (5s grace → SIGKILL). Backends should drain on SIGTERM and exit cleanly.
+
+stdout + stderr land in `$AWM_DIR/logs/stripes/<service_id>.log`. **No auto-restart** in dev — crashes stay loud so you notice. No env mutation outside the `env` map. No file watching — rebuild + re-register (lease re-attach) to pick up changes.
+
+### Authoring a frontend stripe
+
+- **Use relative URLs for backend calls.** `fetch('./_api/echo')`, not `fetch('/hello/_api/echo')`. The same bundle then works at any prefix (`/hello`, `/hello-rework`, `/dev-stuff/hello`, …) without rebuilding.
+- **`@awm/bus` is the cross-stripe pub/sub.** Import the singleton: `import { bus } from '@awm/bus'`. Channels are plain strings; payloads are `unknown` — narrow at the subscribe site. Use `replayLast: true` for late-mounting consumers of single-slot state.
+- **Sibling wiring goes through props/emitters**, not the bus. The bus is for events that cross stripe boundaries; component-to-component within a composite stripe stays explicit so the data flow is local to the parent.
+- **Frontend bundles are pure static.** No SSR, no API routes — that's what the backend is for.
+
+### Sandbox workflow
+
+```bash
+cd /home/tony/agentic_workspace/projects/awm/dev
+
+# Workspace install (creates symlinks for inter-package deps like @awm/bus).
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm install
+
+# Build whatever stripe(s) you're touching — each owns its own build script.
+# The hub serves whatever is on disk; no rebuild on its side.
+
+./dev/run.sh restart            # uvicorn + login server + `awm stripe sync packages/`
+awm stripe list                 # all registered stripes, with backend status
+```
+
+`./dev/run.sh start` invokes `awm stripe sync $REPO_ROOT` as a tracked process (PID in `.awm/stripe-sync.pid`). On `stop` / `restart` the sync process is SIGTERM'd first, which closes every lease, which triggers per-stripe eviction (and SIGTERMs the supervised backends) before uvicorn goes down.
+
+Open `https://127.0.0.1:7821/dev/` in a browser → pick a stripe from the rail → it mounts in an iframe at its registered prefix. Each stripe runs at its own URL so you can also deep-link directly (`https://127.0.0.1:7821/hello/`).
+
+### Composing stripes
+
+Two patterns, used together:
+
+- **Build-time composition (preferred for tight coupling).** A composite stripe declares its leaves as workspace deps in its own `package.json`, imports them, and renders them. The leaves are registered separately too — each appears in the dev-shell — but the production view comes from the composite stripe's bundle. Component-to-component wiring is via props + emitters at the composite's boundary.
+- **Runtime composition (for loose coupling).** Two stripes that don't know about each other coordinate through `@awm/bus`. The STT stripe `publish`es a transcribed utterance; a chat stripe `subscribe`s and renders it. Neither stripe imports the other.
+
+### Reworking an existing stripe
+
+The whole point of the monorepo is that a scope worktree gets a complete copy of `packages/` via git, so you can iterate on a stripe in isolation while `dev`'s version stays mounted:
+
+```bash
+awm scope create awm hello-rework --from dev
+cd /home/tony/agentic_workspace/projects/awm/hello-rework
+
+# Edit packages/hello/...
+# Build the package.
+
+./dev/run.sh restart           # picks up changes in this scope's sandbox
+
+# Or, to make the scope's stripe visible inside dev's sandbox alongside
+# dev's own copy (so you can A/B them), register manually with a unique name:
+awm stripe register --package packages/hello --name @awm/hello-rework
+# Now dev's hub has both @awm/hello (auto-synced) and @awm/hello-rework (manual).
+
+# Finished:
+awm scope complete awm hello-rework --merge --cleanup
+# Back on dev: pull, restart → sync re-registers the merged version.
+```
+
+### Gotchas
+
+- **Name collisions on rework.** Without `--name <override>` the manual register collides with the auto-synced version — `awm stripe register` will 409. Pick a distinct name for the rework copy.
+- **`backend_status: starting` returns 503.** Routing the `_api/*` sub-prefix is gated on the health-poll having seen 200. If a stripe stays `starting`, check `$AWM_DIR/logs/stripes/<service_id>.log` — the backend's own stderr is the first place to look.
+- **No port collision recovery.** If the backend logs ECONNREFUSED on its own port or "address in use", the supervisor doesn't retry — kill and re-register. The port pool advances past in-use ports on the next allocation.
+- **`awm stripe sync` blocks.** It holds every lease in one process. Running it directly (rather than through `./dev/run.sh`) means Ctrl-C tears everything down, which is what you want when iterating on the sync itself.
+- **Vite-dev for hot reload.** The hub serves what's on disk; for the rebuild-on-save loop, register the stripe with `awm hub register --url http://127.0.0.1:<vite-port>` instead of via the package — same trick as `comp-*`.
 
 ## Awm Editable Install Gotcha
 

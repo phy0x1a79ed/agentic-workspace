@@ -1,0 +1,13 @@
+{
+  "name": "@awm/bus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Singleton in-process pub/sub bus shared by every mounted stripe. Cross-cutting events (utterance available, room joined, …) flow through this bus; tight sibling wiring goes through component-exposed methods/emitters instead. NO 'stripe' field: this is a library, not a stripe — awm stripe sync skips it.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "sideEffects": false
+}
