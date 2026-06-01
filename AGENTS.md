@@ -284,6 +284,8 @@ stdout + stderr land in `$AWM_DIR/logs/stripes/<service_id>.log`. **No auto-rest
 
 ### Sandbox workflow
 
+**There is one canonical hub per node: the dev sandbox at `projects/awm/dev/` on port `7821`.** `comp-*` and `svc-*` scope worktrees do not run their own parallel hub for component work — they register *into* the dev sandbox's hub. Running a second `./dev/run.sh` from a scope worktree is reserved for work on the hub itself (`awm.exposed`, `dev/run.sh`, stripe-sync, control-plane); it is not the component-dev path. (Per-scope port bands exist — see § Hub origin — so the parallel-sandbox path *works*, it's just rarely the right one.)
+
 ```bash
 cd /home/tony/agentic_workspace/projects/awm/dev
 
@@ -308,25 +310,33 @@ Two patterns, used together:
 
 ### Reworking an existing stripe
 
-The whole point of the monorepo is that a scope worktree gets a complete copy of `packages/` via git, so you can iterate on a stripe in isolation while `dev`'s version stays mounted:
+The whole point of the monorepo is that a scope worktree gets a complete copy of `packages/` via git, so you can iterate on a stripe in isolation while `dev`'s version stays mounted. Default flow: **edit in your scope worktree, then register the scope's bundle into dev's hub** under a unique name. Dev's auto-synced copy of the stripe stays mounted alongside, so you A/B against it at distinct URLs.
 
 ```bash
 awm scope create awm hello-rework --from dev
 cd /home/tony/agentic_workspace/projects/awm/hello-rework
 
-# Edit packages/hello/...
+# Edit packages/hello/..., then rebuild this scope's bundle:
+PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH \
+  npm --workspace @awm/hello run build      # skip for hand-authored stripes
 
-./dev/run.sh restart           # rebuilds workspace + picks up changes in this scope's sandbox
-
-# Or, to make the scope's stripe visible inside dev's sandbox alongside
-# dev's own copy (so you can A/B them), register manually with a unique name:
-awm stripe register --package packages/hello --name @awm/hello-rework
-# Now dev's hub has both @awm/hello (auto-synced) and @awm/hello-rework (manual).
+# Register into dev's hub under a unique name + prefix (lease blocks; Ctrl-C evicts):
+export AWM_WORKSPACE=/home/tony/agentic_workspace/projects/awm/dev/dev
+awm stripe register \
+  --package packages/hello \
+  --name @awm/hello-rework \
+  --prefix /hello-rework
+# Now dev's hub has both @awm/hello (auto-synced) at /hello AND
+# @awm/hello-rework (this scope's bundle) at /hello-rework.
 
 # Finished:
 awm scope complete awm hello-rework --merge --cleanup
-# Back on dev: pull, restart → sync re-registers the merged version.
+# Back on dev: pull, restart → sync re-registers the merged version at /hello.
 ```
+
+The lease watches `packages/<name>/dist/` on disk, so rebuilding the bundle in this worktree is picked up without re-registering. Re-register only when the manifest, prefix, or backend changes.
+
+If you genuinely need a second hub (working on `awm.exposed` itself, or testing what happens when dev's hub is down), `./dev/run.sh restart` from this worktree spins up a parallel sandbox on the scope's port band — see § Hub origin for the table. That sandbox auto-syncs its own `packages/`, but it's a separate origin you log into separately.
 
 ### Gotchas
 

@@ -3,7 +3,7 @@
    * Status string → themed <Tag>. Maps the lowercase status to a primitive
    * tone; falls back to neutral. Used by the rooms list, agent rail, etc.
    */
-  import Tag from '$lib/primitives/Tag.svelte';
+  import Tag from '$lib/components/primitives/Tag.svelte';
 
   interface Props { status: string }
   let { status }: Props = $props();

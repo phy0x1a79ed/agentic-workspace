@@ -5,9 +5,9 @@
    * for the engine config knobs we expose today (paths, booleans, ints,
    * enums, refs); engines that need rich nesting can ship a custom form.
    */
-  import Input from '$lib/primitives/Input.svelte';
+  import Input from '$lib/components/primitives/Input.svelte';
   import Select from './Select.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
 
   type JsonSchema = {
     type?: string;

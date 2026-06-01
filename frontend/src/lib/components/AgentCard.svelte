@@ -3,10 +3,10 @@
   import { runAgentSlash, ApiError } from '$lib/api/client';
   import StatusTag from './StatusTag.svelte';
   import AgentControls from './AgentControls.svelte';
-  import Card from '$lib/primitives/Card.svelte';
-  import Pill from '$lib/primitives/Pill.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
-  import Tooltip from '$lib/primitives/Tooltip.svelte';
+  import Card from '$lib/components/primitives/Card.svelte';
+  import Pill from '$lib/components/primitives/Pill.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
+  import Tooltip from '$lib/components/primitives/Tooltip.svelte';
   import { agentDisplayName, agentProjectLabel } from '$lib/utils/scope';
 
   type Rail = 'manager' | 'peer' | 'plain' | 'none';

@@ -12,8 +12,8 @@
    */
   import { runAgentSlash, ApiError, type LiveAgent } from '$lib/api/client';
   import Select from './Select.svelte';
-  import Button from '$lib/primitives/Button.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
 
   interface Props {
     roomId: string;

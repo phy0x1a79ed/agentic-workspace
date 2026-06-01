@@ -7,9 +7,9 @@
   } from '$lib/api/client';
   import AgentList from './AgentList.svelte';
   import DynamicConfigForm from './DynamicConfigForm.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
-  import CollapsibleSection from '$lib/primitives/CollapsibleSection.svelte';
-  import Button from '$lib/primitives/Button.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
+  import CollapsibleSection from '$lib/components/primitives/CollapsibleSection.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
 
   interface Props {
     agents: RoomAgent[];

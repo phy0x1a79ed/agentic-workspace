@@ -8,9 +8,9 @@
   import { goto } from '$app/navigation';
   import StatusTag from '$lib/components/StatusTag.svelte';
   import RoomCard from '$lib/components/RoomCard.svelte';
-  import Button from '$lib/primitives/Button.svelte';
-  import Input from '$lib/primitives/Input.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
+  import Input from '$lib/components/primitives/Input.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
   import Select from '$lib/components/Select.svelte';
 
   const STATUS_OPTS = ['active', 'closed', 'archived', 'all'] as const;
