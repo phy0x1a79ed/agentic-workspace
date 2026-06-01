@@ -8,14 +8,12 @@ const config = {
     adapter: adapter({
       pages: '../build',
       assets: '../build',
-      fallback: 'index.html',
       precompress: false,
       strict: false
     }),
     paths: {
-      base: '/ui/web-ptt'
-    },
-    prerender: { entries: [] }
+      base: '/vertical-stripes/ptt'
+    }
   }
 };
 
