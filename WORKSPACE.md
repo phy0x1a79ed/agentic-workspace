@@ -1,15 +1,15 @@
 # AWM Workspace
 
-*Structural orientation for any agent operating in a scope worktree of this AWM workspace. Documents the workspace's paths (`.awm/`, `data/`, `skills/`), MCP tool catalog, project layout, scope lifecycle, and the startup ritual that every scope agent inherits. Auto-injected into every scope agent's context by the `SessionStart` hook (`awm context emit`). **Do not merge into AGENTS.md** (awm-internal, narrower audience) **or README.md** (human setup, different audience) — keeping the three files audience-pure is what lets each one stay legible.*
+*Structural orientation for any agent operating in a scope worktree of this AWM workspace. Documents the workspace's paths (`.awm/`, `data/`, `skills/`), MCP tool catalog, project layout, scope lifecycle, and the startup ritual that every scope agent inherits. Loaded into scope-agent context via the harness's native mechanism — Claude Code Reads this file at session start per its global instructions (`~/.claude/CLAUDE.md`); OpenCode auto-injects it via the per-scope `mcp-opencode.json` `instructions` array. **Do not merge into AGENTS.md** (awm-internal, narrower audience) **or README.md** (human setup, different audience) — keeping the three files audience-pure is what lets each one stay legible.*
 
-Context is assembled general → specific: this file first, then the cwd-local `AGENTS.md` (only if you're working in an awm-dev scope or a project that ships its own), then `.awm/context.md` (the scope's per-task ritual).
+Context is assembled general → specific: this file first, then the cwd-local `AGENTS.md` (the project's hand-maintained brief), then `.awm/context.md` (the scope's per-task ritual).
 
 ## Workspace Layout
 
 | Path | Purpose |
 |------|---------|
-| `WORKSPACE.md` | This file — auto-injected to every scope agent |
-| `AGENTS.md` | AWM-internal architecture (auto-injected only when cwd has it locally) |
+| `WORKSPACE.md` | This file — loaded by every scope agent via harness-native mechanism (CC Reads per global instructions; OC auto-injects via per-scope opencode config) |
+| `AGENTS.md` | AWM-internal architecture (loaded when cwd has it locally — CC Reads via walk-up, OC walks it natively) |
 | `README.md` | Human setup/usage guide (never auto-injected) |
 | `awm/` | AWM service package (Python) + skills catalog |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
@@ -149,7 +149,7 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm lock acquire <path> --holder <id>` / `awm lock release / list / reap` | File / folder locks (heartbeat every 30s) |
 | `awm skill list / search / get / reindex` | Skill catalog |
 | `awm hub register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
-| `awm context emit --cwd <path>` | Render the 3-tier context block for SessionStart hooks |
+| `awm context emit --cwd <path>` | Render the 3-tier context as XML blocks (utility for awm tooling that bundles context into spawned sessions; no harness hook calls it) |
 | `awm peer add / list / ping / whoami` | Federation setup (see README.md) |
 
 ## Agent Rules
