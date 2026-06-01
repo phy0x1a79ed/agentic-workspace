@@ -224,13 +224,24 @@ This complements the older `svc-*` + `comp-*` flow (§ Stripe-presentation proto
 ```
 packages/<name>/
   package.json     ← declares the stripe via a `stripe` field
-  dist/            ← frontend bundle (whatever the package builds to)
+  src/             ← source (only for stripes with a real build step)
+  dist/            ← frontend bundle the hub serves (generated; gitignored)
     index.html     ← served at the prefix root
     main.js, …
+  .gitignore       ← `dist/` — for stripes that build their bundle
   server.js        ← backend entry (optional; any executable)
 ```
 
 The hub serves `dist/` at `<prefix>/` (canonical paths only — see § Stripe-presentation protocol for what that means) and proxies `<prefix>/_api/*` to the supervised backend at the port the hub allocated.
+
+### `dist/` is integrator-built, not committed
+
+The contract: `dist/` is whatever's on disk at sync time, full stop. *How* it got there is the package's business.
+
+- **Stripes with a `build` script in `package.json`** generate `dist/` and gitignore it locally (`packages/<name>/.gitignore` with `dist/`). The integrator (`./dev/run.sh start`) runs `npm install && npm run build --workspaces --if-present` before launching `awm stripe sync`, so generated `dist/`s exist by the time the hub registers them. Skipping the build leaves stale or missing bytes; the hub serves what it finds.
+- **Hand-authored stripes** (`hello`, `dev-shell`) have no `build` script — their `dist/` IS source, hand-written there, and stays tracked in git. `--if-present` skips them at build time; the hub serves the committed bytes.
+
+The repo stays clean (no 100K+ bundles in PR diffs) and the hub stays dumb (still serves bytes verbatim, no compile-on-request). The trade is one rebuild per sandbox start.
 
 ### `stripe` field in package.json
 
@@ -276,17 +287,15 @@ stdout + stderr land in `$AWM_DIR/logs/stripes/<service_id>.log`. **No auto-rest
 ```bash
 cd /home/tony/agentic_workspace/projects/awm/dev
 
-# Workspace install (creates symlinks for inter-package deps like @awm/bus).
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm install
-
-# Build whatever stripe(s) you're touching — each owns its own build script.
-# The hub serves whatever is on disk; no rebuild on its side.
-
-./dev/run.sh restart            # uvicorn + login server + `awm stripe sync packages/`
+./dev/run.sh restart            # uvicorn + login server + workspace build + `awm stripe sync packages/`
 awm stripe list                 # all registered stripes, with backend status
 ```
 
-`./dev/run.sh start` invokes `awm stripe sync $REPO_ROOT` as a tracked process (PID in `.awm/stripe-sync.pid`). On `stop` / `restart` the sync process is SIGTERM'd first, which closes every lease, which triggers per-stripe eviction (and SIGTERMs the supervised backends) before uvicorn goes down.
+`./dev/run.sh start` does, in order: launch uvicorn, launch the login server, install workspace deps if `node_modules/` is missing, run `npm run build --workspaces --if-present`, then launch `awm stripe sync $REPO_ROOT` as a tracked process (PID in `.awm/stripe-sync.pid`). Build failures are logged to `.awm/stripe-sync.log` and abort the sync — fix the build, then restart.
+
+On `stop` / `restart` the sync process is SIGTERM'd first, which closes every lease, which triggers per-stripe eviction (and SIGTERMs the supervised backends) before uvicorn goes down.
+
+For tighter iteration on a single stripe, drop into the package and run its `build` script directly — no need to restart the sandbox unless you're touching the backend, the manifest, or registration plumbing.
 
 Open `https://127.0.0.1:7821/dev/` in a browser → pick a stripe from the rail → it mounts in an iframe at its registered prefix. Each stripe runs at its own URL so you can also deep-link directly (`https://127.0.0.1:7821/hello/`).
 
@@ -306,9 +315,8 @@ awm scope create awm hello-rework --from dev
 cd /home/tony/agentic_workspace/projects/awm/hello-rework
 
 # Edit packages/hello/...
-# Build the package.
 
-./dev/run.sh restart           # picks up changes in this scope's sandbox
+./dev/run.sh restart           # rebuilds workspace + picks up changes in this scope's sandbox
 
 # Or, to make the scope's stripe visible inside dev's sandbox alongside
 # dev's own copy (so you can A/B them), register manually with a unique name:

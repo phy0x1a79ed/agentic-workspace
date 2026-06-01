@@ -262,6 +262,33 @@ _start_login() {
   fi
 }
 
+_build_packages() {
+  # Generate every stripe's dist/ before stripe_sync registers them.
+  # Packages without a build script (e.g. hand-authored hello/dev-shell
+  # where dist/ IS source) are skipped via --if-present. Packages that
+  # DO build keep dist/ gitignored; this is where it's produced.
+  local pkgs_root="$REPO_ROOT/packages"
+  local root_pj="$REPO_ROOT/package.json"
+  if [ ! -d "$pkgs_root" ] || [ ! -f "$root_pj" ]; then
+    return 0
+  fi
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "[dev] npm install (workspace root)…"
+    (cd "$REPO_ROOT" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund) \
+      >>"$SYNC_LOG_FILE" 2>&1 || {
+        echo "[dev] npm install failed — see $SYNC_LOG_FILE"
+        return 1
+      }
+  fi
+  echo "[dev] npm run build --workspaces --if-present"
+  (cd "$REPO_ROOT" && PATH="$NODE_BIN:$PATH" \
+      npm run build --workspaces --if-present) \
+    >>"$SYNC_LOG_FILE" 2>&1 || {
+      echo "[dev] workspace build failed — see $SYNC_LOG_FILE"
+      return 1
+    }
+}
+
 _start_stripe_sync() {
   # Auto-register every packages/* that declares a `stripe` field.
   # If packages/ is empty or absent, this is a no-op (CLI exits 1) —
@@ -274,6 +301,7 @@ _start_stripe_sync() {
   if ! find "$pkgs_root" -maxdepth 2 -name package.json -print -quit | grep -q .; then
     return 0
   fi
+  _build_packages || return 1
   echo "[dev] stripe-sync  $REPO_ROOT/packages/"
   cd "$REPO_ROOT"
   nohup setsid mamba run -n awm --no-capture-output \
