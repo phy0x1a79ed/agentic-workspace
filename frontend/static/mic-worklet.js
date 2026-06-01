@@ -1,1 +1,0 @@
-../../ptt/static/mic-worklet.js

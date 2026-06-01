@@ -42,7 +42,7 @@
       return;
     }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ptt/stream`;
+    const url = `${proto}://${location.host}${base}/_api/stream`;
     try {
       ws = new WebSocket(url, [`bearer.${token}`]);
     } catch (err) {

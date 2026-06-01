@@ -398,10 +398,8 @@ do_build() {
     exit 1
   fi
   (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
-  echo "[dev] build output → $REPO_ROOT/build/"
-  echo "[dev] register with the hub:"
-  echo "      AWM_EXPOSED_PORT=${AWM_EXPOSED_PORT} awm hub register \\"
-  echo "        --name web-ptt-ui --prefix /vertical-stripes/ptt --dir $REPO_ROOT/build"
+  echo "[dev] build output → $REPO_ROOT/build/  (legacy monolith bundle)"
+  echo "[dev] vertical stripes auto-build + auto-register via 'start' (npm run build --workspaces + awm stripe sync)"
 }
 
 case "$cmd" in

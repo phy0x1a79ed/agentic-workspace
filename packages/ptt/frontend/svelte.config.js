@@ -6,11 +6,14 @@ const config = {
   preprocess: vitePreprocess(),
   kit: {
     adapter: adapter({
-      pages: '../build',
-      assets: '../build',
+      pages: '../dist',
+      assets: '../dist',
       precompress: false,
       strict: false
-    })
+    }),
+    paths: {
+      base: '/ptt'
+    }
   }
 };
 

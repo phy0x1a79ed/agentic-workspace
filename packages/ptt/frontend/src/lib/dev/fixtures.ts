@@ -1,35 +1,27 @@
 // Shared fixture discovery — used by /dev routes and the vitest runner.
 //
-// Convention (see infra-dev-components/.awm/context.md):
-//   `<Name>.fixtures.ts` lives next to `<Name>.svelte` and exports:
-//     - `default`: Record<variantName, props>
-//     - `component`: the Svelte component to mount
+// Convention: `<Name>.fixtures.ts` lives next to `<Name>.svelte` and exports:
+//   - default: Record<variantName, props>
+//   - component: the Svelte component to mount
 //
-// Components register themselves by dropping a sibling `.fixtures.ts` file.
-// No central registry; no per-component test boilerplate.
+// Glob path resolves from packages/ptt/frontend/ up 1 → packages/ptt/ →
+// down 1 → components/. The dev surface adds/removes fixtures purely by
+// adding/removing files; no central registry.
 
 export interface FixtureModule {
-  /** Variant-name → props map. */
   default: Record<string, Record<string, unknown>>;
-  /** The Svelte component to mount. */
   component: unknown;
 }
 
 export interface FixtureEntry {
-  /** Absolute glob path (e.g. /src/lib/components/StatusTag.fixtures.ts). */
   path: string;
-  /** Filename without extension (e.g. StatusTag). */
   name: string;
-  /** Route slug (e.g. status-tag). */
   slug: string;
   module: FixtureModule;
 }
 
-// The legacy frontend globs only its own in-tree components. Stripe-owned
-// components (under packages/<name>/components/) ship in each stripe's own
-// SvelteKit bundle and are discovered by that stripe's fixtures.ts.
-const modules: Record<string, FixtureModule> = import.meta.glob<FixtureModule>(
-  '/src/lib/components/*.fixtures.ts',
+const modules = import.meta.glob<FixtureModule>(
+  '/../components/*.fixtures.ts',
   { eager: true },
 );
 
