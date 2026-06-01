@@ -1063,9 +1063,11 @@ def scope_heal(
 
     For each active scope: strip any leaked ``@.awm/context.md`` line from a
     tracked ``AGENTS.md`` (project-tier doc), delete untracked scope-level
-    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink, and
-    back-fill ``.awm/context.md`` if missing. Idempotent. Use ``--dry-run``
-    to sanity-check the report before mutating.
+    ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink,
+    back-fill ``.awm/context.md`` if missing, and refresh the per-scope
+    ``.awm/mcp-opencode.json`` ``instructions`` array to the current
+    canonical shape (workspace ``WORKSPACE.md`` + scope ``.awm/context.md``).
+    Idempotent. Use ``--dry-run`` to sanity-check the report before mutating.
     """
     from awm.services.scopes import heal_scopes
     import json as _json
