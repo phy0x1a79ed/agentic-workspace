@@ -319,7 +319,7 @@ do_build() {
   echo "[dev] build output → $REPO_ROOT/build/"
   echo "[dev] register with the hub:"
   echo "      AWM_EXPOSED_PORT=${AWM_EXPOSED_PORT} awm hub register \\"
-  echo "        --name web-ptt-ui --prefix /ui/web-ptt --dir $REPO_ROOT/build"
+  echo "        --name web-ptt-ui --prefix /vertical-stripes/ptt --dir $REPO_ROOT/build"
 }
 
 case "$cmd" in
