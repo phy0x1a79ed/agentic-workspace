@@ -1,6 +1,6 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace should read [`WORKSPACE.md`](WORKSPACE.md) (auto-injected at session start) and search skills via `mcp__awm__skills_search` — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md)) and search skills via `mcp__awm__skills_search` — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, file locking with crash recovery, skills catalog, session logging, experience tracking, artifact registration, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
@@ -27,7 +27,7 @@ mamba run -n awm python -m awm init
 
 AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The setup skill at [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md) (also discoverable from inside an agent via `skills_get path="awm/harness-setup.md"`) covers:
 
-- The `SessionStart` hook that runs `awm context emit` and injects `<workspace-context>` + `<agents-context>` + `<scope-context>` blocks into Claude Code sessions.
+- How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
 - Per-session harness selection via the `agent_cli` column on `agent_sessions`.
 - Healing existing scopes that pre-date the wiring: `awm scope heal`.
