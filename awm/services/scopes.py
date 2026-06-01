@@ -433,12 +433,19 @@ _CONTEXT_IMPORT_LINE = "@.awm/context.md"
 
 
 def _write_scope_opencode_config(awm_dir: Path) -> None:
-    """Write ``<awm_dir>/mcp-opencode.json`` for opencode SessionStart wiring.
+    """Write ``<awm_dir>/mcp-opencode.json`` for opencode startup wiring.
 
     Starts from the workspace-level ``<WORKSPACE_ROOT>/.awm/mcp-opencode.json``
     (produced by the OpencodeExporter) if it exists — preserves the full MCP
-    catalog — and overlays ``instructions: [".awm/context.md"]`` so opencode
-    loads the scope's context.md natively on startup. Idempotent.
+    catalog — and overlays an ``instructions`` array so opencode loads the
+    workspace + scope orientation docs natively on startup. Idempotent.
+
+    The orientation tiers:
+      - workspace ``WORKSPACE.md`` (absolute path; same for every scope)
+      - scope ``.awm/context.md`` (relative to cwd; opencode resolves against worktree)
+
+    AGENTS.md isn't listed — opencode walks AGENTS.md natively from cwd, so
+    listing it would double-inject.
     """
     import json
     out: dict
@@ -450,8 +457,12 @@ def _write_scope_opencode_config(awm_dir: Path) -> None:
             out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
     else:
         out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-    # Relative path — opencode resolves it against cwd (worktree root).
-    out["instructions"] = [".awm/context.md"]
+    instructions: list[str] = []
+    workspace_md = WORKSPACE_ROOT / "WORKSPACE.md"
+    if workspace_md.is_file():
+        instructions.append(str(workspace_md))
+    instructions.append(".awm/context.md")  # relative — resolved against cwd
+    out["instructions"] = instructions
     awm_dir.mkdir(parents=True, exist_ok=True)
     (awm_dir / "mcp-opencode.json").write_text(json.dumps(out, indent=2) + "\n")
 
