@@ -7,10 +7,19 @@ The hub uses ``starlette.responses.FileResponse`` for the actual byte
 shipping — we don't mount a ``StaticFiles`` sub-app because the prefix is
 chosen per record at registration time, not at app-construction time.
 
-Auto-shell: if the registered dir has no ``index.html`` and the record
-carries an ``entry``, ``serve_static`` synthesises a minimal ESM page at
-the prefix root so a "naked bundle" (just ``main.js`` ± css) is viewable
-without the scope hand-authoring HTML.
+Canonical paths only: each registered URL maps to a deterministic file
+on disk — the file at that exact path, or the directory's
+``index.html``. No SPA fallback, no ``Accept``-conditional synthesis on
+miss. A registered prefix that wants deep-link refresh must prerender a
+real ``index.html`` at every URL its UI exposes. For SPA-shaped routing
+without per-route prerendering, use ``kind=url`` against a real
+upstream.
+
+Auto-shell exception: if the registered dir has no ``index.html`` and the
+record carries an ``entry``, ``serve_static`` synthesises a minimal ESM
+page **at the prefix root only** so a "naked bundle" (just ``main.js`` ±
+css) is viewable without the scope hand-authoring HTML. This is still
+canonical — the synthesized HTML answers exactly the prefix-root URL.
 """
 
 from __future__ import annotations
@@ -38,6 +47,26 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
     Path resolution is contained: any target that resolves outside the
     registered directory is rejected as 404 (no traversal — we don't even
     distinguish forbidden from missing).
+
+    Canonical-paths contract: the resolved URL maps to one specific file
+    on disk, or 404. The mapping is:
+
+    * URL has a file at that exact path → serve that file.
+    * URL points at a directory that contains ``index.html`` → serve
+      that ``index.html``. This is the universal static-server default
+      ("directory URLs are served by their index file") used by nginx,
+      Apache, GitHub Pages, Netlify, etc.; SvelteKit's adapter-static
+      with ``trailingSlash: 'always'`` emits exactly this layout
+      (``<route>/index.html``) so a deep link to ``/focus`` is answered
+      by ``focus/index.html`` without any ``Accept`` sniffing or shell
+      fallback.
+    * URL points at a directory with no ``index.html``, or at no file
+      at all → 404.
+
+    No ``Accept``-conditional behaviour, no extension sniffing, no
+    fallback to the prefix root's ``index.html`` on miss. The only
+    response that isn't bytes-from-disk is the naked-bundle auto-shell
+    at the prefix root (records carrying an ``entry``).
     """
     rel = request.url.path[len(rec.prefix):].lstrip("/")
     root = Path(rec.static_dir).resolve()
@@ -56,9 +85,13 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
         return PlainTextResponse("not found", status_code=404)
     if not _is_within(target, root):
         return PlainTextResponse("not found", status_code=404)
-    if not target.is_file():
-        return PlainTextResponse("not found", status_code=404)
-    return FileResponse(target)
+    if target.is_file():
+        return FileResponse(target)
+    if target.is_dir():
+        index = target / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+    return PlainTextResponse("not found", status_code=404)
 
 
 async def close_ws_unsupported(scope, receive, send) -> None:

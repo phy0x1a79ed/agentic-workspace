@@ -8,14 +8,18 @@ const config = {
     adapter: adapter({
       pages: '../awm/static',
       assets: '../awm/static',
-      fallback: 'index.html',
       precompress: false,
       strict: false
     }),
     paths: {
       base: '/ui'
     },
-    prerender: { entries: [] }
+    prerender: {
+      // dev/components/[name] enumerates fixtures via entries(); a scope
+      // with zero fixtures emits zero pages for that route, which would
+      // otherwise be treated as an "unseen route" error.
+      handleUnseenRoutes: 'ignore'
+    }
   }
 };
 

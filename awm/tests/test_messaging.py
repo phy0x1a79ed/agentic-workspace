@@ -238,29 +238,59 @@ class TestFetchMessages:
 
 class TestListRecipients:
     def test_recipients_include_workspace(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         assert "workspace" in recipients
 
     def test_recipients_include_active_projects(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         assert "project:proj-a" in recipients
 
     def test_recipients_include_active_scopes(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         assert "scope:proj-a/scope-1" in recipients
 
     def test_recipients_include_completed_scopes(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         assert "scope:proj-a/scope-2" in recipients
 
     def test_recipients_include_all_projects(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         assert "project:proj-b" in recipients
 
     def test_recipients_deduplicate_scopes(self, _init_messaging):
-        recipients = messaging.list_recipients()
+        recipients = messaging.list_recipients("*")
         scope_entries = [r for r in recipients if r.startswith("scope:")]
         assert len(scope_entries) == len(set(scope_entries))
+
+    def test_recipients_requires_query(self, _init_messaging):
+        with pytest.raises(ValueError):
+            messaging.list_recipients("")
+        with pytest.raises(TypeError):
+            messaging.list_recipients()  # type: ignore[call-arg]
+
+    def test_recipients_regex_filter_scope_prefix(self, _init_messaging):
+        recipients = messaging.list_recipients(r"^scope:proj-a/")
+        assert recipients, "expected at least one match"
+        assert all(r.startswith("scope:proj-a/") for r in recipients)
+
+    def test_recipients_regex_filter_project_kind(self, _init_messaging):
+        recipients = messaging.list_recipients(r"^project:")
+        assert recipients
+        assert all(r.startswith("project:") for r in recipients)
+
+    def test_recipients_regex_filter_no_match(self, _init_messaging):
+        assert messaging.list_recipients(r"^nonexistent-kind:") == []
+
+    def test_recipients_invalid_regex_raises(self, _init_messaging):
+        with pytest.raises(ValueError):
+            messaging.list_recipients("[unterminated")
+
+    def test_recipients_peer_arg_not_implemented(self, _init_messaging):
+        with pytest.raises(NotImplementedError):
+            messaging.list_recipients("*", peer="all")
+        # local sentinels stay allowed
+        messaging.list_recipients("*", peer=None)
+        messaging.list_recipients("*", peer="local")
 
 
 # ---------------------------------------------------------------------------

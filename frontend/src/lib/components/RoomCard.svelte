@@ -3,7 +3,7 @@
   import { archiveRoom, type Room } from '$lib/api/client';
   import { base } from '$app/paths';
   import { goto } from '$app/navigation';
-  import Button from '$lib/primitives/Button.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
 
   interface Props {
     room: Room;
@@ -14,7 +14,7 @@
   let busy = $state(false);
   let err  = $state('');
 
-  function open() { goto(`${base}/room/${encodeURIComponent(room.id)}`); }
+  function open() { goto(`${base}/room?id=${encodeURIComponent(room.id)}`); }
 
   async function archive() {
     busy = true; err = '';

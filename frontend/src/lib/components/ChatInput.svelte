@@ -1,7 +1,7 @@
 <script lang="ts">
   import SlashPicker from './SlashPicker.svelte';
-  import Button from '$lib/primitives/Button.svelte';
-  import Input from '$lib/primitives/Input.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
+  import Input from '$lib/components/primitives/Input.svelte';
 
   interface Props {
     disabled?: boolean;

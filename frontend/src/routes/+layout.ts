@@ -1,5 +1,7 @@
-// SPA shell — disable SSR; SvelteKit runs purely client-side, adapter-static
-// emits a single index.html fallback.
+// CSR-only bundle prerendered to real files at every route. Runtime state
+// (focused room id, opened room id) lives in query params so the URL ↔
+// file mapping stays 1:1 — `/focus?room=x` and `/focus?room=y` both
+// resolve to the same on-disk `focus.html`.
 export const ssr = false;
-export const prerender = false;
-export const trailingSlash = 'ignore';
+export const prerender = true;
+export const trailingSlash = 'always';

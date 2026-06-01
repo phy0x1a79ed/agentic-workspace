@@ -53,6 +53,8 @@ PID_FILE="$HERE/.awm/dev.pid"
 LOG_FILE="$HERE/.awm/dev.log"
 LOGIN_PID_FILE="$HERE/.awm/login.pid"
 LOGIN_LOG_FILE="$HERE/.awm/login.log"
+SYNC_PID_FILE="$HERE/.awm/stripe-sync.pid"
+SYNC_LOG_FILE="$HERE/.awm/stripe-sync.log"
 CERT_FILE="$HERE/.awm/tls/cert.pem"
 KEY_FILE="$HERE/.awm/tls/key.pem"
 
@@ -98,6 +100,7 @@ is_running_pidfile() {
 }
 is_running()       { is_running_pidfile "$PID_FILE"; }
 is_login_running() { is_running_pidfile "$LOGIN_PID_FILE"; }
+is_sync_running()  { is_running_pidfile "$SYNC_PID_FILE"; }
 
 prep() {
   mkdir -p "$HERE/.awm"
@@ -156,8 +159,28 @@ _stop_one() {
   echo "$stopped"
 }
 
+_stop_sync() {
+  # The stripe-sync process holds N WS leases; SIGTERM is enough — closing
+  # the leases triggers hub eviction (and SIGTERMs the supervised backends).
+  # It does not bind a port, so the port-based straggler sweep in _stop_one
+  # doesn't apply.
+  if [ -f "$SYNC_PID_FILE" ]; then
+    local pid
+    pid="$(cat "$SYNC_PID_FILE")"
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "[dev] stopping stripe-sync pid $pid"
+      pkill -TERM -P "$pid" 2>/dev/null || true
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+    rm -f "$SYNC_PID_FILE"
+  fi
+}
+
 do_stop() {
   local s1 s2
+  # Stop stripe-sync first so leases close cleanly before the hub goes
+  # down (hub-side eviction terminates supervised backends).
+  _stop_sync
   s1="$(_stop_one "$PID_FILE"       "$AWM_EXPOSED_PORT"   "uvicorn")"
   s2="$(_stop_one "$LOGIN_PID_FILE" "$AWM_DEV_LOGIN_PORT" "login-server")"
   if [ "$s1" = "0" ] && [ "$s2" = "0" ]; then
@@ -239,6 +262,60 @@ _start_login() {
   fi
 }
 
+_build_packages() {
+  # Generate every stripe's dist/ before stripe_sync registers them.
+  # Packages without a build script (e.g. hand-authored hello/dev-shell
+  # where dist/ IS source) are skipped via --if-present. Packages that
+  # DO build keep dist/ gitignored; this is where it's produced.
+  local pkgs_root="$REPO_ROOT/packages"
+  local root_pj="$REPO_ROOT/package.json"
+  if [ ! -d "$pkgs_root" ] || [ ! -f "$root_pj" ]; then
+    return 0
+  fi
+  if [ ! -d "$REPO_ROOT/node_modules" ]; then
+    echo "[dev] npm install (workspace root)…"
+    (cd "$REPO_ROOT" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund) \
+      >>"$SYNC_LOG_FILE" 2>&1 || {
+        echo "[dev] npm install failed — see $SYNC_LOG_FILE"
+        return 1
+      }
+  fi
+  echo "[dev] npm run build --workspaces --if-present"
+  (cd "$REPO_ROOT" && PATH="$NODE_BIN:$PATH" \
+      npm run build --workspaces --if-present) \
+    >>"$SYNC_LOG_FILE" 2>&1 || {
+      echo "[dev] workspace build failed — see $SYNC_LOG_FILE"
+      return 1
+    }
+}
+
+_start_stripe_sync() {
+  # Auto-register every packages/* that declares a `stripe` field.
+  # If packages/ is empty or absent, this is a no-op (CLI exits 1) —
+  # silently skip without aborting the harness.
+  local pkgs_root="$REPO_ROOT/packages"
+  if [ ! -d "$pkgs_root" ]; then
+    return 0
+  fi
+  # Any stripe packages? (Has a package.json at all under packages/<name>/.)
+  if ! find "$pkgs_root" -maxdepth 2 -name package.json -print -quit | grep -q .; then
+    return 0
+  fi
+  _build_packages || return 1
+  echo "[dev] stripe-sync  $REPO_ROOT/packages/"
+  cd "$REPO_ROOT"
+  nohup setsid mamba run -n awm --no-capture-output \
+      python -m awm stripe sync "$REPO_ROOT" \
+      >"$SYNC_LOG_FILE" 2>&1 &
+  echo $! >"$SYNC_PID_FILE"
+  sleep 0.5
+  if ! is_sync_running; then
+    echo "[dev] stripe-sync failed to start — see $SYNC_LOG_FILE"
+    tail -n 20 "$SYNC_LOG_FILE" || true
+    rm -f "$SYNC_PID_FILE"
+  fi
+}
+
 do_start() {
   if is_running; then
     echo "[dev] already running (pid $(cat "$PID_FILE")) — use restart"
@@ -253,6 +330,7 @@ do_start() {
   fi
   _start_uvicorn
   _start_login
+  _start_stripe_sync
   echo "[dev] logs: $LOG_FILE"
 }
 
@@ -266,6 +344,10 @@ do_status() {
   if is_login_running; then
     echo "[dev] login-server  running (pid $(cat "$LOGIN_PID_FILE"))"
     echo "[dev]   $LOGIN_URL"
+    any=1
+  fi
+  if is_sync_running; then
+    echo "[dev] stripe-sync   running (pid $(cat "$SYNC_PID_FILE"))"
     any=1
   fi
   [ "$any" -eq 0 ] && echo "[dev] not running"

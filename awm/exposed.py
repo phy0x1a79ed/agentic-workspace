@@ -684,6 +684,19 @@ from awm.services.hub.static import (  # noqa: E402
 )
 
 
+def _stripe_identity_headers(cookies) -> list[tuple[str, str]]:
+    """Mint hub-injected identity headers for a stripe proxy hop from
+    the inbound request's cookies. Returning X-Awm-As here causes the
+    proxy to drop any inbound X-Awm-As the client supplied — that's
+    the forge-prevention seam stripes rely on. Returns an empty list
+    when the operator cookie is absent (anonymous; backend treats the
+    missing header as unauthenticated)."""
+    awm_user = cookies.get(auth_svc.AS_COOKIE)
+    if not awm_user:
+        return []
+    return [("X-Awm-As", awm_user)]
+
+
 class HubRoutingMiddleware:
     def __init__(self, app):
         self.app = app
@@ -711,6 +724,9 @@ class HubRoutingMiddleware:
             response = await _serve_static(request, rec)
             await response(scope, receive, send)
             return
+        if rec.kind == "stripe":
+            await self._dispatch_stripe(scope, receive, send, rec, path)
+            return
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
             response = await proxy_http(request, rec.url)
@@ -719,6 +735,72 @@ class HubRoutingMiddleware:
             from fastapi import WebSocket as _WS
             ws = _WS(scope, receive=receive, send=send)
             await proxy_ws(ws, rec.url)
+
+    async def _dispatch_stripe(self, scope, receive, send, rec, path):
+        """Stripe routing:
+        - <prefix>/_api/<rest> -> proxy to the supervised backend (HTTP or WS)
+        - everything else under <prefix> -> canonical static serving
+
+        While the backend is starting, _api/ requests get 503 + Retry-After
+        so callers can degrade visibly instead of hanging.
+        """
+        api_root = rec.prefix + "/_api"
+        is_api = path == api_root or path.startswith(api_root + "/")
+        if is_api:
+            if rec.backend_port is None:
+                # Backendless stripe — _api/ doesn't exist.
+                if scope["type"] == "websocket":
+                    await _ws_close_unsupported(scope, receive, send)
+                    return
+                from starlette.responses import PlainTextResponse
+                resp = PlainTextResponse("not found", status_code=404)
+                await resp(scope, receive, send)
+                return
+            if rec.backend_status != "ready":
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.accept"})
+                    await send({
+                        "type": "websocket.close",
+                        "code": 1013,
+                        "reason": f"stripe backend not ready ({rec.backend_status})",
+                    })
+                    return
+                from starlette.responses import PlainTextResponse
+                resp = PlainTextResponse(
+                    f"stripe backend not ready ({rec.backend_status})",
+                    status_code=503,
+                    headers={"Retry-After": "1"},
+                )
+                await resp(scope, receive, send)
+                return
+            # Rewrite path so the backend sees its own URL, not the hub prefix.
+            # <prefix>/_api/foo  ->  /foo on the backend.
+            sub_path = path[len(api_root):] or "/"
+            new_scope = dict(scope)
+            new_scope["path"] = sub_path
+            new_scope["raw_path"] = sub_path.encode()
+            target_base = f"http://127.0.0.1:{rec.backend_port}"
+            if scope["type"] == "http":
+                request = Request(new_scope, receive=receive)
+                identity_headers = _stripe_identity_headers(request.cookies)
+                response = await proxy_http(
+                    request, target_base, extra_headers=identity_headers,
+                )
+                await response(scope, receive, send)
+            else:
+                from fastapi import WebSocket as _WS
+                ws = _WS(new_scope, receive=receive, send=send)
+                identity_headers = _stripe_identity_headers(ws.cookies)
+                await proxy_ws(ws, target_base, extra_headers=identity_headers)
+            return
+
+        # Anything else under the prefix is frontend static.
+        if scope["type"] == "websocket":
+            await _ws_close_unsupported(scope, receive, send)
+            return
+        request = Request(scope, receive=receive)
+        response = await _serve_static(request, rec)
+        await response(scope, receive, send)
 
 
 app.add_middleware(HubRoutingMiddleware)

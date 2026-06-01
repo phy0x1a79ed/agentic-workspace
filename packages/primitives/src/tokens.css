@@ -1,0 +1,40 @@
+/* Design tokens for @awm/primitives. Copied from the legacy SPA's app.css —
+   only the custom properties the primitives + gallery actually read. The
+   SPA's resets, Tailwind import, scrollbar styling, and global typography
+   stay in frontend/src/app.css; they're not part of the primitives surface. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0e0e10;
+  --surface:   #17171a;
+  --surface2:  #1f1f24;
+  --border:    #2a2a30;
+  --surface3:  #28282e;
+  --border2:   #38383f;
+  --text:      #e8e8ec;
+  --text2:     #9898a8;
+  --text3:     #52525e;
+
+  --atomizer:  #3b82f6;
+  --recording: #a855f7;
+  --ok:        #10b981;
+  --warn:      #eab308;
+  --danger:    #ef4444;
+  --mgr:       #f59e0b;
+
+  --mono:      'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans:      'DM Sans', system-ui, sans-serif;
+
+  --space-0: 2px;  --space-1: 4px;  --space-2: 6px;  --space-3: 8px;
+  --space-4: 10px; --space-5: 14px; --space-6: 20px;
+  --radius-sm: 2px; --radius-md: 3px; --radius-lg: 4px;
+  --ease-mech: cubic-bezier(0.7, 0, 0.3, 1);
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+}

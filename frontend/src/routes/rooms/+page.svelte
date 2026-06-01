@@ -8,9 +8,9 @@
   import { goto } from '$app/navigation';
   import StatusTag from '$lib/components/StatusTag.svelte';
   import RoomCard from '$lib/components/RoomCard.svelte';
-  import Button from '$lib/primitives/Button.svelte';
-  import Input from '$lib/primitives/Input.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
+  import Input from '$lib/components/primitives/Input.svelte';
+  import PanelLabel from '$lib/components/primitives/PanelLabel.svelte';
   import Select from '$lib/components/Select.svelte';
 
   const STATUS_OPTS = ['active', 'closed', 'archived', 'all'] as const;
@@ -165,7 +165,7 @@
                 <td>{r.host_peer_id ?? ''}</td>
                 <td>{r.created_at ?? ''}</td>
                 <td class="row-actions">
-                  <Button kind="ghost" onclick={() => goto(`${base}/room/${encodeURIComponent(r.id)}`)}>open</Button>
+                  <Button kind="ghost" onclick={() => goto(`${base}/room?id=${encodeURIComponent(r.id)}`)}>open</Button>
                   <Button kind="ghost" onclick={() => archive(r.id)}>archive</Button>
                 </td>
               </tr>
