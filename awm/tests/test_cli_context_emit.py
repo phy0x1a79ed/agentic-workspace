@@ -233,3 +233,5 @@ def test_emit_no_agents_md_no_block(tmp_path: Path) -> None:
     assert "<workspace-context" in result.stdout
     assert "<scope-context" in result.stdout
     assert "<agents-context" not in result.stdout
+
+

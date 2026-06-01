@@ -1,11 +1,15 @@
-"""Tests for the per-scope opencode config that auto-loads `.awm/context.md`.
+"""Tests for the per-scope opencode config that auto-loads orientation docs.
 
 At scope-create time, `_write_scope_opencode_config` writes
 `<worktree>/.awm/mcp-opencode.json` that (a) inherits the workspace MCP
-catalog when present and (b) adds `instructions: [".awm/context.md"]` so
-opencode loads scope orientation natively on startup. The session-launch
-path in `agent_instances.create_session` prefers the per-scope file over
-the workspace fallback.
+catalog when present and (b) adds an `instructions` array so opencode
+loads orientation docs natively on startup. The array always contains
+`.awm/context.md` (scope tier) and prepends the absolute path of
+`<WORKSPACE_ROOT>/WORKSPACE.md` (workspace tier) when that file exists.
+The repo tier (AGENTS.md) is omitted — opencode walks AGENTS.md natively
+from cwd, so listing it would double-inject. The session-launch path in
+`agent_instances.create_session` prefers the per-scope file over the
+workspace fallback.
 """
 
 from __future__ import annotations
@@ -75,3 +79,17 @@ class TestWriteScopeOpencodeConfig:
         cfg = json.loads((awm / "mcp-opencode.json").read_text())
         assert cfg["instructions"] == [".awm/context.md"]
         assert cfg["mcp"] == {}
+
+    def test_includes_workspace_md_when_present(self, tmp_path, awm_workspace):
+        # When the workspace has a WORKSPACE.md file, its absolute path goes
+        # into the instructions array (workspace tier) before .awm/context.md.
+        workspace_md = awm_workspace["workspace"] / "WORKSPACE.md"
+        workspace_md.write_text("# workspace orientation\n")
+        wt = tmp_path / "wt"
+        awm = wt / ".awm"
+        awm.mkdir(parents=True)
+
+        _write_scope_opencode_config(awm)
+
+        cfg = json.loads((awm / "mcp-opencode.json").read_text())
+        assert cfg["instructions"] == [str(workspace_md), ".awm/context.md"]

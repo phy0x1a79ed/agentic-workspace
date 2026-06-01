@@ -433,12 +433,19 @@ _CONTEXT_IMPORT_LINE = "@.awm/context.md"
 
 
 def _write_scope_opencode_config(awm_dir: Path) -> None:
-    """Write ``<awm_dir>/mcp-opencode.json`` for opencode SessionStart wiring.
+    """Write ``<awm_dir>/mcp-opencode.json`` for opencode startup wiring.
 
     Starts from the workspace-level ``<WORKSPACE_ROOT>/.awm/mcp-opencode.json``
     (produced by the OpencodeExporter) if it exists — preserves the full MCP
-    catalog — and overlays ``instructions: [".awm/context.md"]`` so opencode
-    loads the scope's context.md natively on startup. Idempotent.
+    catalog — and overlays an ``instructions`` array so opencode loads the
+    workspace + scope orientation docs natively on startup. Idempotent.
+
+    The orientation tiers:
+      - workspace ``WORKSPACE.md`` (absolute path; same for every scope)
+      - scope ``.awm/context.md`` (relative to cwd; opencode resolves against worktree)
+
+    AGENTS.md isn't listed — opencode walks AGENTS.md natively from cwd, so
+    listing it would double-inject.
     """
     import json
     out: dict
@@ -450,8 +457,12 @@ def _write_scope_opencode_config(awm_dir: Path) -> None:
             out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
     else:
         out = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
-    # Relative path — opencode resolves it against cwd (worktree root).
-    out["instructions"] = [".awm/context.md"]
+    instructions: list[str] = []
+    workspace_md = WORKSPACE_ROOT / "WORKSPACE.md"
+    if workspace_md.is_file():
+        instructions.append(str(workspace_md))
+    instructions.append(".awm/context.md")  # relative — resolved against cwd
+    out["instructions"] = instructions
     awm_dir.mkdir(parents=True, exist_ok=True)
     (awm_dir / "mcp-opencode.json").write_text(json.dumps(out, indent=2) + "\n")
 
@@ -500,12 +511,16 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
     3. Deletes ``CLAUDE.md`` if it is a symlink to ``AGENTS.md`` or is
        otherwise untracked.
     4. Generates ``.awm/context.md`` via ``_default_context`` if missing.
+    5. Refreshes ``.awm/mcp-opencode.json`` so its ``instructions`` array
+       matches what ``_write_scope_opencode_config`` would produce today
+       (workspace ``WORKSPACE.md`` + scope ``.awm/context.md``).
 
     ``dry_run=True`` reports what would happen without mutating files.
     """
     actions: dict[str, str | None] = {
         "import_line": None, "agents_md": None,
         "claude_md": None, "context_md": None,
+        "opencode_config": None,
     }
 
     agents_path = worktree_dir / "AGENTS.md"
@@ -550,6 +565,41 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
             awm_dir.mkdir(parents=True, exist_ok=True)
             context_path.write_text(_default_context(project, scope))
 
+    # Refresh per-scope opencode config — write only if the on-disk bytes
+    # diverge from what we'd generate today (keeps the action report honest).
+    opencode_cfg = awm_dir / "mcp-opencode.json"
+    existing = opencode_cfg.read_text() if opencode_cfg.is_file() else None
+    if not dry_run:
+        awm_dir.mkdir(parents=True, exist_ok=True)
+        _write_scope_opencode_config(awm_dir)
+        new = opencode_cfg.read_text()
+        if existing is None:
+            actions["opencode_config"] = "created"
+        elif new != existing:
+            actions["opencode_config"] = "rewritten"
+    else:
+        # Dry-run: simulate by computing what would be written.
+        import json as _json
+        workspace_cfg = WORKSPACE_ROOT / ".awm" / "mcp-opencode.json"
+        if workspace_cfg.is_file():
+            try:
+                preview = _json.loads(workspace_cfg.read_text())
+            except (OSError, _json.JSONDecodeError):
+                preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+        else:
+            preview = {"$schema": "https://opencode.ai/config.json", "mcp": {}}
+        instr: list[str] = []
+        wsmd = WORKSPACE_ROOT / "WORKSPACE.md"
+        if wsmd.is_file():
+            instr.append(str(wsmd))
+        instr.append(".awm/context.md")
+        preview["instructions"] = instr
+        would = _json.dumps(preview, indent=2) + "\n"
+        if existing is None:
+            actions["opencode_config"] = "would-create"
+        elif would != existing:
+            actions["opencode_config"] = "would-rewrite"
+
     return actions
 
 
@@ -559,7 +609,10 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
     For each active scope worktree: strip any leaked ``@.awm/context.md``
     line from a tracked ``AGENTS.md``, remove untracked scope-level
     ``AGENTS.md`` / ``CLAUDE.md`` / ``CLAUDE.md→AGENTS.md`` symlink,
-    and back-fill ``.awm/context.md`` if missing. Idempotent.
+    back-fill ``.awm/context.md`` if missing, and refresh
+    ``.awm/mcp-opencode.json`` so its ``instructions`` array matches the
+    current canonical shape (workspace ``WORKSPACE.md`` + scope
+    ``.awm/context.md``). Idempotent.
 
     With ``dry_run=True`` the report shows intended actions without
     mutating files — use this before bulk runs to sanity-check.
@@ -676,10 +729,11 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     (awm_dir / "history.md").write_text(_generate_history_md(req.project, req.scope))
     (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(req.project, req.scope))
 
-    # 6. Per-scope opencode config — pulls in .awm/context.md via
-    # `instructions` so opencode loads scope orientation natively without
-    # any tier-3 file at the worktree root. Claude Code gets the same
-    # bytes via the SessionStart hook (awm context emit).
+    # 6. Per-scope opencode config — sets `instructions` to the
+    # absolute workspace WORKSPACE.md + relative `.awm/context.md` so
+    # opencode loads tier-1 + tier-3 natively on startup. Claude Code
+    # reads the same files via global-instruction prompts (no hook;
+    # see `awm_context_loading_design` memory for the 10K-cap detour).
     _write_scope_opencode_config(awm_dir)
 
     # 7. Record in DB
