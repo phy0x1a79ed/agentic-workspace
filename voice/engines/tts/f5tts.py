@@ -20,7 +20,12 @@ ENGINE_ID = "f5tts"
 
 
 class F5TTSConfig(BaseModel):
-    url: str = Field(default_factory=lambda: os.environ.get("F5TTS_URL", "http://127.0.0.1:7842"))
+    """Voice-shaping knobs for the f5tts sidecar.
+
+    Infra (sidecar URL) lives in env vars rather than here so the
+    user-facing config form only shows voice-shaping fields.
+    """
+
     ref_wav_path: str | None = Field(default=None)
     ref_text: str | None = Field(default=None)
     language: str = Field(default="en")
@@ -34,12 +39,13 @@ class F5TTSEngine:
 
     def __init__(self, cfg: F5TTSConfig):
         self.cfg = cfg
+        self._url = os.environ.get("F5TTS_URL", "http://127.0.0.1:7842")
         self._client = httpx.Client(timeout=300.0)
         self._sample_rate = 24_000
 
     def warmup(self) -> None:
         try:
-            self._client.get(f"{self.cfg.url}/health", timeout=5.0)
+            self._client.get(f"{self._url}/health", timeout=5.0)
         except Exception:
             pass
 
@@ -60,7 +66,7 @@ class F5TTSEngine:
             "ref_text": self.cfg.ref_text,
             "language": self.cfg.language,
         }
-        r = self._client.post(f"{self.cfg.url}/synth", json=body)
+        r = self._client.post(f"{self._url}/synth", json=body)
         r.raise_for_status()
         return _wav_to_pcm(r.content, self)
 

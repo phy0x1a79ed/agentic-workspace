@@ -25,8 +25,16 @@
   // state service so the slider position survives a page reload.
   // The $effect re-runs on every vol.value change and pushes the new
   // gain into the live TtsCall's GainNode for live updates.
+  //
+  // Read vol.value unconditionally before the optional chain — `call?.…(arg)`
+  // skips arg evaluation when call is nullish, so on first run (call=null)
+  // vol.value wouldn't be touched and Svelte wouldn't register it as a dep.
+  // The effect would then never re-fire when the slider moves.
   const vol = persistedState<number>('volume', 1.0);
-  $effect(() => { call?.setVolume(vol.value); });
+  $effect(() => {
+    const v = vol.value;
+    call?.setVolume(v);
+  });
 
   // Round-trip status of the most-recent speak/replay call. The composer
   // renders this as a sent/delay pill.
@@ -97,11 +105,17 @@
     });
   }
 
+  // Symmetric with handleSpeak: a bubble's speak button is just "speak
+  // this text" against the current engine/params, so it must go through
+  // ensureCall (which opens/reconfigures as needed). Without this it
+  // silently no-ops whenever `call` is null — first-load, after cancel,
+  // or after a reconfigure path that left the call in an off-state.
   async function handleReplay(text: string) {
-    if (!call) return;
+    if (!selected) return;
     await timed(async () => {
-      call!.setVolume(vol.value);
-      await call!.play(text);
+      const c = await ensureCall(selected, params);
+      c.setVolume(vol.value);
+      await c.play(text);
     });
   }
 

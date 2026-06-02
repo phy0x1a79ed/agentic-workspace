@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -40,7 +41,6 @@ from awm.middleware_auth import authenticate_websocket, require_peer_bearer
 from demo.text_clean import clean_for_tts
 from tts.backend import presets, state
 from voice import engines as engines_registry
-from voice.engines.tts.kokoro_rvc import KokoroRvcConfig
 
 log = logging.getLogger("tts.backend")
 
@@ -261,10 +261,15 @@ async def _fetch_sidecar_voices() -> dict[str, Any] | None:
     now = time.monotonic()
     if _voices_cache["data"] is not None and now - _voices_cache["at"] < _VOICES_TTL_S:
         return _voices_cache["data"]
-    cfg = KokoroRvcConfig()
+    # Sidecar URL + TLS verify are infra knobs read from env (mirrors
+    # voice.engines.tts.kokoro_rvc) so they don't leak into the user-
+    # facing config schema.
+    url = os.environ.get("TTS_RVC_URL", "https://127.0.0.1:12123")
+    verify_raw = os.environ.get("TTS_RVC_VERIFY_SSL", "").strip().lower()
+    verify = verify_raw in {"1", "true", "yes", "on"}
     try:
-        async with httpx.AsyncClient(verify=cfg.verify_ssl, timeout=2.0) as cli:
-            r = await cli.get(f"{cfg.url}/voices")
+        async with httpx.AsyncClient(verify=verify, timeout=2.0) as cli:
+            r = await cli.get(f"{url}/voices")
             r.raise_for_status()
             data = r.json()
     except Exception as exc:

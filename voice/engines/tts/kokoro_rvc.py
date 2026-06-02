@@ -22,17 +22,25 @@ log = logging.getLogger("voice.engines.tts.kokoro_rvc")
 
 
 class KokoroRvcConfig(BaseModel):
-    url: str = Field(
-        default_factory=lambda: os.environ.get("TTS_RVC_URL", "https://127.0.0.1:12123")
-    )
+    """Voice-shaping knobs for the kokoro+rvc sidecar.
+
+    Infra (sidecar URL, TLS verification) lives in env vars rather than
+    here so the user-facing config form only shows what affects how the
+    voice sounds.
+    """
+
     tts_voice: str = Field(default="bf_emma")
     rvc_label: str | None = Field(default="chelly_egoist")
     pitch: int = Field(default=0, ge=-24, le=24)
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
-    verify_ssl: bool = Field(default=False)  # dev cert is self-signed
 
 
 CONFIG_SCHEMA = KokoroRvcConfig
+
+
+def _verify_from_env() -> bool:
+    raw = os.environ.get("TTS_RVC_VERIFY_SSL", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 class KokoroRvcEngine:
@@ -40,12 +48,14 @@ class KokoroRvcEngine:
 
     def __init__(self, cfg: KokoroRvcConfig):
         self.cfg = cfg
+        # Sidecar URL + TLS verify are infra, not voice knobs.
+        self._url = os.environ.get("TTS_RVC_URL", "https://127.0.0.1:12123")
         self._sample_rate = 24_000  # default, refreshed from response header
-        self._client = httpx.Client(timeout=300.0, verify=cfg.verify_ssl)
+        self._client = httpx.Client(timeout=300.0, verify=_verify_from_env())
 
     def warmup(self) -> None:
         try:
-            r = self._client.get(f"{self.cfg.url}/health", timeout=5.0)
+            r = self._client.get(f"{self._url}/health", timeout=5.0)
             r.raise_for_status()
         except Exception as exc:
             log.warning("tts_rvc sidecar health check failed: %s", exc)
@@ -65,7 +75,7 @@ class KokoroRvcEngine:
             "speed": self.cfg.speed,
         }
         out = bytearray()
-        with self._client.stream("POST", f"{self.cfg.url}/stream", json=body) as r:
+        with self._client.stream("POST", f"{self._url}/stream", json=body) as r:
             r.raise_for_status()
             sr = r.headers.get("X-Sample-Rate")
             if sr:
