@@ -13,11 +13,13 @@
     type Post, type RoomAgent,
   } from '$lib/api/client';
   import { RoomWsPool, type RoomEvent } from '$lib/api/ws.svelte';
-  import ChatHistory from './ChatHistory.svelte';
-  import ChatInput   from './ChatInput.svelte';
-  // PttButton lives in the @awm/ptt stripe at packages/ptt/components/PttButton.svelte.
-  // The SvelteKit `$lib` alias does not reach outside `src/lib/`, so the
-  // import uses a relative path back into the workspace package tree.
+  // Chat surface lives in the @awm/chat-primitives workspace package now —
+  // single source of truth shared with the @awm/agent stripe. SvelteKit's
+  // $lib alias doesn't reach outside src/lib/, and frontend/ isn't an npm
+  // workspace member, so we import via relative path into packages/ (same
+  // pattern PttButton already uses below).
+  import ChatHistory from '../../../../packages/chat-primitives/src/ChatHistory.svelte';
+  import ChatInput   from '../../../../packages/chat-primitives/src/ChatInput.svelte';
   import PttButton   from '../../../../packages/ptt/components/PttButton.svelte';
   import { voice } from '$lib/state/voice.svelte';
   import { replay as ttsReplay } from '$lib/voice/tts';
@@ -167,7 +169,10 @@
 </script>
 
 <div class="vconv">
-  <ChatHistory {posts} />
+  <ChatHistory
+    {posts}
+    onspeak={(p) => ttsReplay(p.body ?? '')}
+  />
   <ChatInput
     disabled={!roomId}
     bind:text={composerText}

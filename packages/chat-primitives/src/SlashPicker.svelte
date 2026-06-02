@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { getSlashCommands, type SlashCommandInfo } from '$lib/api/client';
+  import { fetchSlashCommands } from './api';
+  import type { SlashCommandInfo } from './types';
 
   interface Props {
     roomId: string;
@@ -47,7 +48,7 @@
           description: c.description, group: 'server' as const
         }));
       } else {
-        const res = await getSlashCommands(roomId, scope);
+        const res = await fetchSlashCommands(roomId, scope);
         const server: Row[] = res.server.map(c => ({
           cmd: c.name, label: `${c.name} ${c.args}`.trim(),
           description: c.description, group: 'server' as const

@@ -1,0 +1,30 @@
+{
+  "name": "@awm/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Single-agent chat stripe: composes @awm/chat-primitives (history + composer + slash) over awm.exposed /rooms/*, wires PTT input via /ptt/_api/* and TTS output via /tts/_api/*. Frontend-only — no backend of its own.",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "stripe": {
+    "frontend": "dist/",
+    "prefix": "/agent"
+  },
+  "dependencies": {
+    "@awm/chat-primitives": "*",
+    "@awm/primitives": "*",
+    "@awm/ptt": "*",
+    "@awm/tts": "*"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@tsconfig/svelte": "^5.0.0",
+    "svelte": "^5.2.0",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.7.0",
+    "vite": "^5.4.0"
+  }
+}

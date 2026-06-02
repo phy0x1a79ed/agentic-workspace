@@ -1,0 +1,26 @@
+{
+  "name": "@awm/chat-primitives",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat surface primitives — ChatHistory, ChatInput, SlashPicker — extracted from the legacy frontend monolith so the same composition can ship inside any stripe that talks to awm.exposed /rooms/*.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "sideEffects": ["**/*.css", "**/*.svelte"],
+  "scripts": {
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "@awm/primitives": "*"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@tsconfig/svelte": "^5.0.0",
+    "svelte": "^5.2.0",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.7.0"
+  }
+}

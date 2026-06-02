@@ -1,12 +1,18 @@
 <script lang="ts">
-  import type { Post } from '$lib/api/client';
   import { tick } from 'svelte';
-  import { replay, ttsEnabled } from '$lib/voice/tts';
+  import type { Post } from './types';
 
   interface Props {
     posts: Post[];
+    /**
+     * Speak callback. When provided, agent / user text posts render a speaker
+     * affordance whose click invokes this. When omitted, no speak controls.
+     * The caller decides what playback means (legacy /voice/tts/speak, the
+     * @awm/tts stripe, a synth web worker, …).
+     */
+    onspeak?: (post: Post) => void;
   }
-  let { posts }: Props = $props();
+  let { posts, onspeak }: Props = $props();
 
   let scrollEl: HTMLDivElement | undefined = $state();
 
@@ -104,8 +110,7 @@
   }
 
   // Speakable posts: agent or user text (not subscriber, not system, not
-  // tool_use/tool_result). The TTS service itself is mocked; this gates the
-  // affordance per user intent ("speak agent text, but not tool calls").
+  // tool_use/tool_result). Caller's onspeak handles the actual playback.
   function isSpeakable(p: Post): boolean {
     const k = p.kind ?? 'text';
     if (k !== 'text') return false;
@@ -153,13 +158,13 @@
         <article class="post kind-{g.post.kind ?? 'text'}">
           <header>
             <span class="author">{g.post.author}</span>
-            {#if ttsEnabled && isSpeakable(g.post)}
+            {#if onspeak && isSpeakable(g.post)}
               <button
                 class="tts-btn"
                 type="button"
                 title="replay"
                 aria-label="replay"
-                onclick={() => replay(g.post.body ?? '')}
+                onclick={() => onspeak(g.post)}
               >🔊</button>
             {/if}
             <span class="ts mono">{shortTs(g.post.ts)}</span>
