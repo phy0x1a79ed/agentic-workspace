@@ -17,6 +17,51 @@ export async function listEngines(): Promise<EngineRegistry> {
   return (await r.json()) as EngineRegistry;
 }
 
+export interface Preset {
+  engine: string;
+  params: Record<string, unknown>;
+  builtin: boolean;
+}
+
+export interface PresetsResponse {
+  presets: Record<string, Preset>;
+  last_used: { engine: string; params: Record<string, unknown> } | null;
+}
+
+export async function listPresets(): Promise<PresetsResponse> {
+  const r = await fetch('./_api/presets', { credentials: 'include' });
+  if (!r.ok) throw new Error(`GET /presets → HTTP ${r.status}`);
+  return (await r.json()) as PresetsResponse;
+}
+
+export async function savePreset(
+  name: string,
+  engine: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  const r = await fetch(`./_api/presets/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ engine, params }),
+  });
+  if (!r.ok) {
+    const detail = await r.text().catch(() => '');
+    throw new Error(`PUT /presets/${name} → HTTP ${r.status}: ${detail}`);
+  }
+}
+
+export async function deletePreset(name: string): Promise<void> {
+  const r = await fetch(`./_api/presets/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    credentials: 'include',
+  });
+  if (!r.ok) {
+    const detail = await r.text().catch(() => '');
+    throw new Error(`DELETE /presets/${name} → HTTP ${r.status}: ${detail}`);
+  }
+}
+
 interface StartResponse {
   call_id: string;
   ws_url: string;
@@ -54,9 +99,11 @@ interface PendingSpeak {
 export class TtsCall {
   private ws: WebSocket;
   private ctx: AudioContext;
+  private gain: GainNode;
   private queue: PendingSpeak[] = [];
   private ready: Promise<void>;
   private closed = false;
+  private activeSource: AudioBufferSourceNode | null = null;
 
   static async open(engine: string, params: Record<string, unknown>): Promise<TtsCall> {
     const start = await startCall(engine, params);
@@ -71,6 +118,8 @@ export class TtsCall {
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
     this.ctx = new AudioContext();
+    this.gain = this.ctx.createGain();
+    this.gain.connect(this.ctx.destination);
     this.ready = new Promise((resolve, reject) => {
       this.ws.addEventListener('open', () => resolve(), { once: true });
       this.ws.addEventListener('error', () => reject(new Error('ws error')), { once: true });
@@ -121,19 +170,58 @@ export class TtsCall {
 
   async play(text: string): Promise<void> {
     const buf = await this.speak(text);
+    if (this.closed) throw new Error('cancelled');
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(this.ctx.destination);
+    src.connect(this.gain);
+    this.activeSource = src;
     src.start();
     await new Promise<void>((resolve) => {
       src.addEventListener('ended', () => resolve(), { once: true });
     });
+    if (this.activeSource === src) this.activeSource = null;
+  }
+
+  /**
+   * Set output gain. 0 = mute, 1 = unity. Values outside [0, 2] are
+   * clamped to that range so the GainNode never amps catastrophically.
+   * Safe to call before WS open — the GainNode is created up front.
+   *
+   * Uses `cancelScheduledValues` + direct `.value` write rather than
+   * `setValueAtTime`: the latter *appends* a scheduled event, and a
+   * rapid drag (60Hz) piles up dozens of events at the same currentTime,
+   * which under some browsers' scheduling logic leaves the gain stuck
+   * at the first one. `.value = g` is the canonical "apply now and
+   * override anything pending" pattern for GainNode automation.
+   */
+  setVolume(v: number): void {
+    if (!Number.isFinite(v)) return;
+    const g = Math.max(0, Math.min(2, v));
+    this.gain.gain.cancelScheduledValues(0);
+    this.gain.gain.value = g;
+  }
+
+  /**
+   * Abort whatever's in flight: drop any audio currently playing, reject
+   * the queued speak() promises, and tear the WS down so the backend
+   * sees a disconnect and stops engine work for this call. The call is
+   * single-use after cancel — callers should discard and re-open.
+   */
+  cancel(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.activeSource) {
+      try { this.activeSource.stop(); } catch { /* already stopped */ }
+      this.activeSource = null;
+    }
+    for (const p of this.queue) p.reject(new Error('cancelled'));
+    this.queue = [];
+    try { this.ws.close(); } catch { /* ignore */ }
+    try { this.ctx.close(); } catch { /* ignore */ }
   }
 
   close(): void {
-    this.closed = true;
-    try { this.ws.close(); } catch { /* ignore */ }
-    try { this.ctx.close(); } catch { /* ignore */ }
+    this.cancel();
   }
 }
 

@@ -10,4 +10,5 @@ export type CallStatus =
   | { kind: 'idle' }
   | { kind: 'sending'; startedAt: number; tick: number }
   | { kind: 'done'; latencyMs: number }
+  | { kind: 'cancelled' }
   | { kind: 'error'; message: string };

@@ -1,7 +1,9 @@
 <script lang="ts">
   import TtsConfig from '$lib/components/TtsConfig.svelte';
   import TtsHistory from '$lib/components/TtsHistory.svelte';
-  import { TtsCall } from '$lib/api/tts';
+  import TtsPresets from '$lib/components/TtsPresets.svelte';
+  import { TtsCall, type EngineRegistry } from '$lib/api/tts';
+  import { persistedState } from '$lib/persistedState.svelte';
   import type { CallStatus } from '$lib/status';
   import { onDestroy } from 'svelte';
 
@@ -9,9 +11,22 @@
   let bubbles = $state<Bubble[]>([]);
   let nextId = 0;
 
+  // Composer state lifted here so TtsPresets and TtsConfig share the
+  // same source of truth; presets writes into it on "load".
+  let selected = $state<string>('');
+  let params = $state<Record<string, unknown>>({});
+  let engines = $state<EngineRegistry | null>(null);
+
   let call: TtsCall | null = null;
   let activeEngine: string | null = null;
   let activeParams: Record<string, unknown> = {};
+
+  // Playback gain, 0 = mute, 1 = unity. Backed by the stripe-local
+  // state service so the slider position survives a page reload.
+  // The $effect re-runs on every vol.value change and pushes the new
+  // gain into the live TtsCall's GainNode for live updates.
+  const vol = persistedState<number>('volume', 1.0);
+  $effect(() => { call?.setVolume(vol.value); });
 
   // Round-trip status of the most-recent speak/replay call. The composer
   // renders this as a sent/delay pill.
@@ -48,6 +63,7 @@
       return call;
     }
     call = await TtsCall.open(engine, params);
+    call.setVolume(vol.value);
     activeEngine = engine;
     activeParams = { ...params };
     return call;
@@ -76,13 +92,17 @@
     bubbles = [...bubbles, { id, text }];
     await timed(async () => {
       const c = await ensureCall(engine, params);
+      c.setVolume(vol.value);
       await c.play(text);
     });
   }
 
   async function handleReplay(text: string) {
     if (!call) return;
-    await timed(() => call!.play(text));
+    await timed(async () => {
+      call!.setVolume(vol.value);
+      await call!.play(text);
+    });
   }
 
   async function handleEngineChange(engine: string, params: Record<string, unknown>) {
@@ -91,6 +111,27 @@
     await call.reconfigure(engine, params);
     activeEngine = engine;
     activeParams = { ...params };
+  }
+
+  function handleCancel() {
+    if (call) {
+      call.cancel();
+      call = null;
+      activeEngine = null;
+      activeParams = {};
+    }
+    stopTimer();
+    status = { kind: 'cancelled' };
+  }
+
+  async function handlePresetLoad(engine: string, nextParams: Record<string, unknown>) {
+    selected = engine;
+    params = { ...nextParams };
+    if (call) {
+      await call.reconfigure(engine, params);
+      activeEngine = engine;
+      activeParams = { ...params };
+    }
   }
 </script>
 
@@ -101,11 +142,22 @@
   </header>
 
   <section class="history">
-    <TtsHistory {bubbles} onspeak={handleReplay} />
+    <TtsHistory {bubbles} {status} onspeak={handleReplay} oncancel={handleCancel} />
   </section>
 
   <section class="composer">
-    <TtsConfig {status} onspeak={handleSpeak} onengine={handleEngineChange} />
+    <TtsConfig
+      {status}
+      bind:selected
+      bind:params
+      bind:engines
+      volume={vol.value}
+      onvolume={(v) => (vol.value = v)}
+      onspeak={handleSpeak}
+      onengine={handleEngineChange}
+      oncancel={handleCancel}
+    />
+    <TtsPresets currentEngine={selected} currentParams={params} onload={handlePresetLoad} />
   </section>
 </main>
 

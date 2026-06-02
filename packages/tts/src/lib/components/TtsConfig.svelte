@@ -1,25 +1,57 @@
 <script lang="ts">
-  import { Button, Card, CollapsibleSection, PanelLabel, Select } from '@awm/primitives';
+  import { Card, CollapsibleSection, PanelLabel, Select, Slider } from '@awm/primitives';
   import DynamicConfigForm from '$lib/components/DynamicConfigForm.svelte';
+  import SpeakButton from '$lib/components/SpeakButton.svelte';
   import { listEngines, type EngineRegistry } from '$lib/api/tts';
   import type { CallStatus } from '$lib/status';
 
   interface Props {
     status?: CallStatus;
+    selected?: string;
+    params?: Record<string, unknown>;
+    engines?: EngineRegistry | null;
+    volume?: number;
     onspeak?: (text: string, engine: string, params: Record<string, unknown>) => Promise<void> | void;
     onengine?: (engine: string, params: Record<string, unknown>) => Promise<void> | void;
+    oncancel?: () => void;
+    onvolume?: (v: number) => void;
   }
-  let { status = { kind: 'idle' }, onspeak, onengine }: Props = $props();
+  let {
+    status = { kind: 'idle' },
+    selected = $bindable(''),
+    params = $bindable({}),
+    engines = $bindable(null),
+    volume = 1.0,
+    onspeak,
+    onengine,
+    oncancel,
+    onvolume,
+  }: Props = $props();
 
   let text = $state('');
-  let engines = $state<EngineRegistry | null>(null);
   let loadError = $state<string | null>(null);
-  let selected = $state<string>('');
-  let params = $state<Record<string, unknown>>({});
   let configOpen = $state(true);
 
-  // Treat "sending" as busy so the user can't pile up requests on the same socket.
-  const busy = $derived(status.kind === 'sending');
+  // Lock the textarea (and the keyboard-enter handler) whenever a call
+  // is in flight or in its post-call cooldown. Mirrors SpeakButton's
+  // own derivation so the two stay aligned.
+  let busy = $state(false);
+  let prevKind: CallStatus['kind'] = 'idle';
+  let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const k = status.kind;
+    if (k === 'sending') {
+      if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null; }
+      busy = true;
+    } else if (prevKind === 'sending') {
+      busy = true;
+      if (cooldownTimer) clearTimeout(cooldownTimer);
+      cooldownTimer = setTimeout(() => { busy = false; cooldownTimer = null; }, 500);
+    } else {
+      busy = false;
+    }
+    prevKind = k;
+  });
 
   $effect(() => {
     listEngines()
@@ -105,13 +137,26 @@
     ></textarea>
 
     <div class="actions">
-      <Button
-        kind="primary"
+      <SpeakButton
+        {status}
         size="md"
-        onclick={speak}
-        disabled={busy || !text.trim() || !selected}
-      >{busy ? 'sending…' : 'speak'}</Button>
+        onspeak={speak}
+        oncancel={() => oncancel?.()}
+        disabled={!text.trim() || !selected}
+      />
       <span class="hint">ctrl/⌘+enter</span>
+
+      <label class="vol" title="output volume">
+        <span class="vol-icon" aria-hidden="true">{volume === 0 ? '🔇' : volume < 0.5 ? '🔈' : volume < 0.9 ? '🔉' : '🔊'}</span>
+        <Slider
+          value={volume}
+          min={0}
+          max={1}
+          step={0.01}
+          precision={2}
+          onchange={(v) => onvolume?.(v)}
+        />
+      </label>
 
       <div class="status" aria-live="polite">
         {#if status.kind === 'sending'}
@@ -120,6 +165,9 @@
         {:else if status.kind === 'done'}
           <span class="dot dot-done" aria-hidden="true"></span>
           <span class="status-text mono">audio in {fmtMs(status.latencyMs)}</span>
+        {:else if status.kind === 'cancelled'}
+          <span class="dot dot-cancelled" aria-hidden="true"></span>
+          <span class="status-text mono">cancelled</span>
         {:else if status.kind === 'error'}
           <span class="dot dot-err" aria-hidden="true"></span>
           <span class="status-text status-err mono">{status.message}</span>
@@ -188,6 +236,19 @@
   }
   .hint { color: var(--text3); font-family: var(--mono); font-size: 10px; }
 
+  .vol {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 120px;
+    max-width: 180px;
+  }
+  .vol-icon {
+    font-size: 14px;
+    line-height: 1;
+    user-select: none;
+  }
+
   .status {
     display: inline-flex;
     align-items: center;
@@ -210,6 +271,10 @@
   }
   .dot-done {
     background: var(--ok, #5fb872);
+    opacity: 0.85;
+  }
+  .dot-cancelled {
+    background: var(--text3);
     opacity: 0.85;
   }
   .dot-err {

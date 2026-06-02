@@ -1,42 +1,32 @@
 <script lang="ts">
-  import { Button, Card } from '@awm/primitives';
+  import { Card } from '@awm/primitives';
+  import SpeakButton from '$lib/components/SpeakButton.svelte';
+  import type { CallStatus } from '$lib/status';
 
   interface Props {
     text: string;
+    status?: CallStatus;
     onspeak?: (text: string) => Promise<void> | void;
+    oncancel?: () => void;
   }
-  let { text, onspeak }: Props = $props();
+  let { text, status = { kind: 'idle' }, onspeak, oncancel }: Props = $props();
 
-  let phase = $state<'idle' | 'playing' | 'error'>('idle');
-  let errMsg = $state<string | null>(null);
-
-  async function speak() {
-    if (phase === 'playing') return;
-    phase = 'playing';
-    errMsg = null;
-    try {
-      await onspeak?.(text);
-      phase = 'idle';
-    } catch (err) {
-      phase = 'error';
-      errMsg = err instanceof Error ? err.message : String(err);
-    }
-  }
+  function replay() { void onspeak?.(text); }
 </script>
 
 <Card rail="plain">
   <div class="bubble">
     <p class="text">{text}</p>
     <div class="row">
-      <Button
-        kind="primary"
+      <SpeakButton
+        {status}
         size="sm"
-        onclick={speak}
-        disabled={phase === 'playing'}
-        title={phase === 'error' ? errMsg ?? 'error' : 'speak this'}
-      >{phase === 'playing' ? '…' : 'speak'}</Button>
-      {#if phase === 'error'}
-        <span class="err">{errMsg}</span>
+        onspeak={replay}
+        oncancel={() => oncancel?.()}
+        title="speak this"
+      />
+      {#if status.kind === 'error'}
+        <span class="err">{status.message}</span>
       {/if}
     </div>
   </div>

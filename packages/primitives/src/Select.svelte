@@ -19,10 +19,32 @@
 
   let open = $state(false);
   let highlight = $state<number>(-1);
+  let placement = $state<'down' | 'up'>('down');
+  let menuMaxH = $state<number>(220);
   let root: HTMLDivElement;
+  let trigger: HTMLButtonElement;
+
+  const MENU_MAX = 220;  // matches .menu max-height; flip threshold
+  const GAP = 2;
+  const VIEW_PAD = 8;
+
+  function updatePlacement() {
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - VIEW_PAD;
+    const spaceAbove = rect.top - VIEW_PAD;
+    if (spaceBelow >= MENU_MAX || spaceBelow >= spaceAbove) {
+      placement = 'down';
+      menuMaxH = Math.max(80, Math.min(MENU_MAX, spaceBelow - GAP));
+    } else {
+      placement = 'up';
+      menuMaxH = Math.max(80, Math.min(MENU_MAX, spaceAbove - GAP));
+    }
+  }
 
   function toggle() {
     if (disabled) return;
+    if (!open) updatePlacement();
     open = !open;
     highlight = open ? Math.max(0, options.indexOf(value)) : -1;
   }
@@ -50,8 +72,15 @@
     const onDocClick = (e: MouseEvent) => {
       if (open && root && !root.contains(e.target as Node)) close();
     };
+    const onReflow = () => { if (open) updatePlacement(); };
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    window.addEventListener('resize', onReflow);
+    window.addEventListener('scroll', onReflow, true);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('resize', onReflow);
+      window.removeEventListener('scroll', onReflow, true);
+    };
   });
 </script>
 
@@ -65,12 +94,19 @@
     aria-expanded={open}
     onclick={toggle}
     onkeydown={onKey}
+    bind:this={trigger}
   >
     <span class="val" class:placeholder={!value}>{value || placeholder}</span>
     <span class="caret" aria-hidden="true">▾</span>
   </button>
   {#if open}
-    <ul class="menu" role="listbox" tabindex="-1">
+    <ul
+      class="menu"
+      class:up={placement === 'up'}
+      role="listbox"
+      tabindex="-1"
+      style="max-height: {menuMaxH}px"
+    >
       {#each options as opt, i}
         <li>
           <button
@@ -135,6 +171,11 @@
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
     max-height: 220px;
     overflow-y: auto;
+  }
+  .menu.up {
+    top: auto;
+    bottom: calc(100% + 2px);
+    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.6);
   }
   .opt {
     display: block;

@@ -34,11 +34,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+import httpx
+
 from awm.middleware_auth import authenticate_websocket, require_peer_bearer
 from demo.text_clean import clean_for_tts
+from tts.backend import presets, state
 from voice import engines as engines_registry
+from voice.engines.tts.kokoro_rvc import KokoroRvcConfig
 
 log = logging.getLogger("tts.backend")
+
+# Engines we surface in the UI. The registry holds more (f5tts, gptsovits,
+# pocket); they stay loadable from code, but the stripe UI only exposes
+# the production-path set.
+EXPOSED_TTS_ENGINES = ("kokoro_rvc", "piper", "sbv2")
 
 # Per-call state. Calls are minted by /call/start and consumed by the
 # matching WS. Unclaimed calls expire after CALL_TTL_S; the reaper
@@ -66,6 +75,15 @@ class CallStartRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class PresetBody(BaseModel):
+    engine: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class StateBody(BaseModel):
+    value: Any
+
+
 async def _reaper_loop() -> None:
     while True:
         await asyncio.sleep(5)
@@ -83,6 +101,10 @@ def build_app() -> FastAPI:
     @app.on_event("startup")
     async def _startup() -> None:
         asyncio.create_task(_reaper_loop())
+        try:
+            presets.seed_builtin_presets()
+        except Exception as exc:
+            log.warning("preset seed skipped: %s", exc)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -92,14 +114,18 @@ def build_app() -> FastAPI:
 
     @router.get("/engines", dependencies=[Depends(require_peer_bearer)])
     async def list_engines() -> dict[str, dict[str, Any]]:
-        return engines_registry.list_engines()["tts"]
+        all_tts = engines_registry.list_engines()["tts"]
+        exposed = {eid: all_tts[eid] for eid in EXPOSED_TTS_ENGINES if eid in all_tts}
+        if "kokoro_rvc" in exposed:
+            await _enrich_kokoro_rvc_enums(exposed["kokoro_rvc"])
+        return exposed
 
     @router.post("/call/start", dependencies=[Depends(require_peer_bearer)])
     async def call_start(body: CallStartRequest) -> dict[str, Any]:
-        available = engines_registry.list_engine_ids()["tts"]
-        if body.engine not in available:
+        if body.engine not in EXPOSED_TTS_ENGINES:
             raise HTTPException(
-                400, f"unknown tts engine {body.engine!r}; available: {available}"
+                400,
+                f"engine {body.engine!r} not exposed; available: {list(EXPOSED_TTS_ENGINES)}",
             )
         try:
             info = engines_registry.load("tts", body.engine, body.params)
@@ -107,6 +133,10 @@ def build_app() -> FastAPI:
             raise HTTPException(400, f"engine load failed: {exc}") from exc
         instance = engines_registry.current_instance("tts")
         assert instance is not None
+        try:
+            presets.set_last_used(info["id"], info["params"])
+        except Exception as exc:
+            log.debug("set_last_used failed: %s", exc)
         call_id = uuid.uuid4().hex
         expires_at = time.monotonic() + CALL_TTL_S
         async with _lock:
@@ -126,6 +156,50 @@ def build_app() -> FastAPI:
             "engine": info["id"],
             "instance_id": info["instance_id"],
         }
+
+    @router.get("/presets", dependencies=[Depends(require_peer_bearer)])
+    async def get_presets() -> dict[str, Any]:
+        return {
+            "presets": presets.list_presets(),
+            "last_used": presets.get_last_used(),
+        }
+
+    @router.put("/presets/{name}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    async def put_preset(name: str, body: PresetBody) -> None:
+        if not name.strip() or len(name) > 64:
+            raise HTTPException(400, "preset name must be 1–64 chars")
+        try:
+            presets.save_preset(name, body.engine, body.params)
+        except presets.BuiltinConflict:
+            raise HTTPException(409, f"{name!r} is a built-in preset and can't be overwritten")
+
+    @router.delete("/presets/{name}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    async def del_preset(name: str) -> None:
+        try:
+            presets.delete_preset(name)
+        except presets.BuiltinConflict:
+            raise HTTPException(409, f"{name!r} is a built-in preset and can't be deleted")
+
+    @router.get("/state", dependencies=[Depends(require_peer_bearer)])
+    async def get_all_state() -> dict[str, Any]:
+        return state.list_state()
+
+    @router.get("/state/{key}", dependencies=[Depends(require_peer_bearer)])
+    async def get_one_state(key: str) -> dict[str, Any]:
+        v = state.get_state(key)
+        if v is None:
+            raise HTTPException(404, f"state key {key!r} not set")
+        return {"value": v}
+
+    @router.put("/state/{key}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    async def put_one_state(key: str, body: StateBody) -> None:
+        if not key.strip() or len(key) > 64:
+            raise HTTPException(400, "state key must be 1–64 chars")
+        state.set_state(key, body.value)
+
+    @router.delete("/state/{key}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    async def del_one_state(key: str) -> None:
+        state.delete_state(key)
 
     app.include_router(router)
 
@@ -171,6 +245,49 @@ def build_app() -> FastAPI:
             _active.pop(call_id, None)
 
     return app
+
+
+_voices_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_VOICES_TTL_S = 30.0
+
+
+async def _fetch_sidecar_voices() -> dict[str, Any] | None:
+    """Pull {tts:[...], rvc:[{label,...}]} from the kokoro_rvc sidecar.
+
+    Cached briefly so /engines stays cheap on repeated UI mounts. Errors
+    are swallowed — schema renders without enums and the user can still
+    type a value freely.
+    """
+    now = time.monotonic()
+    if _voices_cache["data"] is not None and now - _voices_cache["at"] < _VOICES_TTL_S:
+        return _voices_cache["data"]
+    cfg = KokoroRvcConfig()
+    try:
+        async with httpx.AsyncClient(verify=cfg.verify_ssl, timeout=2.0) as cli:
+            r = await cli.get(f"{cfg.url}/voices")
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:
+        log.info("sidecar /voices unreachable, schema enums skipped: %s", exc)
+        return None
+    _voices_cache["at"] = now
+    _voices_cache["data"] = data
+    return data
+
+
+async def _enrich_kokoro_rvc_enums(entry: dict[str, Any]) -> None:
+    voices = await _fetch_sidecar_voices()
+    if not voices:
+        return
+    props = entry.get("schema", {}).get("properties") or {}
+    tts_list = voices.get("tts") or []
+    rvc_list = [v.get("label") for v in (voices.get("rvc") or []) if v.get("label")]
+    if tts_list and "tts_voice" in props:
+        props["tts_voice"]["enum"] = list(tts_list)
+    if rvc_list and "rvc_label" in props:
+        # rvc_label is Optional[str] → anyOf [str, null]. Stamping enum on
+        # the outer field is what DynamicConfigForm's fieldEnum() reads.
+        props["rvc_label"]["enum"] = list(rvc_list)
 
 
 async def _handle_speak(ws: WebSocket, call: _Call, text: str) -> None:

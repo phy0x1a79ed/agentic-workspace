@@ -1,12 +1,15 @@
 <script lang="ts">
   import TtsBubble from './TtsBubble.svelte';
+  import type { CallStatus } from '$lib/status';
 
   interface Bubble { id: string; text: string; }
   interface Props {
     bubbles: Bubble[];
+    status?: CallStatus;
     onspeak?: (text: string) => Promise<void> | void;
+    oncancel?: () => void;
   }
-  let { bubbles, onspeak }: Props = $props();
+  let { bubbles, status = { kind: 'idle' }, onspeak, oncancel }: Props = $props();
 
   let scrollEl: HTMLDivElement | undefined = $state();
   $effect(() => {
@@ -22,7 +25,7 @@
     <div class="empty">no utterances yet</div>
   {/if}
   {#each bubbles as b (b.id)}
-    <TtsBubble text={b.text} {onspeak} />
+    <TtsBubble text={b.text} {status} {onspeak} {oncancel} />
   {/each}
 </div>
 
