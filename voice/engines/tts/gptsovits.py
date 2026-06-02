@@ -16,16 +16,21 @@ ENGINE_ID = "gptsovits"
 
 
 class GPTSoVITSConfig(BaseModel):
-    url: str = Field(default_factory=lambda: os.environ.get("GPTSOVITS_URL", "http://127.0.0.1:7841"))
+    """Voice-shaping knobs for the gpt-sovits sidecar.
+
+    Infra (sidecar URL) lives in env vars rather than here so the
+    user-facing config form only shows voice-shaping fields.
+    """
+
     ref_audio_path: str | None = Field(default=None)
     prompt_text: str | None = Field(default=None)
     text_lang: str = Field(default="en")
     prompt_lang: str = Field(default="en")
-    top_k: int = Field(default=5)
-    top_p: float = Field(default=1.0)
-    temperature: float = Field(default=1.0)
+    top_k: int = Field(default=5, ge=1, le=100)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     text_split_method: str = Field(default="cut5")
-    batch_size: int = Field(default=1)
+    batch_size: int = Field(default=1, ge=1, le=16)
 
 
 CONFIG_SCHEMA = GPTSoVITSConfig
@@ -36,12 +41,13 @@ class GPTSoVITSEngine:
 
     def __init__(self, cfg: GPTSoVITSConfig):
         self.cfg = cfg
+        self._url = os.environ.get("GPTSOVITS_URL", "http://127.0.0.1:7841")
         self._client = httpx.Client(timeout=300.0)
         self._sample_rate = 32_000
 
     def warmup(self) -> None:
         try:
-            self._client.get(f"{self.cfg.url}/health", timeout=5.0)
+            self._client.get(f"{self._url}/health", timeout=5.0)
         except Exception:
             pass
 
@@ -70,7 +76,7 @@ class GPTSoVITSEngine:
             "streaming_mode": False,
             "media_type": "wav",
         }
-        r = self._client.post(f"{self.cfg.url}/tts", json=body)
+        r = self._client.post(f"{self._url}/tts", json=body)
         r.raise_for_status()
         from voice.engines.tts.f5tts import _wav_to_pcm
         return _wav_to_pcm(r.content, self)
