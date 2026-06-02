@@ -1,30 +1,35 @@
 <script lang="ts">
   import { base } from '$app/paths';
   import PttButton from './PttButton.svelte';
-  import TranscriptHistory from './TranscriptHistory.svelte';
+  import PttComposer from './PttComposer.svelte';
 
-  // The wired panel composes the dumb PttButton + TranscriptHistory and owns
-  // EVERYTHING stateful: WS lifecycle, mic capture, frame protocol, history.
-  // Mock mode: pass `mockEntries` to skip all browser-API setup and seed
-  // entries for offline component-dev iteration.
+  // The wired panel owns the WS lifecycle, mic capture, and frame protocol,
+  // and delegates editable text + chunk UI to PttComposer. Each PTT press
+  // is rendered inline as a live pill that updates with each `partial` and
+  // gets finalized on `stt_result`. Send does NOT stop recording — if the
+  // user hits Send mid-press, the composer clears and the next partial
+  // spawns a fresh live pill in the now-empty editor.
 
   type PartialStep = { delayMs: number; text: string | null };
 
   interface Props {
-    mockEntries?: string[];
-    // Offline-only: drive `currentPartial` through a scripted walk so the
-    // streaming UI can be exercised under vitest / on /dev/components.
-    // Ignored unless `mockEntries` is set (mock branch only).
+    onsend?: (text: string) => void;
+    // Offline-only: seed the composer's editor on mount with chunks +
+    // optional plain-text gaps. Same shape as PttComposer.initialChunks.
+    mockInitial?: Array<string | { chunk?: string; text?: string }>;
+    // Offline-only: drive begin → update → finalize through a scripted walk
+    // so the live-pill UI can be exercised under vitest / on /dev/components.
+    // A null `text` step fires `finalize` (using the previous step's text).
+    // Only honored when `mockInitial` is set (mock branch only).
     mockPartialScript?: PartialStep[];
   }
-  let { mockEntries, mockPartialScript }: Props = $props();
+  let { onsend, mockInitial, mockPartialScript }: Props = $props();
 
-  let entries = $state<string[]>([]);
-  let currentPartial = $state<string | null>(null);
   let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
   let statusText = $state('');
   let loginUrl = $state<string | null>(null);
 
+  let composer: PttComposer | null = $state(null);
   let ws: WebSocket | null = null;
   let audioCtx: AudioContext | null = null;
   let micStream: MediaStream | null = null;
@@ -54,10 +59,8 @@
   let reconnectDelay = 1000;
   function onWsClose(ev: CloseEvent) {
     ws = null;
-    if (mockEntries) return;
+    if (mockInitial) return;
     if (ev.code === 1008) {
-      // Unauthorized: no awm_session cookie. Browser won't gain one by
-      // reconnecting — surface a login link instead of looping.
       status = 'error';
       statusText = 'not logged in';
       const port = Number(location.port) || (location.protocol === 'https:' ? 443 : 80);
@@ -74,14 +77,13 @@
     if (typeof ev.data !== 'string') return;
     let msg: any;
     try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'stt_result' && typeof msg.text === 'string' && msg.text) {
-      entries = [...entries, msg.text];
-      currentPartial = null;
+    if (msg.type === 'stt_result' && typeof msg.text === 'string') {
+      composer?.finalizeLiveChunk(msg.text);
       status = 'idle';
       statusText = '';
       reconnectDelay = 1000;
     } else if (msg.type === 'partial' && typeof msg.text === 'string') {
-      currentPartial = msg.text;
+      composer?.updateLiveChunk(msg.text);
     } else if (msg.type === 'status') {
       status = msg.stage as typeof status;
       statusText = msg.text ?? '';
@@ -106,7 +108,8 @@
   }
 
   async function onDown() {
-    if (mockEntries) return;
+    if (mockInitial) return;
+    composer?.captureCaret();
     try {
       await ensureMic();
     } catch (err) {
@@ -120,12 +123,12 @@
       return;
     }
     recording = true;
-    currentPartial = null;
+    composer?.beginLiveChunk();
     ws.send(JSON.stringify({ type: 'start' }));
   }
 
   function onUp() {
-    if (mockEntries) return;
+    if (mockInitial) return;
     if (!recording) return;
     recording = false;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -134,18 +137,31 @@
   }
 
   $effect(() => {
-    if (mockEntries) {
-      entries = [...mockEntries];
+    if (mockInitial) {
       const timers: ReturnType<typeof setTimeout>[] = [];
       if (mockPartialScript && mockPartialScript.length) {
-        status = 'recording';
         let elapsed = 0;
+        let lastText = '';
+        // Kick off the live pill at t=0.
+        timers.push(setTimeout(() => {
+          status = 'recording';
+          composer?.beginLiveChunk();
+        }, 0));
         for (const step of mockPartialScript) {
           elapsed += step.delayMs;
-          timers.push(setTimeout(() => {
-            currentPartial = step.text;
-            if (step.text === null) status = 'idle';
-          }, elapsed));
+          const stepText = step.text;
+          if (stepText === null) {
+            const finalText = lastText;
+            timers.push(setTimeout(() => {
+              composer?.finalizeLiveChunk(finalText);
+              status = 'idle';
+            }, elapsed));
+          } else {
+            lastText = stepText;
+            timers.push(setTimeout(() => {
+              composer?.updateLiveChunk(stepText);
+            }, elapsed));
+          }
         }
       }
       return () => {
@@ -164,7 +180,16 @@
 </script>
 
 <section class="panel">
-  <TranscriptHistory {entries} {currentPartial} live={status === 'recording'} />
+  <PttComposer
+    bind:this={composer}
+    {onsend}
+    initialChunks={mockInitial}
+  >
+    {#snippet ptt()}
+      <PttButton onpttdown={onDown} onpttup={onUp} />
+    {/snippet}
+  </PttComposer>
+
   <div class="status mono" data-status={status}>
     <span class="dot" class:active={status === 'recording'}></span>
     <span class="txt">
@@ -174,7 +199,6 @@
       {/if}
     </span>
   </div>
-  <PttButton onpttdown={onDown} onpttup={onUp} />
 </section>
 
 <style>
