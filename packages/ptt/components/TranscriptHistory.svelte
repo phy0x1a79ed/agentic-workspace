@@ -4,29 +4,46 @@
 
   interface Props {
     entries: string[];
+    currentPartial?: string | null;
+    // Whether the partial is currently growing (drives the trailing "…").
+    // True while the user is still holding the button; false once `end`
+    // fires and the panel is waiting for the final result.
+    live?: boolean;
     placeholder?: string;
   }
-  let { entries, placeholder = 'transcripts appear here…' }: Props = $props();
+  let {
+    entries,
+    currentPartial = null,
+    live = false,
+    placeholder = 'transcripts appear here…',
+  }: Props = $props();
 
   let scroller: HTMLDivElement | null = $state(null);
 
   $effect(() => {
-    // Re-run on entries change. Pin to bottom — newest line is most relevant.
+    // Re-run on entries OR partial change. Pin to bottom — newest line and
+    // the rolling partial are both most-relevant.
     entries.length;
+    currentPartial;
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   });
+
+  let hasPartial = $derived(typeof currentPartial === 'string' && currentPartial.length > 0);
 </script>
 
 <Card rail="plain">
   <PanelLabel>Transcripts</PanelLabel>
   <div class="scroll" bind:this={scroller}>
-    {#if entries.length === 0}
+    {#if entries.length === 0 && !hasPartial}
       <p class="placeholder">{placeholder}</p>
     {:else}
       <ol class="list">
         {#each entries as line, i (i)}
           <li>{line}</li>
         {/each}
+        {#if hasPartial}
+          <li class="partial" class:live>{currentPartial}</li>
+        {/if}
       </ol>
     {/if}
   </div>
@@ -69,5 +86,20 @@
   }
   .list li:last-child {
     border-left-color: var(--atomizer);
+  }
+  .list li.partial {
+    color: var(--text3);
+    font-style: italic;
+    border-left-color: var(--recording);
+  }
+  .list li.partial.live::after {
+    content: '…';
+    margin-left: 2px;
+    color: var(--recording);
+    animation: ptt-pulse 1s ease-in-out infinite;
+  }
+  @keyframes ptt-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
   }
 </style>

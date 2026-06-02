@@ -5,7 +5,7 @@ protocol, same singleton-Transcriber reuse via ``awm.voice.stt``. Once
 parity is confirmed end-to-end, V1's ``awm/voice/router.py`` will delegate
 to this module and the V1 registry/router can be removed.
 
-Wire protocol (unchanged from V1):
+Wire protocol:
 
   text frames up:
     ``{"type":"start"}``    begin recording (latest wins, barge-in)
@@ -16,8 +16,16 @@ Wire protocol (unchanged from V1):
   broadcast down (to every tab of the same user):
     ``{"type":"ready", "user":"..."}``         on attach
     ``{"type":"status","stage":"recording"|"transcribing"|"idle", "text":"..."}``
+    ``{"type":"partial","text":"..."}``        rolling STT while recording
     ``{"type":"stt_result","text":"..."}``     after whisper completes
     ``{"type":"error","message":"..."}``       on whisper failure
+
+Partial streaming uses faster-whisper's per-segment timestamps to splice
+the buffer: each pass transcribes only the audio after the last committed
+segment, so cost is bounded by the unstable tail rather than the full
+utterance. The final ``stt_result`` always runs a fresh end-to-end pass on
+the complete PCM — committed/tail bookkeeping exists purely to keep the
+mid-recording partials cheap.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ import wave
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from fastapi import WebSocket
 
 
@@ -39,6 +48,39 @@ log = logging.getLogger("awm.services.ptt.registry")
 
 
 IDLE_TIMEOUT_SEC = int(os.environ.get("PTT_IDLE_SEC", os.environ.get("VOICE_IDLE_SEC", "1800")))
+
+# Partial-streaming cadence. 2.0s lets each whisper pass on the tail finish
+# comfortably on small.en int8 CPU before the next one starts, and gives the
+# user enough new audio per pass that segment boundaries actually appear (so
+# the splicer commits forward rather than re-transcribing the same tail).
+# Min-tail keeps us from running whisper on sub-word slivers.
+PARTIAL_MIN_GAP_SEC = float(os.environ.get("PTT_PARTIAL_GAP", "2.0"))
+PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
+SAMPLE_RATE = 16000
+SAMPLE_BYTES = 2  # int16 LE
+
+
+def _transcribe_segments(pcm_bytes: bytes) -> list[tuple[str, float, float]]:
+    """Run whisper on PCM, return ``[(text, start_s, end_s), ...]``.
+
+    Reuses the ``awm.voice.stt`` singleton so the model is loaded once per
+    process and shared with V1's ``/voice/ws``. The singleton's public
+    ``.transcribe()`` joins and discards segment timestamps; we need them
+    for splicing, so we drive ``model.transcribe(...)`` directly here.
+    """
+    from awm.voice.stt import get_transcriber
+
+    if not pcm_bytes:
+        return []
+    audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    model = get_transcriber()._ensure_loaded()
+    segments, _info = model.transcribe(
+        audio,
+        language="en",
+        beam_size=1,
+        vad_filter=False,
+    )
+    return [(seg.text.strip(), seg.start, seg.end) for seg in segments]
 
 
 def _safe(s: str) -> str:
@@ -56,6 +98,13 @@ class PttAgent:
         self.pcm_chunks: list[bytes] = []
         self.send_lock = asyncio.Lock()
         self.last_active = time.monotonic()
+        # Splicing state for rolling partial transcription. ``committed_text``
+        # is the finalized prefix (all whisper segments that have already had
+        # post-context); ``committed_bytes`` is the byte offset into the
+        # concatenated PCM where the unstable tail begins.
+        self.committed_text: str = ""
+        self.committed_bytes: int = 0
+        self._partial_task: Optional[asyncio.Task] = None
 
     # ---- client management ----
 
@@ -68,7 +117,10 @@ class PttAgent:
         self.clients.discard(ws)
         if self.recording_client is ws:
             self.recording_client = None
+            self._cancel_partial_task()
             self.pcm_chunks.clear()
+            self.committed_text = ""
+            self.committed_bytes = 0
         self.last_active = time.monotonic()
 
     def is_idle(self, now: float) -> bool:
@@ -101,10 +153,14 @@ class PttAgent:
 
     async def handle_start(self, ws: WebSocket) -> None:
         # Latest "start" wins — barge-in across clients.
+        self._cancel_partial_task()
         self.pcm_chunks.clear()
+        self.committed_text = ""
+        self.committed_bytes = 0
         self.recording_client = ws
         self.last_active = time.monotonic()
         await self._status("recording", "recording…")
+        self._partial_task = asyncio.create_task(self._partial_loop(ws))
 
     async def add_audio(self, ws: WebSocket, data: bytes) -> None:
         if self.recording_client is ws:
@@ -112,18 +168,28 @@ class PttAgent:
 
     async def handle_cancel(self) -> None:
         self.recording_client = None
+        self._cancel_partial_task()
         self.pcm_chunks.clear()
+        self.committed_text = ""
+        self.committed_bytes = 0
         await self._status("idle", "")
 
     async def handle_end(self, ws: WebSocket) -> None:
         if self.recording_client is not ws:
             return
         self.recording_client = None
+        self._cancel_partial_task()
         if not self.pcm_chunks:
+            self.committed_text = ""
+            self.committed_bytes = 0
             await self._status("idle", "no audio captured")
             return
         pcm = b"".join(self.pcm_chunks)
         self.pcm_chunks.clear()
+        # Reset splicing state — final pass runs on the full PCM, the
+        # committed prefix is only an optimization for the rolling partials.
+        self.committed_text = ""
+        self.committed_bytes = 0
 
         # Dump for debugging (last PTT only).
         dump_path = self.log_dir / f"ptt-{_safe(self.user_id)}.last.wav"
@@ -131,7 +197,7 @@ class PttAgent:
             with wave.open(str(dump_path), "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
-                wf.setframerate(16000)
+                wf.setframerate(SAMPLE_RATE)
                 wf.writeframes(pcm)
         except Exception:  # noqa: BLE001
             log.exception("pcm dump failed")
@@ -143,7 +209,7 @@ class PttAgent:
         t0 = time.monotonic()
         try:
             text = await loop.run_in_executor(
-                None, get_transcriber().transcribe, pcm, 16000,
+                None, get_transcriber().transcribe, pcm, SAMPLE_RATE,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("STT failed for %s", self.user_id)
@@ -155,6 +221,73 @@ class PttAgent:
         await self.broadcast_json({"type": "stt_result", "text": text or ""})
         await self._status("idle", "")
         self.last_active = time.monotonic()
+
+    # ---- rolling partial transcription ----
+
+    def _cancel_partial_task(self) -> None:
+        task = self._partial_task
+        self._partial_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _partial_loop(self, ws: WebSocket) -> None:
+        """While ``ws`` is the recording client, periodically transcribe
+        the audio since the last commit point and broadcast a partial.
+
+        Splicing strategy: faster-whisper returns segments with timestamps
+        relative to the start of the audio we hand it. We always hand it
+        only the *tail* (everything past ``committed_bytes``). Of the
+        segments it returns, all but the last get committed — the last is
+        kept as "rolling" because it may revise once whisper sees more.
+        ``committed_bytes`` advances by the duration of the last committed
+        segment so the next pass slices further into the buffer.
+        """
+        loop = asyncio.get_running_loop()
+        min_tail_bytes = int(PARTIAL_MIN_TAIL_SEC * SAMPLE_RATE * SAMPLE_BYTES)
+        try:
+            while self.recording_client is ws:
+                await asyncio.sleep(PARTIAL_MIN_GAP_SEC)
+                if self.recording_client is not ws:
+                    return
+                joined = b"".join(self.pcm_chunks)
+                tail = joined[self.committed_bytes:]
+                if len(tail) < min_tail_bytes:
+                    continue
+                try:
+                    segments = await loop.run_in_executor(
+                        None, _transcribe_segments, tail,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("partial whisper pass failed for %s", self.user_id)
+                    continue
+                if self.recording_client is not ws:
+                    return
+                if not segments:
+                    continue
+                if len(segments) >= 2:
+                    stable = segments[:-1]
+                    stable_text = " ".join(s[0] for s in stable if s[0]).strip()
+                    if stable_text:
+                        self.committed_text = (
+                            self.committed_text + " " + stable_text
+                        ).strip()
+                    last_stable_end_s = stable[-1][2]
+                    self.committed_bytes += int(
+                        last_stable_end_s * SAMPLE_RATE * SAMPLE_BYTES
+                    )
+                tail_text = segments[-1][0]
+                merged = (self.committed_text + " " + tail_text).strip()
+                if not merged:
+                    continue
+                log.debug(
+                    "ptt partial for %s: committed_bytes=%d segs=%d text=%r",
+                    self.user_id, self.committed_bytes, len(segments), merged,
+                )
+                await self.broadcast_json({"type": "partial", "text": merged})
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("partial loop crashed for %s", self.user_id)
 
 
 class PttRegistry:

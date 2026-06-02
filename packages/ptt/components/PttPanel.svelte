@@ -8,12 +8,19 @@
   // Mock mode: pass `mockEntries` to skip all browser-API setup and seed
   // entries for offline component-dev iteration.
 
+  type PartialStep = { delayMs: number; text: string | null };
+
   interface Props {
     mockEntries?: string[];
+    // Offline-only: drive `currentPartial` through a scripted walk so the
+    // streaming UI can be exercised under vitest / on /dev/components.
+    // Ignored unless `mockEntries` is set (mock branch only).
+    mockPartialScript?: PartialStep[];
   }
-  let { mockEntries }: Props = $props();
+  let { mockEntries, mockPartialScript }: Props = $props();
 
   let entries = $state<string[]>([]);
+  let currentPartial = $state<string | null>(null);
   let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
   let statusText = $state('');
   let loginUrl = $state<string | null>(null);
@@ -69,9 +76,12 @@
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'stt_result' && typeof msg.text === 'string' && msg.text) {
       entries = [...entries, msg.text];
+      currentPartial = null;
       status = 'idle';
       statusText = '';
       reconnectDelay = 1000;
+    } else if (msg.type === 'partial' && typeof msg.text === 'string') {
+      currentPartial = msg.text;
     } else if (msg.type === 'status') {
       status = msg.stage as typeof status;
       statusText = msg.text ?? '';
@@ -110,6 +120,7 @@
       return;
     }
     recording = true;
+    currentPartial = null;
     ws.send(JSON.stringify({ type: 'start' }));
   }
 
@@ -125,7 +136,21 @@
   $effect(() => {
     if (mockEntries) {
       entries = [...mockEntries];
-      return;
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      if (mockPartialScript && mockPartialScript.length) {
+        status = 'recording';
+        let elapsed = 0;
+        for (const step of mockPartialScript) {
+          elapsed += step.delayMs;
+          timers.push(setTimeout(() => {
+            currentPartial = step.text;
+            if (step.text === null) status = 'idle';
+          }, elapsed));
+        }
+      }
+      return () => {
+        for (const t of timers) clearTimeout(t);
+      };
     }
     openSocket();
     return () => {
@@ -139,7 +164,7 @@
 </script>
 
 <section class="panel">
-  <TranscriptHistory {entries} />
+  <TranscriptHistory {entries} {currentPartial} live={status === 'recording'} />
   <div class="status mono" data-status={status}>
     <span class="dot" class:active={status === 'recording'}></span>
     <span class="txt">
