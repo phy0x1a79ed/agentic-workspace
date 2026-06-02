@@ -20,10 +20,10 @@ export interface FixtureEntry {
   module: FixtureModule;
 }
 
-const modules = import.meta.glob<FixtureModule>(
-  '/../components/*.fixtures.ts',
-  { eager: true },
-);
+const modules = {
+  ...import.meta.glob<FixtureModule>('/../components/*.fixtures.ts', { eager: true }),
+  ...import.meta.glob<FixtureModule>('/src/lib/primitives/*.fixtures.ts', { eager: true }),
+};
 
 function deriveName(path: string): string {
   const file = path.split('/').pop() ?? path;

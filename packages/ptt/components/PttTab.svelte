@@ -1,5 +1,9 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  // Import VoiceChip purely so its :global chip styles ship in the bundle.
+  // The chip DOM is still created imperatively below to keep the
+  // contenteditable caret stable across mutations.
+  import VoiceChip from '../frontend/src/lib/primitives/VoiceChip.svelte';
+  void VoiceChip;
 
   // Contenteditable composer where PTT utterances render as atomic,
   // non-editable pills with a × delete button. Keyboard typing produces
@@ -7,22 +11,22 @@
   // cursor cannot enter it; backspace at its boundary removes the whole
   // pill. The DOM is the source of truth (no Svelte-model re-render fight).
   //
-  // During an active PTT press the panel calls beginLiveChunk() once, then
+  // During an active PTT press the shell calls beginLiveChunk() once, then
   // updateLiveChunk(text) on every partial, then finalizeLiveChunk(text)
   // on stt_result. The live pill renders a skeleton while empty and
   // updates in place as the partial grows.
+  //
+  // This is the PTT tab inside PttComposerShell. Send + PTT-button slot
+  // are now shell-level; only the contenteditable surface + its kbd
+  // hide/show toggle live here.
 
   interface Props {
     disabled?: boolean;
-    onsend?: (text: string) => void;
-    ptt?: Snippet;
     // Mock-only seed: chunk text strings or { chunk, text } pairs.
     initialChunks?: Array<string | { chunk?: string; text?: string }>;
   }
   let {
     disabled = false,
-    onsend,
-    ptt,
     initialChunks,
   }: Props = $props();
 
@@ -43,8 +47,6 @@
     return (s ?? '').replace(/​/g, '');
   }
 
-  // Visible-text neighbor inspection: walks past empty / ZWS-only text nodes
-  // so the "is there a space at the boundary?" check looks at actual content.
   function endsWithSpaceVisible(beforeNode: Node): boolean {
     let n: Node | null = beforeNode.previousSibling;
     while (n) {
@@ -77,9 +79,6 @@
     node.parentNode.insertBefore(document.createTextNode(' '), node);
   }
   function ensureTrailingSpaceNode(node: Node): Text {
-    // Returns the text node sitting immediately after `node` that begins with
-    // a real space — creating one if absent. The caret-place step uses this
-    // as a landing spot so adjacent content stays separated.
     let after = node.nextSibling;
     if (after instanceof Text && /^[ \t]/.test(after.nodeValue ?? '')) {
       return after;
@@ -123,9 +122,6 @@
   }
 
   function placeCaretAfter(node: Node) {
-    // Always leave a real space immediately after the pill (and consequently
-    // before any later neighbor). The caret lands after that space so typing
-    // and re-inserted pills both stay separated.
     const sel = window.getSelection();
     if (!sel) return;
     const tail = ensureTrailingSpaceNode(node);
@@ -232,7 +228,9 @@
     chunk.classList.remove('live');
   }
 
-  function walkText(): string {
+  /** Concatenate text nodes (excluding × buttons), collapse runs of
+   *  spaces/tabs to single spaces, trim. Used by the shell's Send. */
+  export function walkText(): string {
     if (!editor) return '';
     let out = '';
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
@@ -252,17 +250,21 @@
       out += node.nodeValue ?? '';
       node = walker.nextNode();
     }
-    // Strip ZWS leftovers, collapse runs of spaces/tabs (newlines preserved
-    // so manual line breaks survive), trim.
     return stripZws(out).replace(/[ \t]+/g, ' ').trim();
+  }
+
+  /** Clear the editor — including any live pill. If PTT is still in flight
+   *  the next partial respawns the live pill at the (now-empty) caret. */
+  export function clear() {
+    if (editor) editor.replaceChildren();
+    liveChunk = null;
+    savedRange = null;
   }
 
   function pruneEmptyChunks() {
     if (!editor) return;
     for (const c of editor.querySelectorAll('.chunk')) {
       const el = c as HTMLSpanElement;
-      // Never prune the live skeleton — it's intentionally empty while waiting
-      // for the first partial.
       if (el === liveChunk || el.classList.contains('live')) continue;
       if (!chunkTextOf(el).trim()) el.remove();
     }
@@ -282,7 +284,6 @@
     const chunk = del.closest('.chunk') as HTMLSpanElement | null;
     if (!chunk) return;
     if (chunk === liveChunk) {
-      // Abandon the active PTT session — don't respawn from later partials.
       liveAbandoned = true;
       liveChunk = null;
     }
@@ -297,8 +298,6 @@
     const { startContainer, startOffset } = range;
     const lookBack = direction === 'before';
 
-    // Walk from the caret toward the desired direction; skip ZWS-only text
-    // nodes; first non-trivial sibling decides.
     let candidate: Node | null = null;
     if (startContainer.nodeType === Node.TEXT_NODE) {
       const text = startContainer.nodeValue ?? '';
@@ -311,7 +310,6 @@
         if (right.length > 0) return null;
         candidate = startContainer.nextSibling;
       }
-      // Walk up if we ran off the end of a text node at the editor root.
       let p: Node | null = startContainer.parentNode;
       while (!candidate && p && p !== editor) {
         candidate = lookBack ? p.previousSibling : p.nextSibling;
@@ -359,20 +357,6 @@
     }
   }
 
-  function onSendClick() {
-    const text = walkText();
-    if (!text) return;
-    onsend?.(text);
-    // Clear EVERYTHING — including the live pill. If PTT is still in flight
-    // the next partial will respawn the live pill at the (now-empty) caret.
-    // The post-send finalized text will include the post-send portion only
-    // from the user's POV (backend re-transcribes from start; treat the
-    // resulting pill as the new utterance — the user can edit it).
-    if (editor) editor.replaceChildren();
-    liveChunk = null;
-    savedRange = null;
-  }
-
   function isEditorFocused(): boolean {
     return !!editor && document.activeElement === editor;
   }
@@ -411,7 +395,7 @@
   });
 </script>
 
-<section class="composer-shell">
+<div class="ptt-tab">
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -431,36 +415,20 @@
     onblur={onBlur}
   ></div>
 
-  <div class="footer">
-    <button
-      type="button"
-      class="footer-btn kbd"
-      onclick={onToggleKeyboard}
-      title={kbdShown ? 'hide keyboard' : 'show keyboard'}
-      aria-label={kbdShown ? 'hide keyboard' : 'show keyboard'}
-    >{kbdShown ? '⌨ ↓' : '⌨ ↑'}</button>
-
-    <div class="ptt-slot">
-      {#if ptt}{@render ptt()}{/if}
-    </div>
-
-    <button
-      type="button"
-      class="footer-btn send"
-      onclick={onSendClick}
-      {disabled}
-      title="send"
-      aria-label="send"
-    >SEND</button>
-  </div>
-</section>
+  <button
+    type="button"
+    class="kbd-btn"
+    onclick={onToggleKeyboard}
+    title={kbdShown ? 'hide keyboard' : 'show keyboard'}
+    aria-label={kbdShown ? 'hide keyboard' : 'show keyboard'}
+  >{kbdShown ? '⌨ ↓' : '⌨ ↑'}</button>
+</div>
 
 <style>
-  .composer-shell {
+  .ptt-tab {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    max-width: 480px;
     width: 100%;
   }
 
@@ -493,127 +461,26 @@
     pointer-events: none;
   }
 
-  /* Atomic pill. contenteditable=false set on the element itself; styling
-     scoped under .editor via :global because pills are JS-created. */
-  :global(.editor .chunk) {
-    display: inline-flex;
-    align-items: center;
-    gap: 0;
-    padding: 1px 0 1px 8px;
-    margin: 0 2px;
-    background: color-mix(in oklab, var(--recording) 16%, var(--surface2));
-    border: 1px solid color-mix(in oklab, var(--recording) 50%, var(--border));
-    border-radius: var(--radius-md);
-    color: var(--text);
-    line-height: 1.5;
-    user-select: none;
-    vertical-align: baseline;
-  }
-  :global(.editor .chunk .chunk-text) {
-    display: inline-block;
-    min-height: 1em;
-  }
-  :global(.editor .chunk-del) {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    margin: 0 2px 0 8px;
-    padding: 0 8px;
-    height: 1.4em;
-    background: transparent;
-    border: 0;
-    border-left: 1px solid color-mix(in oklab, var(--recording) 50%, var(--border));
-    color: var(--text2);
-    font-family: var(--mono);
-    font-size: 13px;
-    cursor: pointer;
-    user-select: none;
-  }
-  :global(.editor .chunk-del:hover) { color: var(--danger); }
-
-  /* Live (streaming) pill — skeleton dots while text is empty, trailing
-     pulse bar while the partial is mid-stream. */
-  :global(.editor .chunk.live) {
-    background: color-mix(in oklab, var(--recording) 26%, var(--surface2));
-    border-color: var(--recording);
-    box-shadow: 0 0 0 1px color-mix(in oklab, var(--recording) 30%, transparent);
-  }
-  :global(.editor .chunk.live .chunk-text) {
-    color: var(--text);
-  }
-  :global(.editor .chunk.live .chunk-text:empty::before) {
-    content: '• • •';
-    letter-spacing: 1px;
-    color: var(--text2);
-    font-family: var(--mono);
-    animation: ptt-skel 1s ease-in-out infinite;
-  }
-  :global(.editor .chunk.live .chunk-text::after) {
-    content: '';
-    display: inline-block;
-    width: 4px;
-    height: 0.95em;
-    margin-left: 3px;
-    background: var(--recording);
-    vertical-align: text-bottom;
-    animation: ptt-pulse 1s ease-in-out infinite;
-  }
-
-  .footer {
-    display: flex;
-    align-items: stretch;
-    gap: var(--space-2);
-  }
-  .ptt-slot {
-    flex: 1 1 auto;
-    display: flex;
-  }
-  .ptt-slot :global(*) {
-    flex: 1 1 auto;
-  }
-  .footer-btn {
-    flex: 0 0 auto;
-    min-height: 52px;
-    min-width: 52px;
-    padding: 0 14px;
+  .kbd-btn {
+    align-self: flex-end;
+    min-height: 32px;
+    min-width: 48px;
+    padding: 0 10px;
     background: var(--surface2);
     border: 1px solid var(--border);
     border-radius: 4px;
     color: var(--text2);
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 11px;
     letter-spacing: 1px;
-    text-transform: uppercase;
     cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
-  .footer-btn:hover  { background: var(--surface3); color: var(--text); }
-  .footer-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  .footer-btn.send {
-    border-color: color-mix(in oklab, var(--atomizer) 40%, var(--border));
-    color: var(--text);
-  }
-  .footer-btn.send:hover {
-    background: color-mix(in oklab, var(--atomizer) 30%, var(--surface2));
-    border-color: var(--atomizer);
-  }
+  .kbd-btn:hover { background: var(--surface3); color: var(--text); }
   @media (hover: hover) and (pointer: fine) {
-    .footer-btn.kbd { display: none; }
+    .kbd-btn { display: none; }
   }
   @media (hover: none), (max-width: 720px) {
-    .footer-btn { min-height: 60px; font-size: 13px; }
     .editor { font-size: 16px; }
-  }
-
-  @keyframes ptt-pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 1; }
-  }
-  @keyframes ptt-skel {
-    0%, 100% { opacity: 0.35; }
-    50% { opacity: 0.95; }
   }
 </style>

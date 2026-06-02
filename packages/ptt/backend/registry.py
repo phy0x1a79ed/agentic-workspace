@@ -56,11 +56,15 @@ IDLE_TIMEOUT_SEC = int(os.environ.get("PTT_IDLE_SEC", os.environ.get("VOICE_IDLE
 # Min-tail keeps us from running whisper on sub-word slivers.
 PARTIAL_MIN_GAP_SEC = float(os.environ.get("PTT_PARTIAL_GAP", "2.0"))
 PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
+# Continuous mode: number of consecutive empty-segment passes (i.e. tail
+# is all silence according to whisper+silero-vad) that triggers committing
+# the current utterance as an stt_result and resetting the splicing window.
+SILENCE_PASSES = int(os.environ.get("PTT_SILENCE_PASSES", "2"))
 SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2  # int16 LE
 
 
-def _transcribe_segments(pcm_bytes: bytes) -> list[tuple[str, float, float]]:
+def _transcribe_segments(pcm_bytes: bytes, vad_filter: bool = False) -> list[tuple[str, float, float]]:
     """Run whisper on PCM, return ``[(text, start_s, end_s), ...]``.
 
     Reuses the ``awm.voice.stt`` singleton so the model is loaded once per
@@ -78,7 +82,7 @@ def _transcribe_segments(pcm_bytes: bytes) -> list[tuple[str, float, float]]:
         audio,
         language="en",
         beam_size=1,
-        vad_filter=False,
+        vad_filter=vad_filter,
     )
     return [(seg.text.strip(), seg.start, seg.end) for seg in segments]
 
@@ -105,6 +109,15 @@ class PttAgent:
         self.committed_text: str = ""
         self.committed_bytes: int = 0
         self._partial_task: Optional[asyncio.Task] = None
+        # Continuous-mode state. ``continuous=True`` enables silero-vad on the
+        # rolling tail; consecutive empty-segment passes accumulate in
+        # ``_silent_passes`` and trigger an stt_result cut + reset once they
+        # cross SILENCE_PASSES. ``_last_partial`` is the most recent merged
+        # text we broadcast, used as the cut payload (it matches what the
+        # user has been watching on screen).
+        self.continuous: bool = False
+        self._silent_passes: int = 0
+        self._last_partial: str = ""
 
     # ---- client management ----
 
@@ -121,6 +134,9 @@ class PttAgent:
             self.pcm_chunks.clear()
             self.committed_text = ""
             self.committed_bytes = 0
+            self.continuous = False
+            self._silent_passes = 0
+            self._last_partial = ""
         self.last_active = time.monotonic()
 
     def is_idle(self, now: float) -> bool:
@@ -151,12 +167,15 @@ class PttAgent:
 
     # ---- input handlers ----
 
-    async def handle_start(self, ws: WebSocket) -> None:
+    async def handle_start(self, ws: WebSocket, mode: Optional[str] = None) -> None:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
+        self.continuous = (mode == "continuous")
+        self._silent_passes = 0
+        self._last_partial = ""
         self.recording_client = ws
         self.last_active = time.monotonic()
         await self._status("recording", "recording…")
@@ -172,6 +191,9 @@ class PttAgent:
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
+        self.continuous = False
+        self._silent_passes = 0
+        self._last_partial = ""
         await self._status("idle", "")
 
     async def handle_end(self, ws: WebSocket) -> None:
@@ -255,7 +277,7 @@ class PttAgent:
                     continue
                 try:
                     segments = await loop.run_in_executor(
-                        None, _transcribe_segments, tail,
+                        None, _transcribe_segments, tail, self.continuous,
                     )
                 except Exception:  # noqa: BLE001
                     log.exception("partial whisper pass failed for %s", self.user_id)
@@ -263,7 +285,31 @@ class PttAgent:
                 if self.recording_client is not ws:
                     return
                 if not segments:
+                    if self.continuous:
+                        self._silent_passes += 1
+                        if self._silent_passes >= SILENCE_PASSES:
+                            cut_text = (
+                                (self.committed_text + " " + self._last_partial).strip()
+                                if self._last_partial
+                                else self.committed_text.strip()
+                            )
+                            if cut_text:
+                                log.debug(
+                                    "ptt silence-cut for %s: text=%r",
+                                    self.user_id, cut_text,
+                                )
+                                await self.broadcast_json(
+                                    {"type": "stt_result", "text": cut_text},
+                                )
+                            # Skip past everything we've accumulated so the
+                            # next utterance transcribes from fresh tail.
+                            self.committed_bytes = len(joined)
+                            self.committed_text = ""
+                            self._last_partial = ""
+                            self._silent_passes = 0
                     continue
+                # Non-empty segments — reset the silence counter.
+                self._silent_passes = 0
                 if len(segments) >= 2:
                     stable = segments[:-1]
                     stable_text = " ".join(s[0] for s in stable if s[0]).strip()
@@ -283,6 +329,7 @@ class PttAgent:
                     "ptt partial for %s: committed_bytes=%d segs=%d text=%r",
                     self.user_id, self.committed_bytes, len(segments), merged,
                 )
+                self._last_partial = tail_text
                 await self.broadcast_json({"type": "partial", "text": merged})
         except asyncio.CancelledError:
             return
@@ -384,7 +431,8 @@ async def run_ptt_ws_session(websocket: WebSocket, user_as: str) -> None:
                 continue
             t = payload.get("type")
             if t == "start":
-                await agent.handle_start(websocket)
+                mode = payload.get("mode")
+                await agent.handle_start(websocket, mode=mode if isinstance(mode, str) else None)
             elif t == "end":
                 await agent.handle_end(websocket)
             elif t == "cancel":
