@@ -362,6 +362,33 @@ The editable install at `/home/tony/lib/miniforge3/envs/awm/lib/python3.14/site-
 
 See memory `[[awm_two_source_trees]]` for the full failure mode.
 
+## Running tests
+
+Pytest tests live under `awm/tests/awm/tests/` and are organized into per-subsystem subdirectories (`unit/`, `hub/`, `scopes/`, `messaging/`, `federation/`, `auth/`, `mcp/`, `artifacts/`, `sessions/`, `agent/`, `misc/`). Every test file declares a module-level `pytestmark` so you can select by subsystem **or** by speed; markers are registered in `pyproject.toml` (`pytest --markers` lists them).
+
+```bash
+# Fast dev-iteration set (~35s on this host, 161 tests). Pure unit + small
+# in-process tests, no subprocesses, no federation. Use on every save.
+mamba run -n awm pytest -m smoke
+
+# One subsystem at a time (path or marker — both work):
+mamba run -n awm pytest awm/tests/hub/
+mamba run -n awm pytest -m messaging
+
+# Everything except subprocess/git/federation/replication clusters:
+mamba run -n awm pytest -m "not (slow or federation)"
+
+# Full suite (~10 min). Run before merging.
+mamba run -n awm pytest
+
+# Preview a selection without running it (sanity-check before a long run):
+mamba run -n awm pytest -m smoke --collect-only -q
+```
+
+Markers in use: `smoke` / `slow` / `federation` / `subprocess` (cross-cutting), plus one per subsystem (`unit`, `hub`, `scopes`, `messaging`, `auth`, `mcp`, `artifacts`, `sessions`, `agent`, `misc`). To retag a file, edit its top-of-file `pytestmark = [...]` line.
+
+Frontend tests are separate: `cd frontend && PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run test` runs the vitest fixture sweep — already fast (jsdom only).
+
 ## Agent Rules
 
 1. **Keep WORKSPACE.md and AGENTS.md audience-pure** — workspace-structural goes in `WORKSPACE.md`, awm-internal goes here. If you find yourself adding path tables or MCP catalogs to this file, they belong in `WORKSPACE.md` instead.
