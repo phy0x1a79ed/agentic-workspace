@@ -141,6 +141,18 @@ def current(kind: str) -> dict[str, Any] | None:
     return {"id": cur["id"], "params": cur["params"], "instance_id": cur["instance_id"]}
 
 
+def current_instance(kind: str) -> Any | None:
+    """Live engine object for `kind`, or None if nothing is loaded.
+
+    Separate from current() so the public describe-state API stays
+    serializable; backends that actually need to call synth/transcribe
+    reach here.
+    """
+    if kind not in _LOADED:
+        raise ValueError(f"unknown engine kind {kind!r}")
+    return _LOADED[kind].get("instance")
+
+
 def loaded() -> dict[str, dict[str, Any] | None]:
     return {kind: current(kind) for kind in _LOADED}
 

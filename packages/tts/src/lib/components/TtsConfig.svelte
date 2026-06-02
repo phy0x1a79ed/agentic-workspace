@@ -1,17 +1,15 @@
 <script lang="ts">
-  import Button from '$lib/primitives/Button.svelte';
-  import Card from '$lib/primitives/Card.svelte';
-  import CollapsibleSection from '$lib/primitives/CollapsibleSection.svelte';
-  import Select from '$lib/primitives/Select.svelte';
-  import DynamicConfigForm from '$lib/primitives/DynamicConfigForm.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import { Button, Card, CollapsibleSection, PanelLabel, Select } from '@awm/primitives';
+  import DynamicConfigForm from '$lib/components/DynamicConfigForm.svelte';
   import { listEngines, type EngineRegistry } from '$lib/api/tts';
+  import type { CallStatus } from '$lib/status';
 
   interface Props {
+    status?: CallStatus;
     onspeak?: (text: string, engine: string, params: Record<string, unknown>) => Promise<void> | void;
     onengine?: (engine: string, params: Record<string, unknown>) => Promise<void> | void;
   }
-  let { onspeak, onengine }: Props = $props();
+  let { status = { kind: 'idle' }, onspeak, onengine }: Props = $props();
 
   let text = $state('');
   let engines = $state<EngineRegistry | null>(null);
@@ -19,7 +17,9 @@
   let selected = $state<string>('');
   let params = $state<Record<string, unknown>>({});
   let configOpen = $state(true);
-  let busy = $state(false);
+
+  // Treat "sending" as busy so the user can't pile up requests on the same socket.
+  const busy = $derived(status.kind === 'sending');
 
   $effect(() => {
     listEngines()
@@ -55,12 +55,11 @@
   async function speak() {
     const t = text.trim();
     if (!t || !selected || busy) return;
-    busy = true;
     try {
       await onspeak?.(t, selected, params);
       text = '';
-    } finally {
-      busy = false;
+    } catch {
+      // Parent owns status (incl. error display).
     }
   }
 
@@ -69,6 +68,21 @@
       e.preventDefault();
       void speak();
     }
+  }
+
+  // Live elapsed counter for the in-flight indicator. The parent bumps
+  // `tick` (or we just read performance.now() since the dot is animated
+  // by CSS); we derive the current elapsed from startedAt + tick to keep
+  // Svelte reactive without a per-frame setInterval here.
+  const elapsedMs = $derived(
+    status.kind === 'sending'
+      ? Math.max(0, status.tick - status.startedAt)
+      : 0
+  );
+
+  function fmtMs(ms: number): string {
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    return `${(ms / 1000).toFixed(2)} s`;
   }
 </script>
 
@@ -96,8 +110,21 @@
         size="md"
         onclick={speak}
         disabled={busy || !text.trim() || !selected}
-      >{busy ? 'speaking…' : 'speak'}</Button>
+      >{busy ? 'sending…' : 'speak'}</Button>
       <span class="hint">ctrl/⌘+enter</span>
+
+      <div class="status" aria-live="polite">
+        {#if status.kind === 'sending'}
+          <span class="dot dot-sending" aria-hidden="true"></span>
+          <span class="status-text mono">sent · {fmtMs(elapsedMs)}</span>
+        {:else if status.kind === 'done'}
+          <span class="dot dot-done" aria-hidden="true"></span>
+          <span class="status-text mono">audio in {fmtMs(status.latencyMs)}</span>
+        {:else if status.kind === 'error'}
+          <span class="dot dot-err" aria-hidden="true"></span>
+          <span class="status-text status-err mono">{status.message}</span>
+        {/if}
+      </div>
     </div>
   </div>
 </Card>
@@ -153,8 +180,46 @@
   }
   .ta:focus { outline: none; border-color: var(--atomizer); }
   .mono { font-family: var(--mono); }
-  .actions { display: flex; align-items: center; gap: var(--space-4); }
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+  }
   .hint { color: var(--text3); font-family: var(--mono); font-size: 10px; }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+    min-height: 16px;
+  }
+  .status-text { font-size: 10px; letter-spacing: 0.4px; color: var(--text2); }
+  .status-err { color: var(--danger); }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-sending {
+    background: var(--atomizer);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--atomizer) 60%, transparent);
+    animation: pulse 1100ms var(--ease-mech) infinite;
+  }
+  .dot-done {
+    background: var(--ok, #5fb872);
+    opacity: 0.85;
+  }
+  .dot-err {
+    background: var(--danger);
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   color-mix(in oklab, var(--atomizer) 55%, transparent); }
+    70%  { box-shadow: 0 0 0 6px color-mix(in oklab, var(--atomizer)  0%, transparent); }
+    100% { box-shadow: 0 0 0 0   color-mix(in oklab, var(--atomizer)  0%, transparent); }
+  }
 
   .config { margin-top: var(--space-3); }
   .engine-row {

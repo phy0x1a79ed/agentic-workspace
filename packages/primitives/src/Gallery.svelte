@@ -6,6 +6,8 @@
   import Input from './Input.svelte';
   import PanelLabel from './PanelLabel.svelte';
   import Pill from './Pill.svelte';
+  import Select from './Select.svelte';
+  import Slider from './Slider.svelte';
   import Tag from './Tag.svelte';
   import Tooltip from './Tooltip.svelte';
 
@@ -30,6 +32,8 @@
     'Input',
     'PanelLabel',
     'Pill',
+    'Select',
+    'Slider',
     'Tag',
     'Tooltip',
   ];
@@ -37,6 +41,9 @@
 
   let inputValue = $state('');
   let sectionOpen = $state(true);
+  let selectValue = $state('alpha');
+  let sliderInt = $state(0);
+  let sliderFloat = $state(1.0);
 </script>
 
 <div class="shell">
@@ -121,6 +128,38 @@
         <Pill tone="atomizer">atomizer</Pill>
         <Pill tone="danger">danger</Pill>
         <Pill disabled>disabled</Pill>
+      </div>
+    </article>
+
+    <article class="card" id="p-Select">
+      <h2 class="name mono">Select</h2>
+      <div class="stage col">
+        <Select
+          value={selectValue}
+          options={['alpha', 'bravo', 'charlie', 'delta']}
+          onchange={(v) => selectValue = v}
+        />
+      </div>
+    </article>
+
+    <article class="card" id="p-Slider">
+      <h2 class="name mono">Slider</h2>
+      <div class="stage col">
+        <Slider
+          value={sliderInt}
+          min={-12}
+          max={12}
+          step={1}
+          onchange={(v) => sliderInt = v}
+        />
+        <Slider
+          value={sliderFloat}
+          min={0.5}
+          max={2.0}
+          step={0.05}
+          precision={2}
+          onchange={(v) => sliderFloat = v}
+        />
       </div>
     </article>
 

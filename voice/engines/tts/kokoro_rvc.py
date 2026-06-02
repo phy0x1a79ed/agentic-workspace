@@ -27,8 +27,8 @@ class KokoroRvcConfig(BaseModel):
     )
     tts_voice: str = Field(default="bf_emma")
     rvc_label: str | None = Field(default="chelly_egoist")
-    pitch: int = Field(default=0)
-    speed: float = Field(default=1.0)
+    pitch: int = Field(default=0, ge=-24, le=24)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
     verify_ssl: bool = Field(default=False)  # dev cert is self-signed
 
 

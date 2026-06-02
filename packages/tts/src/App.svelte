@@ -2,6 +2,8 @@
   import TtsConfig from '$lib/components/TtsConfig.svelte';
   import TtsHistory from '$lib/components/TtsHistory.svelte';
   import { TtsCall } from '$lib/api/tts';
+  import type { CallStatus } from '$lib/status';
+  import { onDestroy } from 'svelte';
 
   interface Bubble { id: string; text: string; }
   let bubbles = $state<Bubble[]>([]);
@@ -10,6 +12,24 @@
   let call: TtsCall | null = null;
   let activeEngine: string | null = null;
   let activeParams: Record<string, unknown> = {};
+
+  // Round-trip status of the most-recent speak/replay call. The composer
+  // renders this as a sent/delay pill.
+  let status = $state<CallStatus>({ kind: 'idle' });
+  let tickHandle: ReturnType<typeof setInterval> | null = null;
+
+  function startTimer() {
+    if (tickHandle) clearInterval(tickHandle);
+    tickHandle = setInterval(() => {
+      if (status.kind === 'sending') {
+        status = { ...status, tick: performance.now() };
+      }
+    }, 60);
+  }
+  function stopTimer() {
+    if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+  }
+  onDestroy(stopTimer);
 
   function paramsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
     const ka = Object.keys(a), kb = Object.keys(b);
@@ -33,16 +53,36 @@
     return call;
   }
 
+  async function timed<T>(fn: () => Promise<T>): Promise<T> {
+    const startedAt = performance.now();
+    status = { kind: 'sending', startedAt, tick: startedAt };
+    startTimer();
+    try {
+      const out = await fn();
+      const latencyMs = performance.now() - startedAt;
+      status = { kind: 'done', latencyMs };
+      return out;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      status = { kind: 'error', message };
+      throw err;
+    } finally {
+      stopTimer();
+    }
+  }
+
   async function handleSpeak(text: string, engine: string, params: Record<string, unknown>) {
     const id = `b${nextId++}`;
     bubbles = [...bubbles, { id, text }];
-    const c = await ensureCall(engine, params);
-    await c.play(text);
+    await timed(async () => {
+      const c = await ensureCall(engine, params);
+      await c.play(text);
+    });
   }
 
   async function handleReplay(text: string) {
     if (!call) return;
-    await call.play(text);
+    await timed(() => call!.play(text));
   }
 
   async function handleEngineChange(engine: string, params: Record<string, unknown>) {
@@ -65,7 +105,7 @@
   </section>
 
   <section class="composer">
-    <TtsConfig onspeak={handleSpeak} onengine={handleEngineChange} />
+    <TtsConfig {status} onspeak={handleSpeak} onengine={handleEngineChange} />
   </section>
 </main>
 

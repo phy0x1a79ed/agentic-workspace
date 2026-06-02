@@ -2,9 +2,9 @@
   /**
    * Themed dropdown — replacement for native `<select>` whose popup list
    * is OS-rendered and unstyleable. Renders a button that mirrors the
-   * AgentControls underline-input look, and on click opens an absolutely
-   * positioned mono list using the surface/border tokens. Click-outside
-   * + Escape closes it; Enter/Space toggles; Up/Down + Enter navigates.
+   * underline-input look, and on click opens an absolutely positioned
+   * mono list using the surface/border tokens. Click-outside + Escape
+   * closes it; Enter/Space toggles; Up/Down + Enter navigates.
    */
   import { onMount } from 'svelte';
 

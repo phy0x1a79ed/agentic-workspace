@@ -21,11 +21,11 @@ class GPTSoVITSConfig(BaseModel):
     prompt_text: str | None = Field(default=None)
     text_lang: str = Field(default="en")
     prompt_lang: str = Field(default="en")
-    top_k: int = Field(default=5)
-    top_p: float = Field(default=1.0)
-    temperature: float = Field(default=1.0)
+    top_k: int = Field(default=5, ge=1, le=100)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     text_split_method: str = Field(default="cut5")
-    batch_size: int = Field(default=1)
+    batch_size: int = Field(default=1, ge=1, le=16)
 
 
 CONFIG_SCHEMA = GPTSoVITSConfig

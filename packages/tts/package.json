@@ -18,6 +18,9 @@
       "health": "/healthz"
     }
   },
+  "dependencies": {
+    "@awm/primitives": "*"
+  },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
     "@tsconfig/svelte": "^5.0.0",

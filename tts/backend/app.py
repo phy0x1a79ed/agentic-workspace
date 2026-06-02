@@ -105,8 +105,8 @@ def build_app() -> FastAPI:
             info = engines_registry.load("tts", body.engine, body.params)
         except Exception as exc:
             raise HTTPException(400, f"engine load failed: {exc}") from exc
-        loaded = engines_registry.current("tts")
-        assert loaded is not None
+        instance = engines_registry.current_instance("tts")
+        assert instance is not None
         call_id = uuid.uuid4().hex
         expires_at = time.monotonic() + CALL_TTL_S
         async with _lock:
@@ -114,7 +114,7 @@ def build_app() -> FastAPI:
                 call_id=call_id,
                 engine_id=info["id"],
                 params=info["params"],
-                instance=loaded["instance"],
+                instance=instance,
                 expires_at=expires_at,
             )
         # The frontend opens this relative to the page (./_api/call/<id>);
@@ -202,9 +202,9 @@ async def _handle_reconfigure(ws: WebSocket, call: _Call, payload: dict[str, Any
     except Exception as exc:
         await ws.send_json({"type": "error", "message": f"engine load failed: {exc}"})
         return
-    loaded = engines_registry.current("tts")
-    assert loaded is not None
+    instance = engines_registry.current_instance("tts")
+    assert instance is not None
     call.engine_id = info["id"]
     call.params = info["params"]
-    call.instance = loaded["instance"]
+    call.instance = instance
     await ws.send_json({"type": "reconfigured", "engine": info["id"], "instance_id": info["instance_id"]})

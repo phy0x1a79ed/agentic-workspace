@@ -5,9 +5,7 @@
    * for the engine config knobs we expose today (paths, booleans, ints,
    * enums, refs); engines that need rich nesting can ship a custom form.
    */
-  import Input from '$lib/primitives/Input.svelte';
-  import Select from './Select.svelte';
-  import PanelLabel from '$lib/primitives/PanelLabel.svelte';
+  import { Input, PanelLabel, Select, Slider } from '@awm/primitives';
 
   type JsonSchema = {
     type?: string;
@@ -22,6 +20,9 @@
     description?: string;
     enum?: (string | number | boolean)[];
     default?: unknown;
+    minimum?: number;
+    maximum?: number;
+    multipleOf?: number;
     anyOf?: FieldSchema[];
     [k: string]: unknown;
   };
@@ -55,6 +56,38 @@
       if (e?.enum) return e.enum;
     }
     return null;
+  }
+
+  /** Returns slider bounds if the field is a bounded numeric, else null. */
+  function fieldRange(f: FieldSchema): { min: number; max: number; step: number } | null {
+    const t = pickType(f);
+    if (t !== 'number' && t !== 'integer') return null;
+    // Pydantic Optional[T] hoists ge/le into the inner anyOf entry; check there too.
+    const inner = f.minimum !== undefined || f.maximum !== undefined
+      ? f
+      : (f.anyOf?.find(a => a.minimum !== undefined || a.maximum !== undefined) ?? f);
+    if (inner.minimum === undefined || inner.maximum === undefined) return null;
+    const step = inner.multipleOf ?? (t === 'integer' ? 1 : 0.01);
+    return { min: inner.minimum, max: inner.maximum, step };
+  }
+
+  function clamp(n: number, lo: number, hi: number): number {
+    return Math.min(hi, Math.max(lo, n));
+  }
+
+  function setSlider(key: string, raw: number, type: string, range: { min: number; max: number }) {
+    const n = type === 'integer' ? Math.round(raw) : raw;
+    const next = { ...value, [key]: clamp(n, range.min, range.max) };
+    emit(next);
+  }
+
+  function numValue(v: unknown, fallback: number): number {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v !== '') {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return fallback;
   }
 
   function strValue(v: unknown): string {
@@ -109,6 +142,7 @@
   {#each properties as [key, field] (key)}
     {@const t = pickType(field)}
     {@const e = fieldEnum(field)}
+    {@const range = fieldRange(field)}
     <div class="row">
       <span class="k">
         <PanelLabel>{field.title || key}</PanelLabel>
@@ -120,6 +154,16 @@
             options={e.map(String)}
             {disabled}
             onchange={(v) => setText(key, v, 'string')}
+          />
+        {:else if range}
+          <Slider
+            value={numValue(value[key] ?? field.default, range.min)}
+            min={range.min}
+            max={range.max}
+            step={range.step}
+            precision={t === 'integer' ? 0 : (range.step < 0.1 ? 2 : 1)}
+            {disabled}
+            onchange={(v) => setSlider(key, v, t, range)}
           />
         {:else if t === 'boolean'}
           <label class="bool">

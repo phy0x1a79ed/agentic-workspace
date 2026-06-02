@@ -1,6 +1,5 @@
 <script lang="ts">
-  import Card from '$lib/primitives/Card.svelte';
-  import Button from '$lib/primitives/Button.svelte';
+  import { Button, Card } from '@awm/primitives';
 
   interface Props {
     text: string;
@@ -8,18 +7,18 @@
   }
   let { text, onspeak }: Props = $props();
 
-  let state = $state<'idle' | 'playing' | 'error'>('idle');
+  let phase = $state<'idle' | 'playing' | 'error'>('idle');
   let errMsg = $state<string | null>(null);
 
   async function speak() {
-    if (state === 'playing') return;
-    state = 'playing';
+    if (phase === 'playing') return;
+    phase = 'playing';
     errMsg = null;
     try {
       await onspeak?.(text);
-      state = 'idle';
+      phase = 'idle';
     } catch (err) {
-      state = 'error';
+      phase = 'error';
       errMsg = err instanceof Error ? err.message : String(err);
     }
   }
@@ -33,10 +32,10 @@
         kind="primary"
         size="sm"
         onclick={speak}
-        disabled={state === 'playing'}
-        title={state === 'error' ? errMsg ?? 'error' : 'speak this'}
-      >{state === 'playing' ? '…' : 'speak'}</Button>
-      {#if state === 'error'}
+        disabled={phase === 'playing'}
+        title={phase === 'error' ? errMsg ?? 'error' : 'speak this'}
+      >{phase === 'playing' ? '…' : 'speak'}</Button>
+      {#if phase === 'error'}
         <span class="err">{errMsg}</span>
       {/if}
     </div>
