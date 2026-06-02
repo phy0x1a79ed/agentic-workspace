@@ -1,0 +1,27 @@
+{
+  "name": "@awm/ptt-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SvelteKit build host for the @awm/ptt stripe. NOT a workspace member (same exclusion as the legacy /frontend) — has its own deps and its own npm install/build.",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "^3.0.6",
+    "@sveltejs/kit": "^2.8.0",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@testing-library/svelte": "^5.2.4",
+    "@types/node": "^22.10.0",
+    "jsdom": "^25.0.1",
+    "svelte": "^5.2.0",
+    "svelte-check": "^4.1.0",
+    "typescript": "^5.7.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.5"
+  }
+}

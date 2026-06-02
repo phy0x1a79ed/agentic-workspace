@@ -16,6 +16,12 @@ NAME.md
 data/
 projects/
 
+# SvelteKit static build output — registered with the hub via
+# `awm hub register --dir build/`, not committed.
+build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
 # Python
 __pycache__/
 *.pyc

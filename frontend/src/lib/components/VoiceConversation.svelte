@@ -15,7 +15,10 @@
   import { RoomWsPool, type RoomEvent } from '$lib/api/ws.svelte';
   import ChatHistory from './ChatHistory.svelte';
   import ChatInput   from './ChatInput.svelte';
-  import PttButton   from './PttButton.svelte';
+  // PttButton lives in the @awm/ptt stripe at packages/ptt/components/PttButton.svelte.
+  // The SvelteKit `$lib` alias does not reach outside `src/lib/`, so the
+  // import uses a relative path back into the workspace package tree.
+  import PttButton   from '../../../../packages/ptt/components/PttButton.svelte';
   import { voice } from '$lib/state/voice.svelte';
   import { replay as ttsReplay } from '$lib/voice/tts';
 

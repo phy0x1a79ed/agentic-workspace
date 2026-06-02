@@ -413,6 +413,7 @@ do_build() {
     echo "[dev] preserved login.html across build"
   fi
   echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
+  echo "[dev] vertical stripes auto-build + auto-register via 'start' (npm run build --workspaces + awm stripe sync)"
 }
 
 case "$cmd" in

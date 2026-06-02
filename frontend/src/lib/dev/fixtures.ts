@@ -25,7 +25,10 @@ export interface FixtureEntry {
   module: FixtureModule;
 }
 
-const modules = import.meta.glob<FixtureModule>(
+// The legacy frontend globs only its own in-tree components. Stripe-owned
+// components (under packages/<name>/components/) ship in each stripe's own
+// SvelteKit bundle and are discovered by that stripe's fixtures.ts.
+const modules: Record<string, FixtureModule> = import.meta.glob<FixtureModule>(
   '/src/lib/components/*.fixtures.ts',
   { eager: true },
 );
