@@ -311,6 +311,72 @@ Two patterns, used together:
 - **Build-time composition (preferred for tight coupling).** A composite stripe declares its leaves as workspace deps in its own `package.json`, imports them, and renders them. The leaves are registered separately too — each appears in the dev-shell — but the production view comes from the composite stripe's bundle. Component-to-component wiring is via props + emitters at the composite's boundary.
 - **Runtime composition (for loose coupling).** Two stripes that don't know about each other coordinate through `@awm/bus`. The STT stripe `publish`es a transcribed utterance; a chat stripe `subscribe`s and renders it. Neither stripe imports the other.
 
+### Publishing components from a package
+
+Build-time composition works because packages publish importable symbols across the workspace. A package can be:
+
+- **Library-only** — no `stripe` field. `@awm/bus` is the example. `awm stripe sync` ignores it; it exists purely to be imported.
+- **Stripe-only** — has `stripe`, no `main`/`exports`. `@awm/hello`, `@awm/dev-shell`. Standalone bundles; nothing for siblings to import.
+- **Both** — `@awm/primitives` registers a gallery stripe at `/primitives` *and* exports `Button`, `Card`, `Tag`, … for build-time consumers. One source tree, two roles.
+
+To make components importable from `@awm/<name>`, four manifest fields plus a barrel file:
+
+```jsonc
+// packages/<name>/package.json
+{
+  "name": "@awm/<name>",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "sideEffects": ["**/*.css", "**/*.svelte"]
+}
+```
+
+- `main` / `exports` point at **source**, not `dist/`. The consumer's Vite + `@sveltejs/vite-plugin-svelte` compiles the `.svelte` and `.ts` it imports. `dist/` is only for the package's stripe role (the bundle the hub serves); siblings never reach for it.
+- `sideEffects` whitelists CSS imports and Svelte component side effects so consumer bundlers don't tree-shake them out. Without it, a `<style>` block that only takes effect via mount can be dropped.
+- `type: "module"` matches the rest of the workspace.
+
+The barrel re-exports each component as a named symbol:
+
+```ts
+// packages/<name>/src/index.ts
+export { default as Button } from './Button.svelte';
+export { default as Card } from './Card.svelte';
+```
+
+`default as X` because each `.svelte` file has exactly one default export. Add one line per component you want public; anything not re-exported here is private to the package even if the file is on disk.
+
+**Consumer side** — no install, no publish, no version negotiation. The root `package.json` has `"workspaces": ["packages/*"]`, so `npm install` at the root symlinks `node_modules/@awm/<name> → packages/<name>/`. A sibling stripe just lists the dep with a wildcard:
+
+```jsonc
+// packages/composite/package.json
+{
+  "dependencies": { "@awm/<name>": "*" }
+}
+```
+
+```svelte
+<!-- packages/composite/src/App.svelte -->
+<script>
+  import { Button, Card } from '@awm/<name>';
+</script>
+```
+
+The `"*"` is just there to satisfy npm's resolver; the actual resolution is the workspace symlink. There's no registry and no semver to track.
+
+#### Gotchas
+
+- **Global CSS doesn't ride the barrel.** Per-component `<style>` blocks travel with the component import (that's what `sideEffects: ["**/*.svelte"]` protects). A file like `primitives/src/tokens.css` is side-effect-only and a bare `import { Button } from '@awm/primitives'` won't pull it in. The composite stripe's entry has to `import '@awm/primitives/tokens.css'` explicitly. If you want that import to work, also add it to `exports`:
+  ```jsonc
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./src/tokens.css"
+  }
+  ```
+- **Source-mode `exports` requires the consumer to compile Svelte/TS.** Inside this monorepo every stripe uses Vite + the Svelte plugin, so this is free. A foreign consumer (a non-Vite app, an external project) would need a built entry — out of scope for now, but the day that matters you add a `build` step that emits `dist/lib/index.js` and switch `exports` to a conditional `{ "import": "./dist/lib/index.js", "svelte": "./src/index.ts" }`.
+- **Don't add a `stripe` field just to make components importable.** Library-only packages (no `stripe`) are the right shape when nothing visual ships at a prefix. Adding an empty stripe creates a dead entry in `/dev/` and a registration the hub has to manage for nothing.
+- **Renaming a re-export is a breaking change across the workspace.** `grep -rn "from '@awm/<name>'" packages/` before renaming. There's no codemod layer; every consumer's import line has to move with it.
+
 ### Reworking an existing stripe
 
 The whole point of the monorepo is that a scope worktree gets a complete copy of `packages/` via git, so you can iterate on a stripe in isolation while `dev`'s version stays mounted. Default flow: **edit in your scope worktree, then register the scope's bundle into dev's hub** under a unique name. Dev's auto-synced copy of the stripe stays mounted alongside, so you A/B against it at distinct URLs.
