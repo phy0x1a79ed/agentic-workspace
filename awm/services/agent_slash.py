@@ -131,21 +131,22 @@ async def _h_cli(scope_key: str, args: list[str]) -> str:
 
 
 async def _h_compact(scope_key: str, args: list[str]) -> str:
-    # claude's /compact is a REPL command — it isn't honored by the headless
-    # `--print --input-format=stream-json` pipeline that runs every agent
-    # here, so injecting it into stdin just shows up as user text. Be
-    # explicit instead of silently failing.
-    return (
-        "/compact is not supported in headless stream-json mode "
-        "(claude REPL only). Use /clear to wipe context, or /restart to "
-        "respawn while preserving conversation."
-    )
+    # Claude's `/compact` REPL command isn't honored by the headless
+    # stream-json pipeline awm uses, so we synthesize the same outcome
+    # ourselves: ask the agent to self-summarize, capture the summary
+    # from the structured transcript, respawn with the summary as primer.
+    # Implementation in agent_instances.compact_session.
+    return await agent_instances.compact_session(scope_key)
 
 
 async def _h_clear(scope_key: str, args: list[str]) -> str:
     sess = agent_instances._by_scope.get(scope_key)
     if sess is None:
         return f"no active session for {scope_key}"
+    # Operator-initiated wipe must outrace any pending auto-resume:
+    # remove queue rows for this scope before respawn fresh, otherwise
+    # the driver might race to bring back the prior --resume id.
+    agent_instances.scrub_resume_queue_for_scope(sess.project, sess.scope)
     new = await agent_instances.respawn_session(scope_key, clear_history=True)
     return (
         f"cleared {scope_key} (pid={new.proc.pid}, "

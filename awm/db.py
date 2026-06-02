@@ -7,7 +7,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS locks (
@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     exited_at TEXT,
     exit_code INTEGER,
     log_path TEXT NOT NULL,
-    claude_session_id TEXT
+    claude_session_id TEXT,
+    intent TEXT NOT NULL DEFAULT 'live'  -- 'live' | 'stopped' | 'killed' | 'compacted'
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_status ON agent_sessions(status);
@@ -167,6 +168,39 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope ON agent_sessions(project, s
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_unique
     ON agent_sessions(project, scope)
     WHERE status IN ('starting', 'running', 'stopping', 'orphaned');
+
+-- agent_events: structured per-session transcript. One row per stream-json
+-- event from the CLI (direction='out') and per framed stdin write
+-- (direction='in'). Local-only, NOT a CRR — transcripts are large and
+-- per-host. Underpins auto-resume replay and synthetic /compact.
+CREATE TABLE IF NOT EXISTS agent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    agent_cli TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    ts TEXT NOT NULL,
+    direction TEXT NOT NULL,             -- 'in' | 'out'
+    event_type TEXT NOT NULL,            -- 'init'|'assistant'|'user'|'tool_use'|'tool_result'|'result'|'partial'|'raw'
+    body TEXT NOT NULL,                  -- JSON: full parsed event, or {"raw": "..."}
+    claude_session_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session_seq ON agent_events(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agent_events_scope_ts ON agent_events(project, scope, ts);
+CREATE INDEX IF NOT EXISTS idx_agent_events_claude_sid ON agent_events(claude_session_id);
+
+-- agent_resume_queue: scheduling table for the post-restart resume driver.
+-- One row per prior session that the reconciler wants to resurrect.
+-- session_id is the prior incarnation's id; primer_text is populated by
+-- /compact orphan recovery.
+CREATE TABLE IF NOT EXISTS agent_resume_queue (
+    session_id INTEGER PRIMARY KEY,
+    scheduled_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    prior_exited_at TEXT,
+    primer_text TEXT
+);
 
 -- NOT NULL columns have explicit DEFAULTs: cr-sqlite (phase 4) refuses to
 -- mark a table as CRR if any non-PK NOT NULL column lacks a default.
@@ -877,6 +911,45 @@ ALTER TABLE scopes_new RENAME TO scopes;
 CREATE INDEX IF NOT EXISTS idx_scopes_status ON scopes(status);
 CREATE INDEX IF NOT EXISTS idx_scopes_project ON scopes(project);
 CREATE INDEX IF NOT EXISTS idx_scopes_legacy ON scopes(legacy_id, origin_peer);
+""",
+
+    (34, 35): """\
+-- v35: structured transcript + auto-resume foundations.
+--   - agent_sessions.intent: tracks why a session exited so the reconciler
+--     knows whether to auto-resume (intent='live' + dead PID = resume
+--     candidate; 'stopped'/'killed'/'compacted' = leave alone).
+--   - agent_events: structured per-session transcript. One row per
+--     stream-json event from the CLI (direction='out') or per framed stdin
+--     write (direction='in'). Local-only, not a CRR.
+--   - agent_resume_queue: scheduling table the resume driver reads after
+--     reconcile_on_startup. session_id is the PRIOR incarnation's id;
+--     primer_text supports /compact orphan recovery.
+ALTER TABLE agent_sessions ADD COLUMN intent TEXT NOT NULL DEFAULT 'live';
+
+CREATE TABLE IF NOT EXISTS agent_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    project TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    agent_cli TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    ts TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    body TEXT NOT NULL,
+    claude_session_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_session_seq ON agent_events(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agent_events_scope_ts ON agent_events(project, scope, ts);
+CREATE INDEX IF NOT EXISTS idx_agent_events_claude_sid ON agent_events(claude_session_id);
+
+CREATE TABLE IF NOT EXISTS agent_resume_queue (
+    session_id INTEGER PRIMARY KEY,
+    scheduled_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    prior_exited_at TEXT,
+    primer_text TEXT
+);
 """,
 }
 

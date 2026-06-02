@@ -40,6 +40,7 @@ from awm import config
 from awm.config import PROJECTS_DIR
 from awm.db import get_connection
 from awm.models import AgentSessionInfo
+from awm.services import agent_transcript
 from awm.services import rooms as rooms_svc
 from awm.services._path import resolve_bin
 
@@ -113,6 +114,10 @@ class AgentInstance:
         self.context_max: Optional[int] = None
         # In-flight respawn lock so concurrent /restart calls don't fight.
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
+        # Re-entry guard for /compact — set while a compact dance is in
+        # flight so a second /compact bounces with a clear error instead
+        # of stacking two summarization round-trips.
+        self.compacting: bool = False
 
 
 _registry: dict[int, AgentInstance] = {}
@@ -171,6 +176,13 @@ def _build_opencode_argv(
     # ``we-want-to-update-humble-clarke``). The argv below launches the
     # CLI correctly; full room-driven I/O parity with the claude harness
     # is not wired here.
+    #
+    # Auto-resume and synthetic /compact are gated on agent_cli=='claude'
+    # in reconcile_on_startup and compact_session respectively, until
+    # opencode's resume/replay protocol is defined by that follow-up.
+    # Structured transcript capture (agent_transcript) DOES work for
+    # opencode via _reader_loop's raw branch, so the substrate for
+    # eventual replay is being built up incidentally.
     argv = [resolve_bin("opencode"), "run", "--format", "json",
             "--dir", str(workspace_dir)]
     if permission_mode == "bypassPermissions":
@@ -416,6 +428,8 @@ async def _input_pump(session: AgentInstance) -> None:
                 fp.write(f"STDIN {framed_body!r}\n")
         except OSError:
             pass
+        # Structured transcript (parallel to the audit log; queryable).
+        agent_transcript.record_in(session, framed_body, injection=False)
 
 
 def enqueue_input(session: AgentInstance, room_id: str, post: rooms_svc.Post) -> bool:
@@ -568,7 +582,16 @@ async def _reader_loop(session: AgentInstance) -> None:
                     fp.write(f"STDOUT(raw) {text}\n")
             except OSError:
                 pass
+            # Structured transcript captures opencode's raw output too —
+            # that's how S6's opencode scaffolding piggybacks on this path
+            # without needing a separate parser.
+            agent_transcript.record_raw_out(session, text)
             continue
+
+        # Structured transcript captures every parsed event (init,
+        # assistant, user/tool_result, result, partial). Underpins replay
+        # and synthetic /compact.
+        agent_transcript.record_out(session, parsed)
 
         # Capture init metadata so /restart can resume + the UI knows what
         # slash commands this scope's claude exposes.
@@ -663,6 +686,8 @@ async def stop_session(session_id: int) -> AgentSessionInfo:
         raise FileNotFoundError(f"session {session_id} not found")
     if info_row["status"] in ("exited", "killed"):
         return _info_from_row(info_row)
+    # Mark intent so the reconciler doesn't auto-resume an operator stop.
+    _set_intent(session_id, "stopped")
     if session is None:
         # Orphan — signal via pid.
         try:
@@ -688,6 +713,7 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
         raise FileNotFoundError(f"session {session_id} not found")
     if info_row["status"] in ("exited", "killed"):
         return _info_from_row(info_row)
+    _set_intent(session_id, "killed")
     if session is None:
         try:
             os.kill(info_row["pid"], signal.SIGKILL)
@@ -799,6 +825,160 @@ async def send_slash(scope_key: str, body: str) -> None:
             fp.write(f"STDIN(slash) {body!r}\n")
     except OSError:
         pass
+    agent_transcript.record_in(session, body, injection=True)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic /compact: summarize → respawn fresh → inject summary as primer
+# ---------------------------------------------------------------------------
+
+_COMPACT_PROMPT = (
+    "Please summarize our entire conversation so far in a single message, "
+    "optimized to be a primer for a fresh agent that needs to continue this "
+    "work. Include: current task, key decisions, files touched, open "
+    "questions, and the next action you were about to take. Reply with ONLY "
+    "the summary, no preamble."
+)
+
+# How long we wait for the agent to produce a summary in response to the
+# compact prompt. Real summaries usually arrive in 5–30s; 180s is a safe
+# upper bound that still lets operators retry if the agent wedges.
+COMPACT_TIMEOUT_S = 180.0
+# Summaries shorter than this are treated as failed (refusal text, blank
+# acknowledgement, etc.); we'd rather leave the old session alive than
+# respawn into a useless primer.
+COMPACT_MIN_SUMMARY_CHARS = 50
+
+
+def _enqueue_compact_orphan(prior_session_id: int, primer_text: str) -> None:
+    """Stash a captured compact summary on the resume queue so the driver
+    will respawn-fresh-with-primer next pass. Used when the respawn
+    after summary capture fails — the summary survives the orphan
+    window and the operator's work isn't lost.
+    """
+    when = _now()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO agent_resume_queue "
+            "(session_id, scheduled_at, attempts, prior_exited_at, primer_text) "
+            "VALUES (?, ?, 0, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "primer_text=excluded.primer_text, scheduled_at=excluded.scheduled_at, "
+            "attempts=0",
+            (prior_session_id, when, when, primer_text),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def compact_session(scope_key: str) -> str:
+    """Synthetic /compact in headless mode.
+
+    1. Refuse if a tool call is in flight (avoids inserting a user message
+       between a tool_use and its tool_result, which confuses Claude).
+    2. Inject the summarization prompt via send_slash (no room framing).
+    3. Wait up to COMPACT_TIMEOUT_S for the next end-of-turn assistant
+       event from the transcript subscriber.
+    4. Quality-gate the summary (length, error flag).
+    5. Mark prior intent='compacted' and respawn fresh.
+    6. Inject the summary into the new session as a primer.
+    7. Post the summary as an audit notice into every room the scope
+       participates in.
+
+    Returns a status string suitable for the slash router to surface.
+    """
+    session = _by_scope.get(scope_key)
+    if session is None:
+        raise NoSessionError(f"no active session for {scope_key}")
+    if session.agent_cli != "claude":
+        # Opencode compact gated on bridging plan we-want-to-update-humble-clarke.
+        return (
+            f"/compact gated for agent_cli={session.agent_cli!r}; "
+            "opencode bridging is a separate plan"
+        )
+    if session.compacting:
+        return f"/compact already in flight for {scope_key}"
+    if agent_transcript.has_unmatched_tool_use(session.id):
+        return (
+            f"compact refused: tool call in flight on {scope_key}; "
+            "wait for completion or /kill first"
+        )
+
+    session.compacting = True
+    prior_session_id = session.id
+    queue = agent_transcript.subscribe_assistant_turns(prior_session_id)
+    summary: str = ""
+    try:
+        try:
+            await send_slash(scope_key, _COMPACT_PROMPT)
+        except NoSessionError as exc:
+            return f"compact failed: {exc}"
+
+        try:
+            summary = await asyncio.wait_for(queue.get(), timeout=COMPACT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            # Fallback: try once to pull the latest assistant text from
+            # the transcript in case the subscriber missed the signal.
+            summary = agent_transcript.read_recent_assistant_text(prior_session_id)
+        if not summary or len(summary) < COMPACT_MIN_SUMMARY_CHARS:
+            return (
+                f"compact failed: no usable summary captured "
+                f"(got {len(summary)} chars); session untouched"
+            )
+
+        # Mark prior intent FIRST so a crash mid-respawn doesn't trigger
+        # a normal auto-resume of the now-orphaned old session.
+        _set_intent(prior_session_id, "compacted")
+
+        try:
+            new_session = await respawn_session(
+                scope_key, clear_history=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Respawn race / missing binary / etc. Park the summary on
+            # the resume queue so the driver can finish the dance on
+            # the next pass (it will spawn fresh + inject primer).
+            _enqueue_compact_orphan(prior_session_id, summary)
+            return (
+                f"compact respawn failed: {exc}; summary parked for "
+                "auto-recovery (resume driver will retry)"
+            )
+
+        primer = f"[system: previous-session-summary]\n{summary}"
+        try:
+            await send_slash(scope_key, primer)
+        except NoSessionError as exc:
+            # New session disappeared between respawn and primer inject.
+            # Park summary for driver to retry.
+            _enqueue_compact_orphan(new_session.id, summary)
+            return (
+                f"compact primer injection failed: {exc}; summary parked "
+                "for auto-recovery"
+            )
+
+        # Audit: post the summary into every room the scope is in so
+        # operators (and other participants) can read what was compacted.
+        for room_id in _rooms_for_scope(scope_key):
+            try:
+                rooms_svc.post(
+                    room_id, author="system:awm",
+                    body=f"[compact summary for {scope_key}]\n{summary}",
+                    kind="system",
+                )
+            except rooms_svc.RoomError:
+                continue
+
+        return (
+            f"compacted {scope_key}: prior session {prior_session_id} "
+            f"summarized → new session {new_session.id} primed"
+        )
+    finally:
+        agent_transcript.unsubscribe_assistant_turns(prior_session_id, queue)
+        # Clearing on the prior session is a no-op (it's dead); the new
+        # session's compacting flag starts False, so nothing to reset there.
+        session.compacting = False
 
 
 # ---------------------------------------------------------------------------
@@ -830,6 +1010,37 @@ def _set_status(session_id: int, status: str, terminal: bool = False) -> None:
                 (status, session_id),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_intent(session_id: int, intent: str) -> None:
+    """Persist why a session is about to exit so the reconciler knows
+    whether to auto-resume on restart."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE agent_sessions SET intent=? WHERE id=?",
+            (intent, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def scrub_resume_queue_for_scope(project: str, scope: str) -> int:
+    """Remove any pending resume rows for this scope. Called from
+    /clear and /kill paths so operator actions don't race the driver.
+    Returns the number of rows deleted (mostly useful for tests)."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM agent_resume_queue WHERE session_id IN "
+            "(SELECT id FROM agent_sessions WHERE project=? AND scope=?)",
+            (project, scope),
+        )
+        conn.commit()
+        return cur.rowcount or 0
     finally:
         conn.close()
 
@@ -889,16 +1100,21 @@ def reconcile_on_startup() -> None:
     """After a server restart, classify any non-terminal rows.
 
     Pids that are still alive become ``orphaned``; dead ones are
-    flipped to ``exited``. ``_by_scope`` is repopulated with stub
-    entries (proc=None) for orphans so spawn attempts for the same
-    scope are correctly rejected — manage them via stop/kill.
+    flipped to ``exited``. Dead Claude sessions whose row says
+    ``intent='live'`` AND has a ``claude_session_id`` get enqueued
+    into ``agent_resume_queue`` so the resume driver can resurrect
+    them. Vagrant rows are deleted (ephemeral). Opencode rows are
+    flipped to exited without enqueueing — opencode auto-resume is
+    gated on the bridging plan and excluded here.
     """
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, project, scope, pid FROM agent_sessions "
+            "SELECT id, project, scope, pid, agent_cli, claude_session_id, "
+            "intent, exited_at FROM agent_sessions "
             "WHERE status IN ('starting','running','stopping')"
         ).fetchall()
+        now = _now()
         for row in rows:
             pid = row["pid"]
             alive = False
@@ -913,22 +1129,351 @@ def reconcile_on_startup() -> None:
                     "UPDATE agent_sessions SET status='orphaned' WHERE id=?",
                     (row["id"],),
                 )
-            elif row["project"] == "_vagrant":
+                continue
+            if row["project"] == "_vagrant":
                 # Vagrant managers are ephemeral; a dead one is just trash
                 # that the partial unique index would otherwise look at on
                 # the next spawn for the same user. Delete it outright.
                 conn.execute(
                     "DELETE FROM agent_sessions WHERE id=?", (row["id"],)
                 )
-            else:
+                continue
+            # Mark exited first (existing behavior).
+            conn.execute(
+                "UPDATE agent_sessions SET status='exited', exited_at=? "
+                "WHERE id=?",
+                (now, row["id"]),
+            )
+            # Resume-candidate gate: Claude only (opencode resume gated
+            # on plan we-want-to-update-humble-clarke), prior session id
+            # captured, and operator hadn't intentionally stopped it.
+            if (row["agent_cli"] == "claude"
+                    and row["claude_session_id"]
+                    and row["intent"] == "live"):
                 conn.execute(
-                    "UPDATE agent_sessions SET status='exited', exited_at=? "
-                    "WHERE id=?",
-                    (_now(), row["id"]),
+                    "INSERT OR IGNORE INTO agent_resume_queue "
+                    "(session_id, scheduled_at, attempts, prior_exited_at) "
+                    "VALUES (?, ?, 0, ?)",
+                    (row["id"], now, row["exited_at"] or now),
                 )
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume driver
+# ---------------------------------------------------------------------------
+
+# Window after stdin_ready in which an early non-zero exit counts as a
+# failed resume (vs. a deliberate /clear or /kill).
+RESUME_HEALTH_WINDOW_S = 15.0
+# Per-room cap on chronological replay so a multi-day outage doesn't
+# flood the context window.
+MAX_REPLAY_POSTS = 200
+# Concurrency cap for the resume driver — many simultaneous CLI starts
+# would thrash the host.
+MAX_CONCURRENT_RESUMES = 3
+# How long the driver sleeps between polling passes when nothing is due.
+RESUME_DRIVER_POLL_S = 5.0
+# Max attempts before we either scrub the session id and try clean,
+# or give up entirely.
+RESUME_MAX_ATTEMPTS = 3
+
+
+_resume_driver_task: asyncio.Task | None = None
+
+
+def _resume_due_rows() -> list[dict]:
+    """Resume-queue rows that are scheduled to run now or earlier,
+    joined with their prior agent_sessions snapshot."""
+    conn = get_connection()
+    try:
+        now = _now()
+        rows = conn.execute(
+            "SELECT q.session_id, q.scheduled_at, q.attempts, "
+            "q.prior_exited_at, q.primer_text, "
+            "s.project, s.scope, s.agent_cli, s.claude_session_id "
+            "FROM agent_resume_queue q "
+            "JOIN agent_sessions s ON s.id = q.session_id "
+            "WHERE q.scheduled_at <= ? "
+            "ORDER BY q.scheduled_at",
+            (now,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def _delete_resume_row(session_id: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM agent_resume_queue WHERE session_id=?", (session_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _reschedule_resume_row(session_id: int, attempts: int,
+                           delay_s: float) -> None:
+    """Bump attempts and push scheduled_at into the future."""
+    from datetime import timedelta
+    new_when = (datetime.now(timezone.utc) + timedelta(seconds=delay_s)).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE agent_resume_queue SET attempts=?, scheduled_at=? "
+            "WHERE session_id=?",
+            (attempts, new_when, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _scrub_claude_session_id(prior_session_id: int) -> None:
+    """Forget the CLI session id for a row so the next respawn starts clean.
+    Last-resort fallback when --resume itself keeps crashing the CLI."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE agent_sessions SET claude_session_id=NULL WHERE id=?",
+            (prior_session_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _post_restart_notice(scope_key: str, *, prior_exited_at: str | None,
+                         missed_per_room: dict[str, int]) -> None:
+    """Post a kind='system' notice from author 'system:awm' into every
+    active room the resumed scope participates in. The notice rides the
+    normal dispatcher path, so the agent's stdin ALSO receives it via
+    framed input — that's the "you were restarted" signal.
+    """
+    rooms = _rooms_for_scope(scope_key)
+    if not rooms:
+        return
+    when = prior_exited_at or "earlier"
+    for room_id in rooms:
+        n = missed_per_room.get(room_id, 0)
+        body = (
+            f"agent {scope_key} auto-resumed after awm restart "
+            f"(prior exit: {when}); {n} missed post(s) in this room follow."
+        )
+        try:
+            rooms_svc.post(room_id, author="system:awm", body=body, kind="system")
+        except rooms_svc.RoomError:
+            continue
+
+
+def _replay_missed_posts(session: AgentInstance, *,
+                         since_ts: str | None) -> dict[str, int]:
+    """Replay posts that arrived while the agent was down. Chronological
+    across all of the agent's rooms; per-room capped at MAX_REPLAY_POSTS
+    (with a truncation notice posted into the offending room).
+
+    Returns a dict of room_id → count enqueued, for the restart notice
+    to reference.
+    """
+    if not since_ts:
+        return {}
+    rooms = _rooms_for_scope(session.scope_key)
+    if not rooms:
+        return {}
+    self_author = f"agent:{session.scope_key}"
+    per_room: dict[str, list] = {}
+    truncated: dict[str, int] = {}
+    conn = get_connection()
+    try:
+        for room_id in rooms:
+            # Count total candidates first so we can post an accurate
+            # truncation notice when capping.
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM room_posts "
+                "WHERE room_id=? AND ts > ? AND author != ? AND kind != 'slash'",
+                (room_id, since_ts, self_author),
+            ).fetchone()["n"]
+            rows = conn.execute(
+                "SELECT * FROM room_posts "
+                "WHERE room_id=? AND ts > ? AND author != ? AND kind != 'slash' "
+                "ORDER BY ts ASC LIMIT ?",
+                (room_id, since_ts, self_author, MAX_REPLAY_POSTS),
+            ).fetchall()
+            per_room[room_id] = [dict(r) for r in rows]
+            if total > MAX_REPLAY_POSTS:
+                truncated[room_id] = total - MAX_REPLAY_POSTS
+    finally:
+        conn.close()
+
+    # Post truncation notices BEFORE we replay, so the agent sees
+    # "[truncated]" → live replay window → restart notice ordering is
+    # preserved in absolute chronology.
+    for room_id, dropped in truncated.items():
+        try:
+            rooms_svc.post(
+                room_id, author="system:awm",
+                body=(
+                    f"replay truncated: {dropped} earlier post(s) in room "
+                    f"{room_id} omitted (cap={MAX_REPLAY_POSTS})."
+                ),
+                kind="system",
+            )
+        except rooms_svc.RoomError:
+            pass
+
+    # Merge across rooms and sort by absolute ts (tiebreaker: room_id, id).
+    merged: list[tuple[str, dict]] = []
+    for room_id, rows in per_room.items():
+        for r in rows:
+            merged.append((room_id, r))
+    merged.sort(key=lambda pair: (pair[1]["ts"], pair[0], pair[1].get("legacy_id", 0)))
+
+    counts: dict[str, int] = {rid: 0 for rid in rooms}
+    for room_id, row in merged:
+        post = rooms_svc._row_to_post(row)
+        enqueue_input(session, room_id, post)
+        counts[room_id] = counts.get(room_id, 0) + 1
+    return counts
+
+
+async def respawn_after_restart(prior_row: dict, *,
+                                primer_text: str | None = None) -> AgentInstance:
+    """Spawn a fresh AgentInstance for a scope whose previous incarnation
+    is already dead (e.g. because awm-exposed restarted). Unlike
+    ``respawn_session``, this does NOT require a live in-memory session.
+
+    If ``primer_text`` is set (compact orphan recovery), spawn fresh
+    (claude_session_id=NULL via fresh=True) and inject the primer via
+    ``send_slash`` after stdin_ready.
+    """
+    project = prior_row["project"]
+    scope = prior_row["scope"]
+    scope_key = _scope_key(project, scope)
+    # If somebody else (re-invite, /restart) already brought it back, bail.
+    if _by_scope.get(scope_key) is not None:
+        return _by_scope[scope_key]
+    if primer_text:
+        session = await create_session(
+            project=project, scope=scope,
+            agent_cli=prior_row["agent_cli"] or "claude",
+            permission_mode="bypassPermissions",
+            resume_session_id=None,
+            fresh=True,
+        )
+        await send_slash(scope_key, primer_text)
+        return session
+    return await create_session(
+        project=project, scope=scope,
+        agent_cli=prior_row["agent_cli"] or "claude",
+        permission_mode="bypassPermissions",
+        resume_session_id=prior_row.get("claude_session_id"),
+        fresh=False,
+    )
+
+
+async def _watch_resume_health(session: AgentInstance) -> bool:
+    """Return True if the session survives ``RESUME_HEALTH_WINDOW_S``
+    without exiting; False if it dies early with non-zero exit code.
+    """
+    try:
+        await asyncio.wait_for(
+            session.proc.wait(), timeout=RESUME_HEALTH_WINDOW_S
+        )
+    except asyncio.TimeoutError:
+        return True
+    # Exited within the window — failure unless it was a clean shutdown.
+    return (session.exit_code or 0) == 0
+
+
+async def _drive_one_resume(row: dict, semaphore: asyncio.Semaphore) -> None:
+    async with semaphore:
+        prior_session_id = row["session_id"]
+        attempts = (row["attempts"] or 0) + 1
+        primer = row.get("primer_text")
+        # Final-attempt fallback: scrub the CLI session id so we spawn clean.
+        if attempts > RESUME_MAX_ATTEMPTS and not primer:
+            _scrub_claude_session_id(prior_session_id)
+            row["claude_session_id"] = None
+        try:
+            session = await respawn_after_restart(row, primer_text=primer)
+        except Exception as exc:  # noqa: BLE001
+            # Couldn't even spawn. Reschedule with backoff up to the cap;
+            # past the cap, give up and notify.
+            if attempts >= RESUME_MAX_ATTEMPTS:
+                _delete_resume_row(prior_session_id)
+                _post_restart_notice(
+                    _scope_key(row["project"], row["scope"]),
+                    prior_exited_at=row.get("prior_exited_at"),
+                    missed_per_room={},
+                )
+                # Best-effort failure trace; the queue row is gone.
+                return
+            _reschedule_resume_row(
+                prior_session_id, attempts,
+                min(60.0 * (2 ** attempts), 600.0),
+            )
+            return
+
+        # Health window: did the resumed CLI survive ~15s?
+        healthy = await _watch_resume_health(session)
+        if not healthy:
+            if attempts >= RESUME_MAX_ATTEMPTS:
+                _delete_resume_row(prior_session_id)
+                return
+            _reschedule_resume_row(
+                prior_session_id, attempts,
+                min(60.0 * (2 ** attempts), 600.0),
+            )
+            return
+
+        # Success: replay missed posts, then post the restart notice.
+        # Replay happens first so the notice (posted last into rooms) ends
+        # up at the most-recent ts — but inside the agent's stdin the
+        # post-time ordering is: notice frames (broadcast immediately) and
+        # then replay (enqueued just before). Practical order to the agent:
+        # restart notice arrives via broadcast at "now"; replay items are
+        # enqueued with earlier ts already. Both end up in the input queue.
+        counts = _replay_missed_posts(session, since_ts=row.get("prior_exited_at"))
+        _post_restart_notice(
+            session.scope_key,
+            prior_exited_at=row.get("prior_exited_at"),
+            missed_per_room=counts,
+        )
+        _delete_resume_row(prior_session_id)
+
+
+async def _drive_resume_queue() -> None:
+    """Background task launched in awm.exposed's lifespan. Polls
+    agent_resume_queue and processes due rows with bounded concurrency."""
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESUMES)
+    while True:
+        try:
+            due = _resume_due_rows()
+        except Exception:  # noqa: BLE001
+            due = []
+        if due:
+            tasks = [
+                asyncio.create_task(_drive_one_resume(row, semaphore))
+                for row in due
+                if row.get("project") and row.get("scope")
+            ]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(RESUME_DRIVER_POLL_S)
+
+
+def start_resume_driver() -> asyncio.Task:
+    """Launch the resume driver task (idempotent). Called from
+    awm.exposed's lifespan after reconcile_on_startup()."""
+    global _resume_driver_task
+    if _resume_driver_task is not None and not _resume_driver_task.done():
+        return _resume_driver_task
+    _resume_driver_task = asyncio.create_task(_drive_resume_queue())
+    return _resume_driver_task
 
 
 # ---------------------------------------------------------------------------

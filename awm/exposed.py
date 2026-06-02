@@ -112,6 +112,10 @@ async def lifespan(app: FastAPI):
         f"cert={info['tls_cert']} fp={info['tls_fingerprint'][:16]}…"
     )
     agent_instances.reconcile_on_startup()
+    # Resume driver: walks agent_resume_queue rows enqueued by reconcile
+    # (or by /compact orphan recovery) and respawns Claude harnesses
+    # so awm-exposed restarts don't destroy agent context.
+    agent_instances.start_resume_driver()
 
     # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
     # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
