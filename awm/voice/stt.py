@@ -33,7 +33,7 @@ class Transcriber:
             )
         return self._model
 
-    def transcribe(self, pcm_bytes: bytes, sample_rate: int) -> str:
+    def transcribe(self, pcm_bytes: bytes, sample_rate: int, vad_filter: bool = False) -> str:
         if not pcm_bytes:
             return ""
         audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
@@ -42,7 +42,7 @@ class Transcriber:
             audio,
             language="en",
             beam_size=1,
-            vad_filter=False,
+            vad_filter=vad_filter,
         )
         return " ".join(seg.text.strip() for seg in segments).strip()
 
