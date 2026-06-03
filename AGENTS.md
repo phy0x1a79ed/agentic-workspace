@@ -423,7 +423,7 @@ General Python env rules (use `mamba run -n awm`, never `pip` / `python` / `mamb
 The editable install at `/home/tony/lib/miniforge3/envs/awm/lib/python3.14/site-packages/__editable___awm_0_1_0_finder.py` maps `awm` → `/home/tony/agentic_workspace/awm` (the **release** worktree). When iterating on dev-tree code, `import awm` from the conda env silently resolves to release code, not the dev tree. Workarounds:
 
 - Run with explicit `PYTHONPATH=<dev-worktree>` to shadow the editable mapping, OR
-- Spawn a Python subprocess with cwd + `sys.path[0]` pinned to the dev worktree (this is how `npm run gen-types` does it — see `frontend/scripts/gen-types.py`), OR
+- Spawn a Python subprocess with cwd + `sys.path[0]` pinned to the dev worktree (this is how `npm run gen-types` does it — see `frontend/scripts/gen-types.mjs`, which spawns the Python child), OR
 - Merge dev → release to advance the editable mapping's target (what the deploy step does).
 
 See memory `[[awm_two_source_trees]]` for the full failure mode.

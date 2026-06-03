@@ -627,6 +627,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/hub/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register */
+        post: operations["register_hub_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hub/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Services */
+        get: operations["list_services_hub_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hub/stripes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Stripes
+         * @description Global stripe map. Unauthenticated by design — the dev-shell (or
+         *     any composer) fetches this on mount to discover backend URLs to
+         *     inject into stripe components via context. The actual backend
+         *     requests still flow through the hub's authenticated proxy at
+         *     ``<prefix>/_api/*``.
+         */
+        get: operations["list_stripes_hub_stripes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hub/services/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deregister */
+        delete: operations["deregister_hub_services__name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/mint": {
         parameters: {
             query?: never;
@@ -872,6 +947,39 @@ export interface components {
             /** Ts */
             ts: string;
         };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /**
+             * Url
+             * @description Local URL to forward requests to (kind=url). Mutually exclusive with `static` and `stripe`.
+             */
+            url?: string | null;
+            /** @description Directory-serving spec (kind=static). Mutually exclusive with `url` and `stripe`. */
+            static?: components["schemas"]["StaticSpec"] | null;
+            /** @description Component-and-backend bundle (kind=stripe). Mutually exclusive with `url` and `static`. */
+            stripe?: components["schemas"]["StripeSpec"] | null;
+        };
+        /** RegisterResponse */
+        RegisterResponse: {
+            /** Service Id */
+            service_id: string;
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /** Kind */
+            kind: string;
+            /** Url */
+            url?: string | null;
+            static?: components["schemas"]["StaticSpec"] | null;
+            stripe?: components["schemas"]["StripeSpec"] | null;
+            /** Lease Ws Path */
+            lease_ws_path: string;
+        };
         /** RoomActionResponse */
         RoomActionResponse: {
             /** Message */
@@ -1011,6 +1119,66 @@ export interface components {
             args: string;
             /** Description */
             description: string;
+        };
+        /** StaticSpec */
+        StaticSpec: {
+            /**
+             * Dir
+             * @description Absolute path on the hub host to serve at the prefix.
+             */
+            dir: string;
+            /**
+             * Entry
+             * @description Relative path to the ESM entry script. When the dir has no index.html, the hub renders a minimal shell that loads this script as a module.
+             */
+            entry?: string | null;
+            /**
+             * Css
+             * @description Optional CSS files (relative to dir) injected into the auto-shell.
+             */
+            css?: string[];
+            /**
+             * Mount Id
+             * @description DOM id of the mount node in the auto-shell.
+             * @default app
+             */
+            mount_id: string;
+        };
+        /** StripeBackend */
+        StripeBackend: {
+            /**
+             * Cmd
+             * @description argv-style command to spawn the backend. ${AWM_SERVICE_PORT} in any arg is substituted with the hub-allocated port before exec.
+             */
+            cmd: string[];
+            /**
+             * Env
+             * @description Extra env vars merged into the process env. AWM_SERVICE_PORT is hub-injected and wins on collision.
+             */
+            env?: {
+                [key: string]: string;
+            };
+            /**
+             * Health
+             * @description Path on the backend the hub polls until 200 to mark ready.
+             * @default /healthz
+             */
+            health: string;
+            /**
+             * Cwd
+             * @description Working directory for the spawned process. Defaults to the static dir.
+             */
+            cwd?: string | null;
+        };
+        /** StripeSpec */
+        StripeSpec: {
+            /**
+             * Dir
+             * @description Absolute path to the frontend bundle dir (canonical-paths static serving at the prefix root).
+             */
+            dir: string;
+            /** @description Optional supervised backend. When set, the hub spawns it at register time and proxies <prefix>/_api/* to it. */
+            backend?: components["schemas"]["StripeBackend"] | null;
         };
         /** TtsSpeakRequest */
         TtsSpeakRequest: {
@@ -2178,6 +2346,131 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VagrantSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_hub_register_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_services_hub_services_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_stripes_hub_stripes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    deregister_hub_services__name__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
