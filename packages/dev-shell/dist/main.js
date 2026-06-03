@@ -7,6 +7,7 @@ const listEl = document.getElementById("stripe-list");
 const frameEl = document.getElementById("frame");
 const emptyEl = document.getElementById("empty");
 const refreshEl = document.getElementById("refresh");
+const operatorEl = document.getElementById("operator");
 
 // Dev-shell IS one of the stripes. Skip itself in the list so the iframe
 // can't recurse. Read its own prefix from window.location so a custom
@@ -22,6 +23,17 @@ async function fetchStripes() {
     throw new Error(`/hub/stripes ${resp.status}: ${await resp.text()}`);
   }
   return (await resp.json()).stripes ?? {};
+}
+
+async function fetchOperator() {
+  try {
+    const resp = await fetch("/auth/whoami", { credentials: "include" });
+    if (!resp.ok) return "operator";
+    const j = await resp.json();
+    return (j && typeof j.awm_user === "string") ? j.awm_user : "operator";
+  } catch {
+    return "operator";
+  }
 }
 
 function render(stripes) {
@@ -68,7 +80,11 @@ function mount(name, info) {
 
 async function reload() {
   try {
-    const stripes = await fetchStripes();
+    const [stripes, operator] = await Promise.all([
+      fetchStripes(),
+      fetchOperator(),
+    ]);
+    if (operatorEl) operatorEl.textContent = operator;
     render(stripes);
   } catch (err) {
     listEl.innerHTML = "";
