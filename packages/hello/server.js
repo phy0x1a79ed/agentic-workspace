@@ -21,8 +21,9 @@ const server = createServer((req, res) => {
   }
   if (url.pathname === "/echo") {
     const msg = url.searchParams.get("msg") ?? "hi";
+    const xAwmAs = req.headers["x-awm-as"] ?? null;
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ echoed: msg, port, pid: process.pid }));
+    res.end(JSON.stringify({ echoed: msg, port, pid: process.pid, xAwmAs }));
     return;
   }
   res.writeHead(404, { "content-type": "text/plain" });

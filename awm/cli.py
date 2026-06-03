@@ -613,6 +613,19 @@ def inbox_search(
     _print_json(r)
 
 
+@inbox_app.command("recipients")
+def inbox_recipients(
+    query: str = typer.Argument(..., help="Regex matched against recipients, or '*' for all."),
+    peer: str = typer.Option(None, "--peer", help="(Reserved; deferred — only 'local' / omitted is honoured today.)"),
+):
+    """List valid recipient scopes matching a regex (local only)."""
+    params: dict[str, object] = {"query": query}
+    if peer is not None:
+        params["peer"] = peer
+    r = _api("GET", "/messages/recipients", params=params)
+    _print_json(r)
+
+
 @room_app.command("create")
 def room_create(
     topic: str = typer.Option(None, "--topic", help="Optional human-readable topic"),

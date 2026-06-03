@@ -684,6 +684,19 @@ from awm.services.hub.static import (  # noqa: E402
 )
 
 
+def _stripe_identity_headers(cookies) -> list[tuple[str, str]]:
+    """Mint hub-injected identity headers for a stripe proxy hop from
+    the inbound request's cookies. Returning X-Awm-As here causes the
+    proxy to drop any inbound X-Awm-As the client supplied — that's
+    the forge-prevention seam stripes rely on. Returns an empty list
+    when the operator cookie is absent (anonymous; backend treats the
+    missing header as unauthenticated)."""
+    awm_user = cookies.get(auth_svc.AS_COOKIE)
+    if not awm_user:
+        return []
+    return [("X-Awm-As", awm_user)]
+
+
 class HubRoutingMiddleware:
     def __init__(self, app):
         self.app = app
@@ -769,12 +782,16 @@ class HubRoutingMiddleware:
             target_base = f"http://127.0.0.1:{rec.backend_port}"
             if scope["type"] == "http":
                 request = Request(new_scope, receive=receive)
-                response = await proxy_http(request, target_base)
+                identity_headers = _stripe_identity_headers(request.cookies)
+                response = await proxy_http(
+                    request, target_base, extra_headers=identity_headers,
+                )
                 await response(scope, receive, send)
             else:
                 from fastapi import WebSocket as _WS
                 ws = _WS(new_scope, receive=receive, send=send)
-                await proxy_ws(ws, target_base)
+                identity_headers = _stripe_identity_headers(ws.cookies)
+                await proxy_ws(ws, target_base, extra_headers=identity_headers)
             return
 
         # Anything else under the prefix is frontend static.

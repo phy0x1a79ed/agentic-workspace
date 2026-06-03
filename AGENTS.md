@@ -275,10 +275,13 @@ When a stripe declares a backend, the hub:
 
 stdout + stderr land in `$AWM_DIR/logs/stripes/<service_id>.log`. **No auto-restart** in dev — crashes stay loud so you notice. No env mutation outside the `env` map. No file watching — rebuild + re-register (lease re-attach) to pick up changes.
 
+**Caller identity.** Every proxied request (HTTP and WebSocket) carries `X-Awm-As: <operator>` when the browser session is authenticated, and *no* `X-Awm-As` header at all when anonymous. The hub mints the header at the proxy edge from the `awm_as` cookie — your backend does not read cookies, does not validate bearers, does not call `/auth/whoami`. The header is forge-resistant: the hub overwrites any inbound `X-Awm-As` the client supplied. Bind to `127.0.0.1` (the supervisor already does); that's the trust boundary. If you need finer-grained policy, enforce it yourself against the header value.
+
 ### Authoring a frontend stripe
 
 - **Use relative URLs for backend calls.** `fetch('./_api/echo')`, not `fetch('/hello/_api/echo')`. The same bundle then works at any prefix (`/hello`, `/hello-rework`, `/dev-stuff/hello`, …) without rebuilding.
 - **`@awm/bus` is the cross-stripe pub/sub.** Import the singleton: `import { bus } from '@awm/bus'`. Channels are plain strings; payloads are `unknown` — narrow at the subscribe site. Use `replayLast: true` for late-mounting consumers of single-slot state.
+- **Read the operator with `getOperator()` from `@awm/bus`.** It's a cached fetch to `/auth/whoami` — one round-trip per page load no matter how many components call it. Don't build `X-Awm-As` yourself on outgoing fetches; the hub will inject (and overwrite) it for you, so your value is silently ignored. `awm_as` is HttpOnly so you can't read it from JS anyway.
 - **Sibling wiring goes through props/emitters**, not the bus. The bus is for events that cross stripe boundaries; component-to-component within a composite stripe stays explicit so the data flow is local to the parent.
 - **Frontend bundles are pure static.** No SSR, no API routes — that's what the backend is for.
 
@@ -307,6 +310,72 @@ Two patterns, used together:
 
 - **Build-time composition (preferred for tight coupling).** A composite stripe declares its leaves as workspace deps in its own `package.json`, imports them, and renders them. The leaves are registered separately too — each appears in the dev-shell — but the production view comes from the composite stripe's bundle. Component-to-component wiring is via props + emitters at the composite's boundary.
 - **Runtime composition (for loose coupling).** Two stripes that don't know about each other coordinate through `@awm/bus`. The STT stripe `publish`es a transcribed utterance; a chat stripe `subscribe`s and renders it. Neither stripe imports the other.
+
+### Publishing components from a package
+
+Build-time composition works because packages publish importable symbols across the workspace. A package can be:
+
+- **Library-only** — no `stripe` field. `@awm/bus` is the example. `awm stripe sync` ignores it; it exists purely to be imported.
+- **Stripe-only** — has `stripe`, no `main`/`exports`. `@awm/hello`, `@awm/dev-shell`. Standalone bundles; nothing for siblings to import.
+- **Both** — `@awm/primitives` registers a gallery stripe at `/primitives` *and* exports `Button`, `Card`, `Tag`, … for build-time consumers. One source tree, two roles.
+
+To make components importable from `@awm/<name>`, four manifest fields plus a barrel file:
+
+```jsonc
+// packages/<name>/package.json
+{
+  "name": "@awm/<name>",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "sideEffects": ["**/*.css", "**/*.svelte"]
+}
+```
+
+- `main` / `exports` point at **source**, not `dist/`. The consumer's Vite + `@sveltejs/vite-plugin-svelte` compiles the `.svelte` and `.ts` it imports. `dist/` is only for the package's stripe role (the bundle the hub serves); siblings never reach for it.
+- `sideEffects` whitelists CSS imports and Svelte component side effects so consumer bundlers don't tree-shake them out. Without it, a `<style>` block that only takes effect via mount can be dropped.
+- `type: "module"` matches the rest of the workspace.
+
+The barrel re-exports each component as a named symbol:
+
+```ts
+// packages/<name>/src/index.ts
+export { default as Button } from './Button.svelte';
+export { default as Card } from './Card.svelte';
+```
+
+`default as X` because each `.svelte` file has exactly one default export. Add one line per component you want public; anything not re-exported here is private to the package even if the file is on disk.
+
+**Consumer side** — no install, no publish, no version negotiation. The root `package.json` has `"workspaces": ["packages/*"]`, so `npm install` at the root symlinks `node_modules/@awm/<name> → packages/<name>/`. A sibling stripe just lists the dep with a wildcard:
+
+```jsonc
+// packages/composite/package.json
+{
+  "dependencies": { "@awm/<name>": "*" }
+}
+```
+
+```svelte
+<!-- packages/composite/src/App.svelte -->
+<script>
+  import { Button, Card } from '@awm/<name>';
+</script>
+```
+
+The `"*"` is just there to satisfy npm's resolver; the actual resolution is the workspace symlink. There's no registry and no semver to track.
+
+#### Gotchas
+
+- **Global CSS doesn't ride the barrel.** Per-component `<style>` blocks travel with the component import (that's what `sideEffects: ["**/*.svelte"]` protects). A file like `primitives/src/tokens.css` is side-effect-only and a bare `import { Button } from '@awm/primitives'` won't pull it in. The composite stripe's entry has to `import '@awm/primitives/tokens.css'` explicitly. If you want that import to work, also add it to `exports`:
+  ```jsonc
+  "exports": {
+    ".": "./src/index.ts",
+    "./tokens.css": "./src/tokens.css"
+  }
+  ```
+- **Source-mode `exports` requires the consumer to compile Svelte/TS.** Inside this monorepo every stripe uses Vite + the Svelte plugin, so this is free. A foreign consumer (a non-Vite app, an external project) would need a built entry — out of scope for now, but the day that matters you add a `build` step that emits `dist/lib/index.js` and switch `exports` to a conditional `{ "import": "./dist/lib/index.js", "svelte": "./src/index.ts" }`.
+- **Don't add a `stripe` field just to make components importable.** Library-only packages (no `stripe`) are the right shape when nothing visual ships at a prefix. Adding an empty stripe creates a dead entry in `/dev/` and a registration the hub has to manage for nothing.
+- **Renaming a re-export is a breaking change across the workspace.** `grep -rn "from '@awm/<name>'" packages/` before renaming. There's no codemod layer; every consumer's import line has to move with it.
 
 ### Reworking an existing stripe
 
@@ -345,6 +414,7 @@ If you genuinely need a second hub (working on `awm.exposed` itself, or testing 
 - **No port collision recovery.** If the backend logs ECONNREFUSED on its own port or "address in use", the supervisor doesn't retry — kill and re-register. The port pool advances past in-use ports on the next allocation.
 - **`awm stripe sync` blocks.** It holds every lease in one process. Running it directly (rather than through `./dev/run.sh`) means Ctrl-C tears everything down, which is what you want when iterating on the sync itself.
 - **Vite-dev for hot reload.** The hub serves what's on disk; for the rebuild-on-save loop, register the stripe with `awm hub register --url http://127.0.0.1:<vite-port>` instead of via the package — same trick as `comp-*`.
+- **Setting `X-Awm-As` manually on a `fetch` is a no-op.** The hub overwrites it from the `awm_as` cookie on every stripe proxy hop, so the value you sent is dropped. If you need to act on behalf of a different operator, that's peer federation (see § Service Hub), not a stripe concern.
 
 ## Awm Editable Install Gotcha
 
@@ -357,6 +427,33 @@ The editable install at `/home/tony/lib/miniforge3/envs/awm/lib/python3.14/site-
 - Merge dev → release to advance the editable mapping's target (what the deploy step does).
 
 See memory `[[awm_two_source_trees]]` for the full failure mode.
+
+## Running tests
+
+Pytest tests live under `awm/tests/awm/tests/` and are organized into per-subsystem subdirectories (`unit/`, `hub/`, `scopes/`, `messaging/`, `federation/`, `auth/`, `mcp/`, `artifacts/`, `sessions/`, `agent/`, `misc/`). Every test file declares a module-level `pytestmark` so you can select by subsystem **or** by speed; markers are registered in `pyproject.toml` (`pytest --markers` lists them).
+
+```bash
+# Fast dev-iteration set (~35s on this host, 161 tests). Pure unit + small
+# in-process tests, no subprocesses, no federation. Use on every save.
+mamba run -n awm pytest -m smoke
+
+# One subsystem at a time (path or marker — both work):
+mamba run -n awm pytest awm/tests/hub/
+mamba run -n awm pytest -m messaging
+
+# Everything except subprocess/git/federation/replication clusters:
+mamba run -n awm pytest -m "not (slow or federation)"
+
+# Full suite (~10 min). Run before merging.
+mamba run -n awm pytest
+
+# Preview a selection without running it (sanity-check before a long run):
+mamba run -n awm pytest -m smoke --collect-only -q
+```
+
+Markers in use: `smoke` / `slow` / `federation` / `subprocess` (cross-cutting), plus one per subsystem (`unit`, `hub`, `scopes`, `messaging`, `auth`, `mcp`, `artifacts`, `sessions`, `agent`, `misc`). To retag a file, edit its top-of-file `pytestmark = [...]` line.
+
+Frontend tests are separate: `cd frontend && PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run test` runs the vitest fixture sweep — already fast (jsdom only).
 
 ## Agent Rules
 
