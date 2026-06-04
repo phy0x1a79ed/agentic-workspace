@@ -139,13 +139,23 @@ explicitly. The generator picks up subpath imports too.
 
 ### Iterating on a package in a scope
 
+**Use the running `dev` sandbox. Do NOT start your own.** Only the `dev`
+scope runs `./dev/run.sh start` — every other scope (`comp-*`, `svc-*`,
+`web-*`, etc.) shadows against the already-running hub at
+`https://127.0.0.1:7821/`. Spinning up a second sandbox in your own
+worktree gives you a hub at a different port with none of `dev`'s seeded
+state, splits your browser cookies across origins, and is almost never
+what you want. If `./dev/run.sh status` shows nothing running, ask the
+`dev`-scope agent to start it — don't start one yourself.
+
 To live-test a local change against the running dev sandbox without
 evicting the dev copy, push it as a shadow overlay:
 
 ```bash
-cd /home/tony/agentic_workspace/projects/awm/<scope>
+cd /home/tony/agentic_workspace/projects/awm/<scope>   # NOT projects/awm/dev
 awm dev shadow services/tts pages/tts
 # (lease blocks; Ctrl-C pops the overlay; dev's base traffic resumes instantly)
+# Visit https://127.0.0.1:7821/ui/... — same origin as the dev sandbox.
 ```
 
 For named templates, edit `packages/dev.sh` and call `./packages/dev.sh <name>`:
