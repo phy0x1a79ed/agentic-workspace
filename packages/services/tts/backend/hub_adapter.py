@@ -87,7 +87,7 @@ async def _dispatch_call(fn: str, args: Any) -> Any:
     """Run one function call. Imports are local so service start doesn't
     pay the cost when the function is never invoked."""
     if fn == "listEngines":
-        from tts.backend.app import EXPOSED_TTS_ENGINES, _enrich_kokoro_rvc_enums
+        from app import EXPOSED_TTS_ENGINES, _enrich_kokoro_rvc_enums
         from voice import engines as reg
         all_tts = reg.list_engines()["tts"]
         exposed = {eid: all_tts[eid] for eid in EXPOSED_TTS_ENGINES if eid in all_tts}
@@ -95,31 +95,31 @@ async def _dispatch_call(fn: str, args: Any) -> Any:
             await _enrich_kokoro_rvc_enums(exposed["kokoro_rvc"])
         return exposed
     if fn == "listPresets":
-        from tts.backend import presets
+        import presets
         return {"presets": presets.list_presets(),
                 "last_used": presets.get_last_used()}
     if fn == "savePreset":
-        from tts.backend import presets
+        import presets
         name = args.get("name")
         presets.save_preset(name, args.get("engine"), args.get("params", {}))
         return None
     if fn == "deletePreset":
-        from tts.backend import presets
+        import presets
         presets.delete_preset(args.get("name"))
         return None
     if fn == "getAllState":
-        from tts.backend import state
+        import state
         return state.list_state()
     if fn == "getState":
-        from tts.backend import state
+        import state
         v = state.get_state(args.get("key"))
         return {"value": v}
     if fn == "setState":
-        from tts.backend import state
+        import state
         state.set_state(args.get("key"), args.get("value"))
         return None
     if fn == "delState":
-        from tts.backend import state
+        import state
         state.delete_state(args.get("key"))
         return None
     raise RuntimeError(f"unknown function {fn!r}")
@@ -145,7 +145,7 @@ async def _run_call_session(hub_url: str, token: str, sid: str,
     the websockets connection minimally — it already supports send_bytes/
     send_text/receive, and most engine code only calls those.
     """
-    from tts.backend.app import _Call, _active, _handle_speak, _handle_reconfigure
+    from app import _Call, _active, _handle_speak, _handle_reconfigure
     from voice import engines as reg
     import uuid
 

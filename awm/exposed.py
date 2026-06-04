@@ -33,7 +33,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import JSONResponse, Response
 
 from awm import __version__, config
 from awm._lib.access_log import record as record_access
@@ -336,7 +336,6 @@ from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
-from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
 app.include_router(peer_router)
@@ -414,7 +413,7 @@ async def auth_bootstrap(request: Request):
     except auth_svc.TokenMissing:
         raise HTTPException(500, "daemon token not initialized")
 
-    response = Response(status_code=302, headers={"Location": "/ui/"})
+    response = Response(status_code=302, headers={"Location": "/ui/agent"})
     response.set_cookie(
         key=auth_svc.SESSION_COOKIE,
         value=bearer,
@@ -438,8 +437,8 @@ async def auth_bootstrap(request: Request):
 async def auth_whoami(request: Request, _auth: None = Depends(require_bearer)):
     """Return the operator display name (from ``awm_as`` cookie).
 
-    Used by ``/ui/login.html`` to poll for completion after the operator
-    clicks a DM'd bootstrap link in another tab.
+    Used by the ``/ui/login`` page stripe to poll for completion after the
+    operator clicks a DM'd bootstrap link in another tab.
     """
     awm_user = request.cookies.get(auth_svc.AS_COOKIE) or "operator"
     return JSONResponse({"awm_user": awm_user})
@@ -452,29 +451,6 @@ async def auth_logout(_request: Request):
     response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
     response.delete_cookie(auth_svc.AS_COOKIE, path="/")
     return response
-
-_STATIC_DIR = _Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
-    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
-    # mic-worklet.js) are served directly; anything else under /ui/ falls
-    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
-    # etc.) survive hard reloads.
-    @app.get("/ui")
-    @app.get("/ui/")
-    @app.get("/ui/{full_path:path}")
-    async def _spa(full_path: str = ""):
-        # login.html stays its own page (server-rendered single-purpose entry).
-        if full_path:
-            # Resolve safely — reject any path that escapes the static dir.
-            candidate = (_STATIC_DIR / full_path).resolve()
-            try:
-                candidate.relative_to(_STATIC_DIR.resolve())
-            except ValueError:
-                return FileResponse(_STATIC_DIR / "index.html")
-            if candidate.is_file():
-                return FileResponse(candidate)
-        return FileResponse(_STATIC_DIR / "index.html")
-
 
 # ---------------------------------------------------------------------------
 # Gate destructive routes on the core app

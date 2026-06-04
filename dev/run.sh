@@ -262,6 +262,8 @@ _start_login() {
   fi
 }
 
+NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
+
 _build_packages() {
   # Layout-driven build pipeline:
   #   1. awm packages gen — write generated package.json + per-page
@@ -383,51 +385,6 @@ do_reset() {
   esac
 }
 
-FRONTEND_DIR="$REPO_ROOT/frontend"
-NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
-
-do_frontend() {
-  if [ ! -d "$FRONTEND_DIR" ]; then
-    echo "[dev] no frontend/ directory — nothing to run"
-    exit 1
-  fi
-  if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-    echo "[dev] installing frontend deps…"
-    (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund)
-  fi
-  # AWM_API_TARGET defaults to this worktree's own uvicorn; override to point
-  # Vite at a different scope's backend (e.g. web-backend's uvicorn on 7841).
-  local api_target="${AWM_API_TARGET:-https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}}"
-  echo "[dev] vite dev → http://0.0.0.0:${VITE_PORT}/ui/  (proxies API/WS to ${api_target})"
-  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" \
-      AWM_API_TARGET="$api_target" VITE_PORT="$VITE_PORT" \
-      npm run dev -- --host 0.0.0.0 --port "$VITE_PORT")
-}
-
-do_build() {
-  if [ ! -d "$FRONTEND_DIR" ]; then
-    echo "[dev] no frontend/ directory — nothing to build"
-    exit 1
-  fi
-  # adapter-static empties awm/static/ before writing the SPA, which wipes
-  # the server-rendered login.html (operator lockout risk). Preserve it
-  # across the build by copy-aside-then-restore.
-  local login_src="$REPO_ROOT/awm/static/login.html"
-  local login_bak=""
-  if [ -f "$login_src" ]; then
-    login_bak="$(mktemp)"
-    cp "$login_src" "$login_bak"
-  fi
-  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
-  if [ -n "$login_bak" ]; then
-    cp "$login_bak" "$login_src"
-    rm -f "$login_bak"
-    echo "[dev] preserved login.html across build"
-  fi
-  echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
-  echo "[dev] vertical stripes auto-build + auto-register via 'start' (npm run build --workspaces + awm stripe sync)"
-}
-
 case "$cmd" in
   start)    do_start ;;
   stop)     do_stop ;;
@@ -437,10 +394,8 @@ case "$cmd" in
   reset)    do_reset ;;
   login)    do_login ;;
   logs)     tail -n 200 -F "$LOG_FILE" ;;
-  frontend) do_frontend ;;
-  build)    do_build ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs|frontend|build}"
+    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs}"
     exit 2
     ;;
 esac

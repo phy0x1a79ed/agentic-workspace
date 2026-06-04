@@ -120,7 +120,7 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 | Prefix | Family | What it owns |
 |--------|--------|-------------|
-| `comp-*` | component | A single frontend component + its fixtures (one slug under `/dev/components/`). |
+| `comp-*` | component | A single shared component package (one slug under `packages/components/<name>/`). |
 | `svc-*`  | service   | A backend service contract — endpoints, models, the Pydantic surface for an area. |
 | `feat-*` | feature   | End-to-end integration that wires components, services, and external engines together (e.g. `feat-stt`, `feat-rooms`). |
 | `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners. |

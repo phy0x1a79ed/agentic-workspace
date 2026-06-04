@@ -16,8 +16,6 @@ lives next to this file and is gitignored.
 ./run.sh reset          # wipe state and re-seed (prompts first)
 ./run.sh login          # one-line CLI form of the login URL
 ./run.sh logs           # tail uvicorn log
-./run.sh frontend       # Vite dev server for ../frontend (HTTP, port 12103)
-./run.sh build          # production SvelteKit build → ../awm/static/
 ```
 
 ## Three scopes in parallel
@@ -26,12 +24,12 @@ This sandbox runs in **every** `projects/awm/<scope>/` worktree. Each scope
 gets a distinct port band derived from its directory name, so all three can
 run side-by-side:
 
-| Scope worktree | uvicorn | login | Vite |
-|---|---|---|---|
-| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` | `7822` | `12103` |
-| `projects/awm/web-ui/` (`feat/web-ui`) | `7831` | `7832` | `12113` |
-| `projects/awm/web-backend/` (`feat/web-backend`) | `7841` | `7842` | `12123` |
-| any other scope (fallback) | `7851` | `7852` | `12153` |
+| Scope worktree | uvicorn | login |
+|---|---|---|
+| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` | `7822` |
+| `projects/awm/web-ui/` (`feat/web-ui`) | `7831` | `7832` |
+| `projects/awm/web-backend/` (`feat/web-backend`) | `7841` | `7842` |
+| any other scope (fallback) | `7851` | `7852` |
 
 **The uvicorn port IS the service-hub origin for this sandbox.** `AGENTS.md`
 § "Service Hub" documents the hub at `:7820` (the production default — the
@@ -52,21 +50,6 @@ Works.
 - Merging up: PRs land on `dev`. The `projects/awm/dev/` worktree is the
   canonical integration test target — run its sandbox to verify a merge.
 
-### Cross-scope live test
-
-The frontend dev can point their Vite proxy at **any** running uvicorn by
-exporting `AWM_API_TARGET` before `./run.sh frontend`. Default is the same
-worktree's own uvicorn (solo mode). Example: have a web-backend dev's
-in-progress backend serve the frontend dev's UI:
-
-```bash
-# in projects/awm/web-ui/dev
-AWM_API_TARGET=https://127.0.0.1:7841 ./run.sh frontend
-```
-
-Caveat: the browser must have an authed cookie for the target backend, so
-visit `http://127.0.0.1:7842/` (web-backend's login bookmark) once first.
-
 ### Per-worktree overrides
 
 Drop a gitignored `dev/.env` next to `run.sh` for per-worktree settings.
@@ -85,7 +68,7 @@ which takes precedence over the scope-band defaults.
 
 | Process | URL (web-ui scope) | Purpose |
 |---|---|---|
-| uvicorn | `https://127.0.0.1:7831/ui/` | the actual app + /ui SPA (self-signed cert) |
+| uvicorn | `https://127.0.0.1:7831/` | the hub origin; serves backend routes + per-page stripes at `/ui/<name>/` (self-signed cert) |
 | login-server | `http://127.0.0.1:7832/` | bookmark page that mints a fresh `/auth/bootstrap?ot=...` link on every refresh |
 
 Bookmark the login URL for your scope. Refresh it any time you need a new
@@ -135,27 +118,18 @@ AWM_WORKSPACE=$(pwd) awm scope list             # alternative — reads dev/.awm
 The harness itself uses the loopback bearer in `.awm/auth.token` directly,
 so it never needs the operator's CLI.
 
-## Frontend (SvelteKit)
+## Page stripes
 
-The web UI source lives in `../frontend/` — a SvelteKit 2 + Svelte 5 + Tailwind
-v4 + bits-ui project. The production build is emitted to `../awm/static/` and
-served by uvicorn at `/ui/`. See `../frontend/` for component layout and design
-tokens (DM Sans/Mono, dark-only, `--atomizer` blue accent).
+The web UI is composed of per-page stripes under `../packages/pages/<name>/`
+(Svelte 5 + Vite), each registered with the hub as `kind=page` and served at
+`/ui/<name>/`. The active pages are `agent`, `tts`, `ptt`, `primitives-gallery`,
+and `login`. Login lives at `/login` (its `prefix.txt` overrides the default
+`/ui/login`); the `/auth/bootstrap` redirect lands on `/ui/agent`.
 
-- `./run.sh frontend` — runs Vite dev on `0.0.0.0:$VITE_PORT` (scope-derived;
-  web-ui=12113, dev=12103, web-backend=12123) with API/WS proxied to the
-  worktree's own uvicorn. Override `AWM_API_TARGET` to point at a different
-  scope's backend. Vite runs over HTTP, so cookies set with `Secure=True`
-  will not flow through — visit the target backend's login URL once to mint
-  a session before relying on the dev server for authed calls.
-- `./run.sh build` — `cd ../frontend && npm install && npm run build`. The
-  cutover replaces `awm/static/{index.html, _app/, mic-worklet.js, favicon.svg}`
-  on every build; `awm/static/login.html` is server-rendered and must be
-  preserved by hand if you wipe the directory.
-
-The backend SPA fallback lives in `awm/exposed.py` next to the static dir
-declaration: it serves real assets directly and falls back to `index.html`
-for any unknown `/ui/<path>` so deep links survive hard reloads.
+`./run.sh start` runs `awm packages gen` + `npm run build --workspaces` +
+`awm packages sync` automatically — pages are built into `dist/` and
+registered as the hub comes up. See the root `README.md` § *Developing a
+package* for the authoring workflow.
 
 ## Don't use this directory as an agent CWD
 

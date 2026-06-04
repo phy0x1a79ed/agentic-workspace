@@ -22,7 +22,6 @@ include = ["awm*"]
 
 [tool.setuptools.package-data]
 "awm.skills" = ["**/*.md", "**/*.template"]
-"awm.static" = ["*.html", "*.css", "*.js"]
 "awm.services" = ["_room_names_data/*.txt"]
 
 [project.optional-dependencies]

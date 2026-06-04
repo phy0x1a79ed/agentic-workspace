@@ -1,74 +1,8 @@
 # AWM Internal Architecture
 
-*Internal architecture reference for agents working ON awm itself: Service Hub protocol, vertical-stripe component dev infra, Python/env conventions. Auto-injected only when the agent's cwd contains this file at its root — `projects/awm/*` scopes inherit it via .bare-worktree sharing; other projects' agents never see it. **Do not merge into WORKSPACE.md** — that file is universal, this one is awm-private; keeping them separate is what keeps non-awm agents' contexts uncluttered.*
+*Internal architecture reference for agents working ON awm itself: Service Hub protocol, package model, Python/env conventions. Auto-injected only when the agent's cwd contains this file at its root — `projects/awm/*` scopes inherit it via .bare-worktree sharing; other projects' agents never see it. **Do not merge into WORKSPACE.md** — that file is universal, this one is awm-private; keeping them separate is what keeps non-awm agents' contexts uncluttered.*
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
-
-## Component Dev Architecture
-
-The frontend has two complementary seams that contain UI complexity and turn composition bugs into autonomous test failures. **Do this work in a worktree that has `feat/infra-dev-components` merged in** (every `comp-*` and `infra-typed-seams` branch carries the doc but not the runtime — see § "Where to run" below).
-
-### Per-component dev surface (`infra-dev-components`)
-
-Each component owns a sibling `<Name>.fixtures.ts` file declaring variants. No central registry — Vite globs them at build time.
-
-```ts
-// frontend/src/lib/components/StatusTag.fixtures.ts
-import type { ComponentProps } from 'svelte';
-import Component from './StatusTag.svelte';
-
-const fixtures: Record<string, ComponentProps<typeof Component>> = {
-  active: { status: 'active' },
-  failed: { status: 'failed' },
-};
-export { Component as component };
-export default fixtures;
-```
-
-Dev surface routes:
-
-- `/dev/components` — auto-generated index of every `*.fixtures.ts` under `src/lib/components/`.
-- `/dev/components/[slug]?v=<variant>` — single-component view with variant switcher.
-- Root `+layout.svelte` skips app chrome and the backend bootstrap on `/dev/*`, so dev pages never call `/voice`, `/rooms`, `/peers`, or `/vagrant`.
-
-`npm run test` runs `vitest` + `jsdom`. A single generic runner (`src/lib/dev/fixtures.test.ts`) globs the same fixture set and mounts every variant — **crash-on-mount bugs surface in CI without anyone opening a browser**. Adding a fixture requires zero changes to the runner.
-
-### Bind-prop wrapper pattern
-
-For `$bindable` props whose bug lives at the parent's bind direction, the fixture points at a thin wrapper Svelte file that wires the bind from local state. For `AgentList`, the parent itself is the wrapper, so no extra file is needed — the failing variants in `AgentList.fixtures.ts` reproduce the composition-seam crash autonomously.
-
-### Typed seam (`infra-typed-seams`)
-
-`npm run gen-types` spawns a one-shot Python process in the `awm` mamba env that imports `awm.exposed:app` and calls `app.openapi()` directly. No live uvicorn required, no auth wall. Output goes to `frontend/src/lib/api/generated.ts` (committed). Spawn cwd + `sys.path` are pinned to the worktree root so `import awm` resolves to the worktree's source, not the editable install (see memory `[[awm_two_source_trees]]`).
-
-Hand-written interfaces in `client.ts` get progressively replaced by re-exports from `generated.ts`. The first proof-of-seam is `VagrantSessionResponse`. The migration is intentionally narrow — types that match 1:1 swap immediately; types that diverge in shape stay hand-written until the backend tightens its `response_model` declarations.
-
-Engine `CONFIG_SCHEMA` JSON Schemas escape this pipeline (FastAPI types their envelope as `dict[str, Any]` → `unknown`). Fixtures for engine forms hand-shape JSON Schema blobs.
-
-### Workflow
-
-`node`/`npm` live in the `awm` mamba env, not on the default PATH. Prefix as shown:
-
-```bash
-cd frontend
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm install
-
-# Visual: see fixtures in the browser
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run dev   # http://localhost:12103/ui/dev
-
-# Autonomous: fail CI on crash-on-mount bugs
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run test
-
-# Regenerate types after Pydantic model changes
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run gen-types
-PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run check
-```
-
-### Where to run
-
-- **`feat/infra-dev-components`** has the dev routes, vitest config, and the generic runner. Anything you add a fixture for shows up here.
-- **`feat/infra-typed-seams`** has the `gen-types` script and `generated.ts`.
-- **`feat/comp-*`** branches carry only the fixture file for their component. To verify a `comp-*` fixture, either merge `feat/infra-dev-components` into the comp branch (and `feat/infra-typed-seams` if the component needs generated types), or use the `verify/integration` branch that octopus-merges all five.
 
 ## Service Hub
 
@@ -121,11 +55,11 @@ Use a `svc-*` worktree when a stripe needs to **own** a path prefix end-to-end: 
 
 ### Stripe-presentation protocol
 
-A vertical stripe typically combines a `svc-*` (backend, `kind=url`) and a `comp-*` (frontend bundle, `kind=static`) registered through the same hub origin. End-user view:
+A vertical stripe typically combines a `svc-*` (backend, `kind=url`) and a `comp-*` (static bundle, `kind=static`) registered through the same hub origin. End-user view:
 
 ```
 https://127.0.0.1:7820/x/whatever   ← backend routes (forwarded to svc-X process)
-https://127.0.0.1:7820/comp-x/      ← frontend bundle (served from disk)
+https://127.0.0.1:7820/comp-x/      ← static bundle (served from disk)
 ```
 
 Same scheme, same host, same port. The svc-X port is plumbing the hub knows about; browsers never see it.
@@ -141,13 +75,13 @@ awm hub trust-self              # writes auth token to .awm/peers/<self>.token
 
 `trust-self` is idempotent. It only matters for URL-kind registrations: the hub forwards as the local peer, so the local peer's own token has to live in `peers/`.
 
-**Browser login.** The hub middleware short-circuits route auth for both `kind=static` and `kind=url`, so a stripe-only URL (`/comp-x/`, `/x/...`) opens without a cookie. To exercise a stripe inside the full SPA — where the bundle may `fetch('/rooms')`, `/peer/...`, etc. — visit the login bookmark first:
+**Browser login.** The hub middleware short-circuits route auth for both `kind=static` and `kind=url`, so a stripe-only URL (`/comp-x/`, `/x/...`) opens without a cookie. To exercise a stripe that calls back to authenticated routes (`fetch('/rooms')`, `/peer/...`, etc.), visit the login bookmark first:
 
 ```
 http://127.0.0.1:<login-port>/   (e.g. :7822 for dev, :7832 for web-ui)
 ```
 
-Each refresh mints a fresh single-use 60s-TTL `/auth/bootstrap?ot=…` URL; clicking it sets an `HttpOnly` cookie. CLI form: `./dev/run.sh login` from inside the sandbox prints the same URL.
+Each refresh mints a fresh single-use 60s-TTL `/auth/bootstrap?ot=…` URL; clicking it sets an `HttpOnly` cookie and redirects to `/ui/agent`. CLI form: `./dev/run.sh login` from inside the sandbox prints the same URL.
 
 #### svc-X (kind=url)
 
@@ -221,9 +155,9 @@ Hub → service is degenerate peer auth (URL kind only). The hub injects `Author
 
 Static-kind registrations don't proxy, so there's no second-hop auth — bytes are served by the hub directly, subject to whatever middleware sits in front of the hub itself.
 
-### What `comp-*` and frontend slices need to know about consuming
+### What `comp-*` and page stripes need to know about consuming
 
-**Nothing.** The hub IS `awm.exposed:app`. Same origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm. The frontend can `fetch('/x/whatever')` without CORS, cookies, or a second port.
+**Nothing.** The hub IS `awm.exposed:app`. Same origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm. A page stripe can `fetch('/x/whatever')` without CORS, cookies, or a second port.
 
 ### Demos
 
@@ -268,7 +202,7 @@ General Python env rules (use `mamba run -n awm`, never `pip` / `python` / `mamb
 The editable install at `/home/tony/lib/miniforge3/envs/awm/lib/python3.14/site-packages/__editable___awm_0_1_0_finder.py` maps `awm` → `/home/tony/agentic_workspace/awm` (the **release** worktree). When iterating on dev-tree code, `import awm` from the conda env silently resolves to release code, not the dev tree. Workarounds:
 
 - Run with explicit `PYTHONPATH=<dev-worktree>` to shadow the editable mapping, OR
-- Spawn a Python subprocess with cwd + `sys.path[0]` pinned to the dev worktree (this is how `npm run gen-types` does it — see `frontend/scripts/gen-types.mjs`, which spawns the Python child), OR
+- Spawn a Python subprocess with cwd + `sys.path[0]` pinned to the dev worktree, OR
 - Merge dev → release to advance the editable mapping's target (what the deploy step does).
 
 See memory `[[awm_two_source_trees]]` for the full failure mode.
@@ -297,8 +231,6 @@ mamba run -n awm pytest -m smoke --collect-only -q
 ```
 
 Markers in use: `smoke` / `slow` / `federation` / `subprocess` (cross-cutting), plus one per subsystem (`unit`, `hub`, `scopes`, `messaging`, `auth`, `mcp`, `artifacts`, `sessions`, `agent`, `misc`). To retag a file, edit its top-of-file `pytestmark = [...]` line.
-
-Frontend tests are separate: `cd frontend && PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run test` runs the vitest fixture sweep — already fast (jsdom only).
 
 ## Agent Rules
 
