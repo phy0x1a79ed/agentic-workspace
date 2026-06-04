@@ -2048,7 +2048,7 @@ def packages_gen(
 def _packages_walk(repo_root: pathlib.Path) -> tuple[list[pathlib.Path],
                                                      list[pathlib.Path]]:
     """Return (service_dirs, page_dirs) under repo_root/packages/. Skips
-    _to_delete/ and any subdir name starting with '_'."""
+    any subdir name starting with '_' (e.g. _shared/)."""
     pkgs = repo_root / "packages"
     services: list[pathlib.Path] = []
     pages: list[pathlib.Path] = []

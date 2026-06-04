@@ -171,7 +171,7 @@ def write_page(pkg_dir: Path) -> bool:
 def run(repo_root: Path) -> dict[str, int]:
     """Walk ``repo_root/packages/{components,pages}/`` and write manifests.
 
-    Skips ``_to_delete/`` and ``_shared/`` (anything starting with ``_``).
+    Skips ``_shared/`` (anything starting with ``_``).
     Returns a small counters dict for the caller to log.
     """
     pkgs = repo_root / "packages"

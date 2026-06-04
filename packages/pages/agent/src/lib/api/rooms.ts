@@ -1,10 +1,8 @@
 /**
  * Room bootstrap + WS attach for the agent convo page.
  *
- * Lifted from agent-harness/packages/agent/src/api/rooms.ts and trimmed
- * to the operations this page actually uses: find-or-create a room for
- * a {project, scope} pair, post text into it, and stream incoming posts
- * back through a callback.
+ * Find-or-create a room for a {project, scope} pair, post text into it,
+ * and stream incoming posts back through a callback.
  *
  * `awmAs()` reads the same awm_as cookie the hub stamps on bootstrap —
  * its value (e.g. "operator") is sent as `X-Awm-As: user:operator` so

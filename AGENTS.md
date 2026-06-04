@@ -88,12 +88,12 @@ Each prefix maps to a stack of records (base + optional overlays). Overlays are 
 
 This scope migrates the package model from one ambiguous `kind="stripe"` to three structurally distinct kinds:
 
-- **Folder taxonomy.** `packages/{components,services,pages,_to_delete,_shared}/` — see § Developing a package.
+- **Folder taxonomy.** `packages/{components,services,pages,_shared}/` — see § Developing a package.
 - **Layout-driven generator.** `awm packages gen <repo_root>` writes per-package `package.json` and per-page `vite.config.ts` from the folder layout + a regex scan of `src/` for `@awm/<x>` imports. Lives at `awm/services/packages/gen.py`. Generated files are committed; CI gates on `git diff --quiet` after a fresh run.
 - **Service RPC layer.** `awm/services/hub/rpc.py` holds the in-memory `ControlChannel` table keyed by `service_id`. Three endpoint families: `POST /hub/service/register`, `WS /hub/service/control/{sid}`, `WS /hub/service/bridge/{sid}/{bid}`. JSON envelopes on the control WS (call/reply/notify/sub/unsub/emit/session.*); direct sessions/emitters get a raw-frame bridge so PCM audio (TTS, PTT) byte-relays without JSON wrapping.
 - **PID journal + 10s reconnect.** Service registrations are journaled to `<AWM_DIR>/state/services.json`. On hub boot, each service has 10 seconds to re-open its control WS; silent ones get `SIGTERM` on their last-known PID + a respawn from `start_cmd`.
 - **Shadow overlays.** Each registered prefix is a stack; `awm dev shadow <pkg>...` pushes overlays from a scope worktree against a running hub. Lease close pops the overlay; base traffic resumes with no respawn.
-- **Migration.** `packages/components/primitives/` (from old `packages/primitives`), `packages/pages/{primitives-gallery,tts,ptt}/`, `packages/services/{tts,ptt}/`. `bus`/`dev-shell`/`hello` moved to `packages/_to_delete/` for a follow-up `cleanup-legacy-packages` scope.
+- **Migration.** `packages/components/primitives/` (from old `packages/primitives`), `packages/pages/{primitives-gallery,tts,ptt,agent}/`, `packages/services/{tts,ptt}/`. The pre-redesign legacy packages (`bus`, `dev-shell`, `hello`, the old `kind=stripe` `ptt`/`tts`/`agent`, and the old `chat-primitives` library) were deleted outright in the `agent-harness` scope — no holding pen.
 
 What this scope did NOT do (deferred):
 

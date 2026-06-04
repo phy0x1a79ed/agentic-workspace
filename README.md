@@ -48,7 +48,6 @@ packages/
   services/<name>/     ← long-running backend; reached at /svc/<name>/…
   pages/<name>/        ← static bundle; served at /ui/<name>/
   _shared/             ← hand-maintained shared Vite config base
-  _to_delete/          ← legacy packages awaiting cleanup
   dev.sh               ← saved dev-shadow templates (see Iterating below)
 ```
 
