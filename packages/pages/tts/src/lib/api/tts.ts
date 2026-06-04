@@ -4,26 +4,13 @@
  *   POST /svc/tts/session/call    (open a direct-bridge call session)
  *   WS   /svc/tts/session/<id>    (PCM + JSON control frames)
  *
- * URLs are absolute under /svc/tts/ — the page lives at /ui/tts/ and
- * cross-prefixes the service explicitly.
+ * The wire layer (auth headers, JSON encoding, error shaping) lives in
+ * @awm/client; this module only owns the TTS protocol on top.
  */
 
-const SVC = '/svc/tts';
+import { svc, toWsUrl } from '@awm/client';
 
-async function callFn<T>(fn: string, args: unknown = {}): Promise<T> {
-  const r = await fetch(`${SVC}/fn/${fn}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(args),
-  });
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    throw new Error(`POST ${SVC}/fn/${fn} → HTTP ${r.status}: ${detail}`);
-  }
-  if (r.status === 204) return undefined as unknown as T;
-  return (await r.json()) as T;
-}
+const TTS = svc('tts');
 
 export interface EngineDescriptor {
   schema: Record<string, unknown>;
@@ -33,7 +20,7 @@ export interface EngineDescriptor {
 export type EngineRegistry = Record<string, EngineDescriptor>;
 
 export async function listEngines(): Promise<EngineRegistry> {
-  return await callFn<EngineRegistry>('listEngines');
+  return await TTS.fn<EngineRegistry>('listEngines');
 }
 
 export interface Preset {
@@ -48,7 +35,7 @@ export interface PresetsResponse {
 }
 
 export async function listPresets(): Promise<PresetsResponse> {
-  return await callFn<PresetsResponse>('listPresets');
+  return await TTS.fn<PresetsResponse>('listPresets');
 }
 
 export async function savePreset(
@@ -56,34 +43,17 @@ export async function savePreset(
   engine: string,
   params: Record<string, unknown>,
 ): Promise<void> {
-  await callFn<void>('savePreset', { name, engine, params });
+  await TTS.fn<void>('savePreset', { name, engine, params });
 }
 
 export async function deletePreset(name: string): Promise<void> {
-  await callFn<void>('deletePreset', { name });
+  await TTS.fn<void>('deletePreset', { name });
 }
 
 interface SessionOpenResponse {
   session_id: string;
   ws_path: string;
   direct: boolean;
-}
-
-async function openCallSession(
-  engine: string,
-  params: Record<string, unknown>,
-): Promise<SessionOpenResponse> {
-  const r = await fetch(`${SVC}/session/call`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ engine, params }),
-  });
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    throw new Error(`POST ${SVC}/session/call → HTTP ${r.status}: ${detail}`);
-  }
-  return (await r.json()) as SessionOpenResponse;
 }
 
 interface PendingSpeak {
@@ -108,10 +78,10 @@ export class TtsCall {
   private activeSource: AudioBufferSourceNode | null = null;
 
   static async open(engine: string, params: Record<string, unknown>): Promise<TtsCall> {
-    const session = await openCallSession(engine, params);
-    const httpUrl = new URL(session.ws_path, window.location.href);
-    httpUrl.protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    return new TtsCall(httpUrl.toString());
+    const session = await TTS.session<SessionOpenResponse>('call', { engine, params });
+    // ws_path is server-authoritative (may route to a peer hub or carry a
+    // bridge token) — use it verbatim, don't reconstruct from session_id.
+    return new TtsCall(toWsUrl(session.ws_path));
   }
 
   private constructor(wsUrl: string) {

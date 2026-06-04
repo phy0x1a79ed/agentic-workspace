@@ -11,5 +11,8 @@
   "sideEffects": [
     "**/*.svelte",
     "**/*.css"
-  ]
+  ],
+  "dependencies": {
+    "@awm/client": "*"
+  }
 }

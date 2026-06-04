@@ -1,6 +1,7 @@
 <script lang="ts">
   import PttButton from './PttButton.svelte';
   import PttComposerShell from './PttComposerShell.svelte';
+  import { apiFetch, AuthError, toWsUrl } from '@awm/client';
   // Vite-bundled worklet URL: `?url` returns the asset URL at build time.
   // The bundled file is fetched relative to the page origin, so it works
   // whether the page is served from /ui/ptt/, /ui/agent/, or anywhere
@@ -74,27 +75,19 @@
 
   async function openSession(): Promise<string | null> {
     try {
-      const r = await fetch(`${svcPrefix}/session/stream`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({}),
-      });
-      if (r.status === 401 || r.status === 403) {
+      const body = await apiFetch<{ ws_path: string }>(
+        `${svcPrefix}/session/stream`,
+        { method: 'POST', body: {} },
+      );
+      return body.ws_path;
+    } catch (err) {
+      if (err instanceof AuthError) {
         status = 'error';
         statusText = 'not logged in';
         const port = Number(location.port) || (location.protocol === 'https:' ? 443 : 80);
         loginUrl = `http://${location.hostname}:${port + 1}/`;
         return null;
       }
-      if (!r.ok) {
-        status = 'error';
-        statusText = `session open failed: HTTP ${r.status}`;
-        return null;
-      }
-      const body = await r.json() as { ws_path: string };
-      return body.ws_path;
-    } catch (err) {
       status = 'error';
       statusText = `session open failed: ${(err as Error).message}`;
       return null;
@@ -104,10 +97,8 @@
   async function openSocket(): Promise<void> {
     const wsPath = await openSession();
     if (!wsPath) return;
-    const httpUrl = new URL(wsPath, window.location.href);
-    httpUrl.protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     try {
-      ws = new WebSocket(httpUrl.toString());
+      ws = new WebSocket(toWsUrl(wsPath));
     } catch (err) {
       status = 'error';
       statusText = `ws open failed: ${(err as Error).message}`;

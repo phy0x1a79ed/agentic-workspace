@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { whoami } from '@awm/client';
 
   let signedIn = $state(false);
 
@@ -9,14 +10,13 @@
     async function check() {
       if (cancelled) return;
       try {
-        const r = await fetch('/auth/whoami', { credentials: 'include' });
-        if (r.ok) {
-          signedIn = true;
-          setTimeout(() => location.replace('/ui/agent'), 400);
-          return;
-        }
+        await whoami();
+        signedIn = true;
+        setTimeout(() => location.replace('/ui/agent'), 400);
+        return;
       } catch (_) {
-        // network blip — keep polling
+        // not signed in (AuthError) or network blip (HttpError/TypeError)
+        // — keep polling.
       }
       setTimeout(check, 2000);
     }

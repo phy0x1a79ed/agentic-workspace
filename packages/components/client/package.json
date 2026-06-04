@@ -1,5 +1,5 @@
 {
-  "name": "@awm/tts-history",
+  "name": "@awm/client",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,5 @@
   "sideEffects": [
     "**/*.svelte",
     "**/*.css"
-  ],
-  "dependencies": {
-    "@awm/client": "*"
-  }
+  ]
 }

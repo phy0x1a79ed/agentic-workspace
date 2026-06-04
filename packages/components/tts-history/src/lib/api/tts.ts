@@ -1,29 +1,17 @@
 /**
- * TTS service client. Talks to the registered service at
+ * TTS service client for the tts-history component. Mirrors the page's
+ * api/tts.ts (within-scope duplication is a known follow-up — for now
+ * both modules go through @awm/client so auth + svc URL handling are
+ * unified at the wire layer).
+ *
  *   POST /svc/tts/fn/<name>       (RPC functions)
  *   POST /svc/tts/session/call    (open a direct-bridge call session)
  *   WS   /svc/tts/session/<id>    (PCM + JSON control frames)
- *
- * URLs are absolute under /svc/tts/ — any page that mounts this lives at
- * its own /ui/<x>/ prefix and cross-prefixes the service explicitly.
  */
 
-const SVC = '/svc/tts';
+import { svc, toWsUrl } from '@awm/client';
 
-async function callFn<T>(fn: string, args: unknown = {}): Promise<T> {
-  const r = await fetch(`${SVC}/fn/${fn}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(args),
-  });
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    throw new Error(`POST ${SVC}/fn/${fn} → HTTP ${r.status}: ${detail}`);
-  }
-  if (r.status === 204) return undefined as unknown as T;
-  return (await r.json()) as T;
-}
+const TTS = svc('tts');
 
 export interface EngineDescriptor {
   schema: Record<string, unknown>;
@@ -33,30 +21,13 @@ export interface EngineDescriptor {
 export type EngineRegistry = Record<string, EngineDescriptor>;
 
 export async function listEngines(): Promise<EngineRegistry> {
-  return await callFn<EngineRegistry>('listEngines');
+  return await TTS.fn<EngineRegistry>('listEngines');
 }
 
 interface SessionOpenResponse {
   session_id: string;
   ws_path: string;
   direct: boolean;
-}
-
-async function openCallSession(
-  engine: string,
-  params: Record<string, unknown>,
-): Promise<SessionOpenResponse> {
-  const r = await fetch(`${SVC}/session/call`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ engine, params }),
-  });
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    throw new Error(`POST ${SVC}/session/call → HTTP ${r.status}: ${detail}`);
-  }
-  return (await r.json()) as SessionOpenResponse;
 }
 
 interface PendingSpeak {
@@ -81,10 +52,8 @@ export class TtsCall {
   private activeSource: AudioBufferSourceNode | null = null;
 
   static async open(engine: string, params: Record<string, unknown>): Promise<TtsCall> {
-    const session = await openCallSession(engine, params);
-    const httpUrl = new URL(session.ws_path, window.location.href);
-    httpUrl.protocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    return new TtsCall(httpUrl.toString());
+    const session = await TTS.session<SessionOpenResponse>('call', { engine, params });
+    return new TtsCall(toWsUrl(session.ws_path));
   }
 
   private constructor(wsUrl: string) {

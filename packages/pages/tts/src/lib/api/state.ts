@@ -3,33 +3,27 @@
  *   POST /svc/tts/fn/{getState,setState,delState}
  */
 
-const SVC = '/svc/tts';
+import { svc, HttpError } from '@awm/client';
 
-async function callFn<T>(fn: string, args: unknown = {}): Promise<T> {
-  const r = await fetch(`${SVC}/fn/${fn}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify(args),
-  });
-  if (r.status === 404) return undefined as unknown as T;
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    throw new Error(`POST ${SVC}/fn/${fn} → HTTP ${r.status}: ${detail}`);
-  }
-  if (r.status === 204) return undefined as unknown as T;
-  return (await r.json()) as T;
-}
+const TTS = svc('tts');
 
 export async function getState<T = unknown>(key: string): Promise<T | null> {
-  const r = await callFn<{ value: T | null }>('getState', { key });
-  return r?.value ?? null;
+  try {
+    const r = await TTS.fn<{ value: T | null }>('getState', { key });
+    return r?.value ?? null;
+  } catch (err) {
+    // The state surface returns 404 when the key was never set — treat
+    // as "no value" rather than an error so callers can use the
+    // returned-default-on-null contract.
+    if (err instanceof HttpError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 export async function setState<T = unknown>(key: string, value: T): Promise<void> {
-  await callFn<void>('setState', { key, value });
+  await TTS.fn<void>('setState', { key, value });
 }
 
 export async function deleteState(key: string): Promise<void> {
-  await callFn<void>('delState', { key });
+  await TTS.fn<void>('delState', { key });
 }
