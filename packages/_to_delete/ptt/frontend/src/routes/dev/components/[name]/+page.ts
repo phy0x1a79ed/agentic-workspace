@@ -1,13 +1,8 @@
 import type { EntryGenerator } from './$types';
 
 // Build-time enumeration of fixture slugs so SvelteKit prerenders one
-// canonical .html per component. Mirrors the globs + slug derivation in
-// $lib/dev/fixtures.ts — if you add a new fixture source there, add it
-// here too.
-const fixtureFiles = {
-  ...import.meta.glob('/src/lib/components/*.fixtures.ts'),
-  ...import.meta.glob('/../ptt/components/*.fixtures.ts'),
-};
+// canonical .html per component. Mirrors the glob in $lib/dev/fixtures.ts.
+const fixtureFiles = import.meta.glob('/../components/*.fixtures.ts');
 
 export const prerender = true;
 

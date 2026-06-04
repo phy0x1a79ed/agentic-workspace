@@ -22,6 +22,11 @@ projects/
 node_modules/
 packages/**/dist/
 
+# SvelteKit static build output — registered with the hub via
+# `awm hub register --dir build/`, not committed.
+build/
+frontend/.svelte-kit/
+
 # Python
 __pycache__/
 *.pyc
