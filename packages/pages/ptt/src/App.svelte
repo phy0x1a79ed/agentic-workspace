@@ -1,95 +1,79 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  // PTT demo page. The page itself does almost nothing — all the real
+  // work (session against /svc/ptt, mic worklet, transcript chips,
+  // PTT/Convo modes) lives in @awm/ptt-composer. We keep a running log
+  // of finalized utterances below the composer to make the component's
+  // output visible standalone.
+  import { PttComposer } from '@awm/ptt-composer';
 
-  // Minimal PTT page: opens a stream session against /svc/ptt, pushes
-  // mic PCM up while the button is held, renders transcript text frames
-  // back. The full PTT UI (PttPanel, ConvoTab, …) is preserved in the
-  // web-ptt scope and ports forward as components/ptt-shared.
-  let session = $state<{ id: string; ws_path: string } | null>(null);
-  let socket = $state<WebSocket | null>(null);
-  let mediaStream = $state<MediaStream | null>(null);
-  let audioCtx = $state<AudioContext | null>(null);
-  let proc = $state<ScriptProcessorNode | null>(null);
-  let transcript = $state('');
-  let recording = $state(false);
-  let error = $state<string | null>(null);
+  let sent = $state<string[]>([]);
+  let live = $state<string[]>([]);
 
-  async function openSession() {
-    const r = await fetch('/svc/ptt/session/stream', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'include',
-      body: '{}',
-    });
-    if (!r.ok) { error = `session open: HTTP ${r.status}`; return; }
-    session = await r.json();
-    const u = new URL(session.ws_path, window.location.href);
-    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    socket = new WebSocket(u.toString());
-    socket.binaryType = 'arraybuffer';
-    socket.addEventListener('message', (ev) => {
-      if (typeof ev.data === 'string') {
-        try {
-          const obj = JSON.parse(ev.data);
-          if (obj?.text) transcript = obj.text;
-        } catch { /* ignore */ }
-      }
-    });
+  function onSend(text: string) {
+    sent = [...sent, text];
   }
-
-  async function startRecord() {
-    if (!socket || socket.readyState !== WebSocket.OPEN) await openSession();
-    recording = true;
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioCtx = new AudioContext({ sampleRate: 16000 });
-    const src = audioCtx.createMediaStreamSource(mediaStream);
-    proc = audioCtx.createScriptProcessor(4096, 1, 1);
-    proc.onaudioprocess = (ev) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      const data = ev.inputBuffer.getChannelData(0);
-      const out = new Int16Array(data.length);
-      for (let i = 0; i < data.length; i++) {
-        const s = Math.max(-1, Math.min(1, data[i]));
-        out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      socket.send(out.buffer);
-    };
-    src.connect(proc);
-    proc.connect(audioCtx.destination);
+  function onText(text: string) {
+    live = [...live, text];
   }
-
-  function stopRecord() {
-    recording = false;
-    proc?.disconnect();
-    proc = null;
-    audioCtx?.close();
-    audioCtx = null;
-    mediaStream?.getTracks().forEach((t) => t.stop());
-    mediaStream = null;
-  }
-
-  onDestroy(() => {
-    stopRecord();
-    socket?.close();
-  });
 </script>
 
 <main>
-  <h1>PTT</h1>
-  {#if error}<p class="error">{error}</p>{/if}
-  <button
-    onmousedown={startRecord}
-    onmouseup={stopRecord}
-    onmouseleave={stopRecord}
-  >
-    {recording ? 'recording…' : 'hold to talk'}
-  </button>
-  <pre>{transcript}</pre>
+  <header>
+    <h1>PTT</h1>
+    <p class="hint">
+      Hold the mic button (or <kbd>SPACE</kbd>) to talk. Toggle between
+      PTT and CONVO modes in the tabs above the editor.
+    </p>
+  </header>
+
+  <PttComposer onsend={onSend} onText={onText} />
+
+  <section class="log">
+    <h2>Finalized utterances</h2>
+    {#if live.length === 0}
+      <p class="empty">none yet</p>
+    {:else}
+      <ol>
+        {#each live as t, i (`${i}-${t}`)}
+          <li>{t}</li>
+        {/each}
+      </ol>
+    {/if}
+
+    <h2>Sent (Send button pressed)</h2>
+    {#if sent.length === 0}
+      <p class="empty">none yet</p>
+    {:else}
+      <ol>
+        {#each sent as t, i (`${i}-${t}`)}
+          <li>{t}</li>
+        {/each}
+      </ol>
+    {/if}
+  </section>
 </main>
 
 <style>
-  main { padding: 2rem; font-family: system-ui, sans-serif; }
-  .error { color: #b00; }
-  button { padding: 1rem 2rem; font-size: 1.1rem; }
-  pre { background: #f5f5f5; padding: 1rem; min-height: 4rem; }
+  main {
+    padding: 1.5rem;
+    font-family: system-ui, sans-serif;
+    max-width: 560px;
+    margin: 0 auto;
+    color: var(--text, #ddd);
+    background: var(--bg, #111);
+    min-height: 100vh;
+  }
+  header { margin-bottom: 1rem; }
+  h1 { font-size: 1.2rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 0 0 0.25rem; }
+  h2 { font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 1.5rem 0 0.5rem; color: var(--text2, #bbb); }
+  .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0; }
+  .empty { font-style: italic; color: var(--text3, #888); font-size: 0.85rem; }
+  ol { padding-left: 1.25rem; margin: 0; font-size: 0.9rem; line-height: 1.5; }
+  kbd {
+    background: var(--surface2, #222);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--mono, monospace);
+    font-size: 0.85em;
+  }
 </style>

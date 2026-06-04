@@ -835,10 +835,14 @@ class HubRoutingMiddleware:
         from starlette.responses import PlainTextResponse
 
         rel = path[len(rec.prefix):]
-        identity = _stripe_identity_headers(
-            Request(scope).cookies if scope["type"] == "http"
-            else _WS(scope).cookies
-        )
+        # WebSocket() requires receive+send; Request() is fine with just
+        # scope. We only need .cookies here, which both expose off scope
+        # headers, so build the right type per scope kind.
+        if scope["type"] == "http":
+            cookies = Request(scope).cookies
+        else:
+            cookies = _WS(scope, receive=receive, send=send).cookies
+        identity = _stripe_identity_headers(cookies)
         as_ = identity[0][1] if identity else None
 
         if scope["type"] == "http":
