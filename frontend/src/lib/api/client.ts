@@ -75,6 +75,17 @@ export async function api<T = unknown>(
 
 /* ─── Typed endpoints ────────────────────────────────────────────────── */
 
+// Backend-derived types come from `generated.ts` (regenerate with
+// `npm run gen-types`). The migration is intentionally narrow: types that
+// match the generated schema 1:1 are re-exported as aliases below; types
+// that diverge (Room reshape, voice-engine dict responses, untyped peer/scope
+// endpoints) stay hand-written until the backend tightens its response_model
+// declarations. Engine CONFIG_SCHEMA blobs are explicitly out of this seam —
+// the spec's `dict[str, Any]` becomes `unknown` and is not useful here.
+import type { components } from './generated';
+
+export type VagrantSessionResponse = components['schemas']['VagrantSessionResponse'];
+
 export interface Peer {
   peer_id: string;
   friendly_name?: string;
@@ -168,13 +179,6 @@ export interface SlashCommandsResponse {
 }
 
 export interface AgentSlashResponse { handled: boolean; result: string }
-
-export interface VagrantSessionResponse {
-  scope_uuid: string;
-  room_id: string;
-  scope_identifier: string;
-  manager_live: boolean;
-}
 
 export interface EngineSpec {
   schema: { properties?: Record<string, unknown>; [k: string]: unknown };
