@@ -137,19 +137,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] vagrant-scopes disabled: {exc}")
 
-    # Restore persisted voice engine selections. Non-fatal: a broken engine
-    # leaves voice unloaded until the operator picks something else.
-    try:
-        from awm.services import voice_engine_config
-        from voice import engines as _voice_engines
-        for _kind, _sel in voice_engine_config.get_global().items():
-            if _sel is None:
-                continue
-            _voice_engines.load(_kind, _sel["engine_id"], _sel["params"])
-        print(f"[awm-exposed] voice engines restored: {voice_engine_config.get_global()}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice engine restore failed: {exc}")
-
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
 
@@ -230,56 +217,14 @@ async def lifespan(app: FastAPI):
         leadership_task = None
         print("[awm-exposed] leadership: no peer identity — running ACTIVE single-node")
 
-    # Warm STT model in the background — first connection waits a few
-    # seconds rather than every connection paying full load cost. Failures
-    # log but don't take down the listener.
-    async def _warm_voice() -> None:
-        loop = asyncio.get_running_loop()
-        try:
-            from awm.voice.stt import get_transcriber
-            t0 = time.perf_counter()
-            await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
-            print(f"[awm-exposed] STT model ready in "
-                  f"{time.perf_counter() - t0:.1f}s")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[awm-exposed] STT model unavailable: {exc}")
-
-    warmup_task = asyncio.create_task(_warm_voice())
-
-    try:
-        from awm.voice.registry import get_registry
-        get_registry().start_reaper()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice registry init failed: {exc}")
-
-    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts}/``.
-    # Lazy import so engine bootstrap (which can pull large models) doesn't
-    # run unless the user actually visits the voice surface.
-    engines_watcher_task: asyncio.Task | None = None
-    try:
-        import voice.engines as _voice_engines  # type: ignore[import-not-found]
-        engines_watcher_task = asyncio.create_task(
-            _voice_engines._watch_dynamic(), name="voice-engines-watcher",
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice engines watcher disabled: {exc}")
-
     yield
 
     challenges_sweeper_task.cancel()
-    warmup_task.cancel()
     replication_task.cancel()
-    if engines_watcher_task is not None:
-        engines_watcher_task.cancel()
     if leadership_task is not None:
         leadership_task.cancel()
     try:
         await ldr_discord.stop_bot()
-    except Exception:
-        pass
-    try:
-        from awm.voice.registry import get_registry
-        await get_registry().shutdown()
     except Exception:
         pass
 
@@ -391,13 +336,11 @@ from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
-from awm.voice.router import router as voice_router  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
 app.include_router(peer_router)
 app.include_router(repl_router)
-app.include_router(voice_router)
 app.include_router(vagrant_router)
 app.include_router(hub_router)
 
@@ -631,7 +574,6 @@ async def gate_and_auth_for_core(request: Request, call_next):
     # unauthenticated at the middleware level: /ui is static HTML;
     # /auth/exchange validates its own bearer to mint a session cookie.
     if (path.startswith("/rooms") or path.startswith("/ui")
-            or path.startswith("/voice")
             or path.startswith("/peer/")
             or path.startswith("/auth/")):
         return await call_next(request)

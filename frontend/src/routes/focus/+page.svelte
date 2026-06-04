@@ -9,7 +9,6 @@
   } from '$lib/api/client';
   import UnifiedSidebar     from '$lib/components/UnifiedSidebar.svelte';
   import DetailsPanel       from '$lib/components/DetailsPanel.svelte';
-  import VoiceConversation  from '$lib/components/VoiceConversation.svelte';
   import Sheet              from '$lib/components/Sheet.svelte';
   import { recipients } from '$lib/state/recipients.svelte';
   import { ui } from '$lib/state/ui.svelte';
@@ -64,11 +63,6 @@
 
   const activeRoom = $derived(rooms.find(r => r.id === activeId));
   const selectedKeys = $derived(activeId ? recipients.get(activeId) : []);
-  // VoiceConversation accepts a single ``toScope`` — pick the first selected
-  // scope recipient (the previous fan-out across multiple was a niche path).
-  const primaryToScope = $derived(
-    selectedKeys.filter(k => k.startsWith('scope:')).map(k => k.slice('scope:'.length))[0] ?? null
-  );
 </script>
 
 <div class="focus chrome" class:with-details={activeId}>
@@ -91,15 +85,13 @@
     </header>
 
     {#if activeId}
-      <VoiceConversation
-        roomId={activeId}
-        toScope={primaryToScope}
-        managerScope={ui.managerScope}
-        sttIntoComposer
-        sendToRoom
-        onresult={(m) => errorBanner = m}
-        onagents={(a) => { if (activeId) agentsByRoom[activeId] = a; }}
-      />
+      <div class="empty-state">
+        <div class="empty-icon">◇</div>
+        <div class="empty-text">
+          conversation pane pending<br />
+          <span class="dim">see /rooms for live post stream</span>
+        </div>
+      </div>
     {:else}
       <div class="empty-state">
         <div class="empty-icon">◇</div>

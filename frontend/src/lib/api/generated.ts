@@ -458,158 +458,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/voice/stt": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Stt Http
-         * @description Transcribe a raw int16 LE 16 kHz mono PCM body to text.
-         *
-         *     Fallback when the client can't keep the WebSocket open (e.g. while
-         *     backgrounded). For the active foreground flow the WS path delivers
-         *     the same payload via ``stt_result`` so other tabs see it too.
-         */
-        post: operations["stt_http_voice_stt_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Engines List
-         * @description `{kind: {engine_id: {schema, defaults}}}` for dynamic UI forms.
-         */
-        get: operations["engines_list_voice_engines_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines/loaded": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Engines Loaded */
-        get: operations["engines_loaded_voice_engines_loaded_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines/{kind}/load": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Engines Load */
-        post: operations["engines_load_voice_engines__kind__load_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines/{kind}/unload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Engines Unload */
-        post: operations["engines_unload_voice_engines__kind__unload_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines/global": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Engines Global Get */
-        get: operations["engines_global_get_voice_engines_global_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/engines/{kind}/global": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Engines Global Put */
-        put: operations["engines_global_put_voice_engines__kind__global_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/voice/tts/speak": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Tts Speak
-         * @description Synthesize ``text`` via the currently loaded TTS engine.
-         *
-         *     Returns ``audio/wav`` so the browser ``Audio`` element plays it directly.
-         *     Requires ``POST /voice/engines/tts/load`` first; 409 otherwise.
-         */
-        post: operations["tts_speak_voice_tts_speak_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/vagrant/session": {
         parameters: {
             query?: never;
@@ -644,6 +492,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/hub/service/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Service Register */
+        post: operations["service_register_hub_service_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/hub/shadow/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Shadow Register */
+        post: operations["shadow_register_hub_shadow_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/hub/services": {
         parameters: {
             query?: never;
@@ -653,30 +535,6 @@ export interface paths {
         };
         /** List Services */
         get: operations["list_services_hub_services_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/hub/stripes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Stripes
-         * @description Global stripe map. Unauthenticated by design — the dev-shell (or
-         *     any composer) fetches this on mount to discover backend URLs to
-         *     inject into stripe components via context. The actual backend
-         *     requests still flow through the hub's authenticated proxy at
-         *     ``<prefix>/_api/*``.
-         */
-        get: operations["list_stripes_hub_stripes_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -869,24 +727,6 @@ export interface components {
             /** Result */
             result: string;
         };
-        /** EngineGlobalRequest */
-        EngineGlobalRequest: {
-            /** Engine Id */
-            engine_id: string;
-            /** Params */
-            params?: {
-                [key: string]: unknown;
-            };
-        };
-        /** EngineLoadRequest */
-        EngineLoadRequest: {
-            /** Id */
-            id: string;
-            /** Params */
-            params?: {
-                [key: string]: unknown;
-            };
-        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -918,6 +758,14 @@ export interface components {
             context_used?: number | null;
             /** Context Max */
             context_max?: number | null;
+        };
+        /** PageSpec */
+        PageSpec: {
+            /**
+             * Dir
+             * @description Absolute path to the page bundle dir; served canonically at the /ui/<name> prefix.
+             */
+            dir: string;
         };
         /** ParticipantInfo */
         ParticipantInfo: {
@@ -953,15 +801,10 @@ export interface components {
             name: string;
             /** Prefix */
             prefix: string;
-            /**
-             * Url
-             * @description Local URL to forward requests to (kind=url). Mutually exclusive with `static` and `stripe`.
-             */
+            /** Url */
             url?: string | null;
-            /** @description Directory-serving spec (kind=static). Mutually exclusive with `url` and `stripe`. */
             static?: components["schemas"]["StaticSpec"] | null;
-            /** @description Component-and-backend bundle (kind=stripe). Mutually exclusive with `url` and `static`. */
-            stripe?: components["schemas"]["StripeSpec"] | null;
+            page?: components["schemas"]["PageSpec"] | null;
         };
         /** RegisterResponse */
         RegisterResponse: {
@@ -976,7 +819,7 @@ export interface components {
             /** Url */
             url?: string | null;
             static?: components["schemas"]["StaticSpec"] | null;
-            stripe?: components["schemas"]["StripeSpec"] | null;
+            page?: components["schemas"]["PageSpec"] | null;
             /** Lease Ws Path */
             lease_ws_path: string;
         };
@@ -1111,6 +954,86 @@ export interface components {
             /** Scope */
             scope: string;
         };
+        /** ServiceRegisterRequest */
+        ServiceRegisterRequest: {
+            /**
+             * Name
+             * @description Service name; URL prefix becomes /svc/<name> unless prefix is set explicitly.
+             */
+            name: string;
+            /**
+             * Prefix
+             * @description URL prefix the service claims. Must begin /svc/. Defaults to /svc/<name>.
+             */
+            prefix?: string | null;
+            /**
+             * Pid
+             * @description The service process PID. The hub uses it for SIGTERM on restart-after-silence.
+             */
+            pid?: number | null;
+            /**
+             * Start
+             * @description Argv to respawn the service. Required only if the hub needs to restart it (hub-spawned services carry this from supervisor side).
+             */
+            start?: string[] | null;
+            /**
+             * Cwd
+             * @description Working directory for restart. Defaults to current dir if unset.
+             */
+            cwd?: string | null;
+        };
+        /** ServiceRegisterResponse */
+        ServiceRegisterResponse: {
+            /** Service Id */
+            service_id: string;
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /** Control Ws Path */
+            control_ws_path: string;
+            /** Bridge Ws Base */
+            bridge_ws_base: string;
+        };
+        /** ShadowRegisterRequest */
+        ShadowRegisterRequest: {
+            /**
+             * Name
+             * @description Unique shadow name (must NOT collide with the base or any other overlay).
+             */
+            name: string;
+            /**
+             * Prefix
+             * @description Prefix to shadow; a base must already exist for this prefix.
+             */
+            prefix: string;
+            /**
+             * Page
+             * @description Page shadow: {dir: <absolute path>}
+             */
+            page?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Service shadow: ServiceRegisterRequest shape (pid/start/cwd). */
+            service?: components["schemas"]["ServiceRegisterRequest"] | null;
+        };
+        /** ShadowRegisterResponse */
+        ShadowRegisterResponse: {
+            /** Service Id */
+            service_id: string;
+            /** Name */
+            name: string;
+            /** Prefix */
+            prefix: string;
+            /** Kind */
+            kind: string;
+            /** Lease Ws Path */
+            lease_ws_path: string;
+            /** Control Ws Path */
+            control_ws_path?: string | null;
+            /** Bridge Ws Base */
+            bridge_ws_base?: string | null;
+        };
         /** SlashCommandInfo */
         SlashCommandInfo: {
             /** Name */
@@ -1122,68 +1045,17 @@ export interface components {
         };
         /** StaticSpec */
         StaticSpec: {
-            /**
-             * Dir
-             * @description Absolute path on the hub host to serve at the prefix.
-             */
+            /** Dir */
             dir: string;
-            /**
-             * Entry
-             * @description Relative path to the ESM entry script. When the dir has no index.html, the hub renders a minimal shell that loads this script as a module.
-             */
+            /** Entry */
             entry?: string | null;
-            /**
-             * Css
-             * @description Optional CSS files (relative to dir) injected into the auto-shell.
-             */
+            /** Css */
             css?: string[];
             /**
              * Mount Id
-             * @description DOM id of the mount node in the auto-shell.
              * @default app
              */
             mount_id: string;
-        };
-        /** StripeBackend */
-        StripeBackend: {
-            /**
-             * Cmd
-             * @description argv-style command to spawn the backend. ${AWM_SERVICE_PORT} in any arg is substituted with the hub-allocated port before exec.
-             */
-            cmd: string[];
-            /**
-             * Env
-             * @description Extra env vars merged into the process env. AWM_SERVICE_PORT is hub-injected and wins on collision.
-             */
-            env?: {
-                [key: string]: string;
-            };
-            /**
-             * Health
-             * @description Path on the backend the hub polls until 200 to mark ready.
-             * @default /healthz
-             */
-            health: string;
-            /**
-             * Cwd
-             * @description Working directory for the spawned process. Defaults to the static dir.
-             */
-            cwd?: string | null;
-        };
-        /** StripeSpec */
-        StripeSpec: {
-            /**
-             * Dir
-             * @description Absolute path to the frontend bundle dir (canonical-paths static serving at the prefix root).
-             */
-            dir: string;
-            /** @description Optional supervised backend. When set, the hub spawns it at register time and proxies <prefix>/_api/* to it. */
-            backend?: components["schemas"]["StripeBackend"] | null;
-        };
-        /** TtsSpeakRequest */
-        TtsSpeakRequest: {
-            /** Text */
-            text: string;
         };
         /** VagrantSessionResponse */
         VagrantSessionResponse: {
@@ -2048,286 +1920,6 @@ export interface operations {
             };
         };
     };
-    stt_http_voice_stt_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_list_voice_engines_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_loaded_voice_engines_loaded_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_load_voice_engines__kind__load_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kind: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EngineLoadRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_unload_voice_engines__kind__unload_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kind: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: boolean;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_global_get_voice_engines_global_get: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    engines_global_put_voice_engines__kind__global_put: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path: {
-                kind: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EngineGlobalRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    tts_speak_voice_tts_speak_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TtsSpeakRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     session_vagrant_session_post: {
         parameters: {
             query?: never;
@@ -2394,6 +1986,76 @@ export interface operations {
             };
         };
     };
+    service_register_hub_service_register_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServiceRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceRegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    shadow_register_hub_shadow_register_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShadowRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShadowRegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_services_hub_services_get: {
         parameters: {
             query?: never;
@@ -2423,28 +2085,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_stripes_hub_stripes_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
                 };
             };
         };

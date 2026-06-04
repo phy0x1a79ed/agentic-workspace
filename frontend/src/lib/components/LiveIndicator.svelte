@@ -1,21 +1,16 @@
 <script lang="ts">
   /**
    * Coloured pulse dot + ping readout. Color encodes link state (ui.wsKind +
-   * ping latency); voice activity (recording/transcribing) overrides with the
-   * recording colour. The dot pulses at the same cadence the ping loop
-   * refreshes at, so visually you can tell when the link is sluggish.
+   * ping latency). The dot pulses at the same cadence the ping loop refreshes
+   * at, so visually you can tell when the link is sluggish.
    */
   import { ui } from '$lib/state/ui.svelte';
-  import { voice } from '$lib/state/voice.svelte';
 
-  type State = 'off' | 'err' | 'ok' | 'slow' | 'active';
+  type State = 'off' | 'err' | 'ok' | 'slow';
 
-  // Same formula as ui._pingTick: cadence = max(2*ping, 1000ms). Drives the
-  // pulse animation so the dot beats once per ping cycle.
   const SLOW_MS = 300;
 
   const state = $derived<State>(
-    (voice.stage === 'recording' || voice.stage === 'transcribing') ? 'active' :
     ui.wsKind === 'off' ? 'off' :
     ui.wsKind === 'err' ? 'err' :
     (ui.pingMs ?? 0) > SLOW_MS ? 'slow' :
@@ -25,7 +20,6 @@
   // Visual pulse is intentionally much slower than the refresh cadence — the
   // ping number is the precise readout; the dot just signals "alive."
   const cycleMs = $derived(
-    state === 'active' ? 1200 :
     state === 'err'    ? 1600 :
     state === 'off'    ? 0    :  // no pulse when offline
     Math.max(6 * (ui.pingMs ?? 500), 3000)
@@ -111,16 +105,6 @@
     color: var(--warn);
     border-color: color-mix(in oklab, var(--warn) 60%, transparent);
     background: color-mix(in oklab, var(--warn) 8%, transparent);
-  }
-
-  /* ACTIVE — voice recording/transcribing. */
-  .live[data-state="active"] {
-    color: var(--recording);
-    border-color: var(--recording);
-    background: color-mix(in oklab, var(--recording) 14%, transparent);
-    box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--recording) 30%, transparent),
-      0 0 8px color-mix(in oklab, var(--recording) 45%, transparent);
   }
 
   @keyframes pulse {

@@ -413,7 +413,7 @@ class RoomInfo(BaseModel):
 
 class ParticipantInfo(BaseModel):
     room_id: str
-    kind: str  # scope|subscriber|shadow_peer|voice
+    kind: str  # scope|subscriber|shadow_peer
     identifier: str
     joined_at: str
     left_at: str | None = None

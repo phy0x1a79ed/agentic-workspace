@@ -78,8 +78,8 @@ export async function api<T = unknown>(
 // Backend-derived types come from `generated.ts` (regenerate with
 // `npm run gen-types`). The migration is intentionally narrow: types that
 // match the generated schema 1:1 are re-exported as aliases below; types
-// that diverge (Room reshape, voice-engine dict responses, untyped peer/scope
-// endpoints) stay hand-written until the backend tightens its response_model
+// that diverge (Room reshape, untyped peer/scope endpoints) stay hand-written
+// until the backend tightens its response_model
 // declarations. Engine CONFIG_SCHEMA blobs are explicitly out of this seam —
 // the spec's `dict[str, Any]` becomes `unknown` and is not useful here.
 import type { components } from './generated';
@@ -180,19 +180,6 @@ export interface SlashCommandsResponse {
 
 export interface AgentSlashResponse { handled: boolean; result: string }
 
-export interface EngineSpec {
-  schema: { properties?: Record<string, unknown>; [k: string]: unknown };
-  defaults: Record<string, unknown>;
-}
-export type EnginesByKind = Record<string, Record<string, EngineSpec>>;
-
-export interface LoadedEngine {
-  id: string;
-  params: Record<string, unknown>;
-  instance_id: string;
-}
-export type LoadedEnginesByKind = Record<string, LoadedEngine | null>;
-
 /* ─── Convenience helpers ────────────────────────────────────────────── */
 
 export const peerInfo      = ()                          => api<Peer>('GET', '/peer');
@@ -230,36 +217,5 @@ export const runAgentSlash = (id: string, scope: string, cmd: string) =>
 export const ensureVagrantSession = () =>
   api<VagrantSessionResponse>('POST', '/vagrant/session');
 
-export const listVoiceEngines = () =>
-  api<EnginesByKind>('GET', '/voice/engines');
-export const getLoadedEngines = () =>
-  api<LoadedEnginesByKind>('GET', '/voice/engines/loaded');
-export const loadEngine = (kind: string, id: string, params: Record<string, unknown> = {}) =>
-  api<LoadedEngine>('POST', `/voice/engines/${encodeURIComponent(kind)}/load`, { id, params });
-export const unloadEngine = (kind: string) =>
-  api<{ unloaded: boolean }>('POST', `/voice/engines/${encodeURIComponent(kind)}/unload`);
-
-/** Persisted global engine selection: ``{stt: {engine_id, params} | null, tts: ...}``. */
-export interface GlobalEngineSelection { engine_id: string; params: Record<string, unknown> }
-export type GlobalEnginesByKind = Record<string, GlobalEngineSelection | null>;
-export const getGlobalEngines = () =>
-  api<GlobalEnginesByKind>('GET', '/voice/engines/global');
-export const putGlobalEngine = (kind: string, engine_id: string, params: Record<string, unknown> = {}) =>
-  api<GlobalEnginesByKind>('PUT', `/voice/engines/${encodeURIComponent(kind)}/global`, { engine_id, params });
-/** Fetch synth audio blob (audio/wav). 409 = no tts engine loaded. */
-export async function ttsSpeakBlob(text: string): Promise<Blob> {
-  const r = await fetch('/voice/tts/speak', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'X-Awm-As': awmAs() },
-    body: JSON.stringify({ text }),
-  });
-  if (!r.ok) {
-    let detail = '';
-    try { detail = await r.text(); } catch { /* ignore */ }
-    throw new ApiError(`tts ${r.status}${detail ? ': ' + detail.slice(0, 200) : ''}`, r.status, detail);
-  }
-  return r.blob();
-}
 export const getSlashCommands = (id: string, scope: string) =>
   api<SlashCommandsResponse>('GET', `/rooms/${encodeURIComponent(id)}/agents/${encodeURIComponent(scope)}/slash-commands`);
