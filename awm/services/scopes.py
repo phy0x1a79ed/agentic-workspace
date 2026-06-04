@@ -18,7 +18,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.db import get_connection
-from awm.git_utils import run_git, detect_default_branch
+from awm._lib.git_utils import run_git, detect_default_branch
 from awm.models import (
     ScopeCreateRequest,
     ScopeUpdateRequest,

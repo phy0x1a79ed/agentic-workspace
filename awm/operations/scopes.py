@@ -1,7 +1,7 @@
 """Scope operation definitions for the registry."""
 
 from awm.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.registry import (
+from awm._lib.operations import (
     Column,
     JsonOutput,
     Operation,

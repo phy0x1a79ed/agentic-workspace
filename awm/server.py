@@ -45,9 +45,9 @@ from awm.models import (
     PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import register_fastapi_routes
+from awm._lib.operations import register_fastapi_routes
 from awm.services import core, projects, scopes, locks, shared_resources, skills
-from awm.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
+from awm._lib.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state

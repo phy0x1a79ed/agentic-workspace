@@ -10,9 +10,9 @@ import json
 
 import pytest
 
-from awm.tool_dispatch import handle_tool
+from awm._lib.tool_dispatch import handle_tool
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import operations_to_mcp_tools, dispatch_operation
+from awm._lib.operations import operations_to_mcp_tools, dispatch_operation
 
 
 class TestMCPToolGeneration:

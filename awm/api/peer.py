@@ -18,7 +18,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from awm.middleware_auth import require_peer_bearer
+from awm.services.auth.middleware_auth import require_peer_bearer
 from awm.services import rooms as rooms_svc
 
 

@@ -14,7 +14,7 @@ from awm.config import (
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
-from awm.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
+from awm._lib.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
 from awm.models import ProjectCreateRequest, ProjectCreateResponse
 from awm.services._validation import validate_name
 

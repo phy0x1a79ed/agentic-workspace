@@ -42,7 +42,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.middleware_auth import authenticate_websocket, require_bearer
+from awm.services.auth.middleware_auth import authenticate_websocket, require_bearer
 from awm.services.hub import rpc
 from awm.services.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.services.hub.registry import (

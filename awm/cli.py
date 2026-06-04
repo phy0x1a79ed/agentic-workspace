@@ -1432,7 +1432,7 @@ def skill_search(
 # ---------------------------------------------------------------------------
 
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import register_cli_commands
+from awm._lib.operations import register_cli_commands
 
 _session_groups = register_cli_commands(app, SESSION_OPERATIONS, _api)
 _session_app = _session_groups["session"]

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from fastapi import Query, WebSocket
 
-from awm.middleware_auth import authenticate_websocket
+from awm.services.auth.middleware_auth import authenticate_websocket
 
 
 @dataclass

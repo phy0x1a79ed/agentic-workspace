@@ -36,10 +36,10 @@ from fastapi import (
 from starlette.responses import FileResponse, JSONResponse, Response
 
 from awm import __version__, config
-from awm.access_log import record as record_access
+from awm._lib.access_log import record as record_access
 from awm.db import init_db
-from awm.middleware_auth import require_bearer
-from awm.middleware_gate import require_destructive
+from awm.services.auth.middleware_auth import require_bearer
+from awm.services.auth.middleware_gate import require_destructive
 from awm.server import app as core_app
 from awm.services import agent_instances, auth as auth_svc
 

@@ -28,7 +28,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request, WebSocket
 from fastapi import Depends
 
-from awm.middleware_auth import require_peer_bearer
+from awm.services.auth.middleware_auth import require_peer_bearer
 
 
 def build_app(prefix: str) -> FastAPI:

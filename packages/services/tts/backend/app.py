@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field
 
 import httpx
 
-from awm.middleware_auth import authenticate_websocket, require_peer_bearer
+from awm.services.auth.middleware_auth import authenticate_websocket, require_peer_bearer
 from .text_clean import clean_for_tts
 from tts.backend import presets, state
 from voice import engines as engines_registry

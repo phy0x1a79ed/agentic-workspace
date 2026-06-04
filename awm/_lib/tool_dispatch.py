@@ -30,7 +30,7 @@ from awm.models import (
     ScopeSyncRequest,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import dispatch_operation, operations_to_mcp_tools
+from awm._lib.operations import dispatch_operation, operations_to_mcp_tools
 from awm.services import artifacts, core, locks, messaging, projects, scopes, skills
 
 

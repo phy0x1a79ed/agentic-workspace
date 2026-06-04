@@ -21,7 +21,7 @@ from fastapi import (
     WebSocket,
 )
 
-from awm.middleware_auth import require_bearer
+from awm.services.auth.middleware_auth import require_bearer
 from awm.models import (
     AgentSlashCatalog,
     AgentSlashRequest,
@@ -45,7 +45,7 @@ from awm.models import (
     SlashCommandInfo,
 )
 from awm.services import agent_slash, orchestration, rooms as rooms_svc
-from awm.ws_auth import authenticate_room_ws
+from awm.services.auth.ws_auth import authenticate_room_ws
 
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])

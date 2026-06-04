@@ -150,7 +150,7 @@ async def proxy_ws(
     client's bearer never reaches the service. ``X-Awm-As`` is forwarded
     verbatim (G6) unless overridden via ``extra_headers``.
     """
-    from awm.middleware_auth import authenticate_websocket
+    from awm.services.auth.middleware_auth import authenticate_websocket
 
     # Validate inbound auth. authenticate_websocket closes on failure
     # and returns None; in that case .accept() raises and we exit.
@@ -374,7 +374,7 @@ async def proxy_session_ws(
     ``session.frame`` envelopes back to the browser, JSON for json
     payloads or decoded base64 for binary.
     """
-    from awm.middleware_auth import authenticate_websocket
+    from awm.services.auth.middleware_auth import authenticate_websocket
 
     chosen_sub = await authenticate_websocket(client_ws)
 
@@ -547,7 +547,7 @@ async def proxy_service_emit_ws(
     this handler — the route picks ``proxy_session_ws``-style relay
     for them instead.
     """
-    from awm.middleware_auth import authenticate_websocket
+    from awm.services.auth.middleware_auth import authenticate_websocket
 
     chosen_sub = await authenticate_websocket(client_ws)
     ch = rpc.get_control(service_id)

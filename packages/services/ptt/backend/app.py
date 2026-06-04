@@ -23,7 +23,7 @@ import logging
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket
 from starlette.websockets import WebSocketState
 
-from awm.middleware_auth import authenticate_websocket, require_peer_bearer
+from awm.services.auth.middleware_auth import authenticate_websocket, require_peer_bearer
 
 
 log = logging.getLogger("awm.services.ptt")

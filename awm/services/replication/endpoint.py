@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from awm.db import get_connection
-from awm.middleware_auth import require_peer_bearer
+from awm.services.auth.middleware_auth import require_peer_bearer
 from awm.services.replication import schema as repl_schema
 
 log = logging.getLogger("awm.replication.endpoint")

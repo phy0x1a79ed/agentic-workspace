@@ -746,7 +746,7 @@ async def run_subscriber_session(
     """
     # Imported here so the services layer doesn't grow a runtime dep on
     # the API package's envelope module shape (it's free-standing).
-    from awm import ws_envelope as env
+    from awm._lib import ws_envelope as env
 
     room = get_room(room_id)
     if room is None:
