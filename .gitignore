@@ -16,6 +16,12 @@ NAME.md
 data/
 projects/
 
+# Node / Vite build output
+# package-lock.json (root + frontend/) is tracked authoritatively so a stale
+# untracked copy can't block dev's next FF — see session #334.
+node_modules/
+packages/**/dist/
+
 # Python
 __pycache__/
 *.pyc
