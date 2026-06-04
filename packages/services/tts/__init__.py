@@ -1,4 +1,3 @@
-"""TTS stripe package — backend serves the per-call WS protocol behind
-``<prefix>/_api/*`` on the dev hub. Frontend lives in
-``packages/tts/``.
+"""TTS service package — control-WS adapter registered at ``/svc/tts/``.
+Frontend lives in ``packages/pages/tts/``.
 """
