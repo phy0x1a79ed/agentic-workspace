@@ -1,11 +1,19 @@
 """Style-Bert-VITS2 engine.
 
-Thin HTTP client of `tts_sbv2_service.py` (default :7843). The sidecar
-loads the WarriorMama777/GLaDOS_TTS Style-Bert-VITS2 checkpoint and
-synthesises authentic GLaDOS prosody from text alone — no reference
-WAV or transcript needed, unlike f5tts / gptsovits. The knobs below
-match the sidecar's `/synth` payload (see
-`demo/tts_sbv2_service.py::synth`).
+Thin HTTP client of an sbv2 sidecar process (default :7843, override
+via ``SBV2_URL``). The sidecar loads the WarriorMama777/GLaDOS_TTS
+Style-Bert-VITS2 checkpoint and synthesises authentic GLaDOS prosody
+from text alone — no reference WAV or transcript needed, unlike f5tts
+/ gptsovits.
+
+The checkpoint itself is preserved under the awm project shared-data
+dir at ``~/agentic_workspace/data/awm/tts-models/sbv2/Portal_GLaDOS_v1/``
+(reachable from any scope via ``.awm/data/tts-models/sbv2/Portal_GLaDOS_v1``).
+A future sidecar implementation should accept that path via
+``SBV2_MODEL_DIR`` and expose the ``/synth`` payload shape the knobs
+below assume. The prototype sidecar lived at ``demo/tts_sbv2_service.py``
+before the ``demo/`` directory was removed in S2; see git history for
+its synth route shape.
 """
 
 from __future__ import annotations
