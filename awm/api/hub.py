@@ -585,9 +585,13 @@ async def list_services() -> dict[str, Any]:
     "/services/{name}",
     dependencies=[Depends(require_bearer)],
 )
-async def deregister(name: str, request: Request) -> dict[str, Any]:
+async def deregister(name: str, request: Request, kind: str | None = None) -> dict[str, Any]:
     registry = get_registry()
-    rec = await registry.evict_by_name(name)
+    from awm.services.hub.registry import PrefixConflict
+    try:
+        rec = await registry.evict_by_name(name, kind=kind)
+    except PrefixConflict as e:
+        raise HTTPException(409, str(e))
     if rec is None:
         raise HTTPException(404, f"unknown service: {name}")
     log.info("deregistered service %s (id=%s)", name, rec.service_id)

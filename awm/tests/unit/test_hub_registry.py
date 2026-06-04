@@ -132,9 +132,9 @@ def test_evict_overlay_never_collapses_base(reg):
     _run(reg.evict_by_name("ov"))
     # Base is still resolvable, both via longest_match and by_name.
     assert reg.longest_match("/x") is base
-    assert reg.get_by_name("base") is base
+    assert reg.get_by_name("url", "base") is base
     # Overlay name is gone.
-    assert reg.get_by_name("ov") is None
+    assert reg.get_by_name("url", "ov") is None
 
 
 def test_overlay_name_collision_rejected(reg):
@@ -152,7 +152,7 @@ def test_evict_base_with_overlay_present_leaves_overlay(reg):
     base = _run(reg.register("base", "/x", "http://localhost:1"))
     overlay = _run(reg.push_shadow(_overlay("ov", "/x")))
     _run(reg.evict_by_id(base.service_id))
-    assert reg.get_by_name("base") is None
+    assert reg.get_by_name("url", "base") is None
     assert reg.longest_match("/x") is overlay
 
 
@@ -163,3 +163,51 @@ def test_evict_only_record_clears_prefix(reg):
     _run(reg.evict_by_id(base.service_id))
     assert reg.longest_match("/x") is None
     assert reg.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# Same-name page + service coexistence (kind-scoped uniqueness)
+# ---------------------------------------------------------------------------
+
+
+def test_same_name_page_and_service_coexist_page_first(reg, tmp_path):
+    page = _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    svc = _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    assert reg.get_by_name("page", "tts") is page
+    assert reg.get_by_name("service", "tts") is svc
+    assert reg.longest_match("/ui/tts") is page
+    assert reg.longest_match("/svc/tts") is svc
+
+
+def test_same_name_page_and_service_coexist_service_first(reg, tmp_path):
+    svc = _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    page = _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    assert reg.get_by_name("page", "tts") is page
+    assert reg.get_by_name("service", "tts") is svc
+
+
+def test_same_kind_same_name_distinct_prefix_still_rejected(reg):
+    _run(reg.register("dup", "/a", "http://localhost:1"))
+    with pytest.raises(PrefixConflict):
+        _run(reg.register("dup", "/b", "http://localhost:2"))
+
+
+def test_evict_by_name_ambiguous_without_kind_raises(reg, tmp_path):
+    _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    with pytest.raises(PrefixConflict):
+        _run(reg.evict_by_name("tts"))
+    # Disambiguating by kind succeeds and leaves the other in place.
+    evicted = _run(reg.evict_by_name("tts", kind="page"))
+    assert evicted is not None and evicted.kind == "page"
+    assert reg.get_by_name("page", "tts") is None
+    assert reg.get_by_name("service", "tts") is not None

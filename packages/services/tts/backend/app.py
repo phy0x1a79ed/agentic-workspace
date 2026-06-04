@@ -1,14 +1,16 @@
 """TTS-only call protocol.
 
-Three peer-gated routes plus ``/healthz``:
+Peer-gated routes plus ``/healthz``:
 
 * ``GET  /engines``                — JSON Schema + defaults per engine.
 * ``POST /call/start``             — allocate a call bound to an engine.
 * ``WS   /call/{call_id}``         — speak text in, PCM frames back.
+* ``GET/PUT/DELETE /presets[/{name}]`` — engine config presets.
+* ``GET/PUT/DELETE /state[/{key}]`` — keyed state store.
 
-The hub serves this under ``<prefix>/_api/`` after stripping the prefix
-(see ``awm/exposed.py::_dispatch_stripe``). The frontend uses relative
-URLs (``./_api/engines``) so the bundle is location-agnostic.
+The hub dispatches this service through
+``awm/exposed.py::HubRoutingMiddleware._dispatch_service`` — see AGENTS.md
+§ *Service Hub* for the envelope layer.
 
 WS protocol:
 
@@ -45,9 +47,8 @@ from voice import engines as engines_registry
 
 log = logging.getLogger("tts.backend")
 
-# Engines we surface in the UI. The registry holds more (f5tts, gptsovits,
-# pocket); they stay loadable from code, but the stripe UI only exposes
-# the production-path set.
+# Engines we surface in the UI. The registry holds more (f5tts, gptsovits);
+# they stay loadable from code, but the UI only exposes the production-path set.
 EXPOSED_TTS_ENGINES = ("kokoro_rvc", "piper", "sbv2")
 
 # Per-call state. Calls are minted by /call/start and consumed by the

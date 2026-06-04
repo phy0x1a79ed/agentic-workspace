@@ -96,8 +96,10 @@ class Registry:
     def __init__(self) -> None:
         # prefix -> [base_record, *overlay_records_oldest_to_newest]
         self._stacks: dict[str, list[ServiceRecord]] = {}
-        # name -> record (every record, base or overlay)
-        self._by_name: dict[str, ServiceRecord] = {}
+        # (kind, name) -> record. Keyed by (kind, name) so a package can
+        # ship a same-named page (/ui/X) and service (/svc/X) — they share
+        # logical identity but live on disjoint prefixes.
+        self._by_name: dict[tuple[str, str], ServiceRecord] = {}
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -107,7 +109,7 @@ class Registry:
     async def register(self, name: str, prefix: str, url: str) -> ServiceRecord:
         prefix = _normalize_prefix(prefix)
         async with self._lock:
-            self._check_register(prefix, name, allow_shadow=False)
+            self._check_register(prefix, name, "url", allow_shadow=False)
             rec = ServiceRecord(
                 name=name, prefix=prefix, kind="url", url=url.rstrip("/"),
             )
@@ -126,7 +128,7 @@ class Registry:
     ) -> ServiceRecord:
         prefix = _normalize_prefix(prefix)
         async with self._lock:
-            self._check_register(prefix, name, allow_shadow=False)
+            self._check_register(prefix, name, "static", allow_shadow=False)
             rec = ServiceRecord(
                 name=name,
                 prefix=prefix,
@@ -152,7 +154,7 @@ class Registry:
                 f"page prefix {prefix!r} must begin with /ui/"
             )
         async with self._lock:
-            self._check_register(prefix, name, allow_shadow=False)
+            self._check_register(prefix, name, "page", allow_shadow=False)
             rec = ServiceRecord(
                 name=name,
                 prefix=prefix,
@@ -185,7 +187,7 @@ class Registry:
                 f"service prefix {prefix!r} must begin with /svc/"
             )
         async with self._lock:
-            self._check_register(prefix, name, allow_shadow=False)
+            self._check_register(prefix, name, "service", allow_shadow=False)
             rec = ServiceRecord(
                 name=name,
                 prefix=prefix,
@@ -221,12 +223,13 @@ class Registry:
                 raise NoBaseToShadow(
                     f"no base registered for prefix {prefix!r}; cannot shadow"
                 )
-            if rec.name in self._by_name:
+            key = (rec.kind, rec.name)
+            if key in self._by_name:
                 raise PrefixConflict(
-                    f"name {rec.name!r} already in use; pick a unique shadow name"
+                    f"name {rec.name!r} already in use for kind {rec.kind!r}; pick a unique shadow name"
                 )
             stack.append(rec)
-            self._by_name[rec.name] = rec
+            self._by_name[key] = rec
             log.info(
                 "pushed shadow %s on %s (depth=%d)",
                 rec.name, prefix, len(stack) - 1,
@@ -247,9 +250,22 @@ class Registry:
                 log.exception("teardown failed for %s", evicted.name)
         return evicted
 
-    async def evict_by_name(self, name: str) -> ServiceRecord | None:
+    async def evict_by_name(self, name: str, *, kind: str | None = None) -> ServiceRecord | None:
+        """Evict by name. With ``kind`` given, target that specific record.
+        Without ``kind``, evict iff exactly one record holds the name;
+        raise ``PrefixConflict`` (with the candidate kinds) if more do.
+        """
         async with self._lock:
-            rec = self._by_name.get(name)
+            if kind is not None:
+                rec = self._by_name.get((kind, name))
+            else:
+                matches = [r for (k, n), r in self._by_name.items() if n == name]
+                if len(matches) > 1:
+                    kinds = sorted({r.kind for r in matches})
+                    raise PrefixConflict(
+                        f"name {name!r} is ambiguous across kinds {kinds!r}; specify kind"
+                    )
+                rec = matches[0] if matches else None
             if rec is None:
                 return None
             evicted = self._pop_by_id_locked(rec.service_id)
@@ -265,7 +281,7 @@ class Registry:
             for idx, rec in enumerate(stack):
                 if rec.service_id == service_id:
                     stack.pop(idx)
-                    self._by_name.pop(rec.name, None)
+                    self._by_name.pop((rec.kind, rec.name), None)
                     if not stack:
                         # Base was evicted directly via DELETE.
                         del self._stacks[prefix]
@@ -316,14 +332,14 @@ class Registry:
                     return rec
         return None
 
-    def get_by_name(self, name: str) -> ServiceRecord | None:
-        return self._by_name.get(name)
+    def get_by_name(self, kind: str, name: str) -> ServiceRecord | None:
+        return self._by_name.get((kind, name))
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _check_register(self, prefix: str, name: str, *, allow_shadow: bool) -> None:
+    def _check_register(self, prefix: str, name: str, kind: str, *, allow_shadow: bool) -> None:
         for reserved in _RESERVED_PREFIXES:
             if prefix == reserved or prefix.startswith(reserved + "/"):
                 raise PrefixConflict(
@@ -341,10 +357,10 @@ class Registry:
                     f"prefix {prefix!r} already registered by {base.name!r}"
                 )
             return
-        clash = self._by_name.get(name)
+        clash = self._by_name.get((kind, name))
         if clash is not None and clash.prefix != prefix:
             raise PrefixConflict(
-                f"name {name!r} already in use under {clash.prefix!r}"
+                f"name {name!r} already in use for kind {kind!r} under {clash.prefix!r}"
             )
 
     def _install_base(self, rec: ServiceRecord) -> None:
@@ -353,9 +369,9 @@ class Registry:
         existing = self._stacks.get(rec.prefix)
         if existing:
             old = existing[0]
-            self._by_name.pop(old.name, None)
+            self._by_name.pop((old.kind, old.name), None)
         self._stacks[rec.prefix] = [rec]
-        self._by_name[rec.name] = rec
+        self._by_name[(rec.kind, rec.name)] = rec
 
 
 def _normalize_prefix(prefix: str) -> str:

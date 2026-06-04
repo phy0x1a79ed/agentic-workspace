@@ -1667,9 +1667,15 @@ def hub_list():
 
 
 @hub_app.command("deregister")
-def hub_deregister(name: str = typer.Argument(..., help="Service name to evict")):
+def hub_deregister(
+    name: str = typer.Argument(..., help="Service name to evict"),
+    kind: str = typer.Option(None, "--kind", help="Disambiguate if the name exists across multiple kinds (page|service|url|static)"),
+):
     """Force-evict a service by name (independent of its lease holder)."""
-    r = _exposed_api("DELETE", f"/hub/services/{name}")
+    path = f"/hub/services/{name}"
+    if kind:
+        path += f"?kind={kind}"
+    r = _exposed_api("DELETE", path)
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)

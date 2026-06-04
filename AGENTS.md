@@ -30,7 +30,6 @@ This scope migrates the package model from one ambiguous `kind="stripe"` to thre
 
 What this scope did NOT do (deferred):
 
-- Replacement for `@awm/bus`. Direct emitters cover the obvious cross-page coordination case but the in-browser client library is a follow-up.
 - Cross-peer service replication.
 
 ### Hub origin = `awm.exposed` port

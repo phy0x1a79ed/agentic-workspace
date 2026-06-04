@@ -148,7 +148,7 @@ class TestReconcileHappyPath:
         kill.assert_not_called()
         # Registry was rehydrated with the journaled service_id.
         from awm.services.hub.registry import get_registry
-        rec = get_registry().get_by_name("ptt")
+        rec = get_registry().get_by_name("service", "ptt")
         assert rec is not None
         assert rec.service_id == sid
 

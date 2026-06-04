@@ -188,10 +188,10 @@ def list_engines() -> dict[str, dict[str, dict[str, Any]]]:
 # Import all engine modules so they self-register. New engines: add here.
 def _bootstrap() -> None:
     from voice.engines.stt import whisper, sherpa, whisper_stream  # noqa: F401
-    from voice.engines.tts import piper, pocket, kokoro_rvc, f5tts, gptsovits, sbv2  # noqa: F401
+    from voice.engines.tts import piper, kokoro_rvc, f5tts, gptsovits, sbv2  # noqa: F401
 
     register_stt(whisper); register_stt(sherpa); register_stt(whisper_stream)
-    register_tts(piper); register_tts(pocket); register_tts(kokoro_rvc)
+    register_tts(piper); register_tts(kokoro_rvc)
     register_tts(f5tts); register_tts(gptsovits); register_tts(sbv2)
 
 
