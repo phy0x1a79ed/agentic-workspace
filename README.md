@@ -130,11 +130,30 @@ run scans for it and adds the dep to the page's `package.json`. Vite +
 <script>
   import { Button, Card } from '@awm/primitives';
   import '@awm/primitives/style.css';
+  import { apiFetch, svc, AuthError } from '@awm/client';
 </script>
 ```
 
 Global CSS doesn't ride the component barrel — `import '@awm/primitives/style.css'`
 explicitly. The generator picks up subpath imports too.
+
+### Talking to the hub from a page — `@awm/client`
+
+Pages and components never hand-roll `fetch` against `/rooms`, `/auth/*`,
+or `/svc/<name>/…`. Use `@awm/client`:
+
+- `apiFetch(path, init?)` — sets `credentials: 'include'`, attaches the
+  `X-Awm-As: user:<n>` identity header derived from the `awm_as`
+  cookie, JSON-encodes object bodies, and turns non-2xx responses into
+  `AuthError` (401/403) or `HttpError` so callers can branch on auth
+  failure without regex-parsing the message.
+- `svc('tts').fn('listEngines')` / `svc('tts').session('call', {…})` /
+  `svc('tts').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
+  surface every service exposes.
+- `whoami()` — `GET /auth/whoami`; throws `AuthError` if not signed in.
+
+Skipping `apiFetch` means skipping `X-Awm-As`, which silently
+misattributes writes on a multi-operator hub.
 
 ### Iterating on a package in a scope
 
