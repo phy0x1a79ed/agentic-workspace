@@ -1,12 +1,11 @@
-"""PTT backend — the supervised process for the @awm/ptt stripe.
+"""PTT backend — the supervised process for the ``ptt`` service.
 
-Run via the hub::
-
-    awm stripe register --package packages/ptt
-
-The hub allocates a port from ``AWM_STRIPE_PORT_POOL``, spawns
-``python -m backend --port <port>`` with cwd ``packages/ptt/``, polls
-``/healthz`` until ready, then proxies ``/ptt/_api/*`` here.
+Discovered + spawned by ``awm packages sync`` from
+``packages/services/ptt/start.sh``, which execs the control-WS adapter
+(``python -m backend.hub_adapter``). The hub injects ``AWM_HUB_URL``,
+``AWM_HUB_TOKEN``, ``AWM_SERVICE_NAME`` and (after restart) ``AWM_SERVICE_ID``.
+Browser-side, calls go to ``/svc/ptt/{fn,session,emit}/*`` and the hub
+relays them across the control + bridge WSes.
 """
 
 from backend.app import build_app
