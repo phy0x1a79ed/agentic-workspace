@@ -2,10 +2,10 @@
 
 Two distinct surfaces share this module:
 
-* **Legacy proxy** (``proxy_http`` / ``proxy_ws``) — ``kind="url"`` and
-  ``kind="stripe"`` registrations. The hub authenticates to the upstream
-  service AS ITSELF (injects ``Authorization: Bearer <local-auth.token>``
-  + ``X-Awm-From: <self-peer-id>``), strips the user's bearer/cookie,
+* **URL proxy** (``proxy_http`` / ``proxy_ws``) — ``kind="url"``
+  registrations. The hub authenticates to the upstream service AS
+  ITSELF (injects ``Authorization: Bearer <local-auth.token>`` +
+  ``X-Awm-From: <self-peer-id>``), strips the user's bearer/cookie,
   preserves ``X-Awm-As``.
 * **Service RPC translator** (``proxy_service_http``,
   ``proxy_service_emit_ws``, ``proxy_session_ws``) — ``kind="service"``
@@ -75,8 +75,8 @@ def _hub_headers(
 
     ``extra_headers`` are appended last AND their keys are also stripped
     from the inbound iteration, so the hub-provided value overrides
-    anything the caller sent. That's the forge-prevention seam stripe
-    routing uses to mint X-Awm-As from the awm_as cookie.
+    anything the caller sent. That's the forge-prevention seam the
+    service dispatcher uses to mint X-Awm-As from the awm_as cookie.
     """
     extras = list(extra_headers or [])
     strip_extra = {k.lower() for k, _ in extras}

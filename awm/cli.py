@@ -37,7 +37,6 @@ room_app = typer.Typer(help="Rooms: multi-participant conversations with agents"
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
 hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
-stripe_app = typer.Typer(help="Deprecated: alias for `awm packages` (will go away soon)", no_args_is_help=True)
 packages_app = typer.Typer(help="Packages: generate manifests + sync packages/{services,pages}/ with the hub", no_args_is_help=True)
 dev_app = typer.Typer(help="Dev workflows: shadow packages into the running hub", no_args_is_help=True)
 
@@ -55,7 +54,6 @@ app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
 app.add_typer(context_app, name="context")
 app.add_typer(hub_app, name="hub")
-app.add_typer(stripe_app, name="stripe")
 app.add_typer(packages_app, name="packages")
 app.add_typer(dev_app, name="dev")
 
@@ -1712,123 +1710,28 @@ def hub_trust_self():
 
 
 # ---------------------------------------------------------------------------
-# Vertical stripes — register packages/* as kind=stripe + hold leases
+# Packages: gen / sync / list / register (and `awm dev shadow`)
 # ---------------------------------------------------------------------------
 #
-# A "stripe" is a workspace package (under projects/awm/dev/packages/*)
-# whose package.json carries a `stripe` field declaring its frontend
-# bundle and optional backend command. `awm stripe sync` walks the
-# workspace and registers every stripe with the hub in one process;
-# Ctrl-C closes every lease at once and the hub evicts on the next
-# tick (which terminates supervised backends — see
-# awm.services.hub.supervisor).
+# `awm packages gen <repo_root>` — write generated package.json (+ per-page
+#   vite.config.ts) from the packages/{components,pages}/<name>/ layout
+#   and a regex scan of each package's src/ for @awm/<x> imports.
+#   Idempotent; CI gates on `git diff --quiet` after a fresh run.
 #
-# Package.json shape (illustrative):
-#   {
-#     "name": "@awm/hello",
-#     "stripe": {
-#       "frontend": "dist/",            # absolute or relative-to-package
-#       "prefix": "/hello",             # optional; default derived from name
-#       "backend": {                    # optional — backendless = frontend-only
-#         "cmd": ["node", "dist/server.js", "${AWM_SERVICE_PORT}"],
-#         "env": {},
-#         "health": "/healthz",
-#         "cwd": null
-#       }
-#     }
-#   }
-
-def _stripe_prefix_default(pkg_name: str) -> str:
-    """Derive a URL prefix from an npm package name.
-    ``@awm/hello`` -> ``/hello``; ``foo-bar`` -> ``/foo-bar``.
-    """
-    base = pkg_name.split("/", 1)[1] if pkg_name.startswith("@") else pkg_name
-    return "/" + base.lstrip("/")
-
-
-def _load_stripe_package(pkg_dir: pathlib.Path) -> tuple[str, dict]:
-    """Read ``<pkg_dir>/package.json``, validate it carries a ``stripe``
-    field, return (npm_name, stripe_spec). Raises typer.Exit on
-    malformed input."""
-    pj_path = pkg_dir / "package.json"
-    if not pj_path.is_file():
-        typer.echo(f"no package.json at {pj_path}", err=True)
-        raise typer.Exit(2)
-    try:
-        pj = json.loads(pj_path.read_text())
-    except json.JSONDecodeError as exc:
-        typer.echo(f"package.json at {pj_path} is invalid JSON: {exc}", err=True)
-        raise typer.Exit(2)
-    name = pj.get("name")
-    if not isinstance(name, str) or not name:
-        typer.echo(f"{pj_path} missing required field 'name'", err=True)
-        raise typer.Exit(2)
-    stripe = pj.get("stripe")
-    if not isinstance(stripe, dict):
-        typer.echo(f"{pj_path} missing 'stripe' field (not a stripe package?)", err=True)
-        raise typer.Exit(2)
-    return name, stripe
-
-
-def _stripe_payload(pkg_dir: pathlib.Path, name: str, stripe: dict,
-                    name_override: str | None, prefix_override: str | None) -> dict:
-    """Build the POST /hub/register payload from a parsed stripe spec.
-    Resolves ``frontend`` relative to the package dir."""
-    frontend = stripe.get("frontend")
-    if not isinstance(frontend, str) or not frontend:
-        typer.echo(
-            f"stripe in {pkg_dir}/package.json missing 'frontend' (path to bundle dir)",
-            err=True,
-        )
-        raise typer.Exit(2)
-    frontend_abs = (pkg_dir / frontend).expanduser().resolve()
-    if not frontend_abs.is_dir():
-        typer.echo(
-            f"frontend dir {frontend_abs} (from {pkg_dir}/package.json) does not exist — build first?",
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    reg_name = name_override or name
-    reg_prefix = prefix_override or stripe.get("prefix") or _stripe_prefix_default(name)
-
-    stripe_payload: dict = {"dir": str(frontend_abs)}
-    backend = stripe.get("backend")
-    if backend is not None:
-        if not isinstance(backend, dict):
-            typer.echo(f"stripe.backend in {pkg_dir}/package.json must be an object", err=True)
-            raise typer.Exit(2)
-        cmd = backend.get("cmd")
-        if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
-            typer.echo(
-                f"stripe.backend.cmd in {pkg_dir}/package.json must be a non-empty list of strings",
-                err=True,
-            )
-            raise typer.Exit(2)
-        backend_payload: dict = {"cmd": list(cmd)}
-        if "env" in backend:
-            if not isinstance(backend["env"], dict):
-                typer.echo(
-                    f"stripe.backend.env in {pkg_dir}/package.json must be an object",
-                    err=True,
-                )
-                raise typer.Exit(2)
-            backend_payload["env"] = {str(k): str(v) for k, v in backend["env"].items()}
-        if "health" in backend:
-            backend_payload["health"] = str(backend["health"])
-        # cwd defaults (hub side) to the frontend dir; allow override.
-        if backend.get("cwd"):
-            cwd = (pkg_dir / backend["cwd"]).expanduser().resolve()
-            backend_payload["cwd"] = str(cwd)
-        stripe_payload["backend"] = backend_payload
-
-    return {"name": reg_name, "prefix": reg_prefix, "stripe": stripe_payload}
+# `awm packages sync <repo_root>` — register every packages/services/<name>
+#   (kind="service") and packages/pages/<name> (kind="page") with the hub.
+#   Holds N concurrent leases until Ctrl-C. Services do not get a port;
+#   their start.sh is invoked with AWM_HUB_URL + AWM_HUB_TOKEN in env so
+#   they can call /hub/service/register themselves.
+#
+# `awm dev shadow services/tts pages/dashboard ...` — from a scope worktree,
+#   push the same-prefix packages as overlays onto the dev sandbox's hub;
+#   Ctrl-C pops them (no respawn — base traffic resumes).
 
 
 async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> None:
-    """Open the lease WS and idle until close. Used by both
-    ``stripe register`` (one lease) and ``stripe sync`` (N concurrent).
-    """
+    """Open the lease WS and idle until close. Used by packages sync (N
+    concurrent leases) and dev shadow (per-overlay lease)."""
     import ssl as _ssl
     import websockets as _ws
 
@@ -1877,157 +1780,6 @@ def _post_register(base: str, token: str, payload: dict) -> dict:
         typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
     return r.json()
-
-
-@stripe_app.command("register")
-def stripe_register(
-    package: str = typer.Option(
-        ..., "--package",
-        help="Path to a stripe package directory (must contain package.json "
-             "with a 'stripe' field).",
-    ),
-    name: str | None = typer.Option(
-        None, "--name",
-        help="Override the registration name (default: package.json 'name'). "
-             "Use this to coexist with the same stripe synced from another scope.",
-    ),
-    prefix: str | None = typer.Option(
-        None, "--prefix",
-        help="Override the URL prefix (default: derived from package name).",
-    ),
-):
-    """DEPRECATED — kind=stripe is being retired. Prefer `awm dev shadow
-    pages/<name>` / `awm dev shadow services/<name>` against a sandbox
-    running `awm packages sync`. This command still works against any
-    surviving stripe registrations but is unused in the new layout.
-    """
-    typer.echo("[awm stripe register] deprecated; see `awm packages sync` + "
-               "`awm dev shadow`.", err=True)
-    import asyncio as _asyncio
-
-    pkg_dir = pathlib.Path(package).expanduser().resolve()
-    if not pkg_dir.is_dir():
-        typer.echo(f"package dir {pkg_dir} does not exist", err=True)
-        raise typer.Exit(2)
-
-    pkg_name, stripe_spec = _load_stripe_package(pkg_dir)
-    payload = _stripe_payload(pkg_dir, pkg_name, stripe_spec, name, prefix)
-
-    base, token = _exposed_base_and_token()
-    body = _post_register(base, token, payload)
-    typer.echo(
-        f"registered stripe {payload['name']} → prefix={payload['prefix']} "
-        f"id={body['service_id']}"
-    )
-    typer.echo(f"holding lease (Ctrl-C to evict)…")
-    try:
-        _asyncio.run(_hold_one_lease(base, token, payload["name"], body["lease_ws_path"]))
-    except KeyboardInterrupt:
-        typer.echo("lease closed — stripe evicted")
-
-
-@stripe_app.command("sync")
-def stripe_sync(
-    workspace: str = typer.Argument(
-        ...,
-        help="Path to the npm workspaces root containing 'packages/'. "
-             "Every packages/<name>/package.json with a 'stripe' field is "
-             "registered.",
-    ),
-    prefix_prefix: str | None = typer.Option(
-        None, "--prefix-prefix",
-        help="Optional URL prefix to prepend to every stripe's prefix "
-             "(e.g. '/dev' to namespace stripes under /dev/<name>).",
-    ),
-):
-    """DEPRECATED — `kind=stripe` is being retired; use `awm packages sync`
-    against the new packages/{services,pages}/* layout. This shim still
-    discovers and registers any leftover stripe packages but emits a
-    one-line warning so the next migration round is visible.
-    """
-    typer.echo("[awm stripe sync] deprecated; see `awm packages sync`.",
-               err=True)
-    import asyncio as _asyncio
-
-    ws_root = pathlib.Path(workspace).expanduser().resolve()
-    pkgs_root = ws_root / "packages"
-    if not pkgs_root.is_dir():
-        typer.echo(f"no packages/ dir at {pkgs_root}", err=True)
-        raise typer.Exit(2)
-
-    base, token = _exposed_base_and_token()
-    registered: list[tuple[str, str]] = []   # (name, lease_path)
-
-    for pkg_dir in sorted(p for p in pkgs_root.iterdir() if p.is_dir()):
-        pj = pkg_dir / "package.json"
-        if not pj.is_file():
-            continue
-        try:
-            data = json.loads(pj.read_text())
-        except json.JSONDecodeError:
-            typer.echo(f"skip {pkg_dir.name}: package.json is invalid JSON", err=True)
-            continue
-        if not isinstance(data.get("stripe"), dict):
-            # Library packages (e.g. @awm/bus) declare no `stripe` field.
-            continue
-        name = data["name"]
-        try:
-            payload = _stripe_payload(pkg_dir, name, data["stripe"], None, None)
-            if prefix_prefix:
-                payload["prefix"] = prefix_prefix.rstrip("/") + payload["prefix"]
-            body = _post_register(base, token, payload)
-        except typer.Exit:
-            typer.echo(f"skip {name}: registration failed (see prior error)", err=True)
-            continue
-        registered.append((payload["name"], body["lease_ws_path"]))
-        typer.echo(
-            f"registered {payload['name']} → prefix={payload['prefix']} "
-            f"id={body['service_id']}"
-        )
-
-    if not registered:
-        typer.echo("no stripe packages found", err=True)
-        raise typer.Exit(1)
-
-    typer.echo(f"holding {len(registered)} lease(s) (Ctrl-C to evict all)…")
-    async def _hold_all():
-        await _asyncio.gather(*(
-            _hold_one_lease(base, token, name, path) for name, path in registered
-        ))
-    try:
-        _asyncio.run(_hold_all())
-    except KeyboardInterrupt:
-        typer.echo("all leases closed — stripes evicted")
-
-
-@stripe_app.command("list")
-def stripe_list():
-    """List currently registered stripes (status + per-stripe URLs)."""
-    r = _exposed_api("GET", "/hub/stripes")
-    if r.status_code >= 400:
-        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    _print_json(r)
-
-
-# ---------------------------------------------------------------------------
-# Packages: gen / sync / list / register (and `awm dev shadow`)
-# ---------------------------------------------------------------------------
-#
-# `awm packages gen <repo_root>` — write generated package.json (+ per-page
-#   vite.config.ts) from the packages/{components,pages}/<name>/ layout
-#   and a regex scan of each package's src/ for @awm/<x> imports.
-#   Idempotent; CI gates on `git diff --quiet` after a fresh run.
-#
-# `awm packages sync <repo_root>` — register every packages/services/<name>
-#   (kind="service") and packages/pages/<name> (kind="page") with the hub.
-#   Holds N concurrent leases until Ctrl-C. Services do not get a port;
-#   their start.sh is invoked with AWM_HUB_URL + AWM_HUB_TOKEN in env so
-#   they can call /hub/service/register themselves.
-#
-# `awm dev shadow services/tts pages/dashboard ...` — from a scope worktree,
-#   push the same-prefix packages as overlays onto the dev sandbox's hub;
-#   Ctrl-C pops them (no respawn — base traffic resumes).
 
 
 @packages_app.command("gen")

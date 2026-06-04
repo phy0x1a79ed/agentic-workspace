@@ -8,21 +8,20 @@ Endpoints fall into three groups:
     DELETE /hub/services/{name}
     WS     /hub/lease/{service_id}
 
-* **Service kind (G3)** — RPC-over-WS services at /svc/<name>:
+* **Service kind** — RPC-over-WS services at /svc/<name>:
 
     POST /hub/service/register
     WS   /hub/service/control/{service_id}
     WS   /hub/service/bridge/{service_id}/{bridge_id}
 
-* **Shadow overlays (G5)** — push a same-prefix overlay on top of a
+* **Shadow overlays** — push a same-prefix overlay on top of a
   base registration:
 
     POST /hub/shadow/register
 
-* **Legacy** — kept for kind="url" / kind="static" / kind="stripe":
+* **Non-package registrations** — kind="url" / kind="static" / kind="page":
 
     POST /hub/register
-    GET  /hub/stripes
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ from awm.services.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
 from awm.services.hub.supervisor import (
-    PortPoolExhausted, remove_service_journal_entry, spawn_backend, terminate,
+    remove_service_journal_entry,
     update_service_journal_entry,
 )
 
@@ -60,8 +59,7 @@ router = APIRouter(prefix="/hub", tags=["hub"])
 
 
 # ============================================================================
-# Legacy spec models (kind=url, kind=static, kind=stripe) — kept for now;
-# slated for removal in S8.
+# Non-package registrations: kind="url" / kind="static" / kind="page"
 # ============================================================================
 
 
@@ -70,18 +68,6 @@ class StaticSpec(BaseModel):
     entry: str | None = Field(None)
     css: list[str] = Field(default_factory=list)
     mount_id: str = Field("app")
-
-
-class StripeBackend(BaseModel):
-    cmd: list[str] = Field(..., min_length=1)
-    env: dict[str, str] = Field(default_factory=dict)
-    health: str = Field("/healthz")
-    cwd: str | None = Field(None)
-
-
-class StripeSpec(BaseModel):
-    dir: str = Field(..., min_length=1)
-    backend: StripeBackend | None = Field(None)
 
 
 class PageSpec(BaseModel):
@@ -95,7 +81,6 @@ class RegisterRequest(BaseModel):
     prefix: str = Field(..., min_length=1)
     url: str | None = Field(None)
     static: StaticSpec | None = Field(None)
-    stripe: StripeSpec | None = Field(None)
     page: PageSpec | None = Field(None)
 
     @model_validator(mode="after")
@@ -103,13 +88,12 @@ class RegisterRequest(BaseModel):
         provided = [
             ("url", bool(self.url)),
             ("static", self.static is not None),
-            ("stripe", self.stripe is not None),
             ("page", self.page is not None),
         ]
         n = sum(1 for _, v in provided if v)
         if n != 1:
             raise ValueError(
-                "exactly one of `url`, `static`, `stripe`, or `page` must be provided"
+                "exactly one of `url`, `static`, or `page` must be provided"
             )
         return self
 
@@ -121,7 +105,6 @@ class RegisterResponse(BaseModel):
     kind: str
     url: str | None = None
     static: StaticSpec | None = None
-    stripe: StripeSpec | None = None
     page: PageSpec | None = None
     lease_ws_path: str
 
@@ -149,7 +132,8 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                 css=tuple(req.static.css),
                 mount_id=req.static.mount_id,
             )
-        elif req.page is not None:
+        else:
+            assert req.page is not None
             resolved = Path(req.page.dir).expanduser().resolve()
             if not resolved.is_dir():
                 raise HTTPException(
@@ -157,9 +141,6 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                     f"page.dir {req.page.dir!r} is not a directory",
                 )
             rec = await registry.register_page(req.name, req.prefix, str(resolved))
-        else:
-            assert req.stripe is not None
-            rec = await _register_stripe(registry, req)
     except PrefixConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     return RegisterResponse(
@@ -177,59 +158,9 @@ async def register(req: RegisterRequest) -> RegisterResponse:
             )
             if rec.kind == "static" else None
         ),
-        stripe=(
-            StripeSpec(
-                dir=rec.static_dir,
-                backend=(req.stripe.backend if req.stripe is not None else None),
-            )
-            if rec.kind == "stripe" else None
-        ),
         page=(PageSpec(dir=rec.static_dir) if rec.kind == "page" else None),
         lease_ws_path=f"/hub/lease/{rec.service_id}",
     )
-
-
-async def _register_stripe(registry, req: RegisterRequest):
-    assert req.stripe is not None
-    spec = req.stripe
-    resolved = Path(spec.dir).expanduser().resolve()
-    if not resolved.is_dir():
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"stripe.dir {spec.dir!r} is not a directory",
-        )
-    if spec.backend is None:
-        return await registry.register_stripe(
-            req.name, req.prefix, str(resolved),
-            has_backend=False, backend_port=None, teardown=None,
-        )
-    rec = await registry.register_stripe(
-        req.name, req.prefix, str(resolved),
-        has_backend=True, backend_port=None, teardown=None,
-    )
-    cwd = spec.backend.cwd or str(resolved)
-    try:
-        sup = await spawn_backend(
-            rec, cmd=list(spec.backend.cmd),
-            env_extra=dict(spec.backend.env),
-            cwd=cwd, health_path=spec.backend.health,
-        )
-    except PortPoolExhausted as exc:
-        await registry.evict_by_name(req.name)
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
-    except (OSError, ValueError) as exc:
-        await registry.evict_by_name(req.name)
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"failed to spawn backend for {req.name!r}: {exc}",
-        )
-    rec.backend_port = sup.port
-    rec.backend_pid = sup.process.pid
-
-    async def _teardown() -> None:
-        await terminate(sup)
-    rec.teardown = _teardown
-    return rec
 
 
 # ============================================================================
@@ -486,8 +417,8 @@ class ShadowRegisterRequest(BaseModel):
     prefix: str = Field(..., min_length=1,
                         description="Prefix to shadow; a base must already "
                                     "exist for this prefix.")
-    # The shadow record can be any of the page/service/stripe shapes —
-    # we accept one of three nested specs the same way /hub/register does.
+    # The shadow record can be any of the page/service shapes —
+    # we accept one nested spec the same way /hub/register does.
     page: dict | None = Field(None,
                               description="Page shadow: {dir: <absolute path>}")
     service: ServiceRegisterRequest | None = Field(
@@ -570,7 +501,7 @@ async def shadow_register(req: ShadowRegisterRequest) -> ShadowRegisterResponse:
 
 @router.websocket("/lease/{service_id}")
 async def lease(websocket: WebSocket, service_id: str) -> None:
-    """Generic liveness WS for non-service kinds (page shadows, stripes, url).
+    """Generic liveness WS for non-service kinds (page shadows, url, static).
     Service-kind registrations use /hub/service/control/{id} which doubles
     as the lease (closing it evicts the service)."""
     subprotocol = await authenticate_websocket(websocket)
@@ -646,34 +577,8 @@ async def list_services() -> dict[str, Any]:
             entry["dir"] = rec.static_dir
         elif rec.kind == "service":
             entry["api"] = rec.api
-        elif rec.kind == "stripe":
-            entry["stripe"] = {
-                "dir": rec.static_dir,
-                "backend_port": rec.backend_port,
-                "backend_status": rec.backend_status,
-            }
         out.append(entry)
     return {"services": out}
-
-
-@router.get("/stripes")
-async def list_stripes() -> dict[str, Any]:
-    """Legacy stripe map. Kept temporarily for the dev-shell's stripe rail;
-    will go away when dev-shell migrates to /hub/services."""
-    registry = get_registry()
-    out: dict[str, dict[str, Any]] = {}
-    for rec in await registry.list():
-        if rec.kind != "stripe":
-            continue
-        out[rec.name] = {
-            "prefix": rec.prefix,
-            "frontend_url": rec.prefix,
-            "backend_url": (
-                f"{rec.prefix}/_api/" if rec.backend_port is not None else None
-            ),
-            "status": rec.backend_status,
-        }
-    return {"stripes": out}
 
 
 @router.delete(

@@ -42,7 +42,7 @@ from typing import Any, Awaitable, Callable, Literal
 log = logging.getLogger("awm.hub.registry")
 
 
-Kind = Literal["url", "static", "page", "service", "stripe"]
+Kind = Literal["url", "static", "page", "service"]
 
 
 @dataclass
@@ -51,7 +51,7 @@ class ServiceRecord:
     prefix: str
     kind: Kind = "url"
     url: str = ""                                   # kind == "url"
-    static_dir: str = ""                            # kind in {"static","page","stripe"}
+    static_dir: str = ""                            # kind in {"static","page"}
     entry: str | None = None                        # auto-shell entry (static only)
     css: tuple[str, ...] = ()                       # auto-shell stylesheets (static only)
     mount_id: str = "app"                           # auto-shell mount node id (static only)
@@ -63,10 +63,8 @@ class ServiceRecord:
     start_cmd: list[str] = field(default_factory=list)
     cwd: str = ""
 
-    # Lifecycle bookkeeping shared by service + stripe (stripe is being
-    # retired; see S8). ``backend_status`` mirrors the ready state the
-    # client surface gates on.
-    backend_port: int | None = None
+    # Lifecycle bookkeeping for kind="service". ``backend_status`` mirrors
+    # the ready state the client surface gates on.
     backend_status: str = "starting"                # starting | ready | down
     backend_pid: int | None = None
 
@@ -196,35 +194,6 @@ class Registry:
                 cwd=cwd,
                 backend_pid=pid,
                 backend_status="starting",
-                teardown=teardown,
-            )
-            self._install_base(rec)
-            return rec
-
-    # ------------------------------------------------------------------
-    # Stripe (legacy, retiring in S8)
-    # ------------------------------------------------------------------
-
-    async def register_stripe(
-        self,
-        name: str,
-        prefix: str,
-        static_dir: str,
-        *,
-        has_backend: bool,
-        backend_port: int | None = None,
-        teardown: Callable[[], Awaitable[None]] | None = None,
-    ) -> ServiceRecord:
-        prefix = _normalize_prefix(prefix)
-        async with self._lock:
-            self._check_register(prefix, name, allow_shadow=False)
-            rec = ServiceRecord(
-                name=name,
-                prefix=prefix,
-                kind="stripe",
-                static_dir=static_dir,
-                backend_port=backend_port,
-                backend_status="starting" if has_backend else "ready",
                 teardown=teardown,
             )
             self._install_base(rec)

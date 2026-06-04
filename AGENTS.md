@@ -72,7 +72,7 @@ PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run check
 
 ## Service Hub
 
-`awm.exposed:app` is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, `/voice`, …). A few path prefixes are *registered* at runtime; matched requests dispatch to one of five kinds:
+`awm.exposed:app` is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, …). A few path prefixes are *registered* at runtime; matched requests dispatch to one of four kinds:
 
 | Kind | Surface | Typical caller |
 |---|---|---|
@@ -80,7 +80,6 @@ PATH=/home/tony/lib/miniforge3/envs/awm/bin:$PATH npm run check
 | `service` | RPC-over-WS at `/svc/<name>` | `packages/services/*` via `awm packages sync` |
 | `url` | HTTP/WS proxy at any prefix | external services registered via `awm hub register --url ...` |
 | `static` | static bundle at any prefix | external bundles registered via `awm hub register --dir ...` |
-| `stripe` | DEPRECATED — frontend + supervised backend at `/<name>/_api/*` | `awm stripe sync` (shim, prints warning) |
 
 Each prefix maps to a stack of records (base + optional overlays). Overlays are pushed via `POST /hub/shadow/register` (the `awm dev shadow` CLI); the topmost overlay receives traffic, with base traffic resuming instantly when an overlay's lease closes.
 
@@ -97,7 +96,6 @@ This scope migrates the package model from one ambiguous `kind="stripe"` to thre
 
 What this scope did NOT do (deferred):
 
-- Full deletion of `kind="stripe"` runtime paths — stripe CLI is now a deprecated shim, but the registry, supervisor, and proxy paths remain so the existing test suite keeps passing. Plan S8 calls this out as the next-round cleanup.
 - Replacement for `@awm/bus`. Direct emitters cover the obvious cross-page coordination case but the in-browser client library is a follow-up.
 - Cross-peer service replication.
 
@@ -253,7 +251,7 @@ registry, the supervisor, the RPC envelope layer, the manifest generator,
 etc. Where README.md tells you how to use the package system, the rest of
 this file tells you where the implementation lives:
 
-- **Registry overlay + kinds** — `awm/services/hub/registry.py` (one `_stacks` dict per prefix; base + overlays LIFO; `kind` Literal includes `page`, `service`, plus legacy `url`/`static`/`stripe`).
+- **Registry overlay + kinds** — `awm/services/hub/registry.py` (one `_stacks` dict per prefix; base + overlays LIFO; `kind` Literal = `url` | `static` | `page` | `service`).
 - **RPC layer** — `awm/services/hub/rpc.py` (in-memory `ControlChannel` per service, `_pending` call table, subscriber registry, session table, bridge id allocator).
 - **Service translator + bridge** — `awm/services/hub/proxy.py::proxy_service_http` / `open_session_via_http` / `proxy_session_ws` / `proxy_service_emit_ws`.
 - **Supervisor + PID journal** — `awm/services/hub/supervisor.py::reconcile_journaled_services` / `spawn_service` / `kill_pid_group`; state at `<AWM_DIR>/state/services.json`.
