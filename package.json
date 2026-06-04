@@ -2,8 +2,15 @@
   "name": "awm-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "Vertical-stripe packages workspace. Each packages/<name> is a stripe (frontend + optional backend) or a shared library, registered with the hub at dev-time. The SvelteKit app under frontend/ is intentionally NOT a workspace member — it's the legacy monolith being progressively decomposed into stripes.",
+  "description": "Packages workspace. packages/components/* are importable libraries; packages/pages/* are static bundles served at /ui/<name>; packages/services/* are RPC-over-WS services served at /svc/<name>. Per-package package.json + vite.config.ts are GENERATED from layout — see awm/services/packages/gen.py.",
   "workspaces": [
-    "packages/*"
-  ]
+    "packages/components/*",
+    "packages/pages/*"
+  ],
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "svelte": "^5.0.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0"
+  }
 }
