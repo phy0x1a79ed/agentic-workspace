@@ -141,7 +141,7 @@ awm hub trust-self              # writes auth token to .awm/peers/<self>.token
 
 `trust-self` is idempotent. It only matters for URL-kind registrations: the hub forwards as the local peer, so the local peer's own token has to live in `peers/`.
 
-**Browser login.** The hub middleware short-circuits route auth for both `kind=static` and `kind=url`, so a stripe-only URL (`/comp-x/`, `/x/...`) opens without a cookie. To exercise a stripe inside the full SPA — where the bundle may `fetch('/rooms')`, `/voice`, etc. — visit the login bookmark first:
+**Browser login.** The hub middleware short-circuits route auth for both `kind=static` and `kind=url`, so a stripe-only URL (`/comp-x/`, `/x/...`) opens without a cookie. To exercise a stripe inside the full SPA — where the bundle may `fetch('/rooms')`, `/peer/...`, etc. — visit the login bookmark first:
 
 ```
 http://127.0.0.1:<login-port>/   (e.g. :7822 for dev, :7832 for web-ui)
