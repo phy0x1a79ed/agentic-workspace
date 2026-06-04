@@ -11,7 +11,7 @@
 set -euo pipefail
 
 case "${1:-help}" in
-  agent-stack) awm dev shadow services/ptt services/tts pages/test-agent ;;
+  agent-stack) awm dev shadow services/ptt services/tts pages/agent ;;
   tts-only)    awm dev shadow services/tts pages/tts ;;
   ptt-only)    awm dev shadow services/ptt pages/ptt ;;
   voice)       awm dev shadow services/ptt services/tts pages/ptt pages/tts ;;
