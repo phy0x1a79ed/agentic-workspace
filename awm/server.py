@@ -293,6 +293,18 @@ def get_messages_search(
         raise HTTPException(400, str(exc))
 
 
+@app.get("/messages/recipients")
+def get_messages_recipients(query: str, peer: str | None = None):
+    from awm.services import messaging
+    try:
+        recipients = messaging.list_recipients(query=query, peer=peer)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except NotImplementedError as exc:
+        raise HTTPException(501, str(exc))
+    return {"recipients": recipients, "total": len(recipients), "query": query}
+
+
 @app.get("/messages/fetch")
 def get_messages_fetch(
     scope: str,

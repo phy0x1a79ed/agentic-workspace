@@ -113,6 +113,16 @@ async def lifespan(app: FastAPI):
     )
     agent_instances.reconcile_on_startup()
 
+    # Reconcile journaled services: give each a 10s window to reopen its
+    # control WS, then respawn the silent ones from start_cmd. Fired as
+    # a background task — the hub becomes available immediately for
+    # services that ARE actively reconnecting.
+    try:
+        from awm.services.hub.supervisor import reconcile_journaled_services
+        asyncio.create_task(reconcile_journaled_services())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] service reconcile skipped: {exc}")
+
     # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
     # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
     # 503 with a clear message, the rest of the app keeps running.
@@ -684,6 +694,19 @@ from awm.services.hub.static import (  # noqa: E402
 )
 
 
+def _stripe_identity_headers(cookies) -> list[tuple[str, str]]:
+    """Mint hub-injected identity headers for a stripe proxy hop from
+    the inbound request's cookies. Returning X-Awm-As here causes the
+    proxy to drop any inbound X-Awm-As the client supplied — that's
+    the forge-prevention seam stripes rely on. Returns an empty list
+    when the operator cookie is absent (anonymous; backend treats the
+    missing header as unauthenticated)."""
+    awm_user = cookies.get(auth_svc.AS_COOKIE)
+    if not awm_user:
+        return []
+    return [("X-Awm-As", awm_user)]
+
+
 class HubRoutingMiddleware:
     def __init__(self, app):
         self.app = app
@@ -703,7 +726,7 @@ class HubRoutingMiddleware:
         rec = registry.longest_match(path)
         if rec is None:
             return await self.app(scope, receive, send)
-        if rec.kind == "static":
+        if rec.kind in ("static", "page"):
             if scope["type"] == "websocket":
                 await _ws_close_unsupported(scope, receive, send)
                 return
@@ -713,6 +736,9 @@ class HubRoutingMiddleware:
             return
         if rec.kind == "stripe":
             await self._dispatch_stripe(scope, receive, send, rec, path)
+            return
+        if rec.kind == "service":
+            await self._dispatch_service(scope, receive, send, rec, path)
             return
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
@@ -769,12 +795,16 @@ class HubRoutingMiddleware:
             target_base = f"http://127.0.0.1:{rec.backend_port}"
             if scope["type"] == "http":
                 request = Request(new_scope, receive=receive)
-                response = await proxy_http(request, target_base)
+                identity_headers = _stripe_identity_headers(request.cookies)
+                response = await proxy_http(
+                    request, target_base, extra_headers=identity_headers,
+                )
                 await response(scope, receive, send)
             else:
                 from fastapi import WebSocket as _WS
                 ws = _WS(new_scope, receive=receive, send=send)
-                await proxy_ws(ws, target_base)
+                identity_headers = _stripe_identity_headers(ws.cookies)
+                await proxy_ws(ws, target_base, extra_headers=identity_headers)
             return
 
         # Anything else under the prefix is frontend static.
@@ -784,6 +814,63 @@ class HubRoutingMiddleware:
         request = Request(scope, receive=receive)
         response = await _serve_static(request, rec)
         await response(scope, receive, send)
+
+    async def _dispatch_service(self, scope, receive, send, rec, path):
+        """RPC-WS service routing (kind="service"):
+
+        - POST <prefix>/fn/<name>            -> control-WS call/notify
+        - POST <prefix>/session/<kind>       -> open session, return ws_path
+        - WS   <prefix>/session/<id>         -> session WS (direct = byte
+                                                relay, otherwise enveloped)
+        - WS   <prefix>/emit/<topic>         -> emit subscriber WS
+        Everything else under the prefix is 404.
+        """
+        from awm.services.hub.proxy import (
+            open_session_via_http,
+            proxy_service_emit_ws,
+            proxy_service_http,
+            proxy_session_ws,
+        )
+        from fastapi import WebSocket as _WS
+        from starlette.responses import PlainTextResponse
+
+        rel = path[len(rec.prefix):]
+        # WebSocket() requires receive+send; Request() is fine with just
+        # scope. We only need .cookies here, which both expose off scope
+        # headers, so build the right type per scope kind.
+        if scope["type"] == "http":
+            cookies = Request(scope).cookies
+        else:
+            cookies = _WS(scope, receive=receive, send=send).cookies
+        identity = _stripe_identity_headers(cookies)
+        as_ = identity[0][1] if identity else None
+
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            if rel.startswith("/fn/"):
+                response = await proxy_service_http(
+                    request, rec.service_id, as_=as_,
+                )
+            elif rel.startswith("/session/") and request.method == "POST":
+                response = await open_session_via_http(
+                    request, rec.service_id, as_=as_,
+                )
+            else:
+                response = PlainTextResponse("not found", status_code=404)
+            await response(scope, receive, send)
+            return
+
+        # websocket
+        ws = _WS(scope, receive=receive, send=send)
+        if rel.startswith("/session/"):
+            sid = rel[len("/session/"):]
+            await proxy_session_ws(ws, rec.service_id, sid)
+            return
+        if rel.startswith("/emit/"):
+            topic = rel[len("/emit/"):]
+            await proxy_service_emit_ws(ws, rec.service_id, topic, as_=as_)
+            return
+        await _ws_close_unsupported(scope, receive, send)
 
 
 app.add_middleware(HubRoutingMiddleware)

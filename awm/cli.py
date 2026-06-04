@@ -37,7 +37,9 @@ room_app = typer.Typer(help="Rooms: multi-participant conversations with agents"
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
 hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
-stripe_app = typer.Typer(help="Vertical stripes: register packages/* with the hub (kind=stripe)", no_args_is_help=True)
+stripe_app = typer.Typer(help="Deprecated: alias for `awm packages` (will go away soon)", no_args_is_help=True)
+packages_app = typer.Typer(help="Packages: generate manifests + sync packages/{services,pages}/ with the hub", no_args_is_help=True)
+dev_app = typer.Typer(help="Dev workflows: shadow packages into the running hub", no_args_is_help=True)
 
 context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
 
@@ -54,6 +56,8 @@ app.add_typer(discord_app, name="discord")
 app.add_typer(context_app, name="context")
 app.add_typer(hub_app, name="hub")
 app.add_typer(stripe_app, name="stripe")
+app.add_typer(packages_app, name="packages")
+app.add_typer(dev_app, name="dev")
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +614,19 @@ def inbox_search(
         if v is not None:
             params[k] = v
     r = _api("GET", "/messages", params=params)
+    _print_json(r)
+
+
+@inbox_app.command("recipients")
+def inbox_recipients(
+    query: str = typer.Argument(..., help="Regex matched against recipients, or '*' for all."),
+    peer: str = typer.Option(None, "--peer", help="(Reserved; deferred — only 'local' / omitted is honoured today.)"),
+):
+    """List valid recipient scopes matching a regex (local only)."""
+    params: dict[str, object] = {"query": query}
+    if peer is not None:
+        params["peer"] = peer
+    r = _api("GET", "/messages/recipients", params=params)
     _print_json(r)
 
 
@@ -1879,11 +1896,13 @@ def stripe_register(
         help="Override the URL prefix (default: derived from package name).",
     ),
 ):
-    """Register one stripe package with the hub and hold its lease.
-
-    Ctrl-C closes the lease → hub evicts → supervised backend is
-    SIGTERM'd. Re-running re-registers from scratch.
+    """DEPRECATED — kind=stripe is being retired. Prefer `awm dev shadow
+    pages/<name>` / `awm dev shadow services/<name>` against a sandbox
+    running `awm packages sync`. This command still works against any
+    surviving stripe registrations but is unused in the new layout.
     """
+    typer.echo("[awm stripe register] deprecated; see `awm packages sync` + "
+               "`awm dev shadow`.", err=True)
     import asyncio as _asyncio
 
     pkg_dir = pathlib.Path(package).expanduser().resolve()
@@ -1921,13 +1940,13 @@ def stripe_sync(
              "(e.g. '/dev' to namespace stripes under /dev/<name>).",
     ),
 ):
-    """Discover every stripe under ``<workspace>/packages/*`` and register
-    them all in one process, holding N concurrent leases.
-
-    Ctrl-C closes every lease → hub evicts every stripe at once.
-    Failures to register an individual stripe are reported but do not
-    abort the others.
+    """DEPRECATED — `kind=stripe` is being retired; use `awm packages sync`
+    against the new packages/{services,pages}/* layout. This shim still
+    discovers and registers any leftover stripe packages but emits a
+    one-line warning so the next migration round is visible.
     """
+    typer.echo("[awm stripe sync] deprecated; see `awm packages sync`.",
+               err=True)
     import asyncio as _asyncio
 
     ws_root = pathlib.Path(workspace).expanduser().resolve()
@@ -1989,3 +2008,338 @@ def stripe_list():
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
     _print_json(r)
+
+
+# ---------------------------------------------------------------------------
+# Packages: gen / sync / list / register (and `awm dev shadow`)
+# ---------------------------------------------------------------------------
+#
+# `awm packages gen <repo_root>` — write generated package.json (+ per-page
+#   vite.config.ts) from the packages/{components,pages}/<name>/ layout
+#   and a regex scan of each package's src/ for @awm/<x> imports.
+#   Idempotent; CI gates on `git diff --quiet` after a fresh run.
+#
+# `awm packages sync <repo_root>` — register every packages/services/<name>
+#   (kind="service") and packages/pages/<name> (kind="page") with the hub.
+#   Holds N concurrent leases until Ctrl-C. Services do not get a port;
+#   their start.sh is invoked with AWM_HUB_URL + AWM_HUB_TOKEN in env so
+#   they can call /hub/service/register themselves.
+#
+# `awm dev shadow services/tts pages/dashboard ...` — from a scope worktree,
+#   push the same-prefix packages as overlays onto the dev sandbox's hub;
+#   Ctrl-C pops them (no respawn — base traffic resumes).
+
+
+@packages_app.command("gen")
+def packages_gen(
+    repo_root: str = typer.Argument(
+        ".",
+        help="Workspace root containing packages/. Defaults to cwd.",
+    ),
+):
+    """Generate per-package package.json + per-page vite.config.ts from the
+    packages/{components,pages}/<name>/ layout. Run before npm install."""
+    from awm.services.packages import gen as _gen
+    root = pathlib.Path(repo_root).expanduser().resolve()
+    counters = _gen.run(root)
+    typer.echo(json.dumps(counters, indent=2))
+
+
+def _packages_walk(repo_root: pathlib.Path) -> tuple[list[pathlib.Path],
+                                                     list[pathlib.Path]]:
+    """Return (service_dirs, page_dirs) under repo_root/packages/. Skips
+    _to_delete/ and any subdir name starting with '_'."""
+    pkgs = repo_root / "packages"
+    services: list[pathlib.Path] = []
+    pages: list[pathlib.Path] = []
+    if (pkgs / "services").is_dir():
+        for child in sorted((pkgs / "services").iterdir()):
+            if child.is_dir() and not child.name.startswith("_"):
+                if (child / "start.sh").is_file():
+                    services.append(child)
+        # Tolerate trailing "/" in argument resolution above.
+    if (pkgs / "pages").is_dir():
+        for child in sorted((pkgs / "pages").iterdir()):
+            if child.is_dir() and not child.name.startswith("_"):
+                pages.append(child)
+    return services, pages
+
+
+def _post_service_register(base: str, token: str, payload: dict) -> dict:
+    try:
+        r = httpx.post(
+            f"{base}/hub/service/register",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+            verify=False,
+        )
+    except httpx.HTTPError as exc:
+        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"service register failed ({r.status_code}): {r.text}",
+                   err=True)
+        raise typer.Exit(1)
+    return r.json()
+
+
+def _post_page_register(base: str, token: str, name: str, prefix: str,
+                        dir_: str) -> dict:
+    payload = {
+        "name": name,
+        "prefix": prefix,
+        "page": {"dir": dir_},
+    }
+    return _post_register(base, token, payload)
+
+
+def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
+    f = pkg_dir / "prefix.txt"
+    if f.is_file():
+        text = f.read_text(encoding="utf-8").strip()
+        if text:
+            return text if text.startswith("/") else "/" + text
+    return default
+
+
+def _spawn_service_local(pkg_dir: pathlib.Path, base: str, token: str) -> int:
+    """Spawn ``start.sh`` for a service with hub env vars injected.
+
+    Returns the PID. The service is expected to POST /hub/service/register
+    on startup; if it doesn't reconnect within the 10s window the hub
+    will SIGTERM this PID and respawn from start.sh itself (S4).
+    """
+    env = os.environ.copy()
+    env["AWM_HUB_URL"] = base
+    env["AWM_HUB_TOKEN"] = token
+    env["AWM_SERVICE_NAME"] = pkg_dir.name
+    proc = subprocess.Popen(
+        ["bash", str(pkg_dir / "start.sh")],
+        cwd=str(pkg_dir),
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.pid
+
+
+@packages_app.command("sync")
+def packages_sync(
+    workspace: str = typer.Argument(
+        ...,
+        help="Path to the workspace root containing packages/{services,pages}/.",
+    ),
+):
+    """Discover and register every packages/services/<name> (kind=service)
+    and packages/pages/<name> (kind=page) with the hub.
+
+    For each service: spawns ``start.sh`` with AWM_HUB_URL/AWM_HUB_TOKEN in
+    env; the service then registers itself + opens its control WS.
+
+    For each page: POST /hub/register with the static spec at prefix
+    ``/ui/<name>``; this command holds one lease per page until Ctrl-C.
+    """
+    import asyncio as _asyncio
+
+    ws_root = pathlib.Path(workspace).expanduser().resolve()
+    services, pages = _packages_walk(ws_root)
+    if not services and not pages:
+        typer.echo("no service or page packages found", err=True)
+        raise typer.Exit(1)
+
+    base, token = _exposed_base_and_token()
+    leases: list[tuple[str, str]] = []
+    spawned_pids: list[int] = []
+
+    for svc_dir in services:
+        name = svc_dir.name
+        try:
+            spawned_pids.append(_spawn_service_local(svc_dir, base, token))
+            typer.echo(f"spawned service {name} (pid bookkeeping; service "
+                       f"self-registers via /hub/service/register)")
+        except (OSError, ValueError) as exc:
+            typer.echo(f"skip {name}: spawn failed: {exc}", err=True)
+            continue
+
+    for page_dir in pages:
+        name = page_dir.name
+        dist = page_dir / "dist"
+        if not dist.is_dir():
+            typer.echo(f"skip page {name}: no dist/ — build first", err=True)
+            continue
+        prefix = _read_prefix_txt(page_dir, f"/ui/{name}")
+        try:
+            body = _post_page_register(base, token, name, prefix, str(dist))
+        except typer.Exit:
+            continue
+        leases.append((name, body["lease_ws_path"]))
+        typer.echo(f"registered page {name} → prefix={prefix} "
+                   f"id={body['service_id']}")
+
+    if not leases and not spawned_pids:
+        typer.echo("nothing registered", err=True)
+        raise typer.Exit(1)
+
+    if leases:
+        typer.echo(f"holding {len(leases)} page lease(s) (Ctrl-C to evict)…")
+        async def _hold_all():
+            await _asyncio.gather(*(
+                _hold_one_lease(base, token, name, path) for name, path in leases
+            ))
+        try:
+            _asyncio.run(_hold_all())
+        except KeyboardInterrupt:
+            typer.echo("page leases closed")
+    else:
+        # No page leases but services are running — block on a signal so
+        # the user can Ctrl-C to clean up.
+        typer.echo(f"services running (pids={spawned_pids}); "
+                   "press Ctrl-C to stop")
+        try:
+            signal.pause()
+        except KeyboardInterrupt:
+            pass
+
+    # On shutdown, SIGTERM the services we spawned ourselves so they exit
+    # cleanly (their start.sh reconnect loop won't help once the hub goes
+    # too, but this run is local-CLI only — the hub side keeps going).
+    for pid in spawned_pids:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+@packages_app.command("list")
+def packages_list():
+    """List currently registered packages (services + pages)."""
+    r = _exposed_api("GET", "/hub/services")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    _print_json(r)
+
+
+@dev_app.command("shadow")
+def dev_shadow(
+    targets: list[str] = typer.Argument(
+        ...,
+        help="One or more package shadows of the form "
+             "'services/<name>' or 'pages/<name>'. Components are not "
+             "shadowable directly (they're build-time deps).",
+    ),
+):
+    """Push selected packages as shadow overlays onto the running hub.
+
+    Resolves each target relative to the current scope worktree
+    (``./packages/<target>/``), then POSTs /hub/shadow/register once per
+    target and holds one lease each. Ctrl-C pops the overlays; base
+    traffic resumes instantly with no respawn or warmup.
+    """
+    import asyncio as _asyncio
+
+    here = pathlib.Path.cwd()
+    base, token = _exposed_base_and_token()
+    leases: list[tuple[str, str]] = []
+    spawned_pids: list[int] = []
+
+    for target in targets:
+        target = target.strip().lstrip("/")
+        if "/" not in target:
+            typer.echo(f"skip {target!r}: expected 'services/<name>' or "
+                       f"'pages/<name>'", err=True)
+            continue
+        kind, name = target.split("/", 1)
+        pkg_dir = (here / "packages" / kind / name).expanduser().resolve()
+        if not pkg_dir.is_dir():
+            typer.echo(f"skip {target}: {pkg_dir} not a directory", err=True)
+            continue
+        shadow_name = f"shadow:{name}:{pkg_dir.parent.parent.parent.name}"
+        if kind == "components":
+            typer.echo(f"skip {target}: components are build-time deps; "
+                       f"rebuild + shadow the page that imports them instead",
+                       err=True)
+            continue
+        if kind == "pages":
+            dist = pkg_dir / "dist"
+            if not dist.is_dir():
+                typer.echo(f"skip {target}: no dist/ — build first", err=True)
+                continue
+            prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
+            payload = {
+                "name": shadow_name,
+                "prefix": prefix,
+                "page": {"dir": str(dist)},
+            }
+        elif kind == "services":
+            if not (pkg_dir / "start.sh").is_file():
+                typer.echo(f"skip {target}: no start.sh", err=True)
+                continue
+            try:
+                pid = _spawn_service_local(pkg_dir, base, token)
+                spawned_pids.append(pid)
+            except (OSError, ValueError) as exc:
+                typer.echo(f"skip {target}: spawn failed: {exc}", err=True)
+                continue
+            payload = {
+                "name": shadow_name,
+                "prefix": f"/svc/{name}",
+                "service": {
+                    "name": shadow_name,
+                    "prefix": f"/svc/{name}",
+                    "pid": pid,
+                    "start": ["bash", str(pkg_dir / "start.sh")],
+                    "cwd": str(pkg_dir),
+                },
+            }
+        else:
+            typer.echo(f"skip {target}: unknown kind {kind!r}", err=True)
+            continue
+
+        try:
+            r = httpx.post(
+                f"{base}/hub/shadow/register",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+                verify=False,
+            )
+        except httpx.HTTPError as exc:
+            typer.echo(f"skip {target}: hub unreachable: {exc}", err=True)
+            continue
+        if r.status_code >= 400:
+            typer.echo(f"skip {target}: shadow register failed "
+                       f"({r.status_code}): {r.text}", err=True)
+            continue
+        body = r.json()
+        leases.append((target, body["lease_ws_path"]))
+        typer.echo(f"shadow {target} → prefix={payload['prefix']} "
+                   f"id={body['service_id']}")
+
+    if not leases:
+        # Clean up any spawned services if no overlay actually landed.
+        for pid in spawned_pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        typer.echo("no shadows pushed", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"holding {len(leases)} shadow lease(s) (Ctrl-C to pop)…")
+    async def _hold_all():
+        await _asyncio.gather(*(
+            _hold_one_lease(base, token, name, path) for name, path in leases
+        ))
+    try:
+        _asyncio.run(_hold_all())
+    except KeyboardInterrupt:
+        typer.echo("all shadow leases closed — base traffic resumes")
+    finally:
+        for pid in spawned_pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass

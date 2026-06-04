@@ -4,8 +4,8 @@
     peerInfo, listPeers, listProjects, listScopes, coreStatus, pingPeer,
     type Peer, type Project, type Scope, type CoreStatus,
   } from '$lib/api/client';
-  import Button from '$lib/primitives/Button.svelte';
-  import CollapsibleSection from '$lib/primitives/CollapsibleSection.svelte';
+  import Button from '$lib/components/primitives/Button.svelte';
+  import CollapsibleSection from '$lib/components/primitives/CollapsibleSection.svelte';
   import ConfigStats, { type StatRow } from '$lib/components/ConfigStats.svelte';
 
   // ── Status (existing stats) ────────────────────────────────────────────

@@ -4,7 +4,7 @@
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, file locking with crash recovery, skills catalog, session logging, experience tracking, artifact registration, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
-For agent-facing structural docs (paths, MCP tools, scope lifecycle), see [`WORKSPACE.md`](WORKSPACE.md). For awm-internal architecture (Service Hub, vertical-stripe component dev), see [`AGENTS.md`](AGENTS.md).
+For agent-facing structural docs (paths, MCP tools, scope lifecycle), see [`WORKSPACE.md`](WORKSPACE.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`AGENTS.md`](AGENTS.md). This README covers install, federation, and the *usage* side of the package model (authoring components / services / pages); AGENTS.md covers the *implementation* side.
 
 ## Quick Install
 
@@ -31,6 +31,177 @@ AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The setup 
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
 - Per-session harness selection via the `agent_cli` column on `agent_sessions`.
 - Healing existing scopes that pre-date the wiring: `awm scope heal`.
+
+## Developing a package
+
+Packages live under `packages/{components,services,pages}/<name>/`. The
+subfolder *is* the kind — there's no `kind` field anywhere; `awm packages
+sync` walks `packages/{services,pages}/` and registers each with the
+matching hub kind. Authors write source only — `package.json` and
+`vite.config.ts` are generated from layout + import scan.
+
+### Three package kinds, by folder
+
+```
+packages/
+  components/<name>/   ← library; importable across the workspace; no URL
+  services/<name>/     ← long-running backend; reached at /svc/<name>/…
+  pages/<name>/        ← static bundle; served at /ui/<name>/
+  _shared/             ← hand-maintained shared Vite config base
+  _to_delete/          ← legacy packages awaiting cleanup
+  dev.sh               ← saved dev-shadow templates (see Iterating below)
+```
+
+### What you author on disk
+
+| Kind | Files you write |
+|---|---|
+| Component | `src/index.ts` (barrel re-exporting each public component) plus `.svelte` / `.ts` / `.css` files it ships. That's it. |
+| Page | `src/main.ts` (entry; calls `mount(App, …)`), `src/App.svelte` (root component), `index.html`, plus any per-page components in `src/components/`. Prefix defaults to `/ui/<dirname>`; an alternative prefix lives in an optional one-line `prefix.txt` at the package root. |
+| Service | `start.sh` (`exec`s the runtime), plus whatever source the service needs (`backend/` Python, `server.js` Node, etc.). |
+
+`package.json` and `vite.config.ts` are generated, not authored. The generator
+scans `src/` for `from '@awm/<x>'` imports and writes the inferred
+`dependencies`; the per-page Vite config is a one-line re-export of
+`packages/_shared/vite.config.base.ts`. It's idempotent. CI gates on
+`git diff --quiet` after a fresh run.
+
+### Building a page
+
+Boot sequence (driven by `dev/run.sh _build_packages`):
+
+```
+awm packages gen $REPO_ROOT            # write per-package package.json + vite.config.ts
+npm install --no-audit --no-fund       # symlink workspace deps
+npm run build --workspaces --if-present # vite build per page → packages/pages/<name>/dist/
+awm packages sync $REPO_ROOT           # register pages + spawn services
+```
+
+### Authoring a service
+
+`start.sh` is the only entry point the hub knows about. The hub injects:
+
+| Var | Purpose |
+|---|---|
+| `AWM_HUB_URL` | base URL of the hub control plane (e.g. `https://127.0.0.1:7821/`) |
+| `AWM_HUB_TOKEN` | bearer for `/hub/service/register` + control WS |
+| `AWM_SERVICE_NAME` | the service name (= directory name) |
+| `AWM_SERVICE_ID` | empty on first spawn; populated by the hub on reconnect after restart |
+
+A typical `start.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+exec mamba run -n awm --no-capture-output python -m my_service.hub_adapter
+```
+
+The adapter POSTs `/hub/service/register` (sending its PID + start_cmd + cwd),
+then opens `WS /hub/service/control/<service_id>` and sends a `ready` frame
+carrying the api manifest:
+
+```jsonc
+{
+  "kind": "ready",
+  "api": {
+    "functions": [
+      {"name": "listEngines"},
+      {"name": "savePreset"},
+      {"name": "delPreset", "no_response": true}
+    ],
+    "emitters": [{"topic": "engine.loaded"}],
+    "sessions": [{"kind": "call", "transport": "direct"}]
+  }
+}
+```
+
+Declare `transport: "direct"` on any session or emitter where you want a
+raw-frame bridge instead of `session.frame` envelopes. PCM audio (TTS, PTT)
+is the canonical case — see `packages/services/tts/backend/hub_adapter.py`
+and `packages/services/ptt/backend/hub_adapter.py` for worked examples.
+
+### Composing components into a page
+
+Just `import` from `@awm/<name>` in the page's `src/`. The generator's next
+run scans for it and adds the dep to the page's `package.json`. Vite +
+`@sveltejs/vite-plugin-svelte` compiles the source in at build time.
+
+```svelte
+<!-- packages/pages/dashboard/src/App.svelte -->
+<script>
+  import { Button, Card } from '@awm/primitives';
+  import '@awm/primitives/style.css';
+</script>
+```
+
+Global CSS doesn't ride the component barrel — `import '@awm/primitives/style.css'`
+explicitly. The generator picks up subpath imports too.
+
+### Iterating on a package in a scope
+
+To live-test a local change against the running dev sandbox without
+evicting the dev copy, push it as a shadow overlay:
+
+```bash
+cd /home/tony/agentic_workspace/projects/awm/<scope>
+awm dev shadow services/tts pages/tts
+# (lease blocks; Ctrl-C pops the overlay; dev's base traffic resumes instantly)
+```
+
+For named templates, edit `packages/dev.sh` and call `./packages/dev.sh <name>`:
+
+```bash
+./packages/dev.sh agent-stack    # shadow ptt + tts + test-agent in one shot
+./packages/dev.sh tts-only       # just tts service + page
+```
+
+Shadows of `components/` are an error — components are build-time deps.
+Edit the component locally, rebuild the *page* that imports it
+(`npm run build -w @awm/<page-name>`), and shadow the page instead.
+
+### Hub-service control plane
+
+Three endpoints frame the service surface:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/hub/service/register` | Body `{name, prefix, pid, start, cwd}`. Returns `{service_id, control_ws_path, bridge_ws_base, auth_token}`. |
+| `WS` | `/hub/service/control/{service_id}` | Persistent control channel; closing it evicts the service. |
+| `WS` | `/hub/service/bridge/{service_id}/{bridge_id}` | Upstream side of a direct session/emitter bridge; hub byte-relays frames between this and the browser-side WS. |
+
+Envelopes on the control WS:
+
+| `kind` | Direction | Fields | Use |
+|---|---|---|---|
+| `ready` | service → hub | `{api}` | Handshake; api manifest. |
+| `call` | hub → service | `{id, fn, args, as?}` | RPC request expecting a reply. |
+| `reply` | service → hub | `{id, ok, result?, error?}` | Reply to a `call`. |
+| `notify` | hub → service | `{fn, args, as?}` | Fire-and-forget. |
+| `sub` / `unsub` | hub → service | `{topic, sub_id, as?}` | Browser subscriber bookkeeping. |
+| `emit` | service → hub | `{topic, payload}` | Event for a non-direct emitter. |
+| `session.open` | hub → service | `{session_id, session_kind, init, as?, bridge_id?}` | Browser opened a session. |
+| `session.opened` | service → hub | `{session_id, ok, error?}` | Service acknowledges. |
+| `session.frame` | both ways | `{session_id, payload}` | One frame on a non-direct session. |
+| `session.close` | both ways | `{session_id, code?, reason?}` | Session ended. |
+
+Browser-side, the hub exposes:
+
+| Browser | Hub action |
+|---|---|
+| `POST /svc/<name>/fn/<fn>` | `call` (or `notify`); reply returned as HTTP JSON |
+| `POST /svc/<name>/session/<kind>` | Allocates `session_id`, returns `{ws_path}` |
+| `WS /svc/<name>/session/<id>` | Direct → byte relay through bridge; non-direct → `session.frame` envelopes |
+| `WS /svc/<name>/emit/<topic>` | Non-direct → JSON fan-out; direct → bridged WS |
+
+### Gotchas
+
+- **Bridge auth inheritance.** The service authenticated by opening the control WS; the bridge WS at `/hub/service/bridge/{sid}/{bid}` inherits that trust and is not re-checked.
+- **10s reconnect window.** On hub restart, services have 10 seconds to re-open their control WS. After that the hub `SIGTERM`s the last-known PID (from `<AWM_DIR>/state/services.json`) and respawns from `start_cmd`.
+- **Shadow can't displace a component.** Edit the component, rebuild the page that imports it, then shadow the page.
+- **AWM_HUB_URL injection.** Python services using `mamba run` inherit env automatically. Node services launched through wrappers may need explicit `--env AWM_HUB_URL=$AWM_HUB_URL`.
+- **Generator stale imports.** Adding a `from '@awm/foo'` import without rerunning `awm packages gen` leaves `dependencies` missing the entry; npm install won't symlink it. The CI guard catches this; `./dev/run.sh restart` runs `gen` first so the loop self-heals.
+
+See `AGENTS.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
 
 ## Server Lifecycle
 

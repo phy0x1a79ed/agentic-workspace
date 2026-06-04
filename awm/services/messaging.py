@@ -264,9 +264,25 @@ def mark_read(message_id: int | str) -> MessageActionResponse:
     )
 
 
-def list_recipients() -> list[str]:
-    """Return valid recipient scopes for all projects and scopes."""
+def list_recipients(query: str, peer: str | None = None) -> list[str]:
+    """Return valid recipient scopes matching ``query``.
+
+    ``query`` is required. Pass ``"*"`` to return every recipient; any other
+    value is compiled as a regex and matched against each recipient string
+    (``workspace``, ``project:<p>``, ``scope:<p>/<s>``).
+
+    ``peer`` is reserved for a future cached cross-peer view; only ``None`` or
+    ``"local"`` is honoured today.
+    """
     from awm.config import PROJECTS_DIR
+
+    if not query:
+        raise ValueError("query is required; pass '*' for all recipients")
+    if peer not in (None, "local"):
+        raise NotImplementedError(
+            "peer fan-out for inbox_recipients is not yet wired "
+            "— see plan-out-an-update-zesty-nygaard"
+        )
 
     recipients = ["workspace"]
     projects_seen: set[str] = set()
@@ -290,4 +306,10 @@ def list_recipients() -> list[str]:
             recipients.append(f"scope:{scope_key}")
             scopes_seen.add(scope_key)
 
-    return recipients
+    if query == "*":
+        return recipients
+    try:
+        pattern = re.compile(query)
+    except re.error as exc:
+        raise ValueError(f"invalid regex {query!r}: {exc}") from exc
+    return [r for r in recipients if pattern.search(r)]

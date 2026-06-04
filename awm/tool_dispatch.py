@@ -352,8 +352,24 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="inbox_recipients",
-        description="List valid recipient scopes (workspace + all projects + all scopes).",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "List valid recipient scopes (workspace + projects + scopes) "
+            "matching a regex. Pass query='*' to return all recipients."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Regex matched against recipient strings, or '*' for all.",
+                },
+                "peer": {
+                    "type": "string",
+                    "description": "Reserved for future peer fan-out; only 'local' / omitted is honoured today.",
+                },
+            },
+            "required": ["query"],
+        },
     ),
     # `agent_spawn` was removed when rooms became the orchestration primitive.
     # Use `room_create --scope ... --prompt ...` (M5) instead.
@@ -911,8 +927,13 @@ def handle_tool(name: str, args: dict) -> str:
     if name == "inbox_mark_read":
         return _serialize(messaging.mark_read(args["id"]))
     if name == "inbox_recipients":
-        recipients = messaging.list_recipients()
-        return json.dumps({"recipients": recipients, "total": len(recipients)}, indent=2)
+        recipients = messaging.list_recipients(
+            query=args["query"], peer=args.get("peer"),
+        )
+        return json.dumps(
+            {"recipients": recipients, "total": len(recipients), "query": args["query"]},
+            indent=2,
+        )
 
     # Rooms — dispatch through the local exposed app for consistent auth
     # + cross-peer fan-out semantics.
