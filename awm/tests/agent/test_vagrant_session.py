@@ -79,13 +79,7 @@ def test_ensure_vagrant_session_without_bootstrap_raises(awm_workspace):
 def exposed_workspace(awm_workspace, monkeypatch):
     awm_dir = awm_workspace["awm_dir"]
     token_file = awm_dir / "auth.token"
-    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", token_file)
     monkeypatch.setattr("awm.config.ACCESS_LOG", awm_dir / "access.log")
-    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", awm_dir / "awm-exposed.pid")
-    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", awm_dir / "awm-exposed.log")
-    from awm.services import auth as _auth
-    _auth._token_cache.update({"value": None, "mtime": None})
-    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     return {**awm_workspace, "token_file": token_file}
 
 
@@ -99,14 +93,15 @@ def good_token(exposed_workspace):
 @pytest.fixture
 def exposed_client(exposed_workspace):
     from fastapi.testclient import TestClient
-    from awm.exposed import app
+    from awm.server import app
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
 
-def test_post_vagrant_session_requires_auth(exposed_client, good_token):
+def test_post_vagrant_session_no_auth(exposed_client, good_token):
+    # Auth retired — POST /vagrant/session is open. Without bootstrap it 503s.
     r = exposed_client.post("/vagrant/session")
-    assert r.status_code == 401
+    assert r.status_code in (200, 503)
 
 
 def test_post_vagrant_session_returns_503_when_not_bootstrapped(

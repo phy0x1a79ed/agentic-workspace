@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
+from starlette.responses import JSONResponse, Response
 
 from awm import __version__
 from awm.config import (
@@ -40,9 +41,6 @@ from awm.models import (
     SharedEditActionResponse,
     SkillListResponse,
     SkillContentResponse,
-    PeerInfo,
-    PeerListResponse,
-    PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm._lib.operations import register_fastapi_routes
@@ -119,6 +117,38 @@ async def lifespan(app: FastAPI):
     reaper_task = asyncio.create_task(_reaper_loop())
     idle_task = asyncio.create_task(_idle_shutdown_loop())
 
+    # Reconcile journaled hub services: give each a 10s window to reopen its
+    # control WS, then respawn silent ones from start_cmd. Fired as a
+    # background task — the hub is available immediately for services that
+    # ARE actively reconnecting.
+    try:
+        from awm.services.hub.supervisor import reconcile_journaled_services
+        asyncio.create_task(reconcile_journaled_services())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] service reconcile skipped: {exc}")
+
+    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
+    # no-op when present. Non-fatal: /vagrant/* 503s with a clear message if
+    # disabled.
+    try:
+        from awm.services.scopes import ensure_vagrant_repo
+        bare = ensure_vagrant_repo()
+        print(f"[awm] vagrant-scopes ready: {bare}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] vagrant-scopes disabled: {exc}")
+
+    # Fan canonical .mcp.json out to backend-specific configs.
+    try:
+        from awm.exports.mcp import sync_mcp_configs
+        for entry in sync_mcp_configs():
+            name = entry.get("name", "?")
+            if entry.get("ok"):
+                print(f"[awm] mcp-sync {name} → {entry.get('path')}")
+            else:
+                print(f"[awm] mcp-sync {name} FAILED: {entry.get('error')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] mcp-sync skipped: {exc}")
+
     yield
 
     # Cleanup
@@ -151,86 +181,15 @@ def get_status():
     conn = get_connection()
     try:
         active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-        active_edits = 0  # shared_edits retired in v37
     finally:
         conn.close()
 
     scope_result = scopes.search_scopes(status="active", limit=10_000)
 
-    # Leadership view — only meaningful when reached via the exposed listener.
-    # When the singleton hasn't been configured (core-only / pre-lifespan),
-    # default to ACTIVE so single-node deployments keep their UI reachable.
-    try:
-        from awm.services.leadership import state as ldr_state
-        s = ldr_state.get_state()
-        leadership_state = s.leadership
-        current_leader = s.current_leader
-        peer_priority = s.self_priority
-    except Exception:
-        leadership_state = "ACTIVE"
-        current_leader = None
-        peer_priority = 100
-
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
         active_scopes=scope_result.total,
-        active_shared_edits=active_edits,
-        leadership_state=leadership_state,
-        current_leader=current_leader,
-        peer_priority=peer_priority,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Peer identity (federation)
-# ---------------------------------------------------------------------------
-
-@app.get("/peer")
-def get_peer_identity():
-    """Return the local peer_id + advertise_url, or 404 if `awm peer init`
-    has not been run on this instance. Used by remote peers to verify they
-    are talking to the right host."""
-    from awm.services.network.peers import get_local_identity, LocalIdentityError
-    try:
-        ident = get_local_identity()
-    except LocalIdentityError as exc:
-        raise HTTPException(500, str(exc))
-    if ident is None:
-        raise HTTPException(404, "local peer identity not configured")
-    return ident
-
-
-@app.get("/peers/search", response_model=PeerListResponse)
-def search_peers_endpoint(
-    query: str | None = None,
-    status: str = "all",
-    limit: int = 50,
-    offset: int = 0,
-):
-    """Search registered remote peers (hybrid keyword + semantic).
-    `status` is one of 'all' (default), 'online', 'offline'."""
-    from awm.services.network import peers as peer_svc
-    rows = peer_svc.search_peers(
-        query=query, status=status, limit=limit, offset=offset,
-    )
-    return PeerListResponse(peers=[PeerInfo(**r) for r in rows])
-
-
-@app.get("/peers/{peer_id}/ping", response_model=PeerPingResponse)
-def ping_peer_endpoint(peer_id: str):
-    """Probe a registered peer via its SSH tunnel; reports reachability
-    and round-trip ms."""
-    from awm.services.network import peers as peer_svc
-    t0 = time.monotonic()
-    result = peer_svc.ping_peer(peer_id)
-    rtt_ms = (time.monotonic() - t0) * 1000.0
-    ok = bool(result.get("ok"))
-    return PeerPingResponse(
-        peer_id=peer_id,
-        ok=ok,
-        rtt_ms=round(rtt_ms, 2) if ok else None,
-        error=None if ok else (result.get("reason") or "ping failed"),
     )
 
 
@@ -574,6 +533,122 @@ def invoke_tool(payload: dict):
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     return {"result": result}
+
+
+# ---------------------------------------------------------------------------
+# Hub control plane (/hub/*) and rooms surface (/rooms/*)
+# ---------------------------------------------------------------------------
+
+from awm.api.hub import router as hub_router  # noqa: E402
+from awm.api.rooms import router as rooms_router  # noqa: E402
+from awm.api.vagrant import router as vagrant_router  # noqa: E402
+
+app.include_router(hub_router)
+app.include_router(rooms_router)
+app.include_router(vagrant_router)
+
+
+# ---------------------------------------------------------------------------
+# Hub forwarding middleware (outermost — empty-registry pass-through is
+# byte-identical to a hub-less awm). Routes /ui/<page>, /svc/<name>/...,
+# and any URL/static prefix that's been registered. Raw ASGI so HTTP and
+# WebSocket scopes are both handled.
+# ---------------------------------------------------------------------------
+
+from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
+from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+from awm.services.hub.static import (  # noqa: E402
+    close_ws_unsupported as _ws_close_unsupported,
+    serve_static as _serve_static,
+)
+
+
+class HubRoutingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        registry = _get_hub_registry()
+        if registry.is_empty():
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        if path == "/hub" or path.startswith("/hub/"):
+            return await self.app(scope, receive, send)
+        rec = registry.longest_match(path)
+        if rec is None:
+            return await self.app(scope, receive, send)
+        if rec.kind in ("static", "page"):
+            if scope["type"] == "websocket":
+                await _ws_close_unsupported(scope, receive, send)
+                return
+            request = Request(scope, receive=receive)
+            response = await _serve_static(request, rec)
+            await response(scope, receive, send)
+            return
+        if rec.kind == "service":
+            await self._dispatch_service(scope, receive, send, rec, path)
+            return
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            response = await proxy_http(request, rec.url)
+            await response(scope, receive, send)
+        else:
+            from fastapi import WebSocket as _WS
+            ws = _WS(scope, receive=receive, send=send)
+            await proxy_ws(ws, rec.url)
+
+    async def _dispatch_service(self, scope, receive, send, rec, path):
+        """RPC-WS service routing (kind="service"):
+
+        - POST <prefix>/fn/<name>            -> control-WS call/notify
+        - POST <prefix>/session/<kind>       -> open session, return ws_path
+        - WS   <prefix>/session/<id>         -> session WS (direct = byte
+                                                relay, otherwise enveloped)
+        - WS   <prefix>/emit/<topic>         -> emit subscriber WS
+        Everything else under the prefix is 404.
+        """
+        from awm.services.hub.proxy import (
+            open_session_via_http,
+            proxy_service_emit_ws,
+            proxy_service_http,
+            proxy_session_ws,
+        )
+        from fastapi import WebSocket as _WS
+        from starlette.responses import PlainTextResponse
+
+        rel = path[len(rec.prefix):]
+        as_ = None
+
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            if rel.startswith("/fn/"):
+                response = await proxy_service_http(
+                    request, rec.service_id, as_=as_,
+                )
+            elif rel.startswith("/session/") and request.method == "POST":
+                response = await open_session_via_http(
+                    request, rec.service_id, as_=as_,
+                )
+            else:
+                response = PlainTextResponse("not found", status_code=404)
+            await response(scope, receive, send)
+            return
+
+        ws = _WS(scope, receive=receive, send=send)
+        if rel.startswith("/session/"):
+            sid = rel[len("/session/"):]
+            await proxy_session_ws(ws, rec.service_id, sid)
+            return
+        if rel.startswith("/emit/"):
+            topic = rel[len("/emit/"):]
+            await proxy_service_emit_ws(ws, rec.service_id, topic, as_=as_)
+            return
+        await _ws_close_unsupported(scope, receive, send)
+
+
+app.add_middleware(HubRoutingMiddleware)
 
 
 # ---------------------------------------------------------------------------

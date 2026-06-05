@@ -30,8 +30,6 @@ scope_app = typer.Typer(help="Scope management", no_args_is_help=True)
 lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
 shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
 skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
-exposed_app = typer.Typer(help="Network-exposed listener admin", no_args_is_help=True)
-peer_app = typer.Typer(help="Federation: manage remote awm peers", no_args_is_help=True)
 inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_help=True)
 room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
 
@@ -47,8 +45,6 @@ app.add_typer(scope_app, name="scope")
 app.add_typer(lock_app, name="lock")
 app.add_typer(shared_app, name="shared")
 app.add_typer(skill_app, name="skill")
-app.add_typer(exposed_app, name="exposed")
-app.add_typer(peer_app, name="peer")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
@@ -115,118 +111,10 @@ def _print_json(r: httpx.Response):
     typer.echo(json.dumps(data, indent=2))
 
 
-def _exposed_base_and_token() -> tuple[str, str]:
-    """Resolve the local exposed URL + bearer token for /rooms calls.
-
-    Returns ``(base_url, token)``. Resolution order:
-
-      1. ``AWM_EXPOSED_HOST`` / ``AWM_EXPOSED_PORT`` env vars (dev escape
-         hatch).
-      2. ``$AWM_DIR/exposed.json`` written by ``serve-exposed`` lifespan
-         (the source-of-truth discovery file — eliminates the config
-         drift in inbox bugs #160/#161/#166).
-      3. Hardcoded fallback ``https://127.0.0.1:7820`` if neither is
-         present (e.g. before the daemon has ever run).
-
-    Operators never see a ``--token`` flag — the auth/TLS ritual lives in
-    :mod:`awm.services.auth`.
-    """
-    from awm.services import auth as _auth
-    try:
-        token = _auth.local_token(generate_if_missing=False)
-    except _auth.TokenMissing as exc:
-        raise typer.BadParameter(str(exc))
-
-    env_host = os.environ.get("AWM_EXPOSED_HOST")
-    env_port = os.environ.get("AWM_EXPOSED_PORT")
-    if env_host or env_port:
-        host = env_host or "127.0.0.1"
-        if host == "0.0.0.0":
-            host = "127.0.0.1"
-        port = int(env_port) if env_port else 7820
-        return f"https://{host}:{port}", token
-
-    discovery_path = AWM_DIR / "exposed.json"
-    if discovery_path.exists():
-        try:
-            import json as _json
-            data = _json.loads(discovery_path.read_text())
-            scheme = data.get("scheme", "https")
-            host = data.get("host") or "127.0.0.1"
-            if host == "0.0.0.0":
-                host = "127.0.0.1"
-            port = int(data.get("port") or 7820)
-            return f"{scheme}://{host}:{port}", token
-        except (OSError, ValueError):
-            pass
-
-    return "https://127.0.0.1:7820", token
-
-
-def _split_remote(name: str) -> tuple[str, str | None]:
-    if "@" in name:
-        base, peer = name.rsplit("@", 1)
-        return base, peer
-    return name, None
-
-
-def _exposed_api(method: str, path: str, *,
-                 peer: str | None = None, **kwargs) -> httpx.Response:
-    """Hit a /rooms-style endpoint on the local awm-exposed.
-
-    ``peer`` is reserved for fan-out queries (``--peer all|<id>``) and is
-    passed through as a ``?peer`` query param — the local exposed app's
-    list/search endpoints handle the tunnel + result merging internally.
-    """
-    base, token = _exposed_base_and_token()
-    headers = kwargs.pop("headers", {}) or {}
-    headers["Authorization"] = f"Bearer {token}"
-    if peer:
-        params = kwargs.pop("params", {}) or {}
-        params["peer"] = peer
-        kwargs["params"] = params
-    # Self-signed TLS on loopback — bearer is the trust boundary.
-    r = httpx.request(
-        method, f"{base}{path}", headers=headers, timeout=30, verify=False,
-        **kwargs,
-    )
+def _local_api(method: str, path: str, **kwargs) -> httpx.Response:
+    """Hit an endpoint on the local awm listener (loopback HTTP, no auth)."""
+    r = httpx.request(method, f"{BASE_URL}{path}", timeout=30, **kwargs)
     return r
-
-
-def _peer_direct_api(method: str, peer_id: str, path: str, **kwargs) -> httpx.Response:
-    """Hit a peer's HTTPS endpoint directly via the peer-client resolver.
-
-    Honors the peer's ``endpoints`` list (direct → SSH fallback) configured
-    via ``awm peer add --endpoint ...``. The bearer is the peer-token
-    installed under ``$AWM_DIR/peers/<peer_id>.token``; ``X-Awm-From`` is
-    our local peer id so the remote tags the post correctly.
-
-    Use this for ``room@peer`` semantics where the remote peer owns the
-    operation (``awm room post name@xps`` lands on xps's transcript).
-    """
-    from awm.services.network import federation, peers as _peers
-    try:
-        base_url, token = federation._resolve(peer_id)
-    except federation.FederationError as exc:
-        raise typer.BadParameter(str(exc))
-    headers = kwargs.pop("headers", {}) or {}
-    headers["Authorization"] = f"Bearer {token}"
-    local = _peers.get_local_identity()
-    if local:
-        headers["X-Awm-From"] = local["peer_id"]
-    r = httpx.request(
-        method, f"{base_url}{path}", headers=headers, timeout=30,
-        verify=False, **kwargs,
-    )
-    return r
-
-
-def _api_for_room(method: str, name: str, suffix: str, **kwargs) -> httpx.Response:
-    """Route a room CLI op to either local or via-tunnel based on @peer."""
-    base, peer = _split_remote(name)
-    if peer:
-        return _peer_direct_api(method, peer, f"/rooms/{base}{suffix}", **kwargs)
-    return _exposed_api(method, f"/rooms/{base}{suffix}", **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -256,95 +144,6 @@ def serve():
     run_server()
 
 
-@app.command("serve-exposed")
-def serve_exposed():
-    """Run the network-exposed HTTPS listener (separate from local core).
-
-    Reads bind/port from AWM_EXPOSED_HOST / AWM_EXPOSED_PORT (default
-    127.0.0.1:7820). Enables TLS if AWM_TLS_CERT and AWM_TLS_KEY are set.
-    Requires an auth token in $AWM_AUTH_TOKEN or AUTH_TOKEN_FILE
-    (default ~/.awm/auth.token) — generate one with ``awm exposed init-token``.
-    """
-    from awm.exposed import run_exposed_server
-    run_exposed_server()
-
-
-@exposed_app.command("init-token")
-def exposed_init_token(
-    force: bool = typer.Option(False, "--force", help="Overwrite existing token"),
-):
-    """Generate a random bearer token and write it to AUTH_TOKEN_FILE.
-
-    Prints the token once. The file is chmod 600. Rotate later by re-running
-    with --force; the listener picks up the change on the next request.
-    """
-    import secrets
-    from awm import config as _config
-
-    path = _config.AUTH_TOKEN_FILE
-    if path.exists() and not force:
-        typer.echo(
-            f"Token file already exists at {path}. Use --force to overwrite.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    token = secrets.token_urlsafe(32)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token + "\n")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-    typer.echo(f"Token written to {path}")
-    typer.echo(f"Token: {token}")
-    typer.echo("Use as: Authorization: Bearer <token>")
-
-
-@exposed_app.command("status")
-def exposed_status():
-    """Check the exposed listener via /status.
-
-    Reads ``$AWM_DIR/exposed.json`` (written by the live daemon) for
-    scheme/host/port so we don't guess. Falls back to env vars +
-    hardcoded defaults if the discovery file is missing.
-    """
-    import json as _json
-    import ssl as _ssl
-    base, token = _exposed_base_and_token()
-    url = f"{base}/status"
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-
-    def _try(target_url: str):
-        return httpx.get(target_url, headers=headers, timeout=5, verify=False)
-
-    try:
-        r = _try(url)
-    except httpx.HTTPError as exc:
-        # If exposed.json said HTTPS but the listener is actually a hand-rolled
-        # plain-HTTP one, the TLS handshake will surface as SSLError wrapped in
-        # an httpx.ConnectError. Try HTTP once before giving up.
-        is_ssl = isinstance(exc.__cause__, _ssl.SSLError) or isinstance(exc, _ssl.SSLError)
-        if base.startswith("https://") and is_ssl:
-            fallback = "http://" + base[len("https://"):]
-            try:
-                r = _try(f"{fallback}/status")
-            except httpx.HTTPError as exc2:
-                typer.echo(
-                    f"Could not reach exposed listener at {url} "
-                    f"(also tried {fallback}/status): {exc2}",
-                    err=True,
-                )
-                raise typer.Exit(1)
-        else:
-            typer.echo(f"Could not reach exposed listener at {url}: {exc}", err=True)
-            raise typer.Exit(1)
-    if r.status_code >= 400:
-        typer.echo(f"Error ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    typer.echo(_json.dumps(r.json(), indent=2))
-
-
 @app.command()
 def status():
     """Show server health + active locks + scopes summary."""
@@ -352,231 +151,9 @@ def status():
     _print_json(r)
 
 
-# ---------------------------------------------------------------------------
-# Peer (federation)
-# ---------------------------------------------------------------------------
-
-@peer_app.command("init")
-def peer_init(
-    peer_id: str = typer.Argument(..., help="Stable identifier for this awm instance"),
-    advertise_url: str = typer.Option(None, "--advertise-url",
-                                       help="Optional cosmetic URL (transport is SSH-tunneled)"),
-    overwrite: bool = typer.Option(False, "--overwrite",
-                                    help="Replace an existing identity file"),
-):
-    """Set the local peer identity (writes config.PEER_FILE)."""
-    from awm.services.network import peers as peer_svc
-    try:
-        data = peer_svc.set_local_identity(peer_id, advertise_url, overwrite=overwrite)
-    except peer_svc.LocalIdentityError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1)
-    except ValueError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2)
-    import json as _json
-    typer.echo(_json.dumps(data, indent=2))
-
-
-@peer_app.command("add")
-def peer_add(
-    peer_id: str = typer.Argument(..., help="Remote peer's identifier"),
-    ssh_alias: str = typer.Option("", "--ssh-alias",
-                                  help="SSH host alias (omit/empty = loopback mode: peer already reachable on 127.0.0.1:--remote-port via an out-of-band reverse forward)"),
-    remote_port: int = typer.Option(7820, "--remote-port",
-                                    help="Port to reach the peer's awm-exposed on (default 7820); in loopback mode this is the local 127.0.0.1 port"),
-    token_file: Optional[str] = typer.Option(
-        None, "--token-file",
-        help="Path to the bearer token file (copied to canonical location). "
-             "Mutually exclusive with --bootstrap-via-ssh.",
-    ),
-    bootstrap_via_ssh: bool = typer.Option(
-        False, "--bootstrap-via-ssh",
-        help="Fetch the peer's bearer over SSH using --ssh-alias "
-             "(reads ~/.awm/auth.token on the remote).",
-    ),
-    friendly_name: str = typer.Option(None, "--name", help="Optional friendly name"),
-    endpoint: list[str] = typer.Option(
-        None, "--endpoint",
-        help=(
-            "Repeatable. ``--endpoint direct=https://10.x.y.z:7820`` or "
-            "``--endpoint ssh=alias:port``. Listed-first endpoints are "
-            "tried first; the SSH-alias pair is a synthesized last fallback."
-        ),
-    ),
-    tls_fingerprint: str = typer.Option(
-        None, "--tls-fingerprint",
-        help="SHA-256 of the remote daemon's TLS cert (optional pinning).",
-    ),
-):
-    """Register a remote awm peer reachable via one or more endpoints.
-
-    Each ``--endpoint`` can be:
-
-      ``direct=https://10.147.20.5:7820``  — direct HTTPS to a known IP.
-
-      ``ssh=capella:7820``  — SSH-tunneled (alias passed to OpenSSH).
-
-    The legacy ``--ssh-alias`` + ``--remote-port`` pair is preserved as a
-    trailing fallback entry when no explicit ``--endpoint`` is given.
-    """
-    from awm.services.network import peers as peer_svc
-
-    parsed: list[dict] = []
-    for raw in endpoint or []:
-        if "=" not in raw:
-            typer.echo(f"error: --endpoint must be kind=spec; got {raw!r}", err=True)
-            raise typer.Exit(2)
-        kind, spec = raw.split("=", 1)
-        kind = kind.strip()
-        spec = spec.strip()
-        if kind == "direct":
-            parsed.append({"kind": "direct", "url": spec})
-        elif kind == "ssh":
-            if ":" not in spec:
-                typer.echo(f"error: ssh endpoint must be alias:port; got {spec!r}", err=True)
-                raise typer.Exit(2)
-            alias, port_s = spec.rsplit(":", 1)
-            try:
-                port_v = int(port_s)
-            except ValueError:
-                typer.echo(f"error: ssh endpoint port must be int; got {port_s!r}", err=True)
-                raise typer.Exit(2)
-            parsed.append({"kind": "ssh", "alias": alias, "port": port_v})
-        else:
-            typer.echo(f"error: unknown endpoint kind {kind!r}", err=True)
-            raise typer.Exit(2)
-
-    if bootstrap_via_ssh and token_file:
-        typer.echo("error: --bootstrap-via-ssh and --token-file are mutually exclusive", err=True)
-        raise typer.Exit(2)
-    if not bootstrap_via_ssh and not token_file:
-        typer.echo("error: pass either --token-file <path> or --bootstrap-via-ssh", err=True)
-        raise typer.Exit(2)
-    if bootstrap_via_ssh and not ssh_alias:
-        typer.echo("error: --bootstrap-via-ssh requires --ssh-alias", err=True)
-        raise typer.Exit(2)
-
-    try:
-        if bootstrap_via_ssh:
-            peer_svc.install_peer_token_via_ssh(peer_id, ssh_alias)
-        else:
-            peer_svc.install_peer_token(peer_id, token_file)
-        entry = peer_svc.add_peer(
-            peer_id, ssh_alias,
-            remote_port=remote_port,
-            friendly_name=friendly_name,
-            endpoints=parsed or None,
-            tls_fingerprint=tls_fingerprint,
-        )
-    except (ValueError, FileNotFoundError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2)
-    import json as _json
-    typer.echo(_json.dumps(entry, indent=2))
-
-
-@peer_app.command("search")
-def peer_search(
-    query: Optional[str] = typer.Option(None, "--query", help="Free-text query"),
-    status: str = typer.Option("all", "--status", help="online | offline | all (default)"),
-    limit: int = typer.Option(50, "--limit"),
-    offset: int = typer.Option(0, "--offset"),
-):
-    """Search registered remote peers (hybrid keyword + semantic)."""
-    from awm.services.network import peers as peer_svc
-    import json as _json
-    rows = peer_svc.search_peers(
-        query=query, status=status, limit=limit, offset=offset,
-    )
-    typer.echo(_json.dumps(rows, indent=2))
-
-
-@peer_app.command("remove")
-def peer_remove(peer_id: str = typer.Argument(...)):
-    """Remove a registered peer."""
-    from awm.services.network import peers as peer_svc
-    if not peer_svc.remove_peer(peer_id):
-        typer.echo(f"no such peer: {peer_id}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"removed peer: {peer_id}")
-
-
-@peer_app.command("set-priority")
-def peer_set_priority(
-    peer_id: str = typer.Argument(..., help="peer_id (or 'self' to update the local self-row)"),
-    priority: int = typer.Argument(..., help="integer priority; lower = higher precedence; 0 wins"),
-):
-    """Set ``peer_priority`` for leader election.
-
-    Each peer in the cluster should have a unique integer. Lower-numbered
-    peers win leadership when reachable; higher-numbered peers stand by.
-    """
-    from awm.services.network import peers as peer_svc
-    target_id = peer_id
-    if peer_id == "self":
-        ident = peer_svc.get_local_identity()
-        if ident is None:
-            typer.echo("error: no local peer identity; run `awm peer init` first", err=True)
-            raise typer.Exit(2)
-        target_id = ident["peer_id"]
-    try:
-        updated = peer_svc.set_peer_priority(target_id, priority)
-    except ValueError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2)
-    if updated is None:
-        typer.echo(f"no such peer: {target_id}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"{target_id}: peer_priority = {priority}")
-
-
-@peer_app.command("refresh-token")
-def peer_refresh_token(
-    peer_id: str = typer.Argument(...),
-    ssh_alias: Optional[str] = typer.Option(
-        None, "--ssh-alias",
-        help="SSH host alias. Defaults to the alias stored at `awm peer add` time.",
-    ),
-):
-    """Re-fetch a peer's bearer token over SSH after the remote rotated it."""
-    from awm.services.network import peers as peer_svc
-    entry = peer_svc.get_peer(peer_id)
-    if entry is None:
-        typer.echo(f"no such peer: {peer_id}", err=True)
-        raise typer.Exit(1)
-    alias = ssh_alias or entry.get("ssh_alias") or ""
-    if not alias:
-        typer.echo(
-            f"error: peer {peer_id} has no ssh_alias on file — pass --ssh-alias",
-            err=True,
-        )
-        raise typer.Exit(2)
-    try:
-        path = peer_svc.install_peer_token_via_ssh(peer_id, alias)
-    except (ValueError, RuntimeError) as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2)
-    typer.echo(f"refreshed token for {peer_id} via ssh {alias} -> {path}")
-
-
-@peer_app.command("ping")
-def peer_ping(
-    peer_id: str = typer.Argument(...),
-    timeout: float = typer.Option(5.0, "--timeout"),
-):
-    """Probe a peer's /peer endpoint, verify identity, and update last_seen."""
-    from awm.services.network import peers as peer_svc
-    import json as _json
-    result = peer_svc.ping_peer(peer_id, timeout=timeout)
-    typer.echo(_json.dumps(dict(result), indent=2))
-    if not result.get("ok"):
-        raise typer.Exit(1)
-
-
 @inbox_app.command("send")
 def inbox_send(
-    scope: str = typer.Argument(..., help="Target scope, e.g. 'scope:foo/bar' or 'scope:foo/bar@crux'"),
+    scope: str = typer.Argument(..., help="Target scope, e.g. 'scope:foo/bar'"),
     subject: str = typer.Option(..., "--subject"),
     body: str = typer.Option(..., "--body"),
     sender: str = typer.Option("operator", "--sender"),
@@ -584,7 +161,7 @@ def inbox_send(
                                   help="One of: scope_assignment, reflection, status_update, notification, plan"),
     metadata: str = typer.Option(None, "--metadata", help="Optional JSON-encoded metadata"),
 ):
-    """Send a message. With ``@<peer-id>`` suffix, routes to the remote peer."""
+    """Send a message to a local scope inbox."""
     payload = {
         "scope": scope, "sender": sender, "msg_type": msg_type,
         "subject": subject, "body": body, "metadata": metadata,
@@ -599,7 +176,7 @@ def inbox_fetch(
     mark_read: bool = typer.Option(False, "--mark-read"),
     limit: int = typer.Option(50, "--limit"),
 ):
-    """Fetch full messages from a scope (local only — no @peer routing)."""
+    """Fetch full messages from a scope."""
     params = {"scope": scope, "mark_read": str(mark_read).lower(), "limit": limit}
     r = _api("GET", "/messages/fetch", params=params)
     _print_json(r)
@@ -613,7 +190,7 @@ def inbox_search(
     query: str = typer.Option(None, "--query"),
     limit: int = typer.Option(50, "--limit"),
 ):
-    """Search message previews (local only — no @peer routing)."""
+    """Search message previews."""
     params = {}
     for k, v in (("scope", scope), ("status", status), ("msg_type", msg_type),
                  ("query", query), ("limit", limit)):
@@ -626,12 +203,9 @@ def inbox_search(
 @inbox_app.command("recipients")
 def inbox_recipients(
     query: str = typer.Argument(..., help="Regex matched against recipients, or '*' for all."),
-    peer: str = typer.Option(None, "--peer", help="(Reserved; deferred — only 'local' / omitted is honoured today.)"),
 ):
-    """List valid recipient scopes matching a regex (local only)."""
+    """List valid recipient scopes matching a regex."""
     params: dict[str, object] = {"query": query}
-    if peer is not None:
-        params["peer"] = peer
     r = _api("GET", "/messages/recipients", params=params)
     _print_json(r)
 
@@ -641,7 +215,7 @@ def room_create(
     topic: str = typer.Option(None, "--topic", help="Optional human-readable topic"),
     scope: list[str] = typer.Option(
         None, "--scope",
-        help="Scope to enroll (project/scope[@peer]); repeatable",
+        help="Scope to enroll (project/scope); repeatable",
     ),
     prompt: list[str] = typer.Option(
         None, "--prompt",
@@ -663,14 +237,14 @@ def room_create(
         "topic": topic, "scopes": scope or [], "prompts": prompts,
         "close_on_exit": close_on_exit,
     }
-    r = _exposed_api("POST", "/rooms", json=payload)
+    r = _local_api("POST", "/rooms", json=payload)
     _print_json(r)
 
 
 @room_app.command("get")
 def room_get(name: str = typer.Argument(...)):
     """Show room details, participants, and recent transcript."""
-    r = _api_for_room("GET", name, "")
+    r = _local_api("GET", f"/rooms/{name}")
     _print_json(r)
 
 
@@ -684,7 +258,7 @@ def room_history(
     params = {"limit_chars": limit_chars}
     if before_ts:
         params["before_ts"] = before_ts
-    r = _api_for_room("GET", name, "/history", params=params)
+    r = _local_api("GET", f"/rooms/{name}/history", params=params)
     _print_json(r)
 
 
@@ -693,7 +267,6 @@ def room_search(
     query: Optional[str] = typer.Argument(None, help="Free-text query (optional)"),
     status: str = typer.Option("active", "--status", help="active (default), closed, archived, or all"),
     participating_scope: Optional[str] = typer.Option(None, "--participating-scope"),
-    peer: Optional[str] = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
     limit: int = typer.Option(50, "--limit"),
     offset: int = typer.Option(0, "--offset"),
 ):
@@ -703,9 +276,7 @@ def room_search(
         params["query"] = query
     if participating_scope:
         params["participating_scope"] = participating_scope
-    if peer:
-        params["peer"] = peer
-    r = _exposed_api("GET", "/rooms/search", params=params)
+    r = _local_api("GET", "/rooms/search", params=params)
     _print_json(r)
 
 
@@ -716,7 +287,7 @@ def room_post(
     to_scope: str = typer.Option(None, "--to", help="Direct-address a scope"),
 ):
     """Post a message to a room (as the local operator)."""
-    r = _api_for_room("POST", name, "/posts", json={"body": text, "to": to_scope})
+    r = _local_api("POST", f"/rooms/{name}/posts", json={"body": text, "to": to_scope})
     _print_json(r)
 
 
@@ -727,8 +298,8 @@ def room_invite(
     prompt: str = typer.Option(None, "--prompt"),
 ):
     """Invite a scope (agent) into a room."""
-    r = _api_for_room(
-        "POST", name, "/invite",
+    r = _local_api(
+        "POST", f"/rooms/{name}/invite",
         json={"scope": scope, "prompt": prompt},
     )
     _print_json(r)
@@ -740,7 +311,7 @@ def room_remove(
     scope: str = typer.Option(..., "--scope"),
 ):
     """Remove a scope from a room (doesn't kill the agent process)."""
-    r = _api_for_room("POST", name, "/remove", json={"scope": scope})
+    r = _local_api("POST", f"/rooms/{name}/remove", json={"scope": scope})
     _print_json(r)
 
 
@@ -750,8 +321,8 @@ def room_close(
     kill_agents: bool = typer.Option(False, "--kill-agents"),
 ):
     """Close a room (optionally SIGTERM all participant agents)."""
-    r = _api_for_room(
-        "POST", name, "/close", json={"kill_agents": kill_agents},
+    r = _local_api(
+        "POST", f"/rooms/{name}/close", json={"kill_agents": kill_agents},
     )
     _print_json(r)
 
@@ -759,14 +330,14 @@ def room_close(
 @room_app.command("archive")
 def room_archive(name: str = typer.Argument(...)):
     """Soft-archive a room. Refused (409) if active scope participants remain."""
-    r = _api_for_room("POST", name, "/archive")
+    r = _local_api("POST", f"/rooms/{name}/archive")
     _print_json(r)
 
 
 @room_app.command("agents")
 def room_agents(name: str = typer.Argument(...)):
     """List room participants with live agent state (PID, status)."""
-    r = _api_for_room("GET", name, "/agents")
+    r = _local_api("GET", f"/rooms/{name}/agents")
     _print_json(r)
 
 
@@ -783,23 +354,11 @@ def room_join(
     import threading
     import websockets as _ws
 
-    base_name, peer = _split_remote(name)
-    if peer:
-        from awm.services.network import ssh_tunnel
-        from awm.services.network import peers as peer_svc
-        try:
-            tun = ssh_tunnel.acquire_tunnel(peer)
-        except ssh_tunnel.TunnelError as exc:
-            raise typer.BadParameter(f"could not tunnel to {peer}: {exc}")
-        token = peer_svc.load_peer_token(peer)
-        base_url = tun.local_url
-    else:
-        base_url, token = _exposed_base_and_token()
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    uri = f"{ws_url}/rooms/{base_name}/attach"
+    ws_url = BASE_URL.replace("http://", "ws://")
+    uri = f"{ws_url}/rooms/{name}/attach"
 
     async def runner():
-        async with _ws.connect(uri, subprotocols=[f"bearer.{token}"]) as ws:
+        async with _ws.connect(uri) as ws:
             stop = asyncio.Event()
 
             async def reader():
@@ -876,24 +435,8 @@ def room_one_off(
         "topic": topic, "scopes": [scope], "prompts": {scope: prompt},
         "close_on_exit": True,
     }
-    r = _exposed_api("POST", "/rooms", json=payload)
+    r = _local_api("POST", "/rooms", json=payload)
     _print_json(r)
-
-
-@peer_app.command("whoami")
-def peer_whoami():
-    """Show this instance's local peer identity (or report 'unset')."""
-    from awm.services.network import peers as peer_svc
-    import json as _json
-    try:
-        ident = peer_svc.get_local_identity()
-    except peer_svc.LocalIdentityError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1)
-    if ident is None:
-        typer.echo("local peer identity is unset — run `awm peer init`", err=True)
-        raise typer.Exit(1)
-    typer.echo(_json.dumps(ident, indent=2))
 
 
 @app.command()
@@ -1337,23 +880,6 @@ def shared_list(
 # Skill commands
 # ---------------------------------------------------------------------------
 
-def _resolve_peer_set(peer_flag: str | None) -> list[str] | None:
-    """Translate a --peer flag into a list of peer_ids, or None for local-only.
-
-    ``--peer all`` returns every registered peer; ``--peer <id>`` returns
-    just that peer (verifies it exists); absent flag returns None.
-    """
-    if not peer_flag:
-        return None
-    from awm.services.network import peers as _peers
-    if peer_flag == "all":
-        return [p["peer_id"] for p in _peers.search_peers(status="all", limit=10_000)]
-    if _peers.get_peer(peer_flag) is None:
-        typer.echo(f"error: unknown peer '{peer_flag}'", err=True)
-        raise typer.Exit(2)
-    return [peer_flag]
-
-
 @skill_app.command("get")
 def skill_get(
     path: str = typer.Argument(..., help="Relative path to skill (e.g. tools/git.md)"),
@@ -1372,11 +898,8 @@ def skill_search(
     query: Optional[str] = typer.Argument(None, help="Free-text query (optional; omit to filter only)"),
     type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
     tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
-    peer: Optional[str] = typer.Option(None, "--peer",
-                                        help="Federate: 'all' or a peer-id. Excludes local."),
 ):
-    """Search skills (hybrid keyword + semantic) with optional type/tag filters.
-    With --peer, fan out to remote peers and tag each result with its origin."""
+    """Search skills (hybrid keyword + semantic) with optional type/tag filters."""
     params: dict = {}
     if query:
         params["query"] = query
@@ -1385,36 +908,23 @@ def skill_search(
     if tags:
         params["tags"] = tags
 
-    peer_ids = _resolve_peer_set(peer)
-    if peer_ids is not None:
-        from awm.services.network import federation as _fed
-        data = _fed.fan_out_get(peer_ids, "/skills/search", params, result_key="skills")
-    else:
-        r = _api("GET", "/skills/search", params=params)
-        if r.status_code >= 400:
-            typer.echo(f"Error: {r.text}", err=True)
-            raise typer.Exit(1)
-        data = r.json()
+    r = _api("GET", "/skills/search", params=params)
+    if r.status_code >= 400:
+        typer.echo(f"Error: {r.text}", err=True)
+        raise typer.Exit(1)
+    data = r.json()
 
     skills = data["skills"]
     if not skills:
         typer.echo("(no matching skills)")
-        if data.get("degraded"):
-            typer.echo(f"degraded peers: {data['degraded']}", err=True)
         return
 
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35}")
     for s in skills:
         tags_str = ", ".join(s.get("tags", []))
-        origin = s.get("origin_peer_id", "local")
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35}")
     typer.echo(f"\nTotal: {data['total']} skill(s)")
-    if data.get("degraded"):
-        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
-    typer.echo(f"\nTotal: {data['total']} match(es)")
-    if data.get("degraded"):
-        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1481,36 +991,6 @@ def discord_list_operators():
 # ---------------------------------------------------------------------------
 # Browser sign-in fallback (no Discord required)
 # ---------------------------------------------------------------------------
-
-@app.command()
-def login(
-    as_user: str = typer.Option("operator", "--as", help="awm_user identity to claim"),
-):
-    """Mint a one-shot sign-in URL and print it.
-
-    Open the URL in a browser to drop the bearer into an HttpOnly cookie
-    and land at ``/ui/``. The nonce expires in 60s and is single-use.
-    """
-    base, token = _exposed_base_and_token()
-    try:
-        r = httpx.post(
-            f"{base}/auth/mint",
-            json={"awm_user": as_user},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-            verify=False,
-        )
-    except httpx.HTTPError as exc:
-        typer.echo(f"could not reach exposed listener at {base}: {exc}", err=True)
-        raise typer.Exit(1)
-    if r.status_code >= 400:
-        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    data = r.json()
-    typer.echo(data["url"])
-    typer.echo(f"# open this in your browser — expires in {data['expires_in_s']}s",
-               err=True)
-
 
 # ---------------------------------------------------------------------------
 # Service hub — register a foreground process as a routed service
@@ -1588,17 +1068,10 @@ def hub_register(
         payload = {"name": name, "prefix": prefix, "url": url}
         summary = f"url={url}"
 
-    base, token = _exposed_base_and_token()
     try:
-        r = httpx.post(
-            f"{base}/hub/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=10)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
@@ -1607,23 +1080,12 @@ def hub_register(
     service_id = body["service_id"]
     lease_path = body["lease_ws_path"]
     typer.echo(f"registered {name} → {summary} (id={service_id})")
-    typer.echo(f"holding lease at wss://...{lease_path} (Ctrl-C to evict)")
+    typer.echo(f"holding lease at ws://...{lease_path} (Ctrl-C to evict)")
 
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_base}{lease_path}"
-
-    ssl_ctx = _ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = _ssl.CERT_NONE
+    ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
 
     async def _hold():
-        async with _ws.connect(
-            ws_url,
-            subprotocols=[f"bearer.{token}"],
-            ssl=ssl_ctx if ws_url.startswith("wss://") else None,
-            max_size=None,
-            open_timeout=10,
-        ) as wsconn:
+        async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
             # First frame is {"type":"ready",...} — print it then idle.
             try:
                 first = await wsconn.recv()
@@ -1649,7 +1111,7 @@ def hub_register(
 @hub_app.command("list")
 def hub_list():
     """List currently registered services."""
-    r = _exposed_api("GET", "/hub/services")
+    r = _local_api("GET", "/hub/services")
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1665,44 +1127,13 @@ def hub_deregister(
     path = f"/hub/services/{name}"
     if kind:
         path += f"?kind={kind}"
-    r = _exposed_api("DELETE", path)
+    r = _local_api("DELETE", path)
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
     _print_json(r)
 
 
-@hub_app.command("trust-self")
-def hub_trust_self():
-    """Install the local auth token at ``$AWM_DIR/peers/<self>.token``.
-
-    Services authenticate hub→service requests via ``require_peer_bearer``,
-    which checks the bearer against the peer-token file for the claimed
-    ``X-Awm-From`` peer. The hub forwards as ITSELF, so the local peer's
-    own token has to be present in the peers/ directory. Idempotent.
-    """
-    from awm.services.network import peers as _peers
-    from awm.services import auth as _auth
-    try:
-        token = _auth.local_token(generate_if_missing=False)
-    except _auth.TokenMissing as exc:
-        typer.echo(f"local auth token missing: {exc}", err=True)
-        raise typer.Exit(1)
-    local = _peers.get_local_identity()
-    if local is None:
-        typer.echo("no local peer identity — run `awm peer init` first",
-                   err=True)
-        raise typer.Exit(1)
-    peer_id = local["peer_id"]
-    peers_dir = AWM_DIR / "peers"
-    peers_dir.mkdir(parents=True, exist_ok=True)
-    target = peers_dir / f"{peer_id}.token"
-    target.write_text(token + "\n")
-    try:
-        target.chmod(0o600)
-    except OSError:
-        pass
-    typer.echo(f"trust-self: wrote {target}")
 
 
 # ---------------------------------------------------------------------------
@@ -1725,24 +1156,13 @@ def hub_trust_self():
 #   Ctrl-C pops them (no respawn — base traffic resumes).
 
 
-async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> None:
+async def _hold_one_lease(name: str, lease_path: str) -> None:
     """Open the lease WS and idle until close. Used by packages sync (N
     concurrent leases) and dev shadow (per-overlay lease)."""
-    import ssl as _ssl
     import websockets as _ws
 
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_base}{lease_path}"
-    ssl_ctx = _ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = _ssl.CERT_NONE
-    async with _ws.connect(
-        ws_url,
-        subprotocols=[f"bearer.{token}"],
-        ssl=ssl_ctx if ws_url.startswith("wss://") else None,
-        max_size=None,
-        open_timeout=10,
-    ) as wsconn:
+    ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
+    async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
         try:
             first = await wsconn.recv()
             try:
@@ -1758,19 +1178,13 @@ async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> 
             return
 
 
-def _post_register(base: str, token: str, payload: dict) -> dict:
+def _post_register(payload: dict) -> dict:
     """POST /hub/register with the given payload, return parsed body
     or typer.Exit(1) on error."""
     try:
-        r = httpx.post(
-            f"{base}/hub/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=15)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
@@ -1813,17 +1227,11 @@ def _packages_walk(repo_root: pathlib.Path) -> tuple[list[pathlib.Path],
     return services, pages
 
 
-def _post_service_register(base: str, token: str, payload: dict) -> dict:
+def _post_service_register(payload: dict) -> dict:
     try:
-        r = httpx.post(
-            f"{base}/hub/service/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/service/register", json=payload, timeout=15)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"service register failed ({r.status_code}): {r.text}",
@@ -1832,14 +1240,13 @@ def _post_service_register(base: str, token: str, payload: dict) -> dict:
     return r.json()
 
 
-def _post_page_register(base: str, token: str, name: str, prefix: str,
-                        dir_: str) -> dict:
+def _post_page_register(name: str, prefix: str, dir_: str) -> dict:
     payload = {
         "name": name,
         "prefix": prefix,
         "page": {"dir": dir_},
     }
-    return _post_register(base, token, payload)
+    return _post_register(payload)
 
 
 def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
@@ -1851,16 +1258,15 @@ def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
     return default
 
 
-def _spawn_service_local(pkg_dir: pathlib.Path, base: str, token: str) -> int:
-    """Spawn ``start.sh`` for a service with hub env vars injected.
+def _spawn_service_local(pkg_dir: pathlib.Path) -> int:
+    """Spawn ``start.sh`` for a service with hub URL injected.
 
     Returns the PID. The service is expected to POST /hub/service/register
     on startup; if it doesn't reconnect within the 10s window the hub
-    will SIGTERM this PID and respawn from start.sh itself (S4).
+    will SIGTERM this PID and respawn from start.sh itself.
     """
     env = os.environ.copy()
-    env["AWM_HUB_URL"] = base
-    env["AWM_HUB_TOKEN"] = token
+    env["AWM_HUB_URL"] = BASE_URL
     env["AWM_SERVICE_NAME"] = pkg_dir.name
     proc = subprocess.Popen(
         ["bash", str(pkg_dir / "start.sh")],
@@ -1897,14 +1303,13 @@ def packages_sync(
         typer.echo("no service or page packages found", err=True)
         raise typer.Exit(1)
 
-    base, token = _exposed_base_and_token()
     leases: list[tuple[str, str]] = []
     spawned_pids: list[int] = []
 
     for svc_dir in services:
         name = svc_dir.name
         try:
-            spawned_pids.append(_spawn_service_local(svc_dir, base, token))
+            spawned_pids.append(_spawn_service_local(svc_dir))
             typer.echo(f"spawned service {name} (pid bookkeeping; service "
                        f"self-registers via /hub/service/register)")
         except (OSError, ValueError) as exc:
@@ -1919,7 +1324,7 @@ def packages_sync(
             continue
         prefix = _read_prefix_txt(page_dir, f"/ui/{name}")
         try:
-            body = _post_page_register(base, token, name, prefix, str(dist))
+            body = _post_page_register(name, prefix, str(dist))
         except typer.Exit:
             continue
         leases.append((name, body["lease_ws_path"]))
@@ -1934,7 +1339,7 @@ def packages_sync(
         typer.echo(f"holding {len(leases)} page lease(s) (Ctrl-C to evict)…")
         async def _hold_all():
             await _asyncio.gather(*(
-                _hold_one_lease(base, token, name, path) for name, path in leases
+                _hold_one_lease(name, path) for name, path in leases
             ))
         try:
             _asyncio.run(_hold_all())
@@ -1963,7 +1368,7 @@ def packages_sync(
 @packages_app.command("list")
 def packages_list():
     """List currently registered packages (services + pages)."""
-    r = _exposed_api("GET", "/hub/services")
+    r = _local_api("GET", "/hub/services")
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1989,7 +1394,6 @@ def dev_shadow(
     import asyncio as _asyncio
 
     here = pathlib.Path.cwd()
-    base, token = _exposed_base_and_token()
     leases: list[tuple[str, str]] = []
     spawned_pids: list[int] = []
 
@@ -2026,7 +1430,7 @@ def dev_shadow(
                 typer.echo(f"skip {target}: no start.sh", err=True)
                 continue
             try:
-                pid = _spawn_service_local(pkg_dir, base, token)
+                pid = _spawn_service_local(pkg_dir)
                 spawned_pids.append(pid)
             except (OSError, ValueError) as exc:
                 typer.echo(f"skip {target}: spawn failed: {exc}", err=True)
@@ -2048,11 +1452,9 @@ def dev_shadow(
 
         try:
             r = httpx.post(
-                f"{base}/hub/shadow/register",
+                f"{BASE_URL}/hub/shadow/register",
                 json=payload,
-                headers={"Authorization": f"Bearer {token}"},
                 timeout=15,
-                verify=False,
             )
         except httpx.HTTPError as exc:
             typer.echo(f"skip {target}: hub unreachable: {exc}", err=True)
@@ -2079,7 +1481,7 @@ def dev_shadow(
     typer.echo(f"holding {len(leases)} shadow lease(s) (Ctrl-C to pop)…")
     async def _hold_all():
         await _asyncio.gather(*(
-            _hold_one_lease(base, token, name, path) for name, path in leases
+            _hold_one_lease(name, path) for name, path in leases
         ))
     try:
         _asyncio.run(_hold_all())

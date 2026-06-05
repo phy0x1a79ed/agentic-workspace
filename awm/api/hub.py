@@ -38,11 +38,10 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 from fastapi import (
-    APIRouter, Depends, HTTPException, Request, WebSocket, status,
+    APIRouter, HTTPException, Request, WebSocket, status,
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.services.auth.middleware_auth import authenticate_websocket, require_bearer
 from awm.services.hub import rpc
 from awm.services.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.services.hub.registry import (
@@ -109,11 +108,7 @@ class RegisterResponse(BaseModel):
     lease_ws_path: str
 
 
-@router.post(
-    "/register",
-    response_model=RegisterResponse,
-    dependencies=[Depends(require_bearer)],
-)
+@router.post("/register", response_model=RegisterResponse)
 async def register(req: RegisterRequest) -> RegisterResponse:
     registry = get_registry()
     try:
@@ -197,11 +192,7 @@ class ServiceRegisterResponse(BaseModel):
     bridge_ws_base: str
 
 
-@router.post(
-    "/service/register",
-    response_model=ServiceRegisterResponse,
-    dependencies=[Depends(require_bearer)],
-)
+@router.post("/service/register", response_model=ServiceRegisterResponse)
 async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterResponse:
     registry = get_registry()
     prefix = req.prefix or f"/svc/{req.name}"
@@ -254,7 +245,6 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
          window (10s) gives the service one chance to come back
          before the hub respawns it.
     """
-    subprotocol = await authenticate_websocket(websocket)
 
     registry = get_registry()
     rec = registry.get_by_id(service_id)
@@ -266,7 +256,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
         return
 
     try:
-        await websocket.accept(subprotocol=subprotocol)
+        await websocket.accept()
     except Exception:
         return
 
@@ -365,7 +355,6 @@ async def service_bridge(websocket: WebSocket, service_id: str,
     browser side; this handler just holds the upstream WS open until
     the relay coroutine signals close.
     """
-    subprotocol = await authenticate_websocket(websocket)
 
     ch = rpc.get_control(service_id)
     if ch is None:
@@ -383,7 +372,7 @@ async def service_bridge(websocket: WebSocket, service_id: str,
         return
 
     try:
-        await websocket.accept(subprotocol=subprotocol)
+        await websocket.accept()
     except Exception:
         return
 
@@ -444,11 +433,7 @@ class ShadowRegisterResponse(BaseModel):
     bridge_ws_base: str | None = None
 
 
-@router.post(
-    "/shadow/register",
-    response_model=ShadowRegisterResponse,
-    dependencies=[Depends(require_bearer)],
-)
+@router.post("/shadow/register", response_model=ShadowRegisterResponse)
 async def shadow_register(req: ShadowRegisterRequest) -> ShadowRegisterResponse:
     registry = get_registry()
     try:
@@ -504,7 +489,6 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
     """Generic liveness WS for non-service kinds (page shadows, url, static).
     Service-kind registrations use /hub/service/control/{id} which doubles
     as the lease (closing it evicts the service)."""
-    subprotocol = await authenticate_websocket(websocket)
 
     registry = get_registry()
     rec = registry.get_by_id(service_id)
@@ -516,7 +500,7 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
         return
 
     try:
-        await websocket.accept(subprotocol=subprotocol)
+        await websocket.accept()
     except Exception:
         return
 
@@ -555,7 +539,7 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
             pass
 
 
-@router.get("/services", dependencies=[Depends(require_bearer)])
+@router.get("/services")
 async def list_services() -> dict[str, Any]:
     registry = get_registry()
     lm = get_lease_manager()
@@ -581,10 +565,7 @@ async def list_services() -> dict[str, Any]:
     return {"services": out}
 
 
-@router.delete(
-    "/services/{name}",
-    dependencies=[Depends(require_bearer)],
-)
+@router.delete("/services/{name}")
 async def deregister(name: str, request: Request, kind: str | None = None) -> dict[str, Any]:
     registry = get_registry()
     from awm.services.hub.registry import PrefixConflict

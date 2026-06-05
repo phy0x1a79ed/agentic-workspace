@@ -15,7 +15,7 @@ from awm.db import init_db, get_connection, SCHEMA_VERSION, _migrate
 
 class TestInitDB:
     def test_fresh_init_creates_tables(self, awm_workspace):
-        """Fresh DB should have all v37 tables at current schema version."""
+        """Fresh DB should have all current tables at current schema version."""
         conn = get_connection(awm_workspace["db_path"])
         tables = {
             r[0]
@@ -24,22 +24,21 @@ class TestInitDB:
             ).fetchall()
         }
         conn.close()
-        # v37 identity layer
         assert "projects" in tables
         assert "users" in tables
         assert "agents" in tables
         assert "agent_instances" in tables
-        # Rooms / data tables
         assert "rooms" in tables
         assert "guest_list" in tables
         assert "room_transcripts" in tables
         assert "session_logs" in tables
         assert "artifacts" in tables
         assert "messages" in tables
-        # Federation control plane + utilities
         assert "locks" in tables
-        assert "peers" in tables
         assert "schema_version" in tables
+        # Federation retired in v38 — peers/peer_sync_state must be gone.
+        assert "peers" not in tables
+        assert "peer_sync_state" not in tables
 
     def test_schema_version_is_current(self, awm_workspace):
         conn = get_connection(awm_workspace["db_path"])

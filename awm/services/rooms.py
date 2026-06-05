@@ -131,11 +131,8 @@ class Post:
 # ---------------------------------------------------------------------------
 
 def _local_peer_id() -> str:
-    from awm.services.network import peers as peer_svc
-    ident = peer_svc.get_local_identity()
-    if ident is None or not ident.get("peer_id"):
-        return "local"
-    return ident["peer_id"]
+    """Legacy stub. Federation is retired; every room is local-host."""
+    return "local"
 
 
 # ---------------------------------------------------------------------------
@@ -254,11 +251,12 @@ def set_close_room_kill_callback(fn: Callable[[str], None] | None) -> None:
 # ---------------------------------------------------------------------------
 
 def _split_scope(ident: str) -> tuple[str, str | None]:
-    """Return (local_scope, peer_id_or_None) for legacy ``proj/scope`` or
-    ``proj/scope@peer`` identifiers."""
+    """Return (local_scope, None). The ``@peer`` suffix used by the retired
+    federation surface is silently stripped — peer dispatch is gone and any
+    @-suffix in stored references is treated as local."""
     if "@" in ident:
-        base, peer = ident.rsplit("@", 1)
-        return base, peer
+        base, _ = ident.rsplit("@", 1)
+        return base, None
     return ident, None
 
 
@@ -816,7 +814,7 @@ def _dispatch_to_participants(room_id: str, post_obj: Post, *,
             continue
         targets.append((f"{g['proj']}/{g['scope_name']}", None))
 
-    for scope_key, peer in targets:
+    for scope_key, _peer in targets:
         if to_scope is not None and scope_key != to_scope:
             continue
         if is_agent_author and to_scope is None:
@@ -824,18 +822,11 @@ def _dispatch_to_participants(room_id: str, post_obj: Post, *,
         if (is_agent_author and to_scope == scope_key
                 and post_obj.author == f"agent:{scope_key}"):
             continue  # don't echo poster's own output back into its stdin
-        if peer is None or peer == _local_peer_id():
-            if _local_scope_dispatcher is not None:
-                try:
-                    _local_scope_dispatcher(room_id, scope_key, post_obj)
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            if _remote_scope_dispatcher is not None:
-                try:
-                    _remote_scope_dispatcher(peer, room_id, scope_key, post_obj)
-                except Exception:  # noqa: BLE001
-                    pass
+        if _local_scope_dispatcher is not None:
+            try:
+                _local_scope_dispatcher(room_id, scope_key, post_obj)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ---------------------------------------------------------------------------

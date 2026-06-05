@@ -9,9 +9,6 @@ Recipients address the polymorphic ref vocabulary directly via
   * ``scope:<project>/<scope>`` → the agent's uuid.
   * ``user:<name>`` → that user's uuid.
 
-Cross-peer ``@<peer-id>`` suffixes still parse and route through
-``federation.forward_send`` — federation tables stay CRR in v37.
-
 When the recipient resolves to an agent and that agent has an owned room,
 ``send_message`` dual-writes a ``kind='notification'`` row into the
 agent's room transcript so the agent's CLI sees the notification through
@@ -38,25 +35,16 @@ from awm.services.identity import iso_to_ms, ms_to_iso, now_ms
 
 
 _SCOPE_RE = re.compile(
-    r"^(workspace|project:[a-zA-Z0-9_-]+|scope:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)"
-    r"(@[A-Za-z0-9][A-Za-z0-9_-]*)?$"
+    r"^(workspace|project:[a-zA-Z0-9_-]+|scope:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)$"
 )
 
 
-def _split_peer(scope: str) -> tuple[str, str | None]:
-    m = _SCOPE_RE.match(scope)
-    if not m:
+def _validate_scope(scope: str) -> None:
+    if not _SCOPE_RE.match(scope):
         raise ValueError(
             f"Invalid scope '{scope}'. Must be 'workspace', 'project:X', "
-            f"or 'scope:X/Y', optionally suffixed with '@<peer-id>'."
+            f"or 'scope:X/Y'."
         )
-    base = m.group(1)
-    peer = m.group(2)[1:] if m.group(2) else None
-    return base, peer
-
-
-def _validate_scope(scope: str) -> None:
-    _split_peer(scope)
 
 
 def _project_inbox_username(name: str) -> str:
@@ -195,24 +183,11 @@ def _agent_owned_room_id(agent_ref: str) -> str | None:
 
 
 def send_message(req: MessageSendRequest) -> MessageActionResponse:
-    """Send a message. Cross-peer ``@<peer-id>`` suffix routes via
-    federation; otherwise insert into the local messages table and (when
-    the recipient is an agent with an owned room) post a notification into
+    """Send a message. Inserts into the local messages table and (when the
+    recipient is an agent with an owned room) posts a notification into
     its transcript."""
-    base_scope, peer_id = _split_peer(req.scope)
-
-    if peer_id is not None:
-        from awm.services.network import federation
-        payload = req.model_dump()
-        payload["scope"] = base_scope
-        try:
-            remote = federation.forward_send(peer_id, payload)
-        except federation.UnknownPeerError as exc:
-            raise ValueError(str(exc)) from exc
-        return MessageActionResponse(
-            message=f"Message forwarded to {req.scope}",
-            msg=MessageInfo(**remote["msg"]) if isinstance(remote, dict) and "msg" in remote else None,
-        )
+    _validate_scope(req.scope)
+    base_scope = req.scope
 
     conn = get_connection()
     try:
@@ -268,8 +243,7 @@ def search_messages(
         params: list = []
         if scope:
             _validate_scope(scope)
-            base, _peer = _split_peer(scope)
-            recipient_id, _label = _resolve_recipient(base, conn=conn)
+            recipient_id, _label = _resolve_recipient(scope, conn=conn)
             sql += " AND recipient_id = ?"
             params.append(recipient_id)
         if status:
@@ -299,10 +273,9 @@ def fetch_messages(
     mark_read: bool = False,
 ) -> MessageFetchResponse:
     _validate_scope(scope)
-    base, _peer = _split_peer(scope)
     conn = get_connection()
     try:
-        recipient_id, _label = _resolve_recipient(base, conn=conn)
+        recipient_id, _label = _resolve_recipient(scope, conn=conn)
         sql = "SELECT * FROM messages WHERE recipient_id = ?"
         params: list = [recipient_id]
         if status:
@@ -367,7 +340,7 @@ def mark_read(message_id: int | str) -> MessageActionResponse:
     )
 
 
-def list_recipients(query: str, peer: str | None = None,
+def list_recipients(query: str,
                     include_inactive: bool = False) -> list[str]:
     """Return valid recipient scopes matching ``query``.
 
@@ -378,19 +351,12 @@ def list_recipients(query: str, peer: str | None = None,
     ``include_inactive`` controls whether completed / deleted scopes appear
     as valid send targets. Default is False: stale scopes don't crowd the
     recipient list. Pass True for the rare backfill case.
-
-    ``peer`` is reserved for a future cached cross-peer view; only ``None`` or
-    ``"local"`` is honoured today.
     """
     from awm.config import PROJECTS_DIR
     from awm.services import scopes as scope_svc
 
     if not query:
         raise ValueError("query is required; pass '*' for all recipients")
-    if peer not in (None, "local"):
-        raise NotImplementedError(
-            "peer fan-out for inbox_recipients is not yet wired"
-        )
 
     recipients = ["workspace"]
     projects_seen: set[str] = set()

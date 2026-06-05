@@ -36,20 +36,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
-from awm.services import auth as auth_svc
 from awm.services._path import resolve_bin
 
 server = Server("awm")
-
-
-def _base_url() -> str:
-    """HTTPS base URL of the local awm daemon (the exposed listener)."""
-    return auth_svc.base_url()
-
-
-def _client_kwargs() -> dict:
-    """Auth + TLS kwargs for outbound httpx calls."""
-    return auth_svc.client_kwargs(timeout=60.0)
 
 
 # ---------------------------------------------------------------------------
@@ -98,20 +87,17 @@ async def _request_with_retry(
     json_body: dict | None = None,
     max_wait: float = 10.0,
 ) -> dict[str, Any]:
-    """Make an HTTPS request to the local awm daemon, reconnecting across
+    """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
 
-    Auth and TLS verification kwargs come from
-    :func:`awm.services.auth.client_kwargs`. On a transport error the first
-    attempt nudges systemd to start the daemon, then we retry for up to
-    ``max_wait`` seconds so the caller's request transparently survives a
-    ``systemctl restart``.
+    On a transport error the first attempt nudges systemd to start the
+    daemon, then we retry for up to ``max_wait`` seconds so the caller's
+    request transparently survives a ``systemctl restart``.
     """
     deadline = time.monotonic() + max_wait
     last_err: Exception | None = None
     first_attempt = True
-    kwargs = _client_kwargs()
-    async with httpx.AsyncClient(base_url=_base_url(), **kwargs) as client:
+    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body)
@@ -131,23 +117,28 @@ async def _request_with_retry(
 def _ensure_core_running() -> None:
     """Start the awm daemon via systemd if it's not already up.
 
-    Starts both ``awm.service`` (core, in-process state) and
-    ``awm-exposed.service`` (HTTPS listener) so the MCP proxy can reach
-    the catalog endpoints. Best-effort — falls back to detached
-    ``awm serve-exposed`` in dev setups without systemd.
+    Best-effort — falls back to detached ``awm serve`` in dev setups
+    without systemd. Port-checks before spawning the fallback to avoid
+    racing into a zombie binding the listener.
     """
     r = subprocess.run(
-        ["systemctl", "--user", "start",
-         "awm.service", "awm-exposed.service"],
+        ["systemctl", "--user", "start", "awm.service"],
         capture_output=True, text=True,
     )
     if r.returncode == 0:
         return
-    # Fallback: detached subprocess. stdio goes to /dev/null so the proxy
-    # doesn't inherit file handles. resolve_bin extends PATH with
-    # ~/.local/bin and linuxbrew so this works under a systemd-user env.
+    # Port-check: if something is already listening on :7819, don't spawn
+    # a duplicate. (The status loop above will recover when the existing
+    # process becomes responsive.)
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        try:
+            s.connect(("127.0.0.1", 7819))
+            return
+        except OSError:
+            pass
     subprocess.Popen(
-        [resolve_bin("awm"), "serve-exposed"],
+        [resolve_bin("awm"), "serve"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

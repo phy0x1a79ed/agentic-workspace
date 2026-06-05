@@ -379,7 +379,7 @@ class TestHealWorktree:
 def _insert_active_scope(db_conn, *, project: str, scope: str,
                         worktree: Path) -> None:
     """Append an active scope row mirroring the seeded_scopes shape."""
-    from awm.services.replication.schema import new_uuid
+    from awm.db import new_uuid
     now = datetime.now(timezone.utc).isoformat()
     db_conn.execute(
         "INSERT INTO scopes "

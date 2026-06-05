@@ -1280,34 +1280,8 @@ def _on_close_room_kill(room_id: str) -> None:
         _set_instance_intent(session.id, "stopped")
 
 
-def _dispatch_remote_scope(peer_id: str, room_id: str, scope_key: str,
-                           post: rooms_svc.Post) -> None:
-    from awm.services.network import federation
-    try:
-        federation.forward_agent_input(
-            peer_id, room_id, scope_key,
-            body=post.body, author=post.author,
-        )
-    except federation.FederationError:
-        pass
-
-
-def _dispatch_shadow_peer(peer_id: str, room_id: str,
-                          post: rooms_svc.Post) -> None:
-    from awm.services.network import federation
-    try:
-        federation.forward_room_post(
-            peer_id, room_id, body=post.body, kind=post.kind,
-            author=post.author,
-        )
-    except federation.FederationError:
-        pass
-
-
 def install_room_dispatchers() -> None:
     rooms_svc.set_local_scope_dispatcher(_dispatch_local_post)
-    rooms_svc.set_remote_scope_dispatcher(_dispatch_remote_scope)
-    rooms_svc.set_shadow_peer_dispatcher(_dispatch_shadow_peer)
     rooms_svc.set_close_room_kill_callback(_on_close_room_kill)
 
 

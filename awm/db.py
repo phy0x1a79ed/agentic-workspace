@@ -9,7 +9,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # Sentinel user uuids — fixed namespace so a fresh install lands the same
 # 'cli'/'system' ids regardless of when/where it's run. The v37 preflight
@@ -20,6 +20,11 @@ SENTINEL_USER_IDS = {
     "cli": str(uuid.uuid5(_SENTINEL_USERS_NS, "cli")),
     "system": str(uuid.uuid5(_SENTINEL_USERS_NS, "system")),
 }
+
+
+def new_uuid() -> str:
+    """Mint a fresh uuid4 hex for use as a row primary key."""
+    return uuid.uuid4().hex
 
 
 SCHEMA_SQL = """\
@@ -217,31 +222,11 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TEXT NOT NULL
 );
 
--- Federation control plane — still CRR (peers + discord_operators).
-CREATE TABLE IF NOT EXISTS peers (
-    peer_id TEXT NOT NULL PRIMARY KEY,
-    ssh_alias TEXT NOT NULL DEFAULT '',
-    remote_port INTEGER NOT NULL DEFAULT 7820,
-    friendly_name TEXT,
-    last_seen TEXT,
-    added_at TEXT NOT NULL DEFAULT '',
-    endpoints TEXT,
-    tls_fingerprint TEXT,
-    peer_priority INTEGER NOT NULL DEFAULT 100,
-    origin_peer TEXT
-);
-
 CREATE TABLE IF NOT EXISTS discord_operators (
     discord_user_id TEXT NOT NULL PRIMARY KEY,
     awm_user TEXT NOT NULL DEFAULT '',
     added_at TEXT NOT NULL DEFAULT '',
     origin_peer TEXT
-);
-
-CREATE TABLE IF NOT EXISTS peer_sync_state (
-    peer_id TEXT PRIMARY KEY,
-    last_db_version INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -706,49 +691,31 @@ CREATE TABLE IF NOT EXISTS agent_relationships (
 CREATE INDEX IF NOT EXISTS idx_agent_relationships_parent
     ON agent_relationships(parent_project, parent_scope);
 """,
+    (37, 38): """\
+-- Federation retirement: single-host now. Collapse all origin_peer values
+-- to '' so post-v38 queries (e.g. embedding indexers) can filter
+-- local-origin rows with `origin_peer = ''` without consulting the
+-- about-to-be-dropped peers table.
+UPDATE scopes SET origin_peer = '';
+UPDATE session_logs SET origin_peer = '';
+UPDATE messages SET origin_peer = '';
+UPDATE artifacts SET origin_peer = '';
+UPDATE room_posts SET origin_peer = '';
+DROP TABLE IF EXISTS peer_sync_state;
+DROP TABLE IF EXISTS peers;
+""",
 }
 
 
 def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """Return a new SQLite connection with WAL mode enabled.
-
-    Loads the cr-sqlite extension when available (vendored at
-    ``awm/_native/crsqlite.so``). Missing/unloadable extension is non-fatal
-    — the daemon falls back to single-peer mode and replication is a no-op.
-    """
+    """Return a new SQLite connection with WAL mode enabled."""
     path = db_path or DB_PATH
-    conn = sqlite3.connect(str(path), timeout=30, factory=_FinalizingConnection)
-    # cr-sqlite must be loaded before any DDL/DML for CRR tables; load
-    # eagerly on every connection so opt-in replication "just works".
-    try:
-        from awm.services.replication import schema as _repl_schema
-        _repl_schema.load_extension(conn)
-    except Exception:
-        # Replication is an enhancement; never block core DB access on it.
-        pass
+    conn = sqlite3.connect(str(path), timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
-
-
-class _FinalizingConnection(sqlite3.Connection):
-    """sqlite3.Connection subclass that runs SELECT crsql_finalize() before
-    close. cr-sqlite leaks per-connection state (state.db + state.db-wal
-    FDs) unless finalized; this guarantees every get_connection() caller
-    releases those handles regardless of whether they call finalize()
-    explicitly. crsql_finalize is idempotent, so the few sites that also
-    call finalize() themselves (db.init_db, replication.sync) are safe.
-    """
-
-    def close(self):
-        try:
-            from awm.services.replication import schema as _repl_schema
-            _repl_schema.finalize(self)
-        except Exception:
-            pass
-        super().close()
 
 
 def _iso_to_ms_or_zero(iso_str: str | None) -> int:
@@ -881,13 +848,6 @@ def _migrate_v37(conn: sqlite3.Connection) -> None:
         raise
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
-
-    # Step 9: re-register CRRs against the trimmed table set.
-    try:
-        from awm.services.replication import schema as _repl_schema
-        _repl_schema.register_all_crrs(conn)
-    except Exception:
-        pass
 
 
 def _create_v37_tables(conn: sqlite3.Connection) -> None:
@@ -1350,52 +1310,9 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
 
 
 def _ensure_self_row(conn: sqlite3.Connection) -> None:
-    """Upsert a peers-table row for the local peer so leader election can
-    read its own priority from the same source as remote peers.
-
-    No-op when PEER_FILE is missing (the daemon can run pre-federation).
-    ``ssh_alias`` is the sentinel ``"self"``, ``remote_port`` is
-    ``EXPOSED_PORT``. ``peer_priority`` seeds from ``AWM_PEER_PRIORITY``
-    on first insert; subsequent calls preserve any operator-set value
-    (so `awm peer set-priority self <n>` survives restarts).
-    """
-    from awm import config
-    import os as _os
-
-    try:
-        from awm.services.network.peers import get_local_identity
-        ident = get_local_identity()
-    except Exception:
-        return
-    if ident is None:
-        return
-    peer_id = ident.get("peer_id")
-    if not peer_id:
-        return
-
-    seed_priority = int(_os.environ.get("AWM_PEER_PRIORITY", "100"))
-    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-    endpoints_json = json.dumps([
-        {"kind": "direct", "url": f"https://{config.EXPOSED_HOST}:{config.EXPOSED_PORT}"}
-    ])
-    try:
-        conn.execute(
-            """
-            INSERT INTO peers (peer_id, ssh_alias, remote_port, friendly_name,
-                               added_at, endpoints, tls_fingerprint, peer_priority)
-            VALUES (?, 'self', ?, ?, ?, ?, NULL, ?)
-            ON CONFLICT(peer_id) DO UPDATE SET
-                ssh_alias = 'self',
-                remote_port = excluded.remote_port,
-                friendly_name = COALESCE(peers.friendly_name, excluded.friendly_name),
-                endpoints = excluded.endpoints
-            """,
-            (peer_id, config.EXPOSED_PORT, peer_id, now, endpoints_json, seed_priority),
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        # peers table missing (partial test fixtures) — non-fatal.
-        pass
+    """Legacy stub. Peers table is being dropped in v38 alongside the
+    federation retirement; no per-host bookkeeping required."""
+    return
 
 
 def _seed_sentinel_users(conn: sqlite3.Connection) -> None:
@@ -1439,16 +1356,5 @@ def init_db(db_path: Path | None = None) -> None:
             _seed_sentinel_users(conn)
 
         _ensure_self_row(conn)
-        # CRR registration runs after migrations land. Idempotent.
-        try:
-            from awm.services.replication import schema as _repl_schema
-            _repl_schema.register_all_crrs(conn)
-        except Exception:
-            pass
     finally:
-        try:
-            from awm.services.replication import schema as _repl_schema
-            _repl_schema.finalize(conn)
-        except Exception:
-            pass
         conn.close()

@@ -127,28 +127,19 @@ class TestArchiveRoomService:
 @pytest.fixture()
 def exposed_client(awm_workspace, monkeypatch):
     awm_dir = awm_workspace["awm_dir"]
-    token_file = awm_dir / "auth.token"
     access_log = awm_dir / "access.log"
-    pid_file = awm_dir / "awm-exposed.pid"
-    log_file = awm_dir / "awm-exposed.log"
-    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", token_file)
     monkeypatch.setattr("awm.config.ACCESS_LOG", access_log)
-    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", pid_file)
-    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", log_file)
     monkeypatch.setattr(
         "awm.services.agent_instances.PROJECTS_DIR",
         awm_workspace["projects_dir"],
     )
-    from awm.services import auth as _auth
-    _auth._token_cache.update({"value": None, "mtime": None})
     from awm.services import agent_instances
     agent_instances._registry_by_id.clear()
     agent_instances._by_scope.clear()
     agent_instances._by_agent_id.clear()
-    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("AWM_ALLOW_DESTRUCTIVE", raising=False)
 
-    from awm.exposed import app
+    from awm.server import app
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 

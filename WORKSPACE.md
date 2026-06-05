@@ -14,7 +14,7 @@ Context is assembled general → specific: this file first, then the cwd-local `
 | `awm/` | AWM service package (Python) + skills catalog |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
 | `projects/` | Project bare repos + git worktrees (agents work here) |
-| `.awm/` | Workspace runtime state (`spawn-mcp.json`, `mcp-opencode.json`, peer tokens) |
+| `.awm/` | Workspace runtime state (`spawn-mcp.json`, `mcp-opencode.json`, etc.) |
 | `.mcp.json` | Canonical MCP server registry — fans out via the exporter framework |
 
 ### Per-Scope Layout
@@ -88,7 +88,6 @@ The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-dis
 | Locks | `lock_acquire`, `lock_release`, `lock_search`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
 | Rooms | `room_create`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
-| Peers | `peer_search`, `peer_ping` |
 | Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `agent_control` |
 
 Each tool has a JSON Schema accessible via your MCP client. New tools land here automatically when `awm-mcp` reloads.
@@ -152,7 +151,6 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm skill list / search / get / reindex` | Skill catalog |
 | `awm hub register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 | `awm context emit --cwd <path>` | Render the 3-tier context as XML blocks (utility for awm tooling that bundles context into spawned sessions; no harness hook calls it) |
-| `awm peer add / list / ping / whoami` | Federation setup (see README.md) |
 
 ## Agent Rules
 

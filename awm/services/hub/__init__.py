@@ -1,4 +1,4 @@
-"""Service hub: live-registration routing layer above awm.exposed:app.
+"""Service hub: live-registration routing layer above awm.server:app.
 
 A registered service owns a path prefix; the hub forwards matched HTTP and
 WS requests to its registered URL. Empty registry → pass-through.

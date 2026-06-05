@@ -1,6 +1,5 @@
-"""Cross-machine federation primitives (peers, routing, fanout).
+"""Network plumbing for in-process services.
 
-This cluster handles awm-to-awm communication. Local-only workspace state
-lives in awm/services/*.py (the existing layout) — this directory is the
-boundary where requests can leave the host.
+Federation (cross-host peers, routing, fanout) was retired; only
+``agent_proxy`` (in-process WS bridge for agent stdio) remains here.
 """

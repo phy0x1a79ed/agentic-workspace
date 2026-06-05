@@ -4,33 +4,13 @@
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
-## Federation: cold but reachable (as of 2026-06-04 post-v37 deploy)
+## Federation: retired
 
-`awm-exposed.service` is **running again** after the v37 deploy. The earlier "federation disabled" rollback over-claimed: stopping `awm-exposed` also kills MCP and the operator UI, because the MCP stdio server proxies to `awm-exposed` over HTTPS (`mcp__awm__*` tools round-trip through `:12100`) and `/ui/*` lives there too. So the right framing is which *behaviors* are cold, not which *services* are off.
-
-**What's hot (use it):**
-- All `mcp__awm__*` tools (round-trip through awm-exposed).
-- Local CLI + HTTP at `awm.service` `127.0.0.1:7819` (always was; unchanged).
-- Browser UI at `https://0.0.0.0:12100/ui/*` after a cookie bootstrap (`awm login`).
-- Leadership election runs; currently `ACTIVE` / `current_leader: capella` (self-elected single-node).
-- The SSH tunnel to `mira` is auto-opened on start by the leadership prober.
-
-**What's cold (don't trust without re-bootstrapping):**
-- Cross-host federation is operationally stale: peers (`capella`/`mira`/`xps`) last gossiped on 2026-05-25. Tokens / TLS handshakes may have drifted. Verify with `awm peer ping <id>` before relying on `/peer/*`.
-- `cr-sqlite` data-table replication is **out of scope in v37 by design** (CRR was trimmed to the control plane). Federation test suites that assert data-row sync are deliberately broken — see the agent-harness scope `.awm/context.md` for the open follow-up call.
-- Cross-peer rooms, `inbox send scope:x@peer`, federated find: work iff the SSH tunnel + auth still pass — ping first.
-
-**To verify federation actually works** (before relying on it):
-```bash
-awm peer ping mira && awm peer ping xps
-awm peer list   # last_seen should be ~now, not 2026-05-25
-```
-
-**Earlier rollback's root cause (kept here so the next on-call doesn't relive it):** `awm-exposed` was in a 5,222-iteration systemd restart loop on `EADDRINUSE :12100` because the original PID 261 (from this morning's session) was still holding the port. The systemd restart counter never won the race. Fix is to find + kill the zombie, then `systemctl --user restart`. Don't `mask` or `disable` the unit unless you're prepared to lose MCP and the UI — that coupling hasn't been unbundled. See `[[awm_exposed_fd_leak_wedge]]` for the longer-running variant of the same pattern.
+Federation is gone — see git history for the deletion (commits S1–S5, S6, S8 on `dev` around 2026-06-04). No `/peer/*` routes, no `awm peer *` CLI, no `awm-exposed.service`, no auth layer, no `peers`/`peer_sync_state` tables. The local listener (`awm.service` on `127.0.0.1:7819`) is the only listener. Single host, no auth, plain HTTP loopback.
 
 ## Service Hub
 
-`awm.exposed:app` is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, …). A few path prefixes are *registered* at runtime; matched requests dispatch to one of four kinds:
+`awm.server:app` is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/hub`, …). A few path prefixes are *registered* at runtime; matched requests dispatch to one of four kinds:
 
 | Kind | Surface | Typical caller |
 |---|---|---|
@@ -52,25 +32,21 @@ This scope migrates the package model from one ambiguous `kind="stripe"` to thre
 - **Shadow overlays.** Each registered prefix is a stack; `awm dev shadow <pkg>...` pushes overlays from a scope worktree against a running hub. Lease close pops the overlay; base traffic resumes with no respawn.
 - **Migration.** `packages/components/primitives/` (from old `packages/primitives`), `packages/pages/{primitives-gallery,tts,ptt,agent}/`, `packages/services/{tts,ptt}/`. The pre-redesign legacy packages (`bus`, `dev-shell`, `hello`, the old `kind=stripe` `ptt`/`tts`/`agent`, and the old `chat-primitives` library) were deleted outright in the `agent-harness` scope — no holding pen.
 
-What this scope did NOT do (deferred):
+### Hub origin = `awm.server` port
 
-- Cross-peer service replication.
-
-### Hub origin = `awm.exposed` port
-
-There's only ever one hub origin per node — the `awm.exposed` process. Which port that is depends on context:
+There's only ever one hub origin per node — the `awm.server` process. Which port that is depends on context:
 
 | Context | Port | What runs |
 |---|---|---|
-| Production (systemd-managed) | `7820` | `awm.exposed.service` on the host |
+| Production (systemd-managed) | `7819` | `awm.service` on the host |
 | Dev sandbox: `projects/awm/dev/` | `7821` | `./dev/run.sh start` |
 | Dev sandbox: `projects/awm/web-ui/` | `7831` | same |
 | Dev sandbox: `projects/awm/web-backend/` | `7841` | same |
 | Dev sandbox: any other scope (fallback) | `7851` | same |
 
-The per-scope port bands are set by `dev/run.sh` from the worktree dirname, so all sandboxes can run side-by-side with the real `awm.exposed` and with each other. Bookmark `http://127.0.0.1:<login-port>/` (always uvicorn+1) for one-shot login URLs. See `dev/AGENTS.md` for the full per-worktree table.
+Per-scope port bands are set by `dev/run.sh` from the worktree dirname, so dev sandboxes run side-by-side with prod (and each other) on distinct ports.
 
-**Substitute your sandbox port** whenever this section says `:7820`.
+**Substitute your sandbox port** whenever this section says `:7819`.
 
 ### When to make a `svc-*` scope
 
@@ -81,8 +57,8 @@ A `svc-*` scope is for cross-cutting work on a single backend service — the se
 A vertical stripe typically combines a `svc-*` (backend, `kind=url`) and a `comp-*` (static bundle, `kind=static`) registered through the same hub origin. End-user view:
 
 ```
-https://127.0.0.1:7820/x/whatever   ← backend routes (forwarded to svc-X process)
-https://127.0.0.1:7820/comp-x/      ← static bundle (served from disk)
+http://127.0.0.1:7819/x/whatever   ← backend routes (forwarded to svc-X process)
+http://127.0.0.1:7819/comp-x/      ← static bundle (served from disk)
 ```
 
 Same scheme, same host, same port. The svc-X port is plumbing the hub knows about; browsers never see it.
@@ -90,27 +66,15 @@ Same scheme, same host, same port. The svc-X port is plumbing the hub knows abou
 #### One-time per node
 
 ```bash
-./dev/run.sh start              # bring up the dev hub (or skip if prod awm.exposed is already up)
-export AWM_WORKSPACE=$PWD/dev   # so the awm CLI uses this sandbox's .awm/ for token + discovery
-awm hub trust-self              # writes auth token to .awm/peers/<self>.token
-                                # — only needed if any stripe uses kind=url
+./dev/run.sh start              # bring up the dev hub (or skip if prod awm.service is already up)
+export AWM_WORKSPACE=$PWD/dev   # so the awm CLI uses this sandbox's .awm/
 ```
 
-`trust-self` is idempotent. It only matters for URL-kind registrations: the hub forwards as the local peer, so the local peer's own token has to live in `peers/`.
-
-**Browser login.** The hub middleware short-circuits route auth for both `kind=static` and `kind=url`, so a stripe-only URL (`/comp-x/`, `/x/...`) opens without a cookie. To exercise a stripe that calls back to authenticated routes (`fetch('/rooms')`, `/peer/...`, etc.), visit the login bookmark first:
-
-```
-http://127.0.0.1:<login-port>/   (e.g. :7822 for dev, :7832 for web-ui)
-```
-
-Each refresh mints a fresh single-use 60s-TTL `/auth/bootstrap?ot=…` URL; clicking it sets an `HttpOnly` cookie and redirects to `/ui/agent`. CLI form: `./dev/run.sh login` from inside the sandbox prints the same URL.
+No auth bootstrap: federation is gone, the listener is loopback-only, no bearer or cookie is required.
 
 #### svc-X (kind=url)
 
-1. **Build the FastAPI service.** Two requirements:
-   - Mount your routes under the claimed prefix (`APIRouter(prefix="/x")`) — the hub forwards the path verbatim, so the same path it gets must land on your routes.
-   - Gate routes with `Depends(require_peer_bearer)` from `awm.services.auth.middleware_auth`. The hub strips the user's bearer and injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>`; `require_peer_bearer` validates exactly that. `X-Awm-As` is preserved verbatim. Copy `awm/demos/echo_svc.py` as the starting skeleton.
+1. **Build the FastAPI service.** Mount your routes under the claimed prefix (`APIRouter(prefix="/x")`) — the hub forwards the path verbatim, so the same path it gets must land on your routes. No auth deps to wire up; the hub forwards on loopback without injecting any headers.
 
 2. **Run on a free port** (any port that isn't the hub or another service):
 
@@ -170,30 +134,23 @@ All four lease/registration commands POST/DELETE/WS to `/hub/*` on the hub origi
 | `GET`    | `/hub/services` | List registrations + lease state |
 | `DELETE` | `/hub/services/{name}` | Force-evict by name |
 
-All four require `Authorization: Bearer $(cat .awm/auth.token)`.
-
-### Auth model
-
-Hub → service is degenerate peer auth (URL kind only). The hub injects `Authorization: Bearer <local-auth.token>` + `X-Awm-From: <self-peer-id>` on every forwarded request; the user's bearer (`Authorization` header / `awm_session` cookie) is stripped. `X-Awm-As` is preserved verbatim. Services gate routes with `from awm.services.auth.middleware_auth import require_peer_bearer` — one import, no new bearer concept.
-
-Static-kind registrations don't proxy, so there's no second-hop auth — bytes are served by the hub directly, subject to whatever middleware sits in front of the hub itself.
+All four are unauthenticated — `awm.server` binds loopback only and has no auth layer.
 
 ### What `comp-*` and page stripes need to know about consuming
 
-**Nothing.** The hub IS `awm.exposed:app`. Same origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm. A page stripe can `fetch('/x/whatever')` without CORS, cookies, or a second port.
+**Nothing.** The hub IS `awm.server:app`. Same origin, no new port. With an empty registry the behavior is byte-identical to a hub-less awm. A page stripe can `fetch('/x/whatever')` without CORS, cookies, or a second port.
 
 ### Demos
 
-- `awm/demos/echo_svc.py` — 60-line FastAPI smoke test; copy as the starting point for a real `svc-*`.
-- `awm/demos/static_demo/` — naked `main.js` + `style.css` bundle; copy as the starting point for a `comp-*` registration. README has the one-liner.
+- `awm/demos/static_demo/` — naked `main.js` + `style.css` bundle; copy as the starting point for a `comp-*` registration.
 
 ### Gotchas
 
 - **Prefix conflicts return 409.** Pick a unique prefix per stripe. `/hub` and `/hub/*` are reserved (the lease socket has to stay reachable).
 - **One lease holder per service_id.** Re-registering while a lease is held returns 409 — Ctrl-C the old one or `awm hub deregister <name>` first.
-- **`AWM_WORKSPACE` matters — for the CLI and for every svc process.** Without it, the CLI uses the global discovery file and may target the prod `:7820` instead of your sandbox. `./dev/run.sh` exports it for its own children; if you shell out separately, export it yourself. A `kind=url` svc's `AWM_WORKSPACE` must match the hub it's registered with — `require_peer_bearer` looks the hub's injected bearer up in that workspace's `peers/` dir, so a mismatch yields silent 401s on every forwarded request. If a svc is already running, `tr '\0' '\n' </proc/<pid>/environ | grep AWM_WORKSPACE` tells you which hub it was set up against; register it there rather than spinning a parallel sandbox.
+- **`AWM_WORKSPACE` matters — for the CLI and for every svc process.** Without it, the CLI hits the global discovery and may target prod `:7819` instead of your sandbox. `./dev/run.sh` exports it for its own children; if you shell out separately, export it yourself. If a svc is already running, `tr '\0' '\n' </proc/<pid>/environ | grep AWM_WORKSPACE` tells you which hub it was set up against; register it there rather than spinning a parallel sandbox.
 - **Vite dev server vs static dir.** During hot-reload iteration, register `--url http://127.0.0.1:<vite-port>` instead of `--dir` — point at the dev server directly. Switch to `--dir ./dist` once you're past the rebuild loop.
-- **Never run two `awm.exposed` on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are explicitly supported and how dev parallelism works.
+- **Never run two `awm.server` on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are explicitly supported and how dev parallelism works.
 
 ## Developing a package — see `README.md`
 
@@ -214,7 +171,7 @@ this file tells you where the implementation lives:
 - **Supervisor + PID journal** — `awm/services/hub/supervisor.py::reconcile_journaled_services` / `spawn_service` / `kill_pid_group`; state at `<AWM_DIR>/state/services.json`.
 - **Manifest generator** — `awm/services/packages/gen.py` (regex scan for `from '@awm/<x>'`, idempotent write-if-changed).
 - **CLI** — `awm packages gen/sync/list` and `awm dev shadow` live in `awm/cli.py` (search for `packages_app` / `dev_app`).
-- **Middleware dispatch** — `awm/exposed.py::HubRoutingMiddleware._dispatch_service` (the entry point that translates `/svc/<name>/{fn,session,emit}/*` into the rpc.py layer).
+- **Middleware dispatch** — `awm/server.py::HubRoutingMiddleware._dispatch_service` (the entry point that translates `/svc/<name>/{fn,session,emit}/*` into the rpc.py layer).
 
 The Service Hub section above carries the *external* contract (which kinds exist, the post-implementation summary of what this scope built, the port table); this section tells you which files implement each piece if you're about to change them.
 
@@ -232,28 +189,27 @@ See memory `[[awm_two_source_trees]]` for the full failure mode.
 
 ## Running tests
 
-Pytest tests live under `awm/tests/` and are organized into per-subsystem subdirectories (`unit/`, `hub/`, `scopes/`, `messaging/`, `federation/`, `auth/`, `mcp/`, `artifacts/`, `sessions/`, `agent/`, `misc/`). Every test file declares a module-level `pytestmark` so you can select by subsystem **or** by speed; markers are registered in `pyproject.toml` (`pytest --markers` lists them).
+Pytest tests live under `awm/tests/` and are organized into per-subsystem subdirectories (`unit/`, `hub/`, `scopes/`, `messaging/`, `auth/`, `mcp/`, `artifacts/`, `sessions/`, `agent/`, `misc/`). Every test file declares a module-level `pytestmark` so you can select by subsystem **or** by speed; markers are registered in `pyproject.toml` (`pytest --markers` lists them).
 
 ```bash
-# Fast dev-iteration set (~35s on this host, 161 tests). Pure unit + small
-# in-process tests, no subprocesses, no federation. Use on every save.
-mamba run -n awm pytest -m smoke
+# Fast dev-iteration set. Pure unit + small in-process tests, no subprocesses.
+mamba run -n awm pytest -m unit
 
 # One subsystem at a time (path or marker — both work):
 mamba run -n awm pytest awm/tests/hub/
 mamba run -n awm pytest -m messaging
 
-# Everything except subprocess/git/federation/replication clusters:
-mamba run -n awm pytest -m "not (slow or federation)"
+# Everything except subprocess/git clusters:
+mamba run -n awm pytest -m "not slow"
 
-# Full suite (~10 min). Run before merging.
+# Full suite. Run before merging.
 mamba run -n awm pytest
 
 # Preview a selection without running it (sanity-check before a long run):
-mamba run -n awm pytest -m smoke --collect-only -q
+mamba run -n awm pytest -m unit --collect-only -q
 ```
 
-Markers in use: `smoke` / `slow` / `federation` / `subprocess` (cross-cutting), plus one per subsystem (`unit`, `hub`, `scopes`, `messaging`, `auth`, `mcp`, `artifacts`, `sessions`, `agent`, `misc`). To retag a file, edit its top-of-file `pytestmark = [...]` line.
+Markers in use: `smoke` / `slow` / `subprocess` (cross-cutting), plus one per subsystem (`unit`, `hub`, `scopes`, `messaging`, `auth`, `mcp`, `artifacts`, `sessions`, `agent`, `misc`). To retag a file, edit its top-of-file `pytestmark = [...]` line.
 
 ## Agent Rules
 

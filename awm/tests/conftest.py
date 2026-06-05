@@ -35,10 +35,6 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
     monkeypatch.setattr("awm.config.DATA_DIR", data_dir)
     monkeypatch.setattr("awm.config.SKILLS_DIR", skills_dir)
-    # PEER_FILE defaults to the developer's workspace — redirect into the
-    # temp workspace so each test starts without a local peer identity
-    # (and tests that want one can write to this path).
-    monkeypatch.setattr("awm.config.PEER_FILE", awm_dir / "peer.json")
 
     # Patch where imported
     monkeypatch.setattr("awm.db.DB_PATH", db_path)
