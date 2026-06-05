@@ -9,7 +9,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # Sentinel user uuids — fixed namespace so a fresh install lands the same
 # 'cli'/'system' ids regardless of when/where it's run. The v37 preflight
@@ -222,31 +222,11 @@ CREATE TABLE IF NOT EXISTS config (
     updated_at TEXT NOT NULL
 );
 
--- Federation control plane — still CRR (peers + discord_operators).
-CREATE TABLE IF NOT EXISTS peers (
-    peer_id TEXT NOT NULL PRIMARY KEY,
-    ssh_alias TEXT NOT NULL DEFAULT '',
-    remote_port INTEGER NOT NULL DEFAULT 7820,
-    friendly_name TEXT,
-    last_seen TEXT,
-    added_at TEXT NOT NULL DEFAULT '',
-    endpoints TEXT,
-    tls_fingerprint TEXT,
-    peer_priority INTEGER NOT NULL DEFAULT 100,
-    origin_peer TEXT
-);
-
 CREATE TABLE IF NOT EXISTS discord_operators (
     discord_user_id TEXT NOT NULL PRIMARY KEY,
     awm_user TEXT NOT NULL DEFAULT '',
     added_at TEXT NOT NULL DEFAULT '',
     origin_peer TEXT
-);
-
-CREATE TABLE IF NOT EXISTS peer_sync_state (
-    peer_id TEXT PRIMARY KEY,
-    last_db_version INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -710,6 +690,19 @@ CREATE TABLE IF NOT EXISTS agent_relationships (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_relationships_parent
     ON agent_relationships(parent_project, parent_scope);
+""",
+    (37, 38): """\
+-- Federation retirement: single-host now. Collapse all origin_peer values
+-- to '' so post-v38 queries (e.g. embedding indexers) can filter
+-- local-origin rows with `origin_peer = ''` without consulting the
+-- about-to-be-dropped peers table.
+UPDATE scopes SET origin_peer = '';
+UPDATE session_logs SET origin_peer = '';
+UPDATE messages SET origin_peer = '';
+UPDATE artifacts SET origin_peer = '';
+UPDATE room_posts SET origin_peer = '';
+DROP TABLE IF EXISTS peer_sync_state;
+DROP TABLE IF EXISTS peers;
 """,
 }
 

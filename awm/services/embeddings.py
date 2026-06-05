@@ -109,9 +109,7 @@ def index_session(session_id: int) -> None:
     try:
         row = conn.execute(
             "SELECT summary, deviations, suggestions "
-            "FROM session_logs WHERE legacy_id=? "
-            "AND origin_peer = COALESCE("
-            "  (SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')",
+            "FROM session_logs WHERE legacy_id=? AND origin_peer = ''",
             (session_id,),
         ).fetchone()
     finally:
@@ -135,8 +133,7 @@ def index_artifact(artifact_id: int) -> None:
     try:
         row = conn.execute(
             "SELECT name, description, tags FROM artifacts "
-            "WHERE legacy_id=? AND origin_peer = "
-            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias='self' LIMIT 1), '')",
+            "WHERE legacy_id=? AND origin_peer = ''",
             (artifact_id,),
         ).fetchone()
     finally:
@@ -229,22 +226,6 @@ def index_lock(lock_id: int) -> None:
     if row["metadata"]:
         parts.append(str(row["metadata"]))
     _upsert_embedding("lock", str(row["id"]), " ".join(p for p in parts if p))
-
-
-def index_peer(peer_id: str) -> None:
-    """Embed a peer: peer_id + ssh_alias + friendly_name."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT peer_id, ssh_alias, friendly_name FROM peers WHERE peer_id = ?",
-            (peer_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return
-    parts = [row["peer_id"] or "", row["ssh_alias"] or "", row["friendly_name"] or ""]
-    _upsert_embedding("peer", peer_id, " ".join(p for p in parts if p))
 
 
 # ---------------------------------------------------------------------------
@@ -375,19 +356,13 @@ def reindex_all() -> dict:
         "rooms": 0,
         "projects": 0,
         "locks": 0,
-        "peers": 0,
         "stray_pruned": 0,
     }
 
     conn = get_connection()
     try:
-        self_clause = (
-            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')"
-        )
-        # Only index local-origin sessions; replicated remote rows are
-        # indexed on their owning peer.
         session_ids = [r[0] for r in conn.execute(
-            f"SELECT legacy_id FROM session_logs WHERE origin_peer = {self_clause}"
+            "SELECT legacy_id FROM session_logs WHERE origin_peer = ''"
         ).fetchall()]
         scope_rows = conn.execute(
             "SELECT project, scope FROM scopes WHERE status != 'deleted'"
@@ -397,9 +372,6 @@ def reindex_all() -> dict:
         ).fetchall()]
         lock_ids = [r[0] for r in conn.execute(
             "SELECT id FROM locks"
-        ).fetchall()]
-        peer_ids = [r[0] for r in conn.execute(
-            "SELECT peer_id FROM peers"
         ).fetchall()]
     finally:
         conn.close()
@@ -442,16 +414,9 @@ def reindex_all() -> dict:
         except Exception:
             pass
 
-    for pid in peer_ids:
-        try:
-            index_peer(pid)
-            stats["peers"] += 1
-        except Exception:
-            pass
-
     # Final safety pass: drop embeddings rows whose source_type we don't
     # recognize (legacy schema drift).
-    known_types = {"skill", "artifact", "session", "scope", "room", "project", "lock", "peer"}
+    known_types = {"skill", "artifact", "session", "scope", "room", "project", "lock"}
     conn = get_connection()
     try:
         rows = conn.execute("SELECT source_type, source_id FROM embeddings").fetchall()
