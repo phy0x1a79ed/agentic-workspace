@@ -49,6 +49,7 @@ projects/
   metasmith/             # metasmith dev (caching, cancellation, hints, mcp, …)
   metasmith-libraries/   # per-pipeline libraries (eukaryotic-assembly, fabfos, phyloflash, …)
   mitacs-purify/         # bioreactor work
+  odysseus/              # odysseus fork (https://github.com/phy0x1a79ed/odysseus)
   research/              # biofilms, ecological-modelling, functional-decomposition
   scadc/                 # figures + analyses for the SCADC paper
   scratch/               # one-off sandboxes (endfield, minecraft-turtles, network_debug)
@@ -56,7 +57,6 @@ projects/
   spanish-lakes/         # spanish-lakes metagenomics
   synclust/              # synclust dev
   threejs-scene-manager/ # scene manager dev
-  tools/                 # misc tooling
   vpn_bounce/            # vpn relay experiments
 ```
 
@@ -80,15 +80,15 @@ The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-dis
 
 | Category | Tools |
 |---|---|
-| Skills | `skills_list`, `skills_get`, `skills_search`, `skills_sync` |
-| Sessions | `session_log`, `session_list`, `session_get`, `session_search`, `session_resolve` |
-| Scopes | `scope_create`, `scope_list`, `scope_complete`, `scope_delete` |
-| Projects | `project_create`, `project_list` |
+| Skills | `skills_get`, `skills_search`, `skills_sync` |
+| Sessions | `session_log`, `session_get`, `session_search`, `session_resolve` |
+| Scopes | `scope_create`, `scope_search`, `scope_complete`, `scope_delete` |
+| Projects | `project_create`, `project_search` |
 | Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
-| Locks | `lock_acquire`, `lock_release`, `lock_list`, `lock_heartbeat` |
+| Locks | `lock_acquire`, `lock_release`, `lock_search`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
-| Rooms | `room_create`, `room_list`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
-| Peers | `peers_list`, `peer_ping` |
+| Rooms | `room_create`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
+| Peers | `peer_search`, `peer_ping` |
 | Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `agent_control` |
 
 Each tool has a JSON Schema accessible via your MCP client. New tools land here automatically when `awm-mcp` reloads.
@@ -120,14 +120,14 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 | Prefix | Family | What it owns |
 |--------|--------|-------------|
-| `comp-*` | component | A single frontend component + its fixtures (one slug under `/dev/components/`). |
-| `svc-*`  | service   | A backend service contract — endpoints, models, the Pydantic surface for an area. |
-| `feat-*` | feature   | End-to-end integration that wires components, services, and external engines together (e.g. `feat-stt`, `feat-rooms`). |
-| `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners. |
+| `comp-*` | component | Cross-cutting work on a single shared frontend component (a deeper rework than a normal PR). The component itself lives in `packages/components/<name>/` regardless of which scope is editing it. |
+| `svc-*`  | service   | Cross-cutting work on a single long-running backend service. The service itself lives in `packages/services/<name>/`. |
+| `feat-*` | feature   | Multi-package composition that wires components, services, and pages together (e.g. `feat-stt`, `feat-rooms`). |
+| `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners, the service hub itself. |
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
-For component+backend stripes packaged as workspace packages (one `packages/<name>/` per stripe, auto-discovered by the hub at sandbox start), see § *Developing a vertical stripe* in `projects/awm/dev/AGENTS.md`. New stripes prefer that flow over the inline `comp-*` + `svc-*` registration.
+For the day-to-day workflow of authoring/iterating on a package — what files you write, how `awm packages gen` + `awm packages sync` work, the shadow flow — see § *Developing a package* in the awm-internal AGENTS.md (auto-loaded inside any `projects/awm/*` scope).
 
 ## Git Model
 

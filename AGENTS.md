@@ -92,7 +92,7 @@ The per-scope port bands are set by `dev/run.sh` from the worktree dirname, so a
 
 ### When to make a `svc-*` scope
 
-Use a `svc-*` worktree when a stripe needs to **own** a path prefix end-to-end: ship its own routes, run as its own process, iterate without rebuilding the monolith. PTT V2 (audio + WS + STT) is the first customer. Pure shared-library refactors stay in `awm/`.
+A `svc-*` scope is for cross-cutting work on a single backend service — the service itself lives in `packages/services/<name>/` regardless of which scope is editing it. Similarly, a `comp-*` scope is for cross-cutting work on a single shared component in `packages/components/<name>/`. Day-to-day, see § *Developing a package* below — that is the authoritative workflow doc and supersedes the older `kind=url` / `kind=static` flows documented in § *Stripe-presentation protocol*.
 
 ### Stripe-presentation protocol
 
