@@ -197,20 +197,25 @@ def tls_fingerprint() -> str | None:
 def bootstrap() -> dict[str, str]:
     """Idempotent daemon-startup bootstrap.
 
-    Ensures both the auth token and TLS cert/key exist. Returns a dict
-    with paths and the cert fingerprint for logging.
+    Ensures the auth token exists. TLS material is bootstrapped only when
+    the legacy exposed-listener entrypoint runs — the local listener is
+    loopback HTTP and has nothing to TLS-secure.
     """
     token = local_token(generate_if_missing=True)
-    cert, key = bootstrap_tls(generate_if_missing=True)
-    return {
+    info = {
         "token_file": str(config.AUTH_TOKEN_FILE),
-        "tls_cert": str(cert),
-        "tls_key": str(key),
-        "tls_fingerprint": tls_fingerprint() or "",
-        # Token is intentionally not returned here — callers who need it
-        # call local_token() directly so it doesn't leak into log lines.
         "token_len": str(len(token)),
     }
+    try:
+        cert, key = bootstrap_tls(generate_if_missing=True)
+        info["tls_cert"] = str(cert)
+        info["tls_key"] = str(key)
+        info["tls_fingerprint"] = tls_fingerprint() or ""
+    except Exception:
+        info["tls_cert"] = ""
+        info["tls_key"] = ""
+        info["tls_fingerprint"] = ""
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -346,20 +351,17 @@ def client_kwargs(*, timeout: float = 30.0) -> dict:
 
 
 def base_url() -> str:
-    """Canonical HTTPS base URL for the local daemon.
+    """Canonical HTTP base URL for the local daemon.
 
-    ``AWM_PUBLIC_BASE_URL`` overrides everything when the listener is
-    reachable from outside the host (e.g. ZeroTier-forwarded port range)
-    and the URL needs to be handed to a browser elsewhere on the network
-    — Discord-DM bootstrap link, ``/auth/mint`` JSON response.
+    ``AWM_PUBLIC_BASE_URL`` overrides everything for the rare case where
+    the URL needs to be handed off to a browser on a different host (dev
+    shadow scenarios). Default is loopback HTTP — the listener binds only
+    127.0.0.1, so there is nothing to TLS-secure.
     """
     override = os.environ.get("AWM_PUBLIC_BASE_URL")
     if override:
         return override.rstrip("/")
-    host = config.EXPOSED_HOST
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-    return f"https://{host}:{config.EXPOSED_PORT}"
+    return f"http://{config.HOST}:{config.PORT}"
 
 
 # ---------------------------------------------------------------------------
