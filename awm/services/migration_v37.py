@@ -469,6 +469,36 @@ def _classify_literal(
     return m.users[literal]
 
 
+def _seed_data_table_tombstones(
+    conn: sqlite3.Connection, m: SeedManifest, ns: uuid.UUID
+) -> None:
+    """Ensure every (project, scope) referenced by session_logs / artifacts /
+    messages resolves — tombstone any pair without an agents entry. This lets
+    the rebuild dance lookup-only with no on-the-fly inserts."""
+    pairs: set[tuple[str, str]] = set()
+    if _table_exists(conn, "session_logs"):
+        for r in conn.execute(
+            "SELECT DISTINCT project, scope FROM session_logs WHERE project!='' AND scope!=''"
+        ).fetchall():
+            pairs.add((r[0], r[1]))
+    if _table_exists(conn, "artifacts"):
+        for r in conn.execute(
+            "SELECT DISTINCT project, scope FROM artifacts WHERE project!='' AND scope!=''"
+        ).fetchall():
+            pairs.add((r[0], r[1]))
+    if _table_exists(conn, "messages"):
+        for r in conn.execute("SELECT DISTINCT scope FROM messages").fetchall():
+            s = r[0]
+            if s and "/" in s and not s.startswith("user:") and not s.startswith("agent:") and s != "system":
+                parts = s.split("/", 1)
+                pairs.add((parts[0], parts[1]))
+    for project, scope in sorted(pairs):
+        key = f"{project}/{scope}"
+        if key in m.agents or key in m.tombstone_agents:
+            continue
+        _tombstone_agent(m, ns, project, scope)
+
+
 def _seed_ref_resolution(conn: sqlite3.Connection, m: SeedManifest) -> None:
     """Pre-compute every distinct polymorphic-ref literal we'll encounter
     during backfill."""
@@ -528,6 +558,7 @@ def preflight(db_path: str | Path) -> Path:
         _seed_projects(conn, m, ns)
         _seed_users(conn, m, ns)
         _seed_agents(conn, m, ns)
+        _seed_data_table_tombstones(conn, m, ns)
         _seed_agent_instances(conn, m)
         _seed_room_owner_map(conn, m)
         _seed_ref_resolution(conn, m)
