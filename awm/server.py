@@ -7,7 +7,8 @@ import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from starlette.responses import JSONResponse, Response
 
 from awm import __version__
 from awm.config import (
@@ -20,6 +21,8 @@ from awm.config import (
     REAPER_INTERVAL,
 )
 from awm.db import init_db, get_connection
+from awm.services import auth as auth_svc
+from awm.services.auth.middleware_auth import require_bearer
 from awm.models import (
     StatusResponse,
     ProjectCreateRequest,
@@ -119,11 +122,66 @@ async def lifespan(app: FastAPI):
     reaper_task = asyncio.create_task(_reaper_loop())
     idle_task = asyncio.create_task(_idle_shutdown_loop())
 
+    # Auth bootstrap — mint a local token if missing so /auth and
+    # require_bearer have something to read. TLS bootstrap is skipped (the
+    # listener is loopback HTTP only).
+    try:
+        info = auth_svc.bootstrap()
+        print(f"[awm] auth ready: token={info['token_file']}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] auth bootstrap failed: {exc}")
+
+    # Reconcile journaled hub services: give each a 10s window to reopen its
+    # control WS, then respawn silent ones from start_cmd. Fired as a
+    # background task — the hub is available immediately for services that
+    # ARE actively reconnecting.
+    try:
+        from awm.services.hub.supervisor import reconcile_journaled_services
+        asyncio.create_task(reconcile_journaled_services())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] service reconcile skipped: {exc}")
+
+    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
+    # no-op when present. Non-fatal: /vagrant/* 503s with a clear message if
+    # disabled.
+    try:
+        from awm.services.scopes import ensure_vagrant_repo
+        bare = ensure_vagrant_repo()
+        print(f"[awm] vagrant-scopes ready: {bare}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] vagrant-scopes disabled: {exc}")
+
+    # Fan canonical .mcp.json out to backend-specific configs.
+    try:
+        from awm.exports.mcp import sync_mcp_configs
+        for entry in sync_mcp_configs():
+            name = entry.get("name", "?")
+            if entry.get("ok"):
+                print(f"[awm] mcp-sync {name} → {entry.get('path')}")
+            else:
+                print(f"[awm] mcp-sync {name} FAILED: {entry.get('error')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm] mcp-sync skipped: {exc}")
+
+    # Periodic sweep of expired one-shot login challenges.
+    async def _challenges_sweeper() -> None:
+        while True:
+            try:
+                await asyncio.sleep(30)
+                auth_svc.sweep_challenges()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                continue
+
+    challenges_sweeper_task = asyncio.create_task(_challenges_sweeper())
+
     yield
 
     # Cleanup
     reaper_task.cancel()
     idle_task.cancel()
+    challenges_sweeper_task.cancel()
     if PID_FILE.exists():
         PID_FILE.unlink()
 
@@ -576,6 +634,209 @@ def invoke_tool(payload: dict):
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     return {"result": result}
+
+
+# ---------------------------------------------------------------------------
+# Hub control plane (/hub/*) and rooms surface (/rooms/*)
+# ---------------------------------------------------------------------------
+
+from awm.api.hub import router as hub_router  # noqa: E402
+from awm.api.rooms import router as rooms_router  # noqa: E402
+
+app.include_router(hub_router)
+app.include_router(rooms_router)
+
+
+# ---------------------------------------------------------------------------
+# Web UI auth — one-shot login flow (`awm login` mints; browser consumes)
+# ---------------------------------------------------------------------------
+
+def _is_loopback(request: Request) -> bool:
+    if request.client is None:
+        return False
+    return request.client.host in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+@app.post("/auth/mint")
+async def auth_mint(request: Request):
+    """Mint a one-shot login challenge. Loopback-only.
+
+    Body: ``{"awm_user": "<name>"}``. Returns
+    ``{"nonce": ..., "url": ".../auth/bootstrap?ot=..."}``.
+    """
+    if not _is_loopback(request):
+        raise HTTPException(403, "/auth/mint is loopback-only")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    awm_user = (body.get("awm_user") if isinstance(body, dict) else None) or "operator"
+    awm_user = str(awm_user).strip() or "operator"
+
+    nonce = auth_svc.mint_challenge(awm_user)
+    url = f"{auth_svc.base_url()}/auth/bootstrap?ot={nonce}"
+    return JSONResponse({
+        "nonce": nonce,
+        "url": url,
+        "awm_user": awm_user,
+        "expires_in_s": auth_svc.CHALLENGE_TTL_SECONDS,
+    })
+
+
+@app.get("/auth/bootstrap")
+async def auth_bootstrap(request: Request):
+    """Consume a one-shot nonce and set the bearer cookie."""
+    nonce = request.query_params.get("ot", "")
+    awm_user = auth_svc.consume_challenge(nonce)
+    if awm_user is None:
+        raise HTTPException(401, "challenge expired or invalid — request a new login")
+
+    try:
+        bearer = auth_svc.local_token(generate_if_missing=False)
+    except auth_svc.TokenMissing:
+        raise HTTPException(500, "daemon token not initialized")
+
+    # secure=False because the local listener is HTTP loopback — Secure-flagged
+    # cookies are silently dropped by browsers on http:// origins.
+    response = Response(status_code=302, headers={"Location": "/ui/agent"})
+    response.set_cookie(
+        key=auth_svc.SESSION_COOKIE, value=bearer,
+        httponly=True, secure=False, samesite="strict", path="/",
+    )
+    response.set_cookie(
+        key=auth_svc.AS_COOKIE, value=awm_user,
+        httponly=False, secure=False, samesite="strict", path="/",
+    )
+    return response
+
+
+@app.get("/auth/whoami")
+async def auth_whoami(request: Request, _auth: None = Depends(require_bearer)):
+    awm_user = request.cookies.get(auth_svc.AS_COOKIE) or "operator"
+    return JSONResponse({"awm_user": awm_user})
+
+
+@app.delete("/auth/session")
+async def auth_logout(_request: Request):
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
+    response.delete_cookie(auth_svc.AS_COOKIE, path="/")
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Hub forwarding middleware (outermost — empty-registry pass-through is
+# byte-identical to a hub-less awm). Routes /ui/<page>, /svc/<name>/...,
+# and any URL/static prefix that's been registered. Raw ASGI so HTTP and
+# WebSocket scopes are both handled.
+# ---------------------------------------------------------------------------
+
+from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
+from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+from awm.services.hub.static import (  # noqa: E402
+    close_ws_unsupported as _ws_close_unsupported,
+    serve_static as _serve_static,
+)
+
+
+def _identity_headers(cookies) -> list[tuple[str, str]]:
+    awm_user = cookies.get(auth_svc.AS_COOKIE)
+    if not awm_user:
+        return []
+    return [("X-Awm-As", awm_user)]
+
+
+class HubRoutingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        registry = _get_hub_registry()
+        if registry.is_empty():
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        if path == "/hub" or path.startswith("/hub/"):
+            return await self.app(scope, receive, send)
+        rec = registry.longest_match(path)
+        if rec is None:
+            return await self.app(scope, receive, send)
+        if rec.kind in ("static", "page"):
+            if scope["type"] == "websocket":
+                await _ws_close_unsupported(scope, receive, send)
+                return
+            request = Request(scope, receive=receive)
+            response = await _serve_static(request, rec)
+            await response(scope, receive, send)
+            return
+        if rec.kind == "service":
+            await self._dispatch_service(scope, receive, send, rec, path)
+            return
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            response = await proxy_http(request, rec.url)
+            await response(scope, receive, send)
+        else:
+            from fastapi import WebSocket as _WS
+            ws = _WS(scope, receive=receive, send=send)
+            await proxy_ws(ws, rec.url)
+
+    async def _dispatch_service(self, scope, receive, send, rec, path):
+        """RPC-WS service routing (kind="service"):
+
+        - POST <prefix>/fn/<name>            -> control-WS call/notify
+        - POST <prefix>/session/<kind>       -> open session, return ws_path
+        - WS   <prefix>/session/<id>         -> session WS (direct = byte
+                                                relay, otherwise enveloped)
+        - WS   <prefix>/emit/<topic>         -> emit subscriber WS
+        Everything else under the prefix is 404.
+        """
+        from awm.services.hub.proxy import (
+            open_session_via_http,
+            proxy_service_emit_ws,
+            proxy_service_http,
+            proxy_session_ws,
+        )
+        from fastapi import WebSocket as _WS
+        from starlette.responses import PlainTextResponse
+
+        rel = path[len(rec.prefix):]
+        if scope["type"] == "http":
+            cookies = Request(scope).cookies
+        else:
+            cookies = _WS(scope, receive=receive, send=send).cookies
+        identity = _identity_headers(cookies)
+        as_ = identity[0][1] if identity else None
+
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            if rel.startswith("/fn/"):
+                response = await proxy_service_http(
+                    request, rec.service_id, as_=as_,
+                )
+            elif rel.startswith("/session/") and request.method == "POST":
+                response = await open_session_via_http(
+                    request, rec.service_id, as_=as_,
+                )
+            else:
+                response = PlainTextResponse("not found", status_code=404)
+            await response(scope, receive, send)
+            return
+
+        ws = _WS(scope, receive=receive, send=send)
+        if rel.startswith("/session/"):
+            sid = rel[len("/session/"):]
+            await proxy_session_ws(ws, rec.service_id, sid)
+            return
+        if rel.startswith("/emit/"):
+            topic = rel[len("/emit/"):]
+            await proxy_service_emit_ws(ws, rec.service_id, topic, as_=as_)
+            return
+        await _ws_close_unsupported(scope, receive, send)
+
+
+app.add_middleware(HubRoutingMiddleware)
 
 
 # ---------------------------------------------------------------------------
