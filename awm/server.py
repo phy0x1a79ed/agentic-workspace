@@ -43,9 +43,6 @@ from awm.models import (
     SharedEditActionResponse,
     SkillListResponse,
     SkillContentResponse,
-    PeerInfo,
-    PeerListResponse,
-    PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm._lib.operations import register_fastapi_routes
@@ -217,80 +214,11 @@ def get_status():
 
     scope_result = scopes.search_scopes(status="active", limit=10_000)
 
-    # Leadership view — only meaningful when reached via the exposed listener.
-    # When the singleton hasn't been configured (core-only / pre-lifespan),
-    # default to ACTIVE so single-node deployments keep their UI reachable.
-    try:
-        from awm.services.leadership import state as ldr_state
-        s = ldr_state.get_state()
-        leadership_state = s.leadership
-        current_leader = s.current_leader
-        peer_priority = s.self_priority
-    except Exception:
-        leadership_state = "ACTIVE"
-        current_leader = None
-        peer_priority = 100
-
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
         active_scopes=scope_result.total,
         active_shared_edits=active_edits,
-        leadership_state=leadership_state,
-        current_leader=current_leader,
-        peer_priority=peer_priority,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Peer identity (federation)
-# ---------------------------------------------------------------------------
-
-@app.get("/peer")
-def get_peer_identity():
-    """Return the local peer_id + advertise_url, or 404 if `awm peer init`
-    has not been run on this instance. Used by remote peers to verify they
-    are talking to the right host."""
-    from awm.services.network.peers import get_local_identity, LocalIdentityError
-    try:
-        ident = get_local_identity()
-    except LocalIdentityError as exc:
-        raise HTTPException(500, str(exc))
-    if ident is None:
-        raise HTTPException(404, "local peer identity not configured")
-    return ident
-
-
-@app.get("/peers/search", response_model=PeerListResponse)
-def search_peers_endpoint(
-    query: str | None = None,
-    status: str = "all",
-    limit: int = 50,
-    offset: int = 0,
-):
-    """Search registered remote peers (hybrid keyword + semantic).
-    `status` is one of 'all' (default), 'online', 'offline'."""
-    from awm.services.network import peers as peer_svc
-    rows = peer_svc.search_peers(
-        query=query, status=status, limit=limit, offset=offset,
-    )
-    return PeerListResponse(peers=[PeerInfo(**r) for r in rows])
-
-
-@app.get("/peers/{peer_id}/ping", response_model=PeerPingResponse)
-def ping_peer_endpoint(peer_id: str):
-    """Probe a registered peer via its SSH tunnel; reports reachability
-    and round-trip ms."""
-    from awm.services.network import peers as peer_svc
-    t0 = time.monotonic()
-    result = peer_svc.ping_peer(peer_id)
-    rtt_ms = (time.monotonic() - t0) * 1000.0
-    ok = bool(result.get("ok"))
-    return PeerPingResponse(
-        peer_id=peer_id,
-        ok=ok,
-        rtt_ms=round(rtt_ms, 2) if ok else None,
-        error=None if ok else (result.get("reason") or "ping failed"),
     )
 
 

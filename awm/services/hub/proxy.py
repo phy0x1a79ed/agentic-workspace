@@ -30,7 +30,6 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from awm.services import auth as auth_svc
 from awm.services.hub import rpc
-from awm.services.network.federation import _local_peer_id
 
 log = logging.getLogger("awm.hub.proxy")
 
@@ -87,7 +86,7 @@ def _hub_headers(
             continue
         out.append((k, v))
     out.append(("Authorization", f"Bearer {auth_svc.local_token()}"))
-    out.append(("X-Awm-From", _local_peer_id()))
+    out.append(("X-Awm-From", "local"))
     out.extend(extras)
     return out
 
@@ -166,7 +165,7 @@ async def proxy_ws(
     override_keys = {k.lower() for k, _ in overrides}
 
     outgoing_headers: list[tuple[str, str]] = [
-        ("X-Awm-From", _local_peer_id()),
+        ("X-Awm-From", "local"),
     ]
     x_as = client_ws.headers.get("x-awm-as")
     if x_as and "x-awm-as" not in override_keys:

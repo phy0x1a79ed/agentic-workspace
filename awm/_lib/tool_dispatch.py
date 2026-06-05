@@ -360,10 +360,6 @@ TOOL_DEFINITIONS: list[Tool] = [
                     "type": "string",
                     "description": "Regex matched against recipient strings, or '*' for all.",
                 },
-                "peer": {
-                    "type": "string",
-                    "description": "Reserved for future peer fan-out; only 'local' / omitted is honoured today.",
-                },
             },
             "required": ["query"],
         },
@@ -409,14 +405,13 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="room_search",
-        description="Search rooms (hybrid keyword + semantic). Defaults to status='active'; pass status='all' to include closed/archived. Optionally fans out across peers.",
+        description="Search rooms (hybrid keyword + semantic). Defaults to status='active'; pass status='all' to include closed/archived.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Free-text query on topic / transcript; omit for filter-only"},
                 "status": {"type": "string", "description": "active (default), closed, archived, or all"},
                 "participating_scope": {"type": "string"},
-                "peer": {"type": "string", "description": "all|<peer-id> for fan-out"},
                 "limit": {"type": "integer", "default": 50},
                 "offset": {"type": "integer", "default": 0},
             },
@@ -515,29 +510,6 @@ TOOL_DEFINITIONS: list[Tool] = [
             "required": ["room_id", "scope", "command"],
         },
     ),
-    # Peers (control-center)
-    Tool(
-        name="peer_search",
-        description="Search registered remote awm peers (hybrid keyword + semantic). Status filter accepts 'online' (last_seen within 5 min), 'offline', or 'all' (default).",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Free-text query on peer_id / ssh_alias / friendly_name"},
-                "status": {"type": "string", "description": "online, offline, or all (default)"},
-                "limit": {"type": "integer", "default": 50},
-                "offset": {"type": "integer", "default": 0},
-            },
-        },
-    ),
-    Tool(
-        name="peer_ping",
-        description="Probe a registered peer via its SSH tunnel; reports reachability and round-trip ms.",
-        inputSchema={
-            "type": "object",
-            "properties": {"peer_id": {"type": "string"}},
-            "required": ["peer_id"],
-        },
-    ),
     Tool(
         name="project_search",
         description="Search projects (hybrid keyword + semantic). Pass active_only=true to hide projects with no active scopes.",
@@ -601,23 +573,17 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
     """Dispatch a ``room_*`` / ``agent_control`` MCP tool in-process.
 
     Routes go through the same services modules the FastAPI router uses
-    (``rooms_svc``, ``orchestration``, ``agent_slash``, federation), so
-    the MCP surface stays consistent with the HTTP surface even when no
-    daemon is reachable. Closes inbox #160/#161.
+    (``rooms_svc``, ``orchestration``, ``agent_slash``), so the MCP
+    surface stays consistent with the HTTP surface even when no daemon is
+    reachable. Closes inbox #160/#161.
     """
     from awm.services import (
         agent_slash as agent_slash_svc,
         orchestration,
         rooms as rooms_svc,
     )
-    from awm.services.network import federation, peers as peer_svc
 
     author = args.get("author") or "user:operator"
-
-    def _peer_ids(spec: str) -> list[str]:
-        if spec == "all":
-            return [p["peer_id"] for p in peer_svc.search_peers(status="all", limit=10_000)]
-        return [spec]
 
     if name == "room_create":
         # orchestration.create_room_with_scopes is async; run it on a
@@ -674,21 +640,8 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
                 offset=offset,
             )
         ]
-        degraded: list[dict] = []
-        if (peer := args.get("peer")) and peer != "local":
-            for pid in _peer_ids(peer):
-                try:
-                    remote = federation.forward_room_search(
-                        pid, query,
-                        status=status,
-                        participating_scope=participating_scope,
-                        limit=limit,
-                    )
-                    local_hits.extend(remote.get("rooms", []))
-                except federation.FederationError as exc:
-                    degraded.append({"peer_id": pid, "reason": str(exc)})
         return json.dumps(
-            {"rooms": local_hits, "total": len(local_hits), "degraded": degraded},
+            {"rooms": local_hits, "total": len(local_hits)},
             indent=2, default=str,
         )
 
@@ -935,16 +888,13 @@ def handle_tool(name: str, args: dict) -> str:
     if name == "inbox_mark_read":
         return _serialize(messaging.mark_read(args["id"]))
     if name == "inbox_recipients":
-        recipients = messaging.list_recipients(
-            query=args["query"], peer=args.get("peer"),
-        )
+        recipients = messaging.list_recipients(query=args["query"])
         return json.dumps(
             {"recipients": recipients, "total": len(recipients), "query": args["query"]},
             indent=2,
         )
 
-    # Rooms — dispatch through the local exposed app for consistent auth
-    # + cross-peer fan-out semantics.
+    # Rooms — dispatch through the local exposed app for consistent auth.
     if name in (
         "room_create", "room_get", "room_history",
         "room_search", "room_post", "room_invite", "room_remove",
@@ -952,29 +902,6 @@ def handle_tool(name: str, args: dict) -> str:
     ):
         return _dispatch_room_tool(name, args)
 
-    # Peers (control-center surface)
-    if name == "peer_search":
-        from awm.services.network import peers as peer_svc
-        rows = peer_svc.search_peers(
-            query=args.get("query"),
-            status=args.get("status", "all"),
-            limit=args.get("limit", 50),
-            offset=args.get("offset", 0),
-        )
-        return json.dumps({"peers": rows, "total": len(rows)}, indent=2, default=str)
-    if name == "peer_ping":
-        import time as _time
-        from awm.services.network import peers as peer_svc
-        t0 = _time.monotonic()
-        result = peer_svc.ping_peer(args["peer_id"])
-        rtt_ms = (_time.monotonic() - t0) * 1000.0
-        ok = bool(result.get("ok"))
-        return json.dumps({
-            "peer_id": args["peer_id"],
-            "ok": ok,
-            "rtt_ms": round(rtt_ms, 2) if ok else None,
-            "error": None if ok else (result.get("reason") or "ping failed"),
-        }, indent=2)
     if name == "project_search":
         return _serialize(projects.search_projects(
             query=args.get("query"),

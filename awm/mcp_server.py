@@ -131,23 +131,28 @@ async def _request_with_retry(
 def _ensure_core_running() -> None:
     """Start the awm daemon via systemd if it's not already up.
 
-    Starts both ``awm.service`` (core, in-process state) and
-    ``awm-exposed.service`` (HTTPS listener) so the MCP proxy can reach
-    the catalog endpoints. Best-effort — falls back to detached
-    ``awm serve-exposed`` in dev setups without systemd.
+    Best-effort — falls back to detached ``awm serve`` in dev setups
+    without systemd. Port-checks before spawning the fallback to avoid
+    racing into a zombie binding the listener.
     """
     r = subprocess.run(
-        ["systemctl", "--user", "start",
-         "awm.service", "awm-exposed.service"],
+        ["systemctl", "--user", "start", "awm.service"],
         capture_output=True, text=True,
     )
     if r.returncode == 0:
         return
-    # Fallback: detached subprocess. stdio goes to /dev/null so the proxy
-    # doesn't inherit file handles. resolve_bin extends PATH with
-    # ~/.local/bin and linuxbrew so this works under a systemd-user env.
+    # Port-check: if something is already listening on :7819, don't spawn
+    # a duplicate. (The status loop above will recover when the existing
+    # process becomes responsive.)
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        try:
+            s.connect(("127.0.0.1", 7819))
+            return
+        except OSError:
+            pass
     subprocess.Popen(
-        [resolve_bin("awm"), "serve-exposed"],
+        [resolve_bin("awm"), "serve"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

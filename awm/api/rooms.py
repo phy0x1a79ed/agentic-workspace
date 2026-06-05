@@ -105,11 +105,10 @@ def search_rooms(
     query: str | None = Query(None),
     status: str = Query("active"),
     participating_scope: str | None = Query(None),
-    peer: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Search rooms (hybrid keyword + semantic) with optional peer fan-out.
+    """Search rooms (hybrid keyword + semantic).
     Defaults to status='active'; pass status='all' for the full history."""
     local = [
         _room_info(r).model_dump()
@@ -119,24 +118,7 @@ def search_rooms(
             limit=limit, offset=offset,
         )
     ]
-    degraded: list[dict] = []
-    if peer and peer != "local":
-        from awm.services.network import federation, peers as peer_svc
-        if peer == "all":
-            peer_ids = [p["peer_id"] for p in peer_svc.search_peers(status="all", limit=10_000)]
-        else:
-            peer_ids = [peer]
-        for pid in peer_ids:
-            try:
-                remote = federation.forward_room_search(
-                    pid, query,
-                    status=status, participating_scope=participating_scope,
-                    limit=limit,
-                )
-                local.extend(remote.get("rooms", []))
-            except federation.FederationError as exc:
-                degraded.append({"peer_id": pid, "reason": str(exc)})
-    return {"rooms": local, "total": len(local), "degraded": degraded}
+    return {"rooms": local, "total": len(local)}
 
 
 @router.get("/{room_id}", response_model=RoomDetail, dependencies=[Depends(require_bearer)])

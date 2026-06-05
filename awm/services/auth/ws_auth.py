@@ -2,9 +2,6 @@
 
 Extends ``middleware_auth.authenticate_websocket`` with:
 
-- ``X-Awm-From``: peer-origin claim. If present and not a known peer
-  in the registry, the connection is rejected (same logic as the REST
-  middleware in exposed.py).
 - ``X-Awm-As``: user identity claim. Optional cosmetic header that the
   rooms service uses to author posts as ``user:<name>`` instead of the
   default ``user:operator``. If absent, defaults to ``user:operator``.
@@ -48,18 +45,5 @@ async def authenticate_room_ws(
         return WSAuthResult(False, None, None, "user:operator", "unauthorized")
 
     from_peer = websocket.headers.get("x-awm-from")
-    if from_peer:
-        from awm.services.network import peers as peer_svc
-        if peer_svc.get_peer(from_peer) is None:
-            await websocket.close(code=1008, reason="unknown peer in X-Awm-From")
-            return WSAuthResult(False, None, None, "user:operator",
-                                "unknown peer in X-Awm-From")
-
     user_as = websocket.headers.get("x-awm-as") or "user:operator"
-    if from_peer:
-        # Tag the user with the origin peer so cross-host posts read
-        # cleanly in the transcript.
-        if "@" not in user_as:
-            user_as = f"{user_as}@{from_peer}"
-
     return WSAuthResult(True, subprotocol, from_peer, user_as)
