@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from awm.config import VAGRANT_PROJECT
-from awm.services.auth.middleware_auth import require_bearer
 from awm.services import agent_instances
 from awm.services.scopes import (
     _vagrant_scope_name,
@@ -43,17 +42,9 @@ class VagrantSessionResponse(BaseModel):
     manager_live: bool
 
 
-def _user_from_request(request: Request) -> str:
-    return request.headers.get("x-awm-as") or "user:operator"
-
-
-@router.post(
-    "/session",
-    response_model=VagrantSessionResponse,
-    dependencies=[Depends(require_bearer)],
-)
+@router.post("/session", response_model=VagrantSessionResponse)
 async def session(request: Request) -> VagrantSessionResponse:
-    user_as = _user_from_request(request)
+    user_as = "user:operator"
     try:
         scope_uuid, room_id = ensure_vagrant_session(user_as)
     except FileNotFoundError as exc:

@@ -111,30 +111,9 @@ def _print_json(r: httpx.Response):
     typer.echo(json.dumps(data, indent=2))
 
 
-def _exposed_base_and_token() -> tuple[str, str]:
-    """Resolve the local listener URL + bearer token for /rooms calls.
-
-    Returns ``(base_url, token)``. The single listener (``awm.server:app``
-    on :7819 loopback) is the only target — env-var overrides and the
-    legacy ``$AWM_DIR/exposed.json`` discovery file are gone with the
-    federation surface.
-    """
-    from awm.services import auth as _auth
-    try:
-        token = _auth.local_token(generate_if_missing=False)
-    except _auth.TokenMissing as exc:
-        raise typer.BadParameter(str(exc))
-    return BASE_URL, token
-
-
-def _exposed_api(method: str, path: str, **kwargs) -> httpx.Response:
-    """Hit an endpoint on the local awm listener."""
-    base, token = _exposed_base_and_token()
-    headers = kwargs.pop("headers", {}) or {}
-    headers["Authorization"] = f"Bearer {token}"
-    r = httpx.request(
-        method, f"{base}{path}", headers=headers, timeout=30, **kwargs,
-    )
+def _local_api(method: str, path: str, **kwargs) -> httpx.Response:
+    """Hit an endpoint on the local awm listener (loopback HTTP, no auth)."""
+    r = httpx.request(method, f"{BASE_URL}{path}", timeout=30, **kwargs)
     return r
 
 
@@ -258,14 +237,14 @@ def room_create(
         "topic": topic, "scopes": scope or [], "prompts": prompts,
         "close_on_exit": close_on_exit,
     }
-    r = _exposed_api("POST", "/rooms", json=payload)
+    r = _local_api("POST", "/rooms", json=payload)
     _print_json(r)
 
 
 @room_app.command("get")
 def room_get(name: str = typer.Argument(...)):
     """Show room details, participants, and recent transcript."""
-    r = _exposed_api("GET", f"/rooms/{name}")
+    r = _local_api("GET", f"/rooms/{name}")
     _print_json(r)
 
 
@@ -279,7 +258,7 @@ def room_history(
     params = {"limit_chars": limit_chars}
     if before_ts:
         params["before_ts"] = before_ts
-    r = _exposed_api("GET", f"/rooms/{name}/history", params=params)
+    r = _local_api("GET", f"/rooms/{name}/history", params=params)
     _print_json(r)
 
 
@@ -297,7 +276,7 @@ def room_search(
         params["query"] = query
     if participating_scope:
         params["participating_scope"] = participating_scope
-    r = _exposed_api("GET", "/rooms/search", params=params)
+    r = _local_api("GET", "/rooms/search", params=params)
     _print_json(r)
 
 
@@ -308,7 +287,7 @@ def room_post(
     to_scope: str = typer.Option(None, "--to", help="Direct-address a scope"),
 ):
     """Post a message to a room (as the local operator)."""
-    r = _exposed_api("POST", f"/rooms/{name}/posts", json={"body": text, "to": to_scope})
+    r = _local_api("POST", f"/rooms/{name}/posts", json={"body": text, "to": to_scope})
     _print_json(r)
 
 
@@ -319,7 +298,7 @@ def room_invite(
     prompt: str = typer.Option(None, "--prompt"),
 ):
     """Invite a scope (agent) into a room."""
-    r = _exposed_api(
+    r = _local_api(
         "POST", f"/rooms/{name}/invite",
         json={"scope": scope, "prompt": prompt},
     )
@@ -332,7 +311,7 @@ def room_remove(
     scope: str = typer.Option(..., "--scope"),
 ):
     """Remove a scope from a room (doesn't kill the agent process)."""
-    r = _exposed_api("POST", f"/rooms/{name}/remove", json={"scope": scope})
+    r = _local_api("POST", f"/rooms/{name}/remove", json={"scope": scope})
     _print_json(r)
 
 
@@ -342,7 +321,7 @@ def room_close(
     kill_agents: bool = typer.Option(False, "--kill-agents"),
 ):
     """Close a room (optionally SIGTERM all participant agents)."""
-    r = _exposed_api(
+    r = _local_api(
         "POST", f"/rooms/{name}/close", json={"kill_agents": kill_agents},
     )
     _print_json(r)
@@ -351,14 +330,14 @@ def room_close(
 @room_app.command("archive")
 def room_archive(name: str = typer.Argument(...)):
     """Soft-archive a room. Refused (409) if active scope participants remain."""
-    r = _exposed_api("POST", f"/rooms/{name}/archive")
+    r = _local_api("POST", f"/rooms/{name}/archive")
     _print_json(r)
 
 
 @room_app.command("agents")
 def room_agents(name: str = typer.Argument(...)):
     """List room participants with live agent state (PID, status)."""
-    r = _exposed_api("GET", f"/rooms/{name}/agents")
+    r = _local_api("GET", f"/rooms/{name}/agents")
     _print_json(r)
 
 
@@ -375,12 +354,11 @@ def room_join(
     import threading
     import websockets as _ws
 
-    base_url, token = _exposed_base_and_token()
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = BASE_URL.replace("http://", "ws://")
     uri = f"{ws_url}/rooms/{name}/attach"
 
     async def runner():
-        async with _ws.connect(uri, subprotocols=[f"bearer.{token}"]) as ws:
+        async with _ws.connect(uri) as ws:
             stop = asyncio.Event()
 
             async def reader():
@@ -457,7 +435,7 @@ def room_one_off(
         "topic": topic, "scopes": [scope], "prompts": {scope: prompt},
         "close_on_exit": True,
     }
-    r = _exposed_api("POST", "/rooms", json=payload)
+    r = _local_api("POST", "/rooms", json=payload)
     _print_json(r)
 
 
@@ -1014,36 +992,6 @@ def discord_list_operators():
 # Browser sign-in fallback (no Discord required)
 # ---------------------------------------------------------------------------
 
-@app.command()
-def login(
-    as_user: str = typer.Option("operator", "--as", help="awm_user identity to claim"),
-):
-    """Mint a one-shot sign-in URL and print it.
-
-    Open the URL in a browser to drop the bearer into an HttpOnly cookie
-    and land at ``/ui/``. The nonce expires in 60s and is single-use.
-    """
-    base, token = _exposed_base_and_token()
-    try:
-        r = httpx.post(
-            f"{base}/auth/mint",
-            json={"awm_user": as_user},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-            verify=False,
-        )
-    except httpx.HTTPError as exc:
-        typer.echo(f"could not reach exposed listener at {base}: {exc}", err=True)
-        raise typer.Exit(1)
-    if r.status_code >= 400:
-        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    data = r.json()
-    typer.echo(data["url"])
-    typer.echo(f"# open this in your browser — expires in {data['expires_in_s']}s",
-               err=True)
-
-
 # ---------------------------------------------------------------------------
 # Service hub — register a foreground process as a routed service
 # ---------------------------------------------------------------------------
@@ -1120,17 +1068,10 @@ def hub_register(
         payload = {"name": name, "prefix": prefix, "url": url}
         summary = f"url={url}"
 
-    base, token = _exposed_base_and_token()
     try:
-        r = httpx.post(
-            f"{base}/hub/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=10)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
@@ -1139,23 +1080,12 @@ def hub_register(
     service_id = body["service_id"]
     lease_path = body["lease_ws_path"]
     typer.echo(f"registered {name} → {summary} (id={service_id})")
-    typer.echo(f"holding lease at wss://...{lease_path} (Ctrl-C to evict)")
+    typer.echo(f"holding lease at ws://...{lease_path} (Ctrl-C to evict)")
 
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_base}{lease_path}"
-
-    ssl_ctx = _ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = _ssl.CERT_NONE
+    ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
 
     async def _hold():
-        async with _ws.connect(
-            ws_url,
-            subprotocols=[f"bearer.{token}"],
-            ssl=ssl_ctx if ws_url.startswith("wss://") else None,
-            max_size=None,
-            open_timeout=10,
-        ) as wsconn:
+        async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
             # First frame is {"type":"ready",...} — print it then idle.
             try:
                 first = await wsconn.recv()
@@ -1181,7 +1111,7 @@ def hub_register(
 @hub_app.command("list")
 def hub_list():
     """List currently registered services."""
-    r = _exposed_api("GET", "/hub/services")
+    r = _local_api("GET", "/hub/services")
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1197,7 +1127,7 @@ def hub_deregister(
     path = f"/hub/services/{name}"
     if kind:
         path += f"?kind={kind}"
-    r = _exposed_api("DELETE", path)
+    r = _local_api("DELETE", path)
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1226,24 +1156,13 @@ def hub_deregister(
 #   Ctrl-C pops them (no respawn — base traffic resumes).
 
 
-async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> None:
+async def _hold_one_lease(name: str, lease_path: str) -> None:
     """Open the lease WS and idle until close. Used by packages sync (N
     concurrent leases) and dev shadow (per-overlay lease)."""
-    import ssl as _ssl
     import websockets as _ws
 
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_base}{lease_path}"
-    ssl_ctx = _ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = _ssl.CERT_NONE
-    async with _ws.connect(
-        ws_url,
-        subprotocols=[f"bearer.{token}"],
-        ssl=ssl_ctx if ws_url.startswith("wss://") else None,
-        max_size=None,
-        open_timeout=10,
-    ) as wsconn:
+    ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
+    async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
         try:
             first = await wsconn.recv()
             try:
@@ -1259,19 +1178,13 @@ async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> 
             return
 
 
-def _post_register(base: str, token: str, payload: dict) -> dict:
+def _post_register(payload: dict) -> dict:
     """POST /hub/register with the given payload, return parsed body
     or typer.Exit(1) on error."""
     try:
-        r = httpx.post(
-            f"{base}/hub/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=15)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"register failed ({r.status_code}): {r.text}", err=True)
@@ -1314,17 +1227,11 @@ def _packages_walk(repo_root: pathlib.Path) -> tuple[list[pathlib.Path],
     return services, pages
 
 
-def _post_service_register(base: str, token: str, payload: dict) -> dict:
+def _post_service_register(payload: dict) -> dict:
     try:
-        r = httpx.post(
-            f"{base}/hub/service/register",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-            verify=False,
-        )
+        r = httpx.post(f"{BASE_URL}/hub/service/register", json=payload, timeout=15)
     except httpx.HTTPError as exc:
-        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        typer.echo(f"could not reach hub at {BASE_URL}: {exc}", err=True)
         raise typer.Exit(1)
     if r.status_code >= 400:
         typer.echo(f"service register failed ({r.status_code}): {r.text}",
@@ -1333,14 +1240,13 @@ def _post_service_register(base: str, token: str, payload: dict) -> dict:
     return r.json()
 
 
-def _post_page_register(base: str, token: str, name: str, prefix: str,
-                        dir_: str) -> dict:
+def _post_page_register(name: str, prefix: str, dir_: str) -> dict:
     payload = {
         "name": name,
         "prefix": prefix,
         "page": {"dir": dir_},
     }
-    return _post_register(base, token, payload)
+    return _post_register(payload)
 
 
 def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
@@ -1352,16 +1258,15 @@ def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
     return default
 
 
-def _spawn_service_local(pkg_dir: pathlib.Path, base: str, token: str) -> int:
-    """Spawn ``start.sh`` for a service with hub env vars injected.
+def _spawn_service_local(pkg_dir: pathlib.Path) -> int:
+    """Spawn ``start.sh`` for a service with hub URL injected.
 
     Returns the PID. The service is expected to POST /hub/service/register
     on startup; if it doesn't reconnect within the 10s window the hub
-    will SIGTERM this PID and respawn from start.sh itself (S4).
+    will SIGTERM this PID and respawn from start.sh itself.
     """
     env = os.environ.copy()
-    env["AWM_HUB_URL"] = base
-    env["AWM_HUB_TOKEN"] = token
+    env["AWM_HUB_URL"] = BASE_URL
     env["AWM_SERVICE_NAME"] = pkg_dir.name
     proc = subprocess.Popen(
         ["bash", str(pkg_dir / "start.sh")],
@@ -1398,14 +1303,13 @@ def packages_sync(
         typer.echo("no service or page packages found", err=True)
         raise typer.Exit(1)
 
-    base, token = _exposed_base_and_token()
     leases: list[tuple[str, str]] = []
     spawned_pids: list[int] = []
 
     for svc_dir in services:
         name = svc_dir.name
         try:
-            spawned_pids.append(_spawn_service_local(svc_dir, base, token))
+            spawned_pids.append(_spawn_service_local(svc_dir))
             typer.echo(f"spawned service {name} (pid bookkeeping; service "
                        f"self-registers via /hub/service/register)")
         except (OSError, ValueError) as exc:
@@ -1420,7 +1324,7 @@ def packages_sync(
             continue
         prefix = _read_prefix_txt(page_dir, f"/ui/{name}")
         try:
-            body = _post_page_register(base, token, name, prefix, str(dist))
+            body = _post_page_register(name, prefix, str(dist))
         except typer.Exit:
             continue
         leases.append((name, body["lease_ws_path"]))
@@ -1435,7 +1339,7 @@ def packages_sync(
         typer.echo(f"holding {len(leases)} page lease(s) (Ctrl-C to evict)…")
         async def _hold_all():
             await _asyncio.gather(*(
-                _hold_one_lease(base, token, name, path) for name, path in leases
+                _hold_one_lease(name, path) for name, path in leases
             ))
         try:
             _asyncio.run(_hold_all())
@@ -1464,7 +1368,7 @@ def packages_sync(
 @packages_app.command("list")
 def packages_list():
     """List currently registered packages (services + pages)."""
-    r = _exposed_api("GET", "/hub/services")
+    r = _local_api("GET", "/hub/services")
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1490,7 +1394,6 @@ def dev_shadow(
     import asyncio as _asyncio
 
     here = pathlib.Path.cwd()
-    base, token = _exposed_base_and_token()
     leases: list[tuple[str, str]] = []
     spawned_pids: list[int] = []
 
@@ -1527,7 +1430,7 @@ def dev_shadow(
                 typer.echo(f"skip {target}: no start.sh", err=True)
                 continue
             try:
-                pid = _spawn_service_local(pkg_dir, base, token)
+                pid = _spawn_service_local(pkg_dir)
                 spawned_pids.append(pid)
             except (OSError, ValueError) as exc:
                 typer.echo(f"skip {target}: spawn failed: {exc}", err=True)
@@ -1549,11 +1452,9 @@ def dev_shadow(
 
         try:
             r = httpx.post(
-                f"{base}/hub/shadow/register",
+                f"{BASE_URL}/hub/shadow/register",
                 json=payload,
-                headers={"Authorization": f"Bearer {token}"},
                 timeout=15,
-                verify=False,
             )
         except httpx.HTTPError as exc:
             typer.echo(f"skip {target}: hub unreachable: {exc}", err=True)
@@ -1580,7 +1481,7 @@ def dev_shadow(
     typer.echo(f"holding {len(leases)} shadow lease(s) (Ctrl-C to pop)…")
     async def _hold_all():
         await _asyncio.gather(*(
-            _hold_one_lease(base, token, name, path) for name, path in leases
+            _hold_one_lease(name, path) for name, path in leases
         ))
     try:
         _asyncio.run(_hold_all())

@@ -1,10 +1,6 @@
 """One-shot prep run by ``dev/run.sh`` before uvicorn starts.
 
-Idempotent: bootstraps the sandbox DB and the loopback bearer token.
-
-Login URLs are minted by the *live* server via ``/auth/mint`` (challenges
-live in process-local memory), so this script intentionally does not
-generate them — ``dev/run.sh login`` does, after the server is up.
+Idempotent: bootstraps the sandbox DB.
 
 Assumes AWM_WORKSPACE points at dev/. Refuses to run otherwise so a stray
 invocation never touches the real workspace.
@@ -30,14 +26,11 @@ def main() -> int:
     _assert_sandbox()
 
     from awm.db import init_db
-    from awm.services import auth as auth_svc
     from awm import config
 
     init_db()
-    auth_svc.local_token(generate_if_missing=True)
 
     print(f"[prep] db={config.DB_PATH}", file=sys.stderr)
-    print(f"[prep] token={config.AUTH_TOKEN_FILE}", file=sys.stderr)
     return 0
 
 

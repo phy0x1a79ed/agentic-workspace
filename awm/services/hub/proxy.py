@@ -28,7 +28,6 @@ import websockets
 from fastapi import Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from awm.services import auth as auth_svc
 from awm.services.hub import rpc
 
 log = logging.getLogger("awm.hub.proxy")
@@ -69,14 +68,7 @@ def _hub_headers(
     request_headers,
     extra_headers: list[tuple[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
-    """Build the outgoing header list: drop hop-by-hop + client bearer,
-    inject hub's bearer + X-Awm-From, preserve X-Awm-As.
-
-    ``extra_headers`` are appended last AND their keys are also stripped
-    from the inbound iteration, so the hub-provided value overrides
-    anything the caller sent. That's the forge-prevention seam the
-    service dispatcher uses to mint X-Awm-As from the awm_as cookie.
-    """
+    """Build the outgoing header list: drop hop-by-hop, pass everything else."""
     extras = list(extra_headers or [])
     strip_extra = {k.lower() for k, _ in extras}
     out: list[tuple[str, str]] = []
@@ -85,8 +77,6 @@ def _hub_headers(
         if kl in _STRIP_REQUEST or kl in strip_extra:
             continue
         out.append((k, v))
-    out.append(("Authorization", f"Bearer {auth_svc.local_token()}"))
-    out.append(("X-Awm-From", "local"))
     out.extend(extras)
     return out
 
@@ -141,20 +131,7 @@ async def proxy_ws(
     target_base: str,
     extra_headers: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Bridge a client WS to ``target_base + path`` via websockets.connect.
-
-    Authenticates the inbound handshake (bearer.<token> subprotocol or
-    awm_session cookie), accepts the client, then opens the upstream
-    connection using the HUB's own bearer + peer headers (G5). The
-    client's bearer never reaches the service. ``X-Awm-As`` is forwarded
-    verbatim (G6) unless overridden via ``extra_headers``.
-    """
-    from awm.services.auth.middleware_auth import authenticate_websocket
-
-    # Validate inbound auth. authenticate_websocket closes on failure
-    # and returns None; in that case .accept() raises and we exit.
-    chosen_sub = await authenticate_websocket(client_ws)
-
+    """Bridge a client WS to ``target_base + path`` via websockets.connect."""
     path = client_ws.url.path
     query = client_ws.url.query
     ws_target = _http_to_ws(target_base.rstrip("/")) + path
@@ -162,24 +139,11 @@ async def proxy_ws(
         ws_target = f"{ws_target}?{query}"
 
     overrides = list(extra_headers or [])
-    override_keys = {k.lower() for k, _ in overrides}
-
-    outgoing_headers: list[tuple[str, str]] = [
-        ("X-Awm-From", "local"),
-    ]
-    x_as = client_ws.headers.get("x-awm-as")
-    if x_as and "x-awm-as" not in override_keys:
-        outgoing_headers.append(("X-Awm-As", x_as))
-    outgoing_headers.extend(overrides)
-
-    token = auth_svc.local_token()
-    subprotocols = [f"bearer.{token}"]
 
     try:
         upstream = await websockets.connect(
             ws_target,
-            subprotocols=subprotocols,
-            additional_headers=outgoing_headers,
+            additional_headers=overrides,
             max_size=None,
             open_timeout=10,
         )
@@ -192,7 +156,7 @@ async def proxy_ws(
         return
 
     try:
-        await client_ws.accept(subprotocol=chosen_sub)
+        await client_ws.accept()
     except Exception:
         try:
             await upstream.close()
@@ -373,10 +337,6 @@ async def proxy_session_ws(
     ``session.frame`` envelopes back to the browser, JSON for json
     payloads or decoded base64 for binary.
     """
-    from awm.services.auth.middleware_auth import authenticate_websocket
-
-    chosen_sub = await authenticate_websocket(client_ws)
-
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         try:
@@ -393,7 +353,7 @@ async def proxy_session_ws(
         return
 
     try:
-        await client_ws.accept(subprotocol=chosen_sub)
+        await client_ws.accept()
     except Exception:
         return
 
@@ -546,9 +506,6 @@ async def proxy_service_emit_ws(
     this handler — the route picks ``proxy_session_ws``-style relay
     for them instead.
     """
-    from awm.services.auth.middleware_auth import authenticate_websocket
-
-    chosen_sub = await authenticate_websocket(client_ws)
     ch = rpc.get_control(service_id)
     if ch is None or not ch.ready.is_set():
         try:
@@ -557,7 +514,7 @@ async def proxy_service_emit_ws(
             pass
         return
     try:
-        await client_ws.accept(subprotocol=chosen_sub)
+        await client_ws.accept()
     except Exception:
         return
 

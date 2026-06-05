@@ -36,20 +36,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
-from awm.services import auth as auth_svc
 from awm.services._path import resolve_bin
 
 server = Server("awm")
-
-
-def _base_url() -> str:
-    """HTTPS base URL of the local awm daemon (the exposed listener)."""
-    return auth_svc.base_url()
-
-
-def _client_kwargs() -> dict:
-    """Auth + TLS kwargs for outbound httpx calls."""
-    return auth_svc.client_kwargs(timeout=60.0)
 
 
 # ---------------------------------------------------------------------------
@@ -98,20 +87,17 @@ async def _request_with_retry(
     json_body: dict | None = None,
     max_wait: float = 10.0,
 ) -> dict[str, Any]:
-    """Make an HTTPS request to the local awm daemon, reconnecting across
+    """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
 
-    Auth and TLS verification kwargs come from
-    :func:`awm.services.auth.client_kwargs`. On a transport error the first
-    attempt nudges systemd to start the daemon, then we retry for up to
-    ``max_wait`` seconds so the caller's request transparently survives a
-    ``systemctl restart``.
+    On a transport error the first attempt nudges systemd to start the
+    daemon, then we retry for up to ``max_wait`` seconds so the caller's
+    request transparently survives a ``systemctl restart``.
     """
     deadline = time.monotonic() + max_wait
     last_err: Exception | None = None
     first_attempt = True
-    kwargs = _client_kwargs()
-    async with httpx.AsyncClient(base_url=_base_url(), **kwargs) as client:
+    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body)

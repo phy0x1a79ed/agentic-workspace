@@ -107,13 +107,7 @@ def _clean_registry():
 def exposed_workspace(awm_workspace, monkeypatch):
     awm_dir = awm_workspace["awm_dir"]
     token_file = awm_dir / "auth.token"
-    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", token_file)
     monkeypatch.setattr("awm.config.ACCESS_LOG", awm_dir / "access.log")
-    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", awm_dir / "awm-exposed.pid")
-    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", awm_dir / "awm-exposed.log")
-    from awm.services import auth as _auth
-    _auth._token_cache.update({"value": None, "mtime": None})
-    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     return {**awm_workspace, "token_file": token_file}
 
 
@@ -131,7 +125,7 @@ def hub_client(exposed_workspace, good_token, monkeypatch):
     monkeypatch.setattr(
         "awm.services.hub.proxy._local_peer_id", lambda: "test-self-peer",
     )
-    from awm.exposed import app
+    from awm.server import app
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -256,7 +250,7 @@ class TestWebSocketForwarding:
         monkeypatch.setattr(
             "awm.services.hub.proxy._local_peer_id", lambda: "test-self-peer",
         )
-        from awm.exposed import app
+        from awm.server import app
         hub_port = _free_port()
         cfg = uvicorn.Config(
             app, host="127.0.0.1", port=hub_port,

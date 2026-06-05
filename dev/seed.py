@@ -1,8 +1,8 @@
 """Populate the dev-harness sandbox via the live web-ui backend.
 
-Hits the running uvicorn over HTTP using the loopback bearer token. No
-``awm.*`` imports, no service-level shortcuts — the seeder exercises the
-exact endpoints the UI uses.
+Hits the running uvicorn over HTTP on loopback (no auth). No ``awm.*``
+imports, no service-level shortcuts — the seeder exercises the exact
+endpoints the UI uses.
 
 Idempotent: projects and scopes return 409 if they already exist; room
 seeding is skipped if any active room is present. Safe to re-run.
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -22,7 +21,6 @@ from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
-TOKEN_FILE = HERE / ".awm" / "auth.token"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("AWM_PORT", "7821"))
@@ -39,16 +37,12 @@ def _assert_sandbox() -> None:
 
 
 def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dict | str]:
-    token = TOKEN_FILE.read_text().strip()
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         BASE + path,
         data=data,
         method=method,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers={"Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -95,36 +89,6 @@ SCOPES = [
 ]
 
 
-def _seed_peer() -> None:
-    """Register the fake `peer-test` peer via `awm peer add`.
-
-    No HTTP endpoint exists for peer registration (only ping / list), so
-    this is the one place we shell out to the awm CLI. The token file is a
-    dummy — ping will fail with an SSH-resolve error, which is the point
-    (exercises the error path in the UI).
-    """
-    tok = HERE / ".awm" / "peer-test.dummy-token"
-    tok.write_text("dev-sandbox-fake-token\n")
-    os.chmod(tok, 0o600)
-    result = subprocess.run(
-        [
-            "awm", "peer", "add", "peer-test",
-            "--ssh-alias", "dev-peer-test",
-            "--remote-port", "19999",
-            "--name", "dev fake peer",
-            "--token-file", str(tok),
-        ],
-        capture_output=True, text=True,
-    )
-    # add_peer is an UPSERT; re-runs return 0. A non-zero with "already"
-    # in stderr is also fine; surface anything else.
-    if result.returncode != 0 and "already" not in (result.stderr or ""):
-        print(f"[seed] peer add returned {result.returncode}: {result.stderr.strip()}",
-              file=sys.stderr)
-    else:
-        print("[seed] peer 'peer-test' registered")
-
-
 def main() -> int:
     _assert_sandbox()
 
@@ -138,9 +102,9 @@ def main() -> int:
 
     # Rooms have no REST surface; use the MCP tool dispatcher. Only seed
     # the demo room if no active rooms exist yet.
-    code, rooms = _request("GET", "/scopes")  # cheap auth probe
+    code, rooms = _request("GET", "/scopes")
     if code != 200:
-        raise SystemExit(f"[seed] auth probe failed: {code} {rooms}")
+        raise SystemExit(f"[seed] /scopes probe failed: {code} {rooms}")
 
     existing = _invoke("room_list", {"status": "active", "limit": 1})
     if existing.get("total", 0) == 0:
@@ -163,7 +127,6 @@ def main() -> int:
     else:
         print("[seed] active room(s) already exist, skipping room seed")
 
-    _seed_peer()
     print("[seed] done.")
     return 0
 

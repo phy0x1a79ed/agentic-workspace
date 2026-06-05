@@ -63,8 +63,5 @@ HEARTBEAT_INTERVAL = 30        # seconds — agents should heartbeat this often
 HEARTBEAT_STALE_THRESHOLD = 120  # seconds — locks older than this are reapable
 REAPER_INTERVAL = 30           # seconds — how often the reaper runs
 
-AUTH_TOKEN_ENV = "AWM_AUTH_TOKEN"
-AUTH_TOKEN_FILE = Path(os.environ.get("AWM_AUTH_TOKEN_FILE", str(AWM_DIR / "auth.token")))
-
 ACCESS_LOG = AWM_DIR / "access.log"
 ALLOW_DESTRUCTIVE = os.environ.get("AWM_ALLOW_DESTRUCTIVE") == "1"

@@ -34,12 +34,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 import httpx
 
-from awm.services.auth.middleware_auth import authenticate_websocket, require_peer_bearer
 from text_clean import clean_for_tts
 import presets
 import state
@@ -114,7 +113,7 @@ def build_app() -> FastAPI:
 
     router = APIRouter(tags=["tts"])
 
-    @router.get("/engines", dependencies=[Depends(require_peer_bearer)])
+    @router.get("/engines")
     async def list_engines() -> dict[str, dict[str, Any]]:
         all_tts = engines_registry.list_engines()["tts"]
         exposed = {eid: all_tts[eid] for eid in EXPOSED_TTS_ENGINES if eid in all_tts}
@@ -122,7 +121,7 @@ def build_app() -> FastAPI:
             await _enrich_kokoro_rvc_enums(exposed["kokoro_rvc"])
         return exposed
 
-    @router.post("/call/start", dependencies=[Depends(require_peer_bearer)])
+    @router.post("/call/start")
     async def call_start(body: CallStartRequest) -> dict[str, Any]:
         if body.engine not in EXPOSED_TTS_ENGINES:
             raise HTTPException(
@@ -159,14 +158,14 @@ def build_app() -> FastAPI:
             "instance_id": info["instance_id"],
         }
 
-    @router.get("/presets", dependencies=[Depends(require_peer_bearer)])
+    @router.get("/presets")
     async def get_presets() -> dict[str, Any]:
         return {
             "presets": presets.list_presets(),
             "last_used": presets.get_last_used(),
         }
 
-    @router.put("/presets/{name}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    @router.put("/presets/{name}", status_code=204)
     async def put_preset(name: str, body: PresetBody) -> None:
         if not name.strip() or len(name) > 64:
             raise HTTPException(400, "preset name must be 1–64 chars")
@@ -175,31 +174,31 @@ def build_app() -> FastAPI:
         except presets.BuiltinConflict:
             raise HTTPException(409, f"{name!r} is a built-in preset and can't be overwritten")
 
-    @router.delete("/presets/{name}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    @router.delete("/presets/{name}", status_code=204)
     async def del_preset(name: str) -> None:
         try:
             presets.delete_preset(name)
         except presets.BuiltinConflict:
             raise HTTPException(409, f"{name!r} is a built-in preset and can't be deleted")
 
-    @router.get("/state", dependencies=[Depends(require_peer_bearer)])
+    @router.get("/state")
     async def get_all_state() -> dict[str, Any]:
         return state.list_state()
 
-    @router.get("/state/{key}", dependencies=[Depends(require_peer_bearer)])
+    @router.get("/state/{key}")
     async def get_one_state(key: str) -> dict[str, Any]:
         v = state.get_state(key)
         if v is None:
             raise HTTPException(404, f"state key {key!r} not set")
         return {"value": v}
 
-    @router.put("/state/{key}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    @router.put("/state/{key}", status_code=204)
     async def put_one_state(key: str, body: StateBody) -> None:
         if not key.strip() or len(key) > 64:
             raise HTTPException(400, "state key must be 1–64 chars")
         state.set_state(key, body.value)
 
-    @router.delete("/state/{key}", status_code=204, dependencies=[Depends(require_peer_bearer)])
+    @router.delete("/state/{key}", status_code=204)
     async def del_one_state(key: str) -> None:
         state.delete_state(key)
 
@@ -207,9 +206,6 @@ def build_app() -> FastAPI:
 
     @app.websocket("/call/{call_id}")
     async def call_ws(ws: WebSocket, call_id: str) -> None:
-        # Validate inbound auth — proxy already authenticated, but the
-        # supervised process is reachable on localhost too.
-        chosen_sub = await authenticate_websocket(ws)
         async with _lock:
             call = _pending.pop(call_id, None)
         if call is None:
@@ -217,7 +213,7 @@ def build_app() -> FastAPI:
             return
         call.claimed = True
         _active[call_id] = call
-        await ws.accept(subprotocol=chosen_sub)
+        await ws.accept()
         try:
             while True:
                 msg = await ws.receive()

@@ -28,15 +28,7 @@ def _clean_registry():
 def exposed_workspace(awm_workspace, monkeypatch):
     awm_dir = awm_workspace["awm_dir"]
     token_file = awm_dir / "auth.token"
-    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", token_file)
     monkeypatch.setattr("awm.config.ACCESS_LOG", awm_dir / "access.log")
-    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", awm_dir / "awm-exposed.pid")
-    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", awm_dir / "awm-exposed.log")
-
-    from awm.services import auth as _auth
-    _auth._token_cache.update({"value": None, "mtime": None})
-    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
-
     return {**awm_workspace, "token_file": token_file}
 
 
@@ -49,7 +41,7 @@ def good_token(exposed_workspace):
 
 @pytest.fixture()
 def client(exposed_workspace):
-    from awm.exposed import app
+    from awm.server import app
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -60,11 +52,6 @@ class TestEmptyRegistryPassthrough:
                        headers={"Authorization": f"Bearer {good_token}"})
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
-
-    def test_unauth_still_rejected(self, client, good_token):
-        # Forwarding middleware MUST NOT swallow the existing 401 path.
-        r = client.get("/status")
-        assert r.status_code == 401
 
     def test_hub_list_works(self, client, good_token):
         # Empty registry: hub control plane still reachable.

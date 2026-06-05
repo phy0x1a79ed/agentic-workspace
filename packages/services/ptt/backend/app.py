@@ -9,10 +9,9 @@ backend sees root paths:
 - ``POST /transcribe`` — HTTP fallback STT (raw int16 LE 16 kHz mono PCM body)
 - ``WS /stream``      — per-user PTT/STT session (delegates to ``backend.registry``)
 
-Auth: the hub injects its peer-bearer toward this service and preserves
-``X-Awm-As`` verbatim. HTTP routes guard with ``require_peer_bearer``;
-WS guards with ``authenticate_websocket``. ``/healthz`` is unauthed so the
-supervisor's local httpx poll flips ``backend_status`` to ready.
+The hub forwards traffic on loopback without auth headers (federation/auth
+retired). ``/healthz`` is unauthed so the supervisor's local httpx poll
+flips ``backend_status`` to ready.
 """
 
 from __future__ import annotations
@@ -20,10 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, WebSocket
-from starlette.websockets import WebSocketState
-
-from awm.services.auth.middleware_auth import authenticate_websocket, require_peer_bearer
+from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket
 
 
 log = logging.getLogger("awm.services.ptt")
@@ -38,7 +34,7 @@ def build_app() -> FastAPI:
 
     router = APIRouter(tags=["ptt"])
 
-    @router.get("/", dependencies=[Depends(require_peer_bearer)])
+    @router.get("/")
     async def root(req: Request) -> dict:
         return {
             "service": "ptt",
@@ -47,7 +43,7 @@ def build_app() -> FastAPI:
             "x_awm_as": req.headers.get("x-awm-as"),
         }
 
-    @router.post("/transcribe", dependencies=[Depends(require_peer_bearer)])
+    @router.post("/transcribe")
     async def transcribe(req: Request) -> dict:
         body = await req.body()
         if not body:
@@ -66,16 +62,9 @@ def build_app() -> FastAPI:
 
     @router.websocket("/stream")
     async def stream(ws: WebSocket) -> None:
-        subprotocol = await authenticate_websocket(ws)
-        if ws.client_state == WebSocketState.DISCONNECTED:
-            return
-        user_as = ws.headers.get("x-awm-as", "").strip()
-        if not user_as:
-            await ws.close(code=1008, reason="x-awm-as required")
-            return
-        await ws.accept(subprotocol=subprotocol)
+        await ws.accept()
         from backend.registry import run_ptt_ws_session
-        await run_ptt_ws_session(ws, user_as)
+        await run_ptt_ws_session(ws, "user:operator")
 
     app.include_router(router)
     return app

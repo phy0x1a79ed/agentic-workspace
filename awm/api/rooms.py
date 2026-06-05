@@ -1,12 +1,4 @@
-"""REST + WebSocket router for the rooms surface.
-
-Mounted from ``awm/exposed.py``. Bearer auth applies via the
-``require_bearer`` dependency on REST routes; the WS attach endpoint
-uses :func:`awm.ws_auth.authenticate_room_ws`.
-
-Cross-peer plumbing (M3) is integrated via ``RemoteRoomProxy`` and the
-forward_room_* helpers in ``awm.services.network.federation``.
-"""
+"""REST + WebSocket router for the rooms surface."""
 
 from __future__ import annotations
 
@@ -14,14 +6,12 @@ from typing import Optional
 
 from fastapi import (
     APIRouter,
-    Depends,
     HTTPException,
     Query,
     Request,
     WebSocket,
 )
 
-from awm.services.auth.middleware_auth import require_bearer
 from awm.models import (
     AgentSlashCatalog,
     AgentSlashRequest,
@@ -45,7 +35,6 @@ from awm.models import (
     SlashCommandInfo,
 )
 from awm.services import agent_slash, orchestration, rooms as rooms_svc
-from awm.services.auth.ws_auth import authenticate_room_ws
 
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -81,7 +70,7 @@ def _opener_from_request(request: Request) -> str:
 # REST
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=RoomInfo, dependencies=[Depends(require_bearer)])
+@router.post("", response_model=RoomInfo)
 async def create_room(req: RoomCreateRequest, request: Request) -> RoomInfo:
     opener = _opener_from_request(request)
     try:
@@ -100,7 +89,7 @@ async def create_room(req: RoomCreateRequest, request: Request) -> RoomInfo:
     return _room_info(room)
 
 
-@router.get("/search", dependencies=[Depends(require_bearer)])
+@router.get("/search")
 def search_rooms(
     query: str | None = Query(None),
     status: str = Query("active"),
@@ -121,7 +110,7 @@ def search_rooms(
     return {"rooms": local, "total": len(local)}
 
 
-@router.get("/{room_id}", response_model=RoomDetail, dependencies=[Depends(require_bearer)])
+@router.get("/{room_id}", response_model=RoomDetail)
 def get_room(room_id: str):
     room = rooms_svc.get_room(room_id)
     if room is None:
@@ -135,8 +124,7 @@ def get_room(room_id: str):
     )
 
 
-@router.get("/{room_id}/history", response_model=RoomHistoryResponse,
-            dependencies=[Depends(require_bearer)])
+@router.get("/{room_id}/history", response_model=RoomHistoryResponse)
 def get_history(
     room_id: str,
     before_ts: Optional[str] = Query(None),
@@ -151,8 +139,7 @@ def get_history(
     )
 
 
-@router.post("/{room_id}/posts", response_model=RoomActionResponse,
-             dependencies=[Depends(require_bearer)])
+@router.post("/{room_id}/posts", response_model=RoomActionResponse)
 def post_to_room(room_id: str, req: RoomPostRequest, request: Request):
     author = _opener_from_request(request)
     try:
@@ -165,8 +152,7 @@ def post_to_room(room_id: str, req: RoomPostRequest, request: Request):
     return RoomActionResponse(message="posted", post=_post_info(post))
 
 
-@router.post("/{room_id}/invite", response_model=RoomActionResponse,
-             dependencies=[Depends(require_bearer)])
+@router.post("/{room_id}/invite", response_model=RoomActionResponse)
 async def invite_to_room(room_id: str, req: RoomInviteRequest, request: Request):
     opener = _opener_from_request(request)
     try:
@@ -191,8 +177,7 @@ async def invite_to_room(room_id: str, req: RoomInviteRequest, request: Request)
     )
 
 
-@router.post("/{room_id}/remove", response_model=RoomActionResponse,
-             dependencies=[Depends(require_bearer)])
+@router.post("/{room_id}/remove", response_model=RoomActionResponse)
 def remove_from_room(room_id: str, req: RoomRemoveRequest):
     ok = rooms_svc.remove_participant(room_id, "scope", req.scope)
     if not ok:
@@ -204,8 +189,7 @@ def remove_from_room(room_id: str, req: RoomRemoveRequest):
 # router; this file no longer hosts dual-mode handlers.
 
 
-@router.post("/{room_id}/close", response_model=RoomActionResponse,
-             dependencies=[Depends(require_bearer)])
+@router.post("/{room_id}/close", response_model=RoomActionResponse)
 def close_room(room_id: str, req: RoomCloseRequest):
     try:
         room = rooms_svc.close_room(room_id, kill_agents=req.kill_agents)
@@ -215,7 +199,6 @@ def close_room(room_id: str, req: RoomCloseRequest):
 
 
 @router.post("/{room_id}/archive", response_model=RoomActionResponse,
-             dependencies=[Depends(require_bearer)],
              responses={409: {"model": RoomArchiveBlockedResponse}})
 def archive_room(room_id: str):
     """Soft-archive a room. 409 with ``blocking_scopes`` if any agent
@@ -233,8 +216,7 @@ def archive_room(room_id: str):
     return RoomActionResponse(message="archived", room=_room_info(room))
 
 
-@router.get("/{room_id}/agents", response_model=RoomAgentsResponse,
-            dependencies=[Depends(require_bearer)])
+@router.get("/{room_id}/agents", response_model=RoomAgentsResponse)
 def get_room_agents(room_id: str):
     """Per-agent panel data — list scope/shadow_peer participants and,
     for local scopes, attach their agent-instance state from
@@ -304,7 +286,6 @@ def _require_local_scope_participant(room_id: str, scope: str) -> None:
 @router.get(
     "/{room_id}/agents/{scope:path}/slash-commands",
     response_model=AgentSlashCatalog,
-    dependencies=[Depends(require_bearer)],
 )
 def get_agent_slash_commands(room_id: str, scope: str) -> AgentSlashCatalog:
     """Catalog of slash commands for the given scope.
@@ -325,7 +306,6 @@ def get_agent_slash_commands(room_id: str, scope: str) -> AgentSlashCatalog:
 @router.post(
     "/{room_id}/agents/{scope:path}/slash",
     response_model=AgentSlashResponse,
-    dependencies=[Depends(require_bearer)],
 )
 async def post_agent_slash(
     room_id: str, scope: str, req: AgentSlashRequest, request: Request,
@@ -384,8 +364,5 @@ async def post_agent_slash(
 
 @router.websocket("/{room_id}/attach")
 async def attach_ws(websocket: WebSocket, room_id: str):
-    auth = await authenticate_room_ws(websocket)
-    if not auth.ok:
-        return
-    await websocket.accept(subprotocol=auth.subprotocol)
-    await rooms_svc.run_subscriber_session(websocket, room_id, auth.user_as)
+    await websocket.accept()
+    await rooms_svc.run_subscriber_session(websocket, room_id, "user:operator")

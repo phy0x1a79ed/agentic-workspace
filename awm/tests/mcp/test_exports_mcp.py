@@ -167,8 +167,7 @@ class TestClaudeSpawnExporter:
         monkeypatch.setattr(claude_spawn_mod.shutil, "which",
                             lambda name: "/fake/bin/awm-mcp" if name == "awm-mcp" else None)
         monkeypatch.setenv("AWM_WORKSPACE", "/the/ws")
-        monkeypatch.setenv("AWM_EXPOSED_HOST", "127.0.0.1")
-        monkeypatch.setenv("AWM_EXPOSED_PORT", "12100")
+        monkeypatch.setenv("AWM_PORT", "12100")
 
         _, content = ClaudeSpawnExporter().export({"mcpServers": {}})
         out = json.loads(content)
@@ -177,19 +176,17 @@ class TestClaudeSpawnExporter:
         assert awm_entry["args"] == []
         assert awm_entry["env"] == {
             "AWM_WORKSPACE": "/the/ws",
-            "AWM_EXPOSED_HOST": "127.0.0.1",
-            "AWM_EXPOSED_PORT": "12100",
+            "AWM_PORT": "12100",
         }
 
     def test_overrides_stale_awm_entry(self, tmp_path, monkeypatch):
-        """Canonical .mcp.json may carry a stale awm entry (different host).
-        Live env vars win — and pre-existing env keys are preserved when the
-        live env doesn't override them."""
+        """Canonical .mcp.json may carry a stale awm entry. Live env vars
+        win — and pre-existing env keys are preserved when the live env
+        doesn't override them."""
         monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
         monkeypatch.setattr(claude_spawn_mod.shutil, "which",
                             lambda name: "/fake/bin/awm-mcp")
-        monkeypatch.setenv("AWM_EXPOSED_HOST", "10.0.0.5")
-        monkeypatch.setenv("AWM_EXPOSED_PORT", "7820")
+        monkeypatch.setenv("AWM_PORT", "7820")
         monkeypatch.delenv("AWM_WORKSPACE", raising=False)
         canonical = {
             "mcpServers": {
@@ -197,8 +194,7 @@ class TestClaudeSpawnExporter:
                     "command": "/old/awm-mcp",
                     "args": ["--legacy"],
                     "env": {
-                        "AWM_EXPOSED_HOST": "stale",
-                        "AWM_EXPOSED_PORT": "9999",
+                        "AWM_PORT": "9999",
                         "EXTRA": "kept",
                     },
                 }
@@ -213,8 +209,7 @@ class TestClaudeSpawnExporter:
         # Live env wins; unrelated existing keys preserved; AWM_WORKSPACE
         # never set so not added.
         assert awm_entry["env"] == {
-            "AWM_EXPOSED_HOST": "10.0.0.5",
-            "AWM_EXPOSED_PORT": "7820",
+            "AWM_PORT": "7820",
             "EXTRA": "kept",
         }
 

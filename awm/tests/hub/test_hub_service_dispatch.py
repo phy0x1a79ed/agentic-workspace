@@ -1,6 +1,6 @@
 """End-to-end tests for the kind="service" dispatch path.
 
-Spins up the real ``awm.exposed:app`` on a free port and exercises the
+Spins up the real ``awm.server:app`` on a free port and exercises the
 HTTP + WS surface that browsers see:
 
 * ``POST /svc/X/fn/<name>``   → ``call`` / ``notify`` on the control WS.
@@ -74,13 +74,7 @@ def _clean_registry_and_rpc():
 def exposed_workspace(awm_workspace, monkeypatch):
     awm_dir = awm_workspace["awm_dir"]
     token_file = awm_dir / "auth.token"
-    monkeypatch.setattr("awm.config.AUTH_TOKEN_FILE", token_file)
     monkeypatch.setattr("awm.config.ACCESS_LOG", awm_dir / "access.log")
-    monkeypatch.setattr("awm.config.EXPOSED_PID_FILE", awm_dir / "awm-exposed.pid")
-    monkeypatch.setattr("awm.config.EXPOSED_LOG_FILE", awm_dir / "awm-exposed.log")
-    from awm.services import auth as _auth
-    _auth._token_cache.update({"value": None, "mtime": None})
-    monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     return {**awm_workspace, "token_file": token_file}
 
 
@@ -97,7 +91,7 @@ def running_hub(exposed_workspace, good_token, monkeypatch):
     monkeypatch.setattr(
         "awm.services.hub.proxy._local_peer_id", lambda: "test-self-peer",
     )
-    from awm.exposed import app
+    from awm.server import app
     port = _free_port()
     cfg = uvicorn.Config(
         app, host="127.0.0.1", port=port,
