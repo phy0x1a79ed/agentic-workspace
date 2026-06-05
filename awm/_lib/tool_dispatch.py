@@ -1013,9 +1013,7 @@ def _awm_status() -> str:
     conn = get_connection()
     try:
         active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-        active_edits = conn.execute(
-            "SELECT COUNT(*) FROM shared_edits WHERE status = 'active'"
-        ).fetchone()[0]
+        active_edits = 0  # shared_edits retired in v37
     finally:
         conn.close()
     scope_result = scopes.search_scopes(status="active", limit=10_000)
