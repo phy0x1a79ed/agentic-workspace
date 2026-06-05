@@ -81,9 +81,7 @@ Required:
       "enabled": true,
       "command": ["/home/<you>/lib/miniforge3/envs/awm/bin/awm-mcp"],
       "environment": {
-        "AWM_WORKSPACE": "/home/<you>/agentic_workspace",
-        "AWM_EXPOSED_HOST": "127.0.0.1",
-        "AWM_EXPOSED_PORT": "12100"
+        "AWM_WORKSPACE": "/home/<you>/agentic_workspace"
       }
     }
   }

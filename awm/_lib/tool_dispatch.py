@@ -933,16 +933,12 @@ def _awm_status() -> str:
     import sys
     import time
 
-    from awm import config
     from awm.config import WORKSPACE_ROOT
     from awm.db import get_connection
 
     conn = get_connection()
     try:
         active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-        active_edits = conn.execute(
-            "SELECT COUNT(*) FROM shared_edits WHERE status = 'active'"
-        ).fetchone()[0]
     finally:
         conn.close()
     scope_result = scopes.search_scopes(status="active", limit=10_000)
@@ -951,40 +947,16 @@ def _awm_status() -> str:
     core_start = getattr(_awm_status, "_core_start_time", None)
     uptime = int(time.time() - core_start) if core_start else None
 
-    # Exposed-process info (separate systemd unit; check pid file + liveness).
-    exposed_pid: int | None = None
-    exposed_alive = False
-    try:
-        if config.EXPOSED_PID_FILE.exists():
-            exposed_pid = int(config.EXPOSED_PID_FILE.read_text().strip() or "0") or None
-            if exposed_pid:
-                try:
-                    os.kill(exposed_pid, 0)
-                    exposed_alive = True
-                except (ProcessLookupError, PermissionError):
-                    exposed_alive = False
-    except (OSError, ValueError):
-        exposed_pid = None
-
-    exposed_info: dict[str, Any] = {
-        "pid": exposed_pid,
-        "alive": exposed_alive,
-        "port": getattr(config, "EXPOSED_PORT", None),
-        "scheme": "https" if getattr(config, "TLS_CERT", None) and config.TLS_CERT.exists() else "http",
-    }
-
     return json.dumps({
         "status": "ok",
         "workspace_root": str(WORKSPACE_ROOT),
         "active_locks": active_locks,
         "active_scopes": scope_result.total,
-        "active_shared_edits": active_edits,
         "core_pid": os.getpid(),
         "core_uptime_s": uptime,
         "core_workspace_root": os.environ.get("AWM_WORKSPACE"),
         "core_python": sys.executable,
         "core_sys_path_head": sys.path[:3],
-        "exposed": exposed_info,
     }, indent=2)
 
 

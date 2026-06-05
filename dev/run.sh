@@ -16,23 +16,20 @@
 # browser refresh (no build step).
 #
 # Two processes:
-#   - uvicorn on https://127.0.0.1:7821 (the actual app + /ui SPA)
+#   - uvicorn on http://127.0.0.1:7821 (the actual app + /ui SPA)
 #   - login_server.py on http://127.0.0.1:7822 (a single-page bookmark
 #     that mints a fresh /auth/bootstrap URL on each refresh; you'd
 #     bookmark this in your browser)
 #
-# Why HTTPS for uvicorn: awm.exposed sets cookies with secure=True, so a
-# plain-HTTP browser would silently drop them. The cert/key are
-# auto-generated under .awm/tls/. Why HTTP for the login bookmark: it
-# only renders a single-use 60s-TTL nonce URL — no secrets — so plain
-# HTTP is fine and avoids a second cert.
+# Both are HTTP-only on loopback — federation/TLS retired. The cookie
+# Secure flag is off, so plain HTTP works.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 
 # Per-worktree env overrides (gitignored). Sourced before computing port
-# defaults so .env can pin AWM_EXPOSED_PORT etc. without env exports.
+# defaults so .env can pin AWM_PORT etc. without env exports.
 if [ -f "$HERE/.env" ]; then
   # shellcheck disable=SC1091
   set -a; . "$HERE/.env"; set +a
@@ -40,8 +37,8 @@ fi
 
 # Scope-aware default port band — each worktree (dev/web-ui/web-backend/…)
 # gets a unique band so three sandboxes can run side-by-side. Override by
-# setting AWM_EXPOSED_PORT / AWM_DEV_LOGIN_PORT / VITE_PORT explicitly (env
-# or dev/.env).
+# setting AWM_PORT / AWM_DEV_LOGIN_PORT / VITE_PORT explicitly (env or
+# dev/.env).
 case "$(basename "$(realpath "$REPO_ROOT")")" in
   dev)         _PORT_BASE=782; _VITE_PORT=12103 ;;
   web-ui)      _PORT_BASE=783; _VITE_PORT=12113 ;;
@@ -55,12 +52,9 @@ LOGIN_PID_FILE="$HERE/.awm/login.pid"
 LOGIN_LOG_FILE="$HERE/.awm/login.log"
 SYNC_PID_FILE="$HERE/.awm/stripe-sync.pid"
 SYNC_LOG_FILE="$HERE/.awm/stripe-sync.log"
-CERT_FILE="$HERE/.awm/tls/cert.pem"
-KEY_FILE="$HERE/.awm/tls/key.pem"
 
 export AWM_WORKSPACE="$HERE"
-export AWM_EXPOSED_PORT="${AWM_EXPOSED_PORT:-${_PORT_BASE}1}"
-export AWM_EXPOSED_HOST="${AWM_EXPOSED_HOST:-127.0.0.1}"
+export AWM_PORT="${AWM_PORT:-${_PORT_BASE}1}"
 export AWM_DEV_LOGIN_PORT="${AWM_DEV_LOGIN_PORT:-${_PORT_BASE}2}"
 export AWM_DEV_LOGIN_HOST="${AWM_DEV_LOGIN_HOST:-127.0.0.1}"
 export VITE_PORT="${VITE_PORT:-$_VITE_PORT}"
@@ -89,7 +83,7 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=init.defaultBranch
 export GIT_CONFIG_VALUE_0=main
 
-URL="https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}/ui/"
+URL="http://127.0.0.1:${AWM_PORT}/ui/"
 LOGIN_URL="http://${AWM_DEV_LOGIN_HOST}:${AWM_DEV_LOGIN_PORT}/"
 
 cmd="${1:-start}"
@@ -109,8 +103,8 @@ prep() {
 }
 
 _port_listeners() {
-  # PIDs listening on $1 (default $AWM_EXPOSED_PORT).
-  local port="${1:-$AWM_EXPOSED_PORT}"
+  # PIDs listening on $1 (default $AWM_PORT).
+  local port="${1:-$AWM_PORT}"
   ss -tlnp 2>/dev/null \
     | awk -v p=":$port" '$4 ~ p' \
     | grep -oE 'pid=[0-9]+' \
@@ -181,7 +175,7 @@ do_stop() {
   # Stop stripe-sync first so leases close cleanly before the hub goes
   # down (hub-side eviction terminates supervised backends).
   _stop_sync
-  s1="$(_stop_one "$PID_FILE"       "$AWM_EXPOSED_PORT"   "uvicorn")"
+  s1="$(_stop_one "$PID_FILE"       "$AWM_PORT"           "uvicorn")"
   s2="$(_stop_one "$LOGIN_PID_FILE" "$AWM_DEV_LOGIN_PORT" "login-server")"
   if [ "$s1" = "0" ] && [ "$s2" = "0" ]; then
     echo "[dev] not running"
@@ -208,7 +202,7 @@ do_login() {
   fi
   local user="${AWM_DEV_USER:-dev}"
   local resp
-  resp="$(curl -sk -X POST "https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}/auth/mint" \
+  resp="$(curl -s -X POST "http://127.0.0.1:${AWM_PORT}/auth/mint" \
             -H "Authorization: Bearer $token" \
             -H "Content-Type: application/json" \
             -d "{\"awm_user\":\"$user\"}")"
@@ -231,9 +225,8 @@ _start_uvicorn() {
   echo "[dev] uvicorn  $URL"
   cd "$REPO_ROOT"
   nohup setsid mamba run -n awm --no-capture-output \
-      uvicorn awm.exposed:app \
-      --host "$AWM_EXPOSED_HOST" --port "$AWM_EXPOSED_PORT" \
-      --ssl-certfile "$CERT_FILE" --ssl-keyfile "$KEY_FILE" \
+      uvicorn awm.server:app \
+      --host 127.0.0.1 --port "$AWM_PORT" \
       --reload --reload-dir "$REPO_ROOT/awm" \
       >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
@@ -338,10 +331,6 @@ do_start() {
     exit 0
   fi
   prep
-  if [ ! -f "$CERT_FILE" ] || [ ! -f "$KEY_FILE" ]; then
-    echo "[dev] TLS cert/key missing after prep — aborting"
-    exit 1
-  fi
   _start_uvicorn
   _start_login
   _start_stripe_sync

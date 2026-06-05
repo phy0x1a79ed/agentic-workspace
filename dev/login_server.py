@@ -10,7 +10,7 @@ Why a second port instead of a route on the main app:
 - ``/auth/mint`` requires a Bearer header (the loopback token).  We don't
   want to expose that token to the browser, so the mint has to happen
   server-side.
-- Adding the route to ``awm.exposed`` would mean modifying production
+- Adding the route to ``awm.server`` would mean modifying production
   code for a dev-only convenience.
 
 The login bookmark itself doesn't carry secrets — only the (single-use,
@@ -19,7 +19,7 @@ The login bookmark itself doesn't carry secrets — only the (single-use,
 Run via ``dev/run.sh start`` (which launches this alongside uvicorn). Or
 manually:
 
-    AWM_WORKSPACE=$(pwd)/dev AWM_EXPOSED_PORT=7821 \\
+    AWM_WORKSPACE=$(pwd)/dev AWM_PORT=7821 \\
         mamba run -n awm python dev/login_server.py
 """
 
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import os
-import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -38,23 +37,16 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOKEN_FILE = HERE / ".awm" / "auth.token"
 
-EXPOSED_HOST = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
-EXPOSED_PORT = int(os.environ.get("AWM_EXPOSED_PORT", "7821"))
+AWM_HOST = "127.0.0.1"
+AWM_PORT = int(os.environ.get("AWM_PORT", "7821"))
 LOGIN_HOST = os.environ.get("AWM_DEV_LOGIN_HOST", "127.0.0.1")
 LOGIN_PORT = int(os.environ.get("AWM_DEV_LOGIN_PORT", "7822"))
 LOGIN_USER = os.environ.get("AWM_DEV_USER", "dev")
-# When the bookmark page is reached from a non-loopback browser (e.g. over
-# ZeroTier), /auth/mint must still be called via loopback (it 403s otherwise),
-# but the rendered bootstrap URL needs the publicly-reachable host. Set
-# AWM_DEV_PUBLIC_HOST to the address the browser will use.
+# When the bookmark page is reached from a non-loopback browser, /auth/mint
+# must still be called via loopback (it 403s otherwise), but the rendered
+# bootstrap URL needs the publicly-reachable host. Set AWM_DEV_PUBLIC_HOST
+# to the address the browser will use.
 PUBLIC_HOST = os.environ.get("AWM_DEV_PUBLIC_HOST", "")
-
-
-# Self-signed cert on the main server — skip verification for this loopback
-# call. The bearer is sent only to 127.0.0.1, so MITM is not in scope.
-_UNVERIFIED = ssl.create_default_context()
-_UNVERIFIED.check_hostname = False
-_UNVERIFIED.verify_mode = ssl.CERT_NONE
 
 
 def _mint_url() -> tuple[str | None, str | None]:
@@ -68,7 +60,7 @@ def _mint_url() -> tuple[str | None, str | None]:
 
     body = json.dumps({"awm_user": LOGIN_USER}).encode("utf-8")
     req = urllib.request.Request(
-        f"https://{EXPOSED_HOST}:{EXPOSED_PORT}/auth/mint",
+        f"http://{AWM_HOST}:{AWM_PORT}/auth/mint",
         data=body,
         headers={
             "Authorization": f"Bearer {token}",
@@ -77,10 +69,10 @@ def _mint_url() -> tuple[str | None, str | None]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, context=_UNVERIFIED, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        return None, f"could not reach the awm server at {EXPOSED_HOST}:{EXPOSED_PORT} ({e})"
+        return None, f"could not reach the awm server at {AWM_HOST}:{AWM_PORT} ({e})"
     except Exception as e:  # noqa: BLE001 — surface anything to the page
         return None, f"unexpected error from /auth/mint: {e}"
 
@@ -89,8 +81,8 @@ def _mint_url() -> tuple[str | None, str | None]:
         return None, f"/auth/mint returned no url: {payload!r}"
     if PUBLIC_HOST:
         url = url.replace(
-            f"https://{EXPOSED_HOST}:{EXPOSED_PORT}/",
-            f"https://{PUBLIC_HOST}:{EXPOSED_PORT}/",
+            f"http://{AWM_HOST}:{AWM_PORT}/",
+            f"http://{PUBLIC_HOST}:{AWM_PORT}/",
             1,
         )
     return url, None
@@ -129,8 +121,7 @@ _PAGE = """<!doctype html>
   <h1>awm dev login</h1>
   {body}
   <p class="hint">
-    refresh this page for a fresh link (each is single-use, 60s ttl).<br>
-    your browser will warn about the self-signed cert — click through.
+    refresh this page for a fresh link (each is single-use, 60s ttl).
   </p>
 </main>
 </body>
@@ -168,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     server = ThreadingHTTPServer((LOGIN_HOST, LOGIN_PORT), Handler)
     print(f"[login-server] http://{LOGIN_HOST}:{LOGIN_PORT}/  "
-          f"(mints against https://{EXPOSED_HOST}:{EXPOSED_PORT})",
+          f"(mints against http://{AWM_HOST}:{AWM_PORT})",
           file=sys.stderr, flush=True)
     try:
         server.serve_forever()

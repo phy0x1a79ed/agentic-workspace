@@ -112,62 +112,28 @@ def _print_json(r: httpx.Response):
 
 
 def _exposed_base_and_token() -> tuple[str, str]:
-    """Resolve the local exposed URL + bearer token for /rooms calls.
+    """Resolve the local listener URL + bearer token for /rooms calls.
 
-    Returns ``(base_url, token)``. Resolution order:
-
-      1. ``AWM_EXPOSED_HOST`` / ``AWM_EXPOSED_PORT`` env vars (dev escape
-         hatch).
-      2. ``$AWM_DIR/exposed.json`` written by ``serve-exposed`` lifespan
-         (the source-of-truth discovery file — eliminates the config
-         drift in inbox bugs #160/#161/#166).
-      3. Hardcoded fallback ``https://127.0.0.1:7820`` if neither is
-         present (e.g. before the daemon has ever run).
-
-    Operators never see a ``--token`` flag — the auth/TLS ritual lives in
-    :mod:`awm.services.auth`.
+    Returns ``(base_url, token)``. The single listener (``awm.server:app``
+    on :7819 loopback) is the only target — env-var overrides and the
+    legacy ``$AWM_DIR/exposed.json`` discovery file are gone with the
+    federation surface.
     """
     from awm.services import auth as _auth
     try:
         token = _auth.local_token(generate_if_missing=False)
     except _auth.TokenMissing as exc:
         raise typer.BadParameter(str(exc))
-
-    env_host = os.environ.get("AWM_EXPOSED_HOST")
-    env_port = os.environ.get("AWM_EXPOSED_PORT")
-    if env_host or env_port:
-        host = env_host or "127.0.0.1"
-        if host == "0.0.0.0":
-            host = "127.0.0.1"
-        port = int(env_port) if env_port else 7820
-        return f"https://{host}:{port}", token
-
-    discovery_path = AWM_DIR / "exposed.json"
-    if discovery_path.exists():
-        try:
-            import json as _json
-            data = _json.loads(discovery_path.read_text())
-            scheme = data.get("scheme", "https")
-            host = data.get("host") or "127.0.0.1"
-            if host == "0.0.0.0":
-                host = "127.0.0.1"
-            port = int(data.get("port") or 7820)
-            return f"{scheme}://{host}:{port}", token
-        except (OSError, ValueError):
-            pass
-
-    return "https://127.0.0.1:7820", token
+    return BASE_URL, token
 
 
 def _exposed_api(method: str, path: str, **kwargs) -> httpx.Response:
-    """Hit an endpoint on the local awm-exposed listener."""
+    """Hit an endpoint on the local awm listener."""
     base, token = _exposed_base_and_token()
     headers = kwargs.pop("headers", {}) or {}
     headers["Authorization"] = f"Bearer {token}"
-    # Self-signed TLS on loopback — bearer is the trust boundary.
     r = httpx.request(
-        method, f"{base}{path}", headers=headers, timeout=30, verify=False,
-        **kwargs,
+        method, f"{base}{path}", headers=headers, timeout=30, **kwargs,
     )
     return r
 

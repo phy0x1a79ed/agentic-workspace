@@ -29,7 +29,6 @@ claim carried by ``X-Awm-As`` / ``X-Awm-From`` headers — see
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import os
 import secrets
@@ -110,112 +109,13 @@ def local_token(*, generate_if_missing: bool = False) -> str:
         return new_value
 
 
-# ---------------------------------------------------------------------------
-# TLS — auto-bootstrap self-signed cert/key
-# ---------------------------------------------------------------------------
-
-
-def bootstrap_tls(*, generate_if_missing: bool = True) -> tuple[Path, Path]:
-    """Ensure :data:`config.TLS_CERT` and :data:`config.TLS_KEY` exist.
-
-    If both are present, returns them. Otherwise generates a self-signed
-    cert (CN=awm-daemon, valid 10 years) at the configured paths and
-    returns them. Permissions: cert 0644, key 0600.
-    """
-    cert_path: Path = config.TLS_CERT
-    key_path: Path = config.TLS_KEY
-
-    if cert_path.exists() and key_path.exists():
-        return cert_path, key_path
-    if not generate_if_missing:
-        raise FileNotFoundError(
-            f"TLS cert/key not found at {cert_path} / {key_path}"
-        )
-
-    # Late import — cryptography is a soft requirement for the daemon
-    # only. CLI/MCP can verify_bearer with no TLS work.
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-    import datetime
-
-    cert_path.parent.mkdir(parents=True, exist_ok=True)
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "awm-daemon"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "awm"),
-    ])
-    now = datetime.datetime.now(tz=datetime.timezone.utc)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(minutes=5))
-        .not_valid_after(now + datetime.timedelta(days=365 * 10))
-        .add_extension(
-            x509.SubjectAlternativeName([
-                x509.DNSName("localhost"),
-                x509.DNSName("awm-daemon"),
-            ]),
-            critical=False,
-        )
-        .sign(private_key=key, algorithm=hashes.SHA256())
-    )
-
-    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(
-        key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    try:
-        os.chmod(cert_path, 0o644)
-        os.chmod(key_path, 0o600)
-    except OSError:
-        pass
-    return cert_path, key_path
-
-
-def tls_fingerprint() -> str | None:
-    """SHA-256 fingerprint of the local TLS cert, lowercase hex."""
-    cert_path: Path = config.TLS_CERT
-    if not cert_path.exists():
-        return None
-    try:
-        return hashlib.sha256(cert_path.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
 def bootstrap() -> dict[str, str]:
-    """Idempotent daemon-startup bootstrap.
-
-    Ensures the auth token exists. TLS material is bootstrapped only when
-    the legacy exposed-listener entrypoint runs — the local listener is
-    loopback HTTP and has nothing to TLS-secure.
-    """
+    """Idempotent daemon-startup bootstrap. Ensures the auth token exists."""
     token = local_token(generate_if_missing=True)
-    info = {
+    return {
         "token_file": str(config.AUTH_TOKEN_FILE),
         "token_len": str(len(token)),
     }
-    try:
-        cert, key = bootstrap_tls(generate_if_missing=True)
-        info["tls_cert"] = str(cert)
-        info["tls_key"] = str(key)
-        info["tls_fingerprint"] = tls_fingerprint() or ""
-    except Exception:
-        info["tls_cert"] = ""
-        info["tls_key"] = ""
-        info["tls_fingerprint"] = ""
-    return info
 
 
 # ---------------------------------------------------------------------------
@@ -327,25 +227,10 @@ def verify_peer_bearer(token: str | None, claimed_peer: str) -> bool:
 
 
 def client_kwargs(*, timeout: float = 30.0) -> dict:
-    """Return httpx kwargs for HTTPS calls to the local daemon.
-
-    ``verify=False`` disables **TLS server-certificate verification** —
-    not auth. The daemon binds a self-signed cert that no public CA has
-    signed, so an httpx default of ``verify=True`` would reject it. The
-    trust boundary is the transport (loopback for CLI/MCP, SSH tunnel for
-    peer-to-peer federation), not the cert chain.
-
-    Auth is independent: the bearer in the ``Authorization`` header is
-    what proves the caller is permitted; TLS just keeps the bearer off
-    the wire in cleartext.
-
-    For non-loopback, non-tunneled HTTPS in the future, switch to
-    ``verify=str(config.TLS_CERT)`` to pin the daemon's cert.
-    """
+    """Return httpx kwargs for HTTP calls to the local daemon."""
     token = local_token()  # raises TokenMissing on client misconfigure
     return {
         "headers": {"Authorization": f"Bearer {token}"},
-        "verify": False,
         "timeout": timeout,
     }
 

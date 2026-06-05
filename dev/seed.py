@@ -1,6 +1,6 @@
 """Populate the dev-harness sandbox via the live web-ui backend.
 
-Hits the running uvicorn over HTTPS using the loopback bearer token. No
+Hits the running uvicorn over HTTP using the loopback bearer token. No
 ``awm.*`` imports, no service-level shortcuts — the seeder exercises the
 exact endpoints the UI uses.
 
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import ssl
 import subprocess
 import sys
 import urllib.error
@@ -25,14 +24,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOKEN_FILE = HERE / ".awm" / "auth.token"
 
-HOST = os.environ.get("AWM_EXPOSED_HOST", "127.0.0.1")
-PORT = int(os.environ.get("AWM_EXPOSED_PORT", "7821"))
-BASE = f"https://{HOST}:{PORT}"
-
-# Self-signed cert on the loopback server — skip verification.
-_TLS = ssl.create_default_context()
-_TLS.check_hostname = False
-_TLS.verify_mode = ssl.CERT_NONE
+HOST = "127.0.0.1"
+PORT = int(os.environ.get("AWM_PORT", "7821"))
+BASE = f"http://{HOST}:{PORT}"
 
 
 def _assert_sandbox() -> None:
@@ -57,7 +51,7 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
         },
     )
     try:
-        with urllib.request.urlopen(req, context=_TLS, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             text = resp.read().decode("utf-8")
             return resp.status, (json.loads(text) if text else "")
     except urllib.error.HTTPError as exc:
