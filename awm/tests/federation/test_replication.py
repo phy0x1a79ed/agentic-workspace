@@ -87,7 +87,7 @@ def test_db_sync_endpoint_returns_changes(awm_workspace, monkeypatch):
     _auth._token_cache.update({"value": None, "mtime": None})
     _auth._challenges.clear()
     from awm.services import agent_instances
-    agent_instances._registry.clear()
+    agent_instances._registry_by_id.clear(); agent_instances._by_scope.clear(); agent_instances._by_agent_id.clear()
     agent_instances._by_scope.clear()
     monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
 
@@ -148,7 +148,7 @@ def test_db_sync_requires_peer_bearer(awm_workspace, monkeypatch):
     _auth._token_cache.update({"value": None, "mtime": None})
     _auth._challenges.clear()
     from awm.services import agent_instances
-    agent_instances._registry.clear()
+    agent_instances._registry_by_id.clear(); agent_instances._by_scope.clear(); agent_instances._by_agent_id.clear()
     agent_instances._by_scope.clear()
     monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
 

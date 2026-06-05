@@ -43,7 +43,7 @@ def exposed_workspace(awm_workspace, monkeypatch):
 
     # Reset live-session registry between tests.
     from awm.services import agent_instances
-    agent_instances._registry.clear()
+    agent_instances._registry_by_id.clear(); agent_instances._by_scope.clear(); agent_instances._by_agent_id.clear()
 
     monkeypatch.delenv("AWM_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("AWM_ALLOW_DESTRUCTIVE", raising=False)
