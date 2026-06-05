@@ -4,32 +4,17 @@ from __future__ import annotations
 
 import subprocess
 
-_UNIT_FOR_TARGET = {
-    "core": ["awm.service"],
-    "exposed": ["awm-exposed.service"],
-    "all": ["awm.service", "awm-exposed.service"],
-}
 
-
-def restart_core(target: str = "all") -> dict[str, str]:
-    """Restart one or more AWM systemd units.
-
-    ``target`` is ``"core"`` (awm.service only), ``"exposed"``
-    (awm-exposed.service only), or ``"all"`` (default: both).
+def restart_core() -> dict[str, str]:
+    """Restart the AWM core systemd unit (``awm.service``).
 
     Uses ``Popen`` (non-blocking) so the HTTP response is sent before
     systemctl delivers SIGTERM.  The systemd unit uses ``Restart=on-failure``,
     so a self-SIGTERM would NOT restart — we must go through systemctl.
     """
-    if target not in _UNIT_FOR_TARGET:
-        raise ValueError(
-            f"unknown restart target {target!r}; "
-            f"choices: {sorted(_UNIT_FOR_TARGET)}"
-        )
-    units = _UNIT_FOR_TARGET[target]
     try:
         subprocess.Popen(
-            ["systemctl", "--user", "restart", *units],
+            ["systemctl", "--user", "restart", "awm.service"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -41,10 +26,6 @@ def restart_core(target: str = "all") -> dict[str, str]:
         )
     return {
         "status": "restarting",
-        "target": target,
-        "units": ",".join(units),
-        "message": (
-            f"restarting {','.join(units)} via systemd. "
-            "MCP clients reconnect on next tool call."
-        ),
+        "units": "awm.service",
+        "message": "restarting awm.service via systemd. MCP clients reconnect on next tool call.",
     }

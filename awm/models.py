@@ -14,7 +14,6 @@ class StatusResponse(BaseModel):
     workspace_root: str
     active_locks: int = 0
     active_scopes: int = 0
-    active_shared_edits: int = 0
 
 
 # ---------------------------------------------------------------------------
