@@ -119,17 +119,19 @@ class TestHeartbeat:
         assert "0 lock(s)" in result.message
 
 
-class TestListLocks:
-    def test_list_all(self, awm_workspace, seeded_locks):
-        result = locks.list_locks()
+class TestSearchLocks:
+    def test_all(self, awm_workspace, seeded_locks):
+        # status='all' restores the firehose; status='active' would drop
+        # the seeded rows whose PID 51763 is bogus and so reads as stale.
+        result = locks.search_locks(status="all")
         assert result.total == 3
 
-    def test_list_by_holder(self, awm_workspace, seeded_locks):
-        result = locks.list_locks(holder_id="agent-1")
+    def test_by_holder(self, awm_workspace, seeded_locks):
+        result = locks.search_locks(status="all", holder_id="agent-1")
         assert result.total == 2
 
-    def test_list_by_path(self, awm_workspace, seeded_locks):
-        result = locks.list_locks(path="data/shared.csv")
+    def test_by_path(self, awm_workspace, seeded_locks):
+        result = locks.search_locks(status="all", path="data/shared.csv")
         assert result.total == 1
 
 

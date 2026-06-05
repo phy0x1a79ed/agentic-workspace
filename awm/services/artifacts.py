@@ -149,33 +149,74 @@ def search_artifacts(
     artifact_type: str | None = None,
     query: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> ArtifactSearchResponse:
-    """Search/filter artifacts."""
+    """Search/filter artifacts. When `query` is set, returns keyword (LIKE on
+    name/description/tags) hits first, then semantic top-up via the shared
+    embeddings helper."""
+    sql = "SELECT * FROM artifacts WHERE status = 'current'"
+    params: list = []
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    if scope:
+        sql += " AND scope = ?"
+        params.append(scope)
+    if artifact_type:
+        sql += " AND artifact_type = ?"
+        params.append(artifact_type)
+    if query:
+        sql += " AND (name LIKE ? OR description LIKE ? OR tags LIKE ?)"
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    sql += " ORDER BY project, artifact_type, name LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
     conn = get_connection()
     try:
-        sql = "SELECT * FROM artifacts WHERE status = 'current'"
-        params: list = []
-        if project:
-            sql += " AND project = ?"
-            params.append(project)
-        if scope:
-            sql += " AND scope = ?"
-            params.append(scope)
-        if artifact_type:
-            sql += " AND artifact_type = ?"
-            params.append(artifact_type)
-        if query:
-            sql += " AND (name LIKE ? OR description LIKE ? OR tags LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like, like])
-        sql += " ORDER BY project, artifact_type, name LIMIT ?"
-        params.append(limit)
-
         rows = conn.execute(sql, params).fetchall()
-        items = [_row_to_info(r) for r in rows]
-        return ArtifactSearchResponse(artifacts=items, total=len(items))
     finally:
         conn.close()
+    items = [_row_to_info(r) for r in rows]
+
+    if not query:
+        return ArtifactSearchResponse(artifacts=items, total=len(items))
+
+    keyword_keys = {str(i.id) for i in items}
+
+    def _materialize(source_id: str):
+        try:
+            aid = int(source_id)
+        except ValueError:
+            return None
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM artifacts WHERE legacy_id = ? AND status = 'current'",
+                (aid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        if project and row["project"] != project:
+            return None
+        if scope and row["scope"] != scope:
+            return None
+        if artifact_type and row["artifact_type"] != artifact_type:
+            return None
+        return _row_to_info(row)
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        merged = hybrid_augment(
+            query, source_type="artifact",
+            keyword_hits=items, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        merged = items
+    return ArtifactSearchResponse(artifacts=merged, total=len(merged))
 
 
 # ---------------------------------------------------------------------------

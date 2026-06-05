@@ -41,17 +41,6 @@ from awm.services import artifacts, core, locks, messaging, projects, scopes, sk
 TOOL_DEFINITIONS: list[Tool] = [
     # Skills
     Tool(
-        name="skills_list",
-        description="List skills in the catalog, optionally filtered by type or tags.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "description": "Filter by skill type (protocol, reference, template)"},
-                "tags": {"type": "string", "description": "Comma-separated tags to filter by"},
-            },
-        },
-    ),
-    Tool(
         name="skills_get",
         description="Read a skill file by relative path (e.g. 'tools/git.md').",
         inputSchema={
@@ -64,13 +53,14 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="skills_search",
-        description="Search skills by name, tags, description, or content.",
+        description="Search skills (hybrid keyword + semantic) with optional type/tag filters. Pass query='' to list every skill matching the filters.",
         inputSchema={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search query"},
+                "query": {"type": "string", "description": "Free-text query; omit to apply filters only"},
+                "type": {"type": "string", "description": "Filter by skill type (protocol, reference, template)"},
+                "tags": {"type": "string", "description": "Comma-separated tags to filter by"},
             },
-            "required": ["query"],
         },
     ),
     Tool(
@@ -101,13 +91,16 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="scope_list",
-        description="List scopes, optionally filtered by status and/or project.",
+        name="scope_search",
+        description="Search scopes (hybrid keyword + semantic). Defaults to status='active'; pass status='all' to include completed/deleted.",
         inputSchema={
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "active, completed, deleted, or all"},
+                "query": {"type": "string", "description": "Free-text query on scope name + context.md"},
+                "status": {"type": "string", "description": "active (default), completed, deleted, or all"},
                 "project": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
             },
         },
     ),
@@ -261,13 +254,17 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="lock_list",
-        description="List active locks, optionally filtered by holder or path.",
+        name="lock_search",
+        description="Search locks (hybrid keyword + semantic). Defaults to status='active' (PID alive + heartbeat fresh); pass status='stale' or 'all'.",
         inputSchema={
             "type": "object",
             "properties": {
+                "query": {"type": "string", "description": "Free-text query on resource_path + holder_id + metadata"},
+                "status": {"type": "string", "description": "active (default), stale, or all"},
                 "holder_id": {"type": "string"},
                 "path": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
             },
         },
     ),
@@ -389,19 +386,6 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="room_list",
-        description="List active rooms (optionally fan out across peers).",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "description": "active|closed|all"},
-                "participating_scope": {"type": "string"},
-                "peer": {"type": "string", "description": "all|<peer-id> for fan-out"},
-                "limit": {"type": "integer"},
-            },
-        },
-    ),
-    Tool(
         name="room_get",
         description="Get a room's metadata, participants, and recent transcript.",
         inputSchema={
@@ -425,15 +409,17 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     Tool(
         name="room_search",
-        description="Search rooms by topic, id, or transcript content (with peer fan-out).",
+        description="Search rooms (hybrid keyword + semantic). Defaults to status='active'; pass status='all' to include closed/archived. Optionally fans out across peers.",
         inputSchema={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "peer": {"type": "string"},
-                "limit": {"type": "integer"},
+                "query": {"type": "string", "description": "Free-text query on topic / transcript; omit for filter-only"},
+                "status": {"type": "string", "description": "active (default), closed, archived, or all"},
+                "participating_scope": {"type": "string"},
+                "peer": {"type": "string", "description": "all|<peer-id> for fan-out"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
             },
-            "required": ["query"],
         },
     ),
     Tool(
@@ -531,9 +517,17 @@ TOOL_DEFINITIONS: list[Tool] = [
     ),
     # Peers (control-center)
     Tool(
-        name="peers_list",
-        description="List registered remote awm peers.",
-        inputSchema={"type": "object", "properties": {}},
+        name="peer_search",
+        description="Search registered remote awm peers (hybrid keyword + semantic). Status filter accepts 'online' (last_seen within 5 min), 'offline', or 'all' (default).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text query on peer_id / ssh_alias / friendly_name"},
+                "status": {"type": "string", "description": "online, offline, or all (default)"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
     ),
     Tool(
         name="peer_ping",
@@ -545,9 +539,17 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
-        name="project_list",
-        description="List projects derived from the scopes table, with per-status scope counts.",
-        inputSchema={"type": "object", "properties": {}},
+        name="project_search",
+        description="Search projects (hybrid keyword + semantic). Pass active_only=true to hide projects with no active scopes.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Free-text query on project name + README"},
+                "active_only": {"type": "boolean", "default": False, "description": "Hide projects with zero active scopes"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
     ),
     # Restart
     Tool(
@@ -614,7 +616,7 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
 
     def _peer_ids(spec: str) -> list[str]:
         if spec == "all":
-            return [p["peer_id"] for p in peer_svc.list_peers()]
+            return [p["peer_id"] for p in peer_svc.search_peers(status="all", limit=10_000)]
         return [spec]
 
     if name == "room_create":
@@ -630,31 +632,6 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
             )
         )
         return json.dumps(room.to_dict(), indent=2, default=str)
-
-    if name == "room_list":
-        status = args.get("status", "active")
-        participating_scope = args.get("participating_scope")
-        limit = int(args.get("limit", 100))
-        local_rows = [
-            r.to_dict() for r in rooms_svc.list_rooms(
-                status=status,
-                participating_scope=participating_scope,
-                limit=limit,
-            )
-        ]
-        merged = list(local_rows)
-        if (peer := args.get("peer")) and peer != "local":
-            for pid in _peer_ids(peer):
-                try:
-                    remote = federation.forward_room_list(
-                        pid, status=status,
-                        participating_scope=participating_scope, limit=limit,
-                    )
-                    merged.extend(remote.get("rooms", []))
-                except federation.FederationError:
-                    continue
-        return json.dumps({"rooms": merged, "total": len(merged)},
-                          indent=2, default=str)
 
     if name == "room_get":
         room = rooms_svc.get_room(args["room_id"])
@@ -683,14 +660,30 @@ def _dispatch_room_tool(name: str, args: dict) -> str:
         )
 
     if name == "room_search":
-        query = args["query"]
-        limit = int(args.get("limit", 20))
-        local_hits = [r.to_dict() for r in rooms_svc.search_rooms(query, limit=limit)]
+        query = args.get("query")
+        status = args.get("status", "active")
+        participating_scope = args.get("participating_scope")
+        limit = int(args.get("limit", 50))
+        offset = int(args.get("offset", 0))
+        local_hits = [
+            r.to_dict() for r in rooms_svc.search_rooms(
+                query,
+                status=status,
+                participating_scope=participating_scope,
+                limit=limit,
+                offset=offset,
+            )
+        ]
         degraded: list[dict] = []
         if (peer := args.get("peer")) and peer != "local":
             for pid in _peer_ids(peer):
                 try:
-                    remote = federation.forward_room_search(pid, query, limit=limit)
+                    remote = federation.forward_room_search(
+                        pid, query,
+                        status=status,
+                        participating_scope=participating_scope,
+                        limit=limit,
+                    )
                     local_hits.extend(remote.get("rooms", []))
                 except federation.FederationError as exc:
                     degraded.append({"peer_id": pid, "reason": str(exc)})
@@ -838,13 +831,15 @@ def handle_tool(name: str, args: dict) -> str:
     translate into protocol-appropriate errors.
     """
     # Skills
-    if name == "skills_list":
-        tag_list = [t.strip() for t in args["tags"].split(",")] if args.get("tags") else None
-        return _serialize(skills.list_skills(type_filter=args.get("type"), tags=tag_list))
     if name == "skills_get":
         return _serialize(skills.get_skill(args["path"]))
     if name == "skills_search":
-        return _serialize(skills.search_skills(args["query"]))
+        tag_list = [t.strip() for t in args["tags"].split(",")] if args.get("tags") else None
+        return _serialize(skills.search_skills(
+            query=args.get("query"),
+            type_filter=args.get("type"),
+            tags=tag_list,
+        ))
     if name == "skills_sync":
         return json.dumps(skills.sync_skills(force=args.get("force", False)))
 
@@ -859,8 +854,14 @@ def handle_tool(name: str, args: dict) -> str:
                                 from_branch=args.get("from_branch"),
                                 context=args.get("context"))
         return _serialize(scopes.create_scope(req))
-    if name == "scope_list":
-        return _serialize(scopes.list_scopes(status=args.get("status"), project=args.get("project")))
+    if name == "scope_search":
+        return _serialize(scopes.search_scopes(
+            query=args.get("query"),
+            status=args.get("status", "active"),
+            project=args.get("project"),
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
+        ))
     if name == "scope_complete":
         req = ScopeUpdateRequest(action="complete", merge=args.get("merge", False), cleanup=args.get("cleanup", False))
         return _serialize(scopes.update_scope(args["project"], args["scope"], req))
@@ -903,8 +904,15 @@ def handle_tool(name: str, args: dict) -> str:
         return _serialize(locks.acquire(req))
     if name == "lock_release":
         return _serialize(locks.release(args["resource_path"], args["holder_id"]))
-    if name == "lock_list":
-        return _serialize(locks.list_locks(holder_id=args.get("holder_id"), path=args.get("path")))
+    if name == "lock_search":
+        return _serialize(locks.search_locks(
+            query=args.get("query"),
+            status=args.get("status", "active"),
+            holder_id=args.get("holder_id"),
+            path=args.get("path"),
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
+        ))
     if name == "lock_heartbeat":
         return _serialize(locks.heartbeat(args["holder_id"]))
 
@@ -938,16 +946,21 @@ def handle_tool(name: str, args: dict) -> str:
     # Rooms — dispatch through the local exposed app for consistent auth
     # + cross-peer fan-out semantics.
     if name in (
-        "room_create", "room_list", "room_get", "room_history",
+        "room_create", "room_get", "room_history",
         "room_search", "room_post", "room_invite", "room_remove",
         "room_close", "room_archive", "room_agents", "agent_control",
     ):
         return _dispatch_room_tool(name, args)
 
     # Peers (control-center surface)
-    if name == "peers_list":
+    if name == "peer_search":
         from awm.services.network import peers as peer_svc
-        rows = peer_svc.list_peers()
+        rows = peer_svc.search_peers(
+            query=args.get("query"),
+            status=args.get("status", "all"),
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
+        )
         return json.dumps({"peers": rows, "total": len(rows)}, indent=2, default=str)
     if name == "peer_ping":
         import time as _time
@@ -962,24 +975,13 @@ def handle_tool(name: str, args: dict) -> str:
             "rtt_ms": round(rtt_ms, 2) if ok else None,
             "error": None if ok else (result.get("reason") or "ping failed"),
         }, indent=2)
-    if name == "project_list":
-        from awm.db import get_connection
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT project, status, COUNT(*) AS n FROM scopes "
-                "GROUP BY project, status ORDER BY project"
-            ).fetchall()
-        finally:
-            conn.close()
-        by_project: dict = {}
-        for r in rows:
-            counts = by_project.setdefault(r["project"], {"active": 0, "completed": 0, "deleted": 0})
-            if r["status"] in counts:
-                counts[r["status"]] = r["n"]
-        return json.dumps({
-            "projects": [{"name": n, "scope_counts": c} for n, c in by_project.items()],
-        }, indent=2)
+    if name == "project_search":
+        return _serialize(projects.search_projects(
+            query=args.get("query"),
+            active_only=args.get("active_only", False),
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
+        ))
 
     # Restart
     if name == "awm_restart":
@@ -1016,7 +1018,7 @@ def _awm_status() -> str:
         ).fetchone()[0]
     finally:
         conn.close()
-    scope_result = scopes.list_scopes(status="active")
+    scope_result = scopes.search_scopes(status="active", limit=10_000)
 
     # Core process info (populated when dispatched in-process on the core).
     core_start = getattr(_awm_status, "_core_start_time", None)

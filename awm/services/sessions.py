@@ -177,46 +177,6 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
     return entry
 
 
-def list_sessions(
-    project: str | None = None,
-    scope: str | None = None,
-    skill_path: str | None = None,
-    status: str | None = None,
-    limit: int = 50,
-) -> SessionLogListResponse:
-    """Query session logs with optional filters."""
-    conn = get_connection()
-    try:
-        query = (
-            "SELECT legacy_id, project, scope, file_path, git_commit, logged_at, "
-            "title, agent_id, skill_path, outcome, deviations, suggestions, "
-            "skill_version, resolved_at, resolution "
-            "FROM session_logs WHERE 1=1"
-        )
-        params: list = []
-        if project:
-            query += " AND project = ?"
-            params.append(project)
-        if scope:
-            query += " AND scope = ?"
-            params.append(scope)
-        if skill_path:
-            query += " AND skill_path = ?"
-            params.append(skill_path)
-        if status == "open":
-            query += " AND resolved_at IS NULL"
-        elif status == "resolved":
-            query += " AND resolved_at IS NOT NULL"
-        query += " ORDER BY logged_at DESC LIMIT ?"
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        entries = [_row_to_entry(r) for r in rows]
-        return SessionLogListResponse(entries=entries, total=len(entries))
-    finally:
-        conn.close()
-
-
 def get_session(session_id: int | str) -> SessionLogContentResponse:
     """Look up a session by its public ``legacy_id``. Accepts ``42`` or
     ``'42@<peer>'`` to disambiguate same-legacy_id rows from different
@@ -326,43 +286,93 @@ def search_sessions(
     scope: str | None = None,
     skill_path: str | None = None,
     query: str | None = None,
-    status: str | None = None,
+    status: str = "open",
     limit: int = 50,
+    offset: int = 0,
 ) -> SessionSearchResponse:
-    """Search session logs, returning previews (no content)."""
+    """Search session logs, returning previews (no content). Defaults to
+    status='open' (unresolved); pass status='all' for the full history."""
+    sql = (
+        "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
+        "skill_path, outcome, resolved_at, "
+        "SUBSTR(summary, 1, ?) AS summary_preview, "
+        "LENGTH(summary) AS summary_len "
+        "FROM session_logs WHERE 1=1"
+    )
+    params: list = [_SUMMARY_PREVIEW_CHARS]
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    if scope:
+        sql += " AND scope = ?"
+        params.append(scope)
+    if skill_path:
+        sql += " AND skill_path = ?"
+        params.append(skill_path)
+    if query:
+        sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    if status == "open":
+        sql += " AND resolved_at IS NULL"
+    elif status == "resolved":
+        sql += " AND resolved_at IS NOT NULL"
+    # status == "all" → no filter
+    sql += " ORDER BY logged_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
     conn = get_connection()
     try:
-        sql = (
-            "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
-            "skill_path, outcome, resolved_at, "
-            "SUBSTR(summary, 1, ?) AS summary_preview, "
-            "LENGTH(summary) AS summary_len "
-            "FROM session_logs WHERE 1=1"
-        )
-        params: list = [_SUMMARY_PREVIEW_CHARS]
-        if project:
-            sql += " AND project = ?"
-            params.append(project)
-        if scope:
-            sql += " AND scope = ?"
-            params.append(scope)
-        if skill_path:
-            sql += " AND skill_path = ?"
-            params.append(skill_path)
-        if query:
-            sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like, like])
-        if status == "open":
-            sql += " AND resolved_at IS NULL"
-        elif status == "resolved":
-            sql += " AND resolved_at IS NOT NULL"
-        sql += " ORDER BY logged_at DESC LIMIT ?"
-        params.append(limit)
         rows = conn.execute(sql, params).fetchall()
-        entries = [_row_to_preview(r) for r in rows]
-        return SessionSearchResponse(entries=entries, total=len(entries))
     finally:
         conn.close()
+    entries = [_row_to_preview(r) for r in rows]
+
+    if not query:
+        return SessionSearchResponse(entries=entries, total=len(entries))
+
+    keyword_keys = {str(e.id) for e in entries}
+
+    def _materialize(source_id: str):
+        try:
+            sid = int(source_id)
+        except ValueError:
+            return None
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
+                "skill_path, outcome, resolved_at, "
+                "SUBSTR(summary, 1, ?) AS summary_preview, "
+                "LENGTH(summary) AS summary_len "
+                "FROM session_logs WHERE legacy_id = ?",
+                (_SUMMARY_PREVIEW_CHARS, sid),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        if status == "open" and row["resolved_at"]:
+            return None
+        if status == "resolved" and not row["resolved_at"]:
+            return None
+        if project and row["project"] != project:
+            return None
+        if scope and row["scope"] != scope:
+            return None
+        if skill_path and row["skill_path"] != skill_path:
+            return None
+        return _row_to_preview(row)
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        merged = hybrid_augment(
+            query, source_type="session",
+            keyword_hits=entries, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        merged = entries
+    return SessionSearchResponse(entries=merged, total=len(merged))
 
 

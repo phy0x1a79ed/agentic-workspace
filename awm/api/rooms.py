@@ -100,60 +100,39 @@ async def create_room(req: RoomCreateRequest, request: Request) -> RoomInfo:
     return _room_info(room)
 
 
-@router.get("", response_model=RoomListResponse, dependencies=[Depends(require_bearer)])
-def list_rooms(
+@router.get("/search", dependencies=[Depends(require_bearer)])
+def search_rooms(
+    query: str | None = Query(None),
     status: str = Query("active"),
     participating_scope: str | None = Query(None),
     peer: str | None = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
-    if peer and peer != "local":
-        # M3 cross-peer fan-out.
-        from awm.services.network import federation
-        if peer == "all":
-            from awm.services.network import peers as peer_svc
-            peer_ids = [p["peer_id"] for p in peer_svc.list_peers()]
-        else:
-            peer_ids = [peer]
-        # Local rooms.
-        local = [_room_info(r).model_dump() for r in
-                 rooms_svc.list_rooms(status=status,
-                                      participating_scope=participating_scope,
-                                      limit=limit)]
-        merged = list(local)
-        for pid in peer_ids:
-            try:
-                remote = federation.forward_room_list(
-                    pid, status=status,
-                    participating_scope=participating_scope, limit=limit,
-                )
-                merged.extend(remote.get("rooms", []))
-            except federation.FederationError:
-                continue
-        return RoomListResponse(rooms=merged, total=len(merged))
-    rooms = rooms_svc.list_rooms(
-        status=status, participating_scope=participating_scope, limit=limit,
-    )
-    return RoomListResponse(rooms=[_room_info(r) for r in rooms], total=len(rooms))
-
-
-@router.get("/search", dependencies=[Depends(require_bearer)])
-def search_rooms(
-    q: str = Query(..., min_length=1),
-    peer: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-):
-    local = [_room_info(r).model_dump() for r in rooms_svc.search_rooms(q, limit=limit)]
+    """Search rooms (hybrid keyword + semantic) with optional peer fan-out.
+    Defaults to status='active'; pass status='all' for the full history."""
+    local = [
+        _room_info(r).model_dump()
+        for r in rooms_svc.search_rooms(
+            query,
+            status=status, participating_scope=participating_scope,
+            limit=limit, offset=offset,
+        )
+    ]
     degraded: list[dict] = []
     if peer and peer != "local":
         from awm.services.network import federation, peers as peer_svc
         if peer == "all":
-            peer_ids = [p["peer_id"] for p in peer_svc.list_peers()]
+            peer_ids = [p["peer_id"] for p in peer_svc.search_peers(status="all", limit=10_000)]
         else:
             peer_ids = [peer]
         for pid in peer_ids:
             try:
-                remote = federation.forward_room_search(pid, q, limit=limit)
+                remote = federation.forward_room_search(
+                    pid, query,
+                    status=status, participating_scope=participating_scope,
+                    limit=limit,
+                )
                 local.extend(remote.get("rooms", []))
             except federation.FederationError as exc:
                 degraded.append({"peer_id": pid, "reason": str(exc)})

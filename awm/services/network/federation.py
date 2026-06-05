@@ -298,42 +298,27 @@ def fan_out_get(
 # Room federation forwards (M3)
 # ---------------------------------------------------------------------------
 
-def forward_room_list(peer_id: str, *,
-                      status: str = "active",
-                      participating_scope: str | None = None,
-                      limit: int = 100,
-                      timeout: float = 5.0) -> dict:
+def forward_room_search(peer_id: str, query: str | None = None, *,
+                        status: str = "active",
+                        participating_scope: str | None = None,
+                        limit: int = 50,
+                        timeout: float = 5.0) -> dict:
+    """Federated room search. `query` is optional — when omitted, returns
+    rooms filtered by `status` (default 'active') and `participating_scope`."""
     base_url, token = _resolve(peer_id)
     headers = {
         "Authorization": f"Bearer {token}",
         "X-Awm-From": _local_peer_id(),
     }
     params: dict = {"status": status, "limit": limit}
+    if query:
+        params["query"] = query
     if participating_scope:
         params["participating_scope"] = participating_scope
     try:
-        r = httpx.get(f"{base_url}/rooms", params=params, headers=headers,
-                      timeout=timeout, verify=_HTTPS_VERIFY)
-    except httpx.HTTPError as exc:
-        raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
-    if r.status_code != 200:
-        raise PeerCallError(f"peer {peer_id} returned {r.status_code}",
-                            status_code=r.status_code)
-    return r.json()
-
-
-def forward_room_search(peer_id: str, query: str, *,
-                        limit: int = 20,
-                        timeout: float = 5.0) -> dict:
-    base_url, token = _resolve(peer_id)
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-Awm-From": _local_peer_id(),
-    }
-    try:
         r = httpx.get(f"{base_url}/rooms/search",
-                      params={"q": query, "limit": limit},
-                      headers=headers, timeout=timeout, verify=_HTTPS_VERIFY)
+                      params=params, headers=headers,
+                      timeout=timeout, verify=_HTTPS_VERIFY)
     except httpx.HTTPError as exc:
         raise PeerCallError(f"could not reach peer {peer_id}: {exc}") from exc
     if r.status_code != 200:

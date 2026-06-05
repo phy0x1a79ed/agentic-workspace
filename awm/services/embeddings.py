@@ -74,6 +74,20 @@ def _upsert_embedding(source_type: str, source_id: str, text: str) -> None:
         conn.close()
 
 
+def delete_embedding(source_type: str, source_id: str) -> None:
+    """Remove an embeddings row. Used by release/remove hooks (locks, peers)
+    so the embeddings table stays in sync with category state."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM embeddings WHERE source_type=? AND source_id=?",
+            (source_type, source_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def index_skill(skill_path: str) -> None:
     """Embed a skill file for semantic search."""
     from awm.services.skills import get_skill
@@ -138,6 +152,101 @@ def index_artifact(artifact_id: int) -> None:
         _upsert_embedding("artifact", str(artifact_id), text)
 
 
+def index_scope(project: str, scope: str) -> None:
+    """Embed a scope for semantic search. Combines the scope identifier with
+    the first 500 chars of its `.awm/context.md` (if present) so 'find the
+    auth scope' matches both scopes named *auth* and scopes whose context
+    talks about authentication."""
+    from awm.config import PROJECTS_DIR
+    source_id = f"{project}/{scope}"
+    parts = [source_id]
+    ctx = PROJECTS_DIR / project / scope / ".awm" / "context.md"
+    if ctx.is_file():
+        try:
+            parts.append(ctx.read_text(encoding="utf-8")[:500])
+        except (OSError, UnicodeDecodeError):
+            pass
+    _upsert_embedding("scope", source_id, "\n".join(parts))
+
+
+def index_room(room_id: str) -> None:
+    """Embed a room: topic + tail of post bodies. Re-run periodically as the
+    transcript grows so semantic search tracks the evolving discussion."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT topic FROM rooms WHERE id = ?", (room_id,),
+        ).fetchone()
+        if row is None:
+            return
+        posts = conn.execute(
+            "SELECT body FROM room_posts WHERE room_id = ? "
+            "ORDER BY id DESC LIMIT 20",
+            (room_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    parts = [row["topic"] or room_id]
+    for p in reversed(posts):
+        if p["body"]:
+            parts.append(p["body"])
+    text = "\n".join(parts)[:2000]
+    _upsert_embedding("room", room_id, text)
+
+
+def index_project(project: str) -> None:
+    """Embed a project: name + first 500 chars of its README, if any. Walks
+    standard README locations under the project root."""
+    from awm.config import PROJECTS_DIR
+    parts = [project]
+    proj_dir = PROJECTS_DIR / project
+    for candidate in ("README.md", "README.rst", "README", "README.txt"):
+        readme = proj_dir / candidate
+        if readme.is_file():
+            try:
+                parts.append(readme.read_text(encoding="utf-8")[:500])
+            except (OSError, UnicodeDecodeError):
+                pass
+            break
+    _upsert_embedding("project", project, "\n".join(parts))
+
+
+def index_lock(lock_id: int) -> None:
+    """Embed an active lock: resource path + holder + metadata. Deleted on
+    release/reap."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, resource_path, holder_id, metadata FROM locks WHERE id = ?",
+            (lock_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return
+    parts = [row["resource_path"] or "", row["holder_id"] or ""]
+    if row["metadata"]:
+        parts.append(str(row["metadata"]))
+    _upsert_embedding("lock", str(row["id"]), " ".join(p for p in parts if p))
+
+
+def index_peer(peer_id: str) -> None:
+    """Embed a peer: peer_id + ssh_alias + friendly_name."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT peer_id, ssh_alias, friendly_name FROM peers WHERE peer_id = ?",
+            (peer_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return
+    parts = [row["peer_id"] or "", row["ssh_alias"] or "", row["friendly_name"] or ""]
+    _upsert_embedding("peer", peer_id, " ".join(p for p in parts if p))
+
+
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
@@ -197,18 +306,63 @@ def semantic_search(
     return results
 
 
+def hybrid_augment(
+    query: str,
+    *,
+    source_type: str,
+    keyword_hits: list,
+    keyword_keys: set[str],
+    materialize,
+    semantic_limit: int = 10,
+    semantic_threshold: float = 0.3,
+) -> list:
+    """Return keyword_hits, then semantic top-up: any semantic_search() hits
+    whose source_id is not already in keyword_keys and whose similarity score
+    exceeds the threshold. Mirrors the mixing rule originally inlined in
+    skills.search_skills() so every category uses the same heuristic.
+
+    `materialize(source_id) -> row | None` re-applies the caller's structural
+    filter so a semantically-relevant row that's been filtered out (wrong
+    project, wrong status) doesn't surface via the semantic path.
+
+    Degrades gracefully to keyword-only when sentence-transformers /
+    sqlite-vec aren't importable, or when semantic_search raises.
+    """
+    if not query:
+        return list(keyword_hits)
+    out = list(keyword_hits)
+    try:
+        hits = semantic_search(query, source_type=source_type, limit=semantic_limit)
+    except Exception:
+        return out
+    for h in hits:
+        sid = h["source_id"]
+        if sid in keyword_keys:
+            continue
+        if h["score"] <= semantic_threshold:
+            continue
+        try:
+            row = materialize(sid)
+        except Exception:
+            row = None
+        if row is None:
+            continue
+        out.append(row)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Bulk reindex
 # ---------------------------------------------------------------------------
 
 
 def reindex_all() -> dict:
-    """Full rebuild: force skills + artifacts sync, re-embed all experiences, drop stray rows.
+    """Full rebuild: force skills + artifacts sync, re-embed every other
+    category, drop stray rows.
 
-    This is the heavy hammer — prefer `skills.sync_skills()` / `artifacts.sync_artifacts()`
-    for routine, lazy syncing. Use this when you need to guarantee the embeddings table
-    is a complete mirror of current state, including experiences (which are append-only
-    and therefore have no sync function of their own).
+    This is the heavy hammer — prefer `skills.sync_skills()` /
+    `artifacts.sync_artifacts()` for routine lazy syncing. Use this when you
+    need the embeddings table to be a complete mirror of current state.
     """
     from awm.services.skills import sync_skills
     from awm.services.artifacts import sync_artifacts
@@ -217,17 +371,35 @@ def reindex_all() -> dict:
         "skills": sync_skills(force=True),
         "artifacts": sync_artifacts(force=True),
         "sessions": 0,
+        "scopes": 0,
+        "rooms": 0,
+        "projects": 0,
+        "locks": 0,
+        "peers": 0,
         "stray_pruned": 0,
     }
 
-    # Sessions — upsert all session log entries.
     conn = get_connection()
     try:
+        self_clause = (
+            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')"
+        )
         # Only index local-origin sessions; replicated remote rows are
         # indexed on their owning peer.
         session_ids = [r[0] for r in conn.execute(
-            "SELECT legacy_id FROM session_logs WHERE origin_peer = "
-            "COALESCE((SELECT peer_id FROM peers WHERE ssh_alias = 'self' LIMIT 1), '')"
+            f"SELECT legacy_id FROM session_logs WHERE origin_peer = {self_clause}"
+        ).fetchall()]
+        scope_rows = conn.execute(
+            "SELECT project, scope FROM scopes WHERE status != 'deleted'"
+        ).fetchall()
+        room_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM rooms"
+        ).fetchall()]
+        lock_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM locks"
+        ).fetchall()]
+        peer_ids = [r[0] for r in conn.execute(
+            "SELECT peer_id FROM peers"
         ).fetchall()]
     finally:
         conn.close()
@@ -239,10 +411,47 @@ def reindex_all() -> dict:
         except Exception:
             pass
 
-    # Final safety pass: drop embeddings rows whose source_type we don't recognize
-    # (e.g. legacy schema drift). sync_skills / sync_artifacts already handle their
-    # own source_types; this just catches orphans with unknown types.
-    known_types = {"skill", "artifact", "session"}
+    for r in scope_rows:
+        try:
+            index_scope(r["project"], r["scope"])
+            stats["scopes"] += 1
+        except Exception:
+            pass
+
+    for rid in room_ids:
+        try:
+            index_room(rid)
+            stats["rooms"] += 1
+        except Exception:
+            pass
+
+    from awm.config import PROJECTS_DIR
+    if PROJECTS_DIR.is_dir():
+        for child in sorted(PROJECTS_DIR.iterdir()):
+            if child.is_dir() and (child / ".bare").is_dir():
+                try:
+                    index_project(child.name)
+                    stats["projects"] += 1
+                except Exception:
+                    pass
+
+    for lid in lock_ids:
+        try:
+            index_lock(lid)
+            stats["locks"] += 1
+        except Exception:
+            pass
+
+    for pid in peer_ids:
+        try:
+            index_peer(pid)
+            stats["peers"] += 1
+        except Exception:
+            pass
+
+    # Final safety pass: drop embeddings rows whose source_type we don't
+    # recognize (legacy schema drift).
+    known_types = {"skill", "artifact", "session", "scope", "room", "project", "lock", "peer"}
     conn = get_connection()
     try:
         rows = conn.execute("SELECT source_type, source_id FROM embeddings").fetchall()

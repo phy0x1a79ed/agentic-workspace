@@ -476,12 +476,20 @@ def peer_add(
     typer.echo(_json.dumps(entry, indent=2))
 
 
-@peer_app.command("list")
-def peer_list():
-    """List registered remote peers."""
+@peer_app.command("search")
+def peer_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query"),
+    status: str = typer.Option("all", "--status", help="online | offline | all (default)"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
+):
+    """Search registered remote peers (hybrid keyword + semantic)."""
     from awm.services.network import peers as peer_svc
     import json as _json
-    typer.echo(_json.dumps(peer_svc.list_peers(), indent=2))
+    rows = peer_svc.search_peers(
+        query=query, status=status, limit=limit, offset=offset,
+    )
+    typer.echo(_json.dumps(rows, indent=2))
 
 
 @peer_app.command("remove")
@@ -659,22 +667,6 @@ def room_create(
     _print_json(r)
 
 
-@room_app.command("list")
-def room_list(
-    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
-    status: str = typer.Option("active", "--status"),
-    participating_scope: str = typer.Option(None, "--participating-scope"),
-):
-    """List rooms (locally or across peers)."""
-    params = {"status": status}
-    if participating_scope:
-        params["participating_scope"] = participating_scope
-    if peer:
-        params["peer"] = peer
-    r = _exposed_api("GET", "/rooms", params=params)
-    _print_json(r)
-
-
 @room_app.command("get")
 def room_get(name: str = typer.Argument(...)):
     """Show room details, participants, and recent transcript."""
@@ -698,12 +690,19 @@ def room_history(
 
 @room_app.command("search")
 def room_search(
-    query: str = typer.Argument(...),
-    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
-    limit: int = typer.Option(20, "--limit"),
+    query: Optional[str] = typer.Argument(None, help="Free-text query (optional)"),
+    status: str = typer.Option("active", "--status", help="active (default), closed, archived, or all"),
+    participating_scope: Optional[str] = typer.Option(None, "--participating-scope"),
+    peer: Optional[str] = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """Search rooms by topic / id / transcript content."""
-    params = {"q": query, "limit": limit}
+    """Search rooms (hybrid keyword + semantic). Defaults to status='active'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
+    if participating_scope:
+        params["participating_scope"] = participating_scope
     if peer:
         params["peer"] = peer
     r = _exposed_api("GET", "/rooms/search", params=params)
@@ -987,10 +986,20 @@ def project_create(
     _print_json(r)
 
 
-@project_app.command("list")
-def project_list():
-    """List projects with per-status scope counts."""
-    r = _api("GET", "/projects")
+@project_app.command("search")
+def project_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (project name + README)"),
+    active_only: bool = typer.Option(False, "--active-only", help="Hide projects with zero active scopes"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
+):
+    """Search projects (hybrid keyword + semantic) with per-status scope counts."""
+    params: dict = {"limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
+    if active_only:
+        params["active_only"] = "true"
+    r = _api("GET", "/projects/search", params=params)
     _print_json(r)
 
 
@@ -1164,18 +1173,21 @@ def _emit_context_block(tag: str, path: Path, *, base: Path) -> None:
     typer.echo(f"</{tag}>")
 
 
-@scope_app.command("list")
-def scope_list(
-    status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/deleted/all)"),
+@scope_app.command("search")
+def scope_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (scope name + context.md)"),
+    status: str = typer.Option("active", "--status", help="active (default), completed, deleted, or all"),
     project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """List scopes."""
-    params = {}
-    if status:
-        params["status"] = status
+    """Search scopes (hybrid keyword + semantic). Defaults to status='active'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
     if project:
         params["project"] = project
-    r = _api("GET", "/scopes", params=params)
+    r = _api("GET", "/scopes/search", params=params)
 
     data = r.json()
     if r.status_code >= 400:
@@ -1226,18 +1238,25 @@ def lock_release(
     _print_json(r)
 
 
-@lock_app.command("list")
-def lock_list(
+@lock_app.command("search")
+def lock_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (resource path + holder + metadata)"),
+    status: str = typer.Option("active", "--status", help="active (default), stale, or all"),
     holder: Optional[str] = typer.Option(None, "--holder", help="Filter by holder"),
     path: Optional[str] = typer.Option(None, "--path", help="Filter by path"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """List active locks."""
-    params = {}
+    """Search locks (hybrid keyword + semantic). Defaults to status='active'
+    (live PID + fresh heartbeat); pass status='stale' or 'all'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
     if holder:
         params["holder"] = holder
     if path:
         params["path"] = path
-    r = _api("GET", "/locks", params=params)
+    r = _api("GET", "/locks/search", params=params)
 
     data = r.json()
     if r.status_code >= 400:
@@ -1246,7 +1265,7 @@ def lock_list(
 
     locks = data["locks"]
     if not locks:
-        typer.echo("(no active locks)")
+        typer.echo("(no matching locks)")
         return
 
     typer.echo(f"{'RESOURCE':<40} {'HOLDER':<20} {'TYPE':<12} {'ACQUIRED':<25}")
@@ -1328,54 +1347,11 @@ def _resolve_peer_set(peer_flag: str | None) -> list[str] | None:
         return None
     from awm.services.network import peers as _peers
     if peer_flag == "all":
-        return [p["peer_id"] for p in _peers.list_peers()]
+        return [p["peer_id"] for p in _peers.search_peers(status="all", limit=10_000)]
     if _peers.get_peer(peer_flag) is None:
         typer.echo(f"error: unknown peer '{peer_flag}'", err=True)
         raise typer.Exit(2)
     return [peer_flag]
-
-
-@skill_app.command("list")
-def skill_list(
-    type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
-    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
-    peer: Optional[str] = typer.Option(None, "--peer",
-                                        help="Federate: 'all' or a peer-id. Excludes local."),
-):
-    """List all skills in the catalog. With --peer, fetches from remote peers."""
-    params = {}
-    if type:
-        params["type"] = type
-    if tags:
-        params["tags"] = tags
-
-    peer_ids = _resolve_peer_set(peer)
-    if peer_ids is not None:
-        from awm.services.network import federation as _fed
-        data = _fed.fan_out_get(peer_ids, "/skills", params, result_key="skills")
-    else:
-        r = _api("GET", "/skills", params=params)
-        if r.status_code >= 400:
-            typer.echo(f"Error: {r.text}", err=True)
-            raise typer.Exit(1)
-        data = r.json()
-
-    skills = data["skills"]
-    if not skills:
-        typer.echo("(no skills found)")
-        if data.get("degraded"):
-            typer.echo(f"degraded peers: {data['degraded']}", err=True)
-        return
-
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
-    for s in skills:
-        tags_str = ", ".join(s.get("tags", []))
-        origin = s.get("origin_peer_id", "local")
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
-    typer.echo(f"\nTotal: {data['total']} skill(s)")
-    if data.get("degraded"):
-        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
 
 
 @skill_app.command("get")
@@ -1393,18 +1369,28 @@ def skill_get(
 
 @skill_app.command("search")
 def skill_search(
-    query: str = typer.Argument(..., help="Search query"),
+    query: Optional[str] = typer.Argument(None, help="Free-text query (optional; omit to filter only)"),
+    type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
+    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
     peer: Optional[str] = typer.Option(None, "--peer",
                                         help="Federate: 'all' or a peer-id. Excludes local."),
 ):
-    """Search skills by name, tags, description, or content. With --peer,
-    fan out to remote peers and tag each result with its origin."""
+    """Search skills (hybrid keyword + semantic) with optional type/tag filters.
+    With --peer, fan out to remote peers and tag each result with its origin."""
+    params: dict = {}
+    if query:
+        params["query"] = query
+    if type:
+        params["type"] = type
+    if tags:
+        params["tags"] = tags
+
     peer_ids = _resolve_peer_set(peer)
     if peer_ids is not None:
         from awm.services.network import federation as _fed
-        data = _fed.fan_out_get(peer_ids, "/skills/search", {"q": query}, result_key="skills")
+        data = _fed.fan_out_get(peer_ids, "/skills/search", params, result_key="skills")
     else:
-        r = _api("GET", "/skills/search", params={"q": query})
+        r = _api("GET", "/skills/search", params=params)
         if r.status_code >= 400:
             typer.echo(f"Error: {r.text}", err=True)
             raise typer.Exit(1)
@@ -1417,11 +1403,15 @@ def skill_search(
             typer.echo(f"degraded peers: {data['degraded']}", err=True)
         return
 
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'FILE':<35} {'PEER':<10}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<35} {'----':<10}")
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
     for s in skills:
+        tags_str = ", ".join(s.get("tags", []))
         origin = s.get("origin_peer_id", "local")
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {s['file_path']:<35} {origin:<10}")
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
+    typer.echo(f"\nTotal: {data['total']} skill(s)")
+    if data.get("degraded"):
+        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
     typer.echo(f"\nTotal: {data['total']} match(es)")
     if data.get("degraded"):
         typer.echo(f"Degraded peers: {data['degraded']}", err=True)

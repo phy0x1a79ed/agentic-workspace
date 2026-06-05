@@ -253,8 +253,14 @@ class TestListRecipients:
         recipients = messaging.list_recipients("*")
         assert "scope:proj-a/scope-1" in recipients
 
-    def test_recipients_include_completed_scopes(self, _init_messaging):
+    def test_recipients_exclude_completed_scopes_by_default(self, _init_messaging):
+        # New default: only active scopes appear as send targets.
         recipients = messaging.list_recipients("*")
+        assert "scope:proj-a/scope-2" not in recipients
+
+    def test_recipients_include_completed_scopes_when_requested(self, _init_messaging):
+        # Explicit opt-in restores the old behavior.
+        recipients = messaging.list_recipients("*", include_inactive=True)
         assert "scope:proj-a/scope-2" in recipients
 
     def test_recipients_include_all_projects(self, _init_messaging):

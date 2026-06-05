@@ -25,36 +25,42 @@ from awm.services.scopes import (
 )
 
 
-class TestListScopes:
-    def test_list_empty(self, awm_workspace):
-        result = scopes.list_scopes()
+class TestSearchScopes:
+    def test_empty(self, awm_workspace):
+        result = scopes.search_scopes(status="all")
         assert result.total == 0
         assert result.scopes == []
 
-    def test_list_all(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes()
+    def test_all(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="all")
         assert result.total == 3
 
-    def test_list_by_status(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes(status="active")
+    def test_default_is_active_only(self, awm_workspace, seeded_scopes):
+        # New default — drops completed/deleted seeded scopes.
+        result = scopes.search_scopes()
         assert result.total == 1
         assert result.scopes[0].status == "active"
 
-    def test_list_by_project(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes(project="proj-a")
+    def test_by_status(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="active")
+        assert result.total == 1
+        assert result.scopes[0].status == "active"
+
+    def test_by_project(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="all", project="proj-a")
         assert result.total == 2
 
-    def test_list_combined_filters(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes(status="completed", project="proj-b")
+    def test_combined_filters(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="completed", project="proj-b")
         assert result.total == 1
         assert result.scopes[0].scope == "scope-3"
 
-    def test_list_status_all(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes(status="all")
+    def test_status_all(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="all")
         assert result.total == 3
 
-    def test_list_includes_repo_path(self, awm_workspace, seeded_scopes):
-        result = scopes.list_scopes(status="active")
+    def test_includes_repo_path(self, awm_workspace, seeded_scopes):
+        result = scopes.search_scopes(status="active")
         assert result.scopes[0].repo_path is not None
         assert "projects/" in result.scopes[0].repo_path
 
@@ -81,7 +87,7 @@ class TestUpdateScope:
         assert result.status == "completed"
 
         # Verify DB was updated
-        db_result = scopes.list_scopes(status="completed")
+        db_result = scopes.search_scopes(status="completed")
         completed = [s.scope for s in db_result.scopes]
         assert "scope-1" in completed
 
@@ -108,7 +114,7 @@ class TestDeleteScope:
         assert result.status == "deleted"
 
         # Verify DB was updated
-        db_result = scopes.list_scopes(status="deleted")
+        db_result = scopes.search_scopes(status="deleted")
         deleted = [s.scope for s in db_result.scopes]
         assert "scope-1" in deleted
 
@@ -425,7 +431,7 @@ class TestHealScopes:
         # seeded_scopes wrote an untracked AGENTS.md at the worktree (no git
         # init). The cleanup pass should delete it and backfill .awm/context.md.
         from awm.services import scopes as scopes_mod
-        active = scopes_mod.list_scopes(status="active").scopes[0]
+        active = scopes_mod.search_scopes(status="active").scopes[0]
         wt = Path(active.worktree)
         # Need a git repo for _is_tracked to work; init an empty one — AGENTS.md
         # remains untracked.
@@ -446,7 +452,7 @@ class TestHealScopes:
 
     def test_dry_run_reports_without_mutating(self, awm_workspace, seeded_scopes):
         from awm.services import scopes as scopes_mod
-        active = scopes_mod.list_scopes(status="active").scopes[0]
+        active = scopes_mod.search_scopes(status="active").scopes[0]
         wt = Path(active.worktree)
         _git_init_no_track(wt)
         (wt / "CLAUDE.md").symlink_to("AGENTS.md")
@@ -462,7 +468,7 @@ class TestHealScopes:
 
     def test_idempotent_across_runs(self, awm_workspace, seeded_scopes):
         from awm.services import scopes as scopes_mod
-        active = scopes_mod.list_scopes(status="active").scopes[0]
+        active = scopes_mod.search_scopes(status="active").scopes[0]
         wt = Path(active.worktree)
         _git_init_no_track(wt)
 

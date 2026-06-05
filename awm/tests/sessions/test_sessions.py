@@ -167,28 +167,28 @@ class TestLogSession:
         assert entry.skill_version == "abc123def456"
 
 
-class TestListSessions:
-    def test_list_all(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions()
+class TestSearchSessions:
+    def test_all(self, awm_workspace, seeded_sessions):
+        result = sessions.search_sessions(status="all")
         assert result.total == 3
 
-    def test_list_by_project(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions(project="proj-a")
+    def test_by_project(self, awm_workspace, seeded_sessions):
+        result = sessions.search_sessions(status="all", project="proj-a")
         assert result.total == 3
 
-    def test_list_by_scope(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions(project="proj-a", scope="scope-1")
+    def test_by_scope(self, awm_workspace, seeded_sessions):
+        result = sessions.search_sessions(status="all", project="proj-a", scope="scope-1")
         assert result.total == 2
 
-    def test_list_with_limit(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions(limit=1)
+    def test_with_limit(self, awm_workspace, seeded_sessions):
+        result = sessions.search_sessions(status="all", limit=1)
         assert result.total == 1
 
-    def test_list_empty(self, awm_workspace):
-        result = sessions.list_sessions()
+    def test_empty(self, awm_workspace):
+        result = sessions.search_sessions(status="all")
         assert result.total == 0
 
-    def test_list_by_skill_path(self, awm_workspace):
+    def test_by_skill_path(self, awm_workspace):
         sessions.log_session(SessionLogCreateRequest(
             project="proj-a", scope="scope-1", summary="s1",
             skill_path="awm/debrief.md",
@@ -200,14 +200,14 @@ class TestListSessions:
         sessions.log_session(SessionLogCreateRequest(
             project="proj-a", scope="scope-1", summary="s3",
         ))
-        result = sessions.list_sessions(skill_path="awm/debrief.md")
+        result = sessions.search_sessions(status="all", skill_path="awm/debrief.md")
         assert result.total == 1
         assert result.entries[0].skill_path == "awm/debrief.md"
 
 
 class TestGetSession:
     def test_get_existing(self, awm_workspace, seeded_sessions):
-        result = sessions.list_sessions()
+        result = sessions.search_sessions(status="all")
         entry_id = result.entries[0].id
         detail = sessions.get_session(entry_id)
         assert detail.entry.id == entry_id
@@ -313,11 +313,11 @@ class TestScopeSessions:
         resp3 = scope_svc.create_scope(req)
         assert resp3.session == 3
 
-    def test_list_scopes_includes_session(self, awm_workspace, seeded_scopes):
-        """list_scopes should return session numbers."""
+    def test_search_scopes_includes_session(self, awm_workspace, seeded_scopes):
+        """search_scopes should return session numbers."""
         from awm.services import scopes as scope_svc
 
-        result = scope_svc.list_scopes(status="all")
+        result = scope_svc.search_scopes(status="all")
         for s in result.scopes:
             assert s.session >= 1
 
@@ -453,7 +453,7 @@ class TestListSessionsStatus:
         ))
         sessions.resolve_session(e2.id, "Done")
 
-        result = sessions.list_sessions(status="open")
+        result = sessions.search_sessions(status="open")
         assert result.total == 1
         assert result.entries[0].id == e1.id
 
@@ -466,11 +466,12 @@ class TestListSessionsStatus:
         ))
         sessions.resolve_session(e2.id, "Done")
 
-        result = sessions.list_sessions(status="resolved")
+        result = sessions.search_sessions(status="resolved")
         assert result.total == 1
         assert result.entries[0].id == e2.id
 
-    def test_list_default_returns_all(self, awm_workspace):
+    def test_list_default_excludes_resolved(self, awm_workspace):
+        # New default: status="open" — resolved entries drop out.
         sessions.log_session(SessionLogCreateRequest(
             project="proj-a", scope="scope-1", summary="Open",
         ))
@@ -479,5 +480,6 @@ class TestListSessionsStatus:
         ))
         sessions.resolve_session(e2.id, "Done")
 
-        result = sessions.list_sessions()
-        assert result.total == 2
+        result = sessions.search_sessions()
+        assert result.total == 1
+        assert result.entries[0].id != e2.id

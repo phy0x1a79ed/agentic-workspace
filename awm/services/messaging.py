@@ -264,12 +264,17 @@ def mark_read(message_id: int | str) -> MessageActionResponse:
     )
 
 
-def list_recipients(query: str, peer: str | None = None) -> list[str]:
+def list_recipients(query: str, peer: str | None = None,
+                    include_inactive: bool = False) -> list[str]:
     """Return valid recipient scopes matching ``query``.
 
     ``query`` is required. Pass ``"*"`` to return every recipient; any other
     value is compiled as a regex and matched against each recipient string
     (``workspace``, ``project:<p>``, ``scope:<p>/<s>``).
+
+    ``include_inactive`` controls whether completed / deleted scopes appear
+    as valid send targets. Default is False: stale scopes don't crowd the
+    recipient list. Pass True for the rare backfill case.
 
     ``peer`` is reserved for a future cached cross-peer view; only ``None`` or
     ``"local"`` is honoured today.
@@ -294,8 +299,9 @@ def list_recipients(query: str, peer: str | None = None) -> list[str]:
                 recipients.append(f"project:{child.name}")
                 projects_seen.add(child.name)
 
-    # Add ALL scopes (any status) as recipients — DISTINCT by (project, scope)
-    result = scope_svc.list_scopes(status="all")
+    # Add active scopes as recipients (or every status when explicitly asked)
+    status = "all" if include_inactive else "active"
+    result = scope_svc.search_scopes(status=status, limit=10_000)
     scopes_seen: set[str] = set()
     for s in result.scopes:
         if s.project not in projects_seen:

@@ -20,11 +20,11 @@ class TestMCPToolGeneration:
         tools = operations_to_mcp_tools(SESSION_OPERATIONS)
         names = {t.name for t in tools}
         assert "session_log" in names
-        assert "session_list" in names
         assert "session_get" in names
         assert "session_resolve" in names
         assert "session_search" in names
-        assert len(names) == 5
+        assert "session_list" not in names  # collapsed into session_search
+        assert len(names) == 4
 
     def test_session_log_schema(self):
         tools = operations_to_mcp_tools(SESSION_OPERATIONS)
@@ -37,12 +37,15 @@ class TestMCPToolGeneration:
         assert "required" in log_tool.inputSchema
         assert "project" in log_tool.inputSchema["required"]
 
-    def test_session_list_schema(self):
+    def test_session_search_schema(self):
         tools = operations_to_mcp_tools(SESSION_OPERATIONS)
-        list_tool = next(t for t in tools if t.name == "session_list")
-        props = list_tool.inputSchema["properties"]
+        search_tool = next(t for t in tools if t.name == "session_search")
+        props = search_tool.inputSchema["properties"]
         assert "project" in props
+        assert "query" in props
+        assert "status" in props
         assert "limit" in props
+        assert "offset" in props
 
     def test_session_get_schema(self):
         tools = operations_to_mcp_tools(SESSION_OPERATIONS)
@@ -52,13 +55,18 @@ class TestMCPToolGeneration:
 
 
 class TestDispatch:
-    def test_dispatch_session_list(self, awm_workspace, seeded_sessions):
-        result = dispatch_operation("session_list", {}, SESSION_OPERATIONS)
+    def test_dispatch_session_search_status_all(self, awm_workspace, seeded_sessions):
+        # status='all' overrides the new active-only default.
+        result = dispatch_operation(
+            "session_search", {"status": "all"}, SESSION_OPERATIONS,
+        )
         assert result is not None
         assert result.total == 3
 
     def test_dispatch_session_get(self, awm_workspace, seeded_sessions):
-        list_result = dispatch_operation("session_list", {}, SESSION_OPERATIONS)
+        list_result = dispatch_operation(
+            "session_search", {"status": "all"}, SESSION_OPERATIONS,
+        )
         entry_id = list_result.entries[0].id
         result = dispatch_operation(
             "session_get", {"session_id": entry_id}, SESSION_OPERATIONS
@@ -72,13 +80,13 @@ class TestDispatch:
 
 
 class TestSessionMCPIntegration:
-    def test_session_list_viahandle_tool(self, awm_workspace, seeded_sessions):
-        result = handle_tool("session_list", {})
+    def test_session_search_viahandle_tool(self, awm_workspace, seeded_sessions):
+        result = handle_tool("session_search", {"status": "all"})
         data = json.loads(result)
         assert data["total"] == 3
 
     def test_session_get_viahandle_tool(self, awm_workspace, seeded_sessions):
-        list_result = json.loads(handle_tool("session_list", {}))
+        list_result = json.loads(handle_tool("session_search", {"status": "all"}))
         entry_id = list_result["entries"][0]["id"]
         result = handle_tool("session_get", {"session_id": entry_id})
         data = json.loads(result)

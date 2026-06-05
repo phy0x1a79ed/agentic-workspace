@@ -122,7 +122,7 @@ def test_create_scope_in_vagrant_project_succeeds(vagrant_bootstrap):
     assert (worktree / ".awm" / "context.md").exists()
 
     # Row exists with project='_vagrant'.
-    listed = scopes_svc.list_scopes(project=VAGRANT_PROJECT)
+    listed = scopes_svc.search_scopes(status="all", project=VAGRANT_PROJECT)
     assert listed.total == 1
     assert listed.scopes[0].scope == "smoke"
     assert listed.scopes[0].project == VAGRANT_PROJECT
@@ -136,10 +136,10 @@ def test_list_scopes_filters_vagrant_distinct_from_resident(
     req = ScopeCreateRequest(project=VAGRANT_PROJECT, scope="alpha")
     scopes_svc.create_scope(req)
 
-    vagrant_only = scopes_svc.list_scopes(project=VAGRANT_PROJECT)
+    vagrant_only = scopes_svc.search_scopes(status="all", project=VAGRANT_PROJECT)
     assert {s.scope for s in vagrant_only.scopes} == {"alpha"}
 
-    resident_only = scopes_svc.list_scopes(project="proj-a")
+    resident_only = scopes_svc.search_scopes(status="all", project="proj-a")
     assert all(s.project == "proj-a" for s in resident_only.scopes)
 
 

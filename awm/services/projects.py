@@ -15,7 +15,11 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm._lib.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
-from awm.models import ProjectCreateRequest, ProjectCreateResponse
+from awm.db import get_connection
+from awm.models import (
+    ProjectCreateRequest, ProjectCreateResponse,
+    ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
+)
 from awm.services._validation import validate_name
 
 
@@ -124,6 +128,12 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
 
+    try:
+        from awm.services.embeddings import index_project
+        index_project(req.name)
+    except Exception:
+        pass
+
     return ProjectCreateResponse(
         name=req.name,
         bare_dir=str(bare_dir),
@@ -131,3 +141,75 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         data_dir=str(DATA_DIR / req.name),
         mode=mode,
     )
+
+
+def search_projects(
+    query: str | None = None,
+    active_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> ProjectListResponse:
+    """Search projects derived from the scopes table + on-disk project dirs,
+    with per-status counts. `query` LIKEs on project name; semantic top-up
+    uses the embeddings table. `active_only` filters to projects with at
+    least one active scope."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT project, status, COUNT(*) AS n FROM scopes "
+            "GROUP BY project, status ORDER BY project"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_project: dict[str, ProjectScopeCounts] = {}
+    for r in rows:
+        counts = by_project.setdefault(r["project"], ProjectScopeCounts())
+        if r["status"] == "active":
+            counts.active = r["n"]
+        elif r["status"] == "completed":
+            counts.completed = r["n"]
+        elif r["status"] == "deleted":
+            counts.deleted = r["n"]
+
+    # Also surface projects that exist on disk but have no scope rows yet.
+    if PROJECTS_DIR.is_dir():
+        for child in sorted(PROJECTS_DIR.iterdir()):
+            if child.is_dir() and (child / ".bare").is_dir():
+                by_project.setdefault(child.name, ProjectScopeCounts())
+
+    items = [
+        ProjectListInfo(name=n, scope_counts=c)
+        for n, c in sorted(by_project.items())
+    ]
+
+    if active_only:
+        items = [p for p in items if p.scope_counts.active > 0]
+    if query:
+        q = query.lower()
+        items = [p for p in items if q in p.name.lower()]
+
+    paged = items[offset:offset + limit]
+
+    if not query:
+        return ProjectListResponse(projects=paged)
+
+    keyword_keys = {p.name for p in paged}
+
+    def _materialize(name: str):
+        if active_only and by_project.get(name, ProjectScopeCounts()).active <= 0:
+            return None
+        if name not in by_project:
+            return None
+        return ProjectListInfo(name=name, scope_counts=by_project[name])
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        merged = hybrid_augment(
+            query, source_type="project",
+            keyword_hits=paged, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        merged = paged
+    return ProjectListResponse(projects=merged)

@@ -328,6 +328,11 @@ def create_room(*, topic: str | None = None,
         row = conn.execute("SELECT * FROM rooms WHERE id = ?", (name,)).fetchone()
     finally:
         conn.close()
+    try:
+        from awm.services.embeddings import index_room
+        index_room(name)
+    except Exception:
+        pass
     return _row_to_room(row)
 
 
@@ -340,12 +345,21 @@ def get_room(room_id: str) -> Room | None:
     return _row_to_room(row) if row else None
 
 
-def list_rooms(*, status: str | None = "active",
-               participating_scope: str | None = None,
-               limit: int = 100) -> list[Room]:
+def search_rooms(
+    query: str | None = None,
+    *,
+    status: str = "active",
+    participating_scope: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Room]:
+    """Search rooms by topic/transcript (keyword + semantic) with structural
+    filters. Defaults to status='active' (pass 'all' for archived/closed too).
+    `participating_scope` narrows to rooms where the given scope is an
+    active participant. `query` LIKEs on topic, id, and post bodies, with
+    semantic top-up from the embeddings table."""
     sql = "SELECT DISTINCT r.* FROM rooms r"
     params: list = []
-    where: list[str] = []
     if participating_scope:
         sql += (
             " JOIN room_participants rp ON rp.room_id = r.id "
@@ -353,38 +367,69 @@ def list_rooms(*, status: str | None = "active",
             "AND rp.left_at IS NULL"
         )
         params.append(participating_scope)
+    if query:
+        sql += " LEFT JOIN room_posts p ON p.room_id = r.id"
+    where: list[str] = []
     if status and status != "all":
         where.append("r.status = ?")
         params.append(status)
+    if query:
+        where.append("(r.topic LIKE ? OR r.id LIKE ? OR p.body LIKE ?)")
+        like = f"%{query}%"
+        params.extend([like, like, like])
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY r.created_at DESC LIMIT ?"
-    params.append(limit)
+    sql += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
     conn = get_connection()
     try:
         rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
-    return [_row_to_room(r) for r in rows]
+    rooms = [_row_to_room(r) for r in rows]
 
+    if not query:
+        return rooms
 
-def search_rooms(query: str, *, limit: int = 20) -> list[Room]:
-    """Match rooms by topic or transcript content (LIKE-based)."""
-    like = f"%{query}%"
-    sql = """\
-SELECT DISTINCT r.*
-FROM rooms r
-LEFT JOIN room_posts p ON p.room_id = r.id
-WHERE r.topic LIKE ? OR r.id LIKE ? OR p.body LIKE ?
-ORDER BY r.created_at DESC
-LIMIT ?
-"""
-    conn = get_connection()
+    keyword_keys = {r.id for r in rooms}
+
+    def _materialize(room_id: str):
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT * FROM rooms WHERE id = ?", (room_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        if status and status != "all" and row["status"] != status:
+            return None
+        # participating_scope filter is structural; semantic shouldn't bypass it
+        if participating_scope:
+            conn = get_connection()
+            try:
+                rp = conn.execute(
+                    "SELECT 1 FROM room_participants WHERE room_id = ? "
+                    "AND kind = 'scope' AND identifier = ? AND left_at IS NULL",
+                    (room_id, participating_scope),
+                ).fetchone()
+            finally:
+                conn.close()
+            if rp is None:
+                return None
+        return _row_to_room(row)
+
     try:
-        rows = conn.execute(sql, (like, like, like, limit)).fetchall()
-    finally:
-        conn.close()
-    return [_row_to_room(r) for r in rows]
+        from awm.services.embeddings import hybrid_augment
+        return hybrid_augment(
+            query, source_type="room",
+            keyword_hits=rooms, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        return rooms
 
 
 def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
@@ -629,6 +674,15 @@ def post(room_id: str, *, author: str, body: str, kind: str = "text",
                 except Exception:
                     pass
         # 'subscriber' participants are addressed by _broadcast above.
+
+    # Refresh the room embedding every ~10th post so semantic search tracks
+    # evolving discussion without paying the embed cost on every message.
+    if hash(uid) % 10 == 0:
+        try:
+            from awm.services.embeddings import index_room
+            index_room(room_id)
+        except Exception:
+            pass
 
     return post_obj
 
