@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from awm.config import VAGRANT_PROJECT
-from awm.middleware_auth import require_bearer
+from awm.services.auth.middleware_auth import require_bearer
 from awm.services import agent_instances
 from awm.services.scopes import (
     _vagrant_scope_name,

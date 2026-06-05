@@ -10,7 +10,12 @@ import asyncio
 
 import pytest
 
-from awm.services.hub.registry import PrefixConflict, Registry
+from awm.services.hub.registry import (
+    NoBaseToShadow,
+    PrefixConflict,
+    Registry,
+    ServiceRecord,
+)
 
 
 @pytest.fixture()
@@ -80,3 +85,129 @@ def test_re_registering_same_name_updates(reg):
     rec2 = _run(reg.register("foo", "/foo", "http://localhost:2"))
     assert rec1.name == rec2.name == "foo"
     assert rec2.url == "http://localhost:2"
+
+
+# ---------------------------------------------------------------------------
+# Shadow overlay stack
+# ---------------------------------------------------------------------------
+
+
+def _overlay(name: str, prefix: str, url: str = "http://localhost:9") -> ServiceRecord:
+    return ServiceRecord(name=name, prefix=prefix, kind="url", url=url)
+
+
+def test_push_shadow_requires_base(reg):
+    with pytest.raises(NoBaseToShadow):
+        _run(reg.push_shadow(_overlay("ghost", "/x")))
+
+
+def test_push_shadow_returns_active_record(reg):
+    base = _run(reg.register("base", "/x", "http://localhost:1"))
+    overlay = _run(reg.push_shadow(_overlay("ov", "/x", "http://localhost:2")))
+    # longest_match returns the topmost — overlay shadows base.
+    assert reg.longest_match("/x") is overlay
+    assert reg.longest_match("/x/sub") is overlay
+    assert overlay.is_overlay is True
+    assert base.is_overlay is False
+
+
+def test_overlay_lifo_eviction_reveals_older_overlay_then_base(reg):
+    base = _run(reg.register("base", "/x", "http://localhost:1"))
+    ov1 = _run(reg.push_shadow(_overlay("ov1", "/x", "http://localhost:2")))
+    ov2 = _run(reg.push_shadow(_overlay("ov2", "/x", "http://localhost:3")))
+    # Topmost wins.
+    assert reg.longest_match("/x") is ov2
+    # Pop the top — older overlay surfaces.
+    _run(reg.evict_by_id(ov2.service_id))
+    assert reg.longest_match("/x") is ov1
+    # Pop the older overlay — base surfaces; stack survives.
+    _run(reg.evict_by_id(ov1.service_id))
+    assert reg.longest_match("/x") is base
+    assert not reg.is_empty()
+
+
+def test_evict_overlay_never_collapses_base(reg):
+    base = _run(reg.register("base", "/x", "http://localhost:1"))
+    overlay = _run(reg.push_shadow(_overlay("ov", "/x", "http://localhost:2")))
+    _run(reg.evict_by_name("ov"))
+    # Base is still resolvable, both via longest_match and by_name.
+    assert reg.longest_match("/x") is base
+    assert reg.get_by_name("url", "base") is base
+    # Overlay name is gone.
+    assert reg.get_by_name("url", "ov") is None
+
+
+def test_overlay_name_collision_rejected(reg):
+    _run(reg.register("base", "/x", "http://localhost:1"))
+    _run(reg.push_shadow(_overlay("ov", "/x")))
+    with pytest.raises(PrefixConflict):
+        _run(reg.push_shadow(_overlay("ov", "/x")))
+
+
+def test_evict_base_with_overlay_present_leaves_overlay(reg):
+    """_pop_by_id_locked pops one record at a time. Evicting the base while
+    an overlay is still attached leaves the overlay as the sole stack entry
+    (the `if not stack: del` branch only fires when the stack empties).
+    The base's name is gone; the overlay continues to serve."""
+    base = _run(reg.register("base", "/x", "http://localhost:1"))
+    overlay = _run(reg.push_shadow(_overlay("ov", "/x")))
+    _run(reg.evict_by_id(base.service_id))
+    assert reg.get_by_name("url", "base") is None
+    assert reg.longest_match("/x") is overlay
+
+
+def test_evict_only_record_clears_prefix(reg):
+    """When the last record on a prefix is evicted (no overlays), the
+    stack entry is deleted and the prefix stops resolving."""
+    base = _run(reg.register("base", "/x", "http://localhost:1"))
+    _run(reg.evict_by_id(base.service_id))
+    assert reg.longest_match("/x") is None
+    assert reg.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# Same-name page + service coexistence (kind-scoped uniqueness)
+# ---------------------------------------------------------------------------
+
+
+def test_same_name_page_and_service_coexist_page_first(reg, tmp_path):
+    page = _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    svc = _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    assert reg.get_by_name("page", "tts") is page
+    assert reg.get_by_name("service", "tts") is svc
+    assert reg.longest_match("/ui/tts") is page
+    assert reg.longest_match("/svc/tts") is svc
+
+
+def test_same_name_page_and_service_coexist_service_first(reg, tmp_path):
+    svc = _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    page = _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    assert reg.get_by_name("page", "tts") is page
+    assert reg.get_by_name("service", "tts") is svc
+
+
+def test_same_kind_same_name_distinct_prefix_still_rejected(reg):
+    _run(reg.register("dup", "/a", "http://localhost:1"))
+    with pytest.raises(PrefixConflict):
+        _run(reg.register("dup", "/b", "http://localhost:2"))
+
+
+def test_evict_by_name_ambiguous_without_kind_raises(reg, tmp_path):
+    _run(reg.register_page("tts", "/ui/tts", str(tmp_path)))
+    _run(reg.register_service(
+        "tts", "/svc/tts",
+        pid=None, start_cmd=["start.sh"], cwd=str(tmp_path),
+    ))
+    with pytest.raises(PrefixConflict):
+        _run(reg.evict_by_name("tts"))
+    # Disambiguating by kind succeeds and leaves the other in place.
+    evicted = _run(reg.evict_by_name("tts", kind="page"))
+    assert evicted is not None and evicted.kind == "page"
+    assert reg.get_by_name("page", "tts") is None
+    assert reg.get_by_name("service", "tts") is not None

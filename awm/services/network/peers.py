@@ -346,16 +346,87 @@ def add_peer(peer_id: str, ssh_alias: str, *,
         row = conn.execute("SELECT * FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
     finally:
         conn.close()
+    try:
+        from awm.services.embeddings import index_peer
+        index_peer(peer_id)
+    except Exception:
+        pass
     return _row_to_peer(row)
 
 
-def list_peers() -> list[dict]:
+_PEER_ONLINE_THRESHOLD_S = 300  # last_seen within 5 min counts as online
+
+
+def _peer_is_online(row_or_dict, *, now: datetime | None = None) -> bool:
+    """Return True if the peer's last_seen is within the freshness window."""
+    last = (row_or_dict["last_seen"]
+            if isinstance(row_or_dict, dict)
+            else row_or_dict["last_seen"])
+    if not last:
+        return False
+    try:
+        ts = datetime.fromisoformat(last)
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - ts).total_seconds() <= _PEER_ONLINE_THRESHOLD_S
+
+
+def search_peers(
+    query: str | None = None,
+    status: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Search registered peers. `status` is one of 'all' / 'online' / 'offline'
+    where online means last_seen within 5 minutes. `query` LIKEs on peer_id,
+    ssh_alias, and friendly_name; semantic top-up uses the embeddings table."""
+    sql = "SELECT * FROM peers WHERE 1=1"
+    params: list = []
+    if query:
+        sql += " AND (peer_id LIKE ? OR ssh_alias LIKE ? OR friendly_name LIKE ?)"
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    sql += " ORDER BY peer_id LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT * FROM peers ORDER BY peer_id").fetchall()
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
-    return [_row_to_peer(r) for r in rows]
+
+    peers = [_row_to_peer(r) for r in rows]
+    if status == "online":
+        peers = [p for p in peers if _peer_is_online(p)]
+    elif status == "offline":
+        peers = [p for p in peers if not _peer_is_online(p)]
+
+    if not query:
+        return peers
+
+    keyword_keys = {p["peer_id"] for p in peers}
+
+    def _materialize(peer_id: str):
+        p = get_peer(peer_id)
+        if p is None:
+            return None
+        if status == "online" and not _peer_is_online(p):
+            return None
+        if status == "offline" and _peer_is_online(p):
+            return None
+        return p
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        return hybrid_augment(
+            query, source_type="peer",
+            keyword_hits=peers, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        return peers
 
 
 def list_remote_peers() -> list[dict]:
@@ -365,7 +436,7 @@ def list_remote_peers() -> list[dict]:
     ident = get_local_identity()
     self_id = ident["peer_id"] if ident else None
     out = []
-    for p in list_peers():
+    for p in search_peers(status="all", limit=10_000):
         if self_id and p["peer_id"] == self_id:
             continue
         out.append(p)
@@ -416,6 +487,11 @@ def remove_peer(peer_id: str) -> bool:
                 token.unlink()
             except OSError:
                 pass
+        try:
+            from awm.services.embeddings import delete_embedding
+            delete_embedding("peer", peer_id)
+        except Exception:
+            pass
         return True
     return False
 

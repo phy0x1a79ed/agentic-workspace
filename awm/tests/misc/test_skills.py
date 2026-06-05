@@ -52,45 +52,47 @@ class TestTypeInference:
         assert info.name == "plain"  # falls back to stem
 
 
-class TestListSkills:
-    def test_list_all(self, sample_skills_dir):
-        result = skills.list_skills()
+class TestSearchSkillsNoQuery:
+    """Filter-only behavior (no `query` arg) — was previously `list_skills`."""
+
+    def test_all(self, sample_skills_dir):
+        result = skills.search_skills()
         assert result.total >= 3
         names = {s.name for s in result.skills}
         assert "git" in names
         assert "Mamba" in names
 
     def test_excludes_index(self, sample_skills_dir):
-        result = skills.list_skills()
+        result = skills.search_skills()
         names = {s.name for s in result.skills}
         assert "_index" not in names
 
     def test_excludes_templates(self, sample_skills_dir):
-        result = skills.list_skills()
+        result = skills.search_skills()
         paths = {s.file_path for s in result.skills}
         for p in paths:
             assert not p.startswith("templates/")
 
     def test_filter_by_type(self, sample_skills_dir):
-        result = skills.list_skills(type_filter="awm")
+        result = skills.search_skills(type_filter="awm")
         assert result.total >= 2
         for s in result.skills:
             assert s.type == "awm"
 
     def test_filter_by_tags(self, sample_skills_dir):
-        result = skills.list_skills(tags=["git"])
+        result = skills.search_skills(tags=["git"])
         assert result.total >= 1
         for s in result.skills:
             assert any("git" in t.lower() for t in s.tags)
 
     def test_empty_when_no_match(self, sample_skills_dir):
-        result = skills.list_skills(type_filter="nonexistent")
+        result = skills.search_skills(type_filter="nonexistent")
         assert result.total == 0
 
     def test_empty_skills_dir(self, awm_workspace, monkeypatch):
         empty = awm_workspace["workspace"] / "empty_skills"
         monkeypatch.setattr("awm.services.skills.SKILLS_DIR", empty)
-        result = skills.list_skills()
+        result = skills.search_skills()
         assert result.total == 0
 
 

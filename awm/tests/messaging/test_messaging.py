@@ -26,28 +26,44 @@ def _init_messaging(awm_workspace, seeded_scopes):
 
 @pytest.fixture()
 def seeded_messages(_init_messaging, db_conn):
-    """Insert sample messages for search/filter tests."""
-    from datetime import datetime, timezone
+    """Insert sample messages for search/filter tests on the v37 shape.
 
-    now = datetime.now(timezone.utc).isoformat()
+    The fixture preserves the legacy (scope, sender, …) tuple shape so test
+    code keeps unpacking it the same way; the row inserted into v37
+    ``messages`` uses recipient_id/sender_id resolved via
+    services.messaging._resolve_recipient + _resolve_sender, then ISO
+    timestamps converted to INTEGER ms.
+    """
+    from awm.services import identity, messaging
+
+    now_ms = identity.now_ms()
+    # (scope, sender, msg_type, subject, body, metadata, status, ts, read_ts)
     rows = [
-        ("workspace", "agent-1", "status_update", "Build complete", "All tests passed", None, "unread", now, None),
-        ("project:proj-a", "agent-2", "notification", "Review needed", "PR #42 ready", None, "unread", now, None),
-        ("scope:proj-a/scope-1", "workspace", "scope_assignment", "Implement feature X", "See the spec below", '{"priority": "high"}', "unread", now, None),
-        ("scope:proj-a/scope-1", "workspace", "plan", "Execution plan", "Step 1: do the thing", None, "read", now, now),
+        ("workspace", "agent-1", "status_update", "Build complete",
+         "All tests passed", None, "unread", now_ms, None),
+        ("project:proj-a", "agent-2", "notification", "Review needed",
+         "PR #42 ready", None, "unread", now_ms, None),
+        ("scope:proj-a/scope-1", "workspace", "scope_assignment",
+         "Implement feature X", "See the spec below",
+         '{"priority": "high"}', "unread", now_ms, None),
+        ("scope:proj-a/scope-1", "workspace", "plan", "Execution plan",
+         "Step 1: do the thing", None, "read", now_ms, now_ms),
     ]
-    from awm.services.replication.schema import new_uuid
-    for i, r in enumerate(rows, start=1):
+    for scope, sender, msg_type, subject, body, metadata, status, ts, read_ts in rows:
+        recipient_id, _ = messaging._resolve_recipient(scope, conn=db_conn)
+        sender_id = messaging._resolve_sender(sender, conn=db_conn)
         db_conn.execute(
             "INSERT INTO messages "
-            "(uuid, legacy_id, origin_peer, "
-            " scope, sender, msg_type, subject, body, metadata, status, "
-            " created_at, read_at) "
-            "VALUES (?, ?, '', ?,?,?,?,?,?,?,?,?)",
-            (new_uuid(), i, *r),
+            "(recipient_id, sender_id, msg_type, subject, body, metadata, "
+            " status, created_at, read_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (recipient_id, sender_id, msg_type, subject, body, metadata,
+             status, ts, read_ts),
         )
     db_conn.commit()
-    return rows
+    # Return the legacy ISO-shape tuple for callers that depend on it.
+    iso = identity.ms_to_iso(now_ms)
+    return [(*r[:7], iso, iso if r[8] else None) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +215,15 @@ class TestFetchMessages:
         assert subjects == {"Implement feature X", "Execution plan"}
 
     def test_fetch_does_not_mark_read_by_default(self, seeded_messages, db_conn):
+        from awm.services import messaging as _msg
         resp = messaging.fetch_messages(scope="scope:proj-a/scope-1")
         assert resp.marked_read_count == 0
+        recipient_id, _ = _msg._resolve_recipient(
+            "scope:proj-a/scope-1", conn=db_conn,
+        )
         row = db_conn.execute(
-            "SELECT status FROM messages WHERE scope = 'scope:proj-a/scope-1' AND subject = 'Implement feature X'"
+            "SELECT status FROM messages WHERE recipient_id=? AND subject=?",
+            (recipient_id, "Implement feature X"),
         ).fetchone()
         assert row["status"] == "unread"
 
@@ -253,8 +274,14 @@ class TestListRecipients:
         recipients = messaging.list_recipients("*")
         assert "scope:proj-a/scope-1" in recipients
 
-    def test_recipients_include_completed_scopes(self, _init_messaging):
+    def test_recipients_exclude_completed_scopes_by_default(self, _init_messaging):
+        # New default: only active scopes appear as send targets.
         recipients = messaging.list_recipients("*")
+        assert "scope:proj-a/scope-2" not in recipients
+
+    def test_recipients_include_completed_scopes_when_requested(self, _init_messaging):
+        # Explicit opt-in restores the old behavior.
+        recipients = messaging.list_recipients("*", include_inactive=True)
         assert "scope:proj-a/scope-2" in recipients
 
     def test_recipients_include_all_projects(self, _init_messaging):

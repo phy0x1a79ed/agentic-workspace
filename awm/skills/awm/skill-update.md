@@ -42,7 +42,7 @@ Note every tool call, every field name, and every example in the skill body. The
 Past debriefs that followed the skill will have `skill_path` set. Use them to see what agents actually ran into:
 
 ```
-session_list project=<project> scope=<scope>
+session_search project=<project> scope=<scope> status=all
 ```
 
 Then filter the returned entries client-side for `skill_path == "<file_path>"` and read the ones that look relevant with `session_get session_id=<id>`. The `## Gotchas / Issues` and free-form `summary` sections are where drift and friction show up.
@@ -114,7 +114,7 @@ Check and update as needed:
 - Other skills whose `requires:` frontmatter or prose references this skill.
 - Any skill that re-embeds step numbers or field names from this skill's examples.
 
-The frontmatter `description` is the single source of truth — discovery (`skills_list`, `skills_search`, `skills_get`, `find_by_name`) always reads it via a live filesystem scan. There is no separate catalog file to keep in sync.
+The frontmatter `description` is the single source of truth — discovery (`skills_search`, `skills_get`, `find_by_name`) always reads it via a live filesystem scan. There is no separate catalog file to keep in sync.
 
 ### 8. Sync the skills index and verify
 

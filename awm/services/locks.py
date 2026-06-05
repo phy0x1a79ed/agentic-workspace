@@ -79,43 +79,12 @@ def _resolve_owner(resource_path: str) -> str | None:
     if suffix_peer:
         return suffix_peer
 
-    conn = get_connection()
-    try:
-        if kind == "scope":
-            if "/" not in body:
-                return None
-            project, scope_name = body.split("/", 1)
-            row = conn.execute(
-                "SELECT origin_peer FROM scopes "
-                "WHERE project = ? AND scope = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (project, scope_name),
-            ).fetchone()
-        elif kind == "artifact":
-            try:
-                legacy = int(body)
-            except ValueError:
-                return None
-            row = conn.execute(
-                "SELECT origin_peer FROM artifacts WHERE legacy_id = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (legacy,),
-            ).fetchone()
-        elif kind == "room":
-            row = conn.execute(
-                "SELECT host_peer_id AS origin_peer FROM rooms "
-                "WHERE id = ? LIMIT 1",
-                (body,),
-            ).fetchone()
-        else:
-            return None
-    finally:
-        conn.close()
-
-    if row is None:
-        return None
-    owner = row["origin_peer"] or ""
-    return owner or None
+    # v37: data tables are no longer cr-sqlite replicated, so there is no
+    # ``origin_peer`` column to consult. Anything addressable in our local
+    # DB is owned locally; cross-peer locks must be reached via the
+    # explicit ``@<peer-id>`` suffix in the resource path (handled at the
+    # top of this function).
+    return None
 
 
 # Peers we've ever federated a lock to in this process — used to fan out
@@ -222,9 +191,16 @@ def acquire(req: LockAcquireRequest) -> LockActionResponse:
             (req.resource_path, req.holder_id),
         ).fetchone()
 
+        info = _row_to_info(row)
+        try:
+            from awm.services.embeddings import index_lock
+            index_lock(row["id"])
+        except Exception:
+            pass
+
         return LockActionResponse(
             message="Lock acquired",
-            lock=_row_to_info(row),
+            lock=info,
         )
     finally:
         conn.close()
@@ -256,11 +232,17 @@ def release(resource_path: str, holder_id: str) -> LockActionResponse:
             return LockActionResponse(message="No matching lock found")
 
         info = _row_to_info(row)
+        lock_row_id = row["id"]
         conn.execute(
             "DELETE FROM locks WHERE resource_path = ? AND holder_id = ?",
             (resource_path, holder_id),
         )
         conn.commit()
+        try:
+            from awm.services.embeddings import delete_embedding
+            delete_embedding("lock", str(lock_row_id))
+        except Exception:
+            pass
         return LockActionResponse(message="Lock released", lock=info)
     finally:
         conn.close()
@@ -323,25 +305,98 @@ def _coerce_lock_action_response(payload) -> LockActionResponse:
     )
 
 
-def list_locks(holder_id: str | None = None, path: str | None = None) -> LockListResponse:
-    """List active locks, optionally filtered."""
+def search_locks(
+    query: str | None = None,
+    status: str = "active",
+    holder_id: str | None = None,
+    path: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> LockListResponse:
+    """Search locks. Defaults to status='active' (live PID + fresh heartbeat).
+    Pass status='stale' to see reapable rows or status='all' for the
+    firehose. `query` LIKEs on resource_path and holder_id; semantic top-up
+    uses the embeddings table."""
+    sql = "SELECT * FROM locks WHERE 1=1"
+    params: list = []
+    if holder_id:
+        sql += " AND holder_id = ?"
+        params.append(holder_id)
+    if path:
+        sql += " AND resource_path = ?"
+        params.append(path)
+    if query:
+        sql += " AND (resource_path LIKE ? OR holder_id LIKE ?)"
+        like = f"%{query}%"
+        params.extend([like, like])
+    sql += " ORDER BY acquired_at LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
     conn = get_connection()
     try:
-        query = "SELECT * FROM locks WHERE 1=1"
-        params: list = []
-        if holder_id:
-            query += " AND holder_id = ?"
-            params.append(holder_id)
-        if path:
-            query += " AND resource_path = ?"
-            params.append(path)
-        query += " ORDER BY acquired_at"
-
-        rows = conn.execute(query, params).fetchall()
-        locks = [_row_to_info(r) for r in rows]
-        return LockListResponse(locks=locks, total=len(locks))
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
+
+    if status == "active":
+        rows = [r for r in rows if not _is_stale(r)]
+    elif status == "stale":
+        rows = [r for r in rows if _is_stale(r)]
+    # status == "all" → no filtering
+
+    locks = [_row_to_info(r) for r in rows]
+
+    if not query:
+        return LockListResponse(locks=locks, total=len(locks))
+
+    keyword_keys = {str(l.id) for l in locks if hasattr(l, "id") and l.id is not None}
+
+    def _materialize(lock_id: str):
+        try:
+            lid = int(lock_id)
+        except ValueError:
+            return None
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT * FROM locks WHERE id = ?", (lid,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        if status == "active" and _is_stale(row):
+            return None
+        if status == "stale" and not _is_stale(row):
+            return None
+        if holder_id and row["holder_id"] != holder_id:
+            return None
+        if path and row["resource_path"] != path:
+            return None
+        return _row_to_info(row)
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        merged = hybrid_augment(
+            query, source_type="lock",
+            keyword_hits=locks, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        merged = locks
+    return LockListResponse(locks=merged, total=len(merged))
+
+
+def _is_stale(row, *, now: datetime | None = None) -> bool:
+    """Return True if a locks row is stale: holder PID gone, or heartbeat
+    older than HEARTBEAT_STALE_THRESHOLD. Lifted from `reap_stale` so the
+    read path (`search_locks(status='active')`) and the reaper can share
+    the same staleness rule."""
+    if row["holder_pid"] and not _pid_alive(row["holder_pid"]):
+        return True
+    hb = datetime.fromisoformat(row["heartbeat_at"])
+    if hb.tzinfo is None:
+        hb = hb.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - hb).total_seconds() > HEARTBEAT_STALE_THRESHOLD
 
 
 def reap_stale() -> int:
@@ -350,26 +405,21 @@ def reap_stale() -> int:
     try:
         now = datetime.now(timezone.utc)
         rows = conn.execute("SELECT * FROM locks").fetchall()
-        reaped = 0
+        reaped_ids: list[int] = []
         for row in rows:
-            stale = False
-            # Check PID first (instant reap on crash)
-            if row["holder_pid"] and not _pid_alive(row["holder_pid"]):
-                stale = True
-            else:
-                # Check heartbeat age
-                hb = datetime.fromisoformat(row["heartbeat_at"])
-                if hb.tzinfo is None:
-                    hb = hb.replace(tzinfo=timezone.utc)
-                age = (now - hb).total_seconds()
-                if age > HEARTBEAT_STALE_THRESHOLD:
-                    stale = True
-
-            if stale:
+            if _is_stale(row, now=now):
                 conn.execute("DELETE FROM locks WHERE id = ?", (row["id"],))
-                reaped += 1
+                reaped_ids.append(row["id"])
 
         conn.commit()
-        return reaped
     finally:
         conn.close()
+
+    try:
+        from awm.services.embeddings import delete_embedding
+        for lid in reaped_ids:
+            delete_embedding("lock", str(lid))
+    except Exception:
+        pass
+
+    return len(reaped_ids)

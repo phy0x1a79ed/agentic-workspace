@@ -262,16 +262,28 @@ _start_login() {
   fi
 }
 
+NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
+
 _build_packages() {
-  # Generate every stripe's dist/ before stripe_sync registers them.
-  # Packages without a build script (e.g. hand-authored hello/dev-shell
-  # where dist/ IS source) are skipped via --if-present. Packages that
-  # DO build keep dist/ gitignored; this is where it's produced.
+  # Layout-driven build pipeline:
+  #   1. awm packages gen — write generated package.json + per-page
+  #      vite.config.ts from the packages/{components,pages}/<name>/
+  #      layout + a src/ import scan (idempotent).
+  #   2. npm install — symlink workspace packages.
+  #   3. npm run build --workspaces --if-present — pages with a build
+  #      script (every generated page) emit dist/.
   local pkgs_root="$REPO_ROOT/packages"
   local root_pj="$REPO_ROOT/package.json"
   if [ ! -d "$pkgs_root" ] || [ ! -f "$root_pj" ]; then
     return 0
   fi
+  echo "[dev] awm packages gen $REPO_ROOT"
+  (cd "$REPO_ROOT" && mamba run -n awm --no-capture-output \
+      python -m awm packages gen "$REPO_ROOT") \
+    >>"$SYNC_LOG_FILE" 2>&1 || {
+      echo "[dev] manifest gen failed — see $SYNC_LOG_FILE"
+      return 1
+    }
   if [ ! -d "$REPO_ROOT/node_modules" ]; then
     echo "[dev] npm install (workspace root)…"
     (cd "$REPO_ROOT" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund) \
@@ -290,27 +302,29 @@ _build_packages() {
 }
 
 _start_stripe_sync() {
-  # Auto-register every packages/* that declares a `stripe` field.
-  # If packages/ is empty or absent, this is a no-op (CLI exits 1) —
-  # silently skip without aborting the harness.
+  # Walk packages/{services,pages}/<name>/ and register each with the
+  # hub via `awm packages sync`. Services are spawned via start.sh +
+  # self-register over a control WS; pages register as kind=page at
+  # /ui/<name>. If nothing is present, silently skip.
   local pkgs_root="$REPO_ROOT/packages"
   if [ ! -d "$pkgs_root" ]; then
     return 0
   fi
-  # Any stripe packages? (Has a package.json at all under packages/<name>/.)
-  if ! find "$pkgs_root" -maxdepth 2 -name package.json -print -quit | grep -q .; then
+  if ! find "$pkgs_root/services" "$pkgs_root/pages" \
+        -maxdepth 2 \( -name start.sh -o -name dist \) -print -quit \
+        2>/dev/null | grep -q .; then
     return 0
   fi
   _build_packages || return 1
-  echo "[dev] stripe-sync  $REPO_ROOT/packages/"
+  echo "[dev] packages-sync  $REPO_ROOT/packages/"
   cd "$REPO_ROOT"
   nohup setsid mamba run -n awm --no-capture-output \
-      python -m awm stripe sync "$REPO_ROOT" \
+      python -m awm packages sync "$REPO_ROOT" \
       >"$SYNC_LOG_FILE" 2>&1 &
   echo $! >"$SYNC_PID_FILE"
   sleep 0.5
   if ! is_sync_running; then
-    echo "[dev] stripe-sync failed to start — see $SYNC_LOG_FILE"
+    echo "[dev] packages-sync failed to start — see $SYNC_LOG_FILE"
     tail -n 20 "$SYNC_LOG_FILE" || true
     rm -f "$SYNC_PID_FILE"
   fi
@@ -371,50 +385,6 @@ do_reset() {
   esac
 }
 
-FRONTEND_DIR="$REPO_ROOT/frontend"
-NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
-
-do_frontend() {
-  if [ ! -d "$FRONTEND_DIR" ]; then
-    echo "[dev] no frontend/ directory — nothing to run"
-    exit 1
-  fi
-  if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
-    echo "[dev] installing frontend deps…"
-    (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund)
-  fi
-  # AWM_API_TARGET defaults to this worktree's own uvicorn; override to point
-  # Vite at a different scope's backend (e.g. web-backend's uvicorn on 7841).
-  local api_target="${AWM_API_TARGET:-https://${AWM_EXPOSED_HOST}:${AWM_EXPOSED_PORT}}"
-  echo "[dev] vite dev → http://0.0.0.0:${VITE_PORT}/ui/  (proxies API/WS to ${api_target})"
-  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" \
-      AWM_API_TARGET="$api_target" VITE_PORT="$VITE_PORT" \
-      npm run dev -- --host 0.0.0.0 --port "$VITE_PORT")
-}
-
-do_build() {
-  if [ ! -d "$FRONTEND_DIR" ]; then
-    echo "[dev] no frontend/ directory — nothing to build"
-    exit 1
-  fi
-  # adapter-static empties awm/static/ before writing the SPA, which wipes
-  # the server-rendered login.html (operator lockout risk). Preserve it
-  # across the build by copy-aside-then-restore.
-  local login_src="$REPO_ROOT/awm/static/login.html"
-  local login_bak=""
-  if [ -f "$login_src" ]; then
-    login_bak="$(mktemp)"
-    cp "$login_src" "$login_bak"
-  fi
-  (cd "$FRONTEND_DIR" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund && PATH="$NODE_BIN:$PATH" npm run build)
-  if [ -n "$login_bak" ]; then
-    cp "$login_bak" "$login_src"
-    rm -f "$login_bak"
-    echo "[dev] preserved login.html across build"
-  fi
-  echo "[dev] build output → $REPO_ROOT/awm/static/  (restart uvicorn to pick up)"
-}
-
 case "$cmd" in
   start)    do_start ;;
   stop)     do_stop ;;
@@ -424,10 +394,8 @@ case "$cmd" in
   reset)    do_reset ;;
   login)    do_login ;;
   logs)     tail -n 200 -F "$LOG_FILE" ;;
-  frontend) do_frontend ;;
-  build)    do_build ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs|frontend|build}"
+    echo "usage: $0 {start|stop|restart|status|seed|reset|login|logs}"
     exit 2
     ;;
 esac

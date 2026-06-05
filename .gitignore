@@ -16,6 +16,18 @@ NAME.md
 data/
 projects/
 
+# SvelteKit static build output — registered with the hub via
+# `awm hub register --dir build/`, not committed.
+build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
+# npm workspace artifacts
+# package-lock.json (root + frontend/) is tracked authoritatively so a stale
+# untracked copy can't block dev's next FF — see session #334.
+node_modules/
+packages/**/dist/
+
 # Python
 __pycache__/
 *.pyc

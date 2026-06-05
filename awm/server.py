@@ -45,9 +45,9 @@ from awm.models import (
     PeerPingResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import register_fastapi_routes
+from awm._lib.operations import register_fastapi_routes
 from awm.services import core, projects, scopes, locks, shared_resources, skills
-from awm.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
+from awm._lib.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
 # Idle shutdown + reaper state
@@ -157,7 +157,7 @@ def get_status():
     finally:
         conn.close()
 
-    scope_result = scopes.list_scopes(status="active")
+    scope_result = scopes.search_scopes(status="active", limit=10_000)
 
     # Leadership view — only meaningful when reached via the exposed listener.
     # When the singleton hasn't been configured (core-only / pre-lifespan),
@@ -203,11 +203,19 @@ def get_peer_identity():
     return ident
 
 
-@app.get("/peers", response_model=PeerListResponse)
-def list_peers_endpoint():
-    """List registered remote peers (control-center surface)."""
+@app.get("/peers/search", response_model=PeerListResponse)
+def search_peers_endpoint(
+    query: str | None = None,
+    status: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Search registered remote peers (hybrid keyword + semantic).
+    `status` is one of 'all' (default), 'online', 'offline'."""
     from awm.services.network import peers as peer_svc
-    rows = peer_svc.list_peers()
+    rows = peer_svc.search_peers(
+        query=query, status=status, limit=limit, offset=offset,
+    )
     return PeerListResponse(peers=[PeerInfo(**r) for r in rows])
 
 
@@ -228,30 +236,20 @@ def ping_peer_endpoint(peer_id: str):
     )
 
 
-@app.get("/projects", response_model=ProjectListResponse)
-def list_projects_endpoint():
-    """List projects derived from the scopes table, with per-status counts."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT project, status, COUNT(*) AS n FROM scopes "
-            "GROUP BY project, status ORDER BY project"
-        ).fetchall()
-    finally:
-        conn.close()
-    by_project: dict[str, ProjectScopeCounts] = {}
-    for r in rows:
-        counts = by_project.setdefault(r["project"], ProjectScopeCounts())
-        if r["status"] == "active":
-            counts.active = r["n"]
-        elif r["status"] == "completed":
-            counts.completed = r["n"]
-        elif r["status"] == "deleted":
-            counts.deleted = r["n"]
-    return ProjectListResponse(projects=[
-        ProjectListInfo(name=name, scope_counts=counts)
-        for name, counts in by_project.items()
-    ])
+@app.get("/projects/search", response_model=ProjectListResponse)
+def search_projects_endpoint(
+    query: str | None = None,
+    active_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Search projects (hybrid keyword + semantic). v37: counts are derived
+    from the agents table (``allocated|active`` → active, ``retired`` →
+    completed)."""
+    from awm.services import projects as projects_svc
+    return projects_svc.search_projects(
+        query=query, active_only=active_only, limit=limit, offset=offset,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +356,19 @@ def create_project(req: ProjectCreateRequest):
 # Scopes (formerly Tasks)
 # ---------------------------------------------------------------------------
 
-@app.get("/scopes", response_model=ScopeListResponse)
-def list_scopes_endpoint(
-    status: str | None = Query(None),
+@app.get("/scopes/search", response_model=ScopeListResponse)
+def search_scopes_endpoint(
+    query: str | None = Query(None),
+    status: str = Query("active"),
     project: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
 ):
-    return scopes.list_scopes(status=status, project=project)
+    """Search scopes (hybrid keyword + semantic). Defaults to status='active'."""
+    return scopes.search_scopes(
+        query=query, status=status, project=project,
+        limit=limit, offset=offset,
+    )
 
 
 @app.post("/scopes", response_model=ScopeActionResponse)
@@ -426,12 +431,21 @@ def release_lock(
     return locks.release(path, holder)
 
 
-@app.get("/locks", response_model=LockListResponse)
-def list_locks_endpoint(
+@app.get("/locks/search", response_model=LockListResponse)
+def search_locks_endpoint(
+    query: str | None = Query(None),
+    status: str = Query("active"),
     holder: str | None = Query(None),
     path: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
 ):
-    return locks.list_locks(holder_id=holder, path=path)
+    """Search locks (hybrid keyword + semantic). Defaults to status='active'
+    (live PID + fresh heartbeat); pass status='stale' or 'all'."""
+    return locks.search_locks(
+        query=query, status=status, holder_id=holder, path=path,
+        limit=limit, offset=offset,
+    )
 
 
 @app.post("/locks/heartbeat", response_model=LockActionResponse)
@@ -472,17 +486,15 @@ def list_shared_edits(status: str | None = Query(None)):
 # ---------------------------------------------------------------------------
 
 @app.get("/skills/search", response_model=SkillListResponse)
-def search_skills_endpoint(q: str = Query(...)):
-    return skills.search_skills(q)
-
-
-@app.get("/skills", response_model=SkillListResponse)
-def list_skills_endpoint(
+def search_skills_endpoint(
+    query: str | None = Query(None),
     type: str | None = Query(None),
     tags: str | None = Query(None, description="Comma-separated tags"),
 ):
+    """Search skills (hybrid keyword + semantic). Omit `query` to filter
+    only by `type` / `tags`."""
     tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    return skills.list_skills(type_filter=type, tags=tag_list)
+    return skills.search_skills(query=query, type_filter=type, tags=tag_list)
 
 
 @app.get("/skills/{path:path}", response_model=SkillContentResponse)

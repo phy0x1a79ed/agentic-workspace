@@ -1,10 +1,9 @@
-"""Session log CRUD: DB-only storage."""
+"""Session log CRUD: DB-only storage (v37)."""
 
 from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime, timezone
 
 from awm.config import SKILLS_DIR
 from awm.db import get_connection
@@ -16,30 +15,13 @@ from awm.models import (
     SessionLogPreview,
     SessionSearchResponse,
 )
-from awm.services.network import peers as peer_svc
-from awm.services.replication.schema import new_uuid, next_legacy_id
+from awm.services import identity
+from awm.services.identity import iso_to_ms, ms_to_iso, now_ms
 
 _SUMMARY_PREVIEW_CHARS = 240
 
 
-def _local_peer_id() -> str:
-    """Return the local peer id, or '' if PEER_FILE hasn't been initialized.
-    Used to stamp origin_peer on new session_log rows."""
-    try:
-        ident = peer_svc.get_local_identity()
-    except Exception:
-        return ""
-    if ident is None:
-        return ""
-    return ident.get("peer_id") or ""
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _get_skills_git_hash() -> str | None:
-    """Get the current git commit hash of the skills directory."""
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%H", "--", str(SKILLS_DIR)],
@@ -55,12 +37,12 @@ def _get_skills_git_hash() -> str | None:
 
 def _row_to_entry(row) -> SessionLogEntry:
     return SessionLogEntry(
-        id=row["legacy_id"],
-        project=row["project"],
-        scope=row["scope"],
+        id=row["id"],
+        project=row["project_name"],
+        scope=row["scope_name"],
         file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
-        logged_at=row["logged_at"],
+        logged_at=ms_to_iso(row["created_at"]) or "",
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
@@ -68,14 +50,21 @@ def _row_to_entry(row) -> SessionLogEntry:
         deviations=row["deviations"],
         suggestions=row["suggestions"],
         skill_version=row["skill_version"],
-        resolved_at=row["resolved_at"],
+        resolved_at=ms_to_iso(row["resolved_at"]),
         resolution=row["resolution"],
     )
 
 
-def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
-    """Format a session log entry as markdown."""
-    date_str = logged_at[:10]
+_BASE_SELECT = (
+    "SELECT s.*, p.name AS project_name, a.scope AS scope_name "
+    "FROM session_logs s "
+    "JOIN agents a ON a.id = s.agent_id "
+    "JOIN projects p ON p.id = a.project_id"
+)
+
+
+def _format_entry(req: SessionLogCreateRequest, logged_at_iso: str) -> str:
+    date_str = logged_at_iso[:10]
     lines = []
     if req.title:
         lines.extend([f"# {req.title}", ""])
@@ -122,14 +111,27 @@ def _format_entry(req: SessionLogCreateRequest, logged_at: str) -> str:
     return "\n".join(lines)
 
 
+def _ensure_agent_for_log(project: str, scope: str, *, conn) -> str:
+    """Resolve (project, scope) to an agent id, creating allocated rows
+    (and the project) on demand so a fresh session_log doesn't blow up
+    on an unseeded scope."""
+    pid = identity.project_id_for_name(project, conn=conn)
+    if pid is None:
+        from awm.config import PROJECTS_DIR
+        bare = PROJECTS_DIR / project / ".bare"
+        identity.ensure_project(project, repo_path=str(bare), conn=conn)
+    return identity.ensure_agent(project, scope, conn=conn)
+
+
 def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
-    """Record a session log entry in the database."""
+    """Record a session log entry."""
     skill_version = None
     if req.skill_path:
         skill_version = _get_skills_git_hash()
 
-    logged_at = _now_iso()
-    content = _format_entry(req, logged_at)
+    created_at_ms = now_ms()
+    logged_at_iso = ms_to_iso(created_at_ms) or ""
+    content = _format_entry(req, logged_at_iso)
 
     metadata = None
     if req.decisions or req.issues or req.next_steps:
@@ -141,33 +143,26 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
 
     conn = get_connection()
     try:
-        origin = _local_peer_id()
-        legacy = next_legacy_id(conn, "session_logs", origin)
-        uid = new_uuid()
-        conn.execute(
-            """
-            INSERT INTO session_logs
-                (uuid, legacy_id, origin_peer,
-                 project, scope, file_path, git_commit, logged_at, summary,
-                 title, agent_id, metadata, content, skill_path,
-                 outcome, deviations, suggestions, skill_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (uid, legacy, origin,
-             req.project, req.scope, "", None, logged_at,
-             req.summary, req.title, req.agent_id, metadata, content,
-             req.skill_path, req.outcome, req.deviations, req.suggestions,
-             skill_version),
+        agent_id = _ensure_agent_for_log(req.project, req.scope, conn=conn)
+        cur = conn.execute(
+            "INSERT INTO session_logs "
+            "(agent_id, created_at, file_path, git_commit, summary, "
+            " metadata, content, skill_path, outcome, deviations, "
+            " suggestions, skill_version, title) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, created_at_ms, "", None, req.summary,
+             metadata, content, req.skill_path, req.outcome,
+             req.deviations, req.suggestions, skill_version, req.title),
         )
+        sid = cur.lastrowid
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
+            f"{_BASE_SELECT} WHERE s.id=?", (sid,),
         ).fetchone()
         entry = _row_to_entry(row)
     finally:
         conn.close()
 
-    # Auto-index for semantic search (best-effort)
     try:
         from awm.services.embeddings import index_session
         index_session(entry.id)
@@ -177,65 +172,22 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
     return entry
 
 
-def list_sessions(
-    project: str | None = None,
-    scope: str | None = None,
-    skill_path: str | None = None,
-    status: str | None = None,
-    limit: int = 50,
-) -> SessionLogListResponse:
-    """Query session logs with optional filters."""
-    conn = get_connection()
-    try:
-        query = (
-            "SELECT legacy_id, project, scope, file_path, git_commit, logged_at, "
-            "title, agent_id, skill_path, outcome, deviations, suggestions, "
-            "skill_version, resolved_at, resolution "
-            "FROM session_logs WHERE 1=1"
-        )
-        params: list = []
-        if project:
-            query += " AND project = ?"
-            params.append(project)
-        if scope:
-            query += " AND scope = ?"
-            params.append(scope)
-        if skill_path:
-            query += " AND skill_path = ?"
-            params.append(skill_path)
-        if status == "open":
-            query += " AND resolved_at IS NULL"
-        elif status == "resolved":
-            query += " AND resolved_at IS NOT NULL"
-        query += " ORDER BY logged_at DESC LIMIT ?"
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        entries = [_row_to_entry(r) for r in rows]
-        return SessionLogListResponse(entries=entries, total=len(entries))
-    finally:
-        conn.close()
-
-
 def get_session(session_id: int | str) -> SessionLogContentResponse:
-    """Look up a session by its public ``legacy_id``. Accepts ``42`` or
-    ``'42@<peer>'`` to disambiguate same-legacy_id rows from different
-    peers post-replication."""
-    legacy_id, peer = peer_svc.parse_id_ref(session_id)
-    origin = peer if peer is not None else _local_peer_id()
+    """Look up a session by its INTEGER id. Cross-peer ``42@peer`` ids
+    are no longer routable post-v37 (session_logs aren't replicated)."""
+    try:
+        sid = int(str(session_id).split("@", 1)[0])
+    except ValueError as exc:
+        raise FileNotFoundError(f"Session log {session_id} not found") from exc
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
-            (legacy_id, origin),
+            f"{_BASE_SELECT} WHERE s.id=?", (sid,),
         ).fetchone()
         if row is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
         entry = _row_to_entry(row)
-
         content = row["content"] or ""
-
-        # Fallback for legacy rows without content
         if not content:
             meta: dict = {}
             if row["metadata"]:
@@ -267,7 +219,6 @@ def get_session(session_id: int | str) -> SessionLogContentResponse:
 
 
 def _display_title(row) -> str:
-    """Return the title if set, otherwise truncate summary to 80 chars."""
     if row["title"]:
         return row["title"]
     s = row["summary"]
@@ -281,41 +232,38 @@ def _row_to_preview(row) -> SessionLogPreview:
     if truncated:
         summary = summary + "…"
     return SessionLogPreview(
-        id=row["legacy_id"],
-        project=row["project"],
-        scope=row["scope"],
-        logged_at=row["logged_at"],
+        id=row["id"],
+        project=row["project_name"],
+        scope=row["scope_name"],
+        logged_at=ms_to_iso(row["created_at"]) or "",
         summary=summary,
         title=row["title"],
         agent_id=row["agent_id"],
         skill_path=row["skill_path"],
         outcome=row["outcome"],
-        resolved_at=row["resolved_at"],
+        resolved_at=ms_to_iso(row["resolved_at"]),
         summary_truncated=truncated,
     )
 
 
 def resolve_session(session_id: int | str, resolution: str) -> SessionLogEntry:
-    """Mark a session log entry as resolved. Accepts ``42`` or ``'42@<peer>'``."""
-    legacy_id, peer = peer_svc.parse_id_ref(session_id)
-    origin = peer if peer is not None else _local_peer_id()
+    try:
+        sid = int(str(session_id).split("@", 1)[0])
+    except ValueError as exc:
+        raise FileNotFoundError(f"Session log {session_id} not found") from exc
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT uuid FROM session_logs WHERE legacy_id = ? AND origin_peer = ?",
-            (legacy_id, origin),
+        existing = conn.execute(
+            "SELECT id FROM session_logs WHERE id=?", (sid,),
         ).fetchone()
-        if row is None:
+        if existing is None:
             raise FileNotFoundError(f"Session log {session_id} not found")
-        uid = row["uuid"]
         conn.execute(
-            "UPDATE session_logs SET resolved_at = ?, resolution = ? WHERE uuid = ?",
-            (_now_iso(), resolution, uid),
+            "UPDATE session_logs SET resolved_at=?, resolution=? WHERE id=?",
+            (now_ms(), resolution, sid),
         )
         conn.commit()
-        row = conn.execute(
-            "SELECT * FROM session_logs WHERE uuid = ?", (uid,),
-        ).fetchone()
+        row = conn.execute(f"{_BASE_SELECT} WHERE s.id=?", (sid,)).fetchone()
         return _row_to_entry(row)
     finally:
         conn.close()
@@ -326,43 +274,101 @@ def search_sessions(
     scope: str | None = None,
     skill_path: str | None = None,
     query: str | None = None,
-    status: str | None = None,
+    status: str = "open",
     limit: int = 50,
+    offset: int = 0,
 ) -> SessionSearchResponse:
-    """Search session logs, returning previews (no content)."""
+    """Search session logs, returning previews (no content). Defaults to
+    status='open' (unresolved); pass status='all' for the full history."""
     conn = get_connection()
     try:
         sql = (
-            "SELECT legacy_id, project, scope, logged_at, title, agent_id, "
-            "skill_path, outcome, resolved_at, "
-            "SUBSTR(summary, 1, ?) AS summary_preview, "
-            "LENGTH(summary) AS summary_len "
-            "FROM session_logs WHERE 1=1"
+            "SELECT s.id, s.created_at, s.title, s.skill_path, s.outcome, "
+            "       s.resolved_at, s.agent_id, "
+            "       SUBSTR(s.summary, 1, ?) AS summary_preview, "
+            "       LENGTH(s.summary) AS summary_len, "
+            "       p.name AS project_name, a.scope AS scope_name "
+            "FROM session_logs s "
+            "JOIN agents a ON a.id = s.agent_id "
+            "JOIN projects p ON p.id = a.project_id "
+            "WHERE 1=1"
         )
         params: list = [_SUMMARY_PREVIEW_CHARS]
         if project:
-            sql += " AND project = ?"
+            sql += " AND p.name = ?"
             params.append(project)
         if scope:
-            sql += " AND scope = ?"
+            sql += " AND a.scope = ?"
             params.append(scope)
         if skill_path:
-            sql += " AND skill_path = ?"
+            sql += " AND s.skill_path = ?"
             params.append(skill_path)
         if query:
-            sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
+            sql += " AND (s.title LIKE ? OR s.summary LIKE ? OR s.content LIKE ?)"
             like = f"%{query}%"
             params.extend([like, like, like])
         if status == "open":
-            sql += " AND resolved_at IS NULL"
+            sql += " AND s.resolved_at IS NULL"
         elif status == "resolved":
-            sql += " AND resolved_at IS NOT NULL"
-        sql += " ORDER BY logged_at DESC LIMIT ?"
-        params.append(limit)
+            sql += " AND s.resolved_at IS NOT NULL"
+        # status == "all" → no filter
+        sql += " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = conn.execute(sql, params).fetchall()
-        entries = [_row_to_preview(r) for r in rows]
-        return SessionSearchResponse(entries=entries, total=len(entries))
     finally:
         conn.close()
+    entries = [_row_to_preview(r) for r in rows]
+
+    if not query:
+        return SessionSearchResponse(entries=entries, total=len(entries))
+
+    keyword_keys = {str(e.id) for e in entries}
+
+    def _materialize(source_id: str):
+        try:
+            sid = int(source_id)
+        except ValueError:
+            return None
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT s.id, s.created_at, s.title, s.skill_path, s.outcome, "
+                "       s.resolved_at, s.agent_id, "
+                "       SUBSTR(s.summary, 1, ?) AS summary_preview, "
+                "       LENGTH(s.summary) AS summary_len, "
+                "       p.name AS project_name, a.scope AS scope_name "
+                "FROM session_logs s "
+                "JOIN agents a ON a.id = s.agent_id "
+                "JOIN projects p ON p.id = a.project_id "
+                "WHERE s.id = ?",
+                (_SUMMARY_PREVIEW_CHARS, sid),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        if status == "open" and row["resolved_at"]:
+            return None
+        if status == "resolved" and not row["resolved_at"]:
+            return None
+        if project and row["project_name"] != project:
+            return None
+        if scope and row["scope_name"] != scope:
+            return None
+        if skill_path and row["skill_path"] != skill_path:
+            return None
+        return _row_to_preview(row)
+
+    try:
+        from awm.services.embeddings import hybrid_augment
+        merged = hybrid_augment(
+            query, source_type="session",
+            keyword_hits=entries, keyword_keys=keyword_keys,
+            materialize=_materialize,
+        )
+    except Exception:
+        merged = entries
+    return SessionSearchResponse(entries=merged, total=len(merged))
+
 
 

@@ -37,7 +37,8 @@ room_app = typer.Typer(help="Rooms: multi-participant conversations with agents"
 
 discord_app = typer.Typer(help="Discord bot operator whitelist", no_args_is_help=True)
 hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
-stripe_app = typer.Typer(help="Vertical stripes: register packages/* with the hub (kind=stripe)", no_args_is_help=True)
+packages_app = typer.Typer(help="Packages: generate manifests + sync packages/{services,pages}/ with the hub", no_args_is_help=True)
+dev_app = typer.Typer(help="Dev workflows: shadow packages into the running hub", no_args_is_help=True)
 
 context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
 
@@ -53,7 +54,8 @@ app.add_typer(room_app, name="room")
 app.add_typer(discord_app, name="discord")
 app.add_typer(context_app, name="context")
 app.add_typer(hub_app, name="hub")
-app.add_typer(stripe_app, name="stripe")
+app.add_typer(packages_app, name="packages")
+app.add_typer(dev_app, name="dev")
 
 
 # ---------------------------------------------------------------------------
@@ -474,12 +476,20 @@ def peer_add(
     typer.echo(_json.dumps(entry, indent=2))
 
 
-@peer_app.command("list")
-def peer_list():
-    """List registered remote peers."""
+@peer_app.command("search")
+def peer_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query"),
+    status: str = typer.Option("all", "--status", help="online | offline | all (default)"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
+):
+    """Search registered remote peers (hybrid keyword + semantic)."""
     from awm.services.network import peers as peer_svc
     import json as _json
-    typer.echo(_json.dumps(peer_svc.list_peers(), indent=2))
+    rows = peer_svc.search_peers(
+        query=query, status=status, limit=limit, offset=offset,
+    )
+    typer.echo(_json.dumps(rows, indent=2))
 
 
 @peer_app.command("remove")
@@ -657,22 +667,6 @@ def room_create(
     _print_json(r)
 
 
-@room_app.command("list")
-def room_list(
-    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
-    status: str = typer.Option("active", "--status"),
-    participating_scope: str = typer.Option(None, "--participating-scope"),
-):
-    """List rooms (locally or across peers)."""
-    params = {"status": status}
-    if participating_scope:
-        params["participating_scope"] = participating_scope
-    if peer:
-        params["peer"] = peer
-    r = _exposed_api("GET", "/rooms", params=params)
-    _print_json(r)
-
-
 @room_app.command("get")
 def room_get(name: str = typer.Argument(...)):
     """Show room details, participants, and recent transcript."""
@@ -696,12 +690,19 @@ def room_history(
 
 @room_app.command("search")
 def room_search(
-    query: str = typer.Argument(...),
-    peer: str = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
-    limit: int = typer.Option(20, "--limit"),
+    query: Optional[str] = typer.Argument(None, help="Free-text query (optional)"),
+    status: str = typer.Option("active", "--status", help="active (default), closed, archived, or all"),
+    participating_scope: Optional[str] = typer.Option(None, "--participating-scope"),
+    peer: Optional[str] = typer.Option(None, "--peer", help="all|<peer-id> for fan-out"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """Search rooms by topic / id / transcript content."""
-    params = {"q": query, "limit": limit}
+    """Search rooms (hybrid keyword + semantic). Defaults to status='active'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
+    if participating_scope:
+        params["participating_scope"] = participating_scope
     if peer:
         params["peer"] = peer
     r = _exposed_api("GET", "/rooms/search", params=params)
@@ -985,10 +986,20 @@ def project_create(
     _print_json(r)
 
 
-@project_app.command("list")
-def project_list():
-    """List projects with per-status scope counts."""
-    r = _api("GET", "/projects")
+@project_app.command("search")
+def project_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (project name + README)"),
+    active_only: bool = typer.Option(False, "--active-only", help="Hide projects with zero active scopes"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
+):
+    """Search projects (hybrid keyword + semantic) with per-status scope counts."""
+    params: dict = {"limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
+    if active_only:
+        params["active_only"] = "true"
+    r = _api("GET", "/projects/search", params=params)
     _print_json(r)
 
 
@@ -1162,18 +1173,21 @@ def _emit_context_block(tag: str, path: Path, *, base: Path) -> None:
     typer.echo(f"</{tag}>")
 
 
-@scope_app.command("list")
-def scope_list(
-    status: Optional[str] = typer.Option(None, "--status", help="Filter by status (active/completed/deleted/all)"),
+@scope_app.command("search")
+def scope_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (scope name + context.md)"),
+    status: str = typer.Option("active", "--status", help="active (default), completed, deleted, or all"),
     project: Optional[str] = typer.Option(None, "--project", help="Filter by project"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """List scopes."""
-    params = {}
-    if status:
-        params["status"] = status
+    """Search scopes (hybrid keyword + semantic). Defaults to status='active'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
     if project:
         params["project"] = project
-    r = _api("GET", "/scopes", params=params)
+    r = _api("GET", "/scopes/search", params=params)
 
     data = r.json()
     if r.status_code >= 400:
@@ -1224,18 +1238,25 @@ def lock_release(
     _print_json(r)
 
 
-@lock_app.command("list")
-def lock_list(
+@lock_app.command("search")
+def lock_search(
+    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (resource path + holder + metadata)"),
+    status: str = typer.Option("active", "--status", help="active (default), stale, or all"),
     holder: Optional[str] = typer.Option(None, "--holder", help="Filter by holder"),
     path: Optional[str] = typer.Option(None, "--path", help="Filter by path"),
+    limit: int = typer.Option(50, "--limit"),
+    offset: int = typer.Option(0, "--offset"),
 ):
-    """List active locks."""
-    params = {}
+    """Search locks (hybrid keyword + semantic). Defaults to status='active'
+    (live PID + fresh heartbeat); pass status='stale' or 'all'."""
+    params: dict = {"status": status, "limit": limit, "offset": offset}
+    if query:
+        params["query"] = query
     if holder:
         params["holder"] = holder
     if path:
         params["path"] = path
-    r = _api("GET", "/locks", params=params)
+    r = _api("GET", "/locks/search", params=params)
 
     data = r.json()
     if r.status_code >= 400:
@@ -1244,7 +1265,7 @@ def lock_list(
 
     locks = data["locks"]
     if not locks:
-        typer.echo("(no active locks)")
+        typer.echo("(no matching locks)")
         return
 
     typer.echo(f"{'RESOURCE':<40} {'HOLDER':<20} {'TYPE':<12} {'ACQUIRED':<25}")
@@ -1326,54 +1347,11 @@ def _resolve_peer_set(peer_flag: str | None) -> list[str] | None:
         return None
     from awm.services.network import peers as _peers
     if peer_flag == "all":
-        return [p["peer_id"] for p in _peers.list_peers()]
+        return [p["peer_id"] for p in _peers.search_peers(status="all", limit=10_000)]
     if _peers.get_peer(peer_flag) is None:
         typer.echo(f"error: unknown peer '{peer_flag}'", err=True)
         raise typer.Exit(2)
     return [peer_flag]
-
-
-@skill_app.command("list")
-def skill_list(
-    type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
-    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
-    peer: Optional[str] = typer.Option(None, "--peer",
-                                        help="Federate: 'all' or a peer-id. Excludes local."),
-):
-    """List all skills in the catalog. With --peer, fetches from remote peers."""
-    params = {}
-    if type:
-        params["type"] = type
-    if tags:
-        params["tags"] = tags
-
-    peer_ids = _resolve_peer_set(peer)
-    if peer_ids is not None:
-        from awm.services.network import federation as _fed
-        data = _fed.fan_out_get(peer_ids, "/skills", params, result_key="skills")
-    else:
-        r = _api("GET", "/skills", params=params)
-        if r.status_code >= 400:
-            typer.echo(f"Error: {r.text}", err=True)
-            raise typer.Exit(1)
-        data = r.json()
-
-    skills = data["skills"]
-    if not skills:
-        typer.echo("(no skills found)")
-        if data.get("degraded"):
-            typer.echo(f"degraded peers: {data['degraded']}", err=True)
-        return
-
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
-    for s in skills:
-        tags_str = ", ".join(s.get("tags", []))
-        origin = s.get("origin_peer_id", "local")
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
-    typer.echo(f"\nTotal: {data['total']} skill(s)")
-    if data.get("degraded"):
-        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
 
 
 @skill_app.command("get")
@@ -1391,18 +1369,28 @@ def skill_get(
 
 @skill_app.command("search")
 def skill_search(
-    query: str = typer.Argument(..., help="Search query"),
+    query: Optional[str] = typer.Argument(None, help="Free-text query (optional; omit to filter only)"),
+    type: Optional[str] = typer.Option(None, "--type", help="Filter by type (sop, tool, template)"),
+    tags: Optional[str] = typer.Option(None, "--tags", help="Comma-separated tags to filter by"),
     peer: Optional[str] = typer.Option(None, "--peer",
                                         help="Federate: 'all' or a peer-id. Excludes local."),
 ):
-    """Search skills by name, tags, description, or content. With --peer,
-    fan out to remote peers and tag each result with its origin."""
+    """Search skills (hybrid keyword + semantic) with optional type/tag filters.
+    With --peer, fan out to remote peers and tag each result with its origin."""
+    params: dict = {}
+    if query:
+        params["query"] = query
+    if type:
+        params["type"] = type
+    if tags:
+        params["tags"] = tags
+
     peer_ids = _resolve_peer_set(peer)
     if peer_ids is not None:
         from awm.services.network import federation as _fed
-        data = _fed.fan_out_get(peer_ids, "/skills/search", {"q": query}, result_key="skills")
+        data = _fed.fan_out_get(peer_ids, "/skills/search", params, result_key="skills")
     else:
-        r = _api("GET", "/skills/search", params={"q": query})
+        r = _api("GET", "/skills/search", params=params)
         if r.status_code >= 400:
             typer.echo(f"Error: {r.text}", err=True)
             raise typer.Exit(1)
@@ -1415,11 +1403,15 @@ def skill_search(
             typer.echo(f"degraded peers: {data['degraded']}", err=True)
         return
 
-    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'FILE':<35} {'PEER':<10}")
-    typer.echo(f"{'----':<25} {'----':<10} {'----':<35} {'----':<10}")
+    typer.echo(f"{'NAME':<25} {'TYPE':<10} {'TAGS':<30} {'FILE':<35} {'PEER':<10}")
+    typer.echo(f"{'----':<25} {'----':<10} {'----':<30} {'----':<35} {'----':<10}")
     for s in skills:
+        tags_str = ", ".join(s.get("tags", []))
         origin = s.get("origin_peer_id", "local")
-        typer.echo(f"{s['name']:<25} {s['type']:<10} {s['file_path']:<35} {origin:<10}")
+        typer.echo(f"{s['name']:<25} {s['type']:<10} {tags_str:<30} {s['file_path']:<35} {origin:<10}")
+    typer.echo(f"\nTotal: {data['total']} skill(s)")
+    if data.get("degraded"):
+        typer.echo(f"Degraded peers: {data['degraded']}", err=True)
     typer.echo(f"\nTotal: {data['total']} match(es)")
     if data.get("degraded"):
         typer.echo(f"Degraded peers: {data['degraded']}", err=True)
@@ -1430,7 +1422,7 @@ def skill_search(
 # ---------------------------------------------------------------------------
 
 from awm.operations.sessions import SESSION_OPERATIONS
-from awm.registry import register_cli_commands
+from awm._lib.operations import register_cli_commands
 
 _session_groups = register_cli_commands(app, SESSION_OPERATIONS, _api)
 _session_app = _session_groups["session"]
@@ -1665,9 +1657,15 @@ def hub_list():
 
 
 @hub_app.command("deregister")
-def hub_deregister(name: str = typer.Argument(..., help="Service name to evict")):
+def hub_deregister(
+    name: str = typer.Argument(..., help="Service name to evict"),
+    kind: str = typer.Option(None, "--kind", help="Disambiguate if the name exists across multiple kinds (page|service|url|static)"),
+):
     """Force-evict a service by name (independent of its lease holder)."""
-    r = _exposed_api("DELETE", f"/hub/services/{name}")
+    path = f"/hub/services/{name}"
+    if kind:
+        path += f"?kind={kind}"
+    r = _exposed_api("DELETE", path)
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
@@ -1708,123 +1706,28 @@ def hub_trust_self():
 
 
 # ---------------------------------------------------------------------------
-# Vertical stripes — register packages/* as kind=stripe + hold leases
+# Packages: gen / sync / list / register (and `awm dev shadow`)
 # ---------------------------------------------------------------------------
 #
-# A "stripe" is a workspace package (under projects/awm/dev/packages/*)
-# whose package.json carries a `stripe` field declaring its frontend
-# bundle and optional backend command. `awm stripe sync` walks the
-# workspace and registers every stripe with the hub in one process;
-# Ctrl-C closes every lease at once and the hub evicts on the next
-# tick (which terminates supervised backends — see
-# awm.services.hub.supervisor).
+# `awm packages gen <repo_root>` — write generated package.json (+ per-page
+#   vite.config.ts) from the packages/{components,pages}/<name>/ layout
+#   and a regex scan of each package's src/ for @awm/<x> imports.
+#   Idempotent; CI gates on `git diff --quiet` after a fresh run.
 #
-# Package.json shape (illustrative):
-#   {
-#     "name": "@awm/hello",
-#     "stripe": {
-#       "frontend": "dist/",            # absolute or relative-to-package
-#       "prefix": "/hello",             # optional; default derived from name
-#       "backend": {                    # optional — backendless = frontend-only
-#         "cmd": ["node", "dist/server.js", "${AWM_SERVICE_PORT}"],
-#         "env": {},
-#         "health": "/healthz",
-#         "cwd": null
-#       }
-#     }
-#   }
-
-def _stripe_prefix_default(pkg_name: str) -> str:
-    """Derive a URL prefix from an npm package name.
-    ``@awm/hello`` -> ``/hello``; ``foo-bar`` -> ``/foo-bar``.
-    """
-    base = pkg_name.split("/", 1)[1] if pkg_name.startswith("@") else pkg_name
-    return "/" + base.lstrip("/")
-
-
-def _load_stripe_package(pkg_dir: pathlib.Path) -> tuple[str, dict]:
-    """Read ``<pkg_dir>/package.json``, validate it carries a ``stripe``
-    field, return (npm_name, stripe_spec). Raises typer.Exit on
-    malformed input."""
-    pj_path = pkg_dir / "package.json"
-    if not pj_path.is_file():
-        typer.echo(f"no package.json at {pj_path}", err=True)
-        raise typer.Exit(2)
-    try:
-        pj = json.loads(pj_path.read_text())
-    except json.JSONDecodeError as exc:
-        typer.echo(f"package.json at {pj_path} is invalid JSON: {exc}", err=True)
-        raise typer.Exit(2)
-    name = pj.get("name")
-    if not isinstance(name, str) or not name:
-        typer.echo(f"{pj_path} missing required field 'name'", err=True)
-        raise typer.Exit(2)
-    stripe = pj.get("stripe")
-    if not isinstance(stripe, dict):
-        typer.echo(f"{pj_path} missing 'stripe' field (not a stripe package?)", err=True)
-        raise typer.Exit(2)
-    return name, stripe
-
-
-def _stripe_payload(pkg_dir: pathlib.Path, name: str, stripe: dict,
-                    name_override: str | None, prefix_override: str | None) -> dict:
-    """Build the POST /hub/register payload from a parsed stripe spec.
-    Resolves ``frontend`` relative to the package dir."""
-    frontend = stripe.get("frontend")
-    if not isinstance(frontend, str) or not frontend:
-        typer.echo(
-            f"stripe in {pkg_dir}/package.json missing 'frontend' (path to bundle dir)",
-            err=True,
-        )
-        raise typer.Exit(2)
-    frontend_abs = (pkg_dir / frontend).expanduser().resolve()
-    if not frontend_abs.is_dir():
-        typer.echo(
-            f"frontend dir {frontend_abs} (from {pkg_dir}/package.json) does not exist — build first?",
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    reg_name = name_override or name
-    reg_prefix = prefix_override or stripe.get("prefix") or _stripe_prefix_default(name)
-
-    stripe_payload: dict = {"dir": str(frontend_abs)}
-    backend = stripe.get("backend")
-    if backend is not None:
-        if not isinstance(backend, dict):
-            typer.echo(f"stripe.backend in {pkg_dir}/package.json must be an object", err=True)
-            raise typer.Exit(2)
-        cmd = backend.get("cmd")
-        if not isinstance(cmd, list) or not cmd or not all(isinstance(c, str) for c in cmd):
-            typer.echo(
-                f"stripe.backend.cmd in {pkg_dir}/package.json must be a non-empty list of strings",
-                err=True,
-            )
-            raise typer.Exit(2)
-        backend_payload: dict = {"cmd": list(cmd)}
-        if "env" in backend:
-            if not isinstance(backend["env"], dict):
-                typer.echo(
-                    f"stripe.backend.env in {pkg_dir}/package.json must be an object",
-                    err=True,
-                )
-                raise typer.Exit(2)
-            backend_payload["env"] = {str(k): str(v) for k, v in backend["env"].items()}
-        if "health" in backend:
-            backend_payload["health"] = str(backend["health"])
-        # cwd defaults (hub side) to the frontend dir; allow override.
-        if backend.get("cwd"):
-            cwd = (pkg_dir / backend["cwd"]).expanduser().resolve()
-            backend_payload["cwd"] = str(cwd)
-        stripe_payload["backend"] = backend_payload
-
-    return {"name": reg_name, "prefix": reg_prefix, "stripe": stripe_payload}
+# `awm packages sync <repo_root>` — register every packages/services/<name>
+#   (kind="service") and packages/pages/<name> (kind="page") with the hub.
+#   Holds N concurrent leases until Ctrl-C. Services do not get a port;
+#   their start.sh is invoked with AWM_HUB_URL + AWM_HUB_TOKEN in env so
+#   they can call /hub/service/register themselves.
+#
+# `awm dev shadow services/tts pages/dashboard ...` — from a scope worktree,
+#   push the same-prefix packages as overlays onto the dev sandbox's hub;
+#   Ctrl-C pops them (no respawn — base traffic resumes).
 
 
 async def _hold_one_lease(base: str, token: str, name: str, lease_path: str) -> None:
-    """Open the lease WS and idle until close. Used by both
-    ``stripe register`` (one lease) and ``stripe sync`` (N concurrent).
-    """
+    """Open the lease WS and idle until close. Used by packages sync (N
+    concurrent leases) and dev shadow (per-overlay lease)."""
     import ssl as _ssl
     import websockets as _ws
 
@@ -1875,130 +1778,316 @@ def _post_register(base: str, token: str, payload: dict) -> dict:
     return r.json()
 
 
-@stripe_app.command("register")
-def stripe_register(
-    package: str = typer.Option(
-        ..., "--package",
-        help="Path to a stripe package directory (must contain package.json "
-             "with a 'stripe' field).",
-    ),
-    name: str | None = typer.Option(
-        None, "--name",
-        help="Override the registration name (default: package.json 'name'). "
-             "Use this to coexist with the same stripe synced from another scope.",
-    ),
-    prefix: str | None = typer.Option(
-        None, "--prefix",
-        help="Override the URL prefix (default: derived from package name).",
+@packages_app.command("gen")
+def packages_gen(
+    repo_root: str = typer.Argument(
+        ".",
+        help="Workspace root containing packages/. Defaults to cwd.",
     ),
 ):
-    """Register one stripe package with the hub and hold its lease.
+    """Generate per-package package.json + per-page vite.config.ts from the
+    packages/{components,pages}/<name>/ layout. Run before npm install."""
+    from awm.services.packages import gen as _gen
+    root = pathlib.Path(repo_root).expanduser().resolve()
+    counters = _gen.run(root)
+    typer.echo(json.dumps(counters, indent=2))
 
-    Ctrl-C closes the lease → hub evicts → supervised backend is
-    SIGTERM'd. Re-running re-registers from scratch.
-    """
-    import asyncio as _asyncio
 
-    pkg_dir = pathlib.Path(package).expanduser().resolve()
-    if not pkg_dir.is_dir():
-        typer.echo(f"package dir {pkg_dir} does not exist", err=True)
-        raise typer.Exit(2)
+def _packages_walk(repo_root: pathlib.Path) -> tuple[list[pathlib.Path],
+                                                     list[pathlib.Path]]:
+    """Return (service_dirs, page_dirs) under repo_root/packages/. Skips
+    any subdir name starting with '_' (e.g. _shared/)."""
+    pkgs = repo_root / "packages"
+    services: list[pathlib.Path] = []
+    pages: list[pathlib.Path] = []
+    if (pkgs / "services").is_dir():
+        for child in sorted((pkgs / "services").iterdir()):
+            if child.is_dir() and not child.name.startswith("_"):
+                if (child / "start.sh").is_file():
+                    services.append(child)
+        # Tolerate trailing "/" in argument resolution above.
+    if (pkgs / "pages").is_dir():
+        for child in sorted((pkgs / "pages").iterdir()):
+            if child.is_dir() and not child.name.startswith("_"):
+                pages.append(child)
+    return services, pages
 
-    pkg_name, stripe_spec = _load_stripe_package(pkg_dir)
-    payload = _stripe_payload(pkg_dir, pkg_name, stripe_spec, name, prefix)
 
-    base, token = _exposed_base_and_token()
-    body = _post_register(base, token, payload)
-    typer.echo(
-        f"registered stripe {payload['name']} → prefix={payload['prefix']} "
-        f"id={body['service_id']}"
-    )
-    typer.echo(f"holding lease (Ctrl-C to evict)…")
+def _post_service_register(base: str, token: str, payload: dict) -> dict:
     try:
-        _asyncio.run(_hold_one_lease(base, token, payload["name"], body["lease_ws_path"]))
-    except KeyboardInterrupt:
-        typer.echo("lease closed — stripe evicted")
+        r = httpx.post(
+            f"{base}/hub/service/register",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+            verify=False,
+        )
+    except httpx.HTTPError as exc:
+        typer.echo(f"could not reach hub at {base}: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"service register failed ({r.status_code}): {r.text}",
+                   err=True)
+        raise typer.Exit(1)
+    return r.json()
 
 
-@stripe_app.command("sync")
-def stripe_sync(
+def _post_page_register(base: str, token: str, name: str, prefix: str,
+                        dir_: str) -> dict:
+    payload = {
+        "name": name,
+        "prefix": prefix,
+        "page": {"dir": dir_},
+    }
+    return _post_register(base, token, payload)
+
+
+def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
+    f = pkg_dir / "prefix.txt"
+    if f.is_file():
+        text = f.read_text(encoding="utf-8").strip()
+        if text:
+            return text if text.startswith("/") else "/" + text
+    return default
+
+
+def _spawn_service_local(pkg_dir: pathlib.Path, base: str, token: str) -> int:
+    """Spawn ``start.sh`` for a service with hub env vars injected.
+
+    Returns the PID. The service is expected to POST /hub/service/register
+    on startup; if it doesn't reconnect within the 10s window the hub
+    will SIGTERM this PID and respawn from start.sh itself (S4).
+    """
+    env = os.environ.copy()
+    env["AWM_HUB_URL"] = base
+    env["AWM_HUB_TOKEN"] = token
+    env["AWM_SERVICE_NAME"] = pkg_dir.name
+    proc = subprocess.Popen(
+        ["bash", str(pkg_dir / "start.sh")],
+        cwd=str(pkg_dir),
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.pid
+
+
+@packages_app.command("sync")
+def packages_sync(
     workspace: str = typer.Argument(
         ...,
-        help="Path to the npm workspaces root containing 'packages/'. "
-             "Every packages/<name>/package.json with a 'stripe' field is "
-             "registered.",
-    ),
-    prefix_prefix: str | None = typer.Option(
-        None, "--prefix-prefix",
-        help="Optional URL prefix to prepend to every stripe's prefix "
-             "(e.g. '/dev' to namespace stripes under /dev/<name>).",
+        help="Path to the workspace root containing packages/{services,pages}/.",
     ),
 ):
-    """Discover every stripe under ``<workspace>/packages/*`` and register
-    them all in one process, holding N concurrent leases.
+    """Discover and register every packages/services/<name> (kind=service)
+    and packages/pages/<name> (kind=page) with the hub.
 
-    Ctrl-C closes every lease → hub evicts every stripe at once.
-    Failures to register an individual stripe are reported but do not
-    abort the others.
+    For each service: spawns ``start.sh`` with AWM_HUB_URL/AWM_HUB_TOKEN in
+    env; the service then registers itself + opens its control WS.
+
+    For each page: POST /hub/register with the static spec at prefix
+    ``/ui/<name>``; this command holds one lease per page until Ctrl-C.
     """
     import asyncio as _asyncio
 
     ws_root = pathlib.Path(workspace).expanduser().resolve()
-    pkgs_root = ws_root / "packages"
-    if not pkgs_root.is_dir():
-        typer.echo(f"no packages/ dir at {pkgs_root}", err=True)
-        raise typer.Exit(2)
-
-    base, token = _exposed_base_and_token()
-    registered: list[tuple[str, str]] = []   # (name, lease_path)
-
-    for pkg_dir in sorted(p for p in pkgs_root.iterdir() if p.is_dir()):
-        pj = pkg_dir / "package.json"
-        if not pj.is_file():
-            continue
-        try:
-            data = json.loads(pj.read_text())
-        except json.JSONDecodeError:
-            typer.echo(f"skip {pkg_dir.name}: package.json is invalid JSON", err=True)
-            continue
-        if not isinstance(data.get("stripe"), dict):
-            # Library packages (e.g. @awm/bus) declare no `stripe` field.
-            continue
-        name = data["name"]
-        try:
-            payload = _stripe_payload(pkg_dir, name, data["stripe"], None, None)
-            if prefix_prefix:
-                payload["prefix"] = prefix_prefix.rstrip("/") + payload["prefix"]
-            body = _post_register(base, token, payload)
-        except typer.Exit:
-            typer.echo(f"skip {name}: registration failed (see prior error)", err=True)
-            continue
-        registered.append((payload["name"], body["lease_ws_path"]))
-        typer.echo(
-            f"registered {payload['name']} → prefix={payload['prefix']} "
-            f"id={body['service_id']}"
-        )
-
-    if not registered:
-        typer.echo("no stripe packages found", err=True)
+    services, pages = _packages_walk(ws_root)
+    if not services and not pages:
+        typer.echo("no service or page packages found", err=True)
         raise typer.Exit(1)
 
-    typer.echo(f"holding {len(registered)} lease(s) (Ctrl-C to evict all)…")
-    async def _hold_all():
-        await _asyncio.gather(*(
-            _hold_one_lease(base, token, name, path) for name, path in registered
-        ))
-    try:
-        _asyncio.run(_hold_all())
-    except KeyboardInterrupt:
-        typer.echo("all leases closed — stripes evicted")
+    base, token = _exposed_base_and_token()
+    leases: list[tuple[str, str]] = []
+    spawned_pids: list[int] = []
+
+    for svc_dir in services:
+        name = svc_dir.name
+        try:
+            spawned_pids.append(_spawn_service_local(svc_dir, base, token))
+            typer.echo(f"spawned service {name} (pid bookkeeping; service "
+                       f"self-registers via /hub/service/register)")
+        except (OSError, ValueError) as exc:
+            typer.echo(f"skip {name}: spawn failed: {exc}", err=True)
+            continue
+
+    for page_dir in pages:
+        name = page_dir.name
+        dist = page_dir / "dist"
+        if not dist.is_dir():
+            typer.echo(f"skip page {name}: no dist/ — build first", err=True)
+            continue
+        prefix = _read_prefix_txt(page_dir, f"/ui/{name}")
+        try:
+            body = _post_page_register(base, token, name, prefix, str(dist))
+        except typer.Exit:
+            continue
+        leases.append((name, body["lease_ws_path"]))
+        typer.echo(f"registered page {name} → prefix={prefix} "
+                   f"id={body['service_id']}")
+
+    if not leases and not spawned_pids:
+        typer.echo("nothing registered", err=True)
+        raise typer.Exit(1)
+
+    if leases:
+        typer.echo(f"holding {len(leases)} page lease(s) (Ctrl-C to evict)…")
+        async def _hold_all():
+            await _asyncio.gather(*(
+                _hold_one_lease(base, token, name, path) for name, path in leases
+            ))
+        try:
+            _asyncio.run(_hold_all())
+        except KeyboardInterrupt:
+            typer.echo("page leases closed")
+    else:
+        # No page leases but services are running — block on a signal so
+        # the user can Ctrl-C to clean up.
+        typer.echo(f"services running (pids={spawned_pids}); "
+                   "press Ctrl-C to stop")
+        try:
+            signal.pause()
+        except KeyboardInterrupt:
+            pass
+
+    # On shutdown, SIGTERM the services we spawned ourselves so they exit
+    # cleanly (their start.sh reconnect loop won't help once the hub goes
+    # too, but this run is local-CLI only — the hub side keeps going).
+    for pid in spawned_pids:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
-@stripe_app.command("list")
-def stripe_list():
-    """List currently registered stripes (status + per-stripe URLs)."""
-    r = _exposed_api("GET", "/hub/stripes")
+@packages_app.command("list")
+def packages_list():
+    """List currently registered packages (services + pages)."""
+    r = _exposed_api("GET", "/hub/services")
     if r.status_code >= 400:
         typer.echo(f"error ({r.status_code}): {r.text}", err=True)
         raise typer.Exit(1)
     _print_json(r)
+
+
+@dev_app.command("shadow")
+def dev_shadow(
+    targets: list[str] = typer.Argument(
+        ...,
+        help="One or more package shadows of the form "
+             "'services/<name>' or 'pages/<name>'. Components are not "
+             "shadowable directly (they're build-time deps).",
+    ),
+):
+    """Push selected packages as shadow overlays onto the running hub.
+
+    Resolves each target relative to the current scope worktree
+    (``./packages/<target>/``), then POSTs /hub/shadow/register once per
+    target and holds one lease each. Ctrl-C pops the overlays; base
+    traffic resumes instantly with no respawn or warmup.
+    """
+    import asyncio as _asyncio
+
+    here = pathlib.Path.cwd()
+    base, token = _exposed_base_and_token()
+    leases: list[tuple[str, str]] = []
+    spawned_pids: list[int] = []
+
+    for target in targets:
+        target = target.strip().lstrip("/")
+        if "/" not in target:
+            typer.echo(f"skip {target!r}: expected 'services/<name>' or "
+                       f"'pages/<name>'", err=True)
+            continue
+        kind, name = target.split("/", 1)
+        pkg_dir = (here / "packages" / kind / name).expanduser().resolve()
+        if not pkg_dir.is_dir():
+            typer.echo(f"skip {target}: {pkg_dir} not a directory", err=True)
+            continue
+        shadow_name = f"shadow:{name}:{pkg_dir.parent.parent.parent.name}"
+        if kind == "components":
+            typer.echo(f"skip {target}: components are build-time deps; "
+                       f"rebuild + shadow the page that imports them instead",
+                       err=True)
+            continue
+        if kind == "pages":
+            dist = pkg_dir / "dist"
+            if not dist.is_dir():
+                typer.echo(f"skip {target}: no dist/ — build first", err=True)
+                continue
+            prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
+            payload = {
+                "name": shadow_name,
+                "prefix": prefix,
+                "page": {"dir": str(dist)},
+            }
+        elif kind == "services":
+            if not (pkg_dir / "start.sh").is_file():
+                typer.echo(f"skip {target}: no start.sh", err=True)
+                continue
+            try:
+                pid = _spawn_service_local(pkg_dir, base, token)
+                spawned_pids.append(pid)
+            except (OSError, ValueError) as exc:
+                typer.echo(f"skip {target}: spawn failed: {exc}", err=True)
+                continue
+            payload = {
+                "name": shadow_name,
+                "prefix": f"/svc/{name}",
+                "service": {
+                    "name": shadow_name,
+                    "prefix": f"/svc/{name}",
+                    "pid": pid,
+                    "start": ["bash", str(pkg_dir / "start.sh")],
+                    "cwd": str(pkg_dir),
+                },
+            }
+        else:
+            typer.echo(f"skip {target}: unknown kind {kind!r}", err=True)
+            continue
+
+        try:
+            r = httpx.post(
+                f"{base}/hub/shadow/register",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15,
+                verify=False,
+            )
+        except httpx.HTTPError as exc:
+            typer.echo(f"skip {target}: hub unreachable: {exc}", err=True)
+            continue
+        if r.status_code >= 400:
+            typer.echo(f"skip {target}: shadow register failed "
+                       f"({r.status_code}): {r.text}", err=True)
+            continue
+        body = r.json()
+        leases.append((target, body["lease_ws_path"]))
+        typer.echo(f"shadow {target} → prefix={payload['prefix']} "
+                   f"id={body['service_id']}")
+
+    if not leases:
+        # Clean up any spawned services if no overlay actually landed.
+        for pid in spawned_pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        typer.echo("no shadows pushed", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"holding {len(leases)} shadow lease(s) (Ctrl-C to pop)…")
+    async def _hold_all():
+        await _asyncio.gather(*(
+            _hold_one_lease(base, token, name, path) for name, path in leases
+        ))
+    try:
+        _asyncio.run(_hold_all())
+    except KeyboardInterrupt:
+        typer.echo("all shadow leases closed — base traffic resumes")
+    finally:
+        for pid in spawned_pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass

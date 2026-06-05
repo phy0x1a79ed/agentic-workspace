@@ -33,13 +33,13 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import JSONResponse, Response
 
 from awm import __version__, config
-from awm.access_log import record as record_access
+from awm._lib.access_log import record as record_access
 from awm.db import init_db
-from awm.middleware_auth import require_bearer
-from awm.middleware_gate import require_destructive
+from awm.services.auth.middleware_auth import require_bearer
+from awm.services.auth.middleware_gate import require_destructive
 from awm.server import app as core_app
 from awm.services import agent_instances, auth as auth_svc
 
@@ -112,6 +112,20 @@ async def lifespan(app: FastAPI):
         f"cert={info['tls_cert']} fp={info['tls_fingerprint'][:16]}…"
     )
     agent_instances.reconcile_on_startup()
+    # Resume driver: walks agent_resume_queue rows enqueued by reconcile
+    # (or by /compact orphan recovery) and respawns Claude harnesses
+    # so awm-exposed restarts don't destroy agent context.
+    agent_instances.start_resume_driver()
+
+    # Reconcile journaled services: give each a 10s window to reopen its
+    # control WS, then respawn the silent ones from start_cmd. Fired as
+    # a background task — the hub becomes available immediately for
+    # services that ARE actively reconnecting.
+    try:
+        from awm.services.hub.supervisor import reconcile_journaled_services
+        asyncio.create_task(reconcile_journaled_services())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[awm-exposed] service reconcile skipped: {exc}")
 
     # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
     # no-op when already present. Failure is non-fatal: /vagrant/* endpoints
@@ -122,19 +136,6 @@ async def lifespan(app: FastAPI):
         print(f"[awm-exposed] vagrant-scopes ready: {bare}")
     except Exception as exc:  # noqa: BLE001
         print(f"[awm-exposed] vagrant-scopes disabled: {exc}")
-
-    # Restore persisted voice engine selections. Non-fatal: a broken engine
-    # leaves voice unloaded until the operator picks something else.
-    try:
-        from awm.services import voice_engine_config
-        from voice import engines as _voice_engines
-        for _kind, _sel in voice_engine_config.get_global().items():
-            if _sel is None:
-                continue
-            _voice_engines.load(_kind, _sel["engine_id"], _sel["params"])
-        print(f"[awm-exposed] voice engines restored: {voice_engine_config.get_global()}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice engine restore failed: {exc}")
 
     config.EXPOSED_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     config.EXPOSED_PID_FILE.write_text(str(os.getpid()))
@@ -216,56 +217,14 @@ async def lifespan(app: FastAPI):
         leadership_task = None
         print("[awm-exposed] leadership: no peer identity — running ACTIVE single-node")
 
-    # Warm STT model in the background — first connection waits a few
-    # seconds rather than every connection paying full load cost. Failures
-    # log but don't take down the listener.
-    async def _warm_voice() -> None:
-        loop = asyncio.get_running_loop()
-        try:
-            from awm.voice.stt import get_transcriber
-            t0 = time.perf_counter()
-            await loop.run_in_executor(None, get_transcriber()._ensure_loaded)
-            print(f"[awm-exposed] STT model ready in "
-                  f"{time.perf_counter() - t0:.1f}s")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[awm-exposed] STT model unavailable: {exc}")
-
-    warmup_task = asyncio.create_task(_warm_voice())
-
-    try:
-        from awm.voice.registry import get_registry
-        get_registry().start_reaper()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice registry init failed: {exc}")
-
-    # Background hot-load watcher for ``$AWM_DATA_DIR/voice/engines/{stt,tts}/``.
-    # Lazy import so engine bootstrap (which can pull large models) doesn't
-    # run unless the user actually visits the voice surface.
-    engines_watcher_task: asyncio.Task | None = None
-    try:
-        import voice.engines as _voice_engines  # type: ignore[import-not-found]
-        engines_watcher_task = asyncio.create_task(
-            _voice_engines._watch_dynamic(), name="voice-engines-watcher",
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm-exposed] voice engines watcher disabled: {exc}")
-
     yield
 
     challenges_sweeper_task.cancel()
-    warmup_task.cancel()
     replication_task.cancel()
-    if engines_watcher_task is not None:
-        engines_watcher_task.cancel()
     if leadership_task is not None:
         leadership_task.cancel()
     try:
         await ldr_discord.stop_bot()
-    except Exception:
-        pass
-    try:
-        from awm.voice.registry import get_registry
-        await get_registry().shutdown()
     except Exception:
         pass
 
@@ -377,13 +336,10 @@ from awm.api.peer import router as peer_router  # noqa: E402
 from awm.api.rooms import router as rooms_router  # noqa: E402
 from awm.api.vagrant import router as vagrant_router  # noqa: E402
 from awm.services.replication.endpoint import router as repl_router  # noqa: E402
-from awm.voice.router import router as voice_router  # noqa: E402
-from pathlib import Path as _Path  # noqa: E402
 
 app.include_router(rooms_router)
 app.include_router(peer_router)
 app.include_router(repl_router)
-app.include_router(voice_router)
 app.include_router(vagrant_router)
 app.include_router(hub_router)
 
@@ -457,7 +413,7 @@ async def auth_bootstrap(request: Request):
     except auth_svc.TokenMissing:
         raise HTTPException(500, "daemon token not initialized")
 
-    response = Response(status_code=302, headers={"Location": "/ui/"})
+    response = Response(status_code=302, headers={"Location": "/ui/agent"})
     response.set_cookie(
         key=auth_svc.SESSION_COOKIE,
         value=bearer,
@@ -481,8 +437,8 @@ async def auth_bootstrap(request: Request):
 async def auth_whoami(request: Request, _auth: None = Depends(require_bearer)):
     """Return the operator display name (from ``awm_as`` cookie).
 
-    Used by ``/ui/login.html`` to poll for completion after the operator
-    clicks a DM'd bootstrap link in another tab.
+    Used by the ``/ui/login`` page stripe to poll for completion after the
+    operator clicks a DM'd bootstrap link in another tab.
     """
     awm_user = request.cookies.get(auth_svc.AS_COOKIE) or "operator"
     return JSONResponse({"awm_user": awm_user})
@@ -495,29 +451,6 @@ async def auth_logout(_request: Request):
     response.delete_cookie(auth_svc.SESSION_COOKIE, path="/")
     response.delete_cookie(auth_svc.AS_COOKIE, path="/")
     return response
-
-_STATIC_DIR = _Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
-    # SPA-aware static handler. Real assets (favicon, hashed JS/CSS chunks,
-    # mic-worklet.js) are served directly; anything else under /ui/ falls
-    # back to index.html so client-side routes (/ui/focus, /ui/room/<id>,
-    # etc.) survive hard reloads.
-    @app.get("/ui")
-    @app.get("/ui/")
-    @app.get("/ui/{full_path:path}")
-    async def _spa(full_path: str = ""):
-        # login.html stays its own page (server-rendered single-purpose entry).
-        if full_path:
-            # Resolve safely — reject any path that escapes the static dir.
-            candidate = (_STATIC_DIR / full_path).resolve()
-            try:
-                candidate.relative_to(_STATIC_DIR.resolve())
-            except ValueError:
-                return FileResponse(_STATIC_DIR / "index.html")
-            if candidate.is_file():
-                return FileResponse(candidate)
-        return FileResponse(_STATIC_DIR / "index.html")
-
 
 # ---------------------------------------------------------------------------
 # Gate destructive routes on the core app
@@ -617,7 +550,6 @@ async def gate_and_auth_for_core(request: Request, call_next):
     # unauthenticated at the middleware level: /ui is static HTML;
     # /auth/exchange validates its own bearer to mint a session cookie.
     if (path.startswith("/rooms") or path.startswith("/ui")
-            or path.startswith("/voice")
             or path.startswith("/peer/")
             or path.startswith("/auth/")):
         return await call_next(request)
@@ -684,13 +616,13 @@ from awm.services.hub.static import (  # noqa: E402
 )
 
 
-def _stripe_identity_headers(cookies) -> list[tuple[str, str]]:
-    """Mint hub-injected identity headers for a stripe proxy hop from
-    the inbound request's cookies. Returning X-Awm-As here causes the
-    proxy to drop any inbound X-Awm-As the client supplied — that's
-    the forge-prevention seam stripes rely on. Returns an empty list
-    when the operator cookie is absent (anonymous; backend treats the
-    missing header as unauthenticated)."""
+def _identity_headers(cookies) -> list[tuple[str, str]]:
+    """Mint hub-injected identity headers for a proxy hop from the
+    inbound request's cookies. Returning X-Awm-As here causes the proxy
+    to drop any inbound X-Awm-As the client supplied — that's the
+    forge-prevention seam the service dispatcher relies on. Returns an
+    empty list when the operator cookie is absent (anonymous; backend
+    treats the missing header as unauthenticated)."""
     awm_user = cookies.get(auth_svc.AS_COOKIE)
     if not awm_user:
         return []
@@ -716,7 +648,7 @@ class HubRoutingMiddleware:
         rec = registry.longest_match(path)
         if rec is None:
             return await self.app(scope, receive, send)
-        if rec.kind == "static":
+        if rec.kind in ("static", "page"):
             if scope["type"] == "websocket":
                 await _ws_close_unsupported(scope, receive, send)
                 return
@@ -724,8 +656,8 @@ class HubRoutingMiddleware:
             response = await _serve_static(request, rec)
             await response(scope, receive, send)
             return
-        if rec.kind == "stripe":
-            await self._dispatch_stripe(scope, receive, send, rec, path)
+        if rec.kind == "service":
+            await self._dispatch_service(scope, receive, send, rec, path)
             return
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
@@ -736,71 +668,62 @@ class HubRoutingMiddleware:
             ws = _WS(scope, receive=receive, send=send)
             await proxy_ws(ws, rec.url)
 
-    async def _dispatch_stripe(self, scope, receive, send, rec, path):
-        """Stripe routing:
-        - <prefix>/_api/<rest> -> proxy to the supervised backend (HTTP or WS)
-        - everything else under <prefix> -> canonical static serving
+    async def _dispatch_service(self, scope, receive, send, rec, path):
+        """RPC-WS service routing (kind="service"):
 
-        While the backend is starting, _api/ requests get 503 + Retry-After
-        so callers can degrade visibly instead of hanging.
+        - POST <prefix>/fn/<name>            -> control-WS call/notify
+        - POST <prefix>/session/<kind>       -> open session, return ws_path
+        - WS   <prefix>/session/<id>         -> session WS (direct = byte
+                                                relay, otherwise enveloped)
+        - WS   <prefix>/emit/<topic>         -> emit subscriber WS
+        Everything else under the prefix is 404.
         """
-        api_root = rec.prefix + "/_api"
-        is_api = path == api_root or path.startswith(api_root + "/")
-        if is_api:
-            if rec.backend_port is None:
-                # Backendless stripe — _api/ doesn't exist.
-                if scope["type"] == "websocket":
-                    await _ws_close_unsupported(scope, receive, send)
-                    return
-                from starlette.responses import PlainTextResponse
-                resp = PlainTextResponse("not found", status_code=404)
-                await resp(scope, receive, send)
-                return
-            if rec.backend_status != "ready":
-                if scope["type"] == "websocket":
-                    await send({"type": "websocket.accept"})
-                    await send({
-                        "type": "websocket.close",
-                        "code": 1013,
-                        "reason": f"stripe backend not ready ({rec.backend_status})",
-                    })
-                    return
-                from starlette.responses import PlainTextResponse
-                resp = PlainTextResponse(
-                    f"stripe backend not ready ({rec.backend_status})",
-                    status_code=503,
-                    headers={"Retry-After": "1"},
+        from awm.services.hub.proxy import (
+            open_session_via_http,
+            proxy_service_emit_ws,
+            proxy_service_http,
+            proxy_session_ws,
+        )
+        from fastapi import WebSocket as _WS
+        from starlette.responses import PlainTextResponse
+
+        rel = path[len(rec.prefix):]
+        # WebSocket() requires receive+send; Request() is fine with just
+        # scope. We only need .cookies here, which both expose off scope
+        # headers, so build the right type per scope kind.
+        if scope["type"] == "http":
+            cookies = Request(scope).cookies
+        else:
+            cookies = _WS(scope, receive=receive, send=send).cookies
+        identity = _identity_headers(cookies)
+        as_ = identity[0][1] if identity else None
+
+        if scope["type"] == "http":
+            request = Request(scope, receive=receive)
+            if rel.startswith("/fn/"):
+                response = await proxy_service_http(
+                    request, rec.service_id, as_=as_,
                 )
-                await resp(scope, receive, send)
-                return
-            # Rewrite path so the backend sees its own URL, not the hub prefix.
-            # <prefix>/_api/foo  ->  /foo on the backend.
-            sub_path = path[len(api_root):] or "/"
-            new_scope = dict(scope)
-            new_scope["path"] = sub_path
-            new_scope["raw_path"] = sub_path.encode()
-            target_base = f"http://127.0.0.1:{rec.backend_port}"
-            if scope["type"] == "http":
-                request = Request(new_scope, receive=receive)
-                identity_headers = _stripe_identity_headers(request.cookies)
-                response = await proxy_http(
-                    request, target_base, extra_headers=identity_headers,
+            elif rel.startswith("/session/") and request.method == "POST":
+                response = await open_session_via_http(
+                    request, rec.service_id, as_=as_,
                 )
-                await response(scope, receive, send)
             else:
-                from fastapi import WebSocket as _WS
-                ws = _WS(new_scope, receive=receive, send=send)
-                identity_headers = _stripe_identity_headers(ws.cookies)
-                await proxy_ws(ws, target_base, extra_headers=identity_headers)
+                response = PlainTextResponse("not found", status_code=404)
+            await response(scope, receive, send)
             return
 
-        # Anything else under the prefix is frontend static.
-        if scope["type"] == "websocket":
-            await _ws_close_unsupported(scope, receive, send)
+        # websocket
+        ws = _WS(scope, receive=receive, send=send)
+        if rel.startswith("/session/"):
+            sid = rel[len("/session/"):]
+            await proxy_session_ws(ws, rec.service_id, sid)
             return
-        request = Request(scope, receive=receive)
-        response = await _serve_static(request, rec)
-        await response(scope, receive, send)
+        if rel.startswith("/emit/"):
+            topic = rel[len("/emit/"):]
+            await proxy_service_emit_ws(ws, rec.service_id, topic, as_=as_)
+            return
+        await _ws_close_unsupported(scope, receive, send)
 
 
 app.add_middleware(HubRoutingMiddleware)

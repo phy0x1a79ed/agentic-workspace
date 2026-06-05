@@ -145,25 +145,46 @@ def seeded_locks(db_conn):
 
 @pytest.fixture()
 def seeded_scopes(db_conn, awm_workspace):
-    """Insert scope rows and create matching workspace dirs."""
-    now = datetime.now(timezone.utc).isoformat()
+    """Seed v37 projects + agents rows and create matching workspace dirs.
+
+    The shape mirrors the v36 fixture: three scopes across two projects, one
+    active + two retired. Test code still talks `(project, scope)` strings;
+    fixture returns the same tuple shape for backward compat.
+    """
+    from awm.services import identity
+
     workspace = awm_workspace["workspace"]
     projects_dir = awm_workspace["projects_dir"]
     scope_worktrees = workspace / "test_worktrees"
 
     scope_data = [
-        ("proj-a", "scope-1", "active", "feat/scope-1", str(scope_worktrees / "proj-a" / "scope-1"), str(projects_dir / "proj-a" / "scope-1"), 1, now, now),
-        ("proj-a", "scope-2", "completed", "feat/scope-2", str(scope_worktrees / "proj-a" / "scope-2"), str(projects_dir / "proj-a" / "scope-2"), 1, now, now),
-        ("proj-b", "scope-3", "completed", "feat/scope-3", str(scope_worktrees / "proj-b" / "scope-3"), str(projects_dir / "proj-b" / "scope-3"), 1, now, now),
+        ("proj-a", "scope-1", "active", "feat/scope-1",
+         str(scope_worktrees / "proj-a" / "scope-1"),
+         str(projects_dir / "proj-a" / "scope-1"), 1),
+        ("proj-a", "scope-2", "completed", "feat/scope-2",
+         str(scope_worktrees / "proj-a" / "scope-2"),
+         str(projects_dir / "proj-a" / "scope-2"), 1),
+        ("proj-b", "scope-3", "completed", "feat/scope-3",
+         str(scope_worktrees / "proj-b" / "scope-3"),
+         str(projects_dir / "proj-b" / "scope-3"), 1),
     ]
-    from awm.services.replication.schema import new_uuid
-    for i, t in enumerate(scope_data, start=1):
-        db_conn.execute(
-            "INSERT INTO scopes "
-            "(uuid, legacy_id, origin_peer, project, scope, status, branch, "
-            " worktree, repo_path, session, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (new_uuid(), i, "test-host", *t),
+
+    # Seed projects (idempotent — repo_path is the .bare stub).
+    for proj_name in ("proj-a", "proj-b"):
+        identity.ensure_project(
+            proj_name,
+            repo_path=str(projects_dir / proj_name / ".bare"),
+            conn=db_conn,
+        )
+
+    # Seed agents: v36 'active' → v37 'active'; v36 'completed' → v37 'retired'.
+    status_map = {"active": "active", "completed": "retired"}
+    for project, scope, v36_status, branch, worktree, _repo_path, _session in scope_data:
+        v37_status = status_map[v36_status]
+        identity.ensure_agent(
+            project, scope,
+            branch=branch, worktree=worktree, agent_cli="claude",
+            status=v37_status, conn=db_conn,
         )
     db_conn.commit()
 
@@ -183,32 +204,48 @@ def seeded_scopes(db_conn, awm_workspace):
     for project_name in ("proj-a", "proj-b"):
         (projects_dir / project_name / ".bare").mkdir(parents=True, exist_ok=True)
 
-    return scope_data
+    # Return the legacy tuple shape so existing callers keep compiling.
+    now = datetime.now(timezone.utc).isoformat()
+    return [(*t, now, now) for t in scope_data]
 
 
 @pytest.fixture()
 def seeded_sessions(db_conn, seeded_scopes, awm_workspace):
-    """Insert session log rows."""
+    """Insert v37 session_logs rows keyed by agent_id."""
+    from awm.services import identity
+
     base = datetime.now(timezone.utc)
     t1 = base.isoformat()
     t2 = (base + timedelta(seconds=1)).isoformat()
     t3 = (base + timedelta(seconds=2)).isoformat()
+    # (project, scope, file_path, git_commit, logged_at, summary,
+    #  agent_label, metadata_json, content) — legacy tuple shape preserved
+    # for callers; agent_label is unused on the v37 row but kept in the
+    # returned tuple so existing test code that unpacks the fixture data
+    # doesn't break.
     sessions_data = [
-        ("proj-a", "scope-1", "", None, t1, "Initial exploration of dataset", "agent-1", None, "Initial exploration of dataset"),
-        ("proj-a", "scope-1", "", "abc123", t2, "Built feature extraction pipeline", "agent-1", '{"decisions": ["Used pandas"]}', "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
-        ("proj-a", "scope-2", "", None, t3, "Reviewed results and documented findings", "agent-2", None, "Reviewed results and documented findings"),
+        ("proj-a", "scope-1", "", None, t1, "Initial exploration of dataset",
+         "agent-1", None, "Initial exploration of dataset"),
+        ("proj-a", "scope-1", "", "abc123", t2, "Built feature extraction pipeline",
+         "agent-1", '{"decisions": ["Used pandas"]}',
+         "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
+        ("proj-a", "scope-2", "", None, t3, "Reviewed results and documented findings",
+         "agent-2", None, "Reviewed results and documented findings"),
     ]
     for s in sessions_data:
+        project, scope, file_path, git_commit, logged_at, summary, \
+            _agent_label, metadata, content = s
+        agent_id = identity.agent_id_for_scope(
+            project, scope, conn=db_conn, active_only=False,
+        )
+        assert agent_id, f"seeded_scopes missing {project}/{scope}"
         db_conn.execute(
             "INSERT INTO session_logs "
-            "(uuid, legacy_id, origin_peer, "
-            " project, scope, file_path, git_commit, logged_at, summary, "
-            " agent_id, metadata, content) "
-            "VALUES ((lower(hex(randomblob(16)))), "
-            "        (SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM session_logs), "
-            "        '', "  # origin_peer='' matches _local_peer_id() fallback in tests
-            "        ?,?,?,?,?,?,?,?,?)",
-            s,
+            "(agent_id, file_path, git_commit, summary, "
+            " metadata, content, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (agent_id, file_path, git_commit, summary,
+             metadata, content, identity.iso_to_ms(logged_at)),
         )
     db_conn.commit()
     return sessions_data

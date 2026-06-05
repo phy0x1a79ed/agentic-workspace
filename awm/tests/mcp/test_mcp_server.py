@@ -16,7 +16,7 @@ import subprocess
 
 import pytest
 
-from awm.tool_dispatch import _serialize, handle_tool
+from awm._lib.tool_dispatch import _serialize, handle_tool
 
 
 class TestSerialize:

@@ -1,7 +1,7 @@
 """Scope operation definitions for the registry."""
 
 from awm.models import ScopeCreateRequest, ScopeUpdateRequest
-from awm.registry import (
+from awm._lib.operations import (
     Column,
     JsonOutput,
     Operation,
@@ -29,13 +29,13 @@ SCOPE_OPERATIONS: list[Operation] = [
         ],
     ),
     Operation(
-        name="scope_list",
-        description="List scopes, optionally filtered by status and/or project.",
-        service_func=scopes.list_scopes,
+        name="scope_search",
+        description="Search scopes (hybrid keyword + semantic). Defaults to status='active'; pass status='all' for the full history.",
+        service_func=scopes.search_scopes,
         http_method="GET",
-        http_path="/scopes",
+        http_path="/scopes/search",
         cli_group="scope",
-        cli_command="list",
+        cli_command="search",
         output=TableOutput(
             list_key="scopes",
             columns=[
@@ -47,8 +47,11 @@ SCOPE_OPERATIONS: list[Operation] = [
             ],
         ),
         params=[
-            Param(name="status", type="string", description="active, completed, deleted, or all", cli_name="--status"),
+            Param(name="query", type="string", description="Free-text query on scope name + context.md", cli_name="--query"),
+            Param(name="status", type="string", default="active", description="active (default), completed, deleted, or all", cli_name="--status"),
             Param(name="project", type="string", description="Filter by project", cli_name="--project"),
+            Param(name="limit", type="integer", default=50, description="Max entries to return", cli_name="--limit"),
+            Param(name="offset", type="integer", default=0, description="Pagination offset", cli_name="--offset"),
         ],
     ),
 ]

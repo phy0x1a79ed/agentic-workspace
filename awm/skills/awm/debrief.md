@@ -13,9 +13,11 @@ Run this protocol at the end of a work session when instructed to debrief.
 
 1. **Update project docs.** If the session changed how the project works — new scripts, new workflows, changed conventions, fixed bugs that affect usage — update `AGENTS.md` (or equivalent project docs) to reflect the current state. Docs should describe the world as it is now, not as it was before the session. Skip if no user-facing behavior changed.
 
-2. **Commit outstanding changes.** If there are uncommitted changes from the session, commit them before logging the debrief. The debrief should describe work that is already landed, not in-flight. Ask the user before committing if unsure.
+2. **Update scope context.** If the session changed how *this scope's* work is framed — new objectives, refined expectations, scope-local conventions, or post-implementation notes worth carrying forward — update `.awm/context.md` to reflect the current state. Only edit `context.md`; `.awm/history.md` and `.awm/artifacts.md` are auto-generated (rebuilt by `awm_refresh` in step 8) and must not be hand-edited. Skip if the scope's framing is unchanged.
 
-3. **Log the session.** Capture how things went — what worked, what didn't, what to improve. If you followed a specific skill, pass its path so the reflection is tied back to that skill for later analysis.
+3. **Commit outstanding changes.** If there are uncommitted changes from the session, commit them before logging the debrief. The debrief should describe work that is already landed, not in-flight. Ask the user before committing if unsure.
+
+4. **Log the session.** Capture how things went — what worked, what didn't, what to improve. If you followed a specific skill, pass its path so the reflection is tied back to that skill for later analysis.
 
    The call has two kinds of fields:
 
@@ -43,7 +45,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    In the rendered session log, `summary` becomes the `## Session Summary` paragraph and the repeated flags become bullet lists under `## Decisions Made`, `## Gotchas / Issues`, and `## Next Steps`.
 
-4. **Resolve fixed issues.** Check for open session issues from prior sessions that were addressed this session. Search for open entries, then resolve any that are no longer relevant:
+5. **Resolve fixed issues.** Check for open session issues from prior sessions that were addressed this session. Search for open entries, then resolve any that are no longer relevant:
 
    ```
    session_search project={project} scope={scope} status=open
@@ -57,7 +59,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    Resolved entries will appear as compact one-liners in `history.md` (with their ID for later retrieval via `session_get`), while open entries remain fully visible. Skip this step if there are no prior open issues.
 
-5. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
+6. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
 
    ```
    artifact_search project={project} scope={scope}
@@ -75,7 +77,7 @@ Run this protocol at the end of a work session when instructed to debrief.
    - Types: figure, dataset, report, model, script, other.
    - Skip this step if no artifacts were produced or changed.
 
-6. **Sync artifacts** so the registry reflects on-disk reality before closing out:
+7. **Sync artifacts** so the registry reflects on-disk reality before closing out:
 
    ```
    artifacts_sync
@@ -83,7 +85,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
    This is lazy — a no-op when nothing has changed since the last sync — so it is safe to call on every debrief. When drift is detected it flips any artifact whose file has been deleted to `status='stale'` (hiding it from search), restores any that have reappeared, and prunes their embeddings. Pass `force=true` only if you deleted files out-of-band without any other DB write during this session.
 
-7. **Refresh** so the next session sees your contributions:
+8. **Refresh** so the next session sees your contributions:
 
    ```
    awm_refresh project={project} scope={scope}

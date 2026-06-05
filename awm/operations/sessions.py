@@ -1,7 +1,7 @@
 """Session operation definitions for the registry."""
 
 from awm.models import SessionLogCreateRequest
-from awm.registry import (
+from awm._lib.operations import (
     Column,
     DetailOutput,
     JsonOutput,
@@ -53,7 +53,7 @@ SESSION_OPERATIONS: list[Operation] = [
     ),
     Operation(
         name="session_search",
-        description="Search session logs, returning previews (no content). Use session_get to fetch full content by ID.",
+        description="Search session logs, returning previews (no content). Defaults to status='open' (unresolved); pass status='all' for the full history. Use session_get to fetch full content by ID.",
         service_func=sessions.search_sessions,
         http_method="GET",
         http_path="/sessions/search",
@@ -78,38 +78,10 @@ SESSION_OPERATIONS: list[Operation] = [
             Param(name="project", type="string", description="Filter by project", cli_name="--project"),
             Param(name="scope", type="string", description="Filter by scope", cli_name="--scope"),
             Param(name="skill_path", type="string", description="Filter by skill path", cli_name="--skill"),
-            Param(name="query", type="string", description="Free-text search on title, summary, and content", cli_name="--query"),
-            Param(name="status", type="string", description="Filter: open, resolved, or omit for all", cli_name="--status"),
+            Param(name="query", type="string", description="Free-text search on title, summary, content (hybrid keyword + semantic)", cli_name="--query"),
+            Param(name="status", type="string", default="open", description="Filter: open (default), resolved, or all", cli_name="--status"),
             Param(name="limit", type="integer", default=50, description="Max entries to return", cli_name="--limit"),
-        ],
-    ),
-    Operation(
-        name="session_list",
-        description="List session log entries, optionally filtered by project and/or scope.",
-        service_func=sessions.list_sessions,
-        http_method="GET",
-        http_path="/sessions",
-        cli_group="session",
-        cli_command="list",
-        output=TableOutput(
-            list_key="entries",
-            columns=[
-                Column(key="id", header="ID", width=6),
-                Column(key="project", header="PROJECT", width=18),
-                Column(key="scope", header="SCOPE", width=22),
-                Column(key="skill_path", header="SKILL", width=20, max_len=20),
-                Column(key="outcome", header="OUTCOME", width=16),
-                Column(key="agent_id", header="AGENT", width=15),
-                Column(key="logged_at", header="LOGGED AT", width=28),
-                Column(key="title", header="TITLE", width=30, max_len=30),
-            ],
-        ),
-        params=[
-            Param(name="project", type="string", description="Filter by project", cli_name="--project"),
-            Param(name="scope", type="string", description="Filter by scope", cli_name="--scope"),
-            Param(name="skill_path", type="string", description="Filter by skill path", cli_name="--skill"),
-            Param(name="status", type="string", description="Filter: open, resolved, or omit for all", cli_name="--status"),
-            Param(name="limit", type="integer", default=50, description="Max entries to return", cli_name="--limit"),
+            Param(name="offset", type="integer", default=0, description="Pagination offset", cli_name="--offset"),
         ],
     ),
     Operation(

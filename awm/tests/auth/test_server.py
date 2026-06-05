@@ -40,11 +40,15 @@ class TestToolsEndpoint:
         data = resp.json()
         assert "tools" in data
         names = {t["name"] for t in data["tools"]}
-        # Spot-check a few that must be present.
-        assert "skills_list" in names
+        # Spot-check a few that must be present (post list→search collapse).
+        assert "skills_search" in names
         assert "skills_sync" in names
         assert "artifacts_sync" in names
         assert "session_log" in names  # registry-driven
+        # And the removed list tools must NOT be present anywhere.
+        for legacy in ("skills_list", "scope_list", "session_list",
+                       "room_list", "lock_list", "peers_list", "project_list"):
+            assert legacy not in names
 
     def test_payload_round_trips_to_mcp_tool(self, client):
         """The proxy reconstructs Tool(**payload); the wire format must be valid."""
@@ -69,8 +73,8 @@ class TestLockEndpoints:
         data = resp.json()
         assert data["lock"]["holder_id"] == "agent-1"
 
-        # List
-        resp = client.get("/locks")
+        # Search
+        resp = client.get("/locks/search", params={"status": "all"})
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
 
@@ -103,13 +107,14 @@ class TestLockEndpoints:
 
 
 class TestSkillEndpoints:
-    def test_list_skills(self, client, sample_skills_dir):
-        resp = client.get("/skills")
+    def test_search_skills_no_query(self, client, sample_skills_dir):
+        # Omit `query` → filter-only path returns the full catalog.
+        resp = client.get("/skills/search")
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
 
-    def test_search_skills(self, client, sample_skills_dir):
-        resp = client.get("/skills/search", params={"q": "mamba"})
+    def test_search_skills_with_query(self, client, sample_skills_dir):
+        resp = client.get("/skills/search", params={"query": "mamba"})
         assert resp.status_code == 200
         assert resp.json()["total"] >= 1
 
@@ -124,25 +129,25 @@ class TestSkillEndpoints:
 
 
 class TestScopeEndpoints:
-    def test_list_scopes(self, client, seeded_scopes):
-        resp = client.get("/scopes")
+    def test_search_scopes_status_all(self, client, seeded_scopes):
+        resp = client.get("/scopes/search", params={"status": "all"})
         assert resp.status_code == 200
         assert resp.json()["total"] == 3
 
-    def test_list_scopes_filtered(self, client, seeded_scopes):
-        resp = client.get("/scopes", params={"status": "active"})
+    def test_search_scopes_default_active(self, client, seeded_scopes):
+        resp = client.get("/scopes/search")
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
 
 
 class TestSessionEndpoints:
-    def test_list_sessions(self, client, seeded_sessions):
-        resp = client.get("/sessions")
+    def test_search_sessions_status_all(self, client, seeded_sessions):
+        resp = client.get("/sessions/search", params={"status": "all"})
         assert resp.status_code == 200
         assert resp.json()["total"] == 3
 
     def test_get_session(self, client, seeded_sessions):
-        list_resp = client.get("/sessions")
+        list_resp = client.get("/sessions/search", params={"status": "all"})
         entry_id = list_resp.json()["entries"][0]["id"]
         resp = client.get(f"/sessions/{entry_id}")
         assert resp.status_code == 200

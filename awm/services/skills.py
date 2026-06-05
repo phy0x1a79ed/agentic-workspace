@@ -81,20 +81,6 @@ def find_by_name(name: str) -> SkillInfo | None:
     return None
 
 
-def list_skills(
-    type_filter: str | None = None,
-    tags: list[str] | None = None,
-) -> SkillListResponse:
-    """List skills with optional type/tag filters."""
-    skills = _scan_skills()
-    if type_filter:
-        skills = [s for s in skills if s.type == type_filter]
-    if tags:
-        tag_set = set(t.lower() for t in tags)
-        skills = [s for s in skills if tag_set & set(t.lower() for t in s.tags)]
-    return SkillListResponse(skills=skills, total=len(skills))
-
-
 def get_skill(path: str) -> SkillContentResponse:
     """Read a skill file by relative path (e.g. 'tools/git.md')."""
     full_path = SKILLS_DIR / path
@@ -105,66 +91,73 @@ def get_skill(path: str) -> SkillContentResponse:
     return SkillContentResponse(skill=skill, content=content)
 
 
-def search_skills(query: str) -> SkillListResponse:
-    """Hybrid search: keyword matching + semantic similarity.
+def search_skills(
+    query: str | None = None,
+    type_filter: str | None = None,
+    tags: list[str] | None = None,
+) -> SkillListResponse:
+    """Search skills with optional structural filters (type, tags) and a
+    free-text `query`. When `query` is set, returns keyword (LIKE on metadata
+    and content) hits first, then semantic top-up via the shared embeddings
+    helper. With no `query`, behaves like the prior `list_skills` did:
+    every skill, filtered by type/tags."""
+    skills = _scan_skills()
+    if type_filter:
+        skills = [s for s in skills if s.type == type_filter]
+    if tags:
+        tag_set = set(t.lower() for t in tags)
+        skills = [s for s in skills if tag_set & set(t.lower() for t in s.tags)]
 
-    Returns keyword matches first, then semantic matches not already found.
-    """
+    if not query:
+        return SkillListResponse(skills=skills, total=len(skills))
+
     q = query.lower()
-    keyword_results = []
+    keyword_results: list = []
     keyword_paths: set[str] = set()
 
-    if SKILLS_DIR.exists():
-        for path in sorted(SKILLS_DIR.rglob("*.md")):
-            if path.name.startswith("_"):
-                continue
-            if _is_template(path):
-                continue
-            skill = _skill_from_path(path)
-            # Search across metadata fields
-            searchable = " ".join([
-                skill.name,
-                skill.type,
-                " ".join(skill.tags),
-                skill.description,
-            ]).lower()
-            if q in searchable:
+    for skill in skills:
+        searchable = " ".join([
+            skill.name, skill.type,
+            " ".join(skill.tags), skill.description,
+        ]).lower()
+        if q in searchable:
+            keyword_results.append(skill)
+            keyword_paths.add(skill.file_path)
+            continue
+        full = SKILLS_DIR / skill.file_path
+        try:
+            content = full.read_text(encoding="utf-8").lower()
+            if q in content:
                 keyword_results.append(skill)
                 keyword_paths.add(skill.file_path)
-                continue
-            # Search in file content
-            try:
-                content = path.read_text(encoding="utf-8").lower()
-                if q in content:
-                    keyword_results.append(skill)
-                    keyword_paths.add(skill.file_path)
-            except (OSError, UnicodeDecodeError):
-                pass
+        except (OSError, UnicodeDecodeError):
+            pass
 
-    # Augment with semantic search (best-effort — skip if deps unavailable)
-    semantic_results = []
+    def _materialize(source_id: str):
+        full = SKILLS_DIR / source_id
+        if not full.is_file():
+            return None
+        try:
+            skill = _skill_from_path(full)
+        except Exception:
+            return None
+        if type_filter and skill.type != type_filter:
+            return None
+        if tags:
+            tag_set = set(t.lower() for t in tags)
+            if not (tag_set & set(t.lower() for t in skill.tags)):
+                return None
+        return skill
+
     try:
-        from awm.services.embeddings import semantic_search
-        hits = semantic_search(query, source_type="skill", limit=10)
-        for hit in hits:
-            if hit["source_id"] in keyword_paths or hit["score"] <= 0.3:
-                continue
-            # Guard against stale embeddings rows whose skill file has been
-            # deleted or moved. Without this check, _skill_from_path would
-            # silently return a ghost SkillInfo (empty description, inferred
-            # type) because _parse_frontmatter tolerates missing files.
-            full = SKILLS_DIR / hit["source_id"]
-            if not full.is_file():
-                continue
-            try:
-                skill = _skill_from_path(full)
-                semantic_results.append(skill)
-            except Exception:
-                pass
+        from awm.services.embeddings import hybrid_augment
+        combined = hybrid_augment(
+            query, source_type="skill",
+            keyword_hits=keyword_results, keyword_keys=keyword_paths,
+            materialize=_materialize,
+        )
     except Exception:
-        pass  # semantic search unavailable — return keyword results only
-
-    combined = keyword_results + semantic_results
+        combined = keyword_results
     return SkillListResponse(skills=combined, total=len(combined))
 
 
