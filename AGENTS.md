@@ -4,27 +4,25 @@
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
-## Federation: DISABLED (as of 2026-06-04)
+## Federation: RETIRED (as of 2026-06-05)
 
-`awm-exposed.service` is **stopped and unit-unlinked**. The `/peer/*` routes, cross-host messaging, federated find, cross-peer rooms, leadership election, and cr-sqlite replication are all off. `awm.service` (local IPC on `127.0.0.1:7819`) is unaffected — every MCP tool, CLI command, and in-process API that doesn't cross a host boundary still works.
+Federation is gone. Not paused — deleted. `awm/api/peer.py`, `awm/services/{replication,leadership}/`, `awm/services/network/{peers,federation,ssh_tunnel,agent_proxy}.py`, the `awm peer *` CLI verbs, `peer_search`/`peer_ping` MCP tools, the `awm-exposed.service` unit, `deploy/v0_*.sh` and `deploy/sync-to-peer.sh` — all removed. SSH between hosts has been doing the real work; the federation surface had no live consumer.
 
-**Why off, not repaired:** peers (`capella`/`mira`/`xps`) last gossiped on 2026-05-25; the exposed listener had been crash-looping on `EADDRINUSE` (5,222 systemd restarts) leaking SSH tunnels by the hundreds; and three substrate changes are queued — v37 identity-table schema (landed on this branch, deploy pending), 74 commits + 26 dirty files on `dev`, and the new agent infrastructure — any of which would re-break a same-day repair. The peer registry rows (`peer_search` / `awm peer list`) are intact for when federation comes back.
+The local listener (`awm.service` on `127.0.0.1:7819`) is the only listener. Every MCP tool, CLI command, and in-process API works as before; nothing crosses a host boundary anymore.
 
 **Don't:**
-- Rely on `@<peer-id>` scope addressing (`awm inbox send scope:x@mira ...`) — it will block on a missing tunnel.
-- Trust `leadership_state` from `awm status` — it reports `STANDBY` / `current_leader: null` permanently while exposed is down.
-- Add code that assumes the `/peer/*` surface is reachable from this host.
+- Address scopes with `@<peer-id>` — the parser silently strips the suffix; identifiers go through as local-only.
+- Look for `/peer/*` routes — they 404; nothing mounts them.
+- Expect `awm peer init/add/ping/list` to exist — they're gone.
 
-**To re-enable** (do this *after* v37 deploy + dev consolidation + agent-infra rollout land):
-
-```bash
-systemctl --user link /home/tony/agentic_workspace/deploy/awm-exposed.service
-systemctl --user enable --now awm-exposed.service
-systemctl --user status awm-exposed.service
-awm peer ping mira && awm peer ping xps
-```
-
-Before re-enabling, also fix `voice engine restore failed: No module named 'voice'` in the exposed startup path — leftover from the S3 voice removal (commit `5766206`); harmless warning today, but it indicates other dangling references the deploy may turn into hard errors.
+**Still pending on this branch (`dev`, not yet on `release`):**
+- S6: delete `awm/exposed.py` and the `EXPOSED_*`/`TLS_*`/`PEER_FILE` config; rewrite `dev/run.sh` to launch `awm.server:app` over HTTP per-scope.
+- S7: re-point hub + auth tests from `awm.exposed:app` to `awm.server:app`.
+- S8: schema v38 migration (drop `peers` + `peer_sync_state` tables).
+- S10: `rm -rf /home/tony/agentic_workspace/scratch`.
+- S11: README.md / WORKSPACE.md / `dev/AGENTS.md` doc sweep (this AGENTS.md is the first pass).
+- S12: deploy (rebase dev→release, `--no-ff` merge, `systemctl disable --now awm-exposed.service` server-side, restart `awm.service`).
+- S13: merge `release` into `agent-harness`, `web-tts`, `web-ppt` sibling worktrees.
 
 ## Service Hub
 
