@@ -4,6 +4,28 @@
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
+## Federation: DISABLED (as of 2026-06-04)
+
+`awm-exposed.service` is **stopped and unit-unlinked**. The `/peer/*` routes, cross-host messaging, federated find, cross-peer rooms, leadership election, and cr-sqlite replication are all off. `awm.service` (local IPC on `127.0.0.1:7819`) is unaffected — every MCP tool, CLI command, and in-process API that doesn't cross a host boundary still works.
+
+**Why off, not repaired:** peers (`capella`/`mira`/`xps`) last gossiped on 2026-05-25; the exposed listener had been crash-looping on `EADDRINUSE` (5,222 systemd restarts) leaking SSH tunnels by the hundreds; and three substrate changes are queued — v37 identity-table schema (landed on this branch, deploy pending), 74 commits + 26 dirty files on `dev`, and the new agent infrastructure — any of which would re-break a same-day repair. The peer registry rows (`peer_search` / `awm peer list`) are intact for when federation comes back.
+
+**Don't:**
+- Rely on `@<peer-id>` scope addressing (`awm inbox send scope:x@mira ...`) — it will block on a missing tunnel.
+- Trust `leadership_state` from `awm status` — it reports `STANDBY` / `current_leader: null` permanently while exposed is down.
+- Add code that assumes the `/peer/*` surface is reachable from this host.
+
+**To re-enable** (do this *after* v37 deploy + dev consolidation + agent-infra rollout land):
+
+```bash
+systemctl --user link /home/tony/agentic_workspace/deploy/awm-exposed.service
+systemctl --user enable --now awm-exposed.service
+systemctl --user status awm-exposed.service
+awm peer ping mira && awm peer ping xps
+```
+
+Before re-enabling, also fix `voice engine restore failed: No module named 'voice'` in the exposed startup path — leftover from the S3 voice removal (commit `5766206`); harmless warning today, but it indicates other dangling references the deploy may turn into hard errors.
+
 ## Service Hub
 
 `awm.exposed:app` is a routing layer. Most requests are served by its in-process routers (`/rooms`, `/peer`, …). A few path prefixes are *registered* at runtime; matched requests dispatch to one of four kinds:
