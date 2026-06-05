@@ -155,9 +155,14 @@ def search_projects(
     least one active scope."""
     conn = get_connection()
     try:
+        # v37: scopes table folded into agents. allocated|active render as
+        # 'active'; retired renders as 'completed'. The legacy 'deleted'
+        # state is gone — agents stay 'retired' once their worktree is
+        # cleaned.
         rows = conn.execute(
-            "SELECT project, status, COUNT(*) AS n FROM scopes "
-            "GROUP BY project, status ORDER BY project"
+            "SELECT p.name AS project, a.status, COUNT(*) AS n "
+            "FROM agents a JOIN projects p ON p.id = a.project_id "
+            "GROUP BY p.name, a.status ORDER BY p.name"
         ).fetchall()
     finally:
         conn.close()
@@ -165,12 +170,10 @@ def search_projects(
     by_project: dict[str, ProjectScopeCounts] = {}
     for r in rows:
         counts = by_project.setdefault(r["project"], ProjectScopeCounts())
-        if r["status"] == "active":
-            counts.active = r["n"]
-        elif r["status"] == "completed":
-            counts.completed = r["n"]
-        elif r["status"] == "deleted":
-            counts.deleted = r["n"]
+        if r["status"] in ("allocated", "active"):
+            counts.active += r["n"]
+        elif r["status"] == "retired":
+            counts.completed += r["n"]
 
     # Also surface projects that exist on disk but have no scope rows yet.
     if PROJECTS_DIR.is_dir():
