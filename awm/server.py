@@ -206,9 +206,6 @@ def get_status():
     conn = get_connection()
     try:
         active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-        active_edits = conn.execute(
-            "SELECT COUNT(*) FROM shared_edits WHERE status = 'active'"
-        ).fetchone()[0]
     finally:
         conn.close()
 
@@ -218,7 +215,6 @@ def get_status():
         workspace_root=str(WORKSPACE_ROOT),
         active_locks=active_locks,
         active_scopes=scope_result.total,
-        active_shared_edits=active_edits,
     )
 
 
