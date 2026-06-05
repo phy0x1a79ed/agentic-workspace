@@ -4,27 +4,29 @@
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
-## Federation: DISABLED (as of 2026-06-04)
+## Federation: cold but reachable (as of 2026-06-04 post-v37 deploy)
 
-`awm-exposed.service` is **stopped and unit-unlinked**. The `/peer/*` routes, cross-host messaging, federated find, cross-peer rooms, leadership election, and cr-sqlite replication are all off. `awm.service` (local IPC on `127.0.0.1:7819`) is unaffected — every MCP tool, CLI command, and in-process API that doesn't cross a host boundary still works.
+`awm-exposed.service` is **running again** after the v37 deploy. The earlier "federation disabled" rollback over-claimed: stopping `awm-exposed` also kills MCP and the operator UI, because the MCP stdio server proxies to `awm-exposed` over HTTPS (`mcp__awm__*` tools round-trip through `:12100`) and `/ui/*` lives there too. So the right framing is which *behaviors* are cold, not which *services* are off.
 
-**Why off, not repaired:** peers (`capella`/`mira`/`xps`) last gossiped on 2026-05-25; the exposed listener had been crash-looping on `EADDRINUSE` (5,222 systemd restarts) leaking SSH tunnels by the hundreds; and three substrate changes are queued — v37 identity-table schema (landed on this branch, deploy pending), 74 commits + 26 dirty files on `dev`, and the new agent infrastructure — any of which would re-break a same-day repair. The peer registry rows (`peer_search` / `awm peer list`) are intact for when federation comes back.
+**What's hot (use it):**
+- All `mcp__awm__*` tools (round-trip through awm-exposed).
+- Local CLI + HTTP at `awm.service` `127.0.0.1:7819` (always was; unchanged).
+- Browser UI at `https://0.0.0.0:12100/ui/*` after a cookie bootstrap (`awm login`).
+- Leadership election runs; currently `ACTIVE` / `current_leader: capella` (self-elected single-node).
+- The SSH tunnel to `mira` is auto-opened on start by the leadership prober.
 
-**Don't:**
-- Rely on `@<peer-id>` scope addressing (`awm inbox send scope:x@mira ...`) — it will block on a missing tunnel.
-- Trust `leadership_state` from `awm status` — it reports `STANDBY` / `current_leader: null` permanently while exposed is down.
-- Add code that assumes the `/peer/*` surface is reachable from this host.
+**What's cold (don't trust without re-bootstrapping):**
+- Cross-host federation is operationally stale: peers (`capella`/`mira`/`xps`) last gossiped on 2026-05-25. Tokens / TLS handshakes may have drifted. Verify with `awm peer ping <id>` before relying on `/peer/*`.
+- `cr-sqlite` data-table replication is **out of scope in v37 by design** (CRR was trimmed to the control plane). Federation test suites that assert data-row sync are deliberately broken — see the agent-harness scope `.awm/context.md` for the open follow-up call.
+- Cross-peer rooms, `inbox send scope:x@peer`, federated find: work iff the SSH tunnel + auth still pass — ping first.
 
-**To re-enable** (do this *after* v37 deploy + dev consolidation + agent-infra rollout land):
-
+**To verify federation actually works** (before relying on it):
 ```bash
-systemctl --user link /home/tony/agentic_workspace/deploy/awm-exposed.service
-systemctl --user enable --now awm-exposed.service
-systemctl --user status awm-exposed.service
 awm peer ping mira && awm peer ping xps
+awm peer list   # last_seen should be ~now, not 2026-05-25
 ```
 
-Before re-enabling, also fix `voice engine restore failed: No module named 'voice'` in the exposed startup path — leftover from the S3 voice removal (commit `5766206`); harmless warning today, but it indicates other dangling references the deploy may turn into hard errors.
+**Earlier rollback's root cause (kept here so the next on-call doesn't relive it):** `awm-exposed` was in a 5,222-iteration systemd restart loop on `EADDRINUSE :12100` because the original PID 261 (from this morning's session) was still holding the port. The systemd restart counter never won the race. Fix is to find + kill the zombie, then `systemctl --user restart`. Don't `mask` or `disable` the unit unless you're prepared to lose MCP and the UI — that coupling hasn't been unbundled. See `[[awm_exposed_fd_leak_wedge]]` for the longer-running variant of the same pattern.
 
 ## Service Hub
 
