@@ -8,13 +8,12 @@ lives next to this file and is gitignored.
 ## Quick start
 
 ```bash
-./run.sh                # start uvicorn (HTTPS) + login bookmark server
+./run.sh                # start uvicorn (HTTP loopback)
 ./run.sh restart        # stop + start
 ./run.sh stop
 ./run.sh status         # what's running, plus URLs
 ./run.sh seed           # (re)seed the sandbox via the live HTTP API
 ./run.sh reset          # wipe state and re-seed (prompts first)
-./run.sh login          # one-line CLI form of the login URL
 ./run.sh logs           # tail uvicorn log
 ```
 
@@ -24,19 +23,19 @@ This sandbox runs in **every** `projects/awm/<scope>/` worktree. Each scope
 gets a distinct port band derived from its directory name, so all three can
 run side-by-side:
 
-| Scope worktree | uvicorn | login |
-|---|---|---|
-| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` | `7822` |
-| `projects/awm/web-ui/` (`feat/web-ui`) | `7831` | `7832` |
-| `projects/awm/web-backend/` (`feat/web-backend`) | `7841` | `7842` |
-| any other scope (fallback) | `7851` | `7852` |
+| Scope worktree | uvicorn |
+|---|---|
+| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` |
+| `projects/awm/web-ui/` (`feat/web-ui`) | `7831` |
+| `projects/awm/web-backend/` (`feat/web-backend`) | `7841` |
+| any other scope (fallback) | `7851` |
 
 **The uvicorn port IS the service-hub origin for this sandbox.** `AGENTS.md`
-§ "Service Hub" documents the hub at `:7820` (the production default — the
-systemd-managed `awm.exposed` on this node). When you're consuming or
+§ "Service Hub" documents the hub at `:7819` (the production default — the
+systemd-managed `awm.service` on this node). When you're consuming or
 registering against the hub *from inside a dev sandbox*, use this worktree's
 uvicorn port instead. The hub control plane lives at
-`https://127.0.0.1:<uvicorn>/hub/` (e.g. `https://127.0.0.1:7821/hub/register`
+`http://127.0.0.1:<uvicorn>/hub/` (e.g. `http://127.0.0.1:7821/hub/register`
 for the `dev/` sandbox).
 
 Each worktree's `dev/.awm/`, `dev/projects/`, `dev/data/` are gitignored —
@@ -57,22 +56,20 @@ It's `source`d before port defaults are computed:
 
 ```bash
 # dev/.env (gitignored)
-AWM_EXPOSED_PORT=9000
-AWM_API_TARGET=https://127.0.0.1:7841
+AWM_PORT=9000
+AWM_API_TARGET=http://127.0.0.1:7841
 ```
 
 Environment variables exported in the shell take precedence over `.env`,
 which takes precedence over the scope-band defaults.
 
-## Two processes (per scope)
+## One process (per scope)
 
 | Process | URL (web-ui scope) | Purpose |
 |---|---|---|
-| uvicorn | `https://127.0.0.1:7831/` | the hub origin; serves backend routes + per-page stripes at `/ui/<name>/` (self-signed cert) |
-| login-server | `http://127.0.0.1:7832/` | bookmark page that mints a fresh `/auth/bootstrap?ot=...` link on every refresh |
+| uvicorn | `http://127.0.0.1:7831/` | the hub origin; serves backend routes + per-page stripes at `/ui/<name>/` |
 
-Bookmark the login URL for your scope. Refresh it any time you need a new
-session — each nonce is single-use, 60s TTL.
+Plain HTTP loopback — auth is gone, the listener trusts every caller.
 
 ## What's seeded
 
@@ -82,16 +79,6 @@ session — each nonce is single-use, 60s TTL.
 - Projects `demo`, `playground`
 - Scopes `demo/alpha`, `demo/beta`, `playground/experiment`
 - One demo room with two posts (via `/invoke` → `room_create` / `room_post`)
-- A fake remote peer `peer-test` (via `awm peer add` CLI; ping will fail
-  with an ssh-resolve error — exercises the UI error path)
-- A local peer identity `dev-sandbox` (with its token copied into
-  `peers/dev-sandbox.token` so pinging self works)
-
-## Why HTTPS, why self-signed
-
-`awm.exposed` sets cookies with `secure=True`, so a plain-HTTP browser
-silently drops them. `_prep.py` calls `auth_svc.bootstrap_tls()` to generate
-a loopback cert under `.awm/tls/`. Your browser will warn — click through.
 
 ## Production-code workarounds (parked in `run.sh`)
 
@@ -108,23 +95,21 @@ hacks. They live in `run.sh` so `seed.py` doesn't have to know about them:
 
 The user's shell typically has `AWM_WORKSPACE=/home/tony/agentic_workspace`
 exported, which makes `awm <cmd>` from anywhere hit **production** (port
-12100). To target the sandbox:
+7819). To target the sandbox:
 
 ```bash
-AWM_EXPOSED_PORT=7831 awm scope list           # pick the band for your scope (web-ui=7831, dev=7821, web-backend=7841)
-AWM_WORKSPACE=$(pwd) awm scope list             # alternative — reads dev/.awm/exposed.json
+AWM_PORT=7831 awm scope list           # pick the band for your scope (web-ui=7831, dev=7821, web-backend=7841)
+AWM_WORKSPACE=$(pwd) awm scope list    # alternative — runs against this sandbox's .awm/
 ```
 
-The harness itself uses the loopback bearer in `.awm/auth.token` directly,
-so it never needs the operator's CLI.
+The harness talks to the loopback port directly; no token, no cookie.
 
 ## Page stripes
 
 The web UI is composed of per-page stripes under `../packages/pages/<name>/`
 (Svelte 5 + Vite), each registered with the hub as `kind=page` and served at
-`/ui/<name>/`. The active pages are `agent`, `tts`, `ptt`, `primitives-gallery`,
-and `login`. Login lives at `/login` (its `prefix.txt` overrides the default
-`/ui/login`); the `/auth/bootstrap` redirect lands on `/ui/agent`.
+`/ui/<name>/`. The active pages are `agent`, `tts`, `ptt`, and
+`primitives-gallery`.
 
 `./run.sh start` runs `awm packages gen` + `npm run build --workspaces` +
 `awm packages sync` automatically — pages are built into `dist/` and

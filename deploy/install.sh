@@ -12,7 +12,6 @@
 # After this completes:
 #   ~/.local/bin/awm                  — wrapper for ad-hoc invocations
 #   $WORKSPACE/.awm/                  — workspace state (db, logs)
-#   ~/.awm/auth.token                 — bearer token (chmod 600)
 #   ~/.config/systemd/user/awm.service — user unit (started + enabled)
 #
 # After this completes, awm.service is running on 127.0.0.1:7819. Verify
@@ -94,17 +93,6 @@ exec "${ENV_PREFIX}/bin/awm" "\$@"
 WRAPPER
 chmod +x "$HOME/.local/bin/awm"
 
-# Token lives outside the workspace tree so it survives workspace re-init.
-mkdir -p "$HOME/.awm"
-chmod 700 "$HOME/.awm"
-
-TOKEN_FILE="$HOME/.awm/auth.token"
-if [[ ! -f "$TOKEN_FILE" ]]; then
-    echo "=== generating bearer token ==="
-    head -c 32 /dev/urandom | base64 | tr -d '=' | tr '/+' '_-' > "$TOKEN_FILE"
-fi
-chmod 600 "$TOKEN_FILE"
-
 if [[ "$INSTALL_SYSTEMD" -eq 1 ]]; then
     echo "=== installing systemd user unit ==="
     UNIT_DIR="$HOME/.config/systemd/user"
@@ -119,7 +107,6 @@ After=network.target
 Type=simple
 Environment=AWM_WORKSPACE=${WORKSPACE}
 Environment=AWM_IDLE_SHUTDOWN=0
-Environment=AWM_AUTH_TOKEN_FILE=${TOKEN_FILE}
 ExecStart=${ENV_PREFIX}/bin/awm serve
 Restart=on-failure
 RestartSec=1
