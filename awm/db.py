@@ -22,6 +22,11 @@ SENTINEL_USER_IDS = {
 }
 
 
+def new_uuid() -> str:
+    """Mint a fresh uuid4 hex for use as a row primary key."""
+    return uuid.uuid4().hex
+
+
 SCHEMA_SQL = """\
 -- v37 schema (16 tables). The identity layer (projects/users/agents/
 -- agent_instances) is the source of truth; every data row points at a
