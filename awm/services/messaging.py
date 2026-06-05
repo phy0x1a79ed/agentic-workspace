@@ -1,9 +1,28 @@
-"""Messaging service — scoped message queues for inter-agent communication."""
+"""Messaging service — agent-addressed inboxes (v37).
+
+Recipients address the polymorphic ref vocabulary directly via
+``identity.resolve_ref``:
+
+  * ``workspace`` → the workspace's ``system`` user sentinel.
+  * ``project:<name>`` → the project's catch-all user (per-project inbox,
+    materialized in the users table as ``proj:<name>``).
+  * ``scope:<project>/<scope>`` → the agent's uuid.
+  * ``user:<name>`` → that user's uuid.
+
+Cross-peer ``@<peer-id>`` suffixes still parse and route through
+``federation.forward_send`` — federation tables stay CRR in v37.
+
+When the recipient resolves to an agent and that agent has an owned room,
+``send_message`` dual-writes a ``kind='notification'`` row into the
+agent's room transcript so the agent's CLI sees the notification through
+the same broadcast path that delivers room posts.
+"""
 
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime, timezone
+from typing import Any
 
 from awm.db import get_connection
 from awm.models import (
@@ -14,23 +33,10 @@ from awm.models import (
     MessageFetchResponse,
     MessageActionResponse,
 )
-from awm.services import scopes as scope_svc
-from awm.services.network import peers as peer_svc
-from awm.services.replication.schema import new_uuid, next_legacy_id
+from awm.services import identity
+from awm.services.identity import iso_to_ms, ms_to_iso, now_ms
 
 
-def _local_peer_id() -> str:
-    """Local peer id from PEER_FILE, '' if not initialized."""
-    try:
-        ident = peer_svc.get_local_identity()
-    except Exception:
-        return ""
-    if ident is None:
-        return ""
-    return ident.get("peer_id") or ""
-
-# Valid scope patterns. Optional ``@<peer-id>`` suffix routes the operation
-# to a remote awm instance registered via `awm peer add`.
 _SCOPE_RE = re.compile(
     r"^(workspace|project:[a-zA-Z0-9_-]+|scope:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)"
     r"(@[A-Za-z0-9][A-Za-z0-9_-]*)?$"
@@ -38,7 +44,6 @@ _SCOPE_RE = re.compile(
 
 
 def _split_peer(scope: str) -> tuple[str, str | None]:
-    """Return (base_scope, peer_id_or_None). Raises ValueError on bad shape."""
     m = _SCOPE_RE.match(scope)
     if not m:
         raise ValueError(
@@ -51,89 +56,202 @@ def _split_peer(scope: str) -> tuple[str, str | None]:
 
 
 def _validate_scope(scope: str) -> None:
-    """Validate the local scope shape. Post-v33 cross-host fetch/search
-    is supported: the ``@peer`` suffix narrows the local query to rows
-    whose ``origin_peer`` matches, because CRR replication means every
-    peer already has a copy."""
-    # _split_peer raises on bad shapes; we don't need the result.
     _split_peer(scope)
 
 
-def _row_to_info(row) -> MessageInfo:
+def _project_inbox_username(name: str) -> str:
+    """The catch-all user that backs ``project:<name>`` inboxes — landed
+    in the users table on demand so ``recipient_id`` always FK-resolves."""
+    return f"proj:{name}"
+
+
+def _resolve_recipient(base_scope: str, *, conn=None) -> tuple[str, str]:
+    """Resolve a ``base_scope`` string to ``(recipient_id, label)``.
+
+    label is the canonical legacy form (``workspace`` / ``project:X`` /
+    ``scope:X/Y``) preserved on the response objects so existing callers
+    keep matching.
+    """
+    if base_scope == "workspace":
+        return identity.SYSTEM_USER_ID, "workspace"
+    if base_scope.startswith("project:"):
+        name = base_scope.split(":", 1)[1]
+        uid = identity.user_id_for_username(
+            _project_inbox_username(name), conn=conn, create_if_missing=True,
+        )
+        return (uid or identity.SYSTEM_REF, base_scope)
+    if base_scope.startswith("scope:"):
+        body = base_scope.split(":", 1)[1]
+        if "/" in body:
+            proj, sc = body.split("/", 1)
+            aid = identity.agent_id_for_scope(proj, sc, conn=conn, active_only=False)
+            if aid:
+                return (aid, base_scope)
+    return (identity.SYSTEM_REF, base_scope)
+
+
+def _resolve_sender(sender_literal: str, *, conn=None) -> str:
+    """Best-effort: ``user:name`` / ``agent:proj/scope`` / ``system`` → ref.
+    Unrecognized literals get treated as user names (created on demand)."""
+    ref = identity.resolve_ref(sender_literal, conn=conn, create_users=True)
+    return ref or identity.SYSTEM_REF
+
+
+def _row_to_info(row, *, conn=None) -> MessageInfo:
+    """Reconstruct legacy MessageInfo shape from a v37 row.
+
+    The legacy ``scope`` / ``sender`` strings come from the recipient/sender
+    refs: agents render as ``scope:project/scope``, users as ``user:name``,
+    ``system`` as ``workspace``.
+    """
     return MessageInfo(
-        id=row["legacy_id"],
-        scope=row["scope"],
-        sender=row["sender"],
+        id=row["id"],
+        scope=_label_for_recipient(row["recipient_id"], conn=conn),
+        sender=_label_for_sender(row["sender_id"], conn=conn),
         msg_type=row["msg_type"],
         subject=row["subject"],
         body=row["body"],
         metadata=row["metadata"],
         status=row["status"],
-        created_at=row["created_at"],
-        read_at=row["read_at"],
+        created_at=ms_to_iso(row["created_at"]) or "",
+        read_at=ms_to_iso(row["read_at"]),
     )
 
 
-def _row_to_preview(row) -> MessagePreview:
+def _row_to_preview(row, *, conn=None) -> MessagePreview:
     return MessagePreview(
-        id=row["legacy_id"],
-        scope=row["scope"],
-        sender=row["sender"],
+        id=row["id"],
+        scope=_label_for_recipient(row["recipient_id"], conn=conn),
+        sender=_label_for_sender(row["sender_id"], conn=conn),
         msg_type=row["msg_type"],
         subject=row["subject"],
         status=row["status"],
-        created_at=row["created_at"],
-        read_at=row["read_at"],
+        created_at=ms_to_iso(row["created_at"]) or "",
+        read_at=ms_to_iso(row["read_at"]),
     )
 
 
-def send_message(req: MessageSendRequest) -> MessageActionResponse:
-    """Send a message to a scope.
+def _label_for_recipient(ref: str, *, conn=None) -> str:
+    if ref == identity.SYSTEM_REF or not ref:
+        return "workspace"
+    # users.id?
+    own = conn is None
+    c = conn or get_connection()
+    try:
+        urow = c.execute("SELECT username FROM users WHERE id=?", (ref,)).fetchone()
+        if urow:
+            name = urow[0]
+            if name == "system" or ref == identity.SYSTEM_USER_ID:
+                return "workspace"
+            if name.startswith("proj:"):
+                return f"project:{name[len('proj:'):]}"
+            return f"user:{name}"
+        arow = c.execute(
+            "SELECT p.name, a.scope FROM agents a "
+            "JOIN projects p ON p.id = a.project_id WHERE a.id=?",
+            (ref,),
+        ).fetchone()
+        if arow:
+            return f"scope:{arow[0]}/{arow[1]}"
+    finally:
+        if own:
+            c.close()
+    return ref
 
-    If the scope carries an ``@<peer-id>`` suffix, the message is forwarded
-    to that peer's ``/inbox`` (and not stored locally). Otherwise it lands
-    in the local DB.
-    """
+
+def _label_for_sender(ref: str, *, conn=None) -> str:
+    if ref == identity.SYSTEM_REF or not ref:
+        return "system"
+    own = conn is None
+    c = conn or get_connection()
+    try:
+        urow = c.execute("SELECT username FROM users WHERE id=?", (ref,)).fetchone()
+        if urow:
+            return f"user:{urow[0]}"
+        arow = c.execute(
+            "SELECT p.name, a.scope FROM agents a "
+            "JOIN projects p ON p.id = a.project_id WHERE a.id=?",
+            (ref,),
+        ).fetchone()
+        if arow:
+            return f"agent:{arow[0]}/{arow[1]}"
+    finally:
+        if own:
+            c.close()
+    return ref
+
+
+def _agent_owned_room_id(agent_ref: str) -> str | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM rooms WHERE owner_agent_id=? AND status='open' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (agent_ref,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def send_message(req: MessageSendRequest) -> MessageActionResponse:
+    """Send a message. Cross-peer ``@<peer-id>`` suffix routes via
+    federation; otherwise insert into the local messages table and (when
+    the recipient is an agent with an owned room) post a notification into
+    its transcript."""
     base_scope, peer_id = _split_peer(req.scope)
 
     if peer_id is not None:
-        # Forward to remote peer. Don't pollute the local DB.
         from awm.services.network import federation
         payload = req.model_dump()
-        payload["scope"] = base_scope  # strip @peer for the remote
+        payload["scope"] = base_scope
         try:
             remote = federation.forward_send(peer_id, payload)
         except federation.UnknownPeerError as exc:
             raise ValueError(str(exc)) from exc
-        # Re-shape into MessageActionResponse from the remote payload
         return MessageActionResponse(
             message=f"Message forwarded to {req.scope}",
             msg=MessageInfo(**remote["msg"]) if isinstance(remote, dict) and "msg" in remote else None,
         )
 
-    now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        origin = _local_peer_id()
-        legacy = next_legacy_id(conn, "messages", origin)
-        uid = new_uuid()
-        conn.execute(
+        recipient_id, _label = _resolve_recipient(base_scope, conn=conn)
+        sender_id = _resolve_sender(req.sender, conn=conn)
+        cur = conn.execute(
             "INSERT INTO messages "
-            "(uuid, legacy_id, origin_peer, scope, sender, msg_type, "
-            " subject, body, metadata, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unread', ?)",
-            (uid, legacy, origin, base_scope, req.sender, req.msg_type,
-             req.subject, req.body, req.metadata, now),
+            "(recipient_id, sender_id, msg_type, subject, body, metadata, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'unread', ?)",
+            (recipient_id, sender_id, req.msg_type, req.subject, req.body,
+             req.metadata, now_ms()),
         )
+        msg_id = cur.lastrowid
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM messages WHERE uuid = ?", (uid,),
+            "SELECT * FROM messages WHERE id=?", (msg_id,),
         ).fetchone()
+        info = _row_to_info(row, conn=conn)
     finally:
         conn.close()
+
+    # Dual-write: if the recipient is an agent with an owned room, post a
+    # transcript notification so the running CLI sees the ping.
+    if base_scope.startswith("scope:"):
+        owned_room = _agent_owned_room_id(recipient_id)
+        if owned_room:
+            try:
+                from awm.services import rooms as rooms_svc
+                rooms_svc.post_transcript(
+                    owned_room, author=sender_id, kind="notification",
+                    body=req.subject or req.body or "",
+                    meta={"message_id": msg_id, "msg_type": req.msg_type},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
     return MessageActionResponse(
         message=f"Message sent to {base_scope}",
-        msg=_row_to_info(row),
+        msg=info,
     )
 
 
@@ -144,22 +262,16 @@ def search_messages(
     query: str | None = None,
     limit: int = 50,
 ) -> MessageSearchResponse:
-    """Browse message previews (no body/metadata) across scopes.
-
-    For the full content of a specific scope's messages, use `fetch_messages`.
-    """
     conn = get_connection()
     try:
         sql = "SELECT * FROM messages WHERE 1=1"
         params: list = []
         if scope:
             _validate_scope(scope)
-            base, peer = _split_peer(scope)
-            sql += " AND scope = ?"
-            params.append(base)
-            if peer is not None:
-                sql += " AND origin_peer = ?"
-                params.append(peer)
+            base, _peer = _split_peer(scope)
+            recipient_id, _label = _resolve_recipient(base, conn=conn)
+            sql += " AND recipient_id = ?"
+            params.append(recipient_id)
         if status:
             sql += " AND status = ?"
             params.append(status)
@@ -173,9 +285,9 @@ def search_messages(
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
+        previews = [_row_to_preview(r, conn=conn) for r in rows]
     finally:
         conn.close()
-    previews = [_row_to_preview(r) for r in rows]
     return MessageSearchResponse(messages=previews, total=len(previews))
 
 
@@ -186,22 +298,13 @@ def fetch_messages(
     limit: int = 50,
     mark_read: bool = False,
 ) -> MessageFetchResponse:
-    """Retrieve full messages for a scope, optionally marking them read atomically.
-
-    ``scope`` is required — this is the "read my inbox" primitive.  When
-    ``mark_read=True``, any returned rows that were ``unread`` are flipped to
-    ``read`` in the same transaction and the returned rows reflect the new state.
-    """
     _validate_scope(scope)
-    base, peer = _split_peer(scope)
-    now = datetime.now(timezone.utc).isoformat()
+    base, _peer = _split_peer(scope)
     conn = get_connection()
     try:
-        sql = "SELECT * FROM messages WHERE scope = ?"
-        params: list = [base]
-        if peer is not None:
-            sql += " AND origin_peer = ?"
-            params.append(peer)
+        recipient_id, _label = _resolve_recipient(base, conn=conn)
+        sql = "SELECT * FROM messages WHERE recipient_id = ?"
+        params: list = [recipient_id]
         if status:
             sql += " AND status = ?"
             params.append(status)
@@ -214,87 +317,77 @@ def fetch_messages(
 
         marked = 0
         if mark_read and rows:
-            unread_uuids = [r["uuid"] for r in rows if r["status"] == "unread"]
-            if unread_uuids:
-                placeholders = ",".join("?" * len(unread_uuids))
+            unread_ids = [r["id"] for r in rows if r["status"] == "unread"]
+            if unread_ids:
+                placeholders = ",".join("?" * len(unread_ids))
                 conn.execute(
-                    f"UPDATE messages SET status = 'read', read_at = ? "
-                    f"WHERE uuid IN ({placeholders})",
-                    [now, *unread_uuids],
+                    f"UPDATE messages SET status='read', read_at=? "
+                    f"WHERE id IN ({placeholders})",
+                    [now_ms(), *unread_ids],
                 )
                 conn.commit()
-                marked = len(unread_uuids)
+                marked = len(unread_ids)
                 rows = conn.execute(sql, params).fetchall()
+        msgs = [_row_to_info(r, conn=conn) for r in rows]
     finally:
         conn.close()
-    msgs = [_row_to_info(r) for r in rows]
     return MessageFetchResponse(messages=msgs, total=len(msgs), marked_read_count=marked)
 
 
 def mark_read(message_id: int | str) -> MessageActionResponse:
-    """Flip a single message's status to ``read``. Accepts ``42`` for the
-    local row or ``'42@peer'`` to target a row that originated on a remote
-    peer (which post-replication exists locally too)."""
-    legacy_id, peer = peer_svc.parse_id_ref(message_id)
-    origin = peer if peer is not None else _local_peer_id()
-    now = datetime.now(timezone.utc).isoformat()
+    """Flip a single message's status to ``read``. Accepts an integer id."""
+    try:
+        mid = int(str(message_id).split("@", 1)[0])
+    except ValueError:
+        return MessageActionResponse(
+            message=f"Invalid message id {message_id!r}", msg=None,
+        )
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT * FROM messages WHERE legacy_id = ? AND origin_peer = ?",
-            (legacy_id, origin),
+            "SELECT * FROM messages WHERE id=?", (mid,),
         ).fetchone()
         if row is None:
             return MessageActionResponse(
                 message=f"No message {message_id} found", msg=None,
             )
         conn.execute(
-            "UPDATE messages SET status = 'read', read_at = ? WHERE uuid = ?",
-            (now, row["uuid"]),
+            "UPDATE messages SET status='read', read_at=? WHERE id=?",
+            (now_ms(), mid),
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM messages WHERE uuid = ?", (row["uuid"],),
+            "SELECT * FROM messages WHERE id=?", (mid,),
         ).fetchone()
+        info = _row_to_info(row, conn=conn)
     finally:
         conn.close()
     return MessageActionResponse(
-        message=f"Marked {message_id} as read",
-        msg=_row_to_info(row),
+        message=f"Marked {message_id} as read", msg=info,
     )
 
 
 def list_recipients(query: str, peer: str | None = None) -> list[str]:
-    """Return valid recipient scopes matching ``query``.
-
-    ``query`` is required. Pass ``"*"`` to return every recipient; any other
-    value is compiled as a regex and matched against each recipient string
-    (``workspace``, ``project:<p>``, ``scope:<p>/<s>``).
-
-    ``peer`` is reserved for a future cached cross-peer view; only ``None`` or
-    ``"local"`` is honoured today.
-    """
+    """Return valid recipient scopes matching ``query``."""
     from awm.config import PROJECTS_DIR
+    from awm.services import scopes as scope_svc
 
     if not query:
         raise ValueError("query is required; pass '*' for all recipients")
     if peer not in (None, "local"):
         raise NotImplementedError(
-            "peer fan-out for inbox_recipients is not yet wired "
-            "— see plan-out-an-update-zesty-nygaard"
+            "peer fan-out for inbox_recipients is not yet wired"
         )
 
     recipients = ["workspace"]
     projects_seen: set[str] = set()
 
-    # Discover projects from filesystem
     if PROJECTS_DIR.is_dir():
         for child in sorted(PROJECTS_DIR.iterdir()):
             if child.is_dir() and (child / ".bare").is_dir():
                 recipients.append(f"project:{child.name}")
                 projects_seen.add(child.name)
 
-    # Add ALL scopes (any status) as recipients — DISTINCT by (project, scope)
     result = scope_svc.list_scopes(status="all")
     scopes_seen: set[str] = set()
     for s in result.scopes:

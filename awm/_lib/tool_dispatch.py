@@ -966,17 +966,24 @@ def handle_tool(name: str, args: dict) -> str:
         from awm.db import get_connection
         conn = get_connection()
         try:
+            # v37: scopes table folded into agents. allocated|active render
+            # as 'active'; retired renders as 'completed'. ``deleted`` is
+            # no longer a distinct state — agents stay 'retired' once
+            # their worktree is cleaned.
             rows = conn.execute(
-                "SELECT project, status, COUNT(*) AS n FROM scopes "
-                "GROUP BY project, status ORDER BY project"
+                "SELECT p.name AS project, a.status, COUNT(*) AS n "
+                "FROM agents a JOIN projects p ON p.id = a.project_id "
+                "GROUP BY p.name, a.status ORDER BY p.name"
             ).fetchall()
         finally:
             conn.close()
         by_project: dict = {}
         for r in rows:
             counts = by_project.setdefault(r["project"], {"active": 0, "completed": 0, "deleted": 0})
-            if r["status"] in counts:
-                counts[r["status"]] = r["n"]
+            if r["status"] in ("allocated", "active"):
+                counts["active"] += r["n"]
+            elif r["status"] == "retired":
+                counts["completed"] += r["n"]
         return json.dumps({
             "projects": [{"name": n, "scope_counts": c} for n, c in by_project.items()],
         }, indent=2)

@@ -230,24 +230,27 @@ def ping_peer_endpoint(peer_id: str):
 
 @app.get("/projects", response_model=ProjectListResponse)
 def list_projects_endpoint():
-    """List projects derived from the scopes table, with per-status counts."""
+    """List projects derived from the agents table, with per-status counts.
+
+    v37: ``allocated|active`` agents render as ``active``; ``retired``
+    renders as ``completed``. The legacy ``deleted`` state is gone.
+    """
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT project, status, COUNT(*) AS n FROM scopes "
-            "GROUP BY project, status ORDER BY project"
+            "SELECT p.name AS project, a.status, COUNT(*) AS n "
+            "FROM agents a JOIN projects p ON p.id = a.project_id "
+            "GROUP BY p.name, a.status ORDER BY p.name"
         ).fetchall()
     finally:
         conn.close()
     by_project: dict[str, ProjectScopeCounts] = {}
     for r in rows:
         counts = by_project.setdefault(r["project"], ProjectScopeCounts())
-        if r["status"] == "active":
-            counts.active = r["n"]
-        elif r["status"] == "completed":
-            counts.completed = r["n"]
-        elif r["status"] == "deleted":
-            counts.deleted = r["n"]
+        if r["status"] in ("allocated", "active"):
+            counts.active += r["n"]
+        elif r["status"] == "retired":
+            counts.completed += r["n"]
     return ProjectListResponse(projects=[
         ProjectListInfo(name=name, scope_counts=counts)
         for name, counts in by_project.items()

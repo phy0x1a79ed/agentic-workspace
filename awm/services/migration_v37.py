@@ -428,11 +428,19 @@ def _classify_literal(
       - 'scope:<project>/<scope>' → agents.id (messaging legacy form)
       - '<project>/<scope>' (bare path) → agents.id
       - 'user:<name>' → users.id (inserts if missing)
-      - 'system' → 'system' sentinel
+      - 'system' / 'workspace' → 'system' sentinel
+      - 'project:<name>' → user with username ``proj:<name>``
+        (auto-materialized so the project inbox FK-resolves)
       - anything else → users.id (literal stored as username, inserted on demand)
     """
-    if literal == "system" or literal == "":
+    if literal == "system" or literal == "" or literal == "workspace":
         return "system"
+    if literal.startswith("project:"):
+        proj = literal[len("project:"):]
+        username = f"proj:{proj}"
+        if username not in m.users:
+            m.users[username] = _det_uuid(ns, "users", username)
+        return m.users[username]
     if literal.startswith("agent:"):
         rest = literal[len("agent:"):]
         if "/" in rest:

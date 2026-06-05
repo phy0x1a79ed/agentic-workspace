@@ -185,6 +185,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_status
 
 -- Unchanged (structure carries over from v36) -------------------------
 
+-- locks: process-coordination primitive used by awm-internal services
+-- (shared_resources, tool_dispatch, federation). v36 schema preserved
+-- verbatim — TEXT timestamps stay because every existing caller reads
+-- them as ISO strings.
+CREATE TABLE IF NOT EXISTS locks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_path TEXT NOT NULL,
+    holder_id TEXT NOT NULL,
+    holder_pid INTEGER,
+    lock_type TEXT NOT NULL DEFAULT 'exclusive',
+    acquired_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    metadata TEXT,
+    UNIQUE(resource_path, holder_id)
+);
+
 CREATE TABLE IF NOT EXISTS embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_type TEXT NOT NULL,
@@ -836,11 +852,15 @@ def _migrate_v37(conn: sqlite3.Connection) -> None:
         _rebuild_messages(conn, seed)
 
         # Step 6: drop retiring tables (and the renamed legacy rooms).
+        # Note: ``locks`` survives v37 unchanged — it's a process-
+        # coordination primitive with several live readers (shared_resources,
+        # tool_dispatch, federation locks endpoints). The v36 row shape is
+        # carried over verbatim.
         for table in (
             "shared_edits", "room_posts", "room_participants",
             "rooms_legacy_v36", "agent_relationships",
             "agent_resume_queue", "agent_events", "agent_sessions",
-            "scopes", "locks",
+            "scopes",
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
 
