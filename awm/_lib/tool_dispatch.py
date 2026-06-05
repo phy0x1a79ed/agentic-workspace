@@ -526,27 +526,13 @@ TOOL_DEFINITIONS: list[Tool] = [
     # Restart
     Tool(
         name="awm_restart",
-        description=(
-            "Restart AWM systemd units. ``target='core'`` restarts only the "
-            "core daemon (default historical behavior); ``'exposed'`` "
-            "restarts only awm-exposed; ``'all'`` (default) restarts both."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "target": {
-                    "type": "string",
-                    "enum": ["core", "exposed", "all"],
-                    "description": "Which unit(s) to restart.",
-                    "default": "all",
-                },
-            },
-        },
+        description="Restart the AWM core systemd unit (awm.service).",
+        inputSchema={"type": "object", "properties": {}},
     ),
     # Status
     Tool(
         name="awm_status",
-        description="Get AWM server status: workspace root, active locks, scopes, shared edits, and core process info.",
+        description="Get AWM server status: workspace root, active locks, active scopes, and core process info.",
         inputSchema={"type": "object", "properties": {}},
     ),
     # MCP-config fan-out
@@ -894,7 +880,7 @@ def handle_tool(name: str, args: dict) -> str:
             indent=2,
         )
 
-    # Rooms — dispatch through the local exposed app for consistent auth.
+    # Rooms — dispatch through the in-process app.
     if name in (
         "room_create", "room_get", "room_history",
         "room_search", "room_post", "room_invite", "room_remove",
@@ -912,8 +898,7 @@ def handle_tool(name: str, args: dict) -> str:
 
     # Restart
     if name == "awm_restart":
-        target = args.get("target", "all")
-        return _serialize(core.restart_core(target=target))
+        return _serialize(core.restart_core())
 
     # Status
     if name == "awm_status":
