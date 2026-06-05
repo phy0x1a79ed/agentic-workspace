@@ -79,43 +79,12 @@ def _resolve_owner(resource_path: str) -> str | None:
     if suffix_peer:
         return suffix_peer
 
-    conn = get_connection()
-    try:
-        if kind == "scope":
-            if "/" not in body:
-                return None
-            project, scope_name = body.split("/", 1)
-            row = conn.execute(
-                "SELECT origin_peer FROM scopes "
-                "WHERE project = ? AND scope = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (project, scope_name),
-            ).fetchone()
-        elif kind == "artifact":
-            try:
-                legacy = int(body)
-            except ValueError:
-                return None
-            row = conn.execute(
-                "SELECT origin_peer FROM artifacts WHERE legacy_id = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (legacy,),
-            ).fetchone()
-        elif kind == "room":
-            row = conn.execute(
-                "SELECT host_peer_id AS origin_peer FROM rooms "
-                "WHERE id = ? LIMIT 1",
-                (body,),
-            ).fetchone()
-        else:
-            return None
-    finally:
-        conn.close()
-
-    if row is None:
-        return None
-    owner = row["origin_peer"] or ""
-    return owner or None
+    # v37: data tables are no longer cr-sqlite replicated, so there is no
+    # ``origin_peer`` column to consult. Anything addressable in our local
+    # DB is owned locally; cross-peer locks must be reached via the
+    # explicit ``@<peer-id>`` suffix in the resource path (handled at the
+    # top of this function).
+    return None
 
 
 # Peers we've ever federated a lock to in this process — used to fan out

@@ -52,21 +52,20 @@ _DEFAULT_EXT_PATH = (
 CRSQLITE_EXT_PATH = Path(os.environ.get("AWM_CRSQLITE_EXT", str(_DEFAULT_EXT_PATH)))
 
 
-# Tables registered as Conflict-free Replicated Relations. The remaining
-# INTEGER-PK tables (scopes, session_logs, messages, artifacts) are
-# intentionally absent until their per-table INTEGER→UUID migrations land
-# (one per PR per the phase-4 plan); cr-sqlite requires non-AUTOINCREMENT
-# unique PKs so each peer can mint new IDs without collisions.
+# Tables registered as Conflict-free Replicated Relations.
+#
+# v37 trimmed the data tables (scopes/session_logs/artifacts/messages/rooms/
+# room_participants/room_posts) out of replication — they were rebuilt onto a
+# uuid identity layer (projects/users/agents/agent_instances/rooms/guest_list/
+# room_transcripts) without cr-sqlite plumbing, on the premise that
+# cross-peer data access becomes a fetch-not-sync design in a later cut.
+#
+# Only the federation control tables stay CRR — those are still the source
+# of truth for "who do we talk to" across peers and keep the peer-ping /
+# leader-election paths working unchanged.
 CRR_TABLES: tuple[str, ...] = (
-    "rooms",
-    "room_participants",
     "peers",
     "discord_operators",
-    "room_posts",
-    "scopes",
-    "session_logs",
-    "messages",
-    "artifacts",
 )
 
 

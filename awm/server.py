@@ -243,7 +243,9 @@ def search_projects_endpoint(
     limit: int = 50,
     offset: int = 0,
 ):
-    """Search projects (hybrid keyword + semantic)."""
+    """Search projects (hybrid keyword + semantic). v37: counts are derived
+    from the agents table (``allocated|active`` → active, ``retired`` →
+    completed)."""
     from awm.services import projects as projects_svc
     return projects_svc.search_projects(
         query=query, active_only=active_only, limit=limit, offset=offset,

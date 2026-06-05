@@ -165,30 +165,30 @@ def peer_agent_input(request: Request, body: dict):
 # ---------------------------------------------------------------------------
 
 @router.get(
-    "/artifacts/{legacy_id}/content",
+    "/artifacts/{artifact_id}/content",
     dependencies=[Depends(require_peer_bearer)],
 )
-def peer_artifact_content(legacy_id: int, request: Request):
-    """Stream the bytes of a local artifact for a remote peer that holds
-    the metadata via replication but not the file. Only serves rows whose
-    ``origin_peer`` is this peer — never re-federates."""
+def peer_artifact_content(artifact_id: int, request: Request):
+    """Stream the bytes of a local artifact for a remote peer.
+
+    v37 dropped cr-sqlite replication of the artifacts table, so the
+    legacy_id/origin_peer disambiguation is gone — ``artifact_id`` is the
+    plain INTEGER PK of an artifacts row that lives on this peer."""
     from fastapi.responses import Response as _Response
+    from awm.db import get_connection
     from awm.services import artifacts as artifacts_svc
 
-    # _require_from_peer enforces X-Awm-From; we don't actually need the
-    # value but the call validates the header is present.
     _require_from_peer(request)
-    local = artifacts_svc._local_peer_id()
-    conn = artifacts_svc.get_connection()
+    conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT path FROM artifacts WHERE legacy_id = ? AND origin_peer = ?",
-            (legacy_id, local),
+            "SELECT path FROM artifacts WHERE id=?",
+            (artifact_id,),
         ).fetchone()
     finally:
         conn.close()
     if row is None:
-        raise HTTPException(404, f"no local artifact with legacy_id={legacy_id}")
+        raise HTTPException(404, f"no local artifact with id={artifact_id}")
     try:
         data = artifacts_svc._read_local_content(row["path"])
     except artifacts_svc.ArtifactNotFound as exc:
