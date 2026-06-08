@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 pytestmark = [pytest.mark.auth, pytest.mark.slow]
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -59,51 +58,6 @@ class TestToolsEndpoint:
             # Tool.model_validate is what the proxy calls; if the server's
             # dump shape drifts, this blows up.
             Tool.model_validate(t)
-
-
-class TestLockEndpoints:
-    def test_acquire_and_release(self, client):
-        # Acquire
-        resp = client.post("/locks", json={
-            "resource_path": "file.txt",
-            "holder_id": "agent-1",
-            "holder_pid": os.getpid(),
-        })
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["lock"]["holder_id"] == "agent-1"
-
-        # Search
-        resp = client.get("/locks/search", params={"status": "all"})
-        assert resp.status_code == 200
-        assert resp.json()["total"] >= 1
-
-        # Release
-        resp = client.delete("/locks", params={"path": "file.txt", "holder": "agent-1"})
-        assert resp.status_code == 200
-        assert "released" in resp.json()["message"].lower()
-
-    def test_acquire_conflict_409(self, client):
-        client.post("/locks", json={
-            "resource_path": "file.txt", "holder_id": "a1",
-        })
-        resp = client.post("/locks", json={
-            "resource_path": "file.txt", "holder_id": "a2",
-        })
-        assert resp.status_code == 409
-
-    def test_heartbeat(self, client):
-        client.post("/locks", json={
-            "resource_path": "file.txt", "holder_id": "a1",
-        })
-        resp = client.post("/locks/heartbeat", params={"holder": "a1"})
-        assert resp.status_code == 200
-        assert "1 lock(s)" in resp.json()["message"]
-
-    def test_reap(self, client):
-        resp = client.post("/locks/reap")
-        assert resp.status_code == 200
-        assert "reaped" in resp.json()
 
 
 class TestSkillEndpoints:

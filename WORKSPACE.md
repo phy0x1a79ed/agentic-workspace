@@ -85,7 +85,6 @@ The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-dis
 | Scopes | `scope_create`, `scope_search`, `scope_complete`, `scope_delete` |
 | Projects | `project_create`, `project_search` |
 | Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
-| Locks | `lock_acquire`, `lock_release`, `lock_search`, `lock_heartbeat` |
 | Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
 | Rooms | `room_create`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
 | Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `agent_control` |
@@ -147,7 +146,6 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
-| `awm lock acquire <path> --holder <id>` / `awm lock release / list / reap` | File / folder locks (heartbeat every 30s) |
 | `awm skill list / search / get / reindex` | Skill catalog |
 | `awm hub register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 | `awm context emit --cwd <path>` | Render the 3-tier context as XML blocks (utility for awm tooling that bundles context into spawned sessions; no harness hook calls it) |

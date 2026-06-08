@@ -59,9 +59,6 @@ PORT = int(os.environ.get("AWM_PORT", "7819"))
 BASE_URL = f"http://{HOST}:{PORT}"
 
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
-HEARTBEAT_INTERVAL = 30        # seconds — agents should heartbeat this often
-HEARTBEAT_STALE_THRESHOLD = 120  # seconds — locks older than this are reapable
-REAPER_INTERVAL = 30           # seconds — how often the reaper runs
 
 ACCESS_LOG = AWM_DIR / "access.log"
 ALLOW_DESTRUCTIVE = os.environ.get("AWM_ALLOW_DESTRUCTIVE") == "1"

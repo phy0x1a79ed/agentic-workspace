@@ -34,11 +34,12 @@ class TestInitDB:
         assert "session_logs" in tables
         assert "artifacts" in tables
         assert "messages" in tables
-        assert "locks" in tables
         assert "schema_version" in tables
         # Federation retired in v38 — peers/peer_sync_state must be gone.
         assert "peers" not in tables
         assert "peer_sync_state" not in tables
+        # Locks retired in v39 — table must be gone.
+        assert "locks" not in tables
 
     def test_schema_version_is_current(self, awm_workspace):
         conn = get_connection(awm_workspace["db_path"])

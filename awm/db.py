@@ -9,7 +9,7 @@ from pathlib import Path
 
 from awm.config import DB_PATH, AWM_DIR
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 # Sentinel user uuids — fixed namespace so a fresh install lands the same
 # 'cli'/'system' ids regardless of when/where it's run. The v37 preflight
@@ -189,22 +189,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_status
     ON messages(recipient_id, status, created_at DESC);
 
 -- Unchanged (structure carries over from v36) -------------------------
-
--- locks: process-coordination primitive used by awm-internal services
--- (shared_resources, tool_dispatch, federation). v36 schema preserved
--- verbatim — TEXT timestamps stay because every existing caller reads
--- them as ISO strings.
-CREATE TABLE IF NOT EXISTS locks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    resource_path TEXT NOT NULL,
-    holder_id TEXT NOT NULL,
-    holder_pid INTEGER,
-    lock_type TEXT NOT NULL DEFAULT 'exclusive',
-    acquired_at TEXT NOT NULL,
-    heartbeat_at TEXT NOT NULL,
-    metadata TEXT,
-    UNIQUE(resource_path, holder_id)
-);
 
 CREATE TABLE IF NOT EXISTS embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -704,6 +688,15 @@ UPDATE room_posts SET origin_peer = '';
 DROP TABLE IF EXISTS peer_sync_state;
 DROP TABLE IF EXISTS peers;
 """,
+    (38, 39): """\
+-- Lock + shared_resources retirement: the `awm lock` surface was carried
+-- through v37 as a process-coordination primitive but its only in-process
+-- caller (shared_resources, whose `shared_edits` table v37 already
+-- dropped) was unreachable. Drop the locks table and purge stranded
+-- embeddings rows.
+DROP TABLE IF EXISTS locks;
+DELETE FROM embeddings WHERE source_type = 'lock';
+""",
 }
 
 
@@ -819,10 +812,9 @@ def _migrate_v37(conn: sqlite3.Connection) -> None:
         _rebuild_messages(conn, seed)
 
         # Step 6: drop retiring tables (and the renamed legacy rooms).
-        # Note: ``locks`` survives v37 unchanged — it's a process-
-        # coordination primitive with several live readers (shared_resources,
-        # tool_dispatch, federation locks endpoints). The v36 row shape is
-        # carried over verbatim.
+        # Note: ``locks`` survives v37 unchanged — dropped in v39 once the
+        # lock + shared_resources surface was ripped (single-host, no
+        # federation = no remaining caller).
         for table in (
             "shared_edits", "room_posts", "room_participants",
             "rooms_legacy_v36", "agent_relationships",
