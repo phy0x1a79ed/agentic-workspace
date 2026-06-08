@@ -72,6 +72,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             detail = body.get("detail", str(e))
         except Exception:
             detail = e.response.text or str(e)
+        # If detail is a structured {error_class, error, ...} dict (from
+        # /invoke's catch-all), surface those fields directly so the MCP
+        # caller sees the real exception class instead of a bare 500.
+        if isinstance(detail, dict):
+            return [TextContent(type="text", text=json.dumps(detail))]
         return [TextContent(type="text", text=json.dumps({"error": detail}))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}))]

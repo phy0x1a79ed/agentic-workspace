@@ -645,6 +645,96 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     )
 
 
+def repair_scope(project: str, scope: str) -> ScopeActionResponse:
+    """Reconcile an on-disk worktree+`.awm/` with a missing DB row.
+
+    Trigger case (inbox #232): `scope_create` partially succeeded — the
+    worktree, branch, and `.awm/` metadata exist on disk, but the
+    `agents` row was never written. With no DB row, the scope is
+    invisible to `scope_search`. The only recovery before this tool was
+    `rm -rf` + retry; this preserves on-disk work instead.
+
+    Idempotent: if a DB row already exists for ``(project, scope)``, the
+    function returns ``status="skipped"`` rather than raising.
+
+    Raises:
+        FileNotFoundError: if the worktree dir or `.awm/context.md` is missing,
+            or the project's bare repo isn't present (no way to attach a row).
+        RuntimeError: if the branch name can't be read from the worktree.
+    """
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
+
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    if not bare_dir.exists():
+        raise FileNotFoundError(
+            f"Project '{project}' has no bare repo at {bare_dir} — nothing to repair against"
+        )
+
+    repo_dir = PROJECTS_DIR / project / scope
+    if not repo_dir.is_dir():
+        raise FileNotFoundError(f"Worktree not found at {repo_dir}")
+    awm_dir = _get_awm_dir(repo_dir)
+    context_path = awm_dir / "context.md"
+    if not context_path.exists():
+        raise FileNotFoundError(
+            f"No .awm/context.md at {context_path} — refusing to repair "
+            f"a worktree that wasn't initialized by scope_create"
+        )
+
+    # Read branch authoritatively from the worktree.
+    r = run_git(["git", "-C", str(repo_dir), "branch", "--show-current"])
+    branch = (r.stdout or "").strip()
+    if r.returncode != 0 or not branch:
+        raise RuntimeError(
+            f"Could not read branch from worktree {repo_dir}: {r.stderr or 'empty branch name'}"
+        )
+
+    conn = get_connection()
+    try:
+        _ensure_project_row(project, conn=conn)
+        existing = identity.agent_id_for_scope(project, scope, conn=conn, active_only=True)
+        if existing:
+            conn.commit()
+            return ScopeActionResponse(
+                project=project,
+                scope=scope,
+                status="skipped",
+                message=(
+                    f"Scope {project}/{scope} already has an active agent row "
+                    f"({existing}); nothing to repair"
+                ),
+            )
+        aid = identity.ensure_agent(
+            project, scope,
+            branch=branch,
+            worktree=str(repo_dir),
+            agent_cli="claude",
+            status="allocated",
+            is_vagrant=(project == VAGRANT_PROJECT),
+            conn=conn,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    try:
+        from awm.services.embeddings import index_scope
+        index_scope(project, scope)
+    except Exception:
+        pass
+
+    return ScopeActionResponse(
+        project=project,
+        scope=scope,
+        status="repaired",
+        message=(
+            f"Backfilled agents row for {project}/{scope} from on-disk worktree "
+            f"({repo_dir}) on branch {branch}, agent_id={aid}"
+        ),
+    )
+
+
 def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActionResponse:
     """Complete a scope (mark agent retired). Optionally merges + cleans up."""
     validate_name(project, kind="project name")
