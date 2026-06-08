@@ -2,7 +2,7 @@
 
 *Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md)) and search skills via `mcp__awm__skills_search` — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
 
-A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, file locking with crash recovery, skills catalog, session logging, experience tracking, artifact registration, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
+A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, skills catalog, session logging, experience tracking, artifact registration, inter-agent messaging, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
 For agent-facing structural docs (paths, MCP tools, scope lifecycle), see [`WORKSPACE.md`](WORKSPACE.md). For **awm-internal architecture** — modifying the hub, registry, supervisor, RPC layer, manifest generator — see [`AGENTS.md`](AGENTS.md). This README covers install and the *usage* side of the package model (authoring components / services / pages); AGENTS.md covers the *implementation* side.
 
@@ -244,7 +244,7 @@ awm refresh        # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. For agent-facing usage (scopes, sessions, locks, messaging, rooms), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. For agent-facing usage (scopes, sessions, messaging, rooms), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ## Destructive operations
 
@@ -297,8 +297,6 @@ For the service-layer architecture in detail, see [`AGENTS.md`](AGENTS.md).
 ## Troubleshooting
 
 **Port in use**: `awm stop` then retry, or `lsof -i :7819` to find the process.
-
-**Stale locks**: `awm lock reap` forces cleanup. The reaper also runs automatically every 30s.
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 

@@ -51,32 +51,6 @@ class TestHandleToolSkills:
         data = json.loads(result)
         assert data["skill"]["name"] == "git"
 
-class TestHandleToolLocks:
-    def test_lock_acquire_and_release(self, awm_workspace):
-        result = handle_tool("lock_acquire", {
-            "resource_path": "file.txt", "holder_id": "a1",
-        })
-        data = json.loads(result)
-        assert data["lock"]["holder_id"] == "a1"
-
-        result = handle_tool("lock_release", {
-            "resource_path": "file.txt", "holder_id": "a1",
-        })
-        data = json.loads(result)
-        assert "released" in data["message"].lower()
-
-    def test_lock_list(self, awm_workspace, seeded_locks):
-        result = handle_tool("lock_list", {})
-        data = json.loads(result)
-        assert data["total"] == 3
-
-    def test_lock_heartbeat(self, awm_workspace):
-        handle_tool("lock_acquire", {"resource_path": "f.txt", "holder_id": "a1"})
-        result = handle_tool("lock_heartbeat", {"holder_id": "a1"})
-        data = json.loads(result)
-        assert "1 lock(s)" in data["message"]
-
-
 class TestHandleToolScopes:
     def test_scope_list(self, awm_workspace, seeded_scopes):
         result = handle_tool("scope_list", {})

@@ -75,8 +75,8 @@ def _upsert_embedding(source_type: str, source_id: str, text: str) -> None:
 
 
 def delete_embedding(source_type: str, source_id: str) -> None:
-    """Remove an embeddings row. Used by release/remove hooks (locks, peers)
-    so the embeddings table stays in sync with category state."""
+    """Remove an embeddings row. Used by category remove hooks so the
+    embeddings table stays in sync with category state."""
     conn = get_connection()
     try:
         conn.execute(
@@ -209,25 +209,6 @@ def index_project(project: str) -> None:
     _upsert_embedding("project", project, "\n".join(parts))
 
 
-def index_lock(lock_id: int) -> None:
-    """Embed an active lock: resource path + holder + metadata. Deleted on
-    release/reap."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT id, resource_path, holder_id, metadata FROM locks WHERE id = ?",
-            (lock_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return
-    parts = [row["resource_path"] or "", row["holder_id"] or ""]
-    if row["metadata"]:
-        parts.append(str(row["metadata"]))
-    _upsert_embedding("lock", str(row["id"]), " ".join(p for p in parts if p))
-
-
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
@@ -355,7 +336,6 @@ def reindex_all() -> dict:
         "scopes": 0,
         "rooms": 0,
         "projects": 0,
-        "locks": 0,
         "stray_pruned": 0,
     }
 
@@ -369,9 +349,6 @@ def reindex_all() -> dict:
         ).fetchall()
         room_ids = [r[0] for r in conn.execute(
             "SELECT id FROM rooms"
-        ).fetchall()]
-        lock_ids = [r[0] for r in conn.execute(
-            "SELECT id FROM locks"
         ).fetchall()]
     finally:
         conn.close()
@@ -407,16 +384,9 @@ def reindex_all() -> dict:
                 except Exception:
                     pass
 
-    for lid in lock_ids:
-        try:
-            index_lock(lid)
-            stats["locks"] += 1
-        except Exception:
-            pass
-
     # Final safety pass: drop embeddings rows whose source_type we don't
     # recognize (legacy schema drift).
-    known_types = {"skill", "artifact", "session", "scope", "room", "project", "lock"}
+    known_types = {"skill", "artifact", "session", "scope", "room", "project"}
     conn = get_connection()
     try:
         rows = conn.execute("SELECT source_type, source_id FROM embeddings").fetchall()

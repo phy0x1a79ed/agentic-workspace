@@ -18,7 +18,6 @@ from awm.config import (
     LOG_FILE,
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
-    REAPER_INTERVAL,
 )
 from awm.db import init_db, get_connection
 from awm.models import (
@@ -33,22 +32,16 @@ from awm.models import (
     ScopeSyncRequest,
     ScopeListResponse,
     ScopeActionResponse,
-    LockAcquireRequest,
-    LockListResponse,
-    LockActionResponse,
-    SharedEditRequest,
-    SharedEditListResponse,
-    SharedEditActionResponse,
     SkillListResponse,
     SkillContentResponse,
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm._lib.operations import register_fastapi_routes
-from awm.services import core, projects, scopes, locks, shared_resources, skills
+from awm.services import core, projects, scopes, skills
 from awm._lib.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
 
 # ---------------------------------------------------------------------------
-# Idle shutdown + reaper state
+# Idle shutdown state
 # ---------------------------------------------------------------------------
 
 _last_request_time: float = 0.0
@@ -58,18 +51,6 @@ _shutdown_event: asyncio.Event | None = None
 # ---------------------------------------------------------------------------
 # Background tasks
 # ---------------------------------------------------------------------------
-
-async def _reaper_loop():
-    """Periodically reap stale locks."""
-    while True:
-        try:
-            reaped = locks.reap_stale()
-            if reaped:
-                print(f"[reaper] Reaped {reaped} stale lock(s)")
-        except Exception as e:
-            print(f"[reaper] Error: {e}")
-        await asyncio.sleep(REAPER_INTERVAL)
-
 
 async def _idle_shutdown_loop():
     """Shut down the server after a period of inactivity."""
@@ -103,18 +84,12 @@ async def lifespan(app: FastAPI):
     # Init DB
     init_db()
 
-    # Reap stale locks from previous crashes
-    reaped = locks.reap_stale()
-    if reaped:
-        print(f"[startup] Reaped {reaped} stale lock(s) from previous session")
-
     # Write PID file
     import os
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
 
     # Start background tasks
-    reaper_task = asyncio.create_task(_reaper_loop())
     idle_task = asyncio.create_task(_idle_shutdown_loop())
 
     # Reconcile journaled hub services: give each a 10s window to reopen its
@@ -152,7 +127,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
-    reaper_task.cancel()
     idle_task.cancel()
     if PID_FILE.exists():
         PID_FILE.unlink()
@@ -178,17 +152,10 @@ async def track_activity(request, call_next):
 
 @app.get("/status", response_model=StatusResponse)
 def get_status():
-    conn = get_connection()
-    try:
-        active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-    finally:
-        conn.close()
-
     scope_result = scopes.search_scopes(status="active", limit=10_000)
 
     return StatusResponse(
         workspace_root=str(WORKSPACE_ROOT),
-        active_locks=active_locks,
         active_scopes=scope_result.total,
     )
 
@@ -366,76 +333,6 @@ def sync_scope_endpoint(project: str, scope: str, req: ScopeSyncRequest):
         raise HTTPException(404, str(e))
     except RuntimeError as e:
         raise HTTPException(409, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Locks
-# ---------------------------------------------------------------------------
-
-@app.post("/locks", response_model=LockActionResponse)
-def acquire_lock(req: LockAcquireRequest):
-    result = locks.acquire(req)
-    if result.lock is None:
-        raise HTTPException(409, result.message)
-    return result
-
-
-@app.delete("/locks", response_model=LockActionResponse)
-def release_lock(
-    path: str = Query(...),
-    holder: str = Query(...),
-):
-    return locks.release(path, holder)
-
-
-@app.get("/locks/search", response_model=LockListResponse)
-def search_locks_endpoint(
-    query: str | None = Query(None),
-    status: str = Query("active"),
-    holder: str | None = Query(None),
-    path: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=10000),
-    offset: int = Query(0, ge=0),
-):
-    """Search locks (hybrid keyword + semantic). Defaults to status='active'
-    (live PID + fresh heartbeat); pass status='stale' or 'all'."""
-    return locks.search_locks(
-        query=query, status=status, holder_id=holder, path=path,
-        limit=limit, offset=offset,
-    )
-
-
-@app.post("/locks/heartbeat", response_model=LockActionResponse)
-def heartbeat_locks(holder: str = Query(...)):
-    return locks.heartbeat(holder)
-
-
-@app.post("/locks/reap")
-def reap_locks():
-    count = locks.reap_stale()
-    return {"reaped": count}
-
-
-# ---------------------------------------------------------------------------
-# Shared Resources
-# ---------------------------------------------------------------------------
-
-@app.post("/shared", response_model=SharedEditActionResponse)
-def start_shared_edit(req: SharedEditRequest):
-    try:
-        return shared_resources.start_edit(req)
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
-@app.post("/shared/{name}/merge", response_model=SharedEditActionResponse)
-def merge_shared_edit(name: str):
-    return shared_resources.merge_edit(name)
-
-
-@app.get("/shared", response_model=SharedEditListResponse)
-def list_shared_edits(status: str | None = Query(None)):
-    return shared_resources.list_edits(status=status)
 
 
 # ---------------------------------------------------------------------------

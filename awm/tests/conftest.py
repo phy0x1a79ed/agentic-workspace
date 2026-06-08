@@ -46,14 +46,12 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.services.scopes.DATA_DIR", data_dir)
     monkeypatch.setattr("awm.services.scopes.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("awm.services.artifacts.WORKSPACE_ROOT", workspace)
-    monkeypatch.setattr("awm.services.locks.HEARTBEAT_STALE_THRESHOLD", 120)
 
     # Server patches
     monkeypatch.setattr("awm.server.WORKSPACE_ROOT", workspace)
     monkeypatch.setattr("awm.server.PID_FILE", awm_dir / "awm.pid")
     monkeypatch.setattr("awm.server.LOG_FILE", awm_dir / "awm.log")
     monkeypatch.setattr("awm.server.IDLE_SHUTDOWN_SECONDS", 0)
-    monkeypatch.setattr("awm.server.REAPER_INTERVAL", 9999)
 
     # Initialize DB
     init_db(db_path)
@@ -117,26 +115,6 @@ def sample_skills_dir(awm_workspace):
     (skills_dir / "_index.md").write_text("# Old Index\n")
 
     return skills_dir
-
-
-@pytest.fixture()
-def seeded_locks(db_conn):
-    """Insert a few locks for testing."""
-    now = datetime.now(timezone.utc).isoformat()
-    import os
-
-    locks_data = [
-        ("projects/proj-a/scope-1", "agent-1", os.getpid(), "exclusive", now, now, None),
-        ("projects/proj-a/scope-2", "agent-2", os.getpid(), "shared", now, now, '{"info": "test"}'),
-        ("data/shared.csv", "agent-1", os.getpid(), "shared", now, now, None),
-    ]
-    for l in locks_data:
-        db_conn.execute(
-            "INSERT INTO locks (resource_path, holder_id, holder_pid, lock_type, acquired_at, heartbeat_at, metadata) VALUES (?,?,?,?,?,?,?)",
-            l,
-        )
-    db_conn.commit()
-    return locks_data
 
 
 @pytest.fixture()

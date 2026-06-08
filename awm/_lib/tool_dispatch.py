@@ -22,7 +22,6 @@ from mcp.types import Tool
 
 from awm.models import (
     ArtifactRegisterRequest,
-    LockAcquireRequest,
     MessageSendRequest,
     ProjectCreateRequest,
     ScopeCreateRequest,
@@ -31,7 +30,7 @@ from awm.models import (
 )
 from awm.operations.sessions import SESSION_OPERATIONS
 from awm._lib.operations import dispatch_operation, operations_to_mcp_tools
-from awm.services import artifacts, core, locks, messaging, projects, scopes, skills
+from awm.services import artifacts, core, messaging, projects, scopes, skills
 
 
 # ---------------------------------------------------------------------------
@@ -223,60 +222,6 @@ TOOL_DEFINITIONS: list[Tool] = [
                 "fork_url": {"type": "string"},
             },
             "required": ["name"],
-        },
-    ),
-    # Locks
-    Tool(
-        name="lock_acquire",
-        description="Acquire a lock on a resource path.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "resource_path": {"type": "string"},
-                "holder_id": {"type": "string"},
-                "lock_type": {"type": "string", "default": "exclusive"},
-                "holder_pid": {"type": "integer"},
-                "metadata": {"type": "string"},
-            },
-            "required": ["resource_path", "holder_id"],
-        },
-    ),
-    Tool(
-        name="lock_release",
-        description="Release a lock on a resource path.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "resource_path": {"type": "string"},
-                "holder_id": {"type": "string"},
-            },
-            "required": ["resource_path", "holder_id"],
-        },
-    ),
-    Tool(
-        name="lock_search",
-        description="Search locks (hybrid keyword + semantic). Defaults to status='active' (PID alive + heartbeat fresh); pass status='stale' or 'all'.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Free-text query on resource_path + holder_id + metadata"},
-                "status": {"type": "string", "description": "active (default), stale, or all"},
-                "holder_id": {"type": "string"},
-                "path": {"type": "string"},
-                "limit": {"type": "integer", "default": 50},
-                "offset": {"type": "integer", "default": 0},
-            },
-        },
-    ),
-    Tool(
-        name="lock_heartbeat",
-        description="Renew heartbeat for all locks held by a given holder.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "holder_id": {"type": "string"},
-            },
-            "required": ["holder_id"],
         },
     ),
     # Messaging
@@ -532,7 +477,7 @@ TOOL_DEFINITIONS: list[Tool] = [
     # Status
     Tool(
         name="awm_status",
-        description="Get AWM server status: workspace root, active locks, active scopes, and core process info.",
+        description="Get AWM server status: workspace root, active scopes, and core process info.",
         inputSchema={"type": "object", "properties": {}},
     ),
     # MCP-config fan-out
@@ -837,24 +782,6 @@ def handle_tool(name: str, args: dict) -> str:
         req = ProjectCreateRequest(**args)
         return _serialize(projects.create_project(req))
 
-    # Locks
-    if name == "lock_acquire":
-        req = LockAcquireRequest(**args)
-        return _serialize(locks.acquire(req))
-    if name == "lock_release":
-        return _serialize(locks.release(args["resource_path"], args["holder_id"]))
-    if name == "lock_search":
-        return _serialize(locks.search_locks(
-            query=args.get("query"),
-            status=args.get("status", "active"),
-            holder_id=args.get("holder_id"),
-            path=args.get("path"),
-            limit=args.get("limit", 50),
-            offset=args.get("offset", 0),
-        ))
-    if name == "lock_heartbeat":
-        return _serialize(locks.heartbeat(args["holder_id"]))
-
     # Messaging
     if name == "inbox_send":
         req = MessageSendRequest(**args)
@@ -919,13 +846,7 @@ def _awm_status() -> str:
     import time
 
     from awm.config import WORKSPACE_ROOT
-    from awm.db import get_connection
 
-    conn = get_connection()
-    try:
-        active_locks = conn.execute("SELECT COUNT(*) FROM locks").fetchone()[0]
-    finally:
-        conn.close()
     scope_result = scopes.search_scopes(status="active", limit=10_000)
 
     # Core process info (populated when dispatched in-process on the core).
@@ -935,7 +856,6 @@ def _awm_status() -> str:
     return json.dumps({
         "status": "ok",
         "workspace_root": str(WORKSPACE_ROOT),
-        "active_locks": active_locks,
         "active_scopes": scope_result.total,
         "core_pid": os.getpid(),
         "core_uptime_s": uptime,

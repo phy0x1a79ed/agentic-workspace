@@ -10,42 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from awm.models import (
-    LockAcquireRequest,
-    LockReleaseRequest,
     ScopeCreateRequest,
     ScopeUpdateRequest,
     SessionLogCreateRequest,
     SkillInfo,
     StatusResponse,
-    LockInfo,
     ScopeInfo,
     SessionLogEntry,
 )
-
-
-class TestLockAcquireRequest:
-    def test_valid_exclusive(self):
-        req = LockAcquireRequest(resource_path="projects/p/s", holder_id="agent-1")
-        assert req.lock_type == "exclusive"
-        assert req.holder_pid is None
-
-    def test_valid_shared(self):
-        req = LockAcquireRequest(
-            resource_path="data/file.csv", holder_id="agent-2",
-            lock_type="shared", holder_pid=1234,
-        )
-        assert req.lock_type == "shared"
-        assert req.holder_pid == 1234
-
-    def test_invalid_lock_type(self):
-        with pytest.raises(ValidationError, match="lock_type"):
-            LockAcquireRequest(
-                resource_path="x", holder_id="a", lock_type="invalid"
-            )
-
-    def test_missing_required_fields(self):
-        with pytest.raises(ValidationError):
-            LockAcquireRequest()
 
 
 class TestScopeCreateRequest:
@@ -97,15 +69,4 @@ class TestStatusResponse:
     def test_defaults(self):
         r = StatusResponse(workspace_root="/tmp")
         assert r.status == "ok"
-        assert r.active_locks == 0
-
-
-class TestLockInfo:
-    def test_all_fields(self):
-        info = LockInfo(
-            id=1, resource_path="x", holder_id="a",
-            holder_pid=None, lock_type="exclusive",
-            acquired_at="2024-01-01", heartbeat_at="2024-01-01",
-            metadata=None,
-        )
-        assert info.id == 1
+        assert r.active_scopes == 0

@@ -27,8 +27,6 @@ from awm.config import (
 app = typer.Typer(name="awm", help="Agentic Workspace Manager", no_args_is_help=True)
 project_app = typer.Typer(help="Project management", no_args_is_help=True)
 scope_app = typer.Typer(help="Scope management", no_args_is_help=True)
-lock_app = typer.Typer(help="Lock management", no_args_is_help=True)
-shared_app = typer.Typer(help="Shared resource edits", no_args_is_help=True)
 skill_app = typer.Typer(help="Skills catalog management", no_args_is_help=True)
 inbox_app = typer.Typer(help="Inbox: send and read scoped messages", no_args_is_help=True)
 room_app = typer.Typer(help="Rooms: multi-participant conversations with agents", no_args_is_help=True)
@@ -42,8 +40,6 @@ context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness 
 
 app.add_typer(project_app, name="project")
 app.add_typer(scope_app, name="scope")
-app.add_typer(lock_app, name="lock")
-app.add_typer(shared_app, name="shared")
 app.add_typer(skill_app, name="skill")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(room_app, name="room")
@@ -146,7 +142,7 @@ def serve():
 
 @app.command()
 def status():
-    """Show server health + active locks + scopes summary."""
+    """Show server health + scopes summary."""
     r = _api("GET", "/status")
     _print_json(r)
 
@@ -748,132 +744,6 @@ def scope_search(
     for s in scopes:
         typer.echo(f"{s['project']:<20} {s['scope']:<25} {s['status']:<12} {s['branch']:<30}")
     typer.echo(f"\nTotal: {data['total']} scope(s)")
-
-
-# ---------------------------------------------------------------------------
-# Lock commands
-# ---------------------------------------------------------------------------
-
-@lock_app.command("acquire")
-def lock_acquire(
-    path: str = typer.Argument(..., help="Resource path to lock"),
-    holder: str = typer.Option(..., "--holder", help="Agent/holder identifier"),
-    lock_type: str = typer.Option("exclusive", "--type", help="Lock type: exclusive or shared"),
-):
-    """Acquire a lock on a resource."""
-    payload = {
-        "resource_path": path,
-        "holder_id": holder,
-        "lock_type": lock_type,
-        "holder_pid": os.getpid(),
-    }
-    r = _api("POST", "/locks", json=payload)
-    _print_json(r)
-
-
-@lock_app.command("release")
-def lock_release(
-    path: str = typer.Argument(..., help="Resource path to unlock"),
-    holder: str = typer.Option(..., "--holder", help="Agent/holder identifier"),
-):
-    """Release a lock."""
-    r = _api("DELETE", "/locks", params={"path": path, "holder": holder})
-    _print_json(r)
-
-
-@lock_app.command("search")
-def lock_search(
-    query: Optional[str] = typer.Option(None, "--query", help="Free-text query (resource path + holder + metadata)"),
-    status: str = typer.Option("active", "--status", help="active (default), stale, or all"),
-    holder: Optional[str] = typer.Option(None, "--holder", help="Filter by holder"),
-    path: Optional[str] = typer.Option(None, "--path", help="Filter by path"),
-    limit: int = typer.Option(50, "--limit"),
-    offset: int = typer.Option(0, "--offset"),
-):
-    """Search locks (hybrid keyword + semantic). Defaults to status='active'
-    (live PID + fresh heartbeat); pass status='stale' or 'all'."""
-    params: dict = {"status": status, "limit": limit, "offset": offset}
-    if query:
-        params["query"] = query
-    if holder:
-        params["holder"] = holder
-    if path:
-        params["path"] = path
-    r = _api("GET", "/locks/search", params=params)
-
-    data = r.json()
-    if r.status_code >= 400:
-        typer.echo(f"Error: {data}", err=True)
-        raise typer.Exit(1)
-
-    locks = data["locks"]
-    if not locks:
-        typer.echo("(no matching locks)")
-        return
-
-    typer.echo(f"{'RESOURCE':<40} {'HOLDER':<20} {'TYPE':<12} {'ACQUIRED':<25}")
-    typer.echo(f"{'--------':<40} {'------':<20} {'----':<12} {'--------':<25}")
-    for lk in locks:
-        typer.echo(f"{lk['resource_path']:<40} {lk['holder_id']:<20} {lk['lock_type']:<12} {lk['acquired_at']:<25}")
-    typer.echo(f"\nTotal: {data['total']} lock(s)")
-
-
-@lock_app.command("reap")
-def lock_reap():
-    """Force stale lock cleanup."""
-    r = _api("POST", "/locks/reap")
-    data = r.json()
-    typer.echo(f"Reaped {data['reaped']} stale lock(s)")
-
-
-# ---------------------------------------------------------------------------
-# Shared resource commands
-# ---------------------------------------------------------------------------
-
-@shared_app.command("edit")
-def shared_edit(
-    name: str = typer.Option(..., "--name", help="Name for this shared edit"),
-    created_by: str = typer.Option("unknown", "--by", help="Who is creating this edit"),
-):
-    """Start a shared resource edit (creates worktree)."""
-    r = _api("POST", "/shared", json={"name": name, "created_by": created_by})
-    _print_json(r)
-
-
-@shared_app.command("merge")
-def shared_merge(
-    name: str = typer.Option(..., "--name", help="Name of the shared edit to merge"),
-):
-    """Merge a shared resource edit back."""
-    r = _api("POST", f"/shared/{name}/merge")
-    _print_json(r)
-
-
-@shared_app.command("list")
-def shared_list(
-    status: Optional[str] = typer.Option(None, "--status", help="Filter by status"),
-):
-    """List shared edits."""
-    params = {}
-    if status:
-        params["status"] = status
-    r = _api("GET", "/shared", params=params)
-
-    data = r.json()
-    if r.status_code >= 400:
-        typer.echo(f"Error: {data}", err=True)
-        raise typer.Exit(1)
-
-    edits = data["edits"]
-    if not edits:
-        typer.echo("(no shared edits)")
-        return
-
-    typer.echo(f"{'NAME':<30} {'STATUS':<12} {'BRANCH':<30} {'CREATED BY':<20}")
-    typer.echo(f"{'----':<30} {'------':<12} {'------':<30} {'----------':<20}")
-    for e in edits:
-        typer.echo(f"{e['name']:<30} {e['status']:<12} {e['branch']:<30} {e['created_by']:<20}")
-    typer.echo(f"\nTotal: {data['total']} edit(s)")
 
 
 # ---------------------------------------------------------------------------

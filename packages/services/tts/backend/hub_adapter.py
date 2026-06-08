@@ -130,7 +130,7 @@ async def _open_bridge(hub_url: str, token: str, sid: str, bid: str) -> Any:
     return await websockets.connect(
         f"{ws_base}/hub/service/bridge/{sid}/{bid}",
         subprotocols=[f"bearer.{token}"],
-        ssl=_ssl_ctx(),
+        ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
     )
@@ -225,7 +225,7 @@ async def _serve(hub_url: str, token: str, name: str, sid: str) -> None:
     async with websockets.connect(
         ws_url,
         subprotocols=[f"bearer.{token}"],
-        ssl=_ssl_ctx(),
+        ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
     ) as ws:

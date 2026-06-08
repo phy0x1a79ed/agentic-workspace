@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 class StatusResponse(BaseModel):
     status: str = "ok"
     workspace_root: str
-    active_locks: int = 0
     active_scopes: int = 0
 
 
@@ -121,73 +120,6 @@ class ArtifactInfo(BaseModel):
 class ArtifactSearchResponse(BaseModel):
     artifacts: list[ArtifactInfo]
     total: int
-
-
-# ---------------------------------------------------------------------------
-# Locks
-# ---------------------------------------------------------------------------
-
-class LockAcquireRequest(BaseModel):
-    resource_path: str
-    holder_id: str
-    holder_pid: int | None = None
-    lock_type: str = Field(default="exclusive", pattern="^(exclusive|shared)$")
-    metadata: str | None = None
-
-
-class LockReleaseRequest(BaseModel):
-    resource_path: str
-    holder_id: str
-
-
-class LockInfo(BaseModel):
-    id: int
-    resource_path: str
-    holder_id: str
-    holder_pid: int | None
-    lock_type: str
-    acquired_at: str
-    heartbeat_at: str
-    metadata: str | None
-
-
-class LockListResponse(BaseModel):
-    locks: list[LockInfo]
-    total: int
-
-
-class LockActionResponse(BaseModel):
-    message: str
-    lock: LockInfo | None = None
-
-
-# ---------------------------------------------------------------------------
-# Shared Resources
-# ---------------------------------------------------------------------------
-
-class SharedEditRequest(BaseModel):
-    name: str
-    created_by: str = "unknown"
-
-
-class SharedEditInfo(BaseModel):
-    id: int
-    name: str
-    worktree_path: str
-    branch: str
-    created_by: str
-    created_at: str
-    status: str
-
-
-class SharedEditListResponse(BaseModel):
-    edits: list[SharedEditInfo]
-    total: int
-
-
-class SharedEditActionResponse(BaseModel):
-    message: str
-    edit: SharedEditInfo | None = None
 
 
 # ---------------------------------------------------------------------------

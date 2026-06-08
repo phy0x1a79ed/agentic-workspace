@@ -77,7 +77,7 @@ async def _open_bridge(hub_url: str, token: str, sid: str, bid: str):
     return await websockets.connect(
         f"{ws_base}/hub/service/bridge/{sid}/{bid}",
         subprotocols=[f"bearer.{token}"],
-        ssl=_ssl_ctx(),
+        ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
     )
@@ -111,6 +111,15 @@ class _BridgeWs:
             raw = await self._ws.recv()
             if isinstance(raw, str):
                 return raw
+
+    async def receive(self) -> dict:
+        try:
+            raw = await self._ws.recv()
+        except websockets.ConnectionClosed:
+            return {"type": "websocket.disconnect"}
+        if isinstance(raw, (bytes, bytearray)):
+            return {"type": "websocket.receive", "bytes": bytes(raw)}
+        return {"type": "websocket.receive", "text": raw}
 
     async def send_bytes(self, data: bytes) -> None:
         await self._ws.send(data)
@@ -152,7 +161,7 @@ async def _serve(hub_url: str, token: str, name: str, sid: str) -> None:
     async with websockets.connect(
         f"{ws_base}/hub/service/control/{sid}",
         subprotocols=[f"bearer.{token}"],
-        ssl=_ssl_ctx(),
+        ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
     ) as ws:
