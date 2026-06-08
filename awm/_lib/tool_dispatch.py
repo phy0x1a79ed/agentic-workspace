@@ -130,6 +130,23 @@ TOOL_DEFINITIONS: list[Tool] = [
         },
     ),
     Tool(
+        name="scope_repair",
+        description=(
+            "Reconcile an on-disk scope worktree+.awm/ with a missing DB row. "
+            "Use when scope_create partially succeeded — worktree exists but "
+            "scope_search shows no row. Idempotent: returns status='skipped' "
+            "if a row already exists."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project": {"type": "string"},
+                "scope": {"type": "string"},
+            },
+            "required": ["project", "scope"],
+        },
+    ),
+    Tool(
         name="scope_sync",
         description="Sync a scope's feature branch with its base branch (merge by default, or rebase). Refuses if the worktree is dirty. Does not fetch — pull the base branch first if upstream commits are wanted.",
         inputSchema={
@@ -751,6 +768,8 @@ def handle_tool(name: str, args: dict) -> str:
         return _serialize(scopes.update_scope(args["project"], args["scope"], req))
     if name == "scope_delete":
         return _serialize(scopes.delete_scope(args["project"], args["scope"]))
+    if name == "scope_repair":
+        return _serialize(scopes.repair_scope(args["project"], args["scope"]))
     if name == "scope_sync":
         req = ScopeSyncRequest(
             strategy=args.get("strategy", "merge"),

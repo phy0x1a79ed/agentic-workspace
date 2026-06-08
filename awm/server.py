@@ -335,6 +335,17 @@ def sync_scope_endpoint(project: str, scope: str, req: ScopeSyncRequest):
         raise HTTPException(409, str(e))
 
 
+@app.post("/scopes/{project}/{scope}/repair", response_model=ScopeActionResponse)
+def repair_scope_endpoint(project: str, scope: str):
+    """Reconcile on-disk worktree+.awm/ with a missing DB row (inbox #232)."""
+    try:
+        return scopes.repair_scope(project, scope)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+
 # ---------------------------------------------------------------------------
 # Skills
 # ---------------------------------------------------------------------------
@@ -429,6 +440,21 @@ def invoke_tool(payload: dict):
         raise HTTPException(409, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
+    except Exception as e:  # noqa: BLE001 — surface anything else with class+message
+        # Inbox #232: bare {"error": "Internal Server Error"} hid the real
+        # failure from MCP callers. Log the traceback server-side and put a
+        # structured {error_class, error} in the response detail so the
+        # caller can branch on the exception class.
+        import traceback as _tb
+        print(
+            f"[awm] /invoke {name} failed with {type(e).__name__}: {e}\n"
+            f"{_tb.format_exc()}",
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={"error_class": type(e).__name__, "error": str(e), "tool": name},
+        )
     return {"result": result}
 
 
@@ -555,6 +581,12 @@ app.add_middleware(HubRoutingMiddleware)
 def run_server(foreground: bool = True):
     """Start the uvicorn server."""
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-bind probe: if something is already on (HOST, PORT), figure out
+    # whether it's a healthy awm against the same workspace (→ exit 0) or
+    # a foreign holder (→ exit 1 with a diagnostic). Eliminates the silent
+    # EADDRINUSE restart-loop pattern (inbox #232).
+    from awm.services._process_utils import exit_if_healthy_peer
+    exit_if_healthy_peer(HOST, PORT, str(WORKSPACE_ROOT))
     uvicorn.run(
         app,
         host=HOST,
