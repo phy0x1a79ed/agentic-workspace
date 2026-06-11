@@ -246,6 +246,27 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 `awm <command> --help` lists every subcommand. For agent-facing usage (scopes, sessions, messaging, rooms), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
+### Per-workspace env file
+
+`awm serve` and `awm-mcp` read `$AWM_WORKSPACE/.awm/env` at startup
+(if present) and merge its `KEY=VAL` lines into the process env before
+doing anything else. Use it to plumb things into the daemon that
+systemd doesn't forward by default — the canonical case is
+`SSH_AUTH_SOCK` so `project_create --clone git@github.com:…` reaches
+your user ssh-agent. Format is dumb `KEY=VAL` per line, `#` for
+comments, leading `export ` tolerated, single- or double-quoted values
+are unquoted. Existing env vars are overridden; missing file is a no-op.
+
+Example `.awm/env`:
+
+```
+SSH_AUTH_SOCK=/run/user/1000/keyring/ssh
+```
+
+Restart the daemon (`sudo systemctl restart awm.service` or
+`systemctl --user restart awm.service`, depending on which unit is
+live on your host) to pick up changes.
+
 ## Destructive operations
 
 `POST /projects` and `DELETE /scopes/{p}/{s}` are 403'd by default. Set `AWM_ALLOW_DESTRUCTIVE=1` in the environment to permit them. No restart needed — re-read each request.

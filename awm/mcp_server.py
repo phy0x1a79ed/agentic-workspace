@@ -203,6 +203,10 @@ async def _run():
 
 
 def main():
+    # Per-workspace env file: merge $AWM_WORKSPACE/.awm/env into os.environ
+    # so the fallback-spawned core inherits it (inbox #236).
+    from awm.config import load_env_file
+    load_env_file()
     _reap_orphan_clients()
     _ensure_core_running()
     asyncio.run(_run())
