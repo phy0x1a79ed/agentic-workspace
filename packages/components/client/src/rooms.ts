@@ -1,14 +1,31 @@
 /**
- * Room bootstrap + WS attach for the agent convo page.
+ * Room bootstrap + WS attach against awm's /rooms surface.
  *
- * Find-or-create a room for a {project, scope} pair, post text into it,
- * and stream incoming posts back through a callback.
+ * Find-or-create a room for a {project, scope} pair, post text into it, and
+ * stream incoming posts back through a callback. Lifted out of the agent page
+ * so any page (chat, agent, …) shares one room client instead of copy-pasting
+ * the find-or-create dance.
  */
 
-import { apiFetch, toWsUrl } from '@awm/client';
-import type { Post } from '@awm/tts-history';
+import { apiFetch } from './auth';
+import { toWsUrl } from './svc';
 
-export type { Post };
+/**
+ * One room transcript post. Mirrors awm's /rooms post shape and is
+ * structurally compatible with `@awm/tts-history`'s `Post`, so the same
+ * objects can be handed straight to `<TtsHistory>` without conversion.
+ */
+export interface RoomPost {
+  id?: string;
+  ts: string;
+  /** Author identifier — e.g. `user:operator`, `agent:project/scope`. */
+  author: string;
+  /** Recipient — single scope or list. Backend may omit on broadcast. */
+  to_scope?: string | string[];
+  body: string;
+  kind?: string;
+  [k: string]: unknown;
+}
 
 interface RoomInfo {
   id: string;
@@ -20,13 +37,13 @@ interface RoomInfo {
 interface RoomListResponse { rooms: RoomInfo[]; total: number }
 
 /**
- * Find the most recent active room with `scopeIdent` (e.g. "awm/infra-service-hub")
+ * Find the most recent active room with `scopeIdent` (e.g. "awm/agent-harness")
  * as a participant; if none exists, create one. Idempotently re-invites the
  * scope so an agent session that died after a hub restart wakes back up.
  */
 export async function ensureRoom(scopeIdent: string): Promise<string> {
   const listed = await apiFetch<RoomListResponse>(
-    `/rooms?status=active&participating_scope=${encodeURIComponent(scopeIdent)}`,
+    `/rooms/search?status=active&participating_scope=${encodeURIComponent(scopeIdent)}`,
   );
   if (listed.rooms.length > 0) {
     const roomId = listed.rooms[listed.rooms.length - 1].id;
@@ -56,8 +73,8 @@ export async function postText(roomId: string, body: string, to?: string): Promi
 }
 
 export type RoomEvent =
-  | { type: 'history'; posts: Post[] }
-  | { type: 'post'; post: Post }
+  | { type: 'history'; posts: RoomPost[] }
+  | { type: 'post'; post: RoomPost }
   | { type: 'participant_joined'; participant: Record<string, unknown> }
   | { type: 'participant_left'; participant: Record<string, unknown> }
   | { type: 'room_closed'; ts: string }
@@ -66,8 +83,8 @@ export type RoomEvent =
   | { type: 'pong' };
 
 /**
- * Open the per-room WS at /rooms/{id}/attach. Initial frame is `history`
- * with the backlog; `post` frames stream in live. Close on unmount.
+ * Open the per-room WS at /rooms/{id}/attach. Initial frame is `history` with
+ * the backlog; `post` frames stream in live. Call `close()` on unmount.
  */
 export class RoomAttach {
   private ws: WebSocket;

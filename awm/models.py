@@ -346,7 +346,7 @@ class ParticipantInfo(BaseModel):
 
 
 class PostInfo(BaseModel):
-    id: int
+    id: str
     room_id: str
     author: str
     body: str

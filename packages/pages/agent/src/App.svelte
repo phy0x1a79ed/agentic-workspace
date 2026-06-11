@@ -21,8 +21,8 @@
   import { TtsHistory, playOnce } from '@awm/tts-history';
   import type { Post } from '@awm/tts-history';
   import { PttComposer } from '@awm/ptt-composer';
-  import { RoomAttach, ensureRoom, postText } from './lib/api/rooms';
-  import type { RoomEvent } from './lib/api/rooms';
+  import { RoomAttach, ensureRoom, postText } from '@awm/client';
+  import type { RoomEvent } from '@awm/client';
 
   // --- URL → scope identifier ---------------------------------------------
 

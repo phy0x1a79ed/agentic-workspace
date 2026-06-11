@@ -150,6 +150,14 @@ or `/svc/<name>/…`. Use `@awm/client`:
   `svc('tts').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
   surface every service exposes.
 - `whoami()` — `GET /auth/whoami`; throws `AuthError` if not signed in.
+- `ensureRoom(scopeIdent)` / `postText(roomId, body, to?)` / `new
+  RoomAttach(roomId, onEvent)` — the room client. `ensureRoom` adopts the
+  most recent active room for a `project/scope` (creating one if none),
+  `postText` posts a user message (`POST /rooms/{id}/posts`), and
+  `RoomAttach` opens `WS /rooms/{id}/attach` (initial `history` frame +
+  live `post` frames). This is what a chat-style page composes against
+  `<TtsHistory>` — see `packages/pages/chat/` for a text-only example and
+  `packages/pages/agent/` for the voice variant.
 
 Skipping `apiFetch` means skipping `X-Awm-As`, which silently
 misattributes writes on a multi-operator hub.
