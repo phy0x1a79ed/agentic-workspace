@@ -48,7 +48,7 @@ def build_app() -> FastAPI:
         body = await req.body()
         if not body:
             raise HTTPException(400, "empty pcm body")
-        from awm.voice.stt import get_transcriber
+        from backend.stt import get_transcriber
 
         loop = asyncio.get_running_loop()
         try:

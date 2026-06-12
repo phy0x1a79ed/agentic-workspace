@@ -1,20 +1,30 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import VoiceChip from './VoiceChip.svelte';
 
-  // Continuous-conversation tab: a vertically scrolling list of voice chips,
-  // one per silence-segmented utterance. The shell drives this via the same
-  // beginLiveChunk / updateLiveChunk / finalizeLiveChunk imperative API that
-  // PttTab uses, so the panel can dispatch transparently to whichever tab
-  // is active.
+  // The single, UNEDITABLE voice composition space. Both push-to-talk (hold)
+  // and continuous conversation feed this one vertically-scrolling list of
+  // voice chips — one per finalized utterance, plus a live one that streams
+  // partials. There is deliberately no caret and no keyboard text entry:
+  // you refine by voice or by removing whole utterances (the chip × button),
+  // and Clear wipes everything to retry before sending. Keyboard editing
+  // lives in the Text tab instead.
+  //
+  // The transport drives this via the same beginLiveChunk / updateLiveChunk /
+  // finalizeLiveChunk imperative API the shell forwards to the active tab.
+  // The PTT / Convo / Pause controls are transport-owned and rendered into
+  // the {@render controls()} slot.
 
   interface ChipRow { id: string; text: string; live: boolean }
 
   interface Props {
     // Mock-only seed of finalized chips.
     initialChips?: string[];
+    // Transport-owned control row (PTT button, Convo start/stop, pause).
+    controls?: Snippet;
   }
-  let { initialChips }: Props = $props();
+  let { initialChips, controls }: Props = $props();
 
   let chips = $state<ChipRow[]>(untrack(() => (
     initialChips
@@ -49,9 +59,8 @@
     return -1;
   }
 
-  export function captureCaret() {
-    // intentionally empty — no caret in list mode
-  }
+  // No caret in list mode — kept so the shell's dispatch contract is uniform.
+  export function captureCaret() {}
 
   export function beginLiveChunk() {
     liveAbandoned = false;
@@ -117,23 +126,46 @@
   }
 </script>
 
-<div bind:this={scroller} class="convo-list" role="log" aria-label="dictated utterances">
-  {#if chips.length === 0}
-    <p class="empty">tap the mic to start a continuous dictation session…</p>
-  {:else}
-    {#each chips as chip (chip.id)}
-      <span class="row">
-        <VoiceChip
-          text={chip.text}
-          live={chip.live}
-          onremove={() => onRemoveChip(chip.id)}
-        />
-      </span>
-    {/each}
+<div class="voice-tab">
+  <div bind:this={scroller} class="convo-list" role="log" aria-label="dictated utterances">
+    {#if chips.length === 0}
+      <p class="empty">hold the mic to dictate, or START a conversation…</p>
+    {:else}
+      {#each chips as chip (chip.id)}
+        <span class="row">
+          <VoiceChip
+            text={chip.text}
+            live={chip.live}
+            onremove={() => onRemoveChip(chip.id)}
+          />
+        </span>
+      {/each}
+    {/if}
+  </div>
+
+  {#if controls}
+    <div class="controls">{@render controls()}</div>
   {/if}
+
+  <div class="actions">
+    <button
+      type="button"
+      class="clear-btn"
+      onclick={clear}
+      disabled={chips.length === 0}
+      title="clear and try again"
+      aria-label="clear all utterances"
+    >CLEAR</button>
+  </div>
 </div>
 
 <style>
+  .voice-tab {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 8px);
+    width: 100%;
+  }
   .convo-list {
     min-height: 120px;
     max-height: 240px;
@@ -156,6 +188,38 @@
   .row {
     display: inline-block;
     max-width: 100%;
+  }
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 8px);
+  }
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .clear-btn {
+    min-height: 32px;
+    padding: 0 12px;
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    color: var(--text2, #bbb);
+    font-family: var(--mono, monospace);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .clear-btn:hover:not(:disabled) {
+    background: var(--surface3, #2a2a2a);
+    color: var(--text, #ddd);
+    border-color: color-mix(in oklab, var(--danger, #f44) 40%, var(--border, #333));
+  }
+  .clear-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
   @media (hover: none), (max-width: 720px) {
     .convo-list { font-size: 16px; }

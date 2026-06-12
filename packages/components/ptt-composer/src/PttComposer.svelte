@@ -8,11 +8,17 @@
   // else under the hub.
   import workletUrl from './lib/audio/worklet.js?url';
 
-  // The mic/STT composer: owns audio capture + the /svc/ptt session WS,
-  // delegates editable text + chunk UI to PttComposerShell. The shell
-  // routes each beginLiveChunk / updateLiveChunk / finalizeLiveChunk call
-  // to whichever tab is currently active (PTT or Convo). In Convo mode
-  // PttButton acts as a toggle and the backend auto-segments on silence.
+  // The mic/STT transport: owns audio capture + the /svc/ptt session WS,
+  // delegates the tab UI to PttComposerShell. The shell routes each
+  // beginLiveChunk / updateLiveChunk / finalizeLiveChunk to the active tab.
+  //
+  // Voice gestures (both available at once, no mode switch):
+  //   - HOLD the PttButton (or SPACE) → one PTT utterance ({type:start} →
+  //     speak → {type:end}).
+  //   - START CONVO → continuous session ({type:start, mode:continuous});
+  //     the backend silence-segments each utterance. PAUSE gates mic audio
+  //     for a manual thinking break without ending the statement.
+  // Both feed the shell's single uneditable Voice chip list.
 
   type PartialStep = { delayMs: number; text: string | null };
 
@@ -25,9 +31,7 @@
     onText?: (text: string) => void;
     /** Override the service prefix. Defaults to /svc/ptt. */
     svcPrefix?: string;
-    // Offline-only: seed the PTT-tab editor on mount.
-    mockInitial?: Array<string | { chunk?: string; text?: string }>;
-    // Offline-only: seed the Convo-tab list on mount.
+    // Offline-only: seed the Voice-tab chip list on mount.
     mockInitialChips?: string[];
     // Offline-only: scripted partial→finalize walk for vitest / dev pages.
     mockPartialScript?: PartialStep[];
@@ -36,10 +40,11 @@
     onsend,
     onText,
     svcPrefix = '/svc/ptt',
-    mockInitial,
     mockInitialChips,
     mockPartialScript,
   }: Props = $props();
+
+  const isMock = $derived(!!(mockInitialChips || mockPartialScript));
 
   let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
   let statusText = $state('');
@@ -53,13 +58,15 @@
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let recording = false;
   let convoListening = $state(false);
+  let paused = $state(false);
 
+  let micLevel = $state(0);
   let pendingLevel = 0;
   let levelFrame = 0;
 
   function pumpLevel() {
     levelFrame = 0;
-    composer?.setMicLevel(pendingLevel);
+    micLevel = pendingLevel;
   }
   function postLevel(v: number) {
     pendingLevel = v;
@@ -68,12 +75,18 @@
   function resetLevel() {
     if (levelFrame) { cancelAnimationFrame(levelFrame); levelFrame = 0; }
     pendingLevel = 0;
-    composer?.setMicLevel(0);
+    micLevel = 0;
   }
 
   // --- Session open: POST /svc/ptt/session/stream → ws_path. ----------
 
+  // Set false when a session-open failure is NOT worth retrying (auth —
+  // needs a login, not a backoff). Service-down / network errors leave it
+  // true so openSocket reschedules a reconnect.
+  let sessionRetryable = true;
+
   async function openSession(): Promise<string | null> {
+    sessionRetryable = true;
     try {
       const body = await apiFetch<{ ws_path: string }>(
         `${svcPrefix}/session/stream`,
@@ -86,6 +99,7 @@
         statusText = 'not logged in';
         const port = Number(location.port) || (location.protocol === 'https:' ? 443 : 80);
         loginUrl = `http://${location.hostname}:${port + 1}/`;
+        sessionRetryable = false;
         return null;
       }
       status = 'error';
@@ -96,12 +110,19 @@
 
   async function openSocket(): Promise<void> {
     const wsPath = await openSession();
-    if (!wsPath) return;
+    if (!wsPath) {
+      // Service was down / unreachable at open time. The reconnect path
+      // (onWsClose) never fires because no socket was created, so without
+      // this the composer would wedge until a manual reload.
+      if (sessionRetryable) scheduleReconnect();
+      return;
+    }
     try {
       ws = new WebSocket(toWsUrl(wsPath));
     } catch (err) {
       status = 'error';
       statusText = `ws open failed: ${(err as Error).message}`;
+      scheduleReconnect();
       return;
     }
     ws.binaryType = 'arraybuffer';
@@ -114,14 +135,20 @@
   }
 
   let reconnectDelay = 1000;
-  function onWsClose(_ev: CloseEvent) {
-    ws = null;
-    resetLevel();
-    if (mockInitial || mockInitialChips) return;
-    setTimeout(() => {
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleReconnect() {
+    if (isMock) return;
+    if (reconnectTimer) return; // one pending reconnect at a time
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
       void openSocket();
     }, reconnectDelay);
+  }
+  function onWsClose(_ev: CloseEvent) {
+    ws = null;
+    resetLevel();
+    scheduleReconnect();
   }
 
   function onWsMessage(ev: MessageEvent) {
@@ -161,7 +188,10 @@
     sourceNode = audioCtx.createMediaStreamSource(micStream);
     workletNode = new AudioWorkletNode(audioCtx, 'mic-downsampler');
     workletNode.port.onmessage = (ev) => {
-      const isHot = recording || convoListening;
+      // Paused convo: hold the mic. Not sending tail audio also keeps the
+      // backend from silence-cutting (its partial loop skips when the tail
+      // is below threshold), so a thinking break never ends the statement.
+      const isHot = (recording || convoListening) && !paused;
       if (!isHot) return;
       const buf = ev.data as ArrayBuffer;
       const v = new Int16Array(buf);
@@ -177,16 +207,12 @@
     sourceNode.connect(workletNode);
   }
 
-  // --- PTT button dispatch — behavior depends on active tab. --------------
+  // --- PTT: hold to talk (one utterance per press). -----------------------
 
   async function onDown() {
-    if (mockInitial || mockInitialChips) return;
-    const mode = composer?.getMode() ?? 'ptt';
-    if (mode === 'convo') {
-      await onConvoToggle();
-      return;
-    }
-    composer?.captureCaret();
+    if (isMock) return;
+    if (composer?.getTab() !== 'voice') return;
+    if (convoListening) return; // PTT is disabled during a convo session
     try {
       await ensureMic();
     } catch (err) {
@@ -205,9 +231,7 @@
   }
 
   function onUp() {
-    if (mockInitial || mockInitialChips) return;
-    const mode = composer?.getMode() ?? 'ptt';
-    if (mode === 'convo') return;
+    if (isMock) return;
     if (!recording) return;
     recording = false;
     resetLevel();
@@ -216,9 +240,14 @@
     }
   }
 
+  // --- Convo: continuous start/stop + manual pause. -----------------------
+
   async function onConvoToggle() {
+    if (isMock) return;
+    if (recording) return; // can't start a convo session mid-PTT-press
     if (convoListening) {
       convoListening = false;
+      paused = false;
       resetLevel();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
@@ -240,16 +269,29 @@
       return;
     }
     convoListening = true;
+    paused = false;
     composer?.beginLiveChunk();
     ws.send(JSON.stringify({ type: 'start', mode: 'continuous' }));
     status = 'recording';
     statusText = 'listening…';
   }
 
-  function onTabSwitchRequest(target: 'ptt' | 'convo'): boolean {
-    if (recording) return false;
-    if (target === 'ptt' && convoListening) {
+  function togglePause() {
+    if (!convoListening) return;
+    paused = !paused;
+    if (paused) {
+      resetLevel();
+      statusText = 'paused';
+    } else {
+      statusText = 'listening…';
+    }
+  }
+
+  function onTabSwitchRequest(target: 'text' | 'voice'): boolean {
+    if (recording) return false; // don't yank the page mid-PTT-press
+    if (target === 'text' && convoListening) {
       convoListening = false;
+      paused = false;
       resetLevel();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
@@ -261,7 +303,7 @@
   }
 
   $effect(() => {
-    if (mockInitial || mockInitialChips) {
+    if (isMock) {
       const timers: ReturnType<typeof setTimeout>[] = [];
       if (mockPartialScript && mockPartialScript.length) {
         let elapsed = 0;
@@ -293,6 +335,7 @@
     }
     void openSocket();
     return () => {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (ws) try { ws.close(); } catch { /* ignore */ }
       if (sourceNode) try { sourceNode.disconnect(); } catch { /* ignore */ }
       if (workletNode) try { workletNode.disconnect(); } catch { /* ignore */ }
@@ -308,16 +351,37 @@
     bind:this={composer}
     {onsend}
     {onTabSwitchRequest}
-    initialChunks={mockInitial}
     initialChips={mockInitialChips}
   >
-    {#snippet ptt()}
-      <PttButton onpttdown={onDown} onpttup={onUp} />
+    {#snippet voiceControls()}
+      <div class="mic-row">
+        <div class="mic-meter" aria-hidden="true">
+          <div class="mic-bar" style:transform="scaleX({micLevel})"></div>
+        </div>
+        <div class="ptt-slot">
+          <PttButton disabled={convoListening} onpttdown={onDown} onpttup={onUp} />
+        </div>
+      </div>
+      <div class="convo-row">
+        <button
+          type="button"
+          class="ctl convo"
+          class:active={convoListening}
+          onclick={onConvoToggle}
+        >{convoListening ? 'STOP' : 'START CONVO'}</button>
+        <button
+          type="button"
+          class="ctl pause"
+          class:active={paused}
+          disabled={!convoListening}
+          onclick={togglePause}
+        >{paused ? 'RESUME' : 'PAUSE'}</button>
+      </div>
     {/snippet}
   </PttComposerShell>
 
   <div class="status mono" data-status={status}>
-    <span class="dot" class:active={status === 'recording'}></span>
+    <span class="dot" class:active={status === 'recording' && !paused}></span>
     <span class="txt">
       {status}{statusText ? ` · ${statusText}` : ''}
       {#if loginUrl}
@@ -334,6 +398,71 @@
     gap: var(--space-3, 12px);
     max-width: 480px;
   }
+
+  .mic-row {
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-2, 8px);
+  }
+  .mic-meter {
+    flex: 0 0 40px;
+    align-self: stretch;
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    min-height: 52px;
+  }
+  .mic-bar {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top,
+      color-mix(in oklab, var(--recording, #f55) 65%, transparent) 0%,
+      color-mix(in oklab, var(--recording, #f55) 25%, transparent) 100%);
+    transform-origin: left center;
+    transform: scaleX(0);
+    transition: transform 60ms linear;
+  }
+  .ptt-slot {
+    flex: 1 1 auto;
+    display: flex;
+  }
+  .ptt-slot :global(*) {
+    flex: 1 1 auto;
+  }
+
+  .convo-row {
+    display: flex;
+    gap: var(--space-2, 8px);
+  }
+  .ctl {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 0 14px;
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    color: var(--text2, #bbb);
+    font-family: var(--mono, monospace);
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .ctl:hover:not(:disabled) { background: var(--surface3, #2a2a2a); color: var(--text, #ddd); }
+  .ctl:disabled { opacity: 0.35; cursor: not-allowed; }
+  .ctl.convo.active {
+    background: color-mix(in oklab, var(--recording, #f55) 25%, var(--surface2, #222));
+    border-color: var(--recording, #f55);
+    color: var(--text, #ddd);
+  }
+  .ctl.pause.active {
+    border-color: var(--atomizer, #ffb74d);
+    color: var(--text, #ddd);
+  }
+
   .status {
     display: flex;
     align-items: center;

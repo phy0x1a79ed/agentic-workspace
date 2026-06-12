@@ -1,19 +1,29 @@
 <script lang="ts">
   // PTT demo page. The page itself does almost nothing — all the real
   // work (session against /svc/ptt, mic worklet, transcript chips,
-  // PTT/Convo modes) lives in @awm/ptt-composer. We keep a running log
-  // of finalized utterances below the composer to make the component's
-  // output visible standalone.
+  // PTT/Convo modes) lives in @awm/ptt-composer. Below the composer we
+  // render this session's output through @awm/tts-history's <TtsHistory>
+  // so the component's chat-history view is visible standalone: each
+  // finalized dictation utterance and each Send becomes a transcript row.
   import { PttComposer } from '@awm/ptt-composer';
+  import { TtsHistory } from '@awm/tts-history';
+  import type { Post } from '@awm/tts-history';
 
-  let sent = $state<string[]>([]);
-  let live = $state<string[]>([]);
+  let posts = $state<Post[]>([]);
+  let seq = 0;
 
-  function onSend(text: string) {
-    sent = [...sent, text];
+  function add(author: string, body: string) {
+    if (!body.trim()) return;
+    posts = [...posts, { id: String(seq++), ts: new Date().toISOString(), author, body }];
   }
+
+  // Send button pressed → the composed message.
+  function onSend(text: string) {
+    add('user:sent', text);
+  }
+  // Each finalized dictation utterance (PTT release / Convo silence-cut).
   function onText(text: string) {
-    live = [...live, text];
+    add('user:dictation', text);
   }
 </script>
 
@@ -28,28 +38,11 @@
 
   <PttComposer onsend={onSend} onText={onText} />
 
-  <section class="log">
-    <h2>Finalized utterances</h2>
-    {#if live.length === 0}
-      <p class="empty">none yet</p>
-    {:else}
-      <ol>
-        {#each live as t, i (`${i}-${t}`)}
-          <li>{t}</li>
-        {/each}
-      </ol>
-    {/if}
-
-    <h2>Sent (Send button pressed)</h2>
-    {#if sent.length === 0}
-      <p class="empty">none yet</p>
-    {:else}
-      <ol>
-        {#each sent as t, i (`${i}-${t}`)}
-          <li>{t}</li>
-        {/each}
-      </ol>
-    {/if}
+  <section class="history">
+    <h2>Chat history</h2>
+    <div class="history-wrap">
+      <TtsHistory {posts} />
+    </div>
   </section>
 </main>
 
@@ -62,13 +55,29 @@
     color: var(--text, #ddd);
     background: var(--bg, #111);
     min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
-  header { margin-bottom: 1rem; }
+  header { margin-bottom: 1rem; flex: 0 0 auto; }
   h1 { font-size: 1.2rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 0 0 0.25rem; }
-  h2 { font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 1.5rem 0 0.5rem; color: var(--text2, #bbb); }
+  h2 { font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 1.5rem 0 0.5rem; color: var(--text2, #bbb); flex: 0 0 auto; }
   .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0; }
-  .empty { font-style: italic; color: var(--text3, #888); font-size: 0.85rem; }
-  ol { padding-left: 1.25rem; margin: 0; font-size: 0.9rem; line-height: 1.5; }
+  .history {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .history-wrap {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 12rem;
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  :global(.history-wrap > .transcript) { flex: 1; }
   kbd {
     background: var(--surface2, #222);
     padding: 1px 4px;

@@ -58,7 +58,7 @@ async def _register(hub_url: str, token: str, name: str) -> dict:
 
 async def _dispatch_call(fn: str, args) -> object:
     if fn == "transcribe":
-        from awm.voice.stt import get_transcriber
+        from backend.stt import get_transcriber
         pcm_b64 = args.get("pcm_b64") if isinstance(args, dict) else None
         if not pcm_b64:
             raise RuntimeError("pcm_b64 required")

@@ -67,12 +67,12 @@ SAMPLE_BYTES = 2  # int16 LE
 def _transcribe_segments(pcm_bytes: bytes, vad_filter: bool = False) -> list[tuple[str, float, float]]:
     """Run whisper on PCM, return ``[(text, start_s, end_s), ...]``.
 
-    Reuses the ``awm.voice.stt`` singleton so the model is loaded once per
-    process and shared with V1's ``/voice/ws``. The singleton's public
-    ``.transcribe()`` joins and discards segment timestamps; we need them
-    for splicing, so we drive ``model.transcribe(...)`` directly here.
+    Reuses the vendored ``backend.stt`` singleton so the model is loaded
+    once per process. The singleton's public ``.transcribe()`` joins and
+    discards segment timestamps; we need them for splicing, so we drive
+    ``model.transcribe(...)`` directly here.
     """
-    from awm.voice.stt import get_transcriber
+    from backend.stt import get_transcriber
 
     if not pcm_bytes:
         return []
@@ -225,7 +225,7 @@ class PttAgent:
             log.exception("pcm dump failed")
 
         await self._status("transcribing", "transcribing…")
-        from awm.voice.stt import get_transcriber
+        from backend.stt import get_transcriber
 
         loop = asyncio.get_running_loop()
         t0 = time.monotonic()
@@ -298,6 +298,10 @@ class PttAgent:
                                     "ptt silence-cut for %s: text=%r",
                                     self.user_id, cut_text,
                                 )
+                                # PHASE 2 SEAM: the convo cleanup / clarification
+                                # LLM loop wraps this finalized utterance here —
+                                # rewrite cut_text and/or emit a clarification
+                                # frame before broadcasting stt_result.
                                 await self.broadcast_json(
                                     {"type": "stt_result", "text": cut_text},
                                 )

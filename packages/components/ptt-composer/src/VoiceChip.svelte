@@ -3,10 +3,8 @@
   // utterance: text + an × delete button, optionally in a "live" streaming
   // state that paints a skeleton until the first partial lands.
   //
-  // Used declaratively by ConvoTab.svelte (one element per chip in a list).
-  // PttTab.svelte creates the same DOM imperatively via its `makeChunk()`
-  // factory because contenteditable + Svelte-state re-renders fight over
-  // caret position — but it imports this file so the :global styles ship.
+  // Used declaratively by VoiceTab.svelte — one element per chip in the
+  // uneditable voice list (both PTT and Convo feed it).
 
   interface Props {
     text?: string;
