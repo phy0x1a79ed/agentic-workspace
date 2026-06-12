@@ -1,45 +1,11 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "awm"
-version = "0.1.0"
-requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
-authors = [
-    { name = "Tony X. Liu", email = "contacttonyliu@gmail.com" },
-    { name = "Opal 0x1a79ed", email = "phyberosis0x1a79ed@gmail.com" },
-]
-dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "typer",
-    "httpx",
-    "mcp[cli]",
-    "pyyaml",
-    "websockets",
-    "discord.py>=2.3",
-]
-
-[tool.setuptools.packages.find]
-include = ["awm*"]
-
-[tool.setuptools.package-data]
-"awm.skills" = ["**/*.md", "**/*.template"]
-"awm.services" = ["_room_names_data/*.txt"]
-
-[project.optional-dependencies]
-test = [
-    "pytest>=7",
-    "httpx",
-    "mcp[cli]",
-]
-
-[project.scripts]
-awm = "awm.__main__:main"
-awm-mcp = "awm.mcp_server:main"
+# Workspace-root config for the modular awm tree.
+#
+# This repo is NOT a single distribution anymore. Each module under awm/ owns
+# its own pyproject.toml (awm-gateway, awm-persistence, awm-config, awm-scopes,
+# awm-agents, awm-artifacts, awm-skills, awm-discord) and is installed editable
+# via dev/install.sh. The packages all merge into the PEP 420 `awm` namespace.
+#
+# Only repo-wide tooling config lives here.
 
 [tool.pytest.ini_options]
 testpaths = ["awm/tests"]

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-skills"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM skills service: skill protocol catalog and search."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "pyyaml",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/skills/.
+[tool.setuptools.packages.find]
+include = ["awm.skills*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"awm.skills" = ["**/*.md", "**/*.template"]

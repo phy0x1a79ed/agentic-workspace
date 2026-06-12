@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-agents"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM agents service: agent runtime spawn/IO/lifecycle/resume and orchestration; each agent owns exactly one scope."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "httpx",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/agents/.
+[tool.setuptools.packages.find]
+include = ["awm.agents*"]
+namespaces = true

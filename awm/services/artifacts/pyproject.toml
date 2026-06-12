@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-artifacts"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM artifacts service: artifact registry and search."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/artifacts/.
+[tool.setuptools.packages.find]
+include = ["awm.artifacts*"]
+namespaces = true
