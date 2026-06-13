@@ -66,6 +66,7 @@ snapshot.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -76,6 +77,8 @@ from starlette.concurrency import run_in_threadpool
 
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
+
+log = logging.getLogger("awm.gateway.catalog")
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +173,20 @@ NATIVE_TOOLS: dict[str, tuple[Tool, Callable[[dict], Any]]] = {
 # ---------------------------------------------------------------------------
 
 
-def _tool_name(rec: ServiceRecord, fn_name: str) -> str:
-    """Globally-unique MCP tool name for a service function. The hub enforces
-    a unique service ``name``, so ``{service}_{fn}`` cannot collide. (A
-    legacy-unprefixed opt-out arrives when the first feature service migrates.)"""
-    return f"{rec.name}_{fn_name}"
+def _tool_name(rec: ServiceRecord, fn: dict) -> str:
+    """MCP tool name for a service function.
+
+    A manifest function may carry an explicit ``"tool"`` key to choose its
+    exact MCP-surface name — this decouples the projected tool label from the
+    internal op ``name`` used for service↔service RPC dispatch, so the frozen
+    ``IDENTITY_CONTRACT.md`` names (``resolveScope`` …) keep dispatching while
+    the surface reads cleanly (``scope_resolve``). With no override the name
+    falls back to ``{service}_{fn}``.
+
+    Overrides drop the automatic global-uniqueness the ``{service}_{fn}`` form
+    gave us (service names are unique); :func:`list_tools` enforces uniqueness
+    by warn-and-skip, so override names MUST be globally unique."""
+    return fn.get("tool") or f"{rec.name}_{fn['name']}"
 
 
 def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
@@ -196,7 +208,7 @@ def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
     if required:
         schema["required"] = required
     return Tool(
-        name=_tool_name(rec, fn["name"]),
+        name=_tool_name(rec, fn),
         description=fn.get("description", ""),
         inputSchema=schema,
     )
@@ -204,19 +216,35 @@ def _fn_to_tool(rec: ServiceRecord, fn: dict) -> Tool:
 
 def list_tools() -> list[Tool]:
     """Native tools + every registered service's declared functions. Sync over a
-    GIL-safe registry snapshot — never awaits, never blocks."""
+    GIL-safe registry snapshot — never awaits, never blocks.
+
+    Projected names must be globally unique. The ``{service}_{fn}`` fallback is
+    collision-free (service names are unique), but explicit ``"tool"`` overrides
+    are not — so we warn-and-skip duplicates (first registrant wins) rather than
+    raise: a raised error here would 500 ``/tools`` and blind every MCP client,
+    which re-fetches it constantly. Native op names are reserved up front."""
     tools: list[Tool] = [t for (t, _) in NATIVE_TOOLS.values()]
+    seen: set[str] = set(NATIVE_TOOLS.keys())
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
-            if isinstance(fn, dict) and fn.get("name"):
-                tools.append(_fn_to_tool(rec, fn))
+            if not (isinstance(fn, dict) and fn.get("name")):
+                continue
+            tool = _fn_to_tool(rec, fn)
+            if tool.name in seen:
+                log.warning(
+                    "duplicate MCP tool name %r from service %r (fn %r) — skipping",
+                    tool.name, rec.name, fn["name"],
+                )
+                continue
+            seen.add(tool.name)
+            tools.append(tool)
     return tools
 
 
 def _find_service_fn(name: str) -> tuple[ServiceRecord | None, str | None]:
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
-            if isinstance(fn, dict) and fn.get("name") and _tool_name(rec, fn["name"]) == name:
+            if isinstance(fn, dict) and fn.get("name") and _tool_name(rec, fn) == name:
                 return rec, fn["name"]
     return None, None
 

@@ -18,6 +18,7 @@ from awm.scopes import channel
 SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_post",
+        "tool": "scope_post",
         "description": (
             "Post to a scope's channel. kind ∈ message|journal|system. "
             "Journal entries are the scope's own debrief; structured fields go in meta."
@@ -34,10 +35,15 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_fetch",
+        "tool": "scope_fetch",
         "description": (
-            "Fetch or search a scope's posts. Pass scope for one channel; add "
-            "query for hybrid keyword+semantic search; omit scope to search "
-            "across scopes; kind filters (e.g. 'journal'); post_id fetches one."
+            "Fetch or search a scope's posts — messages and journal entries. "
+            "Pass scope for one channel; add query for hybrid keyword+semantic "
+            "search; omit scope to search across scopes; kind filters (e.g. "
+            "kind='journal' for session logs / debrief entries); post_id fetches "
+            "one. For the most recent / last N entries pass order='desc' with "
+            "limit (e.g. last 5 awm session logs: project='awm', kind='journal', "
+            "limit=5, order='desc')."
         ),
         "params": [
             {"name": "project", "type": "string", "required": False},
@@ -49,10 +55,13 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
             {"name": "limit", "type": "integer", "required": False},
             {"name": "offset", "type": "integer", "required": False},
             {"name": "before_ts", "type": "string", "required": False},
+            {"name": "order", "type": "string", "required": False,
+             "description": "'asc' (oldest-first) or 'desc' (newest-first). Use 'desc' with limit for the last N."},
         ],
     },
     {
         "name": "scope_subscribe",
+        "tool": "scope_subscribe",
         "description": "Subscribe a guest (another scope 'project/scope', or 'user:<name>') to a scope's channel.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -63,6 +72,7 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_unsubscribe",
+        "tool": "scope_unsubscribe",
         "description": "Remove a guest from a scope's channel.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -98,6 +108,7 @@ def _handle_scope_fetch(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         offset=int(args.get("offset", 0)),
         before_ts=args.get("before_ts"),
+        order=args.get("order"),
     )
     return {"posts": [p.to_dict() for p in posts], "total": len(posts)}
 

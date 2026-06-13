@@ -1,67 +1,67 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import PttTab from './PttTab.svelte';
-  import ConvoTab from './ConvoTab.svelte';
+  import TextTab from './TextTab.svelte';
+  import VoiceTab from './VoiceTab.svelte';
 
-  // Top-level composer surface. Owns:
+  // Top-level composer surface. The tab axis is trust/flow, not input method:
+  //   - TEXT  — plain type-and-send, no STT/WS/AI. Reliable escape hatch.
+  //   - VOICE — push-to-talk AND continuous conversation, both feeding one
+  //             uneditable chip space.
+  // Owns:
   //   - the activeTab state + the tab strip
-  //   - the footer row (mic-volume meter + PTT-button slot + Send)
-  //   - method dispatch: captureCaret / beginLiveChunk / updateLiveChunk /
-  //     finalizeLiveChunk forward to whichever tab is active
-  //   - setMicLevel + getMode for the panel's WS framing decisions
+  //   - the shared footer Send (acts on the active tab's consumeText)
+  //   - method dispatch: beginLiveChunk / updateLiveChunk / finalizeLiveChunk
+  //     forward to whichever tab is active (no-ops on TextTab)
+  //   - getTab() for the transport's gesture-routing decisions
+  // The PTT / Convo / Pause controls are transport-owned and passed in via
+  // the {voiceControls} snippet, rendered inside the Voice pane.
 
-  type Mode = 'ptt' | 'convo';
+  type Tab = 'text' | 'voice';
 
   interface Props {
     onsend?: (text: string) => void;
-    onTabSwitchRequest?: (target: Mode) => boolean;
-    initialChunks?: Array<string | { chunk?: string; text?: string }>;
+    onTabSwitchRequest?: (target: Tab) => boolean;
     initialChips?: string[];
-    ptt?: Snippet;
+    voiceControls?: Snippet;
+    voiceMeter?: Snippet;
+    // Convo display: when a continuous session is live, the Voice pane renders
+    // a flowing text panel of the accumulating message instead of chips.
+    convo?: boolean;
+    convoText?: string;
   }
   let {
     onsend,
     onTabSwitchRequest,
-    initialChunks,
     initialChips,
-    ptt,
+    voiceControls,
+    voiceMeter,
+    convo = false,
+    convoText = '',
   }: Props = $props();
 
-  let activeTab = $state<Mode>('convo');
-  let micLevel = $state(0);
+  let activeTab = $state<Tab>('voice');
 
-  let pttTab: PttTab | null = $state(null);
-  let convoTab: ConvoTab | null = $state(null);
+  let textTab: TextTab | null = $state(null);
+  let voiceTab: VoiceTab | null = $state(null);
 
-  function activeComponent(): PttTab | ConvoTab | null {
-    return activeTab === 'ptt' ? pttTab : convoTab;
+  function activeComponent(): TextTab | VoiceTab | null {
+    return activeTab === 'text' ? textTab : voiceTab;
   }
 
-  export function getMode(): Mode { return activeTab; }
+  export function getTab(): Tab { return activeTab; }
 
-  export function setMicLevel(v: number) {
-    micLevel = Math.max(0, Math.min(1, v));
-  }
-
-  export function captureCaret() { activeComponent()?.captureCaret(); }
   export function beginLiveChunk() { activeComponent()?.beginLiveChunk(); }
   export function updateLiveChunk(text: string) { activeComponent()?.updateLiveChunk(text); }
   export function finalizeLiveChunk(text: string) { activeComponent()?.finalizeLiveChunk(text); }
 
-  function consumeActiveText(): string {
-    if (activeTab === 'ptt') return pttTab?.walkText() ?? '';
-    return convoTab?.consumeText() ?? '';
-  }
-
   function onSendClick() {
-    const text = consumeActiveText();
+    const text = activeComponent()?.consumeText() ?? '';
     if (!text) return;
     onsend?.(text);
-    if (activeTab === 'ptt') pttTab?.clear();
-    else convoTab?.clear();
+    activeComponent()?.clear();
   }
 
-  function selectTab(target: Mode) {
+  function selectTab(target: Tab) {
     if (target === activeTab) return;
     if (onTabSwitchRequest && !onTabSwitchRequest(target)) return;
     activeTab = target;
@@ -73,45 +73,49 @@
     <button
       type="button"
       class="tab"
-      class:active={activeTab === 'ptt'}
+      class:active={activeTab === 'text'}
       role="tab"
-      aria-selected={activeTab === 'ptt'}
-      onclick={() => selectTab('ptt')}
-    >PTT</button>
+      aria-selected={activeTab === 'text'}
+      onclick={() => selectTab('text')}
+    >TEXT</button>
     <button
       type="button"
       class="tab"
-      class:active={activeTab === 'convo'}
+      class:active={activeTab === 'voice'}
       role="tab"
-      aria-selected={activeTab === 'convo'}
-      onclick={() => selectTab('convo')}
-    >CONVO</button>
+      aria-selected={activeTab === 'voice'}
+      onclick={() => selectTab('voice')}
+    >VOICE</button>
   </div>
 
-  <div class="pane" class:hidden={activeTab !== 'ptt'}>
-    <PttTab bind:this={pttTab} {initialChunks} />
+  <div class="pane" class:hidden={activeTab !== 'text'}>
+    <TextTab bind:this={textTab} />
   </div>
-  <div class="pane" class:hidden={activeTab !== 'convo'}>
-    <ConvoTab bind:this={convoTab} {initialChips} />
+  <div class="pane" class:hidden={activeTab !== 'voice'}>
+    <VoiceTab
+      bind:this={voiceTab}
+      {initialChips}
+      {convo}
+      {convoText}
+      controls={voiceControls}
+      meter={voiceMeter}
+      onsend={onSendClick}
+    />
   </div>
 
-  <div class="footer">
-    <div class="mic-meter" aria-hidden="true">
-      <div class="mic-bar" style:transform="scaleX({micLevel})"></div>
+  <!-- The Voice tab carries its own SEND inside the right button column;
+       the shared footer SEND is only for the Text tab. -->
+  {#if activeTab === 'text'}
+    <div class="footer">
+      <button
+        type="button"
+        class="footer-btn send"
+        onclick={onSendClick}
+        title="send"
+        aria-label="send"
+      >SEND</button>
     </div>
-
-    <div class="ptt-slot">
-      {#if ptt}{@render ptt()}{/if}
-    </div>
-
-    <button
-      type="button"
-      class="footer-btn send"
-      onclick={onSendClick}
-      title="send"
-      aria-label="send"
-    >SEND</button>
-  </div>
+  {/if}
 </section>
 
 <style>
@@ -158,39 +162,10 @@
   .footer {
     display: flex;
     align-items: stretch;
-    gap: var(--space-2, 8px);
-  }
-  .mic-meter {
-    flex: 0 0 40px;
-    align-self: stretch;
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    border-radius: 4px;
-    overflow: hidden;
-    position: relative;
-    min-height: 52px;
-  }
-  .mic-bar {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(to top,
-      color-mix(in oklab, var(--recording, #f55) 65%, transparent) 0%,
-      color-mix(in oklab, var(--recording, #f55) 25%, transparent) 100%);
-    transform-origin: left center;
-    transform: scaleX(0);
-    transition: transform 60ms linear;
-  }
-  .ptt-slot {
-    flex: 1 1 auto;
-    display: flex;
-  }
-  .ptt-slot :global(*) {
-    flex: 1 1 auto;
   }
   .footer-btn {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     min-height: 52px;
-    min-width: 64px;
     padding: 0 14px;
     background: var(--surface2, #222);
     border: 1px solid var(--border, #333);
@@ -214,6 +189,5 @@
   }
   @media (hover: none), (max-width: 720px) {
     .footer-btn { min-height: 60px; font-size: 13px; }
-    .mic-meter { min-height: 60px; }
   }
 </style>

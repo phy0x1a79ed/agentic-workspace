@@ -134,6 +134,28 @@ def test_unknown_event_type_is_ignored():
 
 
 # ---------------------------------------------------------------------------
+# list_sessions limit — "last N" recency cap
+# ---------------------------------------------------------------------------
+
+class TestListSessionsLimit:
+    def test_limit_caps_to_most_recent(self, awm_workspace):
+        """list_sessions returns newest-first (DAO ORDER BY id DESC); limit
+        caps to the most recent N — the 'last N sessions' path."""
+        dao = ai_mod._get_dao()
+        ids = [dao.open_instance(project="awm", scope="dev", log_path=None,
+                                 cli_session_id=None, started_at=1000 + i)
+               for i in range(4)]
+
+        all_sessions = ai_mod.list_sessions(project="awm", scope="dev")
+        assert len(all_sessions) == 4
+
+        recent = ai_mod.list_sessions(project="awm", scope="dev", limit=2)
+        assert len(recent) == 2
+        # newest-first: the two highest row ids (last inserted)
+        assert [s.id for s in recent] == [ids[-1], ids[-2]]
+
+
+# ---------------------------------------------------------------------------
 # OpenCode harness — argv shape + per-session dispatch
 # ---------------------------------------------------------------------------
 
