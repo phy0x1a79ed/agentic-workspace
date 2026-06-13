@@ -1,11 +1,15 @@
-"""Populate the dev-harness sandbox via the live web-ui backend.
+"""Populate the dev-harness sandbox via the running modular gateway.
 
-Hits the running uvicorn over HTTP on loopback (no auth). No ``awm.*``
-imports, no service-level shortcuts — the seeder exercises the exact
-endpoints the UI uses.
+Hits the running gateway over HTTP on loopback (no auth). No ``awm.*``
+imports, no service-level shortcuts — everything goes through the gateway's
+generic ``POST /invoke {name, args}`` RPC surface, calling service-prefixed
+tools (``scopes_project_create``, ``scopes_scope_create``,
+``scopes_scope_post``/``scopes_scope_fetch``). Requires the ``scopes``
+feature service to be registered (``dev/run.sh start`` waits for that).
 
-Idempotent: projects and scopes return 409 if they already exist; room
-seeding is skipped if any active room is present. Safe to re-run.
+Idempotent: project/scope creation returns 409 (FileExistsError) when the
+entity already exists and is treated as a skip; channel seeding is skipped
+if demo/alpha already has posts. Safe to re-run.
 
 Run via ``dev/run.sh seed``.
 """
@@ -56,9 +60,11 @@ def _request(method: str, path: str, body: dict | None = None) -> tuple[int, dic
             return exc.code, text
 
 
-def _create(path: str, body: dict, label: str) -> None:
-    code, payload = _request("POST", path, body)
-    if code in (200, 201):
+def _create(tool: str, args: dict, label: str) -> None:
+    """Create an entity via /invoke, idempotently. The gateway maps the
+    handlers' FileExistsError to HTTP 409, which we treat as "already there"."""
+    code, payload = _request("POST", "/invoke", {"name": tool, "args": args})
+    if code == 200:
         print(f"[seed] created {label}")
     elif code == 409:
         print(f"[seed] {label} already exists, skipping")
@@ -93,39 +99,28 @@ def main() -> int:
     _assert_sandbox()
 
     for name in PROJECTS:
-        _create("/projects", {"name": name}, f"project {name!r}")
+        _create("scopes_project_create", {"name": name}, f"project {name!r}")
 
     for project, scope, ctx in SCOPES:
-        _create("/scopes",
+        _create("scopes_scope_create",
                 {"project": project, "scope": scope, "context": ctx},
                 f"scope {project}/{scope}")
 
-    # Rooms have no REST surface; use the MCP tool dispatcher. Only seed
-    # the demo room if no active rooms exist yet.
-    code, rooms = _request("GET", "/scopes")
-    if code != 200:
-        raise SystemExit(f"[seed] /scopes probe failed: {code} {rooms}")
-
-    existing = _invoke("room_list", {"status": "active", "limit": 1})
+    # A scope IS the channel — seed a couple of demo posts on demo/alpha's
+    # channel via the scope-channel tools (no separate rooms anymore).
+    existing = _invoke("scopes_scope_fetch", {"project": "demo", "scope": "alpha", "limit": 1})
     if existing.get("total", 0) == 0:
-        room = _invoke("room_create", {
-            "topic": "dev harness demo room",
-            "scopes": ["demo/alpha"],
-            "author": "user:dev",
-        })
-        room_id = room.get("id") or room.get("room", {}).get("id")
-        if not room_id:
-            raise SystemExit(f"[seed] room_create returned no id: {room}")
         for body in (
-            "hello from the seeder — this room is fake",
-            "open the Rooms tab in the UI to see this",
+            "hello from the seeder — this is a fake channel post",
+            "subscribe to demo/alpha in the UI to see this",
         ):
-            _invoke("room_post", {
-                "room_id": room_id, "body": body, "author": "user:dev",
+            _invoke("scopes_scope_post", {
+                "project": "demo", "scope": "alpha",
+                "author": "user:dev", "body": body, "kind": "message",
             })
-        print(f"[seed] created room {room_id}")
+        print("[seed] seeded demo/alpha channel")
     else:
-        print("[seed] active room(s) already exist, skipping room seed")
+        print("[seed] demo/alpha channel already has posts, skipping")
 
     print("[seed] done.")
     return 0
