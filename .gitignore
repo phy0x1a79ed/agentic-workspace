@@ -1,12 +1,38 @@
 # AWM runtime state
 .awm/
 
+# Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
+awm/services/*/.runtime-env
+
+# Per-worktree dev sandbox (lives at awm/gateway/dev/): env override + the
+# generated per-sandbox MCP config symlink. State dirs (.awm/, data/, projects/)
+# are covered by the global patterns below.
+awm/gateway/dev/.env
+awm/gateway/dev/.mcp.json
+
+# Per-host orientation symlink. AGENTS.md is the canonical tracked source;
+# CLAUDE.md is a host-local symlink to it (see .awm/context.md for the
+# per-scope override layer).
+CLAUDE.md
+
 # Machine identity — per-host; see AGENTS.md
 NAME.md
 
 # Workspace runtime directories (not tracked)
 data/
 projects/
+
+# SvelteKit static build output — registered with the hub via
+# `awm hub register --dir build/`, not committed.
+build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
+# npm workspace artifacts
+# package-lock.json (root + frontend/) is tracked authoritatively so a stale
+# untracked copy can't block dev's next FF — see session #334.
+node_modules/
+packages/**/dist/
 
 # Python
 __pycache__/

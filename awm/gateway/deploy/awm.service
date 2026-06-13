@@ -1,0 +1,16 @@
+[Unit]
+Description=AWM core (FastAPI tool dispatch service)
+After=network.target
+
+[Service]
+Type=simple
+Environment=AWM_WORKSPACE=%h/agentic_workspace
+Environment=AWM_IDLE_SHUTDOWN=0
+ExecStart=/home/tony/lib/miniforge3/envs/awm/bin/awm serve
+Restart=on-failure
+RestartSec=1
+StandardOutput=append:%h/agentic_workspace/.awm/awm.log
+StandardError=append:%h/agentic_workspace/.awm/awm.log
+
+[Install]
+WantedBy=default.target

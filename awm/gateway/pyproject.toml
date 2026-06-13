@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-gateway"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM gateway: the sole interface. Dynamically loads feature modules and re-exposes each as MCP + CLI + HTTP/WS; owns routing, service supervision, daemon lifecycle."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-scopes",
+    "awm-agents",
+    "awm-artifacts",
+    "awm-skills",
+    "awm-discord",
+    "fastapi",
+    "uvicorn[standard]",
+    "typer",
+    "httpx",
+    "mcp[cli]",
+    "pyyaml",
+    "websockets",
+]
+
+[project.scripts]
+awm = "awm.gateway.__main__:main"
+awm-mcp = "awm.gateway.mcp_server:main"
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/gateway/.
+[tool.setuptools.packages.find]
+include = ["awm.gateway*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+    "subprocess: spawns child processes (git, mcp, supervised hub backends)",
+    "unit: pure unit tests (models, validation, registries)",
+    "hub: hub routing / stripes / static / passthrough / service dispatch",
+    "scopes: scope CRUD + git worktree",
+    "messaging: rooms / messages / posts / control plane",
+    "auth: login / exposed app / auth service",
+    "mcp: mcp server / exports / cli context emit",
+    "artifacts: artifact registry",
+    "sessions: session log / history",
+    "agent: agent instances / vagrant sessions",
+    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "integration: cross-component integration tests",
+]

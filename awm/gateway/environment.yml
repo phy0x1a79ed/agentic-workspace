@@ -1,0 +1,16 @@
+name: awm
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - pip
+  - pip:
+    - fastapi
+    - uvicorn[standard]
+    - typer
+    - httpx
+    - mcp[cli]
+    - pyyaml
+    - faster-whisper
+    - numpy
+    - discord.py>=2.3

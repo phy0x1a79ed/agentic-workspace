@@ -1,0 +1,13 @@
+{
+  "name": "@awm/tts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@awm/client": "*",
+    "@awm/primitives": "*"
+  }
+}
