@@ -10,12 +10,17 @@ Run via start.sh (which the hub spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient.adapter import SessionContext
 from awm.agents import dao
 from awm.agents import agent_instances as ai
+from awm.agents import agent_transcript
+from awm.agents import agent_bus
+from awm.agents._time import iso_to_ms
 from awm.agents.agent_slash import dispatch as slash_dispatch
 from awm.agents.models import (
     AgentSessionInfo,
@@ -112,14 +117,18 @@ API_MANIFEST: dict[str, Any] = {
             "name": "agent_subscribe",
             "tool": "agent_subscribe",
             "description": (
-                "Read an agent's raw act stream (the structured stdout event log "
-                "from agents.db) for (project, scope). Subscribe to an AGENT for "
-                "its acts; message a SCOPE for conversation. Returns recent acts; "
-                "live push is a follow-up."
+                "Snapshot an agent's act stream (the normalized transcript from "
+                "agents.db) for (project, scope). Subscribe to an AGENT for its "
+                "acts; message a SCOPE for conversation. Returns acts after an "
+                "optional cursor (after_ts ISO + after_id). For a LIVE stream "
+                "(backfill + push, de-duped by act id) open the 'transcript' WS "
+                "session instead."
             ),
             "params": [
                 {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
+                {"name": "after_ts", "type": "string", "required": False},
+                {"name": "after_id", "type": "string", "required": False},
                 {"name": "limit", "type": "integer", "required": False},
             ],
         },
@@ -135,7 +144,19 @@ API_MANIFEST: dict[str, Any] = {
         },
     ],
     "emitters": [],
-    "sessions": [],
+    "sessions": [
+        {
+            "kind": "transcript",
+            "transport": "direct",
+            "description": (
+                "Live agent act stream for (project, scope). Open with init "
+                "{project, scope, after_ts?, after_id?}: the server replays the "
+                "transcript from the cursor as 'backfill' acts, then streams new "
+                "acts live as 'act' frames. Each act carries its agent_transcript "
+                "id (uuid) so the client de-dupes the backfill/live overlap."
+            ),
+        },
+    ],
 }
 
 
@@ -204,12 +225,84 @@ def _h_enqueue_post(args: dict) -> dict:
 
 
 def _h_agent_subscribe(args: dict) -> dict:
-    from awm.agents import agent_transcript
-    acts = agent_transcript.read_session(args["project"], args["scope"])
-    limit = int(args.get("limit", 200))
-    if limit and len(acts) > limit:
-        acts = acts[-limit:]
+    """One-shot cursored snapshot of an agent's acts (wire shape).
+
+    Returns acts after the (after_ts, after_id) cursor in live wire shape
+    (``{id, kind, body, meta, ts}``) ordered by (ts, id). The LIVE stream is the
+    'transcript' WS session; this is the connect-time backfill / catch-up read.
+    """
+    after_ts = iso_to_ms(args.get("after_ts"))
+    limit = args.get("limit")
+    acts = agent_transcript.read_acts_after(
+        args["project"], args["scope"],
+        after_ts=after_ts,
+        after_id=args.get("after_id"),
+        limit=int(limit) if limit is not None else None,
+    )
     return {"acts": acts, "total": len(acts)}
+
+
+# ---------------------------------------------------------------------------
+# Live transcript WS session (backfill from cursor → live push)
+# ---------------------------------------------------------------------------
+
+async def _transcript_session(ctx: SessionContext) -> None:
+    """Drive a direct WS session streaming an agent's acts.
+
+    On open: replay the transcript from the init cursor (``after_ts``/
+    ``after_id``) as ``{"type":"backfill","acts":[...]}``, then stream new acts
+    live as ``{"type":"act","act":{...}}`` from the in-process bus. Each act
+    carries its ``agent_transcript`` id so the browser de-dupes the
+    backfill/live overlap. On bus backpressure (high-volume partials) a
+    ``{"type":"lagged"}`` sentinel is sent and the socket closes — the client
+    reconnects with its last cursor and replays the gap.
+    """
+    init = ctx.init or {}
+    project = init.get("project")
+    scope = init.get("scope")
+    if not project or not scope:
+        # Best-effort error frame, then return (the bridge closes).
+        try:
+            bridge = await ctx.open_bridge()
+            await bridge.send(json.dumps(
+                {"type": "error", "message": "init requires project + scope"}))
+            await bridge.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    after_ts = iso_to_ms(init.get("after_ts"))
+    after_id = init.get("after_id")
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+    await agent_bus.attach_live(project, scope, queue)
+    bridge = await ctx.open_bridge()
+    try:
+        # 1) Backfill from the cursor. Track the last act so the live stream
+        #    can be deduped by id on the client (overlap is fine).
+        backfill = agent_transcript.read_acts_after(
+            project, scope, after_ts=after_ts, after_id=after_id)
+        await bridge.send(json.dumps({"type": "backfill", "acts": backfill}))
+
+        # 2) Stream live acts published by the reader loop.
+        while True:
+            ev = await queue.get()
+            if isinstance(ev, dict) and ev.get("type") == "lagged":
+                try:
+                    await bridge.send(json.dumps({"type": "lagged"}))
+                except Exception:  # noqa: BLE001
+                    pass
+                break
+            try:
+                await bridge.send(json.dumps(ev))
+            except Exception:  # noqa: BLE001
+                break
+    finally:
+        await agent_bus.detach_live(project, scope, queue)
+        try:
+            await bridge.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _h_get_slash_catalog(args: dict) -> dict:
@@ -248,7 +341,9 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "agents", API_MANIFEST, HANDLERS, on_start=_on_start,
+        "agents", API_MANIFEST, HANDLERS,
+        session_handlers={"transcript": _transcript_session},
+        on_start=_on_start,
     ).run()
 
 

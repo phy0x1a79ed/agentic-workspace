@@ -213,6 +213,30 @@ class AgentsDAO(BaseDAO):
             (project, scope),
         )
 
+    def read_transcript_after(self, project: str, scope: str, *,
+                              after_ts: int | None = None,
+                              after_id: str | None = None,
+                              limit: int | None = None) -> list[dict]:
+        """Transcript rows after a monotonic cursor (ts ms + id tiebreak).
+
+        The cursor is the (ts, id) of the last act the consumer has already
+        seen; rows are returned strictly after it, ordered by the same
+        monotonic key the live bus publishes in. ``after_ts=None`` returns the
+        whole transcript (the connect-time backfill from the start).
+        """
+        sql = "SELECT * FROM agent_transcript WHERE project=? AND scope=?"
+        params: list = [project, scope]
+        if after_ts is not None:
+            # Strictly-after on (ts, id): a later ts, or the same ts with a
+            # greater id. id is a uuid hex (lexicographically comparable).
+            sql += " AND (ts > ? OR (ts = ? AND id > ?))"
+            params.extend([after_ts, after_ts, after_id or ""])
+        sql += " ORDER BY ts, id"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return self.query_all(sql, params)
+
     def get_last_transcript_row(self, project: str, scope: str,
                                 kinds: list[str]) -> dict | None:
         """Most recent transcript row for (project, scope) with kind in kinds."""

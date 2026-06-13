@@ -126,6 +126,55 @@ def record_out(session, parsed: dict) -> None:
         _broadcast_assistant_turn(session.id, _extract_assistant_text(parsed))
 
 
+def _act_from_row(row: dict) -> dict:
+    """Shape one transcript row into the live/backfill wire act.
+
+    ``{id, kind, body, meta, ts}`` — ``id`` is the ``agent_transcript`` uuid
+    (the de-dupe key the browser matches the live overlap against)."""
+    try:
+        meta = json.loads(row.get("meta") or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "body": row.get("body") or "",
+        "meta": meta,
+        "ts": row["ts"],
+    }
+
+
+def record_event(session, event) -> dict | None:
+    """Persist one agentcore :class:`AgentEvent` and return its wire act.
+
+    This is the agentcore-era write path (``record_out`` persisted raw
+    stream-json; this persists the already-normalized event). The event's
+    ``kind`` is stored verbatim (message / partial / tool_use / tool_result /
+    status / result / error); ``body`` is the human-renderable text; ``meta``
+    carries the structured payload plus the agentcore event id and ts. Returns
+    the wire act (``{id, kind, body, meta, ts}``) the bus publishes, or None on
+    a persistence failure.
+    """
+    ts = now_ms()
+    meta = {
+        "event_id": getattr(event, "id", None),
+        "event_ts": getattr(event, "ts", None),
+        "data": getattr(event, "data", None),
+    }
+    body = getattr(event, "text", None) or ""
+    kind = getattr(event, "kind", "status")
+    try:
+        row_id = _get_dao().insert_transcript(
+            project=session.project, scope=session.scope,
+            kind=kind, body=body, meta=meta, ts=ts,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if kind == "message" and body:
+        _broadcast_assistant_turn(session.id, body)
+    return {"id": row_id, "kind": kind, "body": body, "meta": meta, "ts": ts}
+
+
 def record_raw_out(session, line: str) -> None:
     """Persist a non-JSON stdout line as kind='system'."""
     try:
@@ -169,6 +218,19 @@ def _decode_event(row: dict) -> dict:
 def read_session(project: str, scope: str) -> list[dict]:
     """All transcript rows for (project, scope), ordered by ts."""
     return _get_dao().read_transcript(project, scope)
+
+
+def read_acts_after(project: str, scope: str, *,
+                    after_ts: int | None = None,
+                    after_id: str | None = None,
+                    limit: int | None = None) -> list[dict]:
+    """Backfill acts after a monotonic cursor, in live wire shape.
+
+    Each act is ``{id, kind, body, meta, ts}`` ordered by (ts, id). ``after_ts``
+    None replays the whole transcript (connect with no cursor)."""
+    rows = _get_dao().read_transcript_after(
+        project, scope, after_ts=after_ts, after_id=after_id, limit=limit)
+    return [_act_from_row(r) for r in rows]
 
 
 def has_unmatched_tool_use(project: str, scope: str) -> bool:

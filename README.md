@@ -136,23 +136,35 @@ awm services disable <name>       # stop it and keep it down across restarts
 
 ### Iterating with `awm dev shadow`
 
-To live-test a local change without evicting the running base, push the
-service as a **shadow overlay**:
+To live-test local changes without evicting the running bases, bring your
+worktree's pages **and** services up against a hub in one command:
 
 ```bash
-awm dev shadow awm/services/myservice [--name <override>]
+awm dev shadow --port 7821 pages/agent \
+  awm/services/agents awm/services/tts awm/services/ptt
 ```
 
-This execs that folder's `run.sh` with `AWM_SERVICE_OVERLAY=1`, so the process
-registers as a shadow overlay on top of the existing `/svc/<name>` base — **one
-process, one identity**, its own control WS held as the lease. Traffic for
-`/svc/<name>` routes to the overlay while the lease is held; Ctrl-C pops the
-overlay and the base resumes instantly. No second registration, no token, no
-key-file scavenging. A base for that service must already be running
-(`awm services start <name>` first); the argument is an explicit path to the
-service folder (or its `run.sh`), so you can shadow another worktree's copy
-against this gateway. The legacy `awm dev shadow pages/<name>` page-overlay
-path still works for built pages.
+`--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
+otherwise targets `AWM_PORT` (prod `7819`), so always pass `--port` to keep off
+prod. Each target comes up in **one foreground process**; a single Ctrl-C tears
+the whole stack down (overlays popped, services we spawned SIGTERM'd, dev's bases
+resume).
+
+Each target auto-selects base-vs-overlay against what the hub already serves:
+
+- **Service** (a path under `awm/services/`): execs the folder's `run.sh` with
+  the dev `PYTHONPATH` so it runs *this* worktree's code. If `/svc/<name>` already
+  has a base it registers as an overlay (`AWM_SERVICE_OVERLAY=1`, one process /
+  one identity, its control WS as the lease); if not, the adapter self-registers
+  as a fresh base. A base created this way is **not journaled** — it won't respawn
+  if the hub restarts mid-session. You can pass another worktree's path to shadow
+  its copy.
+- **Page** (`pages/<name>`): serves `awm/pages/<name>/dist` at `/ui/<name>` —
+  overlay if a page base already serves that prefix, else a fresh page base. The
+  hub redirects the bare `/ui/<name>` to `/ui/<name>/` so the bundle's relative
+  asset refs resolve; you can hand out either URL form.
+
+`--name <override>` renames a single target (single-target invocations only).
 
 ### Installing
 
@@ -236,17 +248,24 @@ gives you a hub at a different port with none of `dev`'s seeded state and is
 almost never what you want. If nothing is running on that port, ask the
 `dev`-scope agent to start it — don't start one yourself.
 
-To live-test a local change against the running dev sandbox without evicting
-the dev copy, push it as a shadow overlay (services are shadowed by explicit
-path, pages by `pages/<name>`):
+To live-test local changes against the running dev sandbox without evicting the
+dev copies, bring your page(s) and service(s) up as one stack (services by
+explicit path, pages by `pages/<name>`):
 
 ```bash
 cd /home/tony/agentic_workspace/projects/awm/<scope>   # NOT projects/awm/dev
-awm dev shadow awm/services/tts        # shadow the service from this worktree
-awm dev shadow pages/tts               # shadow a built page
-# (lease blocks; Ctrl-C pops the overlay; dev's base traffic resumes instantly)
-# Visit http://127.0.0.1:7821/ui/... — same origin as the dev sandbox.
+awm dev shadow --port 7821 pages/agent \
+  awm/services/agents awm/services/tts awm/services/ptt
+# One process, all of it. Each target auto-picks overlay (a base exists) or a
+# fresh base (none does). Ctrl-C tears the whole stack down; dev's bases resume.
+# Visit http://127.0.0.1:7821/ui/agent — same origin as the dev sandbox.
 ```
+
+`--port 7821` targets the dev sandbox (the CLI otherwise hits prod `7819`).
+Services with no base on the dev hub — e.g. `tts`/`ptt`, whose `run.sh` the dev
+tree doesn't carry — come up as fresh (un-journaled) bases automatically; no
+manual base-wrangling. The bare `/ui/agent` URL works (the hub redirects it to
+`/ui/agent/`).
 
 Shadows of `components/` are an error — components are build-time deps.
 Edit the component locally, rebuild the *page* that imports it
