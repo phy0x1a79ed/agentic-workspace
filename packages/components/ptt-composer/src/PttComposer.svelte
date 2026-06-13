@@ -287,6 +287,19 @@
     }
   }
 
+  // The single convo control folds START / PAUSE / RESUME into one
+  // play/pause toggle: idle → start a continuous session; listening →
+  // pause (thinking break, session stays open); paused → resume. There is
+  // no STOP state on a play/pause toggle — a convo session is torn down by
+  // switching to the TEXT tab (see onTabSwitchRequest).
+  function onConvoButton() {
+    if (!convoListening) {
+      void onConvoToggle(); // start
+    } else {
+      togglePause();        // pause / resume
+    }
+  }
+
   function onTabSwitchRequest(target: 'text' | 'voice'): boolean {
     if (recording) return false; // don't yank the page mid-PTT-press
     if (target === 'text' && convoListening) {
@@ -354,28 +367,24 @@
     initialChips={mockInitialChips}
   >
     {#snippet voiceControls()}
-      <div class="mic-row">
-        <div class="mic-meter" aria-hidden="true">
-          <div class="mic-bar" style:transform="scaleX({micLevel})"></div>
-        </div>
-        <div class="ptt-slot">
-          <PttButton disabled={convoListening} onpttdown={onDown} onpttup={onUp} />
-        </div>
-      </div>
-      <div class="convo-row">
-        <button
-          type="button"
-          class="ctl convo"
-          class:active={convoListening}
-          onclick={onConvoToggle}
-        >{convoListening ? 'STOP' : 'START CONVO'}</button>
-        <button
-          type="button"
-          class="ctl pause"
-          class:active={paused}
-          disabled={!convoListening}
-          onclick={togglePause}
-        >{paused ? 'RESUME' : 'PAUSE'}</button>
+      <PttButton disabled={convoListening} onpttdown={onDown} onpttup={onUp} />
+      <button
+        type="button"
+        class="ctl convo"
+        class:active={convoListening}
+        class:paused
+        onclick={onConvoButton}
+        aria-pressed={convoListening}
+        aria-label={!convoListening ? 'start conversation' : paused ? 'resume conversation' : 'pause conversation'}
+      >
+        <span class="conv-icon" aria-hidden="true">{convoListening && !paused ? '⏸' : '▶'}</span>
+        <span class="conv-lbl">{!convoListening ? 'CONVO' : paused ? 'RESUME' : 'PAUSE'}</span>
+      </button>
+    {/snippet}
+
+    {#snippet voiceMeter()}
+      <div class="mic-meter" aria-hidden="true">
+        <div class="mic-bar" style:transform="scaleX({micLevel})"></div>
       </div>
     {/snippet}
   </PttComposerShell>
@@ -399,53 +408,42 @@
     max-width: 480px;
   }
 
-  .mic-row {
-    display: flex;
-    align-items: stretch;
-    gap: var(--space-2, 8px);
-  }
+  /* Thin horizontal mic-level strip, rendered across the bottom of the
+     voice surface via the {voiceMeter} snippet. */
   .mic-meter {
-    flex: 0 0 40px;
-    align-self: stretch;
+    width: 100%;
+    height: 10px;
     background: var(--surface2, #222);
     border: 1px solid var(--border, #333);
-    border-radius: 4px;
+    border-radius: 5px;
     overflow: hidden;
     position: relative;
-    min-height: 52px;
   }
   .mic-bar {
     position: absolute;
     inset: 0;
-    background: linear-gradient(to top,
-      color-mix(in oklab, var(--recording, #f55) 65%, transparent) 0%,
-      color-mix(in oklab, var(--recording, #f55) 25%, transparent) 100%);
+    background: linear-gradient(to right,
+      color-mix(in oklab, var(--recording, #f55) 25%, transparent) 0%,
+      color-mix(in oklab, var(--recording, #f55) 70%, transparent) 100%);
     transform-origin: left center;
     transform: scaleX(0);
     transition: transform 60ms linear;
   }
-  .ptt-slot {
-    flex: 1 1 auto;
-    display: flex;
-  }
-  .ptt-slot :global(*) {
-    flex: 1 1 auto;
-  }
 
-  .convo-row {
-    display: flex;
-    gap: var(--space-2, 8px);
-  }
+  /* The single convo play/pause toggle, stacked in the right button column. */
   .ctl {
-    flex: 1 1 auto;
-    min-height: 44px;
-    padding: 0 14px;
+    min-height: 52px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     background: var(--surface2, #222);
     border: 1px solid var(--border, #333);
     border-radius: 4px;
     color: var(--text2, #bbb);
     font-family: var(--mono, monospace);
-    font-size: 12px;
+    font-size: 11px;
     letter-spacing: 1px;
     text-transform: uppercase;
     cursor: pointer;
@@ -453,14 +451,15 @@
   }
   .ctl:hover:not(:disabled) { background: var(--surface3, #2a2a2a); color: var(--text, #ddd); }
   .ctl:disabled { opacity: 0.35; cursor: not-allowed; }
+  .conv-icon { font-size: 13px; line-height: 1; }
   .ctl.convo.active {
     background: color-mix(in oklab, var(--recording, #f55) 25%, var(--surface2, #222));
     border-color: var(--recording, #f55);
     color: var(--text, #ddd);
   }
-  .ctl.pause.active {
+  .ctl.convo.active.paused {
+    background: color-mix(in oklab, var(--atomizer, #ffb74d) 18%, var(--surface2, #222));
     border-color: var(--atomizer, #ffb74d);
-    color: var(--text, #ddd);
   }
 
   .status {

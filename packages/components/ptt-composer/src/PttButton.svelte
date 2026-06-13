@@ -60,8 +60,8 @@
   ontouchend={up}
   ontouchcancel={up}
 >
-  <span class="kbd-hint">Hold <kbd>SPACE</kbd> or this button to talk</span>
-  <span class="touch-hint">Hold to talk</span>
+  <span class="kbd-hint">PTT · hold <kbd>SPACE</kbd></span>
+  <span class="touch-hint">PTT · hold</span>
 </button>
 
 <style>

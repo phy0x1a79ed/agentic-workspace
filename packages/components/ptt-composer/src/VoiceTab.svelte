@@ -21,10 +21,16 @@
   interface Props {
     // Mock-only seed of finalized chips.
     initialChips?: string[];
-    // Transport-owned control row (PTT button, Convo start/stop, pause).
+    // Transport-owned controls for the right button column (PTT button +
+    // the convo play/pause toggle). Rendered between CLEAR and SEND.
     controls?: Snippet;
+    // Transport-owned mic-level meter, rendered as a thin strip across the
+    // bottom of the voice surface.
+    meter?: Snippet;
+    // Fired by the column's SEND button; the shell consumes + clears.
+    onsend?: () => void;
   }
-  let { initialChips, controls }: Props = $props();
+  let { initialChips, controls, meter, onsend }: Props = $props();
 
   let chips = $state<ChipRow[]>(untrack(() => (
     initialChips
@@ -127,36 +133,46 @@
 </script>
 
 <div class="voice-tab">
-  <div bind:this={scroller} class="convo-list" role="log" aria-label="dictated utterances">
-    {#if chips.length === 0}
-      <p class="empty">hold the mic to dictate, or START a conversation…</p>
-    {:else}
-      {#each chips as chip (chip.id)}
-        <span class="row">
+  <div class="main">
+    <div bind:this={scroller} class="convo-list" role="log" aria-label="dictated utterances">
+      {#if chips.length === 0}
+        <p class="empty">hold the mic to dictate, or START a conversation…</p>
+      {:else}
+        {#each chips as chip (chip.id)}
           <VoiceChip
             text={chip.text}
             live={chip.live}
             onremove={() => onRemoveChip(chip.id)}
           />
-        </span>
-      {/each}
-    {/if}
+        {/each}
+      {/if}
+    </div>
+
+    <div class="button-col">
+      <button
+        type="button"
+        class="col-btn clear"
+        onclick={clear}
+        disabled={chips.length === 0}
+        title="clear and try again"
+        aria-label="clear all utterances"
+      >CLEAR</button>
+
+      {#if controls}{@render controls()}{/if}
+
+      <button
+        type="button"
+        class="col-btn send"
+        onclick={() => onsend?.()}
+        title="send"
+        aria-label="send"
+      >SEND</button>
+    </div>
   </div>
 
-  {#if controls}
-    <div class="controls">{@render controls()}</div>
+  {#if meter}
+    <div class="meter-strip">{@render meter()}</div>
   {/if}
-
-  <div class="actions">
-    <button
-      type="button"
-      class="clear-btn"
-      onclick={clear}
-      disabled={chips.length === 0}
-      title="clear and try again"
-      aria-label="clear all utterances"
-    >CLEAR</button>
-  </div>
 </div>
 
 <style>
@@ -166,18 +182,30 @@
     gap: var(--space-2, 8px);
     width: 100%;
   }
+
+  /* chip list on the left, vertical button column on the right */
+  .main {
+    display: flex;
+    gap: var(--space-2, 8px);
+    align-items: stretch;
+  }
+  /* vertical scroll of full-width utterance cards — mirrors the chat-history
+     transcript (darker bg so the surface-colored cards stand out). */
   .convo-list {
-    min-height: 120px;
-    max-height: 240px;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 160px;
+    max-height: 280px;
+    overflow-x: hidden;
     overflow-y: auto;
-    padding: var(--space-3, 12px);
-    background: var(--surface, #1a1a1a);
+    padding: var(--space-2, 8px);
+    background: var(--bg, #111);
     border: 1px solid var(--border, #333);
     border-radius: var(--radius-md, 4px);
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
-    align-items: flex-start;
+    align-items: stretch;
   }
   .empty {
     color: var(--text3, #888);
@@ -185,21 +213,18 @@
     font-size: 13px;
     margin: 0;
   }
-  .row {
-    display: inline-block;
-    max-width: 100%;
-  }
-  .controls {
+
+  .button-col {
+    flex: 0 0 140px;
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);
   }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-  .clear-btn {
-    min-height: 32px;
+  /* transport-rendered controls (PTT, convo toggle) stretch to column width */
+  .button-col :global(button) { width: 100%; }
+
+  .col-btn {
+    min-height: 44px;
     padding: 0 12px;
     background: var(--surface2, #222);
     border: 1px solid var(--border, #333);
@@ -212,16 +237,25 @@
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
-  .clear-btn:hover:not(:disabled) {
-    background: var(--surface3, #2a2a2a);
-    color: var(--text, #ddd);
+  .col-btn:hover:not(:disabled) { background: var(--surface3, #2a2a2a); color: var(--text, #ddd); }
+  .col-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .col-btn.clear:hover:not(:disabled) {
     border-color: color-mix(in oklab, var(--danger, #f44) 40%, var(--border, #333));
   }
-  .clear-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
+  .col-btn.send {
+    min-height: 52px;
+    border-color: color-mix(in oklab, var(--atomizer, #ffb74d) 40%, var(--border, #333));
+    color: var(--text, #ddd);
   }
+  .col-btn.send:hover {
+    background: color-mix(in oklab, var(--atomizer, #ffb74d) 30%, var(--surface2, #222));
+    border-color: var(--atomizer, #ffb74d);
+  }
+
+  .meter-strip { width: 100%; }
+
   @media (hover: none), (max-width: 720px) {
     .convo-list { font-size: 16px; }
+    .button-col { flex-basis: 120px; }
   }
 </style>

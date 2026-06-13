@@ -23,12 +23,14 @@
     onTabSwitchRequest?: (target: Tab) => boolean;
     initialChips?: string[];
     voiceControls?: Snippet;
+    voiceMeter?: Snippet;
   }
   let {
     onsend,
     onTabSwitchRequest,
     initialChips,
     voiceControls,
+    voiceMeter,
   }: Props = $props();
 
   let activeTab = $state<Tab>('voice');
@@ -84,18 +86,28 @@
     <TextTab bind:this={textTab} />
   </div>
   <div class="pane" class:hidden={activeTab !== 'voice'}>
-    <VoiceTab bind:this={voiceTab} {initialChips} controls={voiceControls} />
+    <VoiceTab
+      bind:this={voiceTab}
+      {initialChips}
+      controls={voiceControls}
+      meter={voiceMeter}
+      onsend={onSendClick}
+    />
   </div>
 
-  <div class="footer">
-    <button
-      type="button"
-      class="footer-btn send"
-      onclick={onSendClick}
-      title="send"
-      aria-label="send"
-    >SEND</button>
-  </div>
+  <!-- The Voice tab carries its own SEND inside the right button column;
+       the shared footer SEND is only for the Text tab. -->
+  {#if activeTab === 'text'}
+    <div class="footer">
+      <button
+        type="button"
+        class="footer-btn send"
+        onclick={onSendClick}
+        title="send"
+        aria-label="send"
+      >SEND</button>
+    </div>
+  {/if}
 </section>
 
 <style>
