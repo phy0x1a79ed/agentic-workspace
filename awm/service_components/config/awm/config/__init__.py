@@ -42,6 +42,7 @@ ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 DATA_DIR = WORKSPACE_ROOT / "data"
+SERVICES_DIR = AWM_DIR / "services"
 SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")

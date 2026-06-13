@@ -106,17 +106,18 @@ def _local_api(method: str, path: str, **kwargs) -> httpx.Response:
 
 @app.command()
 def init():
-    """Bootstrap workspace and initialize the AWM database."""
-    from awm.persistence.db import init_db
+    """Bootstrap the workspace directory layout.
+
+    Per-service DBs are created lazily by each feature service on first use,
+    so the gateway no longer opens or initializes a shared database here.
+    """
     AWM_DIR.mkdir(parents=True, exist_ok=True)
 
     # Ensure workspace directories exist
     for d in ["data/reference", "projects", "main"]:
         (WORKSPACE_ROOT / d).mkdir(parents=True, exist_ok=True)
 
-    init_db()
     typer.echo(f"Initialized AWM at {AWM_DIR}")
-    typer.echo(f"Database: {AWM_DIR / 'state.db'}")
     typer.echo(f"Workspace: {WORKSPACE_ROOT}")
 
 

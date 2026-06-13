@@ -10,6 +10,7 @@ description = "AWM discord service: discord operator bridge and config."
 dependencies = [
     "awm-config",
     "awm-persistence",
+    "awm-gatewayclient",
     "discord.py>=2.3",
 ]
 

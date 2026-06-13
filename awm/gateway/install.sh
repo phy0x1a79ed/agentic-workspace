@@ -14,6 +14,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 # Component libraries (imported, not run on their own).
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
+run "$WS/awm/service_components/gatewayclient" --no-deps
 
 # Feature services the gateway loads.
 for svc in scopes agents artifacts skills discord; do

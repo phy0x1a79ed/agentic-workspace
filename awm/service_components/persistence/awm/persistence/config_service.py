@@ -1,16 +1,46 @@
-"""Config service — key-value store backed by the config table."""
+"""Config service — key-value store backed by a ``config``-owned DB.
+
+This is the KV store (``config`` table) — DISTINCT from the ``awm.config``
+settings module (paths/ports/env). The KV store lives in the ``config``
+service's own SQLite DB under ``AWM_DIR/services/config/config.db``.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from awm.config import GITHUB_USER
-from awm.db import get_connection
+from awm.persistence.databases import get_connection, init_service_db
+
+_SERVICE = "config"
+
+# The ``config`` service owns exactly this one KV table.
+CONFIG_TABLE_DDL = """\
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+_CONFIG_SCHEMA_VERSION = 1
+_initialized = False
+
+
+def _ensure_db() -> None:
+    """Idempotently create the config service's own DB + ``config`` table."""
+    global _initialized
+    if not _initialized:
+        init_service_db(
+            _SERVICE, CONFIG_TABLE_DDL, schema_version=_CONFIG_SCHEMA_VERSION
+        )
+        _initialized = True
 
 
 def get_config(key: str, default: str | None = None) -> str | None:
     """Get a config value by key."""
-    conn = get_connection()
+    _ensure_db()
+    conn = get_connection(_SERVICE)
     try:
         row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
     finally:
@@ -22,8 +52,9 @@ def get_config(key: str, default: str | None = None) -> str | None:
 
 def set_config(key: str, value: str) -> None:
     """Set a config value (upsert)."""
+    _ensure_db()
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_connection()
+    conn = get_connection(_SERVICE)
     try:
         conn.execute(
             "INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?) "

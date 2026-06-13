@@ -25,7 +25,6 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
-from awm.persistence.db import init_db
 from awm.gateway import catalog
 from awm.gateway.core import restart_core
 
@@ -71,9 +70,6 @@ async def lifespan(app: FastAPI):
 
     # Record core start time for awm_status uptime reporting
     catalog.mark_core_start()
-
-    # Init DB
-    init_db()
 
     # Write PID file
     import os
