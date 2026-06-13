@@ -4,6 +4,14 @@
 
 For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
+## Modular tree migration (in progress)
+
+awm is being split from the monolithic `awm/` package into a nested tree of pip dists under `awm/`: the **gateway** (`awm/gateway/`, package `awm.gateway`) — the sole interface + coordination hub — plus shared components (`awm.config`, `awm.persistence`) and self-contained feature services (`awm.scopes`, `awm.agents`, `awm.artifacts`, `awm.skills`, `awm.discord`). As of this checkpoint the **gateway boots standalone with an empty feature catalog**; feature surfaces (scopes/rooms/artifacts/sessions/…) return only as those modules migrate and register, not because they're baked into the gateway.
+
+- **Install/iterate each module via its own `install.sh`, never hand-rolled `pip`.** `awm/gateway/install.sh` is the composition root — it installs `config` + `persistence` and every feature dist `--no-deps`, then the gateway itself (resolving third-party deps). Components (`config`, `persistence`, `ui_components`) are pure imported source and have no `install.sh`. Override the target env with `AWM_ENV`.
+- **Registration contract.** How a service declares its API (the serializable `ready.api` manifest — `functions`/`emitters`/`subscriptions`), how that threads into the MCP/CLI/HTTP generation layer (manifest → `Operation` → the unchanged `operations.py` compiler; dispatch is catalog-owned), and the **hub-mediated** service↔service comms model (`call` request/reply, `emit`/`sub` pub/sub, `Bridge` streaming — all identity-aware via `as_`, never direct sockets) are documented in `awm/gateway/awm/gateway/catalog.py`. The catalog is the single live source the gateway renders to all three surfaces; `/tools` and `/invoke` read from it.
+- **Concurrency.** One server loop owns all async hub state; blocking work is offloaded (`run_in_threadpool` / `run_in_executor`); `asyncio.run()` is banned inside the daemon (survives only in the CLI/MCP-proxy/entrypoint processes). `catalog.dispatch` is async, `/tools` is sync.
+
 ## Federation: retired
 
 Federation is gone — see git history for the deletion (commits S1–S5, S6, S8 on `dev` around 2026-06-04). No `/peer/*` routes, no `awm peer *` CLI, no `awm-exposed.service`, no auth layer, no `peers`/`peer_sync_state` tables. The local listener (`awm.service` on `127.0.0.1:7819`) is the only listener. Single host, no auth, plain HTTP loopback.

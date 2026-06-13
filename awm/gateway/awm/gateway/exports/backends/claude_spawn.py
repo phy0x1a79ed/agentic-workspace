@@ -23,7 +23,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from awm.config import AWM_DIR
-from awm.exports.mcp import register
+from awm.gateway.exports.mcp import register
 
 
 class ClaudeSpawnExporter:

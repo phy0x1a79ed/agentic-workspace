@@ -28,7 +28,7 @@ import websockets
 from fastapi import Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from awm.services.hub import rpc
+from awm.gateway.hub import rpc
 
 log = logging.getLogger("awm.hub.proxy")
 

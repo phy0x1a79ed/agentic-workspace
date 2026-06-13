@@ -335,6 +335,21 @@ class Registry:
     def get_by_name(self, kind: str, name: str) -> ServiceRecord | None:
         return self._by_name.get((kind, name))
 
+    def service_records(self) -> list[ServiceRecord]:
+        """Snapshot of the topmost ``kind=="service"`` record per prefix.
+
+        Sync; tolerates concurrent mutation (snapshot iteration is
+        GIL-safe), so the catalog can render ``/tools`` without taking the
+        async lock. Returns the active (topmost overlay or base) record for
+        each prefix, filtered to services — the ones that carry an ``api``
+        manifest.
+        """
+        out: list[ServiceRecord] = []
+        for stack in list(self._stacks.values()):
+            if stack and stack[-1].kind == "service":
+                out.append(stack[-1])
+        return out
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

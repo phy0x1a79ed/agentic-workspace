@@ -36,7 +36,7 @@ from starlette.responses import (
     Response,
 )
 
-from awm.services.hub.registry import ServiceRecord
+from awm.gateway.hub.registry import ServiceRecord
 
 log = logging.getLogger("awm.hub.static")
 

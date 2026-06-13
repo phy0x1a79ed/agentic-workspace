@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from awm.config import WORKSPACE_ROOT
-from awm.exports.mcp import register
+from awm.gateway.exports.mcp import register
 
 
 class OpencodeExporter:

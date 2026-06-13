@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from awm.services.hub.registry import Registry, get_registry
+from awm.gateway.hub.registry import Registry, get_registry
 
 log = logging.getLogger("awm.hub.lease")
 

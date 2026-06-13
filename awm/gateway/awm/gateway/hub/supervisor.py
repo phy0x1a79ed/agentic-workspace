@@ -144,7 +144,7 @@ async def reconcile_journaled_services() -> None:
     from start_cmd. Called from the FastAPI startup event after the
     hub control-plane routes are mounted.
     """
-    from awm.services.hub.registry import get_registry
+    from awm.gateway.hub.registry import get_registry
     journal = load_service_journal()
     if not journal:
         return
@@ -183,7 +183,7 @@ async def reconcile_journaled_services() -> None:
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.5)
 
-    from awm.services.hub import rpc as _rpc
+    from awm.gateway.hub import rpc as _rpc
     for name in list(journal.keys()):
         entry = journal.get(name) or {}
         sid = entry.get("service_id")

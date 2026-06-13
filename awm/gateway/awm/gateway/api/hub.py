@@ -42,12 +42,12 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, model_validator
 
-from awm.services.hub import rpc
-from awm.services.hub.lease import LeaseAlreadyHeld, get_lease_manager
-from awm.services.hub.registry import (
+from awm.gateway.hub import rpc
+from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
+from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.services.hub.supervisor import (
+from awm.gateway.hub.supervisor import (
     remove_service_journal_entry,
     update_service_journal_entry,
 )
@@ -568,7 +568,7 @@ async def list_services() -> dict[str, Any]:
 @router.delete("/services/{name}")
 async def deregister(name: str, request: Request, kind: str | None = None) -> dict[str, Any]:
     registry = get_registry()
-    from awm.services.hub.registry import PrefixConflict
+    from awm.gateway.hub.registry import PrefixConflict
     try:
         rec = await registry.evict_by_name(name, kind=kind)
     except PrefixConflict as e:

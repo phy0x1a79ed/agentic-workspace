@@ -36,7 +36,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
-from awm.services._path import resolve_bin
+from awm.gateway._path import resolve_bin
 
 server = Server("awm")
 

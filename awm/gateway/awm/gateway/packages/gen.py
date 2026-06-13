@@ -21,7 +21,7 @@ import logging
 import re
 from pathlib import Path
 
-log = logging.getLogger("awm.services.packages.gen")
+log = logging.getLogger("awm.gateway.packages.gen")
 
 
 _IMPORT_RE = re.compile(

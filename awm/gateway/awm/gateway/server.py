@@ -1,4 +1,12 @@
-"""FastAPI app + uvicorn with lifespan management."""
+"""FastAPI app + uvicorn with lifespan management.
+
+This is the gateway's HTTP surface. It exposes only what the gateway owns
+itself — the daemon lifecycle (`/status`, `/restart`), the generic tool
+dispatch the MCP proxy rides (`/tools`, `/invoke`, both backed by the live
+`catalog`), and the hub control plane + routing middleware. Feature surfaces
+(scopes, rooms, artifacts, …) are NOT baked in here — they arrive as services
+register into the catalog/hub. See `catalog.py` for the registration contract.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +15,8 @@ import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request
-from starlette.responses import JSONResponse, Response
+from fastapi import FastAPI, HTTPException, Request
 
-from awm import __version__
 from awm.config import (
     HOST,
     PORT,
@@ -19,26 +25,11 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
-from awm.db import init_db, get_connection
-from awm.models import (
-    StatusResponse,
-    ProjectCreateRequest,
-    ProjectCreateResponse,
-    ProjectListInfo,
-    ProjectListResponse,
-    ProjectScopeCounts,
-    ScopeCreateRequest,
-    ScopeUpdateRequest,
-    ScopeSyncRequest,
-    ScopeListResponse,
-    ScopeActionResponse,
-    SkillListResponse,
-    SkillContentResponse,
-)
-from awm.operations.sessions import SESSION_OPERATIONS
-from awm._lib.operations import register_fastapi_routes
-from awm.services import core, projects, scopes, skills
-from awm._lib.tool_dispatch import TOOL_DEFINITIONS, handle_tool, mark_core_start
+from awm.persistence.db import init_db
+from awm.gateway import catalog
+from awm.gateway.core import restart_core
+
+__version__ = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Idle shutdown state
@@ -79,7 +70,7 @@ async def lifespan(app: FastAPI):
     _last_request_time = time.time()
 
     # Record core start time for awm_status uptime reporting
-    mark_core_start()
+    catalog.mark_core_start()
 
     # Init DB
     init_db()
@@ -97,24 +88,14 @@ async def lifespan(app: FastAPI):
     # background task — the hub is available immediately for services that
     # ARE actively reconnecting.
     try:
-        from awm.services.hub.supervisor import reconcile_journaled_services
+        from awm.gateway.hub.supervisor import reconcile_journaled_services
         asyncio.create_task(reconcile_journaled_services())
     except Exception as exc:  # noqa: BLE001
         print(f"[awm] service reconcile skipped: {exc}")
 
-    # Bootstrap the unified vagrant-scopes bare repo. Idempotent — cheap
-    # no-op when present. Non-fatal: /vagrant/* 503s with a clear message if
-    # disabled.
-    try:
-        from awm.services.scopes import ensure_vagrant_repo
-        bare = ensure_vagrant_repo()
-        print(f"[awm] vagrant-scopes ready: {bare}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[awm] vagrant-scopes disabled: {exc}")
-
     # Fan canonical .mcp.json out to backend-specific configs.
     try:
-        from awm.exports.mcp import sync_mcp_configs
+        from awm.gateway.exports.mcp import sync_mcp_configs
         for entry in sync_mcp_configs():
             name = entry.get("name", "?")
             if entry.get("ok"):
@@ -150,99 +131,16 @@ async def track_activity(request, call_next):
 # Status
 # ---------------------------------------------------------------------------
 
-@app.get("/status", response_model=StatusResponse)
+@app.get("/status")
 def get_status():
-    scope_result = scopes.search_scopes(status="active", limit=10_000)
-
-    return StatusResponse(
-        workspace_root=str(WORKSPACE_ROOT),
-        active_scopes=scope_result.total,
-    )
-
-
-@app.get("/projects/search", response_model=ProjectListResponse)
-def search_projects_endpoint(
-    query: str | None = None,
-    active_only: bool = False,
-    limit: int = 50,
-    offset: int = 0,
-):
-    """Search projects (hybrid keyword + semantic). v37: counts are derived
-    from the agents table (``allocated|active`` → active, ``retired`` →
-    completed)."""
-    from awm.services import projects as projects_svc
-    return projects_svc.search_projects(
-        query=query, active_only=active_only, limit=limit, offset=offset,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Inbox (federated entry point — remote peers POST here)
-# ---------------------------------------------------------------------------
-
-@app.post("/inbox")
-def post_inbox(request: Request, payload: dict):
-    """User-facing inbox-send. Stores a message with the sender from the
-    request body verbatim — federated cross-peer sends go through
-    ``POST /peer/inbox`` instead (which prefixes the origin peer id)."""
-    from awm.models import MessageSendRequest
-    from awm.services import messaging
-
-    try:
-        req = MessageSendRequest(**payload)
-    except Exception as exc:
-        raise HTTPException(400, f"invalid message body: {exc}")
-    try:
-        return messaging.send_message(req)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/messages")
-def get_messages_search(
-    scope: str | None = None,
-    status: str | None = None,
-    msg_type: str | None = None,
-    query: str | None = None,
-    limit: int = 50,
-):
-    from awm.services import messaging
-    try:
-        return messaging.search_messages(
-            scope=scope, status=status, msg_type=msg_type, query=query, limit=limit,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/messages/recipients")
-def get_messages_recipients(query: str, peer: str | None = None):
-    from awm.services import messaging
-    try:
-        recipients = messaging.list_recipients(query=query, peer=peer)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    except NotImplementedError as exc:
-        raise HTTPException(501, str(exc))
-    return {"recipients": recipients, "total": len(recipients), "query": query}
-
-
-@app.get("/messages/fetch")
-def get_messages_fetch(
-    scope: str,
-    status: str | None = None,
-    msg_type: str | None = None,
-    limit: int = 50,
-    mark_read: bool = False,
-):
-    from awm.services import messaging
-    try:
-        return messaging.fetch_messages(
-            scope=scope, status=status, msg_type=msg_type,
-            limit=limit, mark_read=mark_read,
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
+    """Gateway-native status. ``active_scopes`` is 0 until a scopes service
+    registers — kept in the shape so ``_process_utils.probe_existing_awm``
+    (which validates ``status == "ok"``) classifies the daemon correctly."""
+    return {
+        "status": "ok",
+        "workspace_root": str(WORKSPACE_ROOT),
+        "active_scopes": 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -257,151 +155,9 @@ def restart_core_endpoint():
     MCP clients reconnect transparently on the next tool call.
     """
     try:
-        return core.restart_core()
+        return restart_core()
     except RuntimeError as e:
         raise HTTPException(500, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Projects
-# ---------------------------------------------------------------------------
-
-@app.post("/projects", response_model=ProjectCreateResponse)
-def create_project(req: ProjectCreateRequest):
-    try:
-        return projects.create_project(req)
-    except FileExistsError as e:
-        raise HTTPException(409, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Scopes (formerly Tasks)
-# ---------------------------------------------------------------------------
-
-@app.get("/scopes/search", response_model=ScopeListResponse)
-def search_scopes_endpoint(
-    query: str | None = Query(None),
-    status: str = Query("active"),
-    project: str | None = Query(None),
-    limit: int = Query(50, ge=1, le=10000),
-    offset: int = Query(0, ge=0),
-):
-    """Search scopes (hybrid keyword + semantic). Defaults to status='active'."""
-    return scopes.search_scopes(
-        query=query, status=status, project=project,
-        limit=limit, offset=offset,
-    )
-
-
-@app.post("/scopes", response_model=ScopeActionResponse)
-def create_scope(req: ScopeCreateRequest):
-    try:
-        return scopes.create_scope(req)
-    except (FileNotFoundError, FileExistsError) as e:
-        raise HTTPException(409, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
-@app.patch("/scopes/{project}/{scope}", response_model=ScopeActionResponse)
-def update_scope(project: str, scope: str, req: ScopeUpdateRequest):
-    try:
-        return scopes.update_scope(project, scope, req)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except (RuntimeError, ValueError) as e:
-        raise HTTPException(400, str(e))
-
-
-@app.delete("/scopes/{project}/{scope}", response_model=ScopeActionResponse)
-def delete_scope(project: str, scope: str):
-    try:
-        return scopes.delete_scope(project, scope)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
-@app.post("/scopes/{project}/{scope}/sync", response_model=ScopeActionResponse)
-def sync_scope_endpoint(project: str, scope: str, req: ScopeSyncRequest):
-    try:
-        return scopes.sync_scope(project, scope, req)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except RuntimeError as e:
-        raise HTTPException(409, str(e))
-
-
-@app.post("/scopes/{project}/{scope}/repair", response_model=ScopeActionResponse)
-def repair_scope_endpoint(project: str, scope: str):
-    """Reconcile on-disk worktree+.awm/ with a missing DB row (inbox #232)."""
-    try:
-        return scopes.repair_scope(project, scope)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Skills
-# ---------------------------------------------------------------------------
-
-@app.get("/skills/search", response_model=SkillListResponse)
-def search_skills_endpoint(
-    query: str | None = Query(None),
-    type: str | None = Query(None),
-    tags: str | None = Query(None, description="Comma-separated tags"),
-):
-    """Search skills (hybrid keyword + semantic). Omit `query` to filter
-    only by `type` / `tags`."""
-    tag_list = [t.strip() for t in tags.split(",")] if tags else None
-    return skills.search_skills(query=query, type_filter=type, tags=tag_list)
-
-
-@app.get("/skills/{path:path}", response_model=SkillContentResponse)
-def get_skill_endpoint(path: str):
-    try:
-        return skills.get_skill(path)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
-
-
-# ---------------------------------------------------------------------------
-# Sessions — registered via registry
-# ---------------------------------------------------------------------------
-
-register_fastapi_routes(app, SESSION_OPERATIONS)
-
-
-# ---------------------------------------------------------------------------
-# Artifact content (phase 6 — federates when origin_peer != self)
-# ---------------------------------------------------------------------------
-
-@app.get("/artifacts/{artifact_ref}/content")
-def get_artifact_content(artifact_ref: str):
-    """Return the bytes of an artifact. ``artifact_ref`` is the public
-    legacy_id (``42``) or a peer-scoped ref (``42@capella``). Remote-
-    origin rows transparently proxy to the owning peer via /peer/."""
-    from fastapi.responses import Response as _Response
-    from awm.services import artifacts
-
-    # parse_id_ref also accepts plain ints; the path arg arrives as str.
-    try:
-        # Try int first for compactness; falls back to str grammar.
-        ref: int | str = int(artifact_ref)
-    except ValueError:
-        ref = artifact_ref
-    try:
-        data = artifacts.get_content(ref)
-    except artifacts.ArtifactNotFound as exc:
-        raise HTTPException(404, str(exc))
-    except artifacts.ArtifactContentUnavailable as exc:
-        raise HTTPException(502, str(exc))
-    return _Response(content=data, media_type="application/octet-stream")
 
 
 # ---------------------------------------------------------------------------
@@ -410,27 +166,30 @@ def get_artifact_content(artifact_ref: str):
 
 @app.get("/tools")
 def list_tools_endpoint():
-    """Return the current MCP tool definitions.
+    """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
-    importing `TOOL_DEFINITIONS` at its own process startup. That keeps the
-    proxy stateless: tools added/removed in the core show up immediately
-    after a core restart without needing to restart Claude Code.
+    caching at its own startup. That keeps the proxy stateless: tools that
+    appear/vanish as services register show up immediately, with no Claude
+    Code restart. Sync over a GIL-safe registry snapshot — see catalog.py.
     """
-    return {"tools": [t.model_dump(by_alias=True) for t in TOOL_DEFINITIONS]}
+    return {"tools": [t.model_dump(by_alias=True) for t in catalog.list_tools()]}
 
 
 @app.post("/invoke")
-def invoke_tool(payload: dict):
-    """Dispatch an MCP-style tool call by name. The MCP proxy forwards here
-    over HTTP so the core can be restarted without tearing down the stdio
-    pipe Claude Code has open."""
+async def invoke_tool(payload: dict, request: Request):
+    """Dispatch an MCP-style tool call by name through the catalog. Async so
+    service ops can be awaited over their control WS on the server loop (no
+    second event loop — see catalog.py concurrency note). The MCP proxy
+    forwards here over HTTP so the core can restart without tearing down the
+    stdio pipe Claude Code has open."""
     name = payload.get("name")
     args = payload.get("args", {}) or {}
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
+    as_ = request.headers.get("X-Awm-As")
     try:
-        result = handle_tool(name, args)
+        result = await catalog.dispatch(name, args, as_=as_)
     except ValueError as e:
         # Unknown tool name -> 404
         raise HTTPException(404, str(e))
@@ -459,16 +218,12 @@ def invoke_tool(payload: dict):
 
 
 # ---------------------------------------------------------------------------
-# Hub control plane (/hub/*) and rooms surface (/rooms/*)
+# Hub control plane (/hub/*)
 # ---------------------------------------------------------------------------
 
-from awm.api.hub import router as hub_router  # noqa: E402
-from awm.api.rooms import router as rooms_router  # noqa: E402
-from awm.api.vagrant import router as vagrant_router  # noqa: E402
+from awm.gateway.api.hub import router as hub_router  # noqa: E402
 
 app.include_router(hub_router)
-app.include_router(rooms_router)
-app.include_router(vagrant_router)
 
 
 # ---------------------------------------------------------------------------
@@ -478,9 +233,9 @@ app.include_router(vagrant_router)
 # WebSocket scopes are both handled.
 # ---------------------------------------------------------------------------
 
-from awm.services.hub.proxy import proxy_http, proxy_ws  # noqa: E402
-from awm.services.hub.registry import get_registry as _get_hub_registry  # noqa: E402
-from awm.services.hub.static import (  # noqa: E402
+from awm.gateway.hub.proxy import proxy_http, proxy_ws  # noqa: E402
+from awm.gateway.hub.registry import get_registry as _get_hub_registry  # noqa: E402
+from awm.gateway.hub.static import (  # noqa: E402
     close_ws_unsupported as _ws_close_unsupported,
     serve_static as _serve_static,
 )
@@ -532,7 +287,7 @@ class HubRoutingMiddleware:
         - WS   <prefix>/emit/<topic>         -> emit subscriber WS
         Everything else under the prefix is 404.
         """
-        from awm.services.hub.proxy import (
+        from awm.gateway.hub.proxy import (
             open_session_via_http,
             proxy_service_emit_ws,
             proxy_service_http,
@@ -590,7 +345,7 @@ def run_server(foreground: bool = True):
     # whether it's a healthy awm against the same workspace (→ exit 0) or
     # a foreign holder (→ exit 1 with a diagnostic). Eliminates the silent
     # EADDRINUSE restart-loop pattern (inbox #232).
-    from awm.services._process_utils import exit_if_healthy_peer
+    from awm.gateway._process_utils import exit_if_healthy_peer
     exit_if_healthy_peer(HOST, PORT, str(WORKSPACE_ROOT))
     uvicorn.run(
         app,

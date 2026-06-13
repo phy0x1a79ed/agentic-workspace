@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 
-from awm.services._process_utils import sweep_orphan_awm_serves
+from awm.gateway._process_utils import sweep_orphan_awm_serves
 
 
 def restart_core() -> dict[str, str]:

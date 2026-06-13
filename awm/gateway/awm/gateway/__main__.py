@@ -1,6 +1,6 @@
 """Entry point for `python -m awm`."""
 
-from awm.cli import app
+from awm.gateway.cli import app
 
 
 def main() -> None:
