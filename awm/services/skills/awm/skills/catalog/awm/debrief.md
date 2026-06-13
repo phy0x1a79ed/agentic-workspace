@@ -13,7 +13,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 
 1. **Update project docs.** If the session changed how the project works — new scripts, new workflows, changed conventions, fixed bugs that affect usage — update `AGENTS.md` (or equivalent project docs) to reflect the current state. Docs should describe the world as it is now, not as it was before the session. Skip if no user-facing behavior changed.
 
-2. **Update scope context.** If the session changed how *this scope's* work is framed — new objectives, refined expectations, scope-local conventions, or post-implementation notes worth carrying forward — update `.awm/context.md` to reflect the current state. Only edit `context.md`; `.awm/history.md` and `.awm/artifacts.md` are auto-generated (rebuilt by `awm_refresh` in step 8) and must not be hand-edited. Skip if the scope's framing is unchanged.
+2. **Update scope context.** If the session changed how *this scope's* work is framed — new objectives, refined expectations, scope-local conventions, or post-implementation notes worth carrying forward — update `.awm/context.md` to reflect the current state. Only edit `context.md`; `.awm/history.md` and `.awm/artifacts.md` are auto-generated (rebuilt by `scope_refresh` in step 8) and must not be hand-edited. Skip if the scope's framing is unchanged.
 
 3. **Commit outstanding changes.** If there are uncommitted changes from the session, commit them before logging the debrief. The debrief should describe work that is already landed, not in-flight. Ask the user before committing if unsure.
 
@@ -88,5 +88,5 @@ Run this protocol at the end of a work session when instructed to debrief.
 8. **Refresh** so the next session sees your contributions:
 
    ```
-   awm_refresh project={project} scope={scope}
+   scope_refresh project={project} scope={scope}
    ```

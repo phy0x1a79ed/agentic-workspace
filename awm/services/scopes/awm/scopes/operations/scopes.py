@@ -8,6 +8,7 @@ from awm.scopes import scopes
 SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
+        "tool": "scope_create",
         "description": "Create a new scope (worktree + .awm/ metadata) for a project.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -18,6 +19,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_search",
+        "tool": "scope_search",
         "description": (
             "Search scopes (hybrid keyword + semantic). "
             "Defaults to status='active'; pass status='all' for the full history."
@@ -32,6 +34,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_complete",
+        "tool": "scope_complete",
         "description": "Complete (retire) a scope. Optionally merge and clean up the worktree.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -42,6 +45,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_delete",
+        "tool": "scope_delete",
         "description": "Delete a scope and clean up its worktree and branch.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -50,6 +54,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_repair",
+        "tool": "scope_repair",
         "description": "Reconcile an on-disk worktree with a missing agents DB row.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -58,6 +63,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "scope_sync",
+        "tool": "scope_sync",
         "description": "Sync a scope's feature branch with a base branch via merge or rebase.",
         "params": [
             {"name": "project", "type": "string", "required": True},
@@ -68,6 +74,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     },
     {
         "name": "awm_refresh",
+        "tool": "scope_refresh",
         "description": "Re-generate .awm/history.md and .awm/artifacts.md for a scope.",
         "params": [
             {"name": "project", "type": "string", "required": True},

@@ -1,6 +1,9 @@
 # AWM runtime state
 .awm/
 
+# Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
+awm/services/*/.runtime-env
+
 # Per-worktree dev sandbox env override (port pins, AWM_API_TARGET, etc.)
 dev/.env
 
