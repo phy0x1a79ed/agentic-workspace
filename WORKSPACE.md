@@ -66,30 +66,27 @@ Each project has one or more scope worktrees under it; `awm scope list --project
 
 Every scope agent runs this on session start (the `.awm/context.md` for newly-created scopes embeds the boilerplate; agents in long-lived scopes can re-run it any time to refresh):
 
-1. `mcp__awm__awm_refresh project=<p> scope=<s>` — re-renders `.awm/history.md` and `.awm/artifacts.md` from the DB.
+1. `mcp__awm__scope_refresh project=<p> scope=<s>` — re-renders `.awm/history.md` and `.awm/artifacts.md` from the DB.
 2. Read `.awm/history.md` — open + resolved session log for this scope and its siblings.
 3. Read `.awm/artifacts.md` — registered artifacts (data files, model outputs, figures) from sibling scopes.
-4. `mcp__awm__skills_search query="<your task description>"` — finds the relevant procedural skill before you start.
-5. `mcp__awm__inbox_search status=unread scope=scope:<p>/<s>` (and optionally `scope=workspace`) — anything addressed to you or the workspace that's waiting.
+4. `mcp__awm__skill_search query="<your task description>"` — finds the relevant procedural skill before you start.
+5. `mcp__awm__scope_fetch scope=<s> kind=message` (and optionally the `workspace` channel) — anything addressed to you or the workspace that's waiting.
 
-`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use `awm_refresh`, `session_log`, and `artifact_register` MCP tools.
+`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use `scope_refresh`, `scope_post`, and `artifact_register` MCP tools.
 
 ## MCP Tools
 
-The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The tool surface, by category:
+The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The surface is **projected live** from the registered feature services — your MCP client lists the current tools with their JSON Schemas, so that listing (not a table here) is the source of truth. Tool names follow a `<domain>_<verb>` convention; the families:
 
-| Category | Tools |
-|---|---|
-| Skills | `skills_get`, `skills_search`, `skills_sync` |
-| Sessions | `session_log`, `session_get`, `session_search`, `session_resolve` |
-| Scopes | `scope_create`, `scope_search`, `scope_complete`, `scope_delete` |
-| Projects | `project_create`, `project_search` |
-| Artifacts | `artifact_register`, `artifact_search`, `artifact_delete`, `artifacts_sync` |
-| Messaging | `inbox_send`, `inbox_search`, `inbox_fetch`, `inbox_mark_read`, `inbox_recipients` |
-| Rooms | `room_create`, `room_get`, `room_history`, `room_search`, `room_post`, `room_invite`, `room_remove`, `room_close`, `room_archive`, `room_agents` |
-| Lifecycle | `awm_status`, `awm_restart`, `awm_refresh`, `agent_control` |
+- **Scopes & identity** (`scope_*`, `ref_resolve`) — create / search / complete / delete a scope, sync/repair its branch, `scope_refresh` to rebuild its `.awm/` indexes, and the natural-key identity reads (`scope_resolve`, `scope_ensure`, `ref_resolve`).
+- **Projects** (`project_*`) — create / search / ensure a project.
+- **Scope channel** (`scope_post`, `scope_fetch`, `scope_subscribe`, `scope_unsubscribe`) — a scope *is* the channel: post messages/journal entries, fetch or search them (`scope_fetch ... order='desc'` for the last N), subscribe guests.
+- **Agents** (`agent_*`, `slash_catalog`) — spawn / list / stop / kill agent sessions, `agent_log` to tail one, dispatch slash commands, subscribe to an agent's act stream.
+- **Artifacts** (`artifact_*`) — register / search / get / delete / sync registered outputs.
+- **Skills** (`skill_search`, `skill_get`, `skill_sync`) — discover and read procedural skills.
+- **Discord** (`discord_*`) and **lifecycle** (`awm_status`, `awm_restart`, `awm_mcp_sync`).
 
-Each tool has a JSON Schema accessible via your MCP client. New tools land here automatically when `awm-mcp` reloads.
+New tools appear in the listing automatically as services register — no restart, nothing to mirror here.
 
 ## Skills Discovery
 
@@ -98,8 +95,8 @@ Skills are dynamic protocols that improve with use:
 - **AWM skills** (`skills/awm/`): workspace procedures that drive the MCP tool surface (create-project, create-scope, debrief, skill-update, harness-setup, …)
 - **Tool guides** (`skills/tools/`): external-tool references (git, mamba, dependencies, mcp, metasmith, plotly, chrome-devtools)
 - Skills have frontmatter with `tags`, `requires`, and `scope` for search and hierarchy.
-- `skills_search` combines keyword + semantic search (sentence-transformers embeddings).
-- Session logs can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `session_log`.
+- `skill_search` combines keyword + semantic search (sentence-transformers embeddings).
+- Session logs can include execution traces attached to skills — log what happened, outcome, deviations, and improvement suggestions via `scope_post` (kind=journal).
 - A dedicated `awm/skill-improvement` scope periodically reads session logs and revises skills.
 
 When you don't know the procedure for a verb (e.g. "create scope", "debrief", "register artifact"), **search skills before guessing** — the answer is almost always already written.
@@ -109,7 +106,7 @@ When you don't know the procedure for a verb (e.g. "create scope", "debrief", "r
 1. **Create**: `scope_create` sets up a git worktree on `feat/{scope}` with `.awm/` metadata.
 2. **Startup**: Agent reads `.awm/context.md` (auto-injected), runs the Startup Ritual above.
 3. **Work**: Code in the current directory. Data at `.awm/data/`. Skills at `.awm/skills/`.
-4. **Debrief**: User says "debrief" — agent follows `skills_get path="awm/debrief.md"`.
+4. **Debrief**: User says "debrief" — agent follows `skill_get path="awm/debrief.md"`.
 5. **Complete**: `scope_complete` updates DB status, optionally merges branch.
 
 ## Scope Naming Convention
@@ -133,7 +130,7 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 
 - Branch naming: `feat/{scope}` (or flat keyword for legacy scopes).
 - PRs created from feature branches into `main` / `release` as appropriate.
-- See `skills_get path="tools/git.md"` for the worktree-bare flow in detail.
+- See `skill_get path="tools/git.md"` for the worktree-bare flow in detail.
 
 ## CLI Quick Reference
 
@@ -156,7 +153,7 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
 3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — auto-generated. Use MCP tools.
 4. **Follow the debrief skill** when ending a session — log sessions, register artifacts, reflect.
-5. **Search skills first** — use `skills_search` before starting unfamiliar workflows.
+5. **Search skills first** — use `skill_search` before starting unfamiliar workflows.
 
 ## Python Environment Rules
 

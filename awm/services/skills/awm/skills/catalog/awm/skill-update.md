@@ -23,8 +23,8 @@ Follow this protocol when:
 Never hardcode an absolute path to a skill file. Instead, look it up through the skills service so the protocol is layout-independent:
 
 ```
-skills_search query="<name>"           # returns hits with file_path relative to the skills root
-skills_get    path="<file_path>"       # returns the full skill body + metadata
+skill_search query="<name>"           # returns hits with file_path relative to the skills root
+skill_get    path="<file_path>"       # returns the full skill body + metadata
 ```
 
 To get the **absolute** path for a subsequent `Edit`, resolve it with Glob rather than guessing:
@@ -114,18 +114,18 @@ Check and update as needed:
 - Other skills whose `requires:` frontmatter or prose references this skill.
 - Any skill that re-embeds step numbers or field names from this skill's examples.
 
-The frontmatter `description` is the single source of truth — discovery (`skills_search`, `skills_get`, `find_by_name`) always reads it via a live filesystem scan. There is no separate catalog file to keep in sync.
+The frontmatter `description` is the single source of truth — discovery (`skill_search`, `skill_get`, `find_by_name`) always reads it via a live filesystem scan. There is no separate catalog file to keep in sync.
 
 ### 8. Sync the skills index and verify
 
 ```
-skills_sync
-skills_get path="<file_path>"
+skill_sync
+skill_get path="<file_path>"
 ```
 
-`skills_sync` is lazy — it fingerprints `(file_path, mtime_ns)` across the skills directory and no-ops when nothing has changed, so it is safe to call on every skill-update run. When it detects drift (your edit just bumped the mtime) it re-embeds the changed skill and prunes any embeddings whose source file is now missing. Call it with `force=true` only if you suspect the fingerprint cache is lying.
+`skill_sync` is lazy — it fingerprints `(file_path, mtime_ns)` across the skills directory and no-ops when nothing has changed, so it is safe to call on every skill-update run. When it detects drift (your edit just bumped the mtime) it re-embeds the changed skill and prunes any embeddings whose source file is now missing. Call it with `force=true` only if you suspect the fingerprint cache is lying.
 
-`skills_get` then confirms the updated body and frontmatter come back.
+`skill_get` then confirms the updated body and frontmatter come back.
 
 ### 9. Smoke-test the rewritten skill
 
@@ -133,7 +133,7 @@ Follow the rewritten skill end-to-end against the live MCP server with a throwaw
 
 ## Anti-patterns
 
-- **Hardcoding an absolute path like `/home/<user>/.../skills/awm/<name>.md`.** Resolve via `skills_search` + `Glob` (step 1) so the protocol works in any worktree.
+- **Hardcoding an absolute path like `/home/<user>/.../skills/awm/<name>.md`.** Resolve via `skill_search` + `Glob` (step 1) so the protocol works in any worktree.
 - **Bumping a "version" field in frontmatter.** Not a convention in this workspace. Git history is the changelog.
 - **Adding `## Changelog` sections to skills.** Same reason. Use `git log` on the skill file.
 - **Editing the skill before verifying the tool surface.** You'll codify the next round of drift.

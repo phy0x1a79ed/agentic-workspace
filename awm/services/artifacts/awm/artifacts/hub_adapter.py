@@ -32,6 +32,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "register",
+            "tool": "artifact_register",
             "description": "Register or update an artifact (figure, dataset, report, model, script, other).",
             "params": [
                 {"name": "project", "type": "string", "required": True},
@@ -48,6 +49,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search",
+            "tool": "artifact_search",
             "description": "Search/list registered artifacts by project, type, or free-text query.",
             "params": [
                 {"name": "project", "type": "string"},
@@ -60,6 +62,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "delete",
+            "tool": "artifact_delete",
             "description": "Delete an artifact by id.",
             "params": [
                 {"name": "artifact_id", "type": "string", "required": True},
@@ -67,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get",
+            "tool": "artifact_get",
             "description": "Fetch artifact metadata by id.",
             "params": [
                 {"name": "artifact_id", "type": "string", "required": True},
@@ -74,6 +78,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync",
+            "tool": "artifact_sync",
             "description": "Sync artifact status with on-disk reality; prune stale embeddings.",
             "params": [
                 {"name": "force", "type": "boolean"},

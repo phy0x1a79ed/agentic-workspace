@@ -26,6 +26,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "search_skills",
+            "tool": "skill_search",
             "description": "Search the skill catalog by free-text query and/or structural filters.",
             "params": [
                 {"name": "query", "type": "string", "required": False},
@@ -35,6 +36,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get_skill",
+            "tool": "skill_get",
             "description": "Read a skill file by relative path (e.g. 'tools/git.md').",
             "params": [
                 {"name": "path", "type": "string", "required": True},
@@ -42,6 +44,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "sync_skills",
+            "tool": "skill_sync",
             "description": "Sync the embeddings index with the live skills directory.",
             "params": [
                 {"name": "force", "type": "boolean", "required": False},
