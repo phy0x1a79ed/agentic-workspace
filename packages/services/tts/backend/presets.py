@@ -1,25 +1,24 @@
 """TTS preset storage — named engine configs + a last-used pointer.
 
-Keys live in the central awm.config k/v table (``.awm/state.db``):
+Backed by the service-local JSON store (``_store``); see that module for
+the file layout. Two sections are used here:
 
-* ``tts_preset:<name>`` → JSON ``{engine, params}``
-* ``tts_last_used``     → JSON ``{engine, params}``
+* ``presets``   → ``{name: {engine, params}}``
+* ``last_used`` → ``{engine, params}``
 
-The k/v split mirrors ``awm.services.voice_engine_config``. Built-in
-presets are flagged at read-time from an in-module set so seeding can
-re-run idempotently and deletion can be refused without a schema change.
+Built-in presets are flagged at read-time from an in-module set so
+seeding can re-run idempotently and deletion can be refused without a
+schema change.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from awm.db import get_connection
-from awm.services.config_service import get_config, set_config
+import _store
 
-_KEY_PREFIX = "tts_preset:"
-_LAST_USED_KEY = "tts_last_used"
+_PRESETS_SECTION = "presets"
+_LAST_USED_SECTION = "last_used"
 
 # Names that ``seed_builtin_presets`` writes / refuses to delete. The
 # preset content can change at startup; the *name* is what marks it
@@ -31,30 +30,11 @@ class BuiltinConflict(Exception):
     """Raised when a write/delete targets a built-in preset name."""
 
 
-def _decode(raw: str | None) -> dict[str, Any] | None:
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-
-
 def list_presets() -> dict[str, dict[str, Any]]:
     """Return ``{name: {engine, params, builtin}}`` across all stored presets."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT key, value FROM config WHERE key LIKE ? ORDER BY key",
-            (f"{_KEY_PREFIX}%",),
-        ).fetchall()
-    finally:
-        conn.close()
     out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        name = row["key"][len(_KEY_PREFIX):]
-        body = _decode(row["value"])
-        if not body:
+    for name, body in _store.get_section(_PRESETS_SECTION).items():
+        if not isinstance(body, dict):
             continue
         out[name] = {
             "engine": body.get("engine"),
@@ -65,8 +45,8 @@ def list_presets() -> dict[str, dict[str, Any]]:
 
 
 def get_preset(name: str) -> dict[str, Any] | None:
-    body = _decode(get_config(_KEY_PREFIX + name))
-    if not body:
+    body = _store.get_section(_PRESETS_SECTION).get(name)
+    if not isinstance(body, dict):
         return None
     return {
         "engine": body.get("engine"),
@@ -78,29 +58,31 @@ def get_preset(name: str) -> dict[str, Any] | None:
 def save_preset(name: str, engine: str, params: dict[str, Any]) -> None:
     if name in _BUILTIN_NAMES:
         raise BuiltinConflict(name)
-    set_config(_KEY_PREFIX + name, json.dumps({"engine": engine, "params": params or {}}))
+    presets = _store.get_section(_PRESETS_SECTION)
+    presets[name] = {"engine": engine, "params": params or {}}
+    _store.set_section(_PRESETS_SECTION, presets)
 
 
 def delete_preset(name: str) -> None:
     if name in _BUILTIN_NAMES:
         raise BuiltinConflict(name)
-    conn = get_connection()
-    try:
-        conn.execute("DELETE FROM config WHERE key = ?", (_KEY_PREFIX + name,))
-        conn.commit()
-    finally:
-        conn.close()
+    presets = _store.get_section(_PRESETS_SECTION)
+    if name in presets:
+        del presets[name]
+        _store.set_section(_PRESETS_SECTION, presets)
 
 
 def get_last_used() -> dict[str, Any] | None:
-    body = _decode(get_config(_LAST_USED_KEY))
+    body = _store.get_section(_LAST_USED_SECTION)
     if not body or not body.get("engine"):
         return None
     return {"engine": body["engine"], "params": body.get("params") or {}}
 
 
 def set_last_used(engine: str, params: dict[str, Any]) -> None:
-    set_config(_LAST_USED_KEY, json.dumps({"engine": engine, "params": params or {}}))
+    _store.set_section(
+        _LAST_USED_SECTION, {"engine": engine, "params": params or {}}
+    )
 
 
 # Built-in seed values. Bypass save_preset() because that path refuses
@@ -123,11 +105,16 @@ _BUILTIN_SEEDS: dict[str, dict[str, Any]] = {
 
 
 def seed_builtin_presets() -> None:
-    """Write any missing built-in presets into the config table.
+    """Write any missing built-in presets into the store.
 
     Idempotent: only seeds names that have no existing row, so an
-    operator's manual override (via direct DB edit) survives restart.
+    operator's manual override (via direct file edit) survives restart.
     """
+    presets = _store.get_section(_PRESETS_SECTION)
+    changed = False
     for name, body in _BUILTIN_SEEDS.items():
-        if get_config(_KEY_PREFIX + name) is None:
-            set_config(_KEY_PREFIX + name, json.dumps(body))
+        if name not in presets:
+            presets[name] = body
+            changed = True
+    if changed:
+        _store.set_section(_PRESETS_SECTION, presets)

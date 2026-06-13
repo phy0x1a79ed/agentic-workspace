@@ -73,11 +73,15 @@ async def _register(hub_url: str, token: str, name: str, sid: str) -> dict:
         "start": ["bash", "start.sh"],
         "cwd": os.getcwd(),
     }
+    # Auth was ripped (loopback-only hub); only send a bearer header if a
+    # token is actually present. An empty token yields the header value
+    # "Bearer " which httpx rejects as an illegal header value.
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with httpx.AsyncClient(verify=False, timeout=15) as cli:
         r = await cli.post(
             f"{hub_url}/hub/service/register",
             json=payload,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
         )
         r.raise_for_status()
     return r.json()
@@ -129,7 +133,7 @@ async def _open_bridge(hub_url: str, token: str, sid: str, bid: str) -> Any:
     ws_base = hub_url.replace("https://", "wss://").replace("http://", "ws://")
     return await websockets.connect(
         f"{ws_base}/hub/service/bridge/{sid}/{bid}",
-        subprotocols=[f"bearer.{token}"],
+        subprotocols=[f"bearer.{token}"] if token else None,
         ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
@@ -224,7 +228,7 @@ async def _serve(hub_url: str, token: str, name: str, sid: str) -> None:
     ws_url = f"{ws_base}/hub/service/control/{sid}"
     async with websockets.connect(
         ws_url,
-        subprotocols=[f"bearer.{token}"],
+        subprotocols=[f"bearer.{token}"] if token else None,
         ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
         max_size=None,
         open_timeout=10,
@@ -300,8 +304,8 @@ async def main() -> None:
     token = os.environ.get("AWM_HUB_TOKEN", "")
     name = os.environ.get("AWM_SERVICE_NAME", "tts")
     sid = os.environ.get("AWM_SERVICE_ID", "")
-    if not hub_url or not token:
-        log.error("AWM_HUB_URL / AWM_HUB_TOKEN not set; cannot run")
+    if not hub_url:
+        log.error("AWM_HUB_URL not set; cannot run")
         sys.exit(2)
 
     backoff = 1.0
