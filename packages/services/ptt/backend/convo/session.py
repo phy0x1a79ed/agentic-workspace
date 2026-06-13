@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from backend.agent import AgentError, OpencodeAgent
 
-from .prompt import CONVO_SCHEMA, MAX_CONTEXT_CHARS, build_prompt
+from .prompt import MAX_CONTEXT_CHARS, build_prompt
 
 log = logging.getLogger("ptt.convo.session")
 
@@ -70,7 +70,11 @@ class ConvoSession:
                 context=self.context,
             )
             try:
-                result = await self._agent.complete(prompt, CONVO_SCHEMA)
+                # Free-form + JSON-parse, NOT forced structured output: the
+                # default Zen model is a *thinking* model that 400s on a forced
+                # StructuredOutput tool_choice. complete_json works on thinking
+                # and non-thinking models alike. See backend/agent for the why.
+                result = await self._agent.complete_json(prompt)
                 cleaned = str(result.get("cleaned_text", "")).strip()
                 should_submit = bool(result.get("should_submit", False))
                 notes_update = result.get("notes_update")

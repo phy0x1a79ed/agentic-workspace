@@ -17,7 +17,7 @@ from backend.convo.session import ConvoResult, ConvoSession
 
 
 class StubAgent:
-    """Records prompts and replays a scripted list of complete() outcomes.
+    """Records prompts and replays a scripted list of complete_json() outcomes.
 
     Each script entry is either a dict (returned) or an Exception (raised).
     """
@@ -27,7 +27,7 @@ class StubAgent:
         self.prompts: list[str] = []
         self.i = 0
 
-    async def complete(self, prompt_text, schema, *, directory=None):
+    async def complete_json(self, prompt_text, *, directory=None):
         self.prompts.append(prompt_text)
         item = self.script[self.i]
         self.i += 1

@@ -40,6 +40,7 @@ subprocess env. Wiring the Zen key is a deployment step (see the scope plan).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -49,6 +50,58 @@ from typing import Any, Optional
 import httpx
 
 log = logging.getLogger("ptt.agent.opencode")
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    """Pull the first balanced JSON object out of a free-form reply.
+
+    Thinking models emit their answer as plain text (sometimes fenced, sometimes
+    with trailing prose) rather than via a forced tool call. We scan for the
+    first ``{...}`` that parses as a dict. Returns ``None`` if there isn't one.
+    """
+    if not text:
+        return None
+    s = text.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s).strip()
+    try:
+        v = json.loads(s)
+        if isinstance(v, dict):
+            return v
+    except ValueError:
+        pass
+    start = s.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(s)):
+            c = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+                continue
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        v = json.loads(s[start:i + 1])
+                        if isinstance(v, dict):
+                            return v
+                    except ValueError:
+                        break  # malformed span; try the next '{'
+                    break
+        start = s.find("{", start + 1)
+    return None
 
 # opencode Zen's free DeepSeek. Both are overridable via env so swapping the
 # provider/model (e.g. to ``openrouter`` / a paid tier) is a config change.
@@ -380,3 +433,34 @@ class OpencodeAgent:
             )
         finally:
             await self.close_session(session_id, directory=directory)
+
+    async def complete_json(
+        self,
+        prompt_text: str,
+        *,
+        directory: Optional[str] = None,
+    ) -> dict:
+        """Free-form completion that returns a JSON object parsed from the reply.
+
+        Like :meth:`complete` but WITHOUT a json-schema format, so it never
+        forces a ``StructuredOutput`` tool_choice. *Thinking* models (opencode
+        Zen's ``deepseek-v4-flash-free``) reject a forced tool_choice with a 400
+        ("Thinking mode does not support this tool_choice") but happily emit a
+        JSON object as their text reply — so this is the model-agnostic path for
+        structured-ish output. The prompt MUST instruct the model to return a
+        bare JSON object.
+
+        Raises :class:`AgentError` on any failure (server down, HTTP error,
+        empty reply, or no parseable JSON object) so the caller can fall back.
+        """
+        session_id = await self.open_session(directory=directory)
+        try:
+            text = await self.message_text(
+                session_id, prompt_text, directory=directory,
+            )
+        finally:
+            await self.close_session(session_id, directory=directory)
+        obj = _extract_json_object(text)
+        if obj is None:
+            raise AgentError(f"no JSON object in reply: {text[:200]!r}")
+        return obj

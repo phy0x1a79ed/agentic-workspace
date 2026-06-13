@@ -52,22 +52,26 @@ CONVO_SCHEMA: dict = {
 _INSTRUCTIONS = """\
 You are the cleanup stage of a live voice composer. A user is dictating a \
 message by speaking; speech-to-text produces raw, noisy transcripts in chunks \
-separated by pauses. Each time a new chunk arrives you must return JSON via the \
-StructuredOutput tool with these fields:
+separated by pauses. Each time a new chunk arrives you must reply with ONLY a \
+single JSON object (no markdown fences, no commentary before or after) with \
+exactly these fields:
 
-1. cleaned_text — the user's full message-so-far, faithfully cleaned. Fix \
-transcription errors, remove filler/disfluencies and false starts, add \
+1. cleaned_text (string) — the user's full message-so-far, faithfully cleaned. \
+Fix transcription errors, remove filler/disfluencies and false starts, add \
 punctuation and capitalization. DO NOT add information, answer the user, or \
 change meaning. Preserve their words and intent. Stay stable: keep your prior \
 cleaned version and only integrate the new chunk unless it corrects earlier text.
 
-2. should_submit — true ONLY if the user seems to have finished the message (a \
-complete thought, a natural sign-off, or an explicit cue like "send it"). False \
-if they are mid-thought or likely to continue speaking.
+2. should_submit (boolean) — true ONLY if the user seems to have finished the \
+message (a complete thought, a natural sign-off, or an explicit cue like "send \
+it"). False if they are mid-thought or likely to continue speaking.
 
-3. notes_update — optionally a short scratchpad of proper nouns, spellings, \
-domain terms, or context worth remembering for cleaning later chunks. Keep it \
-concise. Null to leave notes unchanged.
+3. notes_update (string or null) — optionally a short scratchpad of proper \
+nouns, spellings, domain terms, or context worth remembering for cleaning later \
+chunks. Keep it concise. Null to leave notes unchanged.
+
+Example reply: {"cleaned_text": "Deploy Hyperion now.", "should_submit": true, \
+"notes_update": null}
 
 The transcript below is split into ALREADY-COMPOSED text and a NEW chunk since \
 the last pause. Integrate the new chunk into the full cleaned message — it may \
