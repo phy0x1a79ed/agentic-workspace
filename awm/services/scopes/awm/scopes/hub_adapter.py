@@ -6,9 +6,10 @@ loop (register → ready → serve → reconnect).
 
 The four **identity RPCs** — ``resolveScope``, ``resolveRef``,
 ``ensureProject``, ``ensureScope`` — are exposed in ``functions[]`` of the
-ready manifest. Surface ops (rooms / messaging / sessions / projects) will be
-added to this manifest by the surfaces agent; leave ``API_MANIFEST`` extensible
-(import it and ``.copy()`` + extend in the surfaces adapter).
+ready manifest, alongside the scope CRUD ops, the unified scope-channel ops
+(``scope_post`` / ``scope_fetch`` / ``scope_subscribe`` / ``scope_unsubscribe``
+— a scope IS the channel; messages and journals are posts differentiated by
+``kind``), and the project ops.
 
 Run via ``start.sh`` (which the hub spawns and respawns):
     python -m awm.scopes.hub_adapter
@@ -34,9 +35,10 @@ from awm.scopes.identity import (
     SYSTEM_REF,
 )
 from awm.scopes.operations.scopes import SCOPE_MANIFEST_FUNCTIONS, SCOPE_HANDLERS
-from awm.scopes.operations.sessions import SESSION_MANIFEST_FUNCTIONS, SESSION_HANDLERS
-from awm.scopes.operations.rooms import ROOM_MANIFEST_FUNCTIONS, ROOM_HANDLERS
-from awm.scopes.operations.messaging import MESSAGING_MANIFEST_FUNCTIONS, MESSAGING_HANDLERS
+from awm.scopes.operations.scope_channel import (
+    SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
+    SCOPE_CHANNEL_HANDLERS,
+)
 from awm.scopes.operations.projects import PROJECT_MANIFEST_FUNCTIONS, PROJECT_HANDLERS
 
 log = logging.getLogger("awm.scopes.hub_adapter")
@@ -212,9 +214,7 @@ API_MANIFEST: dict[str, Any] = {
     "functions": (
         _IDENTITY_FUNCTIONS
         + SCOPE_MANIFEST_FUNCTIONS
-        + SESSION_MANIFEST_FUNCTIONS
-        + ROOM_MANIFEST_FUNCTIONS
-        + MESSAGING_MANIFEST_FUNCTIONS
+        + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
         + PROJECT_MANIFEST_FUNCTIONS
     ),
     "emitters": [],
@@ -231,9 +231,7 @@ _IDENTITY_HANDLERS: dict[str, Any] = {
 HANDLERS: dict[str, Any] = {
     **_IDENTITY_HANDLERS,
     **SCOPE_HANDLERS,
-    **SESSION_HANDLERS,
-    **ROOM_HANDLERS,
-    **MESSAGING_HANDLERS,
+    **SCOPE_CHANNEL_HANDLERS,
     **PROJECT_HANDLERS,
 }
 

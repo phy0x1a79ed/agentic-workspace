@@ -2,22 +2,34 @@
 ``state.db`` into the scopes service's own DB.
 
 The modular cutover drops the shared runtime DB but leaves the old file on
-disk as a read-only legacy source. This module extracts every table the scopes
-service owns — identity (projects/users/agents), session_logs, messages, rooms,
-guest_list, room_transcripts — plus the scopes/session/room/project embeddings.
+disk as a read-only legacy source. This module extracts the identity tables
+(projects/users/agents) straight, then **folds the old comms trio**
+(``session_logs`` + ``messages`` + ``rooms``/``room_transcripts``) into the
+unified ``scope_posts`` channel, and ``guest_list`` into ``scope_subscribers``.
+
+A scope IS the channel, so:
+  - ``session_logs``    → ``scope_posts`` with ``kind='journal'`` (a self-post by
+    the owning agent; the structured debrief fields move into ``meta``; the
+    open/resolved lifecycle is dropped).
+  - ``messages``        → ``scope_posts`` with ``kind='message'`` (read/unread
+    state dropped). The recipient becomes the channel owner; non-agent
+    recipients (user/project/system) become NON-LITERAL channels
+    (owner_project='', the ref kept verbatim in owner_scope).
+  - ``rooms`` (no longer a table) only supply a ``room_id → (owner_project,
+    owner_scope)`` map; their transcripts fold into that owner's channel.
+    Multiple legacy rooms for one scope MERGE into the one channel, ordered
+    by ``ts`` — room identity is intentionally lost, content is not.
+  - ``room_transcripts``→ ``scope_posts`` (kind preserved).
+  - ``guest_list``      → ``scope_subscribers`` (deduped across folded rooms).
 
 Re-keying rules (per SCHEMA_HANDOFF.md):
   - ``agent_id`` → ``(project, scope)`` via the identity join.
-  - Polymorphic refs (messages.recipient_id / sender_id, guest_list.guest_ref,
-    room_transcripts.author) → natural-key ref strings:
-      agent uuid   → ``'agent:<project>/<scope>'``
-      user uuid    → ``'user:<username>'``
-      'system'     → ``'system'``
-  - rooms.owner_agent_id → (owner_project, owner_scope) via identity join.
+  - Polymorphic refs (uuid | 'system') → natural-key strings:
+      agent uuid → 'agent:<project>/<scope>';  user uuid → 'user:<username>';
+      'system'/'' → 'system'.
 
 Unresolvable rows are SKIPPED with a loud log line; no orphans are written.
-
-Idempotent (upsert / ON CONFLICT DO NOTHING), so re-running is safe.
+Idempotent: derived stable PKs + ``INSERT OR IGNORE``, so re-running is safe.
 
 Usage:
     python -m awm.scopes.seed [LEGACY_STATE_DB]   # defaults to awm.config.DB_PATH
@@ -25,6 +37,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import sys
@@ -34,8 +47,10 @@ from awm.scopes.dao import ScopesDAO, init
 
 log = logging.getLogger("awm.scopes.seed")
 
-# Embeddings source_types owned by the scopes service.
-_SCOPES_EMBED_TYPES = {"session", "scope", "room", "project"}
+# Embeddings source_types still seeded verbatim. 'session' and 'room' are
+# dropped: their source_ids point at the old session_logs / rooms ids that no
+# longer exist as such. Post-level search re-indexes lazily on first sync.
+_SCOPES_EMBED_TYPES = {"scope", "project"}
 
 
 def _build_agent_map(src: sqlite3.Connection) -> dict[str, tuple[str, str]]:
@@ -59,10 +74,7 @@ def _resolve_poly_ref(
     user_map: dict[str, str],
 ) -> str | None:
     """Resolve a polymorphic ref (agent uuid | user uuid | 'system') to a
-    natural-key ref string.
-
-    Returns the natural-key string, or None if unresolvable.
-    """
+    natural-key ref string, or None if unresolvable."""
     if ref_id == "system" or not ref_id:
         return "system"
     if ref_id in agent_map:
@@ -71,6 +83,55 @@ def _resolve_poly_ref(
     if ref_id in user_map:
         return f"user:{user_map[ref_id]}"
     return None
+
+
+def _ref_to_owner(ref: str) -> tuple[str, str]:
+    """Map a natural-key ref to a channel owner (owner_project, owner_scope).
+
+    A literal worktree scope keys on (project, scope). Everything else is a
+    NON-LITERAL channel: owner_project='' and the ref kept verbatim in
+    owner_scope, so it round-trips.
+    """
+    if ref.startswith("agent:"):
+        body = ref[len("agent:"):]
+        project, _, scope = body.partition("/")
+        if project and scope:
+            return (project, scope)
+        return ("", ref)
+    if ref in ("system", "", "workspace"):
+        return ("", "workspace")
+    # 'user:<name>', 'project:<name>', or any other literal → non-literal channel.
+    return ("", ref)
+
+
+def _build_room_owner_map(
+    src: sqlite3.Connection,
+    agent_map: dict[str, tuple[str, str]],
+) -> dict[str, tuple[str, str, int]]:
+    """room_id → (owner_project, owner_scope, created_at). Unresolvable owners
+    are dropped (logged) so their guests/transcripts are skipped too."""
+    out: dict[str, tuple[str, str, int]] = {}
+    by_owner: dict[tuple[str, str], int] = {}
+    for r in src.execute(
+        "SELECT id, owner_agent_id, created_at FROM rooms"
+    ).fetchall():
+        ps = agent_map.get(r["owner_agent_id"])
+        if ps is None:
+            log.warning(
+                "seed rooms: unresolvable owner_agent_id=%s for room %s; "
+                "skipping room + its guests/transcripts",
+                r["owner_agent_id"], r["id"],
+            )
+            continue
+        out[r["id"]] = (ps[0], ps[1], r["created_at"] or 0)
+        by_owner[ps] = by_owner.get(ps, 0) + 1
+    for (proj, scope), n in by_owner.items():
+        if n > 1:
+            log.info(
+                "seed: folding %d legacy rooms for %s/%s into one channel",
+                n, proj, scope,
+            )
+    return out
 
 
 def seed_from_legacy(legacy_db: str | Path | None = None) -> dict[str, int]:
@@ -90,11 +151,8 @@ def seed_from_legacy(legacy_db: str | Path | None = None) -> dict[str, int]:
         "projects": 0,
         "users": 0,
         "agents": 0,
-        "session_logs": 0,
-        "messages": 0,
-        "rooms": 0,
-        "guest_list": 0,
-        "room_transcripts": 0,
+        "scope_posts": 0,
+        "scope_subscribers": 0,
         "embeddings": 0,
     }
 
@@ -154,18 +212,18 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
             )
             counts["agents"] += 1
 
-    # Build lookup maps AFTER identity tables are seeded (so the join works on
-    # legacy data, not the new DB).
+    # Build lookup maps AFTER identity tables are seeded (join on legacy data).
     agent_map = _build_agent_map(src)
     user_map = _build_user_map(src)
+    room_owner = _build_room_owner_map(src, agent_map)
 
-    # --- 2. Session logs -----------------------------------------------------
+    # --- 2. session_logs → scope_posts (kind='journal', self-post) ----------
 
     with dao.transaction() as conn:
         for r in src.execute(
-            "SELECT agent_id, created_at, file_path, git_commit, summary, metadata, "
-            "content, skill_path, outcome, deviations, suggestions, skill_version, "
-            "resolved_at, resolution, title FROM session_logs"
+            "SELECT id, agent_id, created_at, file_path, git_commit, summary, "
+            "metadata, content, skill_path, outcome, deviations, suggestions, "
+            "skill_version, title FROM session_logs"
         ).fetchall():
             ps = agent_map.get(r["agent_id"])
             if ps is None:
@@ -175,29 +233,36 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
                 )
                 continue
             project, scope = ps
+            meta: dict = {}
+            if r["metadata"]:
+                try:
+                    meta = json.loads(r["metadata"])
+                except (TypeError, ValueError):
+                    meta = {"metadata_raw": r["metadata"]}
+            for k in ("title", "skill_path", "skill_version", "outcome",
+                      "deviations", "suggestions", "file_path", "git_commit",
+                      "content"):
+                if r[k]:
+                    meta[k] = r[k]
             dao.execute(
-                "INSERT INTO session_logs "
-                "(project, scope, created_at, file_path, git_commit, summary, "
-                " metadata, content, skill_path, outcome, deviations, suggestions, "
-                " skill_version, resolved_at, resolution, title) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO scope_posts "
+                "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
+                "VALUES (?, ?, ?, ?, 'journal', ?, ?, ?)",
                 (
-                    project, scope, r["created_at"], r["file_path"] or "",
-                    r["git_commit"], r["summary"] or "", r["metadata"],
-                    r["content"], r["skill_path"], r["outcome"],
-                    r["deviations"], r["suggestions"], r["skill_version"],
-                    r["resolved_at"], r["resolution"], r["title"],
+                    f"journal:{r['id']}", project, scope,
+                    f"agent:{project}/{scope}", r["summary"] or "",
+                    json.dumps(meta), r["created_at"],
                 ),
                 conn=conn,
             )
-            counts["session_logs"] += 1
+            counts["scope_posts"] += 1
 
-    # --- 3. Messages (re-key polymorphic refs) --------------------------------
+    # --- 3. messages → scope_posts (kind='message') -------------------------
 
     with dao.transaction() as conn:
         for r in src.execute(
-            "SELECT recipient_id, sender_id, msg_type, subject, body, metadata, "
-            "status, created_at, read_at FROM messages"
+            "SELECT id, recipient_id, sender_id, msg_type, subject, body, "
+            "metadata, created_at FROM messages"
         ).fetchall():
             rec_ref = _resolve_poly_ref(r["recipient_id"], agent_map, user_map)
             send_ref = _resolve_poly_ref(r["sender_id"], agent_map, user_map)
@@ -213,54 +278,39 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
                     r["sender_id"],
                 )
                 continue
+            owner_project, owner_scope = _ref_to_owner(rec_ref)
+            meta: dict = {}
+            if r["metadata"]:
+                try:
+                    meta = json.loads(r["metadata"])
+                except (TypeError, ValueError):
+                    meta = {"metadata_raw": r["metadata"]}
+            if r["subject"]:
+                meta["subject"] = r["subject"]
+            if r["msg_type"]:
+                meta["msg_type"] = r["msg_type"]
             dao.execute(
-                "INSERT INTO messages "
-                "(recipient_ref, sender_ref, msg_type, subject, body, metadata, "
-                " status, created_at, read_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO scope_posts "
+                "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
+                "VALUES (?, ?, ?, ?, 'message', ?, ?, ?)",
                 (
-                    rec_ref, send_ref, r["msg_type"] or "", r["subject"] or "",
-                    r["body"] or "", r["metadata"], r["status"] or "unread",
-                    r["created_at"], r["read_at"],
+                    f"msg:{r['id']}", owner_project, owner_scope, send_ref,
+                    r["body"] or "", json.dumps(meta), r["created_at"],
                 ),
                 conn=conn,
             )
-            counts["messages"] += 1
+            counts["scope_posts"] += 1
 
-    # --- 4. Rooms (re-key owner_agent_id → (owner_project, owner_scope)) -----
-
-    with dao.transaction() as conn:
-        for r in src.execute(
-            "SELECT id, owner_agent_id, topic, status, created_at, closed_at FROM rooms"
-        ).fetchall():
-            ps = agent_map.get(r["owner_agent_id"])
-            if ps is None:
-                log.warning(
-                    "seed rooms: unresolvable owner_agent_id=%s for room %s; skipping",
-                    r["owner_agent_id"], r["id"],
-                )
-                continue
-            owner_project, owner_scope = ps
-            dao.execute(
-                "INSERT OR IGNORE INTO rooms "
-                "(id, owner_project, owner_scope, topic, status, created_at, closed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["id"], owner_project, owner_scope,
-                    r["topic"] or "", r["status"] or "active",
-                    r["created_at"], r["closed_at"],
-                ),
-                conn=conn,
-            )
-            counts["rooms"] += 1
-
-    # --- 5. guest_list (re-key guest_ref uuid → natural key) -----------------
+    # --- 4. guest_list → scope_subscribers (deduped across folded rooms) ----
 
     with dao.transaction() as conn:
         for r in src.execute(
-            "SELECT room_id, guest_kind, guest_ref, display_name, subscriptions FROM guest_list"
+            "SELECT room_id, guest_kind, guest_ref, display_name FROM guest_list"
         ).fetchall():
-            # guest_ref may be an agent uuid or a user uuid
+            owner = room_owner.get(r["room_id"])
+            if owner is None:
+                continue  # room owner unresolvable (already logged)
+            owner_project, owner_scope, created_at = owner
             natural_ref = _resolve_poly_ref(r["guest_ref"], agent_map, user_map)
             if natural_ref is None:
                 log.warning(
@@ -268,32 +318,32 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
                     r["guest_ref"], r["room_id"],
                 )
                 continue
-            # Strip 'agent:' prefix for agent guests (schema stores 'project/scope')
             if natural_ref.startswith("agent:"):
                 stored_ref = natural_ref[len("agent:"):]
-            elif natural_ref.startswith("user:"):
-                stored_ref = natural_ref  # keep 'user:<name>' form
             else:
-                stored_ref = natural_ref
+                stored_ref = natural_ref  # 'user:<name>' / 'system'
             dao.execute(
-                "INSERT OR IGNORE INTO guest_list "
-                "(room_id, guest_kind, guest_ref, display_name, subscriptions) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO scope_subscribers "
+                "(owner_project, owner_scope, guest_kind, guest_ref, display_name, joined_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    r["room_id"], r["guest_kind"] or "agent",
-                    stored_ref, r["display_name"] or "",
-                    r["subscriptions"] or "{}",
+                    owner_project, owner_scope, r["guest_kind"] or "agent",
+                    stored_ref, r["display_name"] or "", created_at,
                 ),
                 conn=conn,
             )
-            counts["guest_list"] += 1
+            counts["scope_subscribers"] += 1
 
-    # --- 6. room_transcripts (re-key polymorphic author) ----------------------
+    # --- 5. room_transcripts → scope_posts (kind preserved) -----------------
 
     with dao.transaction() as conn:
         for r in src.execute(
             "SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts"
         ).fetchall():
+            owner = room_owner.get(r["room_id"])
+            if owner is None:
+                continue  # room owner unresolvable (already logged)
+            owner_project, owner_scope, _ = owner
             natural_author = _resolve_poly_ref(r["author"], agent_map, user_map)
             if natural_author is None:
                 log.warning(
@@ -302,19 +352,19 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
                 )
                 continue
             dao.execute(
-                "INSERT OR IGNORE INTO room_transcripts "
-                "(id, room_id, author, kind, body, meta, ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO scope_posts "
+                "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    r["id"], r["room_id"], natural_author,
+                    r["id"], owner_project, owner_scope, natural_author,
                     r["kind"] or "message", r["body"] or "",
                     r["meta"] or "{}", r["ts"],
                 ),
                 conn=conn,
             )
-            counts["room_transcripts"] += 1
+            counts["scope_posts"] += 1
 
-    # --- 7. embeddings (scopes-owned source_types: session/scope/room/project) -
+    # --- 6. embeddings (identity-level source_types only) -------------------
 
     with dao.transaction() as conn:
         for r in src.execute(

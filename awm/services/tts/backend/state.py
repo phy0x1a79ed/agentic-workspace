@@ -16,8 +16,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from awm.db import get_connection
-from awm.services.config_service import get_config, set_config
+from awm.persistence.databases import get_connection
+from awm.persistence.config_service import get_config, set_config
 
 _KEY_PREFIX = "tts_state:"
 
@@ -33,7 +33,7 @@ def _decode(raw: str | None) -> Any | None:
 
 def list_state() -> dict[str, Any]:
     """Return every stripe-state key/value pair, with the prefix stripped."""
-    conn = get_connection()
+    conn = get_connection("tts")
     try:
         rows = conn.execute(
             "SELECT key, value FROM config WHERE key LIKE ? ORDER BY key",
@@ -59,7 +59,7 @@ def set_state(key: str, value: Any) -> None:
 
 
 def delete_state(key: str) -> None:
-    conn = get_connection()
+    conn = get_connection("tts")
     try:
         conn.execute("DELETE FROM config WHERE key = ?", (_KEY_PREFIX + key,))
         conn.commit()

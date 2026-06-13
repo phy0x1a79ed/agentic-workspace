@@ -100,32 +100,25 @@ def main() -> int:
                 {"project": project, "scope": scope, "context": ctx},
                 f"scope {project}/{scope}")
 
-    # Rooms have no REST surface; use the MCP tool dispatcher. Only seed
-    # the demo room if no active rooms exist yet.
-    code, rooms = _request("GET", "/scopes")
+    # A scope IS the channel — seed a couple of demo posts on demo/alpha's
+    # channel via the scope-channel tools (no separate rooms anymore).
+    code, scopes_probe = _request("GET", "/scopes")
     if code != 200:
-        raise SystemExit(f"[seed] /scopes probe failed: {code} {rooms}")
+        raise SystemExit(f"[seed] /scopes probe failed: {code} {scopes_probe}")
 
-    existing = _invoke("room_list", {"status": "active", "limit": 1})
+    existing = _invoke("scope_fetch", {"project": "demo", "scope": "alpha", "limit": 1})
     if existing.get("total", 0) == 0:
-        room = _invoke("room_create", {
-            "topic": "dev harness demo room",
-            "scopes": ["demo/alpha"],
-            "author": "user:dev",
-        })
-        room_id = room.get("id") or room.get("room", {}).get("id")
-        if not room_id:
-            raise SystemExit(f"[seed] room_create returned no id: {room}")
         for body in (
-            "hello from the seeder — this room is fake",
-            "open the Rooms tab in the UI to see this",
+            "hello from the seeder — this is a fake channel post",
+            "subscribe to demo/alpha in the UI to see this",
         ):
-            _invoke("room_post", {
-                "room_id": room_id, "body": body, "author": "user:dev",
+            _invoke("scope_post", {
+                "project": "demo", "scope": "alpha",
+                "author": "user:dev", "body": body, "kind": "message",
             })
-        print(f"[seed] created room {room_id}")
+        print("[seed] seeded demo/alpha channel")
     else:
-        print("[seed] active room(s) already exist, skipping room seed")
+        print("[seed] demo/alpha channel already has posts, skipping")
 
     print("[seed] done.")
     return 0

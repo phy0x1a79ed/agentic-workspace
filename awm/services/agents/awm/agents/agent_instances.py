@@ -1,33 +1,29 @@
-"""Agent instance management — rooms-aware, tracked, addressable (modular v1).
+"""Agent instance management — tracked, addressable (modular v1).
 
 An AgentInstance owns one ``claude`` or ``opencode`` subprocess attached to a
 single ``(project, scope)``. Its job is the *agent runtime*: serialize inputs
-from any number of rooms into stdin, parse stdout, and broadcast text/tool
-events into the agent's owned room transcript.
+into stdin, parse stdout, and post rendered text/tool events to the agent's
+**scope channel**.
+
+Subscribe to agents, message scopes
+-----------------------------------
+Raw agent acts (the full structured stdout event stream) belong to the *agent*
+and stay local in ``agents.db`` (``agent_transcript``) — you subscribe to an
+*agent* for those. The agent's rendered, human-facing output is also posted to
+its *scope channel* (``scope_post`` on the scopes service) — a scope IS the
+channel, addressed by ``(project, scope)``; there are no rooms.
 
 Modular changes from the monolith
 ----------------------------------
 - **Identity** is resolved via gatewayclient calls to the ``scopes`` service.
-  No uuid ``agent_id`` is stored or referenced; ``(project, scope)`` is the
-  natural key throughout.
+  No uuid ``agent_id``; ``(project, scope)`` is the natural key throughout.
 - **Persistence** goes through ``AgentsDAO`` → ``agents.db``; no shared
   ``state.db``.
-- **Room operations** are cross-service; they go via gatewayclient to the
-  ``scopes`` service, which exposes the room RPCs in its ready manifest:
-  ``ensureAgentRoom`` (owned-room get-or-create), ``roomsForScope`` (active
-  rooms for output broadcast), ``room_post`` (post a transcript event),
-  ``autoCloseForScope`` (close the scope's rooms on session end), plus
-  ``room_create``/``room_invite`` used by ``orchestration``.
-- **Transcript writes** go to the ``agent_transcript`` table in ``agents.db``
+- **Channel output** is cross-service: ``scope_post`` on the ``scopes``
+  service. The scope's channel exists with the scope (``ensureScope``), so
+  there is nothing to create or auto-close.
+- **Raw act writes** go to the ``agent_transcript`` table in ``agents.db``
   via ``agent_transcript.record_*`` (which uses AgentsDAO).
-
-REMAINING CROSS-SERVICE ITEM
-----------------------------
-``roomAgentsKillOnClose(room_id)`` — when a room closes with ``kill_agents``,
-the scopes service knows which agent scopes to SIGTERM, but the kill happens
-in *this* process. That reverse notification (scopes → agents) needs a pub/sub
-or callback channel and is intentionally NOT invented here; it is the one
-deferred integration item. All forward (agents → scopes) room calls are wired.
 """
 
 from __future__ import annotations
@@ -177,24 +173,20 @@ async def _ensure_scope_exists(project: str, scope: str,
 
 
 # ---------------------------------------------------------------------------
-# Rooms helpers (STUBBED — blocked on scopes RPC contract extension)
+# Scope channel output (a scope IS the channel; post the agent's rendered
+# output to its own scope channel via the scopes service)
 # ---------------------------------------------------------------------------
 
-async def _ensure_owned_room(*, project: str, scope: str) -> str | None:
-    """Get-or-create the agent's owned room via the scopes service."""
-    result = await gatewayclient.call(
-        'scopes', 'ensureAgentRoom', {'project': project, 'scope': scope})
-    return result.get('room_id') if result else None
-
-
-async def _rooms_for_scope(scope_key: str) -> list[str]:
-    """Active rooms involving scope_key, via the scopes service."""
-    project, _, scope = scope_key.partition("/")
-    if not scope:
-        return []
-    result = await gatewayclient.call(
-        'scopes', 'roomsForScope', {'project': project, 'scope': scope})
-    return result.get('rooms', []) if result else []
+async def _post_to_scope(*, project: str, scope: str, author: str,
+                         body: str, kind: str) -> None:
+    """Post one rendered agent event to the agent's scope channel."""
+    try:
+        await gatewayclient.call('scopes', 'scope_post', {
+            'project': project, 'scope': scope,
+            'author': author, 'body': body, 'kind': kind,
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -305,11 +297,8 @@ async def create_session(*, project: str, scope: str,
             started_at=now_ms(),
         )
 
-        # Ensure the owned room exists (stubbed until scopes exposes RPC).
-        try:
-            await _ensure_owned_room(project=project, scope=scope)
-        except Exception:  # noqa: BLE001
-            pass
+        # A scope IS the channel — it exists once the scope does (ensured
+        # above); no separate room to provision.
 
         # Spawn the subprocess.
         spawn_env: dict[str, str] | None = None
@@ -405,14 +394,14 @@ async def _input_pump(session: AgentInstance) -> None:
         return
     while True:
         try:
-            room_id, post_author, post_body = await session.input_queue.get()
+            post_author, post_body = await session.input_queue.get()
         except asyncio.CancelledError:
             return
         if session.proc is None or session.proc.stdin is None:
             return
         if session.proc.stdin.is_closing():
             return
-        framed_body = f"[room:{room_id} from:{post_author}]\n{post_body}"
+        framed_body = f"[from:{post_author}]\n{post_body}"
         payload = {
             "type": "user",
             "message": {"role": "user", "content": framed_body},
@@ -433,11 +422,11 @@ async def _input_pump(session: AgentInstance) -> None:
         agent_transcript.record_in(session, framed_body, injection=False)
 
 
-def enqueue_input(session: AgentInstance, room_id: str,
-                  post_author: str, post_body: str) -> bool:
-    """Enqueue a room post for the agent's stdin pump."""
+def enqueue_input(session: AgentInstance, post_author: str,
+                  post_body: str) -> bool:
+    """Enqueue a scope-channel post for the agent's stdin pump."""
     try:
-        session.input_queue.put_nowait((room_id, post_author, post_body))
+        session.input_queue.put_nowait((post_author, post_body))
         return True
     except asyncio.QueueFull:
         return False
@@ -555,22 +544,13 @@ async def _reader_loop(session: AgentInstance) -> None:
         if not events:
             continue
 
-        # Broadcast to the scope's rooms via the scopes service.
-        try:
-            rooms = await _rooms_for_scope(session.scope_key)
-        except Exception:  # noqa: BLE001
-            rooms = []
-        if not rooms:
-            continue
+        # Post the agent's rendered output to its own scope channel.
         author_ref = f"agent:{session.project}/{session.scope}"
-        for room_id in rooms:
-            for kind, body in events:
-                try:
-                    await gatewayclient.call('scopes', 'room_post', {
-                        'room_id': room_id, 'author': author_ref,
-                        'body': body, 'kind': kind})
-                except Exception:  # noqa: BLE001
-                    pass
+        for kind, body in events:
+            await _post_to_scope(
+                project=session.project, scope=session.scope,
+                author=author_ref, body=body, kind=kind,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -595,14 +575,8 @@ async def _waiter_loop(session: AgentInstance) -> None:
             _by_scope.pop(session.scope_key, None)
         _registry_by_id.pop(session.id, None)
 
-    # Auto-close the scope's owned rooms now that its session has ended.
-    project, _, scope = session.scope_key.partition("/")
-    if scope:
-        try:
-            await gatewayclient.call(
-                'scopes', 'autoCloseForScope', {'project': project, 'scope': scope})
-        except Exception:  # noqa: BLE001
-            pass
+    # A scope IS the channel and outlives any single session — there are no
+    # rooms to auto-close. The scope's channel + transcript persist.
 
 
 # ---------------------------------------------------------------------------
@@ -1036,13 +1010,13 @@ def start_resume_driver() -> asyncio.Task:
 # Rooms-service dispatcher wiring — NO-OP in modular mode
 # ---------------------------------------------------------------------------
 
-def _dispatch_local_post(room_id: str, scope_key: str,
-                         post_author: str, post_body: str) -> None:
-    """Forward a room post to the in-memory session's input queue."""
+def _dispatch_local_post(scope_key: str, post_author: str,
+                         post_body: str) -> None:
+    """Forward a scope-channel post to the in-memory session's input queue."""
     session = _by_scope.get(scope_key)
     if session is None:
         return
-    enqueue_input(session, room_id, post_author, post_body)
+    enqueue_input(session, post_author, post_body)
 
 
 def install_room_dispatchers() -> None:

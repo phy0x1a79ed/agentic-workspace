@@ -1,8 +1,9 @@
-"""Higher-level glue: room+scope orchestration, modular edition.
+"""Higher-level glue: multi-scope conversation orchestration (modular edition).
 
-Rooms operations are cross-service — they go via gatewayclient to the scopes
-service (``room_create`` / ``room_invite``), which the scopes service exposes
-in its ready manifest. Local agent sessions are spawned in this process.
+A scope IS the channel. To put several scopes in conversation, spawn a local
+agent session for each and subscribe the guests to the lead scope's channel via
+the scopes service (``scope_subscribe``). Channel posts are cross-service
+(``scope_post``); local agent sessions are spawned in this process.
 """
 from __future__ import annotations
 
@@ -12,17 +13,12 @@ from awm.agents import agent_instances
 import awm.gatewayclient as gatewayclient
 
 
-def _split_scope(s: str) -> tuple[str, str, str | None]:
-    base = s
-    peer: str | None = None
-    if "@" in base:
-        base, peer = base.rsplit("@", 1)
-    if "/" not in base:
-        raise ValueError(
-            f"scope identifier must be 'project/scope[@peer]', got {s!r}"
-        )
-    project, scope = base.split("/", 1)
-    return project, scope, peer
+def _split_scope(s: str) -> tuple[str, str]:
+    """Parse a 'project/scope' identifier."""
+    if "/" not in s:
+        raise ValueError(f"scope identifier must be 'project/scope', got {s!r}")
+    project, scope = s.split("/", 1)
+    return project, scope
 
 
 async def _ensure_local_session(scope_key: str) -> None:
@@ -36,50 +32,50 @@ async def _ensure_local_session(scope_key: str) -> None:
         )
     except agent_instances.ScopeBusyError:
         return
-    except FileNotFoundError:
-        raise
 
 
-async def create_room_with_scopes(*, topic: str | None,
-                                  scopes: list[str],
-                                  prompts: dict[str, str],
-                                  opener: str,
-                                  close_on_exit: bool):
-    """Create a room (via scopes RPC) and spawn local agents.
+async def start_conversation(*, scopes: list[str], opener: str = "user:operator",
+                             close_on_exit: bool = False) -> str | None:
+    """Spawn a local agent for each scope and subscribe the guests to the lead
+    scope's channel. Returns the lead scope key ('project/scope').
 
-    Creates the room in the scopes service, then spawns a local session for
-    each non-peer scope. Returns the new room id.
+    The first entry is the lead (its channel is the shared conversation); the
+    rest subscribe to it.
     """
-    parsed = [(_split_scope(s), s) for s in scopes]
-    for (project, scope, peer), raw in parsed:
-        if peer is None:
-            from awm.config import PROJECTS_DIR
-            ws = PROJECTS_DIR / project / scope
-            if not ws.exists():
-                raise FileNotFoundError(
-                    f"Scope workspace not found at {ws} (for {raw})"
-                )
+    parsed = [_split_scope(s) for s in scopes]
+    from awm.config import PROJECTS_DIR
+    for project, scope in parsed:
+        ws = PROJECTS_DIR / project / scope
+        if not ws.exists():
+            raise FileNotFoundError(f"Scope workspace not found at {ws}")
 
-    room_resp = await gatewayclient.call('scopes', 'room_create', {
-        'topic': topic, 'scopes': scopes,
-        'opener': opener, 'close_on_exit': close_on_exit,
-    })
-    room_id = room_resp.get('id') if room_resp else None
+    if not parsed:
+        return None
+    lead_project, lead_scope = parsed[0]
+    lead_key = f"{lead_project}/{lead_scope}"
 
     local_sessions: list[agent_instances.AgentInstance] = []
-    for (project, scope, peer), raw in parsed:
-        if peer is None:
-            scope_key = f"{project}/{scope}"
-            await _ensure_local_session(scope_key)
-            sess = agent_instances._by_scope.get(scope_key)
-            if sess is not None:
-                local_sessions.append(sess)
+    for i, (project, scope) in enumerate(parsed):
+        scope_key = f"{project}/{scope}"
+        await _ensure_local_session(scope_key)
+        sess = agent_instances._by_scope.get(scope_key)
+        if sess is not None:
+            local_sessions.append(sess)
+        if i > 0:
+            # Subscribe each guest scope to the lead's channel.
+            try:
+                await gatewayclient.call('scopes', 'scope_subscribe', {
+                    'project': lead_project, 'scope': lead_scope,
+                    'guest': scope_key,
+                })
+            except Exception:  # noqa: BLE001
+                pass
 
     if close_on_exit:
         for sess in local_sessions:
             asyncio.create_task(_close_stdin_after_drain(sess))
 
-    return room_id
+    return lead_key
 
 
 async def _close_stdin_after_drain(session: agent_instances.AgentInstance) -> None:
@@ -99,14 +95,13 @@ async def _close_stdin_after_drain(session: agent_instances.AgentInstance) -> No
         pass
 
 
-async def invite_scope_to_room(room_id: str, scope_identifier: str, *,
-                               prompt: str | None,
-                               opener: str):
-    """Add a scope to a room (via scopes RPC) and spawn local agent."""
-    project, scope, peer = _split_scope(scope_identifier)
-    if peer is None:
-        await _ensure_local_session(f"{project}/{scope}")
-    result = await gatewayclient.call('scopes', 'room_invite', {
-        'room_id': room_id, 'scope': f"{project}/{scope}",
+async def invite_scope(lead_key: str, scope_identifier: str) -> dict | None:
+    """Spawn a local agent for ``scope_identifier`` and subscribe it to the
+    lead scope's channel."""
+    lead_project, lead_scope = _split_scope(lead_key)
+    project, scope = _split_scope(scope_identifier)
+    await _ensure_local_session(f"{project}/{scope}")
+    return await gatewayclient.call('scopes', 'scope_subscribe', {
+        'project': lead_project, 'scope': lead_scope,
+        'guest': f"{project}/{scope}",
     })
-    return result.get('participant') if result else None

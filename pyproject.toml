@@ -7,22 +7,29 @@
 #
 # Only repo-wide tooling config lives here.
 
+# NOTE: there is no single `testpaths` — this repo is a nested tree of pip
+# dists that each own their `awm.<x>` package, and the `awm` namespace can
+# only resolve one dist's roots per interpreter. Tests are run per-dist with
+# the dist roots on PYTHONPATH; see `scripts/run-tests.sh`, which invokes
+# pytest once per dist test directory. pytest still discovers THIS config via
+# its rootdir walk-up, so the markers + asyncio_mode below apply to every dist
+# run. Do not add `testpaths` here or a bare `pytest` will try to collect all
+# dists under one PYTHONPATH and fail to import.
 [tool.pytest.ini_options]
-testpaths = ["awm/tests"]
 asyncio_mode = "auto"
 markers = [
     "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
     "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
-    "federation: peer / replication / leadership state machine",
     "subprocess: spawns child processes (git, mcp, supervised hub backends)",
-    "unit: pure unit tests (DB layer, models, validation, registries)",
-    "hub: hub routing / stripes / static / passthrough",
+    "unit: pure unit tests (models, validation, registries)",
+    "hub: hub routing / stripes / static / passthrough / service dispatch",
     "scopes: scope CRUD + git worktree",
     "messaging: rooms / messages / posts / control plane",
     "auth: login / exposed app / auth service",
     "mcp: mcp server / exports / cli context emit",
-    "artifacts: artifact registry + federation",
+    "artifacts: artifact registry",
     "sessions: session log / history",
     "agent: agent instances / vagrant sessions",
     "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "integration: cross-component integration tests",
 ]

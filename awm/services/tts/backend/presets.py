@@ -15,8 +15,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from awm.db import get_connection
-from awm.services.config_service import get_config, set_config
+from awm.persistence.databases import get_connection
+from awm.persistence.config_service import get_config, set_config
 
 _KEY_PREFIX = "tts_preset:"
 _LAST_USED_KEY = "tts_last_used"
@@ -42,7 +42,7 @@ def _decode(raw: str | None) -> dict[str, Any] | None:
 
 def list_presets() -> dict[str, dict[str, Any]]:
     """Return ``{name: {engine, params, builtin}}`` across all stored presets."""
-    conn = get_connection()
+    conn = get_connection("tts")
     try:
         rows = conn.execute(
             "SELECT key, value FROM config WHERE key LIKE ? ORDER BY key",
@@ -84,7 +84,7 @@ def save_preset(name: str, engine: str, params: dict[str, Any]) -> None:
 def delete_preset(name: str) -> None:
     if name in _BUILTIN_NAMES:
         raise BuiltinConflict(name)
-    conn = get_connection()
+    conn = get_connection("tts")
     try:
         conn.execute("DELETE FROM config WHERE key = ?", (_KEY_PREFIX + name,))
         conn.commit()

@@ -84,13 +84,26 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "enqueue_post",
-            "description": "Enqueue a room post into a running agent's stdin.",
+            "description": "Enqueue a scope-channel post into a running agent's stdin.",
             "params": [
                 {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
-                {"name": "room_id", "type": "string", "required": True},
                 {"name": "author", "type": "string", "required": True},
                 {"name": "body", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "agent_subscribe",
+            "description": (
+                "Read an agent's raw act stream (the structured stdout event log "
+                "from agents.db) for (project, scope). Subscribe to an AGENT for "
+                "its acts; message a SCOPE for conversation. Returns recent acts; "
+                "live push is a follow-up."
+            ),
+            "params": [
+                {"name": "project", "type": "string", "required": True},
+                {"name": "scope", "type": "string", "required": True},
+                {"name": "limit", "type": "integer", "required": False},
             ],
         },
         {
@@ -165,13 +178,17 @@ def _h_enqueue_post(args: dict) -> dict:
     session = ai.get_session_by_scope(project, scope)
     if session is None:
         return {"enqueued": False, "reason": "no active session"}
-    ok = ai.enqueue_input(
-        session,
-        args["room_id"],
-        args["author"],
-        args["body"],
-    )
+    ok = ai.enqueue_input(session, args["author"], args["body"])
     return {"enqueued": ok}
+
+
+def _h_agent_subscribe(args: dict) -> dict:
+    from awm.agents import agent_transcript
+    acts = agent_transcript.read_session(args["project"], args["scope"])
+    limit = int(args.get("limit", 200))
+    if limit and len(acts) > limit:
+        acts = acts[-limit:]
+    return {"acts": acts, "total": len(acts)}
 
 
 def _h_get_slash_catalog(args: dict) -> dict:
@@ -192,6 +209,7 @@ HANDLERS = {
     "tail_log": _h_tail_log,
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
+    "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
 }

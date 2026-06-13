@@ -46,11 +46,6 @@ def scopes_workspace(tmp_path, monkeypatch):
     import awm.persistence.databases as pdbs
     monkeypatch.setattr(pdbs, "SERVICES_DIR", services_dir)
 
-    # Patch SKILLS_DIR on the new-location sessions module.
-    import awm.scopes.sessions as _sess
-    if hasattr(_sess, "SKILLS_DIR"):
-        monkeypatch.setattr(_sess, "SKILLS_DIR", skills_dir)
-
     # Patch PROJECTS_DIR / WORKSPACE_ROOT / DATA_DIR on scopes module.
     import awm.scopes.scopes as _scopes
     for attr, val in [
@@ -157,7 +152,13 @@ def seeded_scopes(scopes_workspace, scopes_dao_conn):
 
 @pytest.fixture()
 def seeded_sessions(scopes_workspace, seeded_scopes, scopes_dao_conn):
-    """Insert session_log rows keyed by (project, scope) inline."""
+    """Insert journal posts (kind='journal') into scope_posts.
+
+    A scope IS the channel; the debrief journal is a self-post by the owning
+    agent, with structured fields in ``meta``. (Replaces the old session_logs
+    table.)
+    """
+    import json
     from awm.scopes.identity import iso_to_ms
     from datetime import timedelta
 
@@ -168,24 +169,18 @@ def seeded_sessions(scopes_workspace, seeded_scopes, scopes_dao_conn):
     t3 = (base + timedelta(seconds=2)).isoformat()
 
     sessions_data = [
-        ("proj-a", "scope-1", "", None, t1, "Initial exploration of dataset",
-         "agent-1", None, "Initial exploration of dataset"),
-        ("proj-a", "scope-1", "", "abc123", t2, "Built feature extraction pipeline",
-         "agent-1", '{"decisions": ["Used pandas"]}',
-         "Built feature extraction pipeline\n\nDecisions:\n- Used pandas"),
-        ("proj-a", "scope-2", "", None, t3, "Reviewed results and documented findings",
-         "agent-2", None, "Reviewed results and documented findings"),
+        ("proj-a", "scope-1", t1, "Initial exploration of dataset", {}),
+        ("proj-a", "scope-1", t2, "Built feature extraction pipeline",
+         {"decisions": ["Used pandas"]}),
+        ("proj-a", "scope-2", t3, "Reviewed results and documented findings", {}),
     ]
-    for s in sessions_data:
-        project, scope, file_path, git_commit, logged_at, summary, \
-            _agent_label, metadata, content = s
+    for i, (project, scope, logged_at, summary, meta) in enumerate(sessions_data):
         conn.execute(
-            "INSERT INTO session_logs "
-            "(project, scope, file_path, git_commit, summary, "
-            " metadata, content, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (project, scope, file_path, git_commit, summary,
-             metadata, content, iso_to_ms(logged_at)),
+            "INSERT INTO scope_posts "
+            "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
+            "VALUES (?,?,?,?, 'journal', ?, ?, ?)",
+            (f"journal:{i}", project, scope, f"agent:{project}/{scope}",
+             summary, json.dumps(meta), iso_to_ms(logged_at)),
         )
     conn.commit()
     return sessions_data

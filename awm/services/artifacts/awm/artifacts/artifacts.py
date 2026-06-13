@@ -100,7 +100,6 @@ def _row_to_info(row: dict) -> ArtifactInfo:
         tags=row["tags"],
         status=row["status"],
         created_at=ms_to_iso(row["created_at"]) or "",
-        origin_peer="",
     )
 
 
