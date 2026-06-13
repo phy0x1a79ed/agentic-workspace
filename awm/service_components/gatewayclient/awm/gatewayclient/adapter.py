@@ -52,12 +52,26 @@ import logging
 import os
 import ssl
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Awaitable, Callable
 
 import httpx
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 log = logging.getLogger("awm.gatewayclient.adapter")
+
+# How long (seconds) the run loop keeps retrying after losing the control WS
+# before concluding the gateway is gone for good and exiting cleanly. Matches
+# the gateway's own ``_RECONNECT_WINDOW_S`` so a hard-killed gateway leaves no
+# orphaned services behind (see the lifecycle plan: T2). Override via env.
+_RECONNECT_DEADLINE_S = float(os.environ.get("AWM_RECONNECT_DEADLINE_S", "10.0"))
+
+
+class GiveUp(Exception):
+    """Sentinel: the service has been told to stand down (or the gateway is
+    gone for good). Raising it out of ``_register``/``_serve`` makes ``run()``
+    return cleanly — the process exits 0 with no further retry."""
 
 # A handler takes the call's ``args`` dict and may optionally take the caller
 # identity ``as_`` as a second positional arg. It may be sync or async; sync
@@ -151,6 +165,9 @@ class ServiceAdapter:
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
         self.start_cmd = start_cmd or ["bash", "run.sh"]
+        # Last monotonic time the control WS was confirmed up; drives the
+        # reconnect-deadline give-up in run(). Updated in run() and _serve.
+        self._last_up = monotonic()
 
     # -- dispatch ----------------------------------------------------------
 
@@ -178,32 +195,62 @@ class ServiceAdapter:
     async def _serve(self, hub_url: str, sid: str) -> None:
         ws_base = _ws_base(hub_url)
         ws_url = f"{ws_base}/hub/service/control/{sid}"
-        async with websockets.connect(
-            ws_url,
-            ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
-            max_size=None,
-            open_timeout=10,
-        ) as ws:
-            await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
-            log.info("%s: control WS open, ready sent", self.name)
-
-            async for raw in ws:
+        try:
+            async with websockets.connect(
+                ws_url,
+                ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
+                max_size=None,
+                open_timeout=10,
+            ) as ws:
+                await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
+                log.info("%s: control WS open, ready sent", self.name)
                 try:
-                    env = json.loads(raw) if isinstance(raw, str) else None
-                except json.JSONDecodeError:
-                    continue
-                if env is None:
-                    continue
-                kind = env.get("kind")
-                if kind == "call":
-                    asyncio.create_task(self._handle_call(ws, env))
-                elif kind == "notify":
-                    asyncio.create_task(self._handle_notify(env))
-                elif kind == "session.open":
-                    asyncio.create_task(self._handle_session_open(
-                        ws, hub_url, sid, env))
-                else:
-                    log.debug("%s: ignored inbound kind=%s", self.name, kind)
+                    async for raw in ws:
+                        try:
+                            env = json.loads(raw) if isinstance(raw, str) else None
+                        except json.JSONDecodeError:
+                            continue
+                        if env is None:
+                            continue
+                        kind = env.get("kind")
+                        if kind == "call":
+                            asyncio.create_task(self._handle_call(ws, env))
+                        elif kind == "notify":
+                            asyncio.create_task(self._handle_notify(env))
+                        elif kind == "session.open":
+                            asyncio.create_task(self._handle_session_open(
+                                ws, hub_url, sid, env))
+                        elif kind == "shutdown":
+                            # The gateway's graceful stand-down (T4). Exit the
+                            # run loop cleanly rather than reconnect-bouncing.
+                            log.info("%s: shutdown frame received; standing down",
+                                     self.name)
+                            raise GiveUp("gateway requested shutdown")
+                        else:
+                            log.debug("%s: ignored inbound kind=%s",
+                                      self.name, kind)
+                finally:
+                    # The control WS was actually established this round; record
+                    # when it ended so run()'s give-up deadline counts the
+                    # *retry* window from the disconnect, not from process start
+                    # (a brief blip after hours of uptime must still retry).
+                    self._last_up = monotonic()
+        except ConnectionClosed as exc:
+            # The hub closed the control WS with a terminal code: 4409 = the
+            # lease is already held by a live incumbent, 4404 = the service_id
+            # is unknown. Either way this instance must give up; any other code
+            # (e.g. 1006 abnormal, 1012 going-away) is transient → re-raise so
+            # run() retries within the deadline.
+            code = exc.rcvd.code if exc.rcvd is not None else None
+            if code in (4409, 4404):
+                raise GiveUp(f"control WS closed with code {code}") from exc
+            raise
+        except InvalidStatus as exc:
+            # The WS upgrade itself was rejected with 409 → a live incumbent
+            # holds the slot; give up.
+            if getattr(exc.response, "status_code", None) == 409:
+                raise GiveUp("control WS upgrade rejected (409)") from exc
+            raise
 
     async def _handle_call(self, ws: Any, env: dict[str, Any]) -> None:
         try:
@@ -277,6 +324,11 @@ class ServiceAdapter:
         }
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
             r = await cli.post(f"{hub_url}/hub/service/register", json=payload)
+            if r.status_code == 409:
+                # A live instance already holds this name's lease (T3). Stand
+                # down — the incumbent keeps running. Other non-2xx stay
+                # retryable via raise_for_status below.
+                raise GiveUp(f"register rejected (409): {r.text}")
             r.raise_for_status()
         return r.json()["service_id"]
 
@@ -298,14 +350,37 @@ class ServiceAdapter:
                 await res
 
         backoff = 1.0
+        # ``_last_up`` tracks the last moment the control WS was confirmed up
+        # (set in ``_serve``'s finally, which is reached only once the WS
+        # actually connected). Initialised to now so a service that can never
+        # reach the gateway still gives up after the deadline rather than
+        # retrying forever.
+        self._last_up = monotonic()
         while True:
             try:
                 if not sid:
                     sid = await self._register(hub_url)
                     log.info("%s: registered service_id=%s", self.name, sid)
                 await self._serve(hub_url, sid)
+                # Clean return = the WS was up and the gateway closed it
+                # without a terminal code; treat as a fresh disconnect.
+                self._last_up = monotonic()
                 backoff = 1.0
+            except GiveUp as exc:
+                # Told to stand down (duplicate reject / terminal close /
+                # shutdown frame). Exit cleanly — no retry.
+                log.info("%s: giving up: %s", self.name, exc)
+                return
             except Exception as exc:
+                if monotonic() - self._last_up > _RECONNECT_DEADLINE_S:
+                    # The gateway has been unreachable past the deadline — it
+                    # is gone for good (hard kill / idle os._exit, where its
+                    # lifespan shutdown never ran). Stop rather than spin
+                    # forever as an orphan.
+                    log.warning(
+                        "%s: gateway unreachable for >%.0fs; exiting",
+                        self.name, _RECONNECT_DEADLINE_S)
+                    return
                 log.warning("%s: control WS lost (%s); retry in %.1fs",
                             self.name, exc, backoff)
                 await asyncio.sleep(backoff)

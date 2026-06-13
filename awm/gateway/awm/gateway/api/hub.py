@@ -221,6 +221,20 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
             )
             rec = await registry.push_shadow(rec)
         else:
+            # Duplicate-instance guard (T3): if a record for this name already
+            # exists AND its control-WS lease is currently held, a live
+            # instance is connected — turn the newcomer away with 409 so it
+            # stands down (the adapter raises GiveUp and exits 0) and the
+            # incumbent's service_id + lease are left untouched. A record whose
+            # lease is NOT held is dead (or a benign reconcile placeholder), so
+            # we fall through to the existing replace-in-place takeover.
+            existing = registry.get_by_name("service", req.name)
+            if existing is not None and get_lease_manager().is_held(
+                    existing.service_id):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"service {req.name!r} already has a live instance connected",
+                )
             rec = await registry.register_service(
                 req.name, prefix,
                 pid=req.pid,
@@ -349,6 +363,23 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
             await websocket.close()
         except Exception:
             pass
+        # Runtime crash-respawn watchdog (T5): the service's control WS just
+        # dropped and the lease was released (eviction ran inside lm.hold).
+        # If this wasn't a deliberate stop, a gateway teardown, or an overlay,
+        # give the service the reconnect window to come back, else respawn it.
+        # The journal-entry check (a deliberate `awm services stop` drops the
+        # entry *before* killing) and the shutting-down flag keep this from
+        # resurrecting something that is supposed to stay down.
+        try:
+            from awm.gateway.hub import discovery, supervisor
+            if (not supervisor.is_shutting_down()
+                    and not rec.is_overlay
+                    and supervisor.load_service_journal().get(rec.name)
+                    and discovery.is_enabled(rec.name)):
+                asyncio.create_task(supervisor.supervise_disconnect(rec.name))
+        except Exception:
+            log.debug("disconnect watchdog hook skipped for %s",
+                      rec.name, exc_info=True)
 
 
 def _route_inbound(ch: "rpc.ControlChannel", rec: ServiceRecord,
@@ -640,6 +671,12 @@ async def stop_service(name: str) -> dict[str, Any]:
     entry = supervisor.load_service_journal().get(name) or {}
     rec = registry.get_by_name("service", name)
     pid = (rec.backend_pid if rec is not None else None) or entry.get("last_pid")
+    # Drop the journal entry FIRST, before evicting/killing. When the kill
+    # closes the control WS, the disconnect watchdog (T5) fires and checks the
+    # journal; with the entry already gone it sees a deliberate stop and does
+    # not respawn. (Evicting/killing first would leave a race window where the
+    # watchdog could resurrect the service we're trying to stop.)
+    supervisor.remove_service_journal_entry(name)
     if rec is not None:
         try:
             await registry.evict_by_name(name, kind="service")
@@ -648,7 +685,6 @@ async def stop_service(name: str) -> dict[str, Any]:
     if pid:
         await asyncio.get_event_loop().run_in_executor(
             None, supervisor.kill_pid_group, pid)
-    supervisor.remove_service_journal_entry(name)
     return {"name": name, "stopped": True, "killed_pid": pid}
 
 

@@ -76,6 +76,34 @@ async def lifespan(app: FastAPI):
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
 
+    # Mark teardown as early as possible. uvicorn installs its own SIGTERM /
+    # SIGINT handlers BEFORE lifespan startup, then on signal it closes active
+    # connections (the service control WSs) *before* running lifespan shutdown.
+    # If the crash-respawn watchdog saw those closes before the shutting-down
+    # flag was set, it would try to resurrect the very services we are stopping.
+    # Wrap uvicorn's handlers so the flag is set the instant the signal lands,
+    # ahead of any control-WS close.
+    import signal as _signal
+    from awm.gateway.hub import supervisor as _sup
+
+    def _wrap_signal(sig: int) -> None:
+        prev = _signal.getsignal(sig)
+
+        def _handler(signum, frame):  # noqa: ANN001
+            _sup.set_shutting_down(True)
+            if callable(prev):
+                prev(signum, frame)
+
+        try:
+            _signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not on the main thread (e.g. under TestClient) — the flag is
+            # still set explicitly in the shutdown half below.
+            pass
+
+    for _sig in (_signal.SIGTERM, _signal.SIGINT):
+        _wrap_signal(_sig)
+
     # Start background tasks
     idle_task = asyncio.create_task(_idle_shutdown_loop())
 
@@ -112,6 +140,56 @@ async def lifespan(app: FastAPI):
         print(f"[awm] mcp-sync skipped: {exc}")
 
     yield
+
+    # ----- Graceful shutdown (T4) -------------------------------------------
+    # Runs only on a clean SIGTERM (uvicorn lifespan shutdown). Under a hard
+    # SIGKILL or the idle os._exit this half is skipped entirely — which is
+    # exactly why the service-side reconnect deadline (T2) is the required
+    # backstop, not optional. Here we stop our services in-band and clear the
+    # journal so the next boot brings them up via the clean bootstrap path.
+    try:
+        from awm.gateway.hub import rpc, supervisor
+        from awm.gateway.hub.lease import get_lease_manager
+        from awm.gateway.hub.registry import get_registry
+
+        supervisor.set_shutting_down(True)
+        registry = get_registry()
+        lm = get_lease_manager()
+
+        # 1. Send each live, non-overlay service an in-band stand-down frame.
+        #    Overlays belong to a live `awm dev shadow` process — not ours to
+        #    kill. The control-WS writer task delivers the frame as long as the
+        #    socket is still open.
+        live = [
+            rec for rec in await registry.list()
+            if rec.kind == "service" and not rec.is_overlay
+            and lm.is_held(rec.service_id)
+        ]
+        for rec in live:
+            ch = rpc.get_control(rec.service_id)
+            if ch is not None:
+                ch.enqueue({"kind": "shutdown"})
+        if live:
+            print(f"[awm] shutdown: signalled {len(live)} service(s); waiting")
+
+        # 2. Wait for them to drop their leases (exit), up to a grace window.
+        _grace_deadline = time.monotonic() + 8.0
+        while time.monotonic() < _grace_deadline:
+            if not any(lm.is_held(r.service_id) for r in live):
+                break
+            await asyncio.sleep(0.2)
+
+        # 3. Force-kill any straggler still journaled.
+        for name, entry in supervisor.load_service_journal().items():
+            pid = entry.get("last_pid") if isinstance(entry, dict) else None
+            if pid:
+                supervisor.kill_pid_group(pid)
+
+        # 4. Clear the journal so the next boot bootstraps a clean set instead
+        #    of waiting out reconcile's window against dead PIDs.
+        supervisor.write_service_journal({})
+    except Exception as exc:  # noqa: BLE001 — teardown must never wedge exit
+        print(f"[awm] graceful service shutdown skipped: {exc}")
 
     # Cleanup
     idle_task.cancel()

@@ -32,6 +32,22 @@ log = logging.getLogger("awm.hub.supervisor")
 _SERVICES_STATE_FILENAME = "services.json"
 _RECONNECT_WINDOW_S = 10.0
 
+# Set true while the gateway is tearing down (graceful lifespan shutdown). The
+# crash-respawn watchdog checks this so it does not fight the teardown by
+# resurrecting services the gateway is deliberately stopping. Set as early as
+# possible (a SIGTERM handler in server.lifespan) so it is true before the
+# control WSs start closing.
+_shutting_down = False
+
+
+def set_shutting_down(value: bool) -> None:
+    global _shutting_down
+    _shutting_down = bool(value)
+
+
+def is_shutting_down() -> bool:
+    return _shutting_down
+
 
 def _services_journal_path() -> Path:
     state_dir = config.AWM_DIR / "state"
@@ -172,6 +188,90 @@ def spawn_and_journal(name: str, start_cmd: list[str], cwd: str,
     return new_pid
 
 
+async def _reregister_record(name: str, entry: dict):
+    """Re-create the registry record for a journaled service so its control-WS
+    reconnect (carrying the journaled ``service_id``) is accepted.
+
+    Shared by boot reconcile and the runtime disconnect watchdog. Returns the
+    rehydrated ``ServiceRecord`` (or ``None`` if registration failed). Calls
+    ``registry.register_service`` directly, bypassing the endpoint's
+    duplicate-instance guard (T3) — that guard is for *new* instances, not for
+    rehydrating a record we already own.
+    """
+    from awm.gateway.hub.registry import get_registry
+    registry = get_registry()
+    sid = entry.get("service_id")
+    prefix = entry.get("prefix") or f"/svc/{name}"
+    try:
+        rec = await registry.register_service(
+            name, prefix,
+            pid=entry.get("last_pid"),
+            start_cmd=list(entry.get("start_cmd") or []),
+            cwd=entry.get("cwd") or "",
+        )
+        # Restore the journaled service_id so the service hits the same control
+        # URL it had before the restart. registry.get_by_id reads service_id off
+        # the record, so the rebind is sufficient.
+        if sid:
+            old = rec.service_id
+            rec.service_id = sid
+            log.debug("rebound service %s id %s->%s", name, old, sid)
+        return rec
+    except Exception as exc:
+        log.warning("could not re-register journaled service %s: %s", name, exc)
+        return None
+
+
+async def _respawn_from_journal(name: str, entry: dict) -> None:
+    """SIGTERM the stale PID (if any) and respawn the service from its journal
+    entry. Shared by boot reconcile and the runtime disconnect watchdog.
+
+    The caller is responsible for the higher-level gating (reconnected? enabled?
+    still journaled?); this only does the kill-and-spawn, including the
+    no-``start_cmd`` guard.
+    """
+    sid = entry.get("service_id")
+    last_pid = entry.get("last_pid")
+    start_cmd = entry.get("start_cmd") or []
+    if not start_cmd:
+        log.warning(
+            "service %s did not reconnect and has no start_cmd; leaving", name)
+        return
+    if last_pid:
+        log.info("service %s silent; killing stale pid=%d", name, last_pid)
+        await asyncio.get_event_loop().run_in_executor(
+            None, kill_pid_group, last_pid,
+        )
+    try:
+        # The gateway is the hub, so inject its own loopback URL rather than
+        # trusting a journal field — entries written by an earlier manual
+        # launch may lack ``hub_url`` entirely, which would respawn the
+        # service with an empty AWM_HUB_URL and it would die on boot.
+        hub_url = entry.get("hub_url") or f"http://{config.HOST}:{config.PORT}/"
+        new_pid = spawn_service(
+            name,
+            start_cmd,
+            entry.get("cwd") or "",
+            {
+                "AWM_HUB_URL": hub_url,
+                "AWM_SERVICE_NAME": name,
+                "AWM_SERVICE_ID": sid or "",
+            },
+        )
+        update_service_journal_entry(name, {"last_pid": new_pid})
+    except (OSError, ValueError) as exc:
+        log.error("respawn failed for service %s: %s", name, exc)
+
+
+def _has_ready_control(sid: str | None) -> bool:
+    """True iff the service holds an open, ready control channel."""
+    if not sid:
+        return False
+    from awm.gateway.hub import rpc as _rpc
+    ch = _rpc.get_control(sid)
+    return ch is not None and ch.ready.is_set()
+
+
 async def reconcile_journaled_services() -> None:
     """Boot-time reconcile loop.
 
@@ -180,90 +280,75 @@ async def reconcile_journaled_services() -> None:
     from start_cmd. Called from the FastAPI startup event after the
     hub control-plane routes are mounted.
     """
-    from awm.gateway.hub.registry import get_registry
     journal = load_service_journal()
     if not journal:
         return
-    registry = get_registry()
-    # Re-create the registry record so the control WS handler accepts
-    # the reconnect. The service_id needs to match the journal so the
-    # service's reconnect targets the right URL — we store it in the
-    # journal.
     deadline = asyncio.get_event_loop().time() + _RECONNECT_WINDOW_S
     for name, entry in list(journal.items()):
         if not isinstance(entry, dict):
             continue
-        sid = entry.get("service_id")
-        prefix = entry.get("prefix") or f"/svc/{name}"
-        try:
-            rec = await registry.register_service(
-                name, prefix,
-                pid=entry.get("last_pid"),
-                start_cmd=list(entry.get("start_cmd") or []),
-                cwd=entry.get("cwd") or "",
-            )
-            # Restore the journaled service_id so the service hits the
-            # same control URL it had before the restart.
-            if sid:
-                old = rec.service_id
-                rec.service_id = sid
-                # registry.get_by_id reads service_id off the record, so
-                # the rebind is sufficient. No name map update needed.
-                log.debug("rebound service %s id %s->%s", name, old, sid)
-        except Exception as exc:
-            log.warning("could not re-register journaled service %s: %s",
-                        name, exc)
-            continue
+        await _reregister_record(name, entry)
 
     # Park; let reconnects flow. After the window, respawn the silent ones.
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.5)
 
     from awm.gateway.hub import discovery as _discovery
-    from awm.gateway.hub import rpc as _rpc
     for name in list(journal.keys()):
         entry = journal.get(name) or {}
-        sid = entry.get("service_id")
-        ch = _rpc.get_control(sid) if sid else None
-        if ch is not None and ch.ready.is_set():
+        if _has_ready_control(entry.get("service_id")):
             log.info("service %s reconnected within window", name)
             continue
         if not _discovery.is_enabled(name):
             # Operator disabled it while it was journaled; leave it down.
             log.info("service %s disabled; not respawning", name)
             continue
-        last_pid = entry.get("last_pid")
-        start_cmd = entry.get("start_cmd") or []
-        if not start_cmd:
-            log.warning(
-                "service %s did not reconnect and has no start_cmd; leaving",
-                name,
-            )
-            continue
-        if last_pid:
-            log.info("service %s silent; killing stale pid=%d", name, last_pid)
-            await asyncio.get_event_loop().run_in_executor(
-                None, kill_pid_group, last_pid,
-            )
-        try:
-            # The gateway is the hub, so inject its own loopback URL rather than
-            # trusting a journal field — entries written by an earlier manual
-            # launch may lack ``hub_url`` entirely, which would respawn the
-            # service with an empty AWM_HUB_URL and it would die on boot.
-            hub_url = entry.get("hub_url") or f"http://{config.HOST}:{config.PORT}/"
-            new_pid = spawn_service(
-                name,
-                start_cmd,
-                entry.get("cwd") or "",
-                {
-                    "AWM_HUB_URL": hub_url,
-                    "AWM_SERVICE_NAME": name,
-                    "AWM_SERVICE_ID": sid or "",
-                },
-            )
-            update_service_journal_entry(name, {"last_pid": new_pid})
-        except (OSError, ValueError) as exc:
-            log.error("respawn failed for service %s: %s", name, exc)
+        await _respawn_from_journal(name, entry)
+
+
+async def supervise_disconnect(name: str) -> None:
+    """Runtime crash-respawn watchdog for a single service.
+
+    Hooked from the control-WS disconnect path: a service whose control WS
+    dropped unexpectedly (it crashed or was killed) gets ``_RECONNECT_WINDOW_S``
+    to reconnect on its own; if it doesn't, it is respawned from the journal.
+
+    Gated at every step so it never fights a deliberate stop or a gateway
+    teardown:
+
+    * ``is_shutting_down()`` — the gateway is tearing down; leave it alone.
+    * journal entry present — ``awm services stop`` removes the entry *before*
+      killing the process, so a deliberate stop is skipped.
+    * ``discovery.is_enabled`` — a disabled service stays down.
+    * not already reconnected — a genuine quick reconnect is a no-op.
+    """
+    from awm.gateway.hub import discovery as _discovery
+    if is_shutting_down():
+        return
+    entry = load_service_journal().get(name)
+    if not entry or not _discovery.is_enabled(name):
+        return
+
+    # Re-register so the service's own quick reconnect (same service_id) is
+    # accepted rather than bounced with 4404 — eviction removed the record.
+    await _reregister_record(name, entry)
+
+    # Give it the window to come back.
+    await asyncio.sleep(_RECONNECT_WINDOW_S)
+
+    if is_shutting_down():
+        return
+    # Re-read: the entry may have been removed by a deliberate stop, or the
+    # service may have reconnected, during the window.
+    entry = load_service_journal().get(name)
+    if not entry or not _discovery.is_enabled(name):
+        return
+    if _has_ready_control(entry.get("service_id")):
+        log.info("service %s reconnected after disconnect; not respawning", name)
+        return
+    log.info("service %s did not reconnect within %.0fs; respawning",
+             name, _RECONNECT_WINDOW_S)
+    await _respawn_from_journal(name, entry)
 
 
 async def bootstrap_discovered_services() -> None:

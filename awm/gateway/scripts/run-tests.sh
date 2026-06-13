@@ -33,6 +33,7 @@ COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$
 declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
   [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
+  [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
@@ -43,7 +44,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore scopes agents artifacts skills discord ptt tts)
+ORDER=(gateway agentcore gatewayclient scopes agents artifacts skills discord ptt tts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
