@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from importlib.util import find_spec
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -43,7 +44,30 @@ ENV_FILE = AWM_DIR / "env"
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
-SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+
+def _resolve_skills_dir() -> Path:
+    """Locate the skills catalog the `awm.skills` package owns.
+
+    The catalog is package-data of `awm.skills` (`awm.skills.skills.SKILLS_DIR`).
+    Config only *consumes* the path (for the scopes service's `.awm/skills`
+    symlink + inert template lookup), so it defers to the installed package
+    rather than hardcoding a layout — robust to the env's split editable
+    installs. Falls back to a workspace-local dir when `awm.skills` isn't
+    installed (stripped env), so importing config never crashes.
+    """
+    try:
+        spec = find_spec("awm.skills")
+        if spec and spec.origin:
+            catalog = Path(spec.origin).resolve().parent / "catalog"
+            if catalog.exists():
+                return catalog
+    except (ImportError, ValueError):
+        pass
+    return WORKSPACE_ROOT / "skills"
+
+
+SKILLS_DIR = _resolve_skills_dir()
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 

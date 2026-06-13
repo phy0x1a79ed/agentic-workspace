@@ -8,9 +8,14 @@ from pathlib import Path
 
 import yaml
 
-from awm.config import SKILLS_DIR
 from awm.skills.models import SkillInfo, SkillListResponse, SkillContentResponse
 from awm.skills import dao as _dao_mod
+
+# The catalog is bundled package-data right beside this module. Resolving it
+# package-relative (rather than via awm.config) makes the skills service the
+# single owner of the catalog location and keeps it correct under the env's
+# split editable installs — awm.skills always carries its own catalog.
+SKILLS_DIR = Path(__file__).resolve().parent / "catalog"
 
 
 def _parse_frontmatter(path: Path) -> dict:
