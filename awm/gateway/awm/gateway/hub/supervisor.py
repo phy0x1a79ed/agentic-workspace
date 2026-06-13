@@ -205,13 +205,18 @@ async def reconcile_journaled_services() -> None:
                 None, kill_pid_group, last_pid,
             )
         try:
+            # The gateway is the hub, so inject its own loopback URL rather than
+            # trusting a journal field — entries written by an earlier manual
+            # launch may lack ``hub_url`` entirely, which would respawn the
+            # service with an empty AWM_HUB_URL and it would die on boot.
+            hub_url = entry.get("hub_url") or f"http://{config.HOST}:{config.PORT}/"
             new_pid = spawn_service(
                 name,
                 start_cmd,
                 entry.get("cwd") or "",
                 {
-                    "AWM_HUB_URL": entry.get("hub_url", ""),
-                    "AWM_HUB_TOKEN": entry.get("hub_token", ""),
+                    "AWM_HUB_URL": hub_url,
+                    "AWM_HUB_TOKEN": entry.get("hub_token") or os.environ.get("AWM_HUB_TOKEN", ""),
                     "AWM_SERVICE_NAME": name,
                     "AWM_SERVICE_ID": sid or "",
                 },
