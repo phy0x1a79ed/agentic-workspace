@@ -181,7 +181,6 @@ class TestReconcileRespawn:
             "start_cmd": ["start.sh", "--port", "9000"],
             "cwd": "/srv/tts",
             "hub_url": "http://127.0.0.1:7820",
-            "hub_token": "tok-abc",
         })
 
         async def go():
@@ -200,7 +199,7 @@ class TestReconcileRespawn:
         assert sp["cmd"] == ["start.sh", "--port", "9000"]
         assert sp["cwd"] == "/srv/tts"
         assert sp["env"]["AWM_HUB_URL"] == "http://127.0.0.1:7820"
-        assert sp["env"]["AWM_HUB_TOKEN"] == "tok-abc"
+        assert "AWM_HUB_TOKEN" not in sp["env"]
         assert sp["env"]["AWM_SERVICE_NAME"] == "tts"
         assert sp["env"]["AWM_SERVICE_ID"] == "svc-silent"
 

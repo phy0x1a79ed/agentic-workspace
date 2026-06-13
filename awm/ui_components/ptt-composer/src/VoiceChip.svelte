@@ -1,12 +1,12 @@
 <script lang="ts">
-  // Atomic, non-editable voice pill. The visual identity of a transcribed
-  // utterance: text + an × delete button, optionally in a "live" streaming
-  // state that paints a skeleton until the first partial lands.
+  // Atomic, non-editable voice card. The visual identity of a transcribed
+  // utterance: a full-width section (styled like the chat-history post cards
+  // in @awm/tts-history) holding the text, with an × delete strip pinned to
+  // the right. The optional "live" streaming state paints a skeleton +
+  // recording accent until the first partial lands.
   //
-  // Used declaratively by ConvoTab.svelte (one element per chip in a list).
-  // PttTab.svelte creates the same DOM imperatively via its `makeChunk()`
-  // factory because contenteditable + Svelte-state re-renders fight over
-  // caret position — but it imports this file so the :global styles ship.
+  // Used declaratively by VoiceTab.svelte — one card per chip in the
+  // uneditable voice list (both PTT and Convo feed it).
 
   interface Props {
     text?: string;
@@ -22,60 +22,72 @@
   }
 </script>
 
-<span class="chunk" class:live contenteditable="false">
+<div class="chunk" class:live>
   <span class="chunk-text">{text}</span>
   <!-- svelte-ignore a11y_consider_explicit_label -->
   <button
     type="button"
     class="chunk-del"
-    contenteditable="false"
     tabindex={-1}
-    aria-label="delete chunk"
+    aria-label="delete utterance"
     onclick={handleRemoveClick}
   >×</button>
-</span>
+</div>
 
 <style>
+  /* Full-width card, matching the chat-history post cards in @awm/tts-history
+     (.post / .body): surface bg, hairline border, 4px radius. */
   :global(.chunk) {
-    display: inline-flex;
-    align-items: center;
-    gap: 0;
-    padding: 1px 0 1px 8px;
-    margin: 0 2px;
-    background: color-mix(in oklab, var(--recording, #f55) 16%, var(--surface2, #222));
-    border: 1px solid color-mix(in oklab, var(--recording, #f55) 50%, var(--border, #333));
+    box-sizing: border-box;
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    background: var(--surface, #1a1a1a);
+    border: 1px solid var(--border, #333);
     border-radius: var(--radius-md, 4px);
     color: var(--text, #ddd);
-    line-height: 1.5;
     user-select: none;
-    vertical-align: baseline;
+    overflow: hidden;
   }
   :global(.chunk .chunk-text) {
-    display: inline-block;
-    min-height: 1em;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 5px 10px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.45;
   }
+  /* delete strip pinned to the right edge of the card */
   :global(.chunk-del) {
-    display: inline-flex;
+    flex: 0 0 auto;
+    display: flex;
     align-items: center;
     justify-content: center;
-    margin: 0 2px 0 8px;
-    padding: 0 8px;
-    height: 1.4em;
+    padding: 0 10px;
     background: transparent;
     border: 0;
-    border-left: 1px solid color-mix(in oklab, var(--recording, #f55) 50%, var(--border, #333));
-    color: var(--text2, #bbb);
+    border-left: 1px solid var(--border, #333);
+    color: var(--text3, #888);
     font-family: var(--mono, monospace);
-    font-size: 13px;
+    font-size: 14px;
+    line-height: 1;
     cursor: pointer;
     user-select: none;
+    transition: color 0.12s, background 0.12s;
   }
-  :global(.chunk-del:hover) { color: var(--danger, #f44); }
+  :global(.chunk-del:hover) {
+    color: var(--danger, #f44);
+    background: color-mix(in oklab, var(--danger, #f44) 12%, transparent);
+  }
 
   :global(.chunk.live) {
-    background: color-mix(in oklab, var(--recording, #f55) 26%, var(--surface2, #222));
-    border-color: var(--recording, #f55);
-    box-shadow: 0 0 0 1px color-mix(in oklab, var(--recording, #f55) 30%, transparent);
+    background: color-mix(in oklab, var(--recording, #f55) 12%, var(--surface, #1a1a1a));
+    border-color: color-mix(in oklab, var(--recording, #f55) 55%, var(--border, #333));
+  }
+  :global(.chunk.live .chunk-del) {
+    border-left-color: color-mix(in oklab, var(--recording, #f55) 45%, var(--border, #333));
   }
   :global(.chunk.live .chunk-text) {
     color: var(--text, #ddd);

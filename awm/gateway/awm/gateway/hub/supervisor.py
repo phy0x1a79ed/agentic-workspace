@@ -86,9 +86,10 @@ def spawn_service(name: str, start_cmd: list[str], cwd: str,
                   env_extra: dict[str, str]) -> int:
     """Launch ``start_cmd`` for a service. Returns the spawned PID.
 
-    The hub injects ``AWM_HUB_URL``, ``AWM_HUB_TOKEN``, ``AWM_SERVICE_NAME``
-    in env (caller is expected to set them in ``env_extra``). stdout +
-    stderr land in ``<AWM_DIR>/logs/services/<name>.log``.
+    The hub injects ``AWM_HUB_URL``, ``AWM_SERVICE_NAME`` (and ``AWM_SERVICE_ID``
+    on respawn) in env (caller is expected to set them in ``env_extra``). No
+    auth — the registration handshake carries no token. stdout + stderr land in
+    ``<AWM_DIR>/logs/services/<name>.log``.
     """
     log_dir = config.AWM_DIR / "logs" / "services"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +135,41 @@ def kill_pid_group(pid: int, *, grace_s: float = 5.0) -> None:
         _time.sleep(0.1)
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(os.getpgid(pid), signal.SIGKILL)
+
+
+def default_hub_url() -> str:
+    """Loopback URL of *this* gateway — the only correct ``AWM_HUB_URL`` to
+    inject into a spawned service. ``config.PORT`` is the sandbox port in a dev
+    sandbox and the prod port otherwise, so this is always right for the tree
+    the gateway is running from."""
+    return f"http://{config.HOST}:{config.PORT}/"
+
+
+def spawn_and_journal(name: str, start_cmd: list[str], cwd: str,
+                      hub_url: str | None = None) -> int:
+    """Spawn a service from ``start_cmd`` and write its journal entry.
+
+    The single spawn path shared by first-boot bootstrap and the
+    ``POST /hub/services/{name}/start`` endpoint — both leave a journal entry a
+    later reconcile can resume, and both inject exactly the three contract env
+    vars (``AWM_HUB_URL`` / ``AWM_SERVICE_NAME`` / ``AWM_SERVICE_ID``). No auth.
+    The fresh service self-registers and is assigned a ``service_id`` (filled
+    into the journal by the register endpoint), so ``AWM_SERVICE_ID`` is empty.
+    """
+    hub_url = hub_url or default_hub_url()
+    new_pid = spawn_service(name, list(start_cmd), cwd, {
+        "AWM_HUB_URL": hub_url,
+        "AWM_SERVICE_NAME": name,
+        "AWM_SERVICE_ID": "",
+    })
+    update_service_journal_entry(name, {
+        "start_cmd": list(start_cmd),
+        "cwd": cwd,
+        "last_pid": new_pid,
+        "hub_url": hub_url,
+        "prefix": f"/svc/{name}",
+    })
+    return new_pid
 
 
 async def reconcile_journaled_services() -> None:
@@ -183,6 +219,7 @@ async def reconcile_journaled_services() -> None:
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.5)
 
+    from awm.gateway.hub import discovery as _discovery
     from awm.gateway.hub import rpc as _rpc
     for name in list(journal.keys()):
         entry = journal.get(name) or {}
@@ -190,6 +227,10 @@ async def reconcile_journaled_services() -> None:
         ch = _rpc.get_control(sid) if sid else None
         if ch is not None and ch.ready.is_set():
             log.info("service %s reconnected within window", name)
+            continue
+        if not _discovery.is_enabled(name):
+            # Operator disabled it while it was journaled; leave it down.
+            log.info("service %s disabled; not respawning", name)
             continue
         last_pid = entry.get("last_pid")
         start_cmd = entry.get("start_cmd") or []
@@ -205,13 +246,17 @@ async def reconcile_journaled_services() -> None:
                 None, kill_pid_group, last_pid,
             )
         try:
+            # The gateway is the hub, so inject its own loopback URL rather than
+            # trusting a journal field — entries written by an earlier manual
+            # launch may lack ``hub_url`` entirely, which would respawn the
+            # service with an empty AWM_HUB_URL and it would die on boot.
+            hub_url = entry.get("hub_url") or f"http://{config.HOST}:{config.PORT}/"
             new_pid = spawn_service(
                 name,
                 start_cmd,
                 entry.get("cwd") or "",
                 {
-                    "AWM_HUB_URL": entry.get("hub_url", ""),
-                    "AWM_HUB_TOKEN": entry.get("hub_token", ""),
+                    "AWM_HUB_URL": hub_url,
                     "AWM_SERVICE_NAME": name,
                     "AWM_SERVICE_ID": sid or "",
                 },
@@ -219,3 +264,39 @@ async def reconcile_journaled_services() -> None:
             update_service_journal_entry(name, {"last_pid": new_pid})
         except (OSError, ValueError) as exc:
             log.error("respawn failed for service %s: %s", name, exc)
+
+
+async def bootstrap_discovered_services() -> None:
+    """First-boot bootstrap: spawn every discovered, enabled service that the
+    journal has never seen.
+
+    Runs *after* ``reconcile_journaled_services`` — which already owns every
+    name in the journal (reconnect or respawn). So this only fires for services
+    the journal has no record of: a fresh clone, a wiped ``services.json``, or a
+    newly-added service folder. Once a service is journaled here, the next
+    gateway restart routes it through reconcile, not bootstrap (so a second
+    restart never double-spawns).
+
+    The spawn path, ``start_cmd`` (``["bash", "run.sh"]``) and ``cwd`` are
+    identical to what a service self-registers with, so a bootstrap-spawned
+    entry is indistinguishable from a self-registered one to reconcile.
+    """
+    from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import get_registry
+
+    journal = load_service_journal()
+    registry = get_registry()
+    for spec in discovery.discover_services():
+        if not spec.enabled:
+            log.info("bootstrap: %s disabled; skipping", spec.name)
+            continue
+        if spec.name in journal:
+            continue  # reconcile owns it
+        if registry.get_by_name("service", spec.name) is not None:
+            continue  # already self-registered independently
+        try:
+            new_pid = spawn_and_journal(spec.name, list(spec.start_cmd), spec.cwd)
+        except (OSError, ValueError) as exc:
+            log.error("bootstrap spawn failed for %s: %s", spec.name, exc)
+            continue
+        log.info("bootstrap: spawned %s pid=%d", spec.name, new_pid)

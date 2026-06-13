@@ -2,62 +2,56 @@
 name: debrief
 tags: [session, completion, reflection, debrief]
 requires: []
-description: End-of-session debrief — log the session, register artifacts, refresh
+description: End-of-session debrief — journal the session (scope_post kind=journal), register artifacts, refresh
 ---
 
 # Session Debrief
 
 Run this protocol at the end of a work session when instructed to debrief.
 
+A scope **is** its channel: the session journal, messages, and system events
+are all `scope_posts` addressed by `(project, scope)`. Journaling a session is a
+`scope_post` with `kind=journal` — there is no separate `session_log` tool, and
+journal entries are not "resolved" (the old read-state/resolve model is gone).
+
 ## Steps
 
 1. **Update project docs.** If the session changed how the project works — new scripts, new workflows, changed conventions, fixed bugs that affect usage — update `AGENTS.md` (or equivalent project docs) to reflect the current state. Docs should describe the world as it is now, not as it was before the session. Skip if no user-facing behavior changed.
 
-2. **Update scope context.** If the session changed how *this scope's* work is framed — new objectives, refined expectations, scope-local conventions, or post-implementation notes worth carrying forward — update `.awm/context.md` to reflect the current state. Only edit `context.md`; `.awm/history.md` and `.awm/artifacts.md` are auto-generated (rebuilt by `awm_refresh` in step 8) and must not be hand-edited. Skip if the scope's framing is unchanged.
+2. **Update scope context.** If the session changed how *this scope's* work is framed — new objectives, refined expectations, scope-local conventions, or post-implementation notes worth carrying forward — update `.awm/context.md` to reflect the current state. Only edit `context.md`; `.awm/history.md` and `.awm/artifacts.md` are auto-generated (rebuilt by `scope_refresh` in step 6) and must not be hand-edited. Skip if the scope's framing is unchanged.
 
-3. **Commit outstanding changes.** If there are uncommitted changes from the session, commit them before logging the debrief. The debrief should describe work that is already landed, not in-flight. Ask the user before committing if unsure.
+3. **Commit outstanding changes.** If there are uncommitted changes from the session, commit them before journaling the debrief. The debrief should describe work that is already landed, not in-flight. Ask the user before committing if unsure.
 
-4. **Log the session.** Capture how things went — what worked, what didn't, what to improve. If you followed a specific skill, pass its path so the reflection is tied back to that skill for later analysis.
-
-   The call has two kinds of fields:
-
-   - **`title`** — a short one-line label (e.g. "Fixed parser crash on empty input"). Shown in `history.md` and search results. Keep it under ~80 characters.
-   - **`summary`** — one free-form paragraph. This is the narrative reflection: outcome (success / partial / failure / abandoned), what went well, what didn't, and any deviations or suggestions for a skill you followed.
-   - **`skill_path`** — the path of the skill you followed this session, if any (e.g. `awm/debrief.md`). Omit if no skill was followed.
-   - **`--decision` / `--issue` / `--next-step`** — repeatable flags. Each occurrence appends **one bullet** to a structured list that a future session will read back. Use one flag per discrete item; do **not** cram multiple items into one string.
-     - `--decision` → a concrete choice made this session (what you picked and why)
-     - `--issue` → a gotcha, bug, or blocker encountered
-     - `--next-step` → a specific TODO the next session should pick up
-
-   Example:
+4. **Journal the session.** Post a `kind=journal` entry to this scope's channel capturing how things went — outcome, what worked, what didn't, decisions, gotchas, and next steps. If you followed a specific skill, record its path in `meta.skill_path` so the reflection is tied back to that skill for later analysis.
 
    ```
-   session_log project=my-proj scope=add-normalization \
-     skill_path="awm/debrief.md" \
-     title="Quantile normalization for batches 1-2, batch 3 blocked on missing values" \
-     summary="Partial success. Quantile normalization worked on batches 1-2, but batch 3 has too many missing values to normalize directly. Debrief skill was clear, no deviations." \
-     --decision "Use quantile normalization for cross-sample comparability" \
-     --decision "Defer batch 3 handling until imputation strategy is chosen" \
-     --issue "Batch 3 has 40% missing values in the expression matrix" \
-     --next-step "Evaluate KNN vs MICE imputation on batch 3" \
-     --next-step "Re-run normalization once batch 3 is imputed"
+   scope_post project={project} scope={scope} kind=journal \
+     author="agent:{project}/{scope}" \
+     body="<the narrative — see below>" \
+     meta='{"title": "...", "outcome": "success", "skill_path": "awm/debrief.md"}'
    ```
 
-   In the rendered session log, `summary` becomes the `## Session Summary` paragraph and the repeated flags become bullet lists under `## Decisions Made`, `## Gotchas / Issues`, and `## Next Steps`.
+   Field guide:
 
-5. **Resolve fixed issues.** Check for open session issues from prior sessions that were addressed this session. Search for open entries, then resolve any that are no longer relevant:
+   - **`author`** — your scope identity, `agent:{project}/{scope}` (e.g. `agent:awm/full-modular-services`).
+   - **`body`** — the full narrative, and the only place the *detail* is preserved. Write the outcome paragraph, then list **Decisions**, **Issues**, and **Next steps** as markdown bullets. `history.md` shows only the title + outcome at a glance (see below), so the body is what a future session reads back via `scope_fetch` — put the substance here, one bullet per discrete item.
+   - **`meta`** — a JSON object. Keys that `history.md` renders:
+     - `title` — short one-line label (< ~80 chars); falls back to the first 80 chars of `body` if omitted.
+     - `outcome` — `success` | `partial` | `failure` | `abandoned`; rendered as `[outcome]` next to the title.
+     - `skill_path` — the skill you followed (e.g. `awm/debrief.md`); journals are grouped under it. Omit if none.
+     - `deviations` / `suggestions` — optional, for skill-improvement; each renders as a bullet under the entry.
+
+   How it renders: `history.md` groups journals by `skill_path` and shows
+   `[id] title [outcome]` per entry (plus any `deviations`/`suggestions`). The
+   body is **not** in `history.md` — retrieve it with `scope_fetch` (step 5).
+
+5. **Review prior journal entries.** Read recent journals for this scope to pick up open threads — there is no "resolve" step; open items are carried forward by referencing them in this session's journal and acting on them. Newest-first:
 
    ```
-   session_search project={project} scope={scope} status=open
+   scope_fetch project={project} scope={scope} kind=journal order=desc limit=10
    ```
 
-   For each issue that was fixed or is no longer relevant:
-
-   ```
-   session_resolve session_id={id} resolution="Fixed: brief description of what was done"
-   ```
-
-   Resolved entries will appear as compact one-liners in `history.md` (with their ID for later retrieval via `session_get`), while open entries remain fully visible. Skip this step if there are no prior open issues.
+   To search across scopes, add a `query` and drop `scope`. Skip if there is no prior history.
 
 6. **Review and update artifacts.** Before registering, search for existing artifacts in the scope to avoid duplicates and clean up stale entries.
 
@@ -69,7 +63,7 @@ Run this protocol at the end of a work session when instructed to debrief.
      ```
      artifact_delete artifact_id=<id>
      ```
-   - **Register** new outputs (skips if `artifact_register` is called with an existing `path` — it upserts):
+   - **Register** new outputs (`artifact_register` upserts on an existing `path`):
      ```
      artifact_register project={project} scope={scope} name="..." artifact_type=... path="..." description="..."
      ```
@@ -80,7 +74,7 @@ Run this protocol at the end of a work session when instructed to debrief.
 7. **Sync artifacts** so the registry reflects on-disk reality before closing out:
 
    ```
-   artifacts_sync
+   artifact_sync
    ```
 
    This is lazy — a no-op when nothing has changed since the last sync — so it is safe to call on every debrief. When drift is detected it flips any artifact whose file has been deleted to `status='stale'` (hiding it from search), restores any that have reappeared, and prunes their embeddings. Pass `force=true` only if you deleted files out-of-band without any other DB write during this session.
@@ -88,5 +82,5 @@ Run this protocol at the end of a work session when instructed to debrief.
 8. **Refresh** so the next session sees your contributions:
 
    ```
-   awm_refresh project={project} scope={scope}
+   scope_refresh project={project} scope={scope}
    ```

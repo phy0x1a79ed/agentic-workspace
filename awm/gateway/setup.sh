@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-WORKSPACE_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# This script lives at awm/gateway/setup.sh. Its sibling files (environment.yml,
+# install.sh) are resolved relative to its own directory; the workspace/clone
+# ROOT it seeds (the .awm/ runtime dir) is the git toplevel, not the gateway dir.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 
 echo "=== AWM Setup ==="
 
 # 1. Create mamba environment (idempotent)
 if ! mamba env list 2>/dev/null | awk '{print $1}' | grep -qx "awm"; then
     echo "Creating mamba environment 'awm'..."
-    mamba env create -f "$WORKSPACE_ROOT/environment.yml"
+    mamba env create -f "$HERE/environment.yml"
 else
     echo "Updating mamba environment 'awm'..."
-    mamba env update -f "$WORKSPACE_ROOT/environment.yml" --prune
+    mamba env update -f "$HERE/environment.yml" --prune
 fi
 
 # 2. Install the modular tree into the env. The gateway is the composition
@@ -18,9 +22,9 @@ fi
 # gatewayclient), every feature service (scopes/agents/artifacts/skills/discord),
 # then the gateway itself (which provides the `awm` / `awm-mcp` console scripts).
 echo "Installing awm modular tree (components + feature services + gateway)..."
-AWM_ENV=awm bash "$WORKSPACE_ROOT/awm/gateway/install.sh"
+AWM_ENV=awm bash "$HERE/install.sh"
 
-# 3. Create .awm/ runtime directory
+# 3. Create .awm/ runtime directory at the workspace/clone root
 mkdir -p "$WORKSPACE_ROOT/.awm"
 
 # 4. Initialize the database

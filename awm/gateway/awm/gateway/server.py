@@ -79,15 +79,25 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     idle_task = asyncio.create_task(_idle_shutdown_loop())
 
-    # Reconcile journaled hub services: give each a 10s window to reopen its
-    # control WS, then respawn silent ones from start_cmd. Fired as a
-    # background task — the hub is available immediately for services that
-    # ARE actively reconnecting.
+    # Bring feature services up. One background task runs two phases in order:
+    #   1. reconcile journaled services — give each a 10s window to reopen its
+    #      control WS, then respawn silent ones from start_cmd;
+    #   2. bootstrap discovered-but-unjournaled services — first-boot self-heal
+    #      for a fresh clone / wiped journal / newly-added service folder.
+    # Sequential (bootstrap awaits reconcile) so bootstrap reads the journal
+    # only after reconcile's window + respawns have settled — no double-spawn.
+    async def _bring_up_services() -> None:
+        from awm.gateway.hub.supervisor import (
+            bootstrap_discovered_services,
+            reconcile_journaled_services,
+        )
+        await reconcile_journaled_services()
+        await bootstrap_discovered_services()
+
     try:
-        from awm.gateway.hub.supervisor import reconcile_journaled_services
-        asyncio.create_task(reconcile_journaled_services())
+        asyncio.create_task(_bring_up_services())
     except Exception as exc:  # noqa: BLE001
-        print(f"[awm] service reconcile skipped: {exc}")
+        print(f"[awm] service bring-up skipped: {exc}")
 
     # Fan canonical .mcp.json out to backend-specific configs.
     try:
