@@ -81,7 +81,11 @@ class ConvoSession:
                 fallback = False
             except AgentError as exc:
                 # Faithful degradation: show the accumulated raw transcript,
-                # don't auto-submit, leave notes untouched.
+                # don't auto-submit, leave notes untouched. The exc message
+                # distinguishes empty-reply (thinking model put its answer in
+                # reasoning parts) from no-JSON-found from HTTP error — keep it
+                # visible: it's the single most useful signal for why a live
+                # convo never submits.
                 log.warning("convo cleanup failed, using raw text: %s", exc)
                 cleaned = " ".join(self.raw_log).strip()
                 should_submit = False
@@ -90,6 +94,12 @@ class ConvoSession:
 
             if not cleaned:
                 cleaned = " ".join(self.raw_log).strip()
+
+            # Per-cut outcome trace — the diagnostic for where submission breaks.
+            log.info(
+                "convo cut: should_submit=%s fallback=%s cleaned=%r",
+                should_submit, fallback, cleaned[:120],
+            )
 
             self.composer = cleaned
             if isinstance(notes_update, str) and notes_update.strip():

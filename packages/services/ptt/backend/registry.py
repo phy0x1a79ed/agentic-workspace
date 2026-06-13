@@ -19,7 +19,9 @@ Wire protocol:
 
   broadcast down (to every tab of the same user):
     ``{"type":"ready", "user":"..."}``         on attach
-    ``{"type":"status","stage":"recording"|"transcribing"|"idle", "text":"..."}``
+    ``{"type":"status","stage":"recording"|"transcribing"|"refining"|"idle", "text":"..."}``
+                                              (convo emits "refining" while the
+                                              LLM cleans a silence-cut)
     ``{"type":"partial","text":"..."}``        rolling STT while recording
     ``{"type":"stt_result","text":"..."}``     PTT: after whisper completes
     ``{"type":"composer","text":"..."}``       convo: LLM-cleaned message so far
@@ -62,10 +64,18 @@ IDLE_TIMEOUT_SEC = int(os.environ.get("PTT_IDLE_SEC", os.environ.get("VOICE_IDLE
 # Min-tail keeps us from running whisper on sub-word slivers.
 PARTIAL_MIN_GAP_SEC = float(os.environ.get("PTT_PARTIAL_GAP", "2.0"))
 PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
-# Continuous mode: number of consecutive empty-segment passes (i.e. tail
-# is all silence according to whisper+silero-vad) that triggers committing
-# the current utterance as an stt_result and resetting the splicing window.
-SILENCE_PASSES = int(os.environ.get("PTT_SILENCE_PASSES", "2"))
+# Continuous mode: trailing-silence hang time. A silence-cut fires once the
+# rolling tail ends with at least this many seconds of non-speech AFTER the last
+# transcribed word, measured from whisper's segment timestamps (tail duration
+# minus the last segment's end time). Those timestamps stay on the original
+# timeline even with vad_filter on, so the trailing gap is visible even though
+# the held final segment keeps transcribing.
+#
+# This REPLACES the old "N consecutive empty-segment passes" detector, which
+# could never fire for a real end-of-utterance: the last segment is deliberately
+# left uncommitted, so the tail always retained the final words and never
+# transcribed empty — convo never cut, never refined, never submitted.
+SILENCE_HANG_SEC = float(os.environ.get("PTT_SILENCE_HANG", "1.2"))
 SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2  # int16 LE
 
@@ -116,11 +126,12 @@ class PttAgent:
         self.committed_bytes: int = 0
         self._partial_task: Optional[asyncio.Task] = None
         # Continuous-mode state. ``continuous=True`` enables silero-vad on the
-        # rolling tail; consecutive empty-segment passes accumulate in
-        # ``_silent_passes`` and trigger an stt_result cut + reset once they
-        # cross SILENCE_PASSES. ``_last_partial`` is the most recent merged
-        # text we broadcast, used as the cut payload (it matches what the
-        # user has been watching on screen).
+        # rolling tail; a silence-cut fires when the tail ends with at least
+        # ``SILENCE_HANG_SEC`` of trailing non-speech (gap between the last
+        # segment's end and the tail duration). ``_last_partial`` is the most
+        # recent merged text we broadcast, used as the cut payload (it matches
+        # what the user has been watching on screen). ``_silent_passes`` is
+        # retained only for the rare all-silence-tail path's bookkeeping.
         self.continuous: bool = False
         self._silent_passes: int = 0
         self._last_partial: str = ""
@@ -185,16 +196,48 @@ class PttAgent:
             return
 
         async def _run() -> None:
+            # Surface the LLM refine step — without this the indicator sits on
+            # "listening…" through the whole cut→clean→submit round-trip.
+            await self._status("refining", "refining…")
             try:
                 res = await convo.on_silence_cut(cut_text)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 — on_silence_cut self-handles; belt-and-suspenders
                 log.exception("convo cleanup crashed for %s", self.user_id)
+                await self._status("recording", "listening…")
                 return
             await self.broadcast_json({"type": "composer", "text": res.cleaned_text})
             if res.should_submit:
                 await self.broadcast_json({"type": "submit", "text": res.cleaned_text})
+                await self._status("recording", "listening…")
+            elif res.fallback:
+                # LLM unavailable: composer shows raw text, no submit. Flag it so
+                # a stuck convo is visibly "cleanup offline" rather than silent.
+                await self._status("recording", "cleanup offline · listening…")
+            else:
+                await self._status("recording", "listening…")
 
         asyncio.create_task(_run())
+
+    async def _silence_cut(self, joined: bytes) -> None:
+        """Fire one silence-cut: dispatch the accumulated utterance (convo →
+        LLM inner loop; PTT-continuous → raw stt_result) and reset the splice
+        window so the next utterance transcribes from a fresh tail."""
+        cut_text = (
+            (self.committed_text + " " + self._last_partial).strip()
+            if self._last_partial
+            else self.committed_text.strip()
+        )
+        if cut_text:
+            log.debug("ptt silence-cut for %s: text=%r", self.user_id, cut_text)
+            if self.convo is not None:
+                self._dispatch_convo_cut(cut_text)
+            else:
+                await self.broadcast_json({"type": "stt_result", "text": cut_text})
+        # Skip past everything accumulated so the next utterance starts fresh.
+        self.committed_bytes = len(joined)
+        self.committed_text = ""
+        self._last_partial = ""
+        self._silent_passes = 0
 
     # ---- input handlers ----
 
@@ -226,7 +269,7 @@ class PttAgent:
                 self.convo.set_context(context)
             # Warm the opencode server ahead of the first cut (best-effort).
             asyncio.create_task(mgr.ensure_started())
-        await self._status("recording", "recording…")
+        await self._status("recording", "listening…" if self.continuous else "recording…")
         self._partial_task = asyncio.create_task(self._partial_loop(ws))
 
     async def add_audio(self, ws: WebSocket, data: bytes) -> None:
@@ -348,41 +391,17 @@ class PttAgent:
                     continue
                 if self.recording_client is not ws:
                     return
+                tail_dur = len(tail) / SAMPLE_BYTES / SAMPLE_RATE
                 if not segments:
-                    if self.continuous:
-                        self._silent_passes += 1
-                        if self._silent_passes >= SILENCE_PASSES:
-                            cut_text = (
-                                (self.committed_text + " " + self._last_partial).strip()
-                                if self._last_partial
-                                else self.committed_text.strip()
-                            )
-                            if cut_text:
-                                log.debug(
-                                    "ptt silence-cut for %s: text=%r",
-                                    self.user_id, cut_text,
-                                )
-                                # PHASE 2 SEAM: in convo (continuous) mode the
-                                # finalized utterance goes through the LLM inner
-                                # loop (faithful cleanup + submit decision)
-                                # instead of a raw stt_result. Dispatched as a
-                                # task so the partial loop never blocks on the
-                                # LLM round-trip.
-                                if self.convo is not None:
-                                    self._dispatch_convo_cut(cut_text)
-                                else:
-                                    await self.broadcast_json(
-                                        {"type": "stt_result", "text": cut_text},
-                                    )
-                            # Skip past everything we've accumulated so the
-                            # next utterance transcribes from fresh tail.
-                            self.committed_bytes = len(joined)
-                            self.committed_text = ""
-                            self._last_partial = ""
-                            self._silent_passes = 0
+                    # Whole tail is non-speech (only happens once nothing is left
+                    # uncommitted — e.g. right after a cut). Treat a long enough
+                    # all-silence tail as a hang so a trailing cut still fires.
+                    if self.continuous and tail_dur >= SILENCE_HANG_SEC:
+                        # PHASE 2 SEAM: convo (continuous) routes the finalized
+                        # utterance through the LLM inner loop (cleanup + submit
+                        # decision); PTT-continuous emits a raw stt_result.
+                        await self._silence_cut(joined)
                     continue
-                # Non-empty segments — reset the silence counter.
-                self._silent_passes = 0
                 if len(segments) >= 2:
                     stable = segments[:-1]
                     stable_text = " ".join(s[0] for s in stable if s[0]).strip()
@@ -398,12 +417,21 @@ class PttAgent:
                 merged = (self.committed_text + " " + tail_text).strip()
                 if not merged:
                     continue
-                log.debug(
-                    "ptt partial for %s: committed_bytes=%d segs=%d text=%r",
-                    self.user_id, self.committed_bytes, len(segments), merged,
-                )
                 self._last_partial = tail_text
+                # Trailing silence after the last spoken word — measured from the
+                # segment timestamps, which stay accurate even though the held
+                # last segment keeps transcribing (so this fires for a real
+                # end-of-utterance, unlike the old empty-tail-only counter).
+                trailing_gap = tail_dur - segments[-1][2]
+                log.debug(
+                    "ptt partial for %s: committed_bytes=%d segs=%d gap=%.2fs text=%r",
+                    self.user_id, self.committed_bytes, len(segments),
+                    trailing_gap, merged,
+                )
                 await self.broadcast_json({"type": "partial", "text": merged})
+                if self.continuous and trailing_gap >= SILENCE_HANG_SEC:
+                    # PHASE 2 SEAM (see above): end-of-utterance silence-cut.
+                    await self._silence_cut(joined)
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001

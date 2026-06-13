@@ -65,7 +65,7 @@
   function resetConvoText() { convoComposer = ''; convoPartial = ''; }
   function contextSlice(): string { return (chatContext ?? '').slice(-CONTEXT_CAP); }
 
-  let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
+  let status = $state<'idle' | 'recording' | 'transcribing' | 'refining' | 'error'>('idle');
   let statusText = $state('');
   let loginUrl = $state<string | null>(null);
 
@@ -205,7 +205,10 @@
         composer?.updateLiveChunk(msg.text);
       }
     } else if (msg.type === 'status') {
-      if (!convoListening || msg.stage === 'recording' || msg.stage === 'error') {
+      // Apply server stages in convo mode too (refining, listening, …) so the
+      // pipeline is visible. One guard: while locally paused, ignore a
+      // 'recording' frame so it doesn't clobber the local 'paused' note.
+      if (!(paused && msg.stage === 'recording')) {
         status = msg.stage as typeof status;
         statusText = msg.text ?? '';
       }
@@ -441,7 +444,11 @@
   </PttComposerShell>
 
   <div class="status mono" data-status={status}>
-    <span class="dot" class:active={status === 'recording' && !paused}></span>
+    <span
+      class="dot"
+      class:active={status === 'recording' && !paused}
+      class:refining={status === 'refining'}
+    ></span>
     <span class="txt">
       {status}{statusText ? ` · ${statusText}` : ''}
       {#if loginUrl}
@@ -534,5 +541,15 @@
   .dot.active {
     background: var(--recording, #f55);
     box-shadow: 0 0 6px var(--recording, #f55);
+  }
+  /* The LLM refine step: amber, pulsing, to read as "working" not "capturing". */
+  .dot.refining {
+    background: var(--atomizer, #ffb74d);
+    box-shadow: 0 0 6px var(--atomizer, #ffb74d);
+    animation: dot-pulse 1s ease-in-out infinite;
+  }
+  @keyframes dot-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
   }
 </style>
