@@ -37,7 +37,7 @@ from awm.persistence.databases import init_service_db
 from awm.tts import presets, state
 from awm.tts.app import (
     EXPOSED_TTS_ENGINES,
-    _enrich_kokoro_rvc_enums,
+    _enrich_piper_enums,
 )
 from awm.tts.text_clean import clean_for_tts
 from awm.tts.voice import engines as engines_registry
@@ -105,8 +105,8 @@ API_MANIFEST: dict[str, Any] = {
 async def _h_list_engines(args: dict) -> dict:
     all_tts = engines_registry.list_engines()["tts"]
     exposed = {eid: all_tts[eid] for eid in EXPOSED_TTS_ENGINES if eid in all_tts}
-    if "kokoro_rvc" in exposed:
-        await _enrich_kokoro_rvc_enums(exposed["kokoro_rvc"])
+    if "piper" in exposed:
+        await _enrich_piper_enums(exposed["piper"])
     return exposed
 
 

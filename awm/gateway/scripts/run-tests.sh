@@ -38,10 +38,12 @@ declare -A DISTS=(
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [skills]="$WS/awm/services/skills::$WS/awm/services/skills/tests"
   [discord]="$WS/awm/services/discord::$WS/awm/services/discord/tests"
+  [ptt]="$WS/awm/services/ptt::$WS/awm/services/ptt/awm/ptt/tests"
+  [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore scopes agents artifacts skills discord)
+ORDER=(gateway agentcore scopes agents artifacts skills discord ptt tts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

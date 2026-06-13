@@ -4,12 +4,19 @@ A Python feature service in the `awm.tts` namespace. It needs the `awm` conda
 env to contain its package plus the shared component libraries it imports
 (`config`, `persistence`, `gatewayclient`).
 
-This service is **TTS-only**: it exposes the production TTS engines
-(`kokoro_rvc` / `piper` / `sbv2`, plus loadable `f5tts` / `gptsovits`),
-named-preset + keyed-state storage, and one direct `call` playback session that
-streams synthesized PCM back to the browser. The old duplicate STT /
-orchestrator conversation loop was pruned in the modular migration — `ptt` owns
-STT now.
+This service is **TTS-only**: it exposes exactly **two** user-facing TTS engines
+— `piper` (fast, fully-local, the default) and `sbv2` (Style-Bert-VITS2 sidecar)
+— plus loadable-but-unexposed `kokoro_rvc` / `f5tts` / `gptsovits`. It also owns
+named-preset + keyed-state storage and one direct `call` playback session that
+streams synthesized PCM back to the browser. The old duplicate STT / orchestrator
+conversation loop was pruned in the modular migration — `ptt` owns STT now.
+
+**RVC is not a peer engine.** Retrieval-based Voice Conversion is an audio
+*changer*, not a synthesizer, so it folds into `piper` as an optional post-stage:
+piper's config has an `rvc_voice` dropdown that defaults to `off` (raw local
+piper, lowest latency); selecting any other voice routes piper's PCM through the
+RVC stage on the kokoro-rvc sidecar. `kokoro_rvc` is therefore no longer surfaced
+as its own engine.
 
 ## Install
 
@@ -35,30 +42,46 @@ answer `listEngines` / `listPresets` / `getAllState` etc. it needs only:
 All three of `httpx` / `numpy` / `pydantic` are already in the `awm` env (the
 gateway pulls them). **No heavy install is required to bring the service up.**
 
-### Synthesis dependencies (heavy — operator-provisioned, NOT installed here)
+### Synthesis dependencies
 
-Actual speech synthesis runs through **out-of-process sidecars** (and one
-optional in-process backend). These are the heaviest, least-certain part of the
-voice stack — `torch`, model weights, GPU. They are **not** installed by
-`install.sh` and are **unverified in the `awm` env**. The service registers and
-answers metadata calls without any of them; only opening a `call` session
-against an engine whose sidecar/binary is absent fails — and it fails
-gracefully, per-call (the session ends; other engines are unaffected).
+**piper runs fully in-process and is the working default.** It needs the
+installed `piper` package (`piper-tts`, imports as module `piper` with
+`PiperVoice` / `SynthesisConfig` — **not** the fictional `piper_tts`) plus at
+least one `.onnx` voice model. Models live under
+`<AWM_DATA_DIR>/tts-models/piper/*.onnx` (reachable from any scope as
+`.awm/data/tts-models/piper/`), mirroring the `sbv2` layout. Provision one with:
 
-| Engine | Backend | What the operator provisions | Selecting env vars |
+    python -m piper.download_voices --download-dir \
+      "$AWM_DATA_DIR/tts-models/piper" en_US-lessac-medium
+
+The `voice` dropdown enum is filled at `listEngines` time by scanning that dir;
+`PIPER_VOICE` (or the per-call `voice_path`) overrides the path. `piper-tts`,
+`torch`, `faster-whisper`, `onnxruntime`, `soundfile`, `numpy`, `httpx` are all
+already present in the `awm` env.
+
+The **RVC post-stage** and the other engines run through **out-of-process
+sidecars** — `torch`, model weights, GPU — and are **not** started by
+`install.sh`. The service registers and answers metadata calls without any of
+them; piper-with-`rvc_voice=off` synthesizes with no sidecar at all. Selecting an
+RVC voice, or the `sbv2` engine, fails gracefully per-call if its sidecar is
+absent (the session ends; other engines/paths are unaffected).
+
+| Path / Engine | Backend | What the operator provisions | Selecting env vars |
 |---|---|---|---|
-| `kokoro_rvc` | HTTP sidecar (kokoro TTS + RVC voice-conversion server) | run the sidecar; first run downloads the kokoro + RVC model weights | `TTS_RVC_URL` (default `https://127.0.0.1:12123`), `TTS_RVC_VERIFY_SSL` |
-| `piper` | in-process `piper_tts` package + a `.onnx` voice model | `pip install piper_tts` into the env; download a piper voice; first synth lazy-loads the model | `PIPER_VOICE` (voice path override) |
+| `piper` (default) | in-process `piper` package + `.onnx` voice | download a voice into the piper models dir (above) | `PIPER_VOICE` (path override) |
+| piper `rvc_voice` ≠ `off` | HTTP sidecar (kokoro-rvc RVC voice-conversion server) | run the sidecar; the `rvc_voice` enum is its `/voices` list with `off` prepended | `TTS_RVC_URL` (default `https://127.0.0.1:12123`), `TTS_RVC_VERIFY_SSL` |
 | `sbv2` | HTTP sidecar (Style-Bert-VITS2 server, torch) | run the sbv2 server; first run loads the SBV2 model | `SBV2_URL`, `SBV2_MODEL_DIR` |
-| `f5tts` | HTTP sidecar (F5-TTS server, torch) — loadable, not UI-exposed | run the f5tts server; needs a reference WAV + transcript | `F5TTS_URL` |
+| `f5tts` | HTTP sidecar (F5-TTS server) — loadable, not UI-exposed | run the f5tts server; needs a reference WAV + transcript | `F5TTS_URL` |
 | `gptsovits` | HTTP sidecar (GPT-SoVITS server) — loadable, not UI-exposed | run the GPT-SoVITS server | `GPTSOVITS_URL` |
+| `kokoro_rvc` | kokoro→RVC sidecar — **retired as a peer engine** (RVC now folds into piper) | — | `TTS_RVC_URL` |
 
-UI-exposed engines are `kokoro_rvc` / `piper` / `sbv2` (`app.EXPOSED_TTS_ENGINES`);
-`f5tts` / `gptsovits` stay loadable from code but aren't surfaced in the form.
+UI-exposed engines are exactly `piper` / `sbv2` (`app.EXPOSED_TTS_ENGINES`);
+`kokoro_rvc` / `f5tts` / `gptsovits` stay loadable from code but aren't surfaced.
 
-First-run weight downloads (kokoro, RVC, SBV2, piper voices) happen inside the
-respective sidecars/backends, not in this service — budget for the download +
-model-load latency on the first `call` session against each engine.
+**Caveat:** the piper→RVC-*on* path assumes the kokoro-rvc sidecar accepts a
+PCM-in RVC-only route; if the sidecar only does kokoro→RVC end-to-end today,
+enabling a real RVC voice needs a sidecar change. The `off` (raw piper) default
+works regardless and is the verified path.
 
 ## Run
 
