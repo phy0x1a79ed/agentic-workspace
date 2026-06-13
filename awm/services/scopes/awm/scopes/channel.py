@@ -272,7 +272,7 @@ def get_post(post_id: str) -> ScopePost | None:
 def fetch(*, project: str | None = None, scope: str | None = None,
           kind: str | None = None, query: str | None = None,
           author: str | None = None, limit: int = 50, offset: int = 0,
-          before_ts: str | None = None) -> list[ScopePost]:
+          before_ts: str | None = None, order: str | None = None) -> list[ScopePost]:
     """Pull / search posts.
 
     - ``scope`` given, no ``query`` → that channel's recent posts.
@@ -280,8 +280,11 @@ def fetch(*, project: str | None = None, scope: str | None = None,
       given, else cross-scope).
     - ``kind`` narrows by post kind (e.g. ``'journal'`` for debrief entries).
     - ``author`` narrows by stored/display author ref.
-    Results are returned oldest→newest for a single channel, newest-first for
-    cross-scope/search.
+    - ``order`` ∈ ``'asc'`` | ``'desc'`` forces oldest- or newest-first. With no
+      ``order`` the default is oldest→newest for a single channel and
+      newest-first for cross-scope/search. Use ``order='desc'`` with ``limit`` to
+      pull the *last N* posts of a channel (e.g. the 5 most recent journal
+      entries / session logs).
     """
     dao = ScopesDAO()
     sql = "SELECT * FROM scope_posts WHERE 1=1"
@@ -307,7 +310,11 @@ def fetch(*, project: str | None = None, scope: str | None = None,
             sql += " AND ts < ?"
             params.append(bms)
     single_channel = scope is not None and not query
-    sql += " ORDER BY ts {} LIMIT ? OFFSET ?".format("ASC" if single_channel else "DESC")
+    if order in ("asc", "desc"):
+        direction = order.upper()
+    else:
+        direction = "ASC" if single_channel else "DESC"
+    sql += " ORDER BY ts {} LIMIT ? OFFSET ?".format(direction)
     params.extend([limit, offset])
     rows = dao.query_all(sql, params)
     posts = [_row_to_post(r) for r in rows]

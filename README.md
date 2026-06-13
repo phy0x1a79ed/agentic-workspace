@@ -25,7 +25,7 @@ mamba run -n awm python -m awm init
 
 ## Harness Integration
 
-AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The setup skill at [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md) (also discoverable from inside an agent via `skills_get path="awm/harness-setup.md"`) covers:
+AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The setup skill at [`awm/skills/awm/harness-setup.md`](awm/skills/awm/harness-setup.md) (also discoverable from inside an agent via `skill_get path="awm/harness-setup.md"`) covers:
 
 - How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.

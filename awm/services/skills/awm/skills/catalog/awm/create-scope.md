@@ -24,7 +24,7 @@ cd projects/<project>/<scope>/
 
 The worktree is the agent's CWD. All git operations target `feat/<scope>` in place — no branch switching. Data is reachable via `.awm/data/` (symlink to `data/<project>/`) and skill catalogs via `.awm/skills/`.
 
-For end-of-session logging, follow `skills_get path="awm/debrief.md"`.
+For end-of-session logging, follow `skill_get path="awm/debrief.md"`.
 
 ## List
 

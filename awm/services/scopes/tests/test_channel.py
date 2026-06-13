@@ -25,6 +25,21 @@ class TestChannelOps:
         assert [p.body for p in posts] == ["hello", "hi back"]  # oldest→newest
         assert posts[0].author == "user:alice"
 
+    def test_order_desc_gives_last_n(self, scopes_workspace):
+        """order='desc' + limit pulls the most-recent N of a single channel,
+        the 'last 5 session logs' path. Default stays oldest→newest."""
+        from awm.scopes import channel
+        for i in range(5):
+            channel.post("awm", "dev", author="agent:awm/dev",
+                         body=f"entry {i}", kind="journal")
+        # default single-channel order is oldest→newest (unchanged)
+        asc = channel.fetch(project="awm", scope="dev", kind="journal")
+        assert [p.body for p in asc] == [f"entry {i}" for i in range(5)]
+        # order='desc' + limit → the last 2, newest-first
+        last2 = channel.fetch(project="awm", scope="dev", kind="journal",
+                              limit=2, order="desc")
+        assert [p.body for p in last2] == ["entry 4", "entry 3"]
+
     def test_journal_kind_filter(self, scopes_workspace):
         from awm.scopes import channel
         channel.post("awm", "dev", author="agent:awm/dev", body="a message", kind="message")
