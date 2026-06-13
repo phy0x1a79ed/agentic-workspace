@@ -41,6 +41,41 @@ PID_FILE="$HERE/.awm/dev.pid"
 LOG_FILE="$HERE/.awm/dev.log"
 SYNC_PID_FILE="$HERE/.awm/stripe-sync.pid"
 SYNC_LOG_FILE="$HERE/.awm/stripe-sync.log"
+SERVICES_PID_FILE="$HERE/.awm/services.pid"
+SERVICES_LOG_FILE="$HERE/.awm/services.log"
+JOURNAL_FILE="$HERE/.awm/state/services.json"
+
+# Modular gateway needs the dev worktree's dist roots on PYTHONPATH so the
+# gateway *and* every feature service it spawns resolve dev code, not the
+# installed env / workspace checkout (the modular tree isn't pip-installed,
+# and CWD-shadowing no longer works now that dist roots live at
+# awm/<dist>/awm/<subpkg>/). Built by scanning — a dir is a dist root iff it
+# has an inner awm/ namespace dir — so new dists are picked up automatically.
+# `mamba run` preserves PYTHONPATH, so this survives a start.sh respawn too.
+_build_pythonpath() {
+  local d pp=""
+  for d in "$REPO_ROOT/awm/gateway" \
+           "$REPO_ROOT"/awm/service_components/* \
+           "$REPO_ROOT"/awm/services/*; do
+    [ -d "$d/awm" ] || continue
+    pp="${pp:+$pp:}$d"
+  done
+  printf '%s' "$pp"
+}
+DEV_PYTHONPATH="$(_build_pythonpath)"
+export DEV_PYTHONPATH
+
+# Modular feature services: a dir under awm/services/* is a service iff it
+# ships awm/<name>/hub_adapter.py. Emits "<name> <dir>" per service. Skips the
+# legacy non-dist dirs (hub, network, packages, ptt, tts, __pycache__).
+_discover_services() {
+  local f name
+  for f in "$REPO_ROOT"/awm/services/*/awm/*/hub_adapter.py; do
+    [ -f "$f" ] || continue   # unmatched glob stays literal → skip
+    name="$(basename "$(dirname "$f")")"
+    printf '%s %s\n' "$name" "${f%/awm/*/hub_adapter.py}/"
+  done
+}
 
 export AWM_WORKSPACE="$HERE"
 export AWM_PORT="${AWM_PORT:-${_PORT_BASE}1}"
@@ -158,9 +193,11 @@ _stop_sync() {
 do_stop() {
   local s1
   # Stop stripe-sync first so leases close cleanly before the hub goes
-  # down (hub-side eviction terminates supervised backends).
+  # down (hub-side eviction terminates supervised backends), then the
+  # feature services, then the hub itself.
   _stop_sync
-  s1="$(_stop_one "$PID_FILE" "$AWM_PORT" "uvicorn")"
+  _stop_services
+  s1="$(_stop_one "$PID_FILE" "$AWM_PORT" "gateway")"
   if [ "$s1" = "0" ]; then
     echo "[dev] not running"
   fi
@@ -174,21 +211,112 @@ do_seed() {
 }
 
 _start_uvicorn() {
-  echo "[dev] uvicorn  $URL"
+  echo "[dev] gateway  $URL"
   cd "$REPO_ROOT"
+  PYTHONPATH="$DEV_PYTHONPATH" \
   nohup setsid mamba run -n awm --no-capture-output \
-      uvicorn awm.server:app \
+      uvicorn awm.gateway.server:app \
       --host 127.0.0.1 --port "$AWM_PORT" \
-      --reload --reload-dir "$REPO_ROOT/awm" \
+      --reload \
+      --reload-dir "$REPO_ROOT/awm/gateway" \
+      --reload-dir "$REPO_ROOT/awm/service_components" \
       >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
   sleep 1
   if ! is_running; then
-    echo "[dev] uvicorn failed to start — see $LOG_FILE"
+    echo "[dev] gateway failed to start — see $LOG_FILE"
     tail -n 40 "$LOG_FILE" || true
     rm -f "$PID_FILE"
     exit 1
   fi
+}
+
+# Wait for the gateway HTTP surface to answer before spawning services (they
+# must be able to register) or seeding.
+_wait_hub() {
+  local deadline=$(( SECONDS + 30 ))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl -s -m2 "http://127.0.0.1:${AWM_PORT}/status" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "[dev] gateway did not become healthy in 30s — see $LOG_FILE"
+  tail -n 40 "$LOG_FILE" || true
+  return 1
+}
+
+# Spawn each discovered feature service as a held, session-led process pointed
+# at THIS sandbox's hub + workspace (never prod). Failure-isolated: a service
+# that can't boot just never registers; its absence is logged, not fatal.
+_start_services() {
+  : >"$SERVICES_PID_FILE"
+  : >"$SERVICES_LOG_FILE"
+  local want="" name dir
+  while read -r name dir; do
+    [ -n "$name" ] || continue
+    echo "[dev] service  $name  → hub :$AWM_PORT"
+    (
+      cd "$dir" && exec env \
+        PYTHONPATH="$DEV_PYTHONPATH" \
+        AWM_HUB_URL="http://127.0.0.1:${AWM_PORT}/" \
+        AWM_WORKSPACE="$HERE" \
+        AWM_SERVICE_NAME="$name" \
+        AWM_ENV=awm \
+        nohup setsid mamba run -n awm --no-capture-output \
+          python -m "awm.${name}.hub_adapter" \
+          >>"$SERVICES_LOG_FILE" 2>&1
+    ) &
+    echo $! >>"$SERVICES_PID_FILE"
+    want="${want:+$want }$name"
+  done < <(_discover_services)
+
+  if [ -z "$want" ]; then
+    echo "[dev] no feature services discovered under awm/services/*"
+    return 0
+  fi
+  _wait_services_ready "$want"
+}
+
+# Poll /tools — a service's tools (named "<svc>_<fn>") only project once it has
+# sent its ready frame, so their presence is the readiness signal. Bounded:
+# on timeout we report stragglers and continue (failure-isolation).
+_wait_services_ready() {
+  local want="$1" deadline=$(( SECONDS + 40 )) tools missing name
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    tools="$(curl -s -m3 "http://127.0.0.1:${AWM_PORT}/tools" 2>/dev/null || true)"
+    missing=""
+    for name in $want; do
+      printf '%s' "$tools" | grep -q "\"${name}_" || missing="${missing:+$missing }$name"
+    done
+    if [ -z "$missing" ]; then
+      echo "[dev] services ready: $want"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[dev] WARN services not ready after 40s: $missing (continuing — see $SERVICES_LOG_FILE)"
+  return 0
+}
+
+# Tear down spawned service processes by their recorded session-leader pids
+# (== process-group ids via setsid). Only OUR pids — never a name/pattern
+# kill, which would also hit prod services running the same module names.
+_stop_services() {
+  local pid
+  if [ -f "$SERVICES_PID_FILE" ]; then
+    while read -r pid; do
+      [ -n "$pid" ] || continue
+      kill -0 "$pid" 2>/dev/null || continue
+      echo "[dev] stopping service group $pid"
+      kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      pkill -TERM -P "$pid" 2>/dev/null || true
+    done <"$SERVICES_PID_FILE"
+    rm -f "$SERVICES_PID_FILE"
+  fi
+  # Clear the journal so the gateway's next-boot reconcile doesn't try to
+  # respawn services from a stale entry against a hub that isn't up yet.
+  rm -f "$JOURNAL_FILE"
 }
 
 NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
@@ -207,8 +335,8 @@ _build_packages() {
     return 0
   fi
   echo "[dev] awm packages gen $REPO_ROOT"
-  (cd "$REPO_ROOT" && mamba run -n awm --no-capture-output \
-      python -m awm packages gen "$REPO_ROOT") \
+  (cd "$REPO_ROOT" && PYTHONPATH="$DEV_PYTHONPATH" mamba run -n awm --no-capture-output \
+      python -m awm.gateway packages gen "$REPO_ROOT") \
     >>"$SYNC_LOG_FILE" 2>&1 || {
       echo "[dev] manifest gen failed — see $SYNC_LOG_FILE"
       return 1
@@ -247,9 +375,10 @@ _start_stripe_sync() {
   _build_packages || return 1
   echo "[dev] packages-sync  $REPO_ROOT/packages/"
   cd "$REPO_ROOT"
+  PYTHONPATH="$DEV_PYTHONPATH" \
   nohup setsid mamba run -n awm --no-capture-output \
-      python -m awm packages sync "$REPO_ROOT" \
-      >"$SYNC_LOG_FILE" 2>&1 &
+      python -m awm.gateway packages sync "$REPO_ROOT" \
+      >>"$SYNC_LOG_FILE" 2>&1 &
   echo $! >"$SYNC_PID_FILE"
   sleep 0.5
   if ! is_sync_running; then
@@ -263,21 +392,37 @@ do_start() {
   if is_running; then
     echo "[dev] already running (pid $(cat "$PID_FILE")) — use restart"
     echo "[dev]   $URL"
-    [ -f "$LOGIN_PID_FILE" ] && echo "[dev]   $LOGIN_URL"
     exit 0
   fi
   prep
+  # Start from a clean journal: we spawn every service explicitly below, so
+  # the gateway's startup reconcile should find nothing to respawn.
+  mkdir -p "$(dirname "$JOURNAL_FILE")"
+  rm -f "$JOURNAL_FILE"
   _start_uvicorn
-  _start_stripe_sync
-  echo "[dev] logs: $LOG_FILE"
+  _wait_hub || { _stop_one "$PID_FILE" "$AWM_PORT" "gateway" >/dev/null; exit 1; }
+  _start_services
+  # Legacy frontend (packages/*) — best-effort, never fatal to the core sandbox.
+  _start_stripe_sync || echo "[dev] stripe-sync (legacy frontend) failed — non-fatal; see $SYNC_LOG_FILE"
+  echo "[dev] logs: gateway=$LOG_FILE services=$SERVICES_LOG_FILE"
 }
 
 do_status() {
   local any=0
   if is_running; then
-    echo "[dev] uvicorn       running (pid $(cat "$PID_FILE"))"
+    echo "[dev] gateway       running (pid $(cat "$PID_FILE"))"
     echo "[dev]   $URL"
     any=1
+    # Registered services, straight from the hub.
+    local svcs
+    svcs="$(curl -s -m3 "http://127.0.0.1:${AWM_PORT}/hub/services" 2>/dev/null || true)"
+    if [ -n "$svcs" ]; then
+      # Top-level service names only: a registration's "name" is always
+      # immediately followed by "prefix" (nested api param "name"s are not).
+      echo "[dev] services     $(printf '%s' "$svcs" \
+        | grep -oE '"name": *"[^"]+", *"prefix"' \
+        | sed -E 's/"name": *"([^"]+)".*/\1/' | sort -u | tr '\n' ' ')"
+    fi
   fi
   if is_sync_running; then
     echo "[dev] stripe-sync   running (pid $(cat "$SYNC_PID_FILE"))"

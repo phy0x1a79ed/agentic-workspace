@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-gatewayclient"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM gateway client: how a service process ORIGINATES a call to another service via the gateway (POST /svc/<name>/fn/<fn>), with identity (X-Awm-As) threaded through. Plus a short-TTL positive-only RefCache for validate-by-calling reference checks. Pure imported source; no console scripts, no install.sh."
+dependencies = [
+    "httpx",
+    "websockets",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/gatewayclient/.
+[tool.setuptools.packages.find]
+include = ["awm.gatewayclient*"]
+namespaces = true

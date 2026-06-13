@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-gateway"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM gateway: the sole interface. Dynamically loads feature modules and re-exposes each as MCP + CLI + HTTP/WS; owns routing, service supervision, daemon lifecycle."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-scopes",
+    "awm-agents",
+    "awm-artifacts",
+    "awm-skills",
+    "awm-discord",
+    "fastapi",
+    "uvicorn[standard]",
+    "typer",
+    "httpx",
+    "mcp[cli]",
+    "pyyaml",
+    "websockets",
+]
+
+[project.scripts]
+awm = "awm.gateway.__main__:main"
+awm-mcp = "awm.gateway.mcp_server:main"
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/gateway/.
+[tool.setuptools.packages.find]
+include = ["awm.gateway*"]
+namespaces = true

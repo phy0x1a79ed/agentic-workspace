@@ -25,12 +25,15 @@ def _assert_sandbox() -> None:
 def main() -> int:
     _assert_sandbox()
 
-    from awm.db import init_db
     from awm import config
 
-    init_db()
+    # Modular: there is no shared state.db to init. Each feature service stands
+    # up its own per-service DB under SERVICES_DIR on first use / when the hub
+    # spawns it. Just ensure the services dir exists for the sandbox.
+    services_dir = getattr(config, "SERVICES_DIR", config.AWM_DIR / "services")
+    services_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[prep] db={config.DB_PATH}", file=sys.stderr)
+    print(f"[prep] services_dir={services_dir}", file=sys.stderr)
     return 0
 
 

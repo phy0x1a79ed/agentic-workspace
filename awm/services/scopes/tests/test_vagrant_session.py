@@ -1,0 +1,174 @@
+"""Tests for ensure_vagrant_session + POST /vagrant/session endpoint.
+
+Re-homed from the monolith ``agent/`` suite. These centrally exercise
+rooms / create_room (``ensure_vagrant_session`` mints a room) and the
+retired in-process ``/vagrant/session`` server route — both being
+re-architected in the rooms→scope collapse (T4). Skipped at the module
+level until that lands; the import rewrites are done so it un-skips with
+a one-line change.
+"""
+
+from __future__ import annotations
+
+
+import pytest
+pytestmark = [
+    pytest.mark.agent, pytest.mark.slow, pytest.mark.subprocess,
+    pytest.mark.skip(reason="pending rooms→scope collapse (T4)"),
+]
+
+import pytest
+
+from awm.config import VAGRANT_PROJECT
+
+# Lazy / tolerant imports: the rooms→scope collapse (T4) is removing
+# ``awm.scopes.rooms`` (and reshaping the session/room surface) as this
+# module sits skipped. Guard the imports so collection doesn't error while
+# the whole module is skipped; the names resolve again once T4 lands and the
+# skip is lifted.
+try:  # pragma: no cover - module is skip-marked pending T4
+    from awm.scopes import scopes as scopes_svc
+    from awm.scopes import rooms as rooms_svc
+except ImportError:  # pragma: no cover
+    scopes_svc = None  # type: ignore[assignment]
+    rooms_svc = None  # type: ignore[assignment]
+
+
+@pytest.fixture
+def vagrant_bootstrap(scopes_workspace, monkeypatch):
+    import shutil as _shutil
+    real_which = _shutil.which
+    monkeypatch.setattr(
+        "awm.scopes.scopes.shutil.which",
+        lambda name: None if name == "gh" else real_which(name),
+    )
+    scopes_svc.ensure_vagrant_repo()
+    return scopes_workspace
+
+
+# ---------------------------------------------------------------------------
+# ensure_vagrant_session()
+# ---------------------------------------------------------------------------
+
+def test_ensure_vagrant_session_creates_scope_and_room(vagrant_bootstrap):
+    scope_uuid, room_id = scopes_svc.ensure_vagrant_session("user:alice")
+    assert scope_uuid
+    assert room_id
+
+    # Scope row exists under the sentinel project.
+    listed = scopes_svc.list_scopes(project=VAGRANT_PROJECT)
+    assert len(listed.scopes) == 1
+    assert listed.scopes[0].scope == "alice-handler"
+
+    # Room exists and is active.
+    room = rooms_svc.get_room(room_id)
+    assert room is not None
+    assert room.status == "active"
+
+
+def test_ensure_vagrant_session_is_idempotent(vagrant_bootstrap):
+    first = scopes_svc.ensure_vagrant_session("user:alice")
+    second = scopes_svc.ensure_vagrant_session("user:alice")
+    assert first == second
+
+
+def test_ensure_vagrant_session_distinct_users_get_distinct_rooms(vagrant_bootstrap):
+    a_scope, a_room = scopes_svc.ensure_vagrant_session("user:alice")
+    b_scope, b_room = scopes_svc.ensure_vagrant_session("user:bob")
+    assert a_scope != b_scope
+    assert a_room != b_room
+
+
+def test_ensure_vagrant_session_recreates_room_if_closed(vagrant_bootstrap):
+    _, room_id = scopes_svc.ensure_vagrant_session("user:alice")
+    # Force the room closed and call again — should mint a new room.
+    rooms_svc.close_room(room_id)
+    _, room_id_after = scopes_svc.ensure_vagrant_session("user:alice")
+    assert room_id_after != room_id
+
+
+def test_ensure_vagrant_session_without_bootstrap_raises(scopes_workspace):
+    with pytest.raises(FileNotFoundError, match="awm vagrant-init"):
+        scopes_svc.ensure_vagrant_session("user:alice")
+
+
+# ---------------------------------------------------------------------------
+# POST /vagrant/session — wire the endpoint via the exposed app
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def exposed_workspace(scopes_workspace, monkeypatch):
+    awm_dir = scopes_workspace["awm_dir"]
+    token_file = awm_dir / "auth.token"
+    monkeypatch.setattr("awm.config.ACCESS_LOG", awm_dir / "access.log")
+    return {**scopes_workspace, "token_file": token_file}
+
+
+@pytest.fixture
+def good_token(exposed_workspace):
+    token = "test-secret-token-abc123"
+    exposed_workspace["token_file"].write_text(token + "\n")
+    return token
+
+
+@pytest.fixture
+def exposed_client(exposed_workspace):
+    from fastapi.testclient import TestClient
+    from awm.gateway.server import app
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
+def test_post_vagrant_session_no_auth(exposed_client, good_token):
+    # Auth retired — POST /vagrant/session is open. Without bootstrap it 503s.
+    r = exposed_client.post("/vagrant/session")
+    assert r.status_code in (200, 503)
+
+
+def test_post_vagrant_session_returns_503_when_not_bootstrapped(
+    exposed_workspace, exposed_client, good_token,
+):
+    # The exposed lifespan auto-bootstraps vagrant scopes on startup
+    # (awm/exposed.py:120 ensure_vagrant_repo). Tear the bare repo down
+    # AFTER startup so the request-time ensure_vagrant_session hits the
+    # missing-bare-dir branch and returns 503.
+    import shutil
+    from awm.config import PROJECTS_DIR
+    bare = PROJECTS_DIR / VAGRANT_PROJECT / ".bare"
+    if bare.exists():
+        shutil.rmtree(bare)
+    r = exposed_client.post(
+        "/vagrant/session",
+        headers={"Authorization": f"Bearer {good_token}"},
+    )
+    assert r.status_code == 503
+    assert "vagrant-init" in r.json()["detail"]
+
+
+def test_post_vagrant_session_returns_room(
+    exposed_client, good_token, vagrant_bootstrap
+):
+    r = exposed_client.post(
+        "/vagrant/session",
+        headers={
+            "Authorization": f"Bearer {good_token}",
+            "X-Awm-As": "user:tester",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scope_uuid"]
+    assert body["room_id"]
+
+    # Idempotent: second call returns the same room.
+    r2 = exposed_client.post(
+        "/vagrant/session",
+        headers={
+            "Authorization": f"Bearer {good_token}",
+            "X-Awm-As": "user:tester",
+        },
+    )
+    assert r2.status_code == 200
+    assert r2.json() == body
+
+

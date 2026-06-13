@@ -13,9 +13,12 @@ else
     mamba env update -f "$WORKSPACE_ROOT/environment.yml" --prune
 fi
 
-# 2. Install awm package in dev mode into the env
-echo "Installing awm package (editable)..."
-mamba run -n awm pip install -e "$WORKSPACE_ROOT" --no-deps
+# 2. Install the modular tree into the env. The gateway is the composition
+# root — its install.sh installs the component libraries (config, persistence,
+# gatewayclient), every feature service (scopes/agents/artifacts/skills/discord),
+# then the gateway itself (which provides the `awm` / `awm-mcp` console scripts).
+echo "Installing awm modular tree (components + feature services + gateway)..."
+AWM_ENV=awm bash "$WORKSPACE_ROOT/awm/gateway/install.sh"
 
 # 3. Create .awm/ runtime directory
 mkdir -p "$WORKSPACE_ROOT/.awm"
