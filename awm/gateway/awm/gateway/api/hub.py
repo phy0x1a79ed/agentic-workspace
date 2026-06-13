@@ -182,6 +182,14 @@ class ServiceRegisterRequest(BaseModel):
     cwd: str | None = Field(None,
                             description="Working directory for restart. "
                                         "Defaults to current dir if unset.")
+    overlay: bool = Field(False,
+                          description="Register as a shadow overlay on top of "
+                                      "the existing base for /svc/<name> instead "
+                                      "of as the base. Set by `awm dev shadow` "
+                                      "(via AWM_SERVICE_OVERLAY=1). Requires a "
+                                      "base to already exist; the overlay's own "
+                                      "control WS is its lease — closing it pops "
+                                      "the overlay and the base resumes.")
 
 
 class ServiceRegisterResponse(BaseModel):
@@ -197,12 +205,30 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
     registry = get_registry()
     prefix = req.prefix or f"/svc/{req.name}"
     try:
-        rec = await registry.register_service(
-            req.name, prefix,
-            pid=req.pid,
-            start_cmd=req.start or [],
-            cwd=req.cwd or "",
-        )
+        if req.overlay:
+            # Shadow overlay: one process, one identity. The service drives its
+            # own control WS as the lease; there is no separate overlay
+            # registration to keep in sync (the split-brain `awm dev shadow`
+            # used to create). Requires a base for the prefix to already exist.
+            rec = ServiceRecord(
+                name=req.name,
+                prefix=prefix,
+                kind="service",
+                start_cmd=req.start or [],
+                cwd=req.cwd or "",
+                backend_pid=req.pid,
+                backend_status="starting",
+            )
+            rec = await registry.push_shadow(rec)
+        else:
+            rec = await registry.register_service(
+                req.name, prefix,
+                pid=req.pid,
+                start_cmd=req.start or [],
+                cwd=req.cwd or "",
+            )
+    except NoBaseToShadow as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
     except PrefixConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
 
@@ -210,15 +236,18 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
     # against the supervisor reconnect loop.
     rpc.ensure_control(rec.service_id)
 
-    update_service_journal_entry(rec.name, {
-        "service_id": rec.service_id,
-        "prefix": rec.prefix,
-        "last_pid": rec.backend_pid,
-        "start_cmd": list(rec.start_cmd),
-        "cwd": rec.cwd,
-        "last_register": _now_iso(),
-        "control_ws_open": False,
-    })
+    # Overlays are ephemeral — they are never journaled (reconcile must not
+    # respawn them; they belong to a live `awm dev shadow` process).
+    if not rec.is_overlay:
+        update_service_journal_entry(rec.name, {
+            "service_id": rec.service_id,
+            "prefix": rec.prefix,
+            "last_pid": rec.backend_pid,
+            "start_cmd": list(rec.start_cmd),
+            "cwd": rec.cwd,
+            "last_register": _now_iso(),
+            "control_ws_open": False,
+        })
 
     log.info("registered service %s prefix=%s pid=%s id=%s",
              rec.name, rec.prefix, rec.backend_pid, rec.service_id)
@@ -236,7 +265,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     """Persistent RPC envelope channel for one registered service.
 
     Lifecycle:
-      1. Service connects + authenticates (bearer.<token> subprotocol).
+      1. Service connects (no auth — the gateway binds loopback-only).
       2. Service sends ``{kind: "ready", api: {...}}``.
       3. Hub routes ``call`` / ``notify`` / ``sub`` / ``session.*``
          envelopes outbound; service replies / emits inbound.
@@ -406,21 +435,13 @@ class ShadowRegisterRequest(BaseModel):
     prefix: str = Field(..., min_length=1,
                         description="Prefix to shadow; a base must already "
                                     "exist for this prefix.")
-    # The shadow record can be any of the page/service shapes —
-    # we accept one nested spec the same way /hub/register does.
-    page: dict | None = Field(None,
-                              description="Page shadow: {dir: <absolute path>}")
-    service: ServiceRegisterRequest | None = Field(
-        None,
-        description="Service shadow: ServiceRegisterRequest shape (pid/start/cwd)."
-    )
-
-    @model_validator(mode="after")
-    def _one_of(self) -> "ShadowRegisterRequest":
-        n = sum(1 for v in (self.page, self.service) if v is not None)
-        if n != 1:
-            raise ValueError("exactly one of `page` or `service` must be set")
-        return self
+    page: dict = Field(...,
+                       description="Page shadow: {dir: <absolute path>}. Service "
+                                   "overlays no longer use this endpoint — a "
+                                   "service shadows itself by registering at "
+                                   "/hub/service/register with overlay=true (one "
+                                   "process, one identity, its own control WS as "
+                                   "the lease).")
 
 
 class ShadowRegisterResponse(BaseModel):
@@ -435,43 +456,25 @@ class ShadowRegisterResponse(BaseModel):
 
 @router.post("/shadow/register", response_model=ShadowRegisterResponse)
 async def shadow_register(req: ShadowRegisterRequest) -> ShadowRegisterResponse:
+    """Push a *page* overlay on an existing /ui/<name> base. Service overlays
+    register through /hub/service/register with ``overlay=true`` instead."""
     registry = get_registry()
     try:
-        if req.page is not None:
-            page_dir = Path(str(req.page.get("dir", ""))).expanduser().resolve()
-            if not page_dir.is_dir():
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"page.dir {req.page.get('dir')!r} is not a directory",
-                )
-            rec = ServiceRecord(
-                name=req.name, prefix=req.prefix, kind="page",
-                static_dir=str(page_dir),
+        page_dir = Path(str(req.page.get("dir", ""))).expanduser().resolve()
+        if not page_dir.is_dir():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"page.dir {req.page.get('dir')!r} is not a directory",
             )
-            rec.backend_status = "ready"
-            rec = await registry.push_shadow(rec)
-            return ShadowRegisterResponse(
-                service_id=rec.service_id, name=rec.name, prefix=rec.prefix,
-                kind=rec.kind, lease_ws_path=f"/hub/lease/{rec.service_id}",
-            )
-        assert req.service is not None
         rec = ServiceRecord(
-            name=req.name,
-            prefix=req.service.prefix or req.prefix,
-            kind="service",
-            start_cmd=list(req.service.start or []),
-            cwd=req.service.cwd or "",
-            backend_pid=req.service.pid,
-            backend_status="starting",
+            name=req.name, prefix=req.prefix, kind="page",
+            static_dir=str(page_dir),
         )
+        rec.backend_status = "ready"
         rec = await registry.push_shadow(rec)
-        rpc.ensure_control(rec.service_id)
         return ShadowRegisterResponse(
             service_id=rec.service_id, name=rec.name, prefix=rec.prefix,
-            kind=rec.kind,
-            lease_ws_path=f"/hub/lease/{rec.service_id}",
-            control_ws_path=f"/hub/service/control/{rec.service_id}",
-            bridge_ws_base=f"/hub/service/bridge/{rec.service_id}",
+            kind=rec.kind, lease_ws_path=f"/hub/lease/{rec.service_id}",
         )
     except NoBaseToShadow as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
@@ -582,3 +585,82 @@ async def deregister(name: str, request: Request, kind: str | None = None) -> di
         "kind": rec.kind,
         "service_id": rec.service_id,
     }}
+
+
+# ============================================================================
+# Feature-service lifecycle — the `awm services` control surface.
+#
+# The running gateway is authoritative: it owns the discovery root, the
+# enable-state file, the PID journal, and the registry. So `awm services`
+# routes everything here rather than re-deriving locally (which would resolve
+# the wrong tree under a dev-sandbox shadow). One spawn path
+# (supervisor.spawn_and_journal, shared with first-boot bootstrap); one stop
+# path (evict + kill pid group + drop journal) so reconcile never resurrects a
+# stopped service.
+# ============================================================================
+
+
+@router.get("/services/discovered")
+async def list_discovered_services() -> dict[str, Any]:
+    """Discovery ⋈ enable-state ⋈ live registration — the `awm services list`
+    view."""
+    from awm.gateway.hub import discovery
+    registry = get_registry()
+    out = []
+    for spec in discovery.discover_services():
+        rec = registry.get_by_name("service", spec.name)
+        out.append({
+            "name": spec.name,
+            "enabled": spec.enabled,
+            "running": rec is not None,
+            "status": rec.backend_status if rec is not None else "stopped",
+            "pid": rec.backend_pid if rec is not None else None,
+        })
+    return {"services": out}
+
+
+@router.post("/services/{name}/start")
+async def start_service(name: str) -> dict[str, Any]:
+    from awm.gateway.hub import discovery, supervisor
+    registry = get_registry()
+    if registry.get_by_name("service", name) is not None:
+        return {"name": name, "started": False, "reason": "already-running"}
+    spec = discovery.discover_service(name)
+    if spec is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            f"no service folder {name!r} with a run.sh")
+    pid = supervisor.spawn_and_journal(name, list(spec.start_cmd), spec.cwd)
+    return {"name": name, "started": True, "pid": pid}
+
+
+@router.post("/services/{name}/stop")
+async def stop_service(name: str) -> dict[str, Any]:
+    from awm.gateway.hub import supervisor
+    registry = get_registry()
+    entry = supervisor.load_service_journal().get(name) or {}
+    rec = registry.get_by_name("service", name)
+    pid = (rec.backend_pid if rec is not None else None) or entry.get("last_pid")
+    if rec is not None:
+        try:
+            await registry.evict_by_name(name, kind="service")
+        except PrefixConflict as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    if pid:
+        await asyncio.get_event_loop().run_in_executor(
+            None, supervisor.kill_pid_group, pid)
+    supervisor.remove_service_journal_entry(name)
+    return {"name": name, "stopped": True, "killed_pid": pid}
+
+
+@router.post("/services/{name}/enable")
+async def enable_service(name: str) -> dict[str, Any]:
+    from awm.gateway.hub import discovery
+    discovery.set_enabled(name, True)
+    return {"name": name, "enabled": True, "start": await start_service(name)}
+
+
+@router.post("/services/{name}/disable")
+async def disable_service(name: str) -> dict[str, Any]:
+    from awm.gateway.hub import discovery
+    discovery.set_enabled(name, False)
+    return {"name": name, "enabled": False, "stop": await stop_service(name)}

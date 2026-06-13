@@ -13,14 +13,16 @@
 # (inside a fixture/function), never at module top level.
 #
 # Usage:
-#   scripts/run-tests.sh                 # run all dists
-#   scripts/run-tests.sh scopes gateway  # run only the named dists
-#   PYTEST_ARGS="-x -q" scripts/run-tests.sh   # pass extra args to pytest
+#   awm/gateway/scripts/run-tests.sh                 # run all dists
+#   awm/gateway/scripts/run-tests.sh scopes gateway  # run only the named dists
+#   PYTEST_ARGS="-x -q" awm/gateway/scripts/run-tests.sh   # pass extra args to pytest
 #
 # Reports pass/fail per dist and exits non-zero if any dist failed.
 set -uo pipefail
 
-WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This script lives at awm/gateway/scripts/run-tests.sh; the dist roots below
+# are resolved from the repo/clone root (git toplevel), not the script's dir.
+WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
 COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"

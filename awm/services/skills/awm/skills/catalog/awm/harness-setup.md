@@ -31,14 +31,14 @@ History/artifacts are deliberately NOT auto-injected (too large). Agents fetch o
 
 ## 2. MCP catalog (registered, advertised even when down)
 
-The canonical MCP registry is `<workspace>/.mcp.json`. AWM fans it out to backend-specific files via the **exporter framework** at `awm/exports/`:
+The canonical MCP registry is `<workspace>/.mcp.json`. AWM fans it out to backend-specific files via the **exporter framework**:
 
 | Exporter | Output | Consumer |
 |---|---|---|
 | `claude-spawn` | `<workspace>/.awm/spawn-mcp.json` | claude subprocesses launched by AWM (`--strict-mcp-config`) |
 | `opencode` | `<workspace>/.awm/mcp-opencode.json` | opencode subprocesses launched by AWM (via `OPENCODE_CONFIG`) — also the base that per-scope `mcp-opencode.json` files overlay `instructions` onto |
 
-Trigger a re-sync from a running agent with the `awm_mcp_sync` MCP tool, or restart `awm-exposed.service` (the lifespan hook calls `sync_mcp_configs()` on startup).
+Trigger a re-sync from a running agent with the `awm_mcp_sync` MCP tool, or restart the gateway (`awm.service`) — its lifespan hook calls `sync_mcp_configs()` on startup.
 
 **Registration semantics**: every server listed in `.mcp.json` is *advertised* to spawned agents regardless of whether the upstream service is currently running. The agent will see the tool surface; calls fail with a clear error when the service is down. This makes service availability discoverable (an agent knows `chrome-devtools` *exists* even if the Chrome instance hasn't been started yet).
 
@@ -108,12 +108,12 @@ For OC to pick up the per-scope file, launch with `OPENCODE_CONFIG=<scope>/.awm/
 
 ## 5. AWM-spawned agents
 
-AWM launches agents via rooms — `room_create scopes=[…]` or `room_invite scope=…`. The harness is per-session, persisted on the `agent_sessions.agent_cli` column. Default is `claude`.
+AWM launches agents via the agents service — `agent_spawn scope=…` (a scope IS the channel; the agent's rendered output is posted back to its scope via `scope_post`). The harness is per-session, persisted on the `agent_sessions.agent_cli` column. Default is `claude`.
 
 To spawn an opencode worker:
 
 ```
-room_create topic="…" scopes=["proj/scope"] agent_cli="opencode"
+agent_spawn project="proj" scope="scope" agent_cli="opencode"
 ```
 
 AWM constructs the argv (`opencode run --format json --dir <wd> [--dangerously-skip-permissions] [--model …]`) and sets `OPENCODE_CONFIG` to the **per-scope** `.awm/mcp-opencode.json` if it exists (fallback: workspace-level cfg). The per-scope file's `instructions` array auto-loads WORKSPACE.md + .awm/context.md on top of the workspace MCP catalog.

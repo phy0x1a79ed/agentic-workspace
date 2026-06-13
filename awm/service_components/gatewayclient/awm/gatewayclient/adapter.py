@@ -85,7 +85,6 @@ class SessionContext:
     services have no sessions and never use this.
     """
     hub_url: str
-    token: str
     service_id: str
     session_id: str
     bridge_id: str | None
@@ -94,11 +93,9 @@ class SessionContext:
     async def open_bridge(self) -> Any:
         if not self.bridge_id:
             raise RuntimeError("session has no bridge_id; not a direct session")
-        subprotocols = [f"bearer.{self.token}"] if self.token else None
         ws_base = _ws_base(self.hub_url)
         return await websockets.connect(
             f"{ws_base}/hub/service/bridge/{self.service_id}/{self.bridge_id}",
-            subprotocols=subprotocols,
             ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
             max_size=None,
             open_timeout=10,
@@ -132,8 +129,9 @@ class ServiceAdapter:
         DB exists before it serves.
     start_cmd:
         Argv the hub uses to respawn the service after a silence eviction.
-        Defaults to ``["bash", "start.sh"]`` (the convention every service's
-        ``start.sh`` honours).
+        Defaults to ``["bash", "run.sh"]`` (the convention every service's
+        ``run.sh`` honours). This matches what filesystem discovery records, so
+        a self-registered service and a bootstrap-spawned one are identical.
     """
 
     def __init__(
@@ -152,7 +150,7 @@ class ServiceAdapter:
         self.handlers = handlers
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
-        self.start_cmd = start_cmd or ["bash", "start.sh"]
+        self.start_cmd = start_cmd or ["bash", "run.sh"]
 
     # -- dispatch ----------------------------------------------------------
 
@@ -177,13 +175,11 @@ class ServiceAdapter:
 
     # -- control-WS receive loop ------------------------------------------
 
-    async def _serve(self, hub_url: str, token: str, sid: str) -> None:
+    async def _serve(self, hub_url: str, sid: str) -> None:
         ws_base = _ws_base(hub_url)
         ws_url = f"{ws_base}/hub/service/control/{sid}"
-        subprotocols = [f"bearer.{token}"] if token else None
         async with websockets.connect(
             ws_url,
-            subprotocols=subprotocols,
             ssl=_ssl_ctx() if ws_base.startswith("wss://") else None,
             max_size=None,
             open_timeout=10,
@@ -205,7 +201,7 @@ class ServiceAdapter:
                     asyncio.create_task(self._handle_notify(env))
                 elif kind == "session.open":
                     asyncio.create_task(self._handle_session_open(
-                        ws, hub_url, token, sid, env))
+                        ws, hub_url, sid, env))
                 else:
                     log.debug("%s: ignored inbound kind=%s", self.name, kind)
 
@@ -232,7 +228,7 @@ class ServiceAdapter:
             log.warning("%s: notify %s failed: %s",
                         self.name, env.get("fn"), exc)
 
-    async def _handle_session_open(self, ws: Any, hub_url: str, token: str,
+    async def _handle_session_open(self, ws: Any, hub_url: str,
                                    sid: str, env: dict[str, Any]) -> None:
         session_id = env.get("session_id")
         kind = env.get("session_kind") or env.get("kind_arg") or "call"
@@ -248,7 +244,7 @@ class ServiceAdapter:
                 "kind": "session.opened", "session_id": session_id, "ok": True,
             }))
             ctx = SessionContext(
-                hub_url=hub_url, token=token, service_id=sid,
+                hub_url=hub_url, service_id=sid,
                 session_id=session_id, bridge_id=env.get("bridge_id"),
                 init=env.get("init") or {},
             )
@@ -265,30 +261,33 @@ class ServiceAdapter:
 
     # -- registration + reconnect loop ------------------------------------
 
-    async def _register(self, hub_url: str, token: str) -> str:
+    async def _register(self, hub_url: str) -> str:
+        # An overlay carries a UNIQUE name (registry keys records by name) but
+        # the BASE's prefix, so it stacks on /svc/<base>. `awm dev shadow` sets
+        # AWM_SERVICE_NAME=<unique> + AWM_SERVICE_PREFIX=/svc/<base> +
+        # AWM_SERVICE_OVERLAY=1. A normal service leaves prefix to default.
+        prefix = os.environ.get("AWM_SERVICE_PREFIX") or f"/svc/{self.name}"
         payload = {
             "name": self.name,
-            "prefix": f"/svc/{self.name}",
+            "prefix": prefix,
             "pid": os.getpid(),
             "start": self.start_cmd,
             "cwd": os.getcwd(),
+            "overlay": bool(os.environ.get("AWM_SERVICE_OVERLAY")),
         }
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
-            r = await cli.post(
-                f"{hub_url}/hub/service/register", json=payload, headers=headers)
+            r = await cli.post(f"{hub_url}/hub/service/register", json=payload)
             r.raise_for_status()
         return r.json()["service_id"]
 
     async def run(self) -> None:
         """Register and serve forever, reconnecting with exponential backoff.
 
-        Reads ``AWM_HUB_URL`` (required), ``AWM_HUB_TOKEN`` (optional — the
-        loopback control plane does not enforce it today), and
-        ``AWM_SERVICE_ID`` (set by the hub on respawn) from env.
+        Reads ``AWM_HUB_URL`` (required) and ``AWM_SERVICE_ID`` (set by the hub
+        on respawn) from env. The registration handshake carries no auth — the
+        gateway binds loopback-only.
         """
         hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
-        token = os.environ.get("AWM_HUB_TOKEN", "")
         sid = os.environ.get("AWM_SERVICE_ID", "")
         if not hub_url:
             raise RuntimeError("AWM_HUB_URL not set; cannot reach the gateway")
@@ -302,9 +301,9 @@ class ServiceAdapter:
         while True:
             try:
                 if not sid:
-                    sid = await self._register(hub_url, token)
+                    sid = await self._register(hub_url)
                     log.info("%s: registered service_id=%s", self.name, sid)
-                await self._serve(hub_url, token, sid)
+                await self._serve(hub_url, sid)
                 backoff = 1.0
             except Exception as exc:
                 log.warning("%s: control WS lost (%s); retry in %.1fs",

@@ -18,3 +18,22 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["awm.discord*"]
 namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+    "subprocess: spawns child processes (git, mcp, supervised hub backends)",
+    "unit: pure unit tests (models, validation, registries)",
+    "hub: hub routing / stripes / static / passthrough / service dispatch",
+    "scopes: scope CRUD + git worktree",
+    "messaging: rooms / messages / posts / control plane",
+    "auth: login / exposed app / auth service",
+    "mcp: mcp server / exports / cli context emit",
+    "artifacts: artifact registry",
+    "sessions: session log / history",
+    "agent: agent instances / vagrant sessions",
+    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "integration: cross-component integration tests",
+]
