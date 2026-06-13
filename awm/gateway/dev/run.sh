@@ -14,8 +14,11 @@
 # execs this script in the current worktree.
 #
 # Lives at awm/gateway/dev/ inside a worktree; sandbox state (.awm/, projects/,
-# data/) is created next to it and is gitignored. Backend Python reloads via
-# uvicorn --reload; static HTML/JS reloads on browser refresh.
+# data/) is created next to it and is gitignored. The gateway does NOT
+# fs-watch or auto-reload: backend Python changes require an explicit
+# `awm dev restart` (so editing never silently swaps the worker out from
+# under its spawned services and leaks orphan hub_adapter procs). Static
+# HTML/JS still reloads on browser refresh.
 #
 # The gateway OWNS feature-service lifecycle now: on boot it reconciles the
 # journal then bootstraps every discovered, enabled service (spawning each
@@ -208,11 +211,16 @@ _stop_services() {
 
 do_stop() {
   local s1
-  # stripe-sync first (lease close triggers hub eviction), then the gateway's
-  # feature services, then the gateway itself.
+  # stripe-sync first (lease close triggers hub eviction). Then the GATEWAY
+  # itself: a plain SIGTERM runs its lifespan shutdown, which enqueues an
+  # in-band `shutdown` frame to every live service, waits for them to exit,
+  # force-kills stragglers by journaled pid, and clears the journal. Only
+  # AFTER that do we run _stop_services as a BACKSTOP sweep — on a graceful
+  # exit it finds an already-cleared journal (no-op); on a hard gateway death
+  # (lifespan skipped) it kills the real stragglers the gateway left behind.
   _stop_sync
-  _stop_services
   s1="$(_stop_one "$PID_FILE" "$AWM_PORT" "gateway")"
+  _stop_services
   if [ "$s1" = "0" ]; then
     echo "[dev] not running"
   fi
@@ -232,9 +240,6 @@ _start_uvicorn() {
   nohup setsid mamba run -n awm --no-capture-output \
       uvicorn awm.gateway.server:app \
       --host 127.0.0.1 --port "$AWM_PORT" \
-      --reload \
-      --reload-dir "$REPO_ROOT/awm/gateway" \
-      --reload-dir "$REPO_ROOT/awm/service_components" \
       >"$LOG_FILE" 2>&1 &
   echo $! >"$PID_FILE"
   sleep 1
