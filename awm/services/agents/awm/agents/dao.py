@@ -1,0 +1,225 @@
+"""Agents service data access — agent_instances + agent_transcript tables.
+
+Per the modular invariant, the agents service owns its own SQLite DB at
+AWM_DIR/services/agents/agents.db. All SQL for agent_instances and
+agent_transcript lives here; no direct DB calls in agent_instances.py.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from datetime import datetime, timezone
+
+from awm.persistence.dao import BaseDAO
+from awm.persistence.databases import init_service_db
+
+SERVICE = "agents"
+SCHEMA_VERSION = 1
+
+SCHEMA_SQL = """\
+CREATE TABLE IF NOT EXISTS agent_instances (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project         TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    cli_session_id  TEXT,
+    log_path        TEXT,
+    started_at      INTEGER NOT NULL,
+    ended_at        INTEGER,
+    data            TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
+    ON agent_instances(project, scope, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_instances_open
+    ON agent_instances(project, scope) WHERE ended_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS agent_transcript (
+    id          TEXT PRIMARY KEY,
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    meta        TEXT NOT NULL DEFAULT '{}',
+    ts          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
+    ON agent_transcript(project, scope, ts);
+"""
+
+_initialized = False
+
+
+def init() -> None:
+    global _initialized
+    if not _initialized:
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        _initialized = True
+
+
+class AgentsDAO(BaseDAO):
+    """CRUD over agent_instances and agent_transcript."""
+
+    def __init__(self, conn: sqlite3.Connection | None = None) -> None:
+        super().__init__(SERVICE, conn=conn)
+
+    # -- agent_instances -------------------------------------------------------
+
+    def open_instance(self, *, project: str, scope: str,
+                      log_path: str | None,
+                      cli_session_id: str | None,
+                      started_at: int,
+                      intent: str = "live") -> int:
+        """Insert a new agent_instances row (ended_at=NULL). Returns the row id."""
+        data = json.dumps({"intent": intent}, sort_keys=True)
+        return self.execute(
+            "INSERT INTO agent_instances "
+            "(project, scope, cli_session_id, log_path, started_at, ended_at, data) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?)",
+            (project, scope, cli_session_id, log_path, started_at, data),
+        )
+
+    def close_instance(self, instance_id: int, *, ended_at: int,
+                       exit_code: int | None,
+                       intent_override: str | None = None) -> None:
+        """Close an agent_instances row (set ended_at + merge into data JSON)."""
+        row = self.query_one(
+            "SELECT data FROM agent_instances WHERE id=?", (instance_id,))
+        try:
+            data = json.loads(row["data"] if row and row["data"] else "{}")
+        except (TypeError, ValueError):
+            data = {}
+        if intent_override is not None:
+            data["intent"] = intent_override
+        data["exit_code"] = exit_code
+        self.execute(
+            "UPDATE agent_instances SET ended_at=?, data=? WHERE id=?",
+            (ended_at, json.dumps(data, sort_keys=True), instance_id),
+        )
+
+    def set_instance_intent(self, instance_id: int, intent: str) -> None:
+        """Persist why an instance is about to exit."""
+        row = self.query_one(
+            "SELECT data FROM agent_instances WHERE id=?", (instance_id,))
+        try:
+            data = json.loads(row["data"] if row and row["data"] else "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data["intent"] = intent
+        self.execute(
+            "UPDATE agent_instances SET data=? WHERE id=?",
+            (json.dumps(data, sort_keys=True), instance_id),
+        )
+
+    def update_instance_cli_session_id(self, instance_id: int,
+                                        cli_sid: str) -> None:
+        self.execute(
+            "UPDATE agent_instances SET cli_session_id=? WHERE id=?",
+            (cli_sid, instance_id),
+        )
+
+    def get_instance(self, instance_id: int) -> dict | None:
+        """Return the agent_instances row or None."""
+        return self.query_one(
+            "SELECT * FROM agent_instances WHERE id=?", (instance_id,))
+
+    def get_latest_cli_session_id(self, project: str, scope: str) -> str | None:
+        """Return the most recent cli_session_id for (project, scope), or None."""
+        row = self.query_one(
+            "SELECT cli_session_id FROM agent_instances "
+            "WHERE project=? AND scope=? AND cli_session_id IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (project, scope),
+        )
+        return row["cli_session_id"] if row else None
+
+    def list_instances(self, project: str | None = None,
+                       scope: str | None = None) -> list[dict]:
+        """Return all agent_instances rows, with project/scope/agent_cli inline."""
+        where = []
+        params: list = []
+        if project:
+            where.append("project = ?")
+            params.append(project)
+        if scope:
+            where.append("scope = ?")
+            params.append(scope)
+        sql = "SELECT * FROM agent_instances"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC"
+        return self.query_all(sql, params)
+
+    def close_all_open_instances(self, ended_at: int) -> list[dict]:
+        """Close all agent_instances rows where ended_at IS NULL. Returns closed rows."""
+        rows = self.query_all(
+            "SELECT id, data FROM agent_instances WHERE ended_at IS NULL")
+        for r in rows:
+            try:
+                data = json.loads(r["data"] or "{}")
+            except (TypeError, ValueError):
+                data = {}
+            data["closed_by"] = "reconcile"
+            data["reason"] = "daemon_restart"
+            self.execute(
+                "UPDATE agent_instances SET ended_at=?, data=? WHERE id=?",
+                (ended_at, json.dumps(data, sort_keys=True), r["id"]),
+            )
+        return rows
+
+    def get_active_scopes(self) -> list[dict]:
+        """Return (project, scope) pairs that have no open instance row and
+        the most recent cli_session_id for each, for the resume driver."""
+        # NOTE: in v1 agents.db there's no agents table — active/retired state
+        # is determined externally via scopes RPC. This returns open-ended
+        # instances that need reconciliation (ended_at IS NULL after restart).
+        return self.query_all(
+            "SELECT DISTINCT project, scope, cli_session_id "
+            "FROM agent_instances "
+            "WHERE ended_at IS NULL "
+            "ORDER BY started_at DESC"
+        )
+
+    def get_latest_instance_for_scope(self, project: str, scope: str) -> dict | None:
+        """Return the most recent agent_instances row for (project, scope)."""
+        return self.query_one(
+            "SELECT * FROM agent_instances "
+            "WHERE project=? AND scope=? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (project, scope),
+        )
+
+    # -- agent_transcript ------------------------------------------------------
+
+    def insert_transcript(self, *, project: str, scope: str,
+                          kind: str, body: str,
+                          meta: dict | None,
+                          ts: int) -> str:
+        """Insert one agent_transcript row. Returns the generated id."""
+        row_id = uuid.uuid4().hex
+        meta_str = json.dumps(meta or {})
+        self.execute(
+            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (row_id, project, scope, kind, body, meta_str, ts),
+        )
+        return row_id
+
+    def read_transcript(self, project: str, scope: str) -> list[dict]:
+        """All transcript rows for (project, scope), ordered by ts."""
+        return self.query_all(
+            "SELECT * FROM agent_transcript "
+            "WHERE project=? AND scope=? ORDER BY ts, id",
+            (project, scope),
+        )
+
+    def get_last_transcript_row(self, project: str, scope: str,
+                                kinds: list[str]) -> dict | None:
+        """Most recent transcript row for (project, scope) with kind in kinds."""
+        placeholders = ",".join("?" * len(kinds))
+        return self.query_one(
+            f"SELECT * FROM agent_transcript "
+            f"WHERE project=? AND scope=? AND kind IN ({placeholders}) "
+            f"ORDER BY ts DESC, id DESC LIMIT 1",
+            [project, scope, *kinds],
+        )

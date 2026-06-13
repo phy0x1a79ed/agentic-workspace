@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-persistence"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM persistence component: per-service SQLite DBs, schema/migrations, DAO layer, KV store, and opt-in embedding search."
+dependencies = [
+    "httpx",
+]
+
+# Embedding search is opt-in: a service that never searches doesn't pull these.
+# Install with `pip install awm-persistence[search]`.
+[project.optional-dependencies]
+search = [
+    "sentence-transformers",
+    "sqlite-vec",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/persistence/.
+[tool.setuptools.packages.find]
+include = ["awm.persistence*"]
+namespaces = true
