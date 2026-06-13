@@ -829,34 +829,155 @@ def _shadow_dev_pythonpath(service_dir: pathlib.Path) -> str:
 
 @dev_app.command("shadow")
 def dev_shadow(
-    target: str = typer.Argument(
+    targets: list[str] = typer.Argument(
         ...,
-        help="Explicit path to a service folder (or its run.sh) to overlay — "
-             "e.g. awm/services/scopes or "
-             "projects/awm/web-ptt/awm/services/scopes. Or 'pages/<name>' to "
-             "overlay a built page from ./packages/pages/<name>/dist.",
+        help="One or more targets to bring up on the hub in ONE process. Each is "
+             "either 'pages/<name>' (a built page from awm/pages/<name>/dist) or a "
+             "path to a service folder / its run.sh (e.g. awm/services/agents). "
+             "Example: awm dev shadow --port 7821 pages/agent awm/services/agents "
+             "awm/services/tts awm/services/ptt",
+    ),
+    port: int = typer.Option(
+        7821, "--port", "-p",
+        help="Hub port to bring these up on. Defaults to 7821 (the dev sandbox). "
+             "The CLI otherwise targets AWM_PORT (prod 7819) — set this so you "
+             "never shadow onto prod by accident.",
     ),
     name: Optional[str] = typer.Option(
         None, "--name",
-        help="Override the overlay name (defaults to the folder basename).",
+        help="Override the overlay/base name (single target only).",
     ),
 ):
-    """Overlay a service (or page) onto the running hub.
+    """Bring our worktree's pages + services up on a running hub (default: dev :7821).
 
-    Service: execs the folder's ``run.sh`` with ``AWM_SERVICE_OVERLAY=1`` so the
-    process registers as a shadow overlay on the existing ``/svc/<name>`` base —
-    one process, one identity, its own control WS as the lease. Ctrl-C pops the
-    overlay and the base resumes. No second registration, no token, no key file.
+    Everything comes up in ONE foreground process; Ctrl-C tears the whole stack
+    down (page overlays popped, service subprocesses SIGTERM'd, any base we created
+    evicted, dev's own bases resume).
 
-    Page ('pages/<name>'): pushes ``./packages/pages/<name>/dist`` as a page
-    overlay on ``/ui/<name>`` and holds a lease until Ctrl-C (legacy path).
+    Each target auto-selects base-vs-overlay against what the hub already serves:
+
+    - Page ('pages/<name>'): serves ``awm/pages/<name>/dist`` at ``/ui/<name>``. If a
+      page base already serves that prefix it's pushed as an overlay; otherwise it
+      registers as a fresh page base.
+    - Service (a path under ``awm/services/``): execs the folder's ``run.sh`` with the
+      dev ``PYTHONPATH`` so it runs THIS worktree's code. If ``/svc/<name>`` already has
+      a base it registers as an overlay (``AWM_SERVICE_OVERLAY=1``); otherwise the
+      adapter self-registers as the base. A base created this way is NOT journaled —
+      it won't respawn if the hub restarts mid-session.
     """
-    # Legacy page-overlay path (relative pages/<name> from a scope worktree).
-    if target.startswith("pages/"):
-        _dev_shadow_page(target.split("/", 1)[1], name)
-        return
+    import asyncio as _asyncio
 
-    # Service overlay: resolve the explicit path to a run.sh.
+    global BASE_URL
+    BASE_URL = f"http://{HOST}:{port}"
+
+    if name and len(targets) > 1:
+        typer.echo("--name only applies to a single target", err=True)
+        raise typer.Exit(1)
+    _require_server()
+
+    # One registry snapshot drives the base-vs-overlay decision for every target:
+    # a service base = a kind=service record at /svc/<name> that isn't itself an
+    # overlay; a page base = a kind=page record at that prefix.
+    r = _local_api("GET", "/hub/services")
+    svcs = r.json().get("services", []) if r.status_code < 400 else []
+    service_bases = {s["name"] for s in svcs
+                     if s.get("kind") == "service" and not s.get("is_overlay")}
+    page_prefixes = {s["prefix"] for s in svcs
+                     if s.get("kind") == "page" and not s.get("is_overlay")}
+
+    leases: list[tuple[str, str]] = []   # page leases this CLI holds
+    spawned_pids: list[int] = []         # service subprocesses we own
+
+    for target in targets:
+        if target.startswith("pages/"):
+            lease = _shadow_page_target(target.split("/", 1)[1], name, page_prefixes)
+            if lease:
+                leases.append(lease)
+        else:
+            pid = _shadow_service_target(target, name, service_bases)
+            if pid:
+                spawned_pids.append(pid)
+
+    if not leases and not spawned_pids:
+        typer.echo("nothing brought up", err=True)
+        raise typer.Exit(1)
+
+    async def _hold_all():
+        await _asyncio.gather(*(_hold_one_lease(n, p) for n, p in leases))
+    try:
+        if leases:
+            typer.echo(f"holding {len(leases)} page lease(s) + {len(spawned_pids)} "
+                       f"service(s) on :{port}; Ctrl-C to tear down…")
+            _asyncio.run(_hold_all())
+        else:
+            typer.echo(f"{len(spawned_pids)} service(s) running on :{port} "
+                       f"(pids={spawned_pids}); Ctrl-C to tear down…")
+            signal.pause()
+    except KeyboardInterrupt:
+        typer.echo("tearing down…")
+    finally:
+        for pid in spawned_pids:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+    typer.echo("torn down — base traffic resumes")
+
+
+def _shadow_page_target(
+    name: str, override_name: Optional[str], page_prefixes: set[str],
+) -> Optional[tuple[str, str]]:
+    """Bring up ``awm/pages/<name>/dist`` on ``/ui/<name>``.
+
+    Overlay if a page base already serves the prefix, else register a fresh page
+    base. Returns ``(label, lease_ws_path)`` for the caller to hold, or ``None`` on
+    skip. The CLI holds the lease; closing it pops the overlay / evicts the base.
+    """
+    pkg_dir = (pathlib.Path.cwd() / "awm" / "pages" / name).expanduser().resolve()
+    if not pkg_dir.is_dir():
+        typer.echo(f"pages/{name}: {pkg_dir} not a directory", err=True)
+        return None
+    dist = pkg_dir / "dist"
+    if not dist.is_dir():
+        typer.echo(f"pages/{name}: no dist/ — build first", err=True)
+        return None
+    prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
+
+    if prefix in page_prefixes:
+        worktree = pkg_dir.parents[2].name   # <root>/awm/pages/<name> → <root>
+        shadow_name = override_name or f"shadow:{name}:{worktree}"
+        payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)}}
+        try:
+            r = httpx.post(f"{BASE_URL}/hub/shadow/register", json=payload, timeout=15)
+        except httpx.HTTPError as exc:
+            typer.echo(f"pages/{name}: hub unreachable: {exc}", err=True)
+            return None
+        if r.status_code >= 400:
+            typer.echo(f"pages/{name}: shadow register failed "
+                       f"({r.status_code}): {r.text}", err=True)
+            return None
+        body = r.json()
+        typer.echo(f"page  {name:16} → overlay {prefix}")
+        return (f"pages/{name}", body["lease_ws_path"])
+
+    # No base serves this prefix yet — register a fresh page base.
+    try:
+        body = _post_page_register(override_name or name, prefix, str(dist))
+    except typer.Exit:
+        return None
+    typer.echo(f"page  {name:16} → base    {prefix}")
+    return (f"pages/{name}", body["lease_ws_path"])
+
+
+def _shadow_service_target(
+    target: str, override_name: Optional[str], service_bases: set[str],
+) -> Optional[int]:
+    """Exec a service folder's ``run.sh`` against the hub with this worktree's code.
+
+    Overlay if ``/svc/<name>`` already has a base, else self-register as the base
+    (the adapter's ``AWM_SERVICE_ID``-unset path). Returns the spawned pid, or
+    ``None`` on skip. ``DEV_PYTHONPATH`` makes the process load this worktree's tree.
+    """
     p = pathlib.Path(target).expanduser().resolve()
     if p.is_dir():
         service_dir, run_sh = p, p / "run.sh"
@@ -865,85 +986,38 @@ def dev_shadow(
     else:
         typer.echo(f"{target}: expected a service folder containing run.sh "
                    f"(or the run.sh itself); got {p}", err=True)
-        raise typer.Exit(1)
+        return None
     if not run_sh.is_file():
         typer.echo(f"{service_dir}: no run.sh — not a service folder", err=True)
-        raise typer.Exit(1)
+        return None
 
-    base_name = name or service_dir.name      # the service to shadow (its prefix)
-    overlay_name = f"{base_name}-shadow"       # unique registry identity
-    _require_server()
-    # A base must already exist for /svc/<base>, else the overlay register 409s
-    # and the adapter retries forever — fail fast with a clear message.
-    disc = _local_api("GET", "/hub/services/discovered")
-    running = ({s["name"] for s in disc.json().get("services", []) if s["running"]}
-               if disc.status_code < 400 else set())
-    if base_name not in running:
-        typer.echo(f"no running base for /svc/{base_name} — start it first "
-                   f"(e.g. `awm services start {base_name}`), then shadow.",
-                   err=True)
-        raise typer.Exit(1)
+    base_name = override_name or service_dir.name
+    is_overlay = base_name in service_bases
 
     env = os.environ.copy()
     env["AWM_HUB_URL"] = BASE_URL
-    env["AWM_SERVICE_NAME"] = overlay_name
-    env["AWM_SERVICE_PREFIX"] = f"/svc/{base_name}"
-    env["AWM_SERVICE_OVERLAY"] = "1"
     env.setdefault("AWM_ENV", "awm")
+    if is_overlay:
+        env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"
+        env["AWM_SERVICE_PREFIX"] = f"/svc/{base_name}"
+        env["AWM_SERVICE_OVERLAY"] = "1"
+    else:
+        # Self-register as a fresh base: a unique name, no overlay flag, no
+        # pre-assigned id (the adapter POSTs /hub/service/register itself).
+        env["AWM_SERVICE_NAME"] = base_name
+        for k in ("AWM_SERVICE_ID", "AWM_SERVICE_OVERLAY", "AWM_SERVICE_PREFIX"):
+            env.pop(k, None)
     pp = _shadow_dev_pythonpath(service_dir)
     if pp:
         env["DEV_PYTHONPATH"] = pp
 
-    typer.echo(f"shadow {overlay_name} → /svc/{base_name} (overlay); Ctrl-C to pop")
+    if is_overlay:
+        typer.echo(f"svc   {base_name:16} → overlay /svc/{base_name}")
+    else:
+        typer.echo(f"svc   {base_name:16} → base    /svc/{base_name}"
+                   f"  (not journaled — won't respawn on hub restart)")
     proc = subprocess.Popen(
         ["bash", str(run_sh)], cwd=str(service_dir), env=env,
         start_new_session=True,
     )
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        typer.echo("popping overlay…")
-    finally:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-    typer.echo("overlay popped — base traffic resumes")
-
-
-def _dev_shadow_page(name: str, override_name: Optional[str]) -> None:
-    """Legacy: overlay ./packages/pages/<name>/dist on /ui/<name> until Ctrl-C."""
-    import asyncio as _asyncio
-
-    pkg_dir = (pathlib.Path.cwd() / "packages" / "pages" / name).expanduser().resolve()
-    if not pkg_dir.is_dir():
-        typer.echo(f"pages/{name}: {pkg_dir} not a directory", err=True)
-        raise typer.Exit(1)
-    dist = pkg_dir / "dist"
-    if not dist.is_dir():
-        typer.echo(f"pages/{name}: no dist/ — build first", err=True)
-        raise typer.Exit(1)
-    prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
-    shadow_name = override_name or f"shadow:{name}:{pkg_dir.parent.parent.parent.name}"
-    payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)}}
-    try:
-        r = httpx.post(f"{BASE_URL}/hub/shadow/register", json=payload, timeout=15)
-    except httpx.HTTPError as exc:
-        typer.echo(f"hub unreachable: {exc}", err=True)
-        raise typer.Exit(1)
-    if r.status_code >= 400:
-        typer.echo(f"shadow register failed ({r.status_code}): {r.text}", err=True)
-        raise typer.Exit(1)
-    body = r.json()
-    typer.echo(f"shadow pages/{name} → prefix={prefix} id={body['service_id']}")
-    typer.echo("holding shadow lease (Ctrl-C to pop)…")
-    try:
-        _asyncio.run(_hold_one_lease(f"pages/{name}", body["lease_ws_path"]))
-    except KeyboardInterrupt:
-        typer.echo("shadow lease closed — base traffic resumes")
-    finally:
-        for pid in spawned_pids:
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+    return proc.pid

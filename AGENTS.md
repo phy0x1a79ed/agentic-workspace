@@ -65,7 +65,7 @@ There's only ever one hub origin per node — the gateway (`awm.gateway.server:a
 
 Per-scope port bands are derived from the worktree dirname, so dev sandboxes run side-by-side with prod (and each other) on distinct ports.
 
-**Substitute your sandbox port** whenever this section says `:7819`.
+**Substitute your sandbox port** whenever this section says `:7819`. The CLI's own target hub is `BASE_URL`, computed from `AWM_PORT` (default `7819` = prod) — `AWM_HUB_URL` is injected into *services*, not consulted by the CLI. `awm dev shadow` takes a `--port` (default `7821`, the dev sandbox) to pick which hub it shadows onto, so you don't have to set `AWM_PORT` (and can't fat-finger a shadow onto prod).
 
 ### One-time per node
 

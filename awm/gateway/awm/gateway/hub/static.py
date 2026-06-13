@@ -33,6 +33,7 @@ from starlette.responses import (
     FileResponse,
     HTMLResponse,
     PlainTextResponse,
+    RedirectResponse,
     Response,
 )
 
@@ -73,6 +74,18 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
 
     if rel == "":
         index = root / "index.html"
+        served_at_root = index.is_file() or rec.entry
+        # Canonical directory URL: a bare prefix (``/ui/agent``) is the
+        # bundle's directory, so redirect it to the trailing-slash form
+        # (``/ui/agent/``) the same way nginx/Apache/GitHub Pages do. Without
+        # this the browser resolves the bundle's relative ``./assets/...`` refs
+        # against the parent (``/ui/``) and every asset 404s. Only the prefix
+        # root redirects; asset sub-paths stay byte-serves.
+        if served_at_root and not request.url.path.endswith("/"):
+            dest = request.url.path + "/"
+            if request.url.query:
+                dest = f"{dest}?{request.url.query}"
+            return RedirectResponse(dest, status_code=301)
         if index.is_file():
             return FileResponse(index)
         if rec.entry:
