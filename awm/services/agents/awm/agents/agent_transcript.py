@@ -1,33 +1,24 @@
-"""Per-agent structured transcript: shim over ``room_transcripts``.
+"""Per-agent structured transcript — writes to agents.db agent_transcript table.
 
-v36 routed CLI stdin/stdout events into a parallel ``agent_events`` table.
-v37 unifies those events with the agent's owned room transcript so the UI
-reads one log instead of joining two; this module is the in-process façade
-that translates the agent_instances.py call sites into
-``rooms_svc.post_transcript`` writes.
-
-Callers:
-  * ``agent_instances._reader_loop`` (direction='out'): one row per parsed
-    stream-json event, plus a ``raw`` row for JSONDecodeError fallback.
-  * ``agent_instances._input_pump`` (direction='in'): one row per framed
-    stdin write.
-  * ``agent_instances.send_slash`` (direction='in', injection=True): one
-    row per slash/compact-primer injection.
-
-The compact subscriber (subscribe_assistant_turns) stays in-memory only —
-it's a wake signal for the compact dance, not durable state.
+Modular change from the monolith: transcript writes go to the agents service's
+own DB (agent_transcript table) rather than being forwarded to rooms_svc.post_transcript.
+The compact subscriber and assistant-turn notifier remain in-memory only.
 """
-
 from __future__ import annotations
 
 import asyncio
 import json
 
-from awm.db import get_connection
-from awm.services import rooms as rooms_svc
+from awm.agents.dao import AgentsDAO
+from awm.agents._time import now_ms
+
+
+def _get_dao() -> AgentsDAO:
+    return AgentsDAO()
+
 
 # ---------------------------------------------------------------------------
-# Event-type classification (unchanged from v36)
+# Event-type classification (unchanged)
 # ---------------------------------------------------------------------------
 
 def _classify(parsed: dict) -> str:
@@ -76,10 +67,9 @@ def _extract_assistant_text(parsed: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# End-of-turn notifier: compact_session waits on this
+# End-of-turn notifier
 # ---------------------------------------------------------------------------
 
-# agent_instances.id (in-memory int handle) → set of asyncio.Queue[str]
 _assistant_turn_subs: dict[int, set[asyncio.Queue]] = {}
 
 
@@ -110,52 +100,11 @@ def _broadcast_assistant_turn(handle_id: int, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Owned-room resolution
-# ---------------------------------------------------------------------------
-
-def _owned_room_id(agent_id: str) -> str | None:
-    """The v37 model: every active agent owns exactly one room — that's
-    where its transcript lands. Returns the room id or None if the agent
-    has no owned room yet (mostly during the spawn window before
-    create_session has provisioned one)."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT id FROM rooms WHERE owner_agent_id=? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (agent_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return row[0] if row else None
-
-
-# ---------------------------------------------------------------------------
 # Write paths
 # ---------------------------------------------------------------------------
 
-def _post_to_owned_room(*, agent_id: str, kind: str, body: str,
-                        meta: dict | None) -> None:
-    room_id = _owned_room_id(agent_id)
-    if room_id is None:
-        return
-    try:
-        rooms_svc.post_transcript(
-            room_id, author=agent_id, kind=kind, body=body, meta=meta,
-        )
-    except rooms_svc.RoomError:
-        # Closed/missing room — swallow; the reader loop must not stall.
-        return
-    except Exception:  # noqa: BLE001
-        return
-
-
 def record_out(session, parsed: dict) -> None:
-    """Persist one parsed stream-json event from the CLI's stdout.
-
-    ``session`` is an AgentInstance handle (duck-typed: needs ``agent_id``
-    and ``id`` for the assistant-turn notifier).
-    """
+    """Persist one parsed stream-json event from the CLI's stdout."""
     kind = _classify(parsed)
     try:
         body_json = json.dumps(parsed)
@@ -166,39 +115,49 @@ def record_out(session, parsed: dict) -> None:
         text_body = (parsed.get("result") if parsed.get("type") == "result"
                      and isinstance(parsed.get("result"), str) else "") or ""
     meta = {"event": parsed, "_event_repr": body_json}
-    _post_to_owned_room(
-        agent_id=session.agent_id, kind=kind, body=text_body, meta=meta,
-    )
+    try:
+        _get_dao().insert_transcript(
+            project=session.project, scope=session.scope,
+            kind=kind, body=text_body, meta=meta, ts=now_ms(),
+        )
+    except Exception:  # noqa: BLE001
+        pass
     if _is_end_of_turn_assistant(parsed):
         _broadcast_assistant_turn(session.id, _extract_assistant_text(parsed))
 
 
 def record_raw_out(session, line: str) -> None:
     """Persist a non-JSON stdout line as kind='system'."""
-    _post_to_owned_room(
-        agent_id=session.agent_id, kind="system", body=line,
-        meta={"raw": True},
-    )
+    try:
+        _get_dao().insert_transcript(
+            project=session.project, scope=session.scope,
+            kind="system", body=line, meta={"raw": True}, ts=now_ms(),
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def record_in(session, body: str, *, injection: bool = False) -> None:
-    """Persist a framed stdin write (room post, slash, or compact primer)."""
+    """Persist a framed stdin write."""
     kind = "slash" if injection else "message"
-    _post_to_owned_room(
-        agent_id=session.agent_id, kind=kind, body=body,
-        meta={"direction": "in", "injection": injection},
-    )
+    try:
+        _get_dao().insert_transcript(
+            project=session.project, scope=session.scope,
+            kind=kind, body=body,
+            meta={"direction": "in", "injection": injection},
+            ts=now_ms(),
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Read paths
 # ---------------------------------------------------------------------------
 
-def _decode_event(row) -> dict:
-    """Pull the original parsed stream-json blob out of a transcript row's
-    meta column. Returns {} if unreadable."""
+def _decode_event(row: dict) -> dict:
     try:
-        meta = json.loads(row["meta"] or "{}")
+        meta = json.loads(row.get("meta") or "{}")
     except (TypeError, ValueError):
         return {}
     ev = meta.get("event")
@@ -207,38 +166,15 @@ def _decode_event(row) -> dict:
     return {}
 
 
-def read_session(agent_id: str) -> list[dict]:
-    """All transcript rows for ``agent_id``'s owned room, ordered by ts."""
-    room_id = _owned_room_id(agent_id)
-    if room_id is None:
-        return []
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT * FROM room_transcripts WHERE room_id=? ORDER BY ts, id",
-            (room_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
+def read_session(project: str, scope: str) -> list[dict]:
+    """All transcript rows for (project, scope), ordered by ts."""
+    return _get_dao().read_transcript(project, scope)
 
 
-def has_unmatched_tool_use(agent_id: str) -> bool:
-    """True if the most recent assistant message contains a tool_use whose
-    matching tool_result hasn't landed yet."""
-    room_id = _owned_room_id(agent_id)
-    if room_id is None:
-        return False
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT meta FROM room_transcripts "
-            "WHERE room_id=? AND kind IN ('message', 'tool_result') "
-            "ORDER BY ts DESC, id DESC LIMIT 1",
-            (room_id,),
-        ).fetchone()
-    finally:
-        conn.close()
+def has_unmatched_tool_use(project: str, scope: str) -> bool:
+    """True if the most recent assistant message contains an unmatched tool_use."""
+    row = _get_dao().get_last_transcript_row(
+        project, scope, kinds=["message", "tool_result"])
     if row is None:
         return False
     event = _decode_event(row)
@@ -252,22 +188,9 @@ def has_unmatched_tool_use(agent_id: str) -> bool:
     )
 
 
-def read_recent_assistant_text(agent_id: str) -> str:
-    """Concatenate the text portion of the most recent end-of-turn assistant
-    event. Empty string if none exists."""
-    room_id = _owned_room_id(agent_id)
-    if room_id is None:
-        return ""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT meta FROM room_transcripts "
-            "WHERE room_id=? AND kind='message' "
-            "ORDER BY ts DESC, id DESC LIMIT 1",
-            (room_id,),
-        ).fetchone()
-    finally:
-        conn.close()
+def read_recent_assistant_text(project: str, scope: str) -> str:
+    """Concatenate the text portion of the most recent end-of-turn assistant event."""
+    row = _get_dao().get_last_transcript_row(project, scope, kinds=["message"])
     if row is None:
         return ""
     event = _decode_event(row)

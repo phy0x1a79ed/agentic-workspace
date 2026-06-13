@@ -9,7 +9,8 @@ from pathlib import Path
 import yaml
 
 from awm.config import SKILLS_DIR
-from awm.models import SkillInfo, SkillListResponse, SkillContentResponse
+from awm.skills.models import SkillInfo, SkillListResponse, SkillContentResponse
+from awm.skills import dao as _dao_mod
 
 
 def _parse_frontmatter(path: Path) -> dict:
@@ -72,8 +73,8 @@ def _scan_skills() -> list[SkillInfo]:
 def find_by_name(name: str) -> SkillInfo | None:
     """Look up a skill by its frontmatter `name` field.
 
-    Use this instead of hardcoding file paths when another service needs to reference
-    a skill (e.g. to generate context.md pointers). Layout-independent.
+    Use this instead of hardcoding file paths when another service needs to
+    reference a skill (e.g. to generate context.md pointers). Layout-independent.
     """
     for skill in _scan_skills():
         if skill.name == name:
@@ -150,15 +151,47 @@ def search_skills(
         return skill
 
     try:
-        from awm.services.embeddings import hybrid_augment
-        combined = hybrid_augment(
-            query, source_type="skill",
-            keyword_hits=keyword_results, keyword_keys=keyword_paths,
-            materialize=_materialize,
-        )
+        from awm.persistence.embeddings import hybrid_augment
+        _dao = _dao_mod.SkillsDAO()
+        conn = _dao.open_connection()
+        try:
+            combined = hybrid_augment(
+                conn, query, source_type="skill",
+                keyword_hits=keyword_results, keyword_keys=keyword_paths,
+                materialize=_materialize,
+            )
+        finally:
+            conn.close()
     except Exception:
         combined = keyword_results
     return SkillListResponse(skills=combined, total=len(combined))
+
+
+# ---------------------------------------------------------------------------
+# Index — embed a single skill into the service's own embeddings table.
+# ---------------------------------------------------------------------------
+
+def index_skill(file_path: str) -> None:
+    """Embed a single skill and upsert it into the skills service's embeddings table.
+
+    ``file_path`` is relative to ``SKILLS_DIR`` (e.g. ``'tools/git.md'``).
+    The text sent to the embedder is the file's full content.
+
+    Raises ``FileNotFoundError`` if the skill file doesn't exist.
+    Optional deps (sentence-transformers / sqlite-vec) are imported lazily;
+    if unavailable, this raises ``ImportError`` — callers should catch it.
+    """
+    from awm.persistence.embeddings import upsert_embedding
+    full_path = SKILLS_DIR / file_path
+    if not full_path.exists():
+        raise FileNotFoundError(f"Skill not found: {file_path}")
+    text = full_path.read_text(encoding="utf-8")
+    _dao = _dao_mod.SkillsDAO()
+    conn = _dao.open_connection()
+    try:
+        upsert_embedding(conn, "skill", file_path, text)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -198,10 +231,14 @@ def sync_skills(force: bool = False) -> dict:
 
     When drift is detected (or `force=True`): re-embeds every live skill and
     deletes embeddings rows whose source file no longer exists. Returns stats.
+
+    Degrades gracefully when sentence-transformers / sqlite-vec are absent —
+    indexing errors per skill are swallowed; only the pruning (plain SQL) is
+    guaranteed to run.
     """
-    from awm.services.config_service import get_config, set_config
-    from awm.services.embeddings import index_skill
-    from awm.db import get_connection
+    from awm.persistence.config_service import get_config, set_config
+
+    _dao_mod.init()  # idempotent — ensures the skills DB + embeddings table exist
 
     fp = _fingerprint_skills_dir()
     if not force and get_config(_SYNC_FP_KEY) == fp:
@@ -218,25 +255,10 @@ def sync_skills(force: bool = False) -> dict:
         except Exception:
             pass
 
-    pruned = 0
-    conn = get_connection()
-    try:
-        existing = [
-            r[0] for r in conn.execute(
-                "SELECT source_id FROM embeddings WHERE source_type='skill'"
-            ).fetchall()
-        ]
-        stale = [sid for sid in existing if sid not in live_paths]
-        if stale:
-            conn.executemany(
-                "DELETE FROM embeddings WHERE source_type='skill' AND source_id=?",
-                [(sid,) for sid in stale],
-            )
-            conn.commit()
-            pruned = len(stale)
-    finally:
-        conn.close()
+    _dao = _dao_mod.SkillsDAO()
+    existing = _dao.list_skill_ids()
+    stale = [sid for sid in existing if sid not in live_paths]
+    pruned = _dao.delete_stale(stale)
 
     set_config(_SYNC_FP_KEY, fp)
     return {"skipped": False, "indexed": indexed, "pruned": pruned}
-

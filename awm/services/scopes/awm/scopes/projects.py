@@ -1,4 +1,8 @@
-"""Project CRUD — ports new-project.sh."""
+"""Project CRUD — ports new-project.sh (v1 modular).
+
+All SQL goes through ScopesDAO. Embeddings indexing is reimplemented
+against the scopes service's own embeddings table.
+"""
 
 from __future__ import annotations
 
@@ -14,23 +18,16 @@ from awm.config import (
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
-from awm._lib.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
-from awm.db import get_connection
-from awm.models import (
+from awm.scopes.git_utils import run_git as _run, detect_default_branch as _detect_default_branch
+from awm.scopes.dao import ScopesDAO
+from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
     ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
 )
-from awm.services._validation import validate_name
+from awm.scopes._validation import validate_name
 
 
 def _find_template(stem: str) -> Path | None:
-    """Locate a template file by a stable stem pattern (e.g. `scope-agents`).
-
-    Templates are resolved by filename substring match against any `*.template`
-    file under the workspace skills tree, so renaming or relocating templates
-    does not require a code change. First hit wins; the override copy at
-    `<workspace>/skills/` takes precedence over the package-bundled `SKILLS_DIR`.
-    """
     roots = []
     workspace_skills = WORKSPACE_ROOT / "skills"
     if workspace_skills.exists():
@@ -48,6 +45,21 @@ def _branch_exists(bare_dir: Path, branch: str) -> bool:
     r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify",
               f"refs/heads/{branch}"])
     return r.returncode == 0
+
+
+def _index_project(name: str) -> None:
+    """Upsert a project embedding in the scopes DB. Silently no-ops on failure."""
+    try:
+        from awm.persistence.embeddings import upsert_embedding
+        from awm.persistence.databases import get_connection
+        text = name
+        conn = get_connection("scopes")
+        try:
+            upsert_embedding(conn, "project", name, text)
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
@@ -73,14 +85,12 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
     if mode == "fresh":
         _run(["git", "init", "--bare", str(bare_dir)], check=True)
 
-        # Try creating GitHub repo
         if shutil.which("gh"):
             _run(["gh", "repo", "create", f"{GITHUB_USER}/{req.name}", "--private"],
                  check=True)
             _run(["git", "-C", str(bare_dir), "remote", "add", "origin",
                   f"https://github.com/{GITHUB_USER}/{req.name}.git"], check=True)
 
-        # Create initial commit via temp clone
         with tempfile.TemporaryDirectory() as tmp:
             init_dir = Path(tmp) / "init"
             _run(["git", "clone", str(bare_dir), str(init_dir)])
@@ -105,14 +115,12 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
               "+refs/heads/*:refs/remotes/origin/*"])
         _run(["git", "-C", str(bare_dir), "remote", "add", "upstream", req.fork_url])
 
-    # Create supporting directories
     for d in [
         DATA_DIR / req.name / "raw",
         DATA_DIR / req.name / "staged",
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Detect default branch and create worktree
     default_branch = _detect_default_branch(bare_dir)
     worktree_dir = PROJECTS_DIR / req.name / default_branch
 
@@ -128,11 +136,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
 
-    try:
-        from awm.services.embeddings import index_project
-        index_project(req.name)
-    except Exception:
-        pass
+    _index_project(req.name)
 
     return ProjectCreateResponse(
         name=req.name,
@@ -149,23 +153,13 @@ def search_projects(
     limit: int = 50,
     offset: int = 0,
 ) -> ProjectListResponse:
-    """Search projects derived from the scopes table + on-disk project dirs,
-    with per-status counts. `query` LIKEs on project name; semantic top-up
-    uses the embeddings table. `active_only` filters to projects with at
-    least one active scope."""
-    conn = get_connection()
-    try:
-        # v37: scopes table folded into agents. allocated|active render as
-        # 'active'; retired renders as 'completed'. The legacy 'deleted'
-        # state is gone — agents stay 'retired' once their worktree is
-        # cleaned.
-        rows = conn.execute(
-            "SELECT p.name AS project, a.status, COUNT(*) AS n "
-            "FROM agents a JOIN projects p ON p.id = a.project_id "
-            "GROUP BY p.name, a.status ORDER BY p.name"
-        ).fetchall()
-    finally:
-        conn.close()
+    """Search projects from the agents table + on-disk project dirs."""
+    dao = ScopesDAO()
+    rows = dao.query_all(
+        "SELECT p.name AS project, a.status, COUNT(*) AS n "
+        "FROM agents a JOIN projects p ON p.id = a.project_id "
+        "GROUP BY p.name, a.status ORDER BY p.name"
+    )
 
     by_project: dict[str, ProjectScopeCounts] = {}
     for r in rows:
@@ -175,7 +169,6 @@ def search_projects(
         elif r["status"] == "retired":
             counts.completed += r["n"]
 
-    # Also surface projects that exist on disk but have no scope rows yet.
     if PROJECTS_DIR.is_dir():
         for child in sorted(PROJECTS_DIR.iterdir()):
             if child.is_dir() and (child / ".bare").is_dir():
@@ -207,12 +200,18 @@ def search_projects(
         return ProjectListInfo(name=name, scope_counts=by_project[name])
 
     try:
-        from awm.services.embeddings import hybrid_augment
-        merged = hybrid_augment(
-            query, source_type="project",
-            keyword_hits=paged, keyword_keys=keyword_keys,
-            materialize=_materialize,
-        )
+        from awm.persistence.embeddings import hybrid_augment
+        from awm.persistence.databases import get_connection
+        conn = get_connection("scopes")
+        try:
+            merged = hybrid_augment(
+                conn, query,
+                source_type="project",
+                keyword_hits=paged, keyword_keys=keyword_keys,
+                materialize=_materialize,
+            )
+        finally:
+            conn.close()
     except Exception:
         merged = paged
     return ProjectListResponse(projects=merged)

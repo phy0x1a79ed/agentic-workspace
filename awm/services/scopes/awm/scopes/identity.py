@@ -1,30 +1,41 @@
 """Identity translation: ``(project, scope)`` ↔ ``agent_id`` and friends.
 
-v37 swung the data tables onto uuid primary keys (projects/users/agents) so
-renaming a project, scope, or username is a one-row UPDATE — but the CLI,
-MCP, and exposed surfaces still address agents by their human-facing
-``(project, scope)`` pair. This module is the single place where the
-boundary code translates between the two.
+Rewritten off the shared ``state.db`` onto :class:`ScopesDAO`: every lookup
+goes to the scopes service's own per-service DB
+(``AWM_DIR/services/scopes/scopes.db``).
 
-All lookups are read-only fast-paths over the agents/projects/users tables.
-Per-call sqlite queries are cheap (indexed, in-process); a tiny LRU keeps
-the hot ``(project, scope) → agent_id`` lookup off disk in the common case
-where the daemon resolves the same scope dozens of times per second.
+The module surface (helper names, signatures, constants) is STABLE — the
+surfaces agent imports these unchanged. Internally we still use uuid PKs for
+agents/projects/users; those uuids never leave this module over the RPC
+boundary (the four identity RPCs in ``hub_adapter.py`` map to/from natural
+keys at the manifest edge).
+
+All helpers follow the own-or-passed-connection idiom via
+``ScopesDAO(conn=...)`` so a caller can wrap multiple operations in one
+transaction.
 """
 
 from __future__ import annotations
 
-import functools
-import sqlite3
 import uuid as _uuid
 from datetime import datetime, timezone
 
-from awm.db import SENTINEL_USER_IDS, get_connection
+from awm.scopes.dao import ScopesDAO
+
+# ---------- sentinel refs --------------------------------------------------
 
 SYSTEM_REF = "system"
 
+# Deterministic sentinel user IDs (same derivation as the legacy ``db.py``
+# so seed data that carries these uuids keeps resolving correctly).
+import uuid as _uuid_mod
 
-# ---------- timestamp helpers ----------------------------------------------
+_SENTINEL_NS = _uuid_mod.uuid5(_uuid_mod.NAMESPACE_DNS, "awm.v37.users.sentinels")
+CLI_USER_ID = str(_uuid_mod.uuid5(_SENTINEL_NS, "cli"))
+SYSTEM_USER_ID = str(_uuid_mod.uuid5(_SENTINEL_NS, "system"))
+
+
+# ---------- timestamp helpers -----------------------------------------------
 
 
 def now_ms() -> int:
@@ -47,9 +58,7 @@ def iso_to_ms(iso_str: str | None) -> int | None:
 
 
 def ms_to_iso(ms: int | None) -> str | None:
-    """unix-ms → ISO-8601 UTC string. Used to keep legacy API responses
-    (which expose TEXT timestamps) stable while the underlying columns are
-    INTEGER."""
+    """unix-ms → ISO-8601 UTC string. Keeps legacy API responses stable."""
     if ms is None:
         return None
     try:
@@ -62,111 +71,84 @@ def ms_to_iso(ms: int | None) -> str | None:
 # ---------- project lookups -------------------------------------------------
 
 
-def project_by_name(name: str, *, conn: sqlite3.Connection | None = None) -> dict | None:
+def project_by_name(name: str, *, conn=None) -> dict | None:
     """Return the projects row for ``name`` or None."""
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        row = c.execute(
-            "SELECT id, name, url, repo_path, created_at FROM projects WHERE name=?",
-            (name,),
-        ).fetchone()
-    finally:
-        if own:
-            c.close()
-    return dict(row) if row else None
+    dao = ScopesDAO(conn=conn)
+    return dao.query_one(
+        "SELECT id, name, url, repo_path, created_at FROM projects WHERE name=?",
+        (name,),
+    )
 
 
-def project_id_for_name(name: str, *, conn: sqlite3.Connection | None = None) -> str | None:
+def project_id_for_name(name: str, *, conn=None) -> str | None:
     p = project_by_name(name, conn=conn)
     return p["id"] if p else None
 
 
 def ensure_project(name: str, *, repo_path: str, url: str | None = None,
-                   conn: sqlite3.Connection | None = None) -> str:
+                   conn=None) -> str:
     """Idempotently get-or-create a projects row. Returns the project id.
 
     The DDL uses uuid4 PKs for fresh rows; ``url`` is set on insert and
-    preserved on subsequent calls (a follow-up UPDATE can change it
-    explicitly).
+    preserved on subsequent calls.
     """
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        row = c.execute(
-            "SELECT id FROM projects WHERE name=?", (name,),
-        ).fetchone()
-        if row:
-            return row[0]
-        pid = str(_uuid.uuid4())
-        c.execute(
-            "INSERT INTO projects (id, name, url, repo_path, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (pid, name, url, repo_path, now_ms()),
-        )
-        if own:
-            c.commit()
-        return pid
-    finally:
-        if own:
-            c.close()
+    dao = ScopesDAO(conn=conn)
+    row = dao.query_one("SELECT id FROM projects WHERE name=?", (name,))
+    if row:
+        return row["id"]
+    pid = str(_uuid.uuid4())
+    dao.execute(
+        "INSERT INTO projects (id, name, url, repo_path, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (pid, name, url, repo_path, now_ms()),
+    )
+    return pid
 
 
 # ---------- agent lookups ---------------------------------------------------
 
 
-def agent_by_id(agent_id: str, *, conn: sqlite3.Connection | None = None) -> dict | None:
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        row = c.execute(
-            "SELECT a.*, p.name AS project_name "
-            "FROM agents a JOIN projects p ON p.id = a.project_id "
-            "WHERE a.id = ?",
-            (agent_id,),
-        ).fetchone()
-    finally:
-        if own:
-            c.close()
-    return dict(row) if row else None
+def agent_by_id(agent_id: str, *, conn=None) -> dict | None:
+    dao = ScopesDAO(conn=conn)
+    return dao.query_one(
+        "SELECT a.*, p.name AS project_name "
+        "FROM agents a JOIN projects p ON p.id = a.project_id "
+        "WHERE a.id = ?",
+        (agent_id,),
+    )
 
 
 def agent_id_for_scope(project: str, scope: str, *,
-                       conn: sqlite3.Connection | None = None,
+                       conn=None,
                        active_only: bool = True) -> str | None:
-    """Return the agent id for ``(project, scope)``. By default returns only
-    a live (status ∈ allocated/active) agent; pass ``active_only=False`` to
-    fall through to the most recently retired agent for the same name."""
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        statuses = ("allocated", "active") if active_only else ("allocated", "active", "retired")
-        placeholders = ", ".join("?" * len(statuses))
-        row = c.execute(
-            f"SELECT a.id FROM agents a "
-            f"JOIN projects p ON p.id = a.project_id "
-            f"WHERE p.name=? AND a.scope=? AND a.status IN ({placeholders}) "
-            f"ORDER BY a.created_at DESC LIMIT 1",
-            (project, scope, *statuses),
-        ).fetchone()
-    finally:
-        if own:
-            c.close()
-    return row[0] if row else None
+    """Return the agent id for ``(project, scope)``.
+
+    By default returns only a live (status ∈ allocated/active) agent; pass
+    ``active_only=False`` to fall through to the most recently retired agent
+    for the same name.
+    """
+    statuses = ("allocated", "active") if active_only else ("allocated", "active", "retired")
+    placeholders = ", ".join("?" * len(statuses))
+    dao = ScopesDAO(conn=conn)
+    row = dao.query_one(
+        f"SELECT a.id FROM agents a "
+        f"JOIN projects p ON p.id = a.project_id "
+        f"WHERE p.name=? AND a.scope=? AND a.status IN ({placeholders}) "
+        f"ORDER BY a.created_at DESC LIMIT 1",
+        (project, scope, *statuses),
+    )
+    return row["id"] if row else None
 
 
 def agent_record_for_scope(project: str, scope: str, *,
-                           conn: sqlite3.Connection | None = None,
+                           conn=None,
                            active_only: bool = True) -> dict | None:
     aid = agent_id_for_scope(project, scope, conn=conn, active_only=active_only)
     return agent_by_id(aid, conn=conn) if aid else None
 
 
-def project_scope_for_agent(agent_id: str, *,
-                            conn: sqlite3.Connection | None = None
-                            ) -> tuple[str, str] | None:
-    """Inverse lookup — used by every place that still wants to render
-    ``project/scope`` for an agent uuid (history.md, room labels, …)."""
+def project_scope_for_agent(agent_id: str, *, conn=None) -> tuple[str, str] | None:
+    """Inverse lookup — used internally where ``project/scope`` must be rendered."""
     a = agent_by_id(agent_id, conn=conn)
     if not a:
         return None
@@ -180,103 +162,69 @@ def ensure_agent(project: str, scope: str, *,
                  status: str = "allocated",
                  is_vagrant: bool = False,
                  display_name: str | None = None,
-                 conn: sqlite3.Connection | None = None) -> str:
+                 conn=None) -> str:
     """Get-or-create an agents row for ``(project, scope)``. Returns the
-    agent id. Requires the project to exist already (raise KeyError if not).
+    agent id. Requires the project to exist already (raises KeyError if not).
     """
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        # Already-live agent for this name wins.
-        existing = agent_id_for_scope(project, scope, conn=c, active_only=True)
-        if existing:
-            return existing
-        pid = project_id_for_name(project, conn=c)
-        if not pid:
-            raise KeyError(f"project {project!r} not found — call ensure_project first")
-        aid = str(_uuid.uuid4())
-        c.execute(
-            "INSERT INTO agents "
-            "(id, project_id, scope, parent_id, status, agent_cli, branch, "
-            " worktree, display_name, is_vagrant, created_at, retired_at) "
-            "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL)",
-            (aid, pid, scope, status, agent_cli,
-             branch or f"feat/{scope}", worktree,
-             display_name or scope, 1 if is_vagrant else 0, now_ms()),
-        )
-        if own:
-            c.commit()
-        return aid
-    finally:
-        if own:
-            c.close()
+    dao = ScopesDAO(conn=conn)
+    # Already-live agent for this name wins.
+    existing = agent_id_for_scope(project, scope, conn=conn, active_only=True)
+    if existing:
+        return existing
+    pid = project_id_for_name(project, conn=conn)
+    if not pid:
+        raise KeyError(f"project {project!r} not found — call ensure_project first")
+    aid = str(_uuid.uuid4())
+    dao.execute(
+        "INSERT INTO agents "
+        "(id, project_id, scope, parent_id, status, agent_cli, branch, "
+        " worktree, display_name, is_vagrant, created_at, retired_at) "
+        "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        (aid, pid, scope, status, agent_cli,
+         branch or f"feat/{scope}", worktree,
+         display_name or scope, 1 if is_vagrant else 0, now_ms()),
+    )
+    return aid
 
 
-def retire_agent(agent_id: str, *, conn: sqlite3.Connection | None = None) -> None:
+def retire_agent(agent_id: str, *, conn=None) -> None:
     """Mark an agent retired (idempotent). Sets retired_at if not already."""
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        c.execute(
-            "UPDATE agents SET status='retired', "
-            "retired_at = COALESCE(retired_at, ?) WHERE id=?",
-            (now_ms(), agent_id),
-        )
-        if own:
-            c.commit()
-    finally:
-        if own:
-            c.close()
+    dao = ScopesDAO(conn=conn)
+    dao.execute(
+        "UPDATE agents SET status='retired', "
+        "retired_at = COALESCE(retired_at, ?) WHERE id=?",
+        (now_ms(), agent_id),
+    )
 
 
 # ---------- user lookups ----------------------------------------------------
 
 
 def user_id_for_username(username: str, *,
-                         conn: sqlite3.Connection | None = None,
+                         conn=None,
                          create_if_missing: bool = False) -> str | None:
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        row = c.execute(
-            "SELECT id FROM users WHERE username=?", (username,),
-        ).fetchone()
-        if row:
-            return row[0]
-        if not create_if_missing:
-            return None
-        uid = str(_uuid.uuid4())
-        c.execute(
-            "INSERT INTO users (id, username) VALUES (?, ?)",
-            (uid, username),
-        )
-        if own:
-            c.commit()
-        return uid
-    finally:
-        if own:
-            c.close()
+    dao = ScopesDAO(conn=conn)
+    row = dao.query_one("SELECT id FROM users WHERE username=?", (username,))
+    if row:
+        return row["id"]
+    if not create_if_missing:
+        return None
+    uid = str(_uuid.uuid4())
+    dao.execute("INSERT INTO users (id, username) VALUES (?, ?)", (uid, username))
+    return uid
 
 
-def username_for_user_id(user_id: str, *,
-                         conn: sqlite3.Connection | None = None) -> str | None:
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        row = c.execute(
-            "SELECT username FROM users WHERE id=?", (user_id,),
-        ).fetchone()
-    finally:
-        if own:
-            c.close()
-    return row[0] if row else None
+def username_for_user_id(user_id: str, *, conn=None) -> str | None:
+    dao = ScopesDAO(conn=conn)
+    row = dao.query_one("SELECT username FROM users WHERE id=?", (user_id,))
+    return row["username"] if row else None
 
 
 # ---------- polymorphic ref helpers ----------------------------------------
 
 
 def resolve_ref(literal: str, *,
-                conn: sqlite3.Connection | None = None,
+                conn=None,
                 create_users: bool = False) -> str | None:
     """Resolve a literal author/sender/recipient string to a target id.
 
@@ -286,10 +234,10 @@ def resolve_ref(literal: str, *,
       - '<project>/<scope>' → agents.id
       - 'user:<name>' → users.id (insert when ``create_users``)
       - 'system' / '' → 'system' sentinel string
+      - bare opaque literal (no '/') → username → users.id
 
     Returns ``None`` when nothing resolves and the caller didn't opt into
-    user-on-demand creation; callers can treat that as "fall back to the
-    system sentinel" or surface a 400.
+    user-on-demand creation.
     """
     if not literal or literal == "system":
         return SYSTEM_REF
@@ -315,38 +263,23 @@ def resolve_ref(literal: str, *,
     return user_id_for_username(literal, conn=conn, create_if_missing=create_users)
 
 
-def display_for_ref(ref: str, *,
-                    conn: sqlite3.Connection | None = None) -> str:
-    """Reverse: ``ref`` (agent uuid | user uuid | 'system') → human label
-    for log lines / UI. Falls back to the raw ref if unresolvable."""
+def display_for_ref(ref: str, *, conn=None) -> str:
+    """Reverse: ``ref`` (agent uuid | user uuid | 'system') → human label."""
     if ref == SYSTEM_REF or not ref:
         return "system"
-    own = conn is None
-    c = conn or get_connection()
-    try:
-        # Agents: render as ``project/scope`` (legible identity that survives
-        # rename via the JOIN to projects).
-        row = c.execute(
-            "SELECT p.name, a.scope FROM agents a "
-            "JOIN projects p ON p.id = a.project_id WHERE a.id=?",
-            (ref,),
-        ).fetchone()
-        if row:
-            return f"{row[0]}/{row[1]}"
-        row = c.execute("SELECT username FROM users WHERE id=?", (ref,)).fetchone()
-        if row:
-            return row[0]
-    finally:
-        if own:
-            c.close()
+    dao = ScopesDAO(conn=conn)
+    # Agents: render as ``project/scope``.
+    row = dao.query_one(
+        "SELECT p.name, a.scope FROM agents a "
+        "JOIN projects p ON p.id = a.project_id WHERE a.id=?",
+        (ref,),
+    )
+    if row:
+        return f"{row['name']}/{row['scope']}"
+    row = dao.query_one("SELECT username FROM users WHERE id=?", (ref,))
+    if row:
+        return row["username"]
     return ref
-
-
-# ---------- sentinel users (re-exported for convenience) -------------------
-
-
-CLI_USER_ID = SENTINEL_USER_IDS["cli"]
-SYSTEM_USER_ID = SENTINEL_USER_IDS["system"]
 
 
 __all__ = [

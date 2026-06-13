@@ -6,10 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "awm-scopes"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM scopes service: scope lifecycle (worktree/.awm/heal/sync/repair/context-emit), git, comms (scope-as-channel), and sessions."
+description = "AWM scopes service: identity layer, scope lifecycle, comms, sessions."
 dependencies = [
     "awm-config",
     "awm-persistence",
+    "awm-gatewayclient",
     "fastapi",
     "httpx",
     "pyyaml",

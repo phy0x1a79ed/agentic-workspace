@@ -10,6 +10,7 @@ description = "AWM artifacts service: artifact registry and search."
 dependencies = [
     "awm-config",
     "awm-persistence",
+    "awm-gatewayclient",
 ]
 
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/artifacts/.

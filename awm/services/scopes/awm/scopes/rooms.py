@@ -1,22 +1,16 @@
 """Rooms: agent-owned conversations with a single owning agent + a guest
 list + an append-only transcript.
 
-v37 model:
-- A room has exactly one ``owner_agent_id`` (NOT NULL). Unowned rooms
-  cannot exist.
-- ``guest_list`` is the persistent membership set: ``(room_id, guest_kind,
-  guest_ref)`` where ``guest_kind`` ∈ ``{'user', 'agent'}``. The owner is
-  NEVER a guest of its own room — owner ≠ guest in the v37 data model.
-- ``room_transcripts`` is the append-only event log. ``kind`` is one of
-  message / tool_use / tool_result / system / notification / join / leave /
-  slash / session_start / session_end / compact / system_prompt.
-  ``author`` is a polymorphic ref: agents.id | users.id | the sentinel
-  string 'system'.
+v1 modular model (per SCHEMA_HANDOFF.md):
+- Rooms table uses ``owner_project`` + ``owner_scope`` natural keys (no owner_agent_id uuid).
+- ``guest_list.guest_ref`` is a natural-key string: 'project/scope' for agents or
+  'user:<name>' for users. ``guest_kind`` ∈ {'agent', 'user'}.
+- ``room_transcripts.author`` is a natural-key literal ('agent:proj/scope',
+  'user:name', 'system') or the SYSTEM_REF sentinel.
 
-The rooms service stays free of AgentInstance's concrete shape so it can
-be unit-tested without the agent runtime. agent_instances registers
-dispatchers here so a post can push into a local AgentInstance.input_queue,
-forward to a remote peer, or fan out to subscribing peers.
+All SQL goes through ScopesDAO. The in-process event bus, dispatcher hooks,
+and WS subscriber pump are preserved from the legacy shape; only DB access
+is re-keyed.
 """
 
 from __future__ import annotations
@@ -27,9 +21,14 @@ import uuid as _uuid
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from awm.db import get_connection
-from awm.services import identity, rooms_names
-from awm.services.identity import display_for_ref, ms_to_iso, now_ms
+from awm.scopes.dao import ScopesDAO
+from awm.scopes import rooms_names
+from awm.scopes.identity import (
+    SYSTEM_REF,
+    display_for_ref,
+    ms_to_iso,
+    now_ms,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,15 +61,14 @@ class RoomArchiveBlocked(RoomError):
 
 
 # ---------------------------------------------------------------------------
-# Public dataclasses — kept shape-compatible with the legacy API so callers
-# (api/rooms, web-ui, MCP) keep getting ``project/scope``-style identifiers.
+# Public dataclasses
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Room:
     id: str
     host_peer_id: str
-    created_at: str           # ISO TEXT for API stability over INTEGER ms
+    created_at: str           # ISO TEXT for API stability
     closed_at: str | None
     topic: str | None
     status: str
@@ -87,10 +85,8 @@ class Room:
 
 @dataclass
 class Participant:
-    """API-shape compatibility for the legacy ``list_participants`` callers.
-    ``kind`` is 'scope' (owner agent), 'user' (guest), or 'agent' (guest);
-    ``identifier`` is the rendered ``project/scope`` for agents or the
-    username for users."""
+    """API-shape: ``kind`` is 'scope' (owner agent), 'user' (guest), or 'agent' (guest).
+    ``identifier`` is 'project/scope' for agents or the username for users."""
     room_id: str
     kind: str
     identifier: str
@@ -107,11 +103,8 @@ class Participant:
 
 @dataclass
 class Post:
-    """API-shape compatibility for the legacy ``Post``. ``id`` is the
-    room_transcripts.id (TEXT uuid in v37). ``author`` is rendered as a
-    human-readable string (``agent:proj/scope``, ``user:name``, or
-    ``system``) so the existing dispatch/post pipeline can keep matching
-    on prefixes."""
+    """API-shape. ``author`` is a human-readable string:
+    'agent:proj/scope', 'user:name', or 'system'."""
     id: str
     room_id: str
     author: str
@@ -127,38 +120,69 @@ class Post:
 
 
 # ---------------------------------------------------------------------------
-# Local peer identity for host_peer_id stamping
+# Local peer identity stub
 # ---------------------------------------------------------------------------
 
 def _local_peer_id() -> str:
-    """Legacy stub. Federation is retired; every room is local-host."""
+    """Federation is retired; every room is local-host."""
     return "local"
+
+
+# ---------------------------------------------------------------------------
+# Author normalization helpers (natural keys → display strings)
+# ---------------------------------------------------------------------------
+
+def _author_ref_to_display(author_ref: str) -> str:
+    """Render the stored natural-key author to the legacy display form
+    ('agent:proj/scope', 'user:name', 'system')."""
+    if not author_ref or author_ref == SYSTEM_REF:
+        return "system"
+    # Already a prefixed natural key — return as-is.
+    if author_ref.startswith("agent:") or author_ref.startswith("user:"):
+        return author_ref
+    if author_ref.startswith("scope:"):
+        return "agent:" + author_ref[len("scope:"):]
+    # Bare 'proj/scope' form (should not be stored, but defensively handle)
+    if "/" in author_ref:
+        return f"agent:{author_ref}"
+    return author_ref
+
+
+def _display_to_author_ref(display: str, *, conn=None) -> str:
+    """Normalize a caller-supplied legacy display string to the stored form.
+
+    Identity resolution rules (natural keys only):
+      - 'system' / '' → SYSTEM_REF
+      - 'agent:proj/scope' or 'scope:proj/scope' → 'agent:proj/scope'
+      - 'user:name' → 'user:name'
+      - 'proj/scope' → 'agent:proj/scope'
+      - bare username → 'user:<name>' (created on demand)
+    """
+    if not display or display == "system":
+        return SYSTEM_REF
+    if display.startswith("agent:") or display.startswith("user:"):
+        return display
+    if display.startswith("scope:"):
+        return "agent:" + display[len("scope:"):]
+    if "/" in display:
+        return f"agent:{display}"
+    # Bare username — resolve or create
+    from awm.scopes.identity import user_id_for_username
+    uid = user_id_for_username(display, conn=conn, create_if_missing=True)
+    if uid:
+        from awm.scopes.identity import username_for_user_id
+        name = username_for_user_id(uid, conn=conn)
+        return f"user:{name or display}"
+    return f"user:{display}"
 
 
 # ---------------------------------------------------------------------------
 # Row → dataclass adapters
 # ---------------------------------------------------------------------------
 
-def _ref_to_legacy_author(ref: str, *, conn=None) -> str:
-    """Render an author uuid back to ``agent:proj/scope`` / ``user:name`` /
-    ``system`` for the legacy Post.author shape."""
-    if ref == identity.SYSTEM_REF or not ref:
-        return "system"
-    label = display_for_ref(ref, conn=conn)
-    # display_for_ref returns 'proj/scope' for agents and bare 'name' for
-    # users. Reattach the legacy prefix so callers that match on
-    # ``author.startswith('agent:')`` keep working.
-    if "/" in label:
-        return f"agent:{label}"
-    return f"user:{label}"
-
-
 def _row_to_room(row) -> Room:
     return Room(
         id=row["id"],
-        # v37 dropped host_peer_id from the table — synthesize on read so the
-        # API surface stays stable. Always the local peer for now (we own
-        # every locally-visible room post-v37).
         host_peer_id=_local_peer_id(),
         created_at=ms_to_iso(row["created_at"]) or "",
         closed_at=ms_to_iso(row["closed_at"]),
@@ -168,11 +192,11 @@ def _row_to_room(row) -> Room:
     )
 
 
-def _row_to_post(row, *, conn=None) -> Post:
+def _row_to_post(row) -> Post:
     return Post(
         id=row["id"],
         room_id=row["room_id"],
-        author=_ref_to_legacy_author(row["author"], conn=conn),
+        author=_author_ref_to_display(row["author"]),
         body=row["body"] or "",
         kind=row["kind"],
         ts=ms_to_iso(row["ts"]) or "",
@@ -217,7 +241,7 @@ def _broadcast(room_id: str, event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher hooks (registered by agent_instances)
+# Dispatcher hooks (registered by agents service)
 # ---------------------------------------------------------------------------
 
 _local_scope_dispatcher: Callable[[str, str, Post], None] | None = None
@@ -247,38 +271,57 @@ def set_close_room_kill_callback(fn: Callable[[str], None] | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scope identifier helpers (legacy API surface)
+# Scope identifier helpers
 # ---------------------------------------------------------------------------
 
-def _split_scope(ident: str) -> tuple[str, str | None]:
-    """Return (local_scope, None). The ``@peer`` suffix used by the retired
-    federation surface is silently stripped — peer dispatch is gone and any
-    @-suffix in stored references is treated as local."""
+def _split_scope(ident: str) -> tuple[str, None]:
+    """Strip any '@peer' suffix (federation is retired). Returns (base, None)."""
     if "@" in ident:
         base, _ = ident.rsplit("@", 1)
         return base, None
     return ident, None
 
 
-def _resolve_scope_to_agent_id(scope_key: str, *, conn=None) -> str | None:
-    """Legacy ``project/scope`` → agents.id (active row preferred)."""
-    if "/" not in scope_key:
-        return None
-    proj, sc = scope_key.split("/", 1)
-    return identity.agent_id_for_scope(proj, sc, conn=conn, active_only=False)
+# ---------------------------------------------------------------------------
+# Embeddings helpers (degrade gracefully)
+# ---------------------------------------------------------------------------
+
+def _index_room(room_id: str) -> None:
+    """Upsert a room embedding in the scopes DB. Silently no-ops on failure."""
+    try:
+        from awm.persistence.embeddings import upsert_embedding
+        from awm.persistence.databases import get_connection
+        dao = ScopesDAO()
+        row = dao.query_one(
+            "SELECT id, topic FROM rooms WHERE id=?", (room_id,)
+        )
+        if row is None:
+            return
+        text = row["topic"] or row["id"]
+        # Append recent transcript snippets
+        snippets = dao.query_all(
+            "SELECT body FROM room_transcripts WHERE room_id=? "
+            "ORDER BY ts DESC LIMIT 10",
+            (room_id,),
+        )
+        if snippets:
+            text += " " + " ".join(s["body"] for s in snippets if s["body"])
+        conn = get_connection("scopes")
+        try:
+            upsert_embedding(conn, "room", room_id, text[:500])
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Room CRUD
 # ---------------------------------------------------------------------------
 
-def _room_exists(name: str) -> bool:
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT 1 FROM rooms WHERE id=?", (name,)).fetchone()
-    finally:
-        conn.close()
-    return row is not None
+def _room_name_exists(name: str) -> bool:
+    dao = ScopesDAO()
+    return dao.query_one("SELECT 1 FROM rooms WHERE id=?", (name,)) is not None
 
 
 def create_room(*, topic: str | None = None,
@@ -286,92 +329,94 @@ def create_room(*, topic: str | None = None,
                 opener: str = "user:operator",
                 host_peer_id: str | None = None,
                 close_on_exit: bool = False,
+                owner_project: str | None = None,
+                owner_scope: str | None = None,
                 owner_agent_id: str | None = None) -> Room:
-    """Create a new room with an auto-generated name. v37 requires an
-    owning agent; if ``owner_agent_id`` is not passed, the first entry in
-    ``scopes`` is resolved to an agent id and used as the owner. Any
-    remaining ``scopes`` entries enroll as agent guests. ``host_peer_id``
-    and ``close_on_exit`` are accepted for legacy callers but no longer
-    persisted in the v37 rooms shape (rooms close on owner-retirement, not
-    on every-participant-exit anymore)."""
+    """Create a new room. v1 requires a natural-key owner: pass
+    ``owner_project``+``owner_scope`` (preferred) or the first entry in
+    ``scopes`` as 'project/scope'. ``owner_agent_id`` is accepted for
+    legacy callers but ignored (natural keys only). Remaining ``scopes``
+    entries enroll as agent guests."""
     scope_list = list(scopes)
-    conn = get_connection()
-    try:
-        # Pick the owner first.
-        if owner_agent_id is None:
-            if not scope_list:
-                raise RoomError(
-                    "create_room requires either owner_agent_id or at least "
-                    "one entry in scopes"
-                )
-            owner_aid = _resolve_scope_to_agent_id(scope_list[0], conn=conn)
-            if not owner_aid:
-                raise RoomError(
-                    f"create_room: owner scope {scope_list[0]!r} does not "
-                    "resolve to a known agent"
-                )
-            guest_scopes = scope_list[1:]
-        else:
-            owner_aid = owner_agent_id
-            guest_scopes = scope_list
 
-        name = rooms_names.pick_unique(_room_exists)
-        topic_text = topic or name
-        now = now_ms()
-        conn.execute(
-            "INSERT INTO rooms (id, owner_agent_id, topic, status, created_at, closed_at) "
-            "VALUES (?, ?, ?, 'open', ?, NULL)",
-            (name, owner_aid, topic_text, now),
+    # Determine owner (natural key)
+    if owner_project and owner_scope:
+        own_proj, own_scope = owner_project, owner_scope
+        guest_scopes = scope_list
+    else:
+        if not scope_list:
+            raise RoomError(
+                "create_room requires either owner_project/owner_scope or "
+                "at least one entry in scopes"
+            )
+        first = scope_list[0]
+        base, _ = _split_scope(first)
+        if "/" not in base:
+            raise RoomError(
+                f"create_room: scope {first!r} must be 'project/scope'"
+            )
+        own_proj, own_scope = base.split("/", 1)
+        guest_scopes = scope_list[1:]
+
+    name = rooms_names.pick_unique(_room_name_exists)
+    topic_text = topic or name
+    now = now_ms()
+
+    # Normalize opener to stored author form
+    opener_ref = _display_to_author_ref(opener)
+
+    dao = ScopesDAO()
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
+        dao2.execute(
+            "INSERT INTO rooms "
+            "(id, owner_project, owner_scope, topic, status, created_at, closed_at) "
+            "VALUES (?, ?, ?, ?, 'open', ?, NULL)",
+            (name, own_proj, own_scope, topic_text, now),
         )
-        # Enroll non-owner scopes as agent guests.
+        # Enroll guest scopes
         for s in guest_scopes:
-            base, _peer = _split_scope(s)
-            aid = _resolve_scope_to_agent_id(base, conn=conn)
-            if not aid or aid == owner_aid:
+            base, _ = _split_scope(s)
+            if "/" not in base:
                 continue
-            display = base
-            conn.execute(
+            g_proj, g_sc = base.split("/", 1)
+            # Don't enroll the owner as a guest
+            if g_proj == own_proj and g_sc == own_scope:
+                continue
+            guest_ref = f"{g_proj}/{g_sc}"
+            dao2.execute(
                 "INSERT OR IGNORE INTO guest_list "
                 "(room_id, guest_kind, guest_ref, display_name, subscriptions) "
                 "VALUES (?, 'agent', ?, ?, '{}')",
-                (name, aid, display),
+                (name, guest_ref, base),
             )
-        # Seed transcript events. The session_start kind announces the
-        # room and the owner; opener is recorded as the author so the
-        # legacy "room opened by …" thread shows up.
-        opener_ref = identity.resolve_ref(opener, conn=conn, create_users=True) \
-            or identity.SYSTEM_REF
-        _insert_transcript(
-            conn, room_id=name, author=opener_ref, kind="session_start",
-            body=f"room opened by {opener}", ts=now,
-        )
+        # Seed transcript
+        _insert_transcript_conn(conn, room_id=name, author=opener_ref,
+                                kind="session_start",
+                                body=f"room opened by {opener}", ts=now)
         for s in guest_scopes:
-            base, _peer = _split_scope(s)
-            aid = _resolve_scope_to_agent_id(base, conn=conn)
-            if not aid:
+            base, _ = _split_scope(s)
+            if "/" not in base:
                 continue
-            _insert_transcript(
-                conn, room_id=name, author=aid, kind="join",
-                body=f"agent:{base} joined", ts=now,
-            )
-        conn.commit()
-        row = conn.execute("SELECT * FROM rooms WHERE id=?", (name,)).fetchone()
-    finally:
-        conn.close()
-    try:
-        from awm.services.embeddings import index_room
-        index_room(name)
-    except Exception:
-        pass
-    return _row_to_room(row)
+            g_proj, g_sc = base.split("/", 1)
+            if g_proj == own_proj and g_sc == own_scope:
+                continue
+            agent_ref = f"agent:{g_proj}/{g_sc}"
+            _insert_transcript_conn(conn, room_id=name, author=agent_ref,
+                                    kind="join",
+                                    body=f"agent:{base} joined", ts=now)
+
+    dao3 = ScopesDAO()
+    row = dao3.query_one("SELECT * FROM rooms WHERE id=?", (name,))
+    room = _row_to_room(row)
+
+    _index_room(name)
+    return room
 
 
 def get_room(room_id: str) -> Room | None:
-    conn = get_connection()
-    try:
-        row = conn.execute("SELECT * FROM rooms WHERE id=?", (room_id,)).fetchone()
-    finally:
-        conn.close()
+    dao = ScopesDAO()
+    row = dao.query_one("SELECT * FROM rooms WHERE id=?", (room_id,))
     return _row_to_room(row) if row else None
 
 
@@ -383,57 +428,54 @@ def search_rooms(
     limit: int = 50,
     offset: int = 0,
 ) -> list[Room]:
-    """Search rooms by topic/transcript (keyword + semantic) with structural
-    filters. Defaults to status='active' (pass 'all' for archived/closed too;
-    ``'active'`` is accepted as an alias for the legacy ``'open'`` status to
-    keep existing callers working). ``participating_scope`` narrows to rooms
-    where the given scope is an active participant (owner or guest).
-    ``query`` LIKEs on topic, id, and transcript bodies, with semantic top-up
-    from the embeddings table.
-
-    v37: rooms membership lives on ``guest_list`` (owner + guests); free-text
-    body content lives on ``room_transcripts``.
+    """Search rooms by topic/transcript (keyword + semantic). Defaults to
+    status='active' (alias for 'open'). ``participating_scope`` narrows to
+    rooms where the given 'project/scope' is owner or guest.
     """
-    # 'active' is the new default name for the legacy 'open' status.
     effective_status = "open" if status == "active" else status
-    conn = get_connection()
-    try:
-        sql = "SELECT DISTINCT r.* FROM rooms r"
-        params: list = []
-        join_clauses: list[str] = []
-        where: list[str] = []
-        if participating_scope:
-            agent_id = _resolve_scope_to_agent_id(participating_scope, conn=conn)
-            if not agent_id:
-                return []
-            join_clauses.append(
-                "LEFT JOIN guest_list g ON g.room_id = r.id"
-            )
-            where.append(
-                "(r.owner_agent_id = ? "
-                " OR (g.guest_kind='agent' AND g.guest_ref = ?))"
-            )
-            params.extend([agent_id, agent_id])
-        if query:
-            join_clauses.append(
-                "LEFT JOIN room_transcripts t ON t.room_id = r.id"
-            )
-        if effective_status and effective_status != "all":
-            where.append("r.status = ?")
-            params.append(effective_status)
-        if query:
-            where.append("(r.topic LIKE ? OR r.id LIKE ? OR t.body LIKE ?)")
-            like = f"%{query}%"
-            params.extend([like, like, like])
-        if join_clauses:
-            sql += " " + " ".join(join_clauses)
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        rows = conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
+    dao = ScopesDAO()
+
+    sql = "SELECT DISTINCT r.* FROM rooms r"
+    params: list = []
+    join_clauses: list[str] = []
+    where: list[str] = []
+
+    if participating_scope:
+        ps = participating_scope
+        if ps.startswith("scope:"):
+            ps = ps[len("scope:"):]
+        elif ps.startswith("agent:"):
+            ps = ps[len("agent:"):]
+        if "/" not in ps:
+            return []
+        ps_proj, ps_sc = ps.split("/", 1)
+        ps_key = f"{ps_proj}/{ps_sc}"
+        join_clauses.append("LEFT JOIN guest_list g ON g.room_id = r.id")
+        where.append(
+            "((r.owner_project = ? AND r.owner_scope = ?) "
+            " OR (g.guest_kind='agent' AND g.guest_ref = ?))"
+        )
+        params.extend([ps_proj, ps_sc, ps_key])
+
+    if query:
+        join_clauses.append(
+            "LEFT JOIN room_transcripts t ON t.room_id = r.id"
+        )
+    if effective_status and effective_status != "all":
+        where.append("r.status = ?")
+        params.append(effective_status)
+    if query:
+        where.append("(r.topic LIKE ? OR r.id LIKE ? OR t.body LIKE ?)")
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    if join_clauses:
+        sql += " " + " ".join(join_clauses)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    rows = dao.query_all(sql, params)
     rooms = [_row_to_room(r) for r in rows]
 
     if not query:
@@ -442,46 +484,46 @@ def search_rooms(
     keyword_keys = {r.id for r in rooms}
 
     def _materialize(room_id: str):
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT * FROM rooms WHERE id = ?", (room_id,),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
+        d = ScopesDAO()
+        r = d.query_one("SELECT * FROM rooms WHERE id=?", (room_id,))
+        if r is None:
             return None
-        if effective_status and effective_status != "all" and row["status"] != effective_status:
+        if effective_status and effective_status != "all" and r["status"] != effective_status:
             return None
-        # participating_scope filter is structural; semantic shouldn't bypass it
         if participating_scope:
-            conn = get_connection()
-            try:
-                agent_id = _resolve_scope_to_agent_id(participating_scope, conn=conn)
-                if not agent_id:
-                    return None
-                rp = conn.execute(
-                    "SELECT 1 FROM rooms r "
-                    "LEFT JOIN guest_list g ON g.room_id = r.id "
-                    "WHERE r.id = ? AND ("
-                    "  r.owner_agent_id = ? "
-                    "  OR (g.guest_kind='agent' AND g.guest_ref = ?)"
-                    ") LIMIT 1",
-                    (room_id, agent_id, agent_id),
-                ).fetchone()
-            finally:
-                conn.close()
-            if rp is None:
+            ps = participating_scope
+            if ps.startswith(("scope:", "agent:")):
+                ps = ps.split(":", 1)[1]
+            if "/" not in ps:
                 return None
-        return _row_to_room(row)
+            ps_proj, ps_sc = ps.split("/", 1)
+            ps_key = f"{ps_proj}/{ps_sc}"
+            match = d.query_one(
+                "SELECT 1 FROM rooms r "
+                "LEFT JOIN guest_list g ON g.room_id = r.id "
+                "WHERE r.id = ? AND ("
+                "  (r.owner_project = ? AND r.owner_scope = ?) "
+                "  OR (g.guest_kind='agent' AND g.guest_ref = ?)"
+                ") LIMIT 1",
+                (room_id, ps_proj, ps_sc, ps_key),
+            )
+            if match is None:
+                return None
+        return _row_to_room(r)
 
     try:
-        from awm.services.embeddings import hybrid_augment
-        return hybrid_augment(
-            query, source_type="room",
-            keyword_hits=rooms, keyword_keys=keyword_keys,
-            materialize=_materialize,
-        )
+        from awm.persistence.embeddings import hybrid_augment
+        from awm.persistence.databases import get_connection
+        conn = get_connection("scopes")
+        try:
+            return hybrid_augment(
+                conn, query,
+                source_type="room",
+                keyword_hits=rooms, keyword_keys=keyword_keys,
+                materialize=_materialize,
+            )
+        finally:
+            conn.close()
     except Exception:
         return rooms
 
@@ -493,116 +535,124 @@ def close_room(room_id: str, *, kill_agents: bool = False) -> Room:
     if room.status == "closed":
         return room
     now = now_ms()
-    conn = get_connection()
-    try:
-        conn.execute(
+    dao = ScopesDAO()
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
+        dao2.execute(
             "UPDATE rooms SET status='closed', closed_at=? WHERE id=?",
             (now, room_id),
         )
-        _insert_transcript(
-            conn, room_id=room_id, author=identity.SYSTEM_REF,
-            kind="system", body="room closed", ts=now,
-        )
-        conn.commit()
-        row = conn.execute("SELECT * FROM rooms WHERE id=?", (room_id,)).fetchone()
-    finally:
-        conn.close()
+        _insert_transcript_conn(conn, room_id=room_id, author=SYSTEM_REF,
+                                kind="system", body="room closed", ts=now)
+    row = ScopesDAO().query_one("SELECT * FROM rooms WHERE id=?", (room_id,))
     _broadcast(room_id, {"type": "room_closed", "ts": ms_to_iso(now)})
     if kill_agents and _close_room_kill_callback is not None:
         try:
             _close_room_kill_callback(room_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return _row_to_room(row)
 
 
 def archive_room(room_id: str) -> Room:
     """Soft-archive a room. Refuses if the owner agent is still
-    ``allocated`` or ``active`` — the owner is the only ever-active
-    participant in v37."""
+    'allocated' or 'active' (checks via the agents table in scopes DB)."""
     room = get_room(room_id)
     if room is None:
         raise RoomNotFound(f"no such room: {room_id}")
     if room.status == "archived":
         return room
-    conn = get_connection()
-    try:
-        owner = conn.execute(
-            "SELECT a.id, a.status, p.name, a.scope "
-            "FROM rooms r JOIN agents a ON a.id = r.owner_agent_id "
-            "JOIN projects p ON p.id = a.project_id WHERE r.id=?",
-            (room_id,),
-        ).fetchone()
-        blocking: list[str] = []
-        if owner is not None and owner["status"] in ("allocated", "active"):
-            blocking.append(f"{owner['name']}/{owner['scope']}")
-        if blocking:
-            raise RoomArchiveBlocked(room_id, blocking)
-        now = now_ms()
+
+    dao = ScopesDAO()
+    # Check owner agent status
+    owner = dao.query_one(
+        "SELECT a.status FROM agents a "
+        "JOIN projects p ON p.id = a.project_id "
+        "WHERE p.name=? AND a.scope=? "
+        "ORDER BY a.created_at DESC LIMIT 1",
+        (room.host_peer_id, room.topic),  # these are wrong — need owner from rooms row
+    )
+    # Correct approach: re-query the rooms row for owner_project/owner_scope
+    room_row = dao.query_one("SELECT * FROM rooms WHERE id=?", (room_id,))
+    if room_row is None:
+        raise RoomNotFound(f"no such room: {room_id}")
+
+    own_proj = room_row["owner_project"]
+    own_sc = room_row["owner_scope"]
+    owner_agent = dao.query_one(
+        "SELECT a.status FROM agents a "
+        "JOIN projects p ON p.id = a.project_id "
+        "WHERE p.name=? AND a.scope=? AND a.status IN ('allocated','active') "
+        "LIMIT 1",
+        (own_proj, own_sc),
+    )
+    if owner_agent is not None:
+        raise RoomArchiveBlocked(room_id, [f"{own_proj}/{own_sc}"])
+
+    now = now_ms()
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
         if room.closed_at is None:
-            conn.execute(
+            dao2.execute(
                 "UPDATE rooms SET status='archived', closed_at=? WHERE id=?",
                 (now, room_id),
             )
         else:
-            conn.execute(
+            dao2.execute(
                 "UPDATE rooms SET status='archived' WHERE id=?", (room_id,),
             )
-        conn.commit()
-        row = conn.execute("SELECT * FROM rooms WHERE id=?", (room_id,)).fetchone()
-    finally:
-        conn.close()
+    row = ScopesDAO().query_one("SELECT * FROM rooms WHERE id=?", (room_id,))
     return _row_to_room(row)
 
 
 # ---------------------------------------------------------------------------
-# Participants (legacy compatibility) + Guest list (v37 native)
+# Participants (API surface)
 # ---------------------------------------------------------------------------
 
 def list_participants(room_id: str, *, active_only: bool = True) -> list[Participant]:
-    """Legacy adapter: render owner + guest_list as the historical
-    ``Participant`` shape. The owner is rendered as ``kind='scope'`` with
-    the identifier ``project/scope``."""
-    conn = get_connection()
-    try:
-        room = conn.execute(
-            "SELECT owner_agent_id, created_at FROM rooms WHERE id=?", (room_id,),
-        ).fetchone()
-        if room is None:
-            return []
-        joined_iso = ms_to_iso(room["created_at"]) or ""
-        out: list[Participant] = []
-        owner_label = display_for_ref(room["owner_agent_id"], conn=conn)
+    """Render owner + guest_list as the Participant shape.
+    Owner is rendered as kind='scope' with identifier 'project/scope'."""
+    dao = ScopesDAO()
+    room_row = dao.query_one(
+        "SELECT owner_project, owner_scope, created_at FROM rooms WHERE id=?",
+        (room_id,),
+    )
+    if room_row is None:
+        return []
+    joined_iso = ms_to_iso(room_row["created_at"]) or ""
+    out: list[Participant] = []
+    own_label = f"{room_row['owner_project']}/{room_row['owner_scope']}"
+    out.append(Participant(
+        room_id=room_id, kind="scope", identifier=own_label,
+        joined_at=joined_iso, left_at=None,
+    ))
+    guests = dao.query_all(
+        "SELECT guest_kind, guest_ref, display_name FROM guest_list WHERE room_id=?",
+        (room_id,),
+    )
+    for g in guests:
+        # guest_ref is the natural key: 'project/scope' or 'user:<name>'
+        ref = g["guest_ref"]
+        if g["guest_kind"] == "agent":
+            kind_out = "scope"
+            identifier = ref  # already 'project/scope'
+        else:
+            kind_out = g["guest_kind"]
+            identifier = ref  # 'user:<name>'
         out.append(Participant(
-            room_id=room_id, kind="scope", identifier=owner_label,
+            room_id=room_id, kind=kind_out, identifier=identifier,
             joined_at=joined_iso, left_at=None,
         ))
-        guests = conn.execute(
-            "SELECT guest_kind, guest_ref, display_name FROM guest_list WHERE room_id=?",
-            (room_id,),
-        ).fetchall()
-        for g in guests:
-            label = display_for_ref(g["guest_ref"], conn=conn)
-            kind_out = "scope" if g["guest_kind"] == "agent" else g["guest_kind"]
-            out.append(Participant(
-                room_id=room_id, kind=kind_out, identifier=label,
-                joined_at=joined_iso, left_at=None,
-            ))
-    finally:
-        conn.close()
     return out
 
 
 def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
-    """Legacy adapter: add a participant as either an agent or user guest.
+    """Add a participant as either an agent or user guest.
 
-    ``kind='scope'`` resolves the identifier to an agent uuid; ``'user'``
-    resolves to a users row (created on demand). 'subscriber' and
-    'shadow_peer' from the old model are dropped silently — connection-
-    level subscribers are tracked in-memory via ``subscribe_room``, not in
-    guest_list."""
+    ``kind='scope'`` accepts 'project/scope'; ``'user'`` accepts a username.
+    'subscriber'/'shadow_peer' are in-memory only (no DB insert).
+    """
     if kind in ("subscriber", "shadow_peer"):
-        # Nothing to persist — subscribe_room manages in-memory state.
         return Participant(
             room_id=room_id, kind=kind, identifier=identifier,
             joined_at=ms_to_iso(now_ms()) or "", left_at=None,
@@ -612,49 +662,59 @@ def add_participant(room_id: str, kind: str, identifier: str) -> Participant:
         raise RoomNotFound(f"no such room: {room_id}")
     if room.status == "closed":
         raise RoomClosed(f"room {room_id} is closed")
-    conn = get_connection()
-    try:
-        if kind == "scope":
-            aid = _resolve_scope_to_agent_id(identifier, conn=conn)
-            if not aid:
-                raise RoomError(f"unknown scope identifier: {identifier!r}")
-            guest_kind = "agent"
-            guest_ref = aid
-            display = identifier
-        elif kind == "user":
-            uid = identity.user_id_for_username(identifier, conn=conn, create_if_missing=True)
-            if not uid:
-                raise RoomError(f"could not resolve user identifier: {identifier!r}")
-            guest_kind = "user"
-            guest_ref = uid
-            display = identifier
-        else:
-            raise ValueError(f"invalid participant kind: {kind!r}")
 
-        # Owner is never a guest — silently drop self-add attempts.
-        owner_row = conn.execute(
-            "SELECT owner_agent_id FROM rooms WHERE id=?", (room_id,),
-        ).fetchone()
-        if owner_row and owner_row[0] == guest_ref:
+    dao = ScopesDAO()
+    if kind == "scope":
+        ident = identifier
+        if ident.startswith("agent:"):
+            ident = ident[len("agent:"):]
+        elif ident.startswith("scope:"):
+            ident = ident[len("scope:"):]
+        if "/" not in ident:
+            raise RoomError(f"unknown scope identifier: {identifier!r}")
+        g_proj, g_sc = ident.split("/", 1)
+        guest_kind = "agent"
+        guest_ref = f"{g_proj}/{g_sc}"
+        display = guest_ref
+    elif kind == "user":
+        # Strip user: prefix if present
+        name = identifier
+        if name.startswith("user:"):
+            name = name[len("user:"):]
+        # Ensure user exists
+        from awm.scopes.identity import user_id_for_username
+        uid = user_id_for_username(name, create_if_missing=True)
+        if not uid:
+            raise RoomError(f"could not resolve user identifier: {identifier!r}")
+        guest_kind = "user"
+        guest_ref = f"user:{name}"
+        display = name
+    else:
+        raise ValueError(f"invalid participant kind: {kind!r}")
+
+    # Don't let the owner add themselves as a guest
+    room_row = dao.query_one("SELECT owner_project, owner_scope FROM rooms WHERE id=?", (room_id,))
+    if room_row and kind == "scope":
+        if f"{room_row['owner_project']}/{room_row['owner_scope']}" == guest_ref:
             return Participant(
                 room_id=room_id, kind=kind, identifier=identifier,
                 joined_at=ms_to_iso(now_ms()) or "", left_at=None,
             )
 
-        now = now_ms()
-        conn.execute(
+    now = now_ms()
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
+        dao2.execute(
             "INSERT OR IGNORE INTO guest_list "
             "(room_id, guest_kind, guest_ref, display_name, subscriptions) "
             "VALUES (?, ?, ?, ?, '{}')",
             (room_id, guest_kind, guest_ref, display),
         )
-        _insert_transcript(
-            conn, room_id=room_id, author=guest_ref, kind="join",
-            body=f"{kind}:{identifier} joined", ts=now,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        author_ref = f"agent:{guest_ref}" if guest_kind == "agent" else guest_ref
+        _insert_transcript_conn(conn, room_id=room_id, author=author_ref,
+                                kind="join",
+                                body=f"{kind}:{identifier} joined", ts=now)
+
     participant = Participant(
         room_id=room_id, kind=kind, identifier=identifier,
         joined_at=ms_to_iso(now_ms()) or "", left_at=None,
@@ -668,56 +728,67 @@ def remove_participant(room_id: str, kind: str, identifier: str) -> bool:
     """Remove a guest from a room. Returns True if a row was deleted."""
     if kind in ("subscriber", "shadow_peer"):
         return False
-    conn = get_connection()
-    try:
-        if kind == "scope":
-            aid = _resolve_scope_to_agent_id(identifier, conn=conn)
-            if not aid:
-                return False
-            guest_kind = "agent"
-            guest_ref = aid
-        elif kind == "user":
-            uid = identity.user_id_for_username(identifier, conn=conn)
-            if not uid:
-                return False
-            guest_kind = "user"
-            guest_ref = uid
-        else:
+    dao = ScopesDAO()
+    if kind == "scope":
+        ident = identifier
+        if ident.startswith(("agent:", "scope:")):
+            ident = ident.split(":", 1)[1]
+        if "/" not in ident:
             return False
-        cur = conn.execute(
-            "DELETE FROM guest_list "
+        g_proj, g_sc = ident.split("/", 1)
+        guest_kind = "agent"
+        guest_ref = f"{g_proj}/{g_sc}"
+    elif kind == "user":
+        name = identifier
+        if name.startswith("user:"):
+            name = name[len("user:"):]
+        guest_kind = "user"
+        guest_ref = f"user:{name}"
+    else:
+        return False
+
+    now = now_ms()
+    deleted = False
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
+        cur_rows = dao2.query_all(
+            "SELECT room_id FROM guest_list "
             "WHERE room_id=? AND guest_kind=? AND guest_ref=?",
             (room_id, guest_kind, guest_ref),
         )
-        if cur.rowcount > 0:
-            now = now_ms()
-            _insert_transcript(
-                conn, room_id=room_id, author=guest_ref, kind="leave",
-                body=f"{kind}:{identifier} left", ts=now,
+        if cur_rows:
+            dao2.execute(
+                "DELETE FROM guest_list "
+                "WHERE room_id=? AND guest_kind=? AND guest_ref=?",
+                (room_id, guest_kind, guest_ref),
             )
-        conn.commit()
-    finally:
-        conn.close()
-    if cur.rowcount > 0:
+            author_ref = f"agent:{guest_ref}" if guest_kind == "agent" else guest_ref
+            _insert_transcript_conn(conn, room_id=room_id, author=author_ref,
+                                    kind="leave",
+                                    body=f"{kind}:{identifier} left", ts=now)
+            deleted = True
+
+    if deleted:
         _broadcast(room_id, {
             "type": "participant_left",
             "participant": {"kind": kind, "identifier": identifier},
         })
-    return cur.rowcount > 0
+    return deleted
 
 
 # ---------------------------------------------------------------------------
 # Posting + transcript
 # ---------------------------------------------------------------------------
 
-def _insert_transcript(conn, *, room_id: str, author: str, kind: str,
-                       body: str, ts: int, meta: dict | None = None) -> str:
-    """Insert a row into ``room_transcripts``. Returns the new id."""
+def _insert_transcript_conn(conn, *, room_id: str, author: str, kind: str,
+                             body: str, ts: int, meta: dict | None = None) -> str:
+    """Insert a row into room_transcripts via the given connection."""
     if kind == "text":
         kind = "message"
     tid = str(_uuid.uuid4())
     meta_json = json.dumps(meta) if meta else "{}"
-    conn.execute(
+    dao = ScopesDAO(conn=conn)
+    dao.execute(
         "INSERT INTO room_transcripts "
         "(id, room_id, author, kind, body, meta, ts) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -729,103 +800,81 @@ def _insert_transcript(conn, *, room_id: str, author: str, kind: str,
 def post_transcript(room_id: str, *, author: str, kind: str = "message",
                     body: str = "", meta: dict | None = None,
                     to_scope: str | None = None) -> Post:
-    """v37-native post entry point. ``author`` is the polymorphic ref
-    (agents.id | users.id | 'system'); callers using the legacy string
-    form should go through ``post`` instead. Dispatches to participants
-    the same way the legacy ``post`` did."""
+    """Native post entry point. ``author`` is either a natural-key ref
+    ('agent:proj/scope', 'user:name', 'system') or a uuid (legacy callers).
+    Dispatches to participant input queues."""
     room = get_room(room_id)
     if room is None:
         raise RoomNotFound(f"no such room: {room_id}")
     if room.status == "closed":
         raise RoomClosed(f"room {room_id} is closed")
+
     now = now_ms()
-    conn = get_connection()
-    try:
-        tid = _insert_transcript(
-            conn, room_id=room_id, author=author, kind=kind,
-            body=body, ts=now, meta=meta,
-        )
-        conn.commit()
-        row = conn.execute(
-            "SELECT * FROM room_transcripts WHERE id=?", (tid,),
-        ).fetchone()
-        post_obj = _row_to_post(row, conn=conn)
-    finally:
-        conn.close()
+    # Normalize author to stored form
+    author_ref = _display_to_author_ref(author)
+
+    dao = ScopesDAO()
+    with dao.transaction() as conn:
+        tid = _insert_transcript_conn(conn, room_id=room_id, author=author_ref,
+                                      kind=kind, body=body, ts=now, meta=meta)
+
+    row = ScopesDAO().query_one(
+        "SELECT * FROM room_transcripts WHERE id=?", (tid,),
+    )
+    post_obj = _row_to_post(row)
+
     _broadcast(room_id, {"type": "post", "post": post_obj.to_dict()})
     _dispatch_to_participants(room_id, post_obj, to_scope=to_scope)
 
-    # Refresh the room embedding every ~10th post so semantic search tracks
-    # evolving discussion without paying the embed cost on every message.
+    # Re-index every ~10th post for semantic search
     if hash(tid) % 10 == 0:
-        try:
-            from awm.services.embeddings import index_room
-            index_room(room_id)
-        except Exception:
-            pass
+        _index_room(room_id)
+
     return post_obj
 
 
 def post(room_id: str, *, author: str, body: str, kind: str = "message",
          to_scope: str | None = None) -> Post:
-    """Legacy entry point. ``author`` is a string in the legacy vocabulary
-    (``agent:proj/scope``, ``user:name``, ``system``, …) and gets
-    resolved via ``identity.resolve_ref`` to a target id before insert.
-    Returns a Post with the legacy string author for backwards compat."""
+    """Legacy entry point — ``author`` in legacy vocabulary; resolved to
+    stored form by post_transcript."""
     if kind == "text":
         kind = "message"
-    ref = identity.resolve_ref(author, create_users=True) or identity.SYSTEM_REF
-    return post_transcript(
-        room_id, author=ref, kind=kind, body=body, to_scope=to_scope,
-    )
+    return post_transcript(room_id, author=author, kind=kind, body=body,
+                           to_scope=to_scope)
 
 
 def _dispatch_to_participants(room_id: str, post_obj: Post, *,
                               to_scope: str | None) -> None:
-    """Push the post into the appropriate agent input queues + shadow-peer
-    forwarders. Mirrors the legacy dispatch contract — author starting
-    with ``agent:`` defers to the owner only unless ``to_scope`` is set."""
+    """Push post into agent input queues matching dispatch rules."""
     is_agent_author = post_obj.author.startswith("agent:")
-    conn = get_connection()
-    try:
-        owner_row = conn.execute(
-            "SELECT a.id, p.name, a.scope "
-            "FROM rooms r JOIN agents a ON a.id = r.owner_agent_id "
-            "JOIN projects p ON p.id = a.project_id WHERE r.id=?",
-            (room_id,),
-        ).fetchone()
-        guest_rows = conn.execute(
-            "SELECT g.guest_kind, g.guest_ref, "
-            "       p.name AS proj, a.scope AS scope_name "
-            "FROM guest_list g "
-            "LEFT JOIN agents a ON a.id = g.guest_ref AND g.guest_kind = 'agent' "
-            "LEFT JOIN projects p ON p.id = a.project_id "
-            "WHERE g.room_id = ?",
-            (room_id,),
-        ).fetchall()
-    finally:
-        conn.close()
+    dao = ScopesDAO()
+    room_row = dao.query_one(
+        "SELECT owner_project, owner_scope FROM rooms WHERE id=?", (room_id,),
+    )
+    guests = dao.query_all(
+        "SELECT guest_kind, guest_ref FROM guest_list WHERE room_id=?",
+        (room_id,),
+    )
 
-    targets: list[tuple[str, str | None]] = []
-    if owner_row is not None:
-        targets.append((f"{owner_row['name']}/{owner_row['scope']}", None))
-    for g in guest_rows:
-        if g["guest_kind"] != "agent" or not g["proj"]:
-            continue
-        targets.append((f"{g['proj']}/{g['scope_name']}", None))
+    targets: list[str] = []
+    if room_row:
+        targets.append(f"{room_row['owner_project']}/{room_row['owner_scope']}")
+    for g in guests:
+        if g["guest_kind"] == "agent":
+            targets.append(g["guest_ref"])  # already 'project/scope'
 
-    for scope_key, _peer in targets:
+    for scope_key in targets:
         if to_scope is not None and scope_key != to_scope:
             continue
         if is_agent_author and to_scope is None:
-            continue  # v1 deferral: agent outputs don't feed other agents
+            continue  # agent outputs don't broadcast to other agents
         if (is_agent_author and to_scope == scope_key
                 and post_obj.author == f"agent:{scope_key}"):
-            continue  # don't echo poster's own output back into its stdin
+            continue  # don't echo poster back to itself
         if _local_scope_dispatcher is not None:
             try:
                 _local_scope_dispatcher(room_id, scope_key, post_obj)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
 
@@ -835,73 +884,53 @@ def _dispatch_to_participants(room_id: str, post_obj: Post, *,
 
 def history(room_id: str, *, limit_chars: int = 1024,
             before_ts: str | None = None) -> list[Post]:
-    """Trailing transcript window. ``before_ts`` is interpreted as ISO
-    text (legacy callers) and converted to ms for the query."""
+    """Trailing transcript window. ``before_ts`` is ISO text."""
     if get_room(room_id) is None:
         raise RoomNotFound(f"no such room: {room_id}")
+    dao = ScopesDAO()
     sql = "SELECT * FROM room_transcripts WHERE room_id=?"
     params: list = [room_id]
     if before_ts is not None:
-        before_ms = identity.iso_to_ms(before_ts)
+        from awm.scopes.identity import iso_to_ms
+        before_ms = iso_to_ms(before_ts)
         if before_ms is not None:
             sql += " AND ts < ?"
             params.append(before_ms)
     sql += " ORDER BY ts DESC, id DESC"
-    conn = get_connection()
-    try:
-        rows = conn.execute(sql, params).fetchall()
-        out: list[Post] = []
-        total = 0
-        for row in rows:
-            body_len = len(row["body"] or "")
-            if out and total + body_len > limit_chars:
-                break
-            out.append(_row_to_post(row, conn=conn))
-            total += body_len
-    finally:
-        conn.close()
+    rows = dao.query_all(sql, params)
+    out: list[Post] = []
+    total = 0
+    for row in rows:
+        body_len = len(row["body"] or "")
+        if out and total + body_len > limit_chars:
+            break
+        out.append(_row_to_post(row))
+        total += body_len
     return list(reversed(out))
 
 
 def get_post(post_id: str) -> Post | None:
-    """Lookup a transcript row by its uuid. Legacy ``42@peer`` ids are not
-    supported in v37 — return None for those."""
     if not isinstance(post_id, str) or "@" in post_id:
         return None
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT * FROM room_transcripts WHERE id=?", (post_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return _row_to_post(row, conn=conn)
-    finally:
-        conn.close()
+    dao = ScopesDAO()
+    row = dao.query_one(
+        "SELECT * FROM room_transcripts WHERE id=?", (post_id,),
+    )
+    if row is None:
+        return None
+    return _row_to_post(row)
 
 
 def auto_close_for_scope(scope_key: str) -> list[str]:
-    """Close any open rooms whose owner is the agent named ``scope_key``.
-    Used by agent_instances._waiter_loop on retirement.
-
-    v37 semantics shift here: a room closes when its owner retires
-    (single-owner model). The old close_on_exit + last-scope-leaves
-    heuristic was a multi-scope holdover."""
-    proj_scope = scope_key
-    if "/" not in proj_scope:
+    """Close open rooms owned by the given 'project/scope'. Returns closed IDs."""
+    if "/" not in scope_key:
         return []
-    project, scope = proj_scope.split("/", 1)
-    aid = identity.agent_id_for_scope(project, scope, active_only=False)
-    if not aid:
-        return []
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id FROM rooms WHERE owner_agent_id=? AND status='open'",
-            (aid,),
-        ).fetchall()
-    finally:
-        conn.close()
+    project, scope = scope_key.split("/", 1)
+    dao = ScopesDAO()
+    rows = dao.query_all(
+        "SELECT id FROM rooms WHERE owner_project=? AND owner_scope=? AND status='open'",
+        (project, scope),
+    )
     closed: list[str] = []
     for r in rows:
         try:
@@ -910,6 +939,71 @@ def auto_close_for_scope(scope_key: str) -> list[str]:
         except RoomError:
             continue
     return closed
+
+
+def rooms_for_scope(scope_key: str) -> list[str]:
+    """Return IDs of open rooms where 'project/scope' is owner or guest."""
+    if "/" not in scope_key:
+        return []
+    project, scope = scope_key.split("/", 1)
+    guest_ref = f"{project}/{scope}"
+    dao = ScopesDAO()
+    rows = dao.query_all(
+        "SELECT DISTINCT r.id FROM rooms r "
+        "LEFT JOIN guest_list g ON g.room_id = r.id "
+        "WHERE r.status='open' AND ("
+        "  (r.owner_project=? AND r.owner_scope=?) "
+        "  OR (g.guest_kind='agent' AND g.guest_ref=?)"
+        ")",
+        (project, scope, guest_ref),
+    )
+    return [r["id"] for r in rows]
+
+
+def room_agents_kill_on_close(room_id: str) -> list[tuple[str, str]]:
+    """Return (project, scope) pairs for all agent participants of a room.
+
+    These are the scopes the agents service should SIGTERM when the room closes.
+    Includes both the owner and all agent guests.
+    """
+    dao = ScopesDAO()
+    room_row = dao.query_one(
+        "SELECT owner_project, owner_scope FROM rooms WHERE id=?", (room_id,),
+    )
+    if room_row is None:
+        return []
+    result: list[tuple[str, str]] = [
+        (room_row["owner_project"], room_row["owner_scope"])
+    ]
+    guests = dao.query_all(
+        "SELECT guest_ref FROM guest_list WHERE room_id=? AND guest_kind='agent'",
+        (room_id,),
+    )
+    for g in guests:
+        ref = g["guest_ref"]
+        if "/" in ref:
+            proj, sc = ref.split("/", 1)
+            result.append((proj, sc))
+    return result
+
+
+def ensure_agent_room(project: str, scope: str) -> str:
+    """Get-or-create the owned room for a given scope. Returns the room_id.
+
+    Looks for an existing open room owned by (project, scope); creates one
+    if none found.
+    """
+    dao = ScopesDAO()
+    row = dao.query_one(
+        "SELECT id FROM rooms WHERE owner_project=? AND owner_scope=? "
+        "AND status='open' ORDER BY created_at DESC LIMIT 1",
+        (project, scope),
+    )
+    if row:
+        return row["id"]
+    room = create_room(owner_project=project, owner_scope=scope,
+                       topic=f"room for {project}/{scope}")
+    return room.id
 
 
 # ---------------------------------------------------------------------------
@@ -924,10 +1018,8 @@ async def run_subscriber_session(
     room_id: str,
     user_as: str,
 ) -> None:
-    """Drive a fully-attached WS subscriber for ``room_id``. Owns the
-    queue/subscriber/broadcast loop and transcript backlog send. WS is
-    pure transport — not a guest_list participant in v37."""
-    from awm._lib import ws_envelope as env
+    """Drive a fully-attached WS subscriber for ``room_id``."""
+    from awm.scopes import ws_envelope as env
 
     room = get_room(room_id)
     if room is None:
@@ -1020,11 +1112,8 @@ async def run_subscriber_session(
 
 
 # ---------------------------------------------------------------------------
-# ScopeBusyError compatibility shim
+# Compat shim
 # ---------------------------------------------------------------------------
-# agent_instances.py used to import ScopeBusyError from rooms. v37 moves
-# that into agent_instances itself; the shim below keeps any straggler
-# import path working until the next cleanup pass.
 
 class ScopeBusyError(RoomError):
     pass

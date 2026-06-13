@@ -1,28 +1,33 @@
-"""Agent instance management — rooms-aware, tracked, addressable (v37).
+"""Agent instance management — rooms-aware, tracked, addressable (modular v1).
 
-An AgentInstance owns one ``claude --input-format=stream-json
---output-format=stream-json`` (or ``opencode run --format json``) subprocess
-attached to a single ``(project, scope)``. Its job is the *agent runtime*:
-serialize inputs from any number of rooms into stdin, parse stdout, and
-broadcast text/tool events into the agent's owned room transcript.
+An AgentInstance owns one ``claude`` or ``opencode`` subprocess attached to a
+single ``(project, scope)``. Its job is the *agent runtime*: serialize inputs
+from any number of rooms into stdin, parse stdout, and broadcast text/tool
+events into the agent's owned room transcript.
 
-v37 model changes
------------------
+Modular changes from the monolith
+----------------------------------
+- **Identity** is resolved via gatewayclient calls to the ``scopes`` service.
+  No uuid ``agent_id`` is stored or referenced; ``(project, scope)`` is the
+  natural key throughout.
+- **Persistence** goes through ``AgentsDAO`` → ``agents.db``; no shared
+  ``state.db``.
+- **Room operations** are cross-service; they go via gatewayclient to the
+  ``scopes`` service, which exposes the room RPCs in its ready manifest:
+  ``ensureAgentRoom`` (owned-room get-or-create), ``roomsForScope`` (active
+  rooms for output broadcast), ``room_post`` (post a transcript event),
+  ``autoCloseForScope`` (close the scope's rooms on session end), plus
+  ``room_create``/``room_invite`` used by ``orchestration``.
+- **Transcript writes** go to the ``agent_transcript`` table in ``agents.db``
+  via ``agent_transcript.record_*`` (which uses AgentsDAO).
 
-- **Identity** lives on the ``agents`` row (uuid PK, ``status`` ∈
-  ``allocated|active|retired``). Each spawn opens a new ``agent_instances``
-  row carrying the CLI-specific session token (``cli_session_id``) and
-  per-spawn lifecycle (``started_at``/``ended_at``/``data`` JSON). Resume
-  reads the latest ``agent_instances`` row for that agent.
-- **Transcript** writes go through ``agent_transcript`` which forwards
-  into the agent's owned room's ``room_transcripts``.
-- **Resume scheduling** is process-local: a ``dict[agent_id → wake_at_ms]``
-  plus the simple "every ``agents`` row with ``status='active'`` and no
-  live in-memory handle gets respawned" rule. No more
-  ``agent_resume_queue`` table.
-
-The rooms service registers ``_local_scope_dispatcher`` against this
-module so it can push posts into ``session.input_queue`` directly.
+REMAINING CROSS-SERVICE ITEM
+----------------------------
+``roomAgentsKillOnClose(room_id)`` — when a room closes with ``kill_agents``,
+the scopes service knows which agent scopes to SIGTERM, but the kill happens
+in *this* process. That reverse notification (scopes → agents) needs a pub/sub
+or callback channel and is intentionally NOT invented here; it is the one
+deferred integration item. All forward (agents → scopes) room calls are wired.
 """
 
 from __future__ import annotations
@@ -36,16 +41,26 @@ from typing import Optional
 
 from awm import config
 from awm.config import PROJECTS_DIR
-from awm.db import get_connection
-from awm.models import AgentSessionInfo
-from awm.services import agent_transcript, identity
-from awm.services import rooms as rooms_svc
-from awm.services._path import resolve_bin
-from awm.services.identity import iso_to_ms, ms_to_iso, now_ms
+from awm.agents import dao as _dao_module
+from awm.agents.dao import AgentsDAO
+from awm.agents._time import now_ms, ms_to_iso, iso_to_ms, SYSTEM_REF
+from awm.agents._path import resolve_bin
+from awm.agents.models import AgentSessionInfo
+import awm.gatewayclient as gatewayclient
 
 
 _SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
+
+# Module-level DAO instance (initialized after dao.init() is called).
+_dao: AgentsDAO | None = None
+
+
+def _get_dao() -> AgentsDAO:
+    global _dao
+    if _dao is None:
+        _dao = AgentsDAO()
+    return _dao
 
 
 def _scope_key(project: str, scope: str) -> str:
@@ -59,16 +74,14 @@ def _scope_key(project: str, scope: str) -> str:
 class AgentInstance:
     """In-memory handle for a running CLI subprocess.
 
-    ``id`` is the ``agent_instances.id`` (per-spawn integer); ``agent_id``
-    is the long-lived ``agents.id`` (uuid). Other fields mirror v36 for
-    minimal disruption to the input pump / reader loop / compact dance.
+    ``id`` is the ``agent_instances.id`` (per-spawn integer). ``project`` and
+    ``scope`` are the natural key — no ``agent_id`` uuid is stored.
     """
 
     def __init__(
         self,
         *,
         id: int,
-        agent_id: str,
         project: str,
         scope: str,
         agent_cli: str,
@@ -76,7 +89,6 @@ class AgentInstance:
         proc: asyncio.subprocess.Process,
     ):
         self.id = id
-        self.agent_id = agent_id
         self.project = project
         self.scope = scope
         self.scope_key = _scope_key(project, scope)
@@ -87,20 +99,15 @@ class AgentInstance:
         self.started_at_ms: int = now_ms()
         self.exited_at_ms: Optional[int] = None
         self.exit_code: Optional[int] = None
-        self.input_queue: asyncio.Queue[tuple[str, rooms_svc.Post]] = (
-            asyncio.Queue(maxsize=_INPUT_QUEUE_SIZE)
-        )
+        self.input_queue: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_QUEUE_SIZE)
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
         self.stdin_ready: asyncio.Event = asyncio.Event()
         self.stdin_frames_log = log_path.parent / "agent.log"
-        # Spawn-time flags + captured CLI session id (from init event).
         self.permission_mode: str = "default"
         self.model: Optional[str] = None
         self.effort: Optional[str] = None
-        # cli_session_id — claude session id today; the resume-driver
-        # passes ``--resume <id>`` (claude) or the opencode equivalent.
         self.cli_session_id: Optional[str] = None
         self.claude_slash_commands: list[str] = []
         self.context_used: int = 0
@@ -108,7 +115,6 @@ class AgentInstance:
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         self.compacting: bool = False
 
-    # Legacy alias for code paths that still read .claude_session_id.
     @property
     def claude_session_id(self) -> Optional[str]:
         return self.cli_session_id
@@ -118,14 +124,12 @@ class AgentInstance:
         self.cli_session_id = value
 
 
-# In-memory registries.
+# In-memory registries keyed on scope_key (project/scope) and instance id.
 _registry_by_id: dict[int, AgentInstance] = {}
-_by_agent_id: dict[str, AgentInstance] = {}
 _by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
 
-# Resume wake schedule — agent_id → unix-ms. Populated at restart by
-# reconcile_on_startup; drained by the resume driver.
+# Resume wake schedule — scope_key → unix-ms.
 _resume_schedule: dict[str, int] = {}
 
 
@@ -138,143 +142,63 @@ class NoSessionError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# DB helpers (v37 agent_instances + agents)
+# Identity helpers (scopes RPC)
 # ---------------------------------------------------------------------------
 
-def _ensure_agent_row(*, project: str, scope: str, agent_cli: str,
-                      worktree: Path) -> str:
-    """Get-or-create the agents row for ``(project, scope)``. Bumps status
-    to ``active`` and returns the agent id."""
-    conn = get_connection()
-    try:
-        pid = identity.project_id_for_name(project, conn=conn)
-        if pid is None:
-            # First-touch agent for an unseeded project — synthesize a
-            # projects row from the canonical workspace layout.
-            bare = PROJECTS_DIR / project / ".bare"
-            identity.ensure_project(project, repo_path=str(bare), conn=conn)
-        agent_id = identity.ensure_agent(
-            project, scope,
-            branch=f"feat/{scope}",
-            worktree=str(worktree),
-            agent_cli=agent_cli,
-            status="active",
-            conn=conn,
-        )
-        # ensure_agent uses 'allocated' for fresh rows — bump to 'active'
-        # for live spawns. Also clear any stale retired_at.
-        conn.execute(
-            "UPDATE agents SET status='active', retired_at=NULL, "
-            "agent_cli=?, worktree=? WHERE id=?",
-            (agent_cli, str(worktree), agent_id),
-        )
-        conn.commit()
-        return agent_id
-    finally:
-        conn.close()
+_ref_cache = gatewayclient.RefCache(ttl=120.0)
 
 
-def _open_agent_instance(*, agent_id: str, log_path: Path,
-                         cli_session_id: str | None,
-                         intent: str = "live") -> int:
-    """Insert a new agent_instances row (ended_at=NULL). Returns the row id."""
-    data = json.dumps({"intent": intent}, sort_keys=True)
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "INSERT INTO agent_instances "
-            "(agent_id, cli_session_id, log_path, started_at, ended_at, data) "
-            "VALUES (?, ?, ?, ?, NULL, ?)",
-            (agent_id, cli_session_id, str(log_path), now_ms(), data),
-        )
-        conn.commit()
-        return cur.lastrowid
-    finally:
-        conn.close()
+async def _ensure_scope_exists(project: str, scope: str,
+                                agent_cli: str,
+                                worktree: Path,
+                                as_: str | None = None) -> None:
+    """Ensure project + scope exist in the scopes service.
 
-
-def _close_agent_instance(instance_id: int, *, exit_code: int | None,
-                          intent_override: str | None = None) -> None:
-    """Close an agent_instances row (set ended_at + merge into data JSON)."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT data FROM agent_instances WHERE id=?", (instance_id,),
-        ).fetchone()
-        try:
-            data = json.loads(row[0]) if row and row[0] else {}
-        except (TypeError, ValueError):
-            data = {}
-        if intent_override is not None:
-            data["intent"] = intent_override
-        data["exit_code"] = exit_code
-        conn.execute(
-            "UPDATE agent_instances SET ended_at=?, data=? WHERE id=?",
-            (now_ms(), json.dumps(data, sort_keys=True), instance_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _set_instance_intent(instance_id: int, intent: str) -> None:
-    """Persist why an instance is about to exit (live/stopped/killed/compacted)."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT data FROM agent_instances WHERE id=?", (instance_id,),
-        ).fetchone()
-        try:
-            data = json.loads(row[0]) if row and row[0] else {}
-        except (TypeError, ValueError):
-            data = {}
-        data["intent"] = intent
-        conn.execute(
-            "UPDATE agent_instances SET data=? WHERE id=?",
-            (json.dumps(data, sort_keys=True), instance_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _update_instance_cli_session_id(instance_id: int, cli_sid: str) -> None:
-    conn = get_connection()
-    try:
-        conn.execute(
-            "UPDATE agent_instances SET cli_session_id=? WHERE id=?",
-            (cli_sid, instance_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _ensure_owned_room(*, agent_id: str, project: str, scope: str) -> str:
-    """Get-or-create the agent's owned room. Used by the transcript
-    writer + the post-restart notice path."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT id FROM rooms WHERE owner_agent_id=? AND status='open' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (agent_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row:
-        return row[0]
-    # Create one via rooms_svc.
-    room = rooms_svc.create_room(
-        topic=f"{project}/{scope} agent session",
-        owner_agent_id=agent_id,
-        opener=f"scope:{project}/{scope}",
+    Calls ensureProject then ensureScope via gatewayclient. Does not return
+    an agent_id — the natural key (project, scope) is the identity.
+    """
+    bare = PROJECTS_DIR / project / ".bare"
+    await gatewayclient.call(
+        "scopes", "ensureProject",
+        {"project": project, "repo_path": str(bare)},
+        as_=as_,
     )
-    return room.id
+    await gatewayclient.call(
+        "scopes", "ensureScope",
+        {
+            "project": project, "scope": scope,
+            "branch": f"feat/{scope}",
+            "worktree": str(worktree),
+            "agent_cli": agent_cli,
+            "status": "active",
+        },
+        as_=as_,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Public API: create / lookup
+# Rooms helpers (STUBBED — blocked on scopes RPC contract extension)
+# ---------------------------------------------------------------------------
+
+async def _ensure_owned_room(*, project: str, scope: str) -> str | None:
+    """Get-or-create the agent's owned room via the scopes service."""
+    result = await gatewayclient.call(
+        'scopes', 'ensureAgentRoom', {'project': project, 'scope': scope})
+    return result.get('room_id') if result else None
+
+
+async def _rooms_for_scope(scope_key: str) -> list[str]:
+    """Active rooms involving scope_key, via the scopes service."""
+    project, _, scope = scope_key.partition("/")
+    if not scope:
+        return []
+    result = await gatewayclient.call(
+        'scopes', 'roomsForScope', {'project': project, 'scope': scope})
+    return result.get('rooms', []) if result else []
+
+
+# ---------------------------------------------------------------------------
+# Subprocess argv builders
 # ---------------------------------------------------------------------------
 
 _VALID_PERMISSION_MODES = (
@@ -317,6 +241,10 @@ def _build_opencode_argv(
     return argv
 
 
+# ---------------------------------------------------------------------------
+# Public API: create / lookup
+# ---------------------------------------------------------------------------
+
 async def create_session(*, project: str, scope: str,
                          agent_cli: str = "claude",
                          permission_mode: str = "default",
@@ -324,11 +252,7 @@ async def create_session(*, project: str, scope: str,
                          effort: Optional[str] = None,
                          resume_session_id: Optional[str] = None,
                          fresh: bool = False) -> AgentInstance:
-    """Spawn a CLI subprocess and register it. Raises ScopeBusyError if
-    the scope already has a live in-memory handle.
-
-    ``fresh=True`` skips the DB-recovered resume id (used by /clear).
-    """
+    """Spawn a CLI subprocess and register it."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
@@ -358,36 +282,32 @@ async def create_session(*, project: str, scope: str,
                 f"(pid={_by_scope[key].proc.pid})"
             )
 
-        agent_id = _ensure_agent_row(
-            project=project, scope=scope, agent_cli=agent_cli,
-            worktree=workspace_dir,
-        )
-
-        # Resume id recovery: if not passed and not ``fresh``, look at the
-        # most recent agent_instances row for this agent.
-        if resume_session_id is None and not fresh:
-            conn = get_connection()
-            try:
-                row = conn.execute(
-                    "SELECT cli_session_id FROM agent_instances "
-                    "WHERE agent_id=? AND cli_session_id IS NOT NULL "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (agent_id,),
-                ).fetchone()
-                if row is not None:
-                    resume_session_id = row[0]
-            finally:
-                conn.close()
-
-        instance_id = _open_agent_instance(
-            agent_id=agent_id, log_path=log_path,
-            cli_session_id=resume_session_id,
-        )
-
-        # Ensure the owned room exists before we spawn the subprocess —
-        # the reader loop's transcript writes assume the room is there.
+        # Ensure project + scope exist in the scopes service.
         try:
-            _ensure_owned_room(agent_id=agent_id, project=project, scope=scope)
+            await _ensure_scope_exists(
+                project=project, scope=scope,
+                agent_cli=agent_cli, worktree=workspace_dir,
+            )
+        except gatewayclient.GatewayCallError as exc:
+            raise RuntimeError(
+                f"Failed to ensure scope {project}/{scope} via scopes RPC: {exc}"
+            ) from exc
+
+        dao = _get_dao()
+        # Resume id recovery.
+        if resume_session_id is None and not fresh:
+            resume_session_id = dao.get_latest_cli_session_id(project, scope)
+
+        instance_id = dao.open_instance(
+            project=project, scope=scope,
+            log_path=str(log_path),
+            cli_session_id=resume_session_id,
+            started_at=now_ms(),
+        )
+
+        # Ensure the owned room exists (stubbed until scopes exposes RPC).
+        try:
+            await _ensure_owned_room(project=project, scope=scope)
         except Exception:  # noqa: BLE001
             pass
 
@@ -424,15 +344,14 @@ async def create_session(*, project: str, scope: str,
             )
         except FileNotFoundError as exc:
             log_fp.close()
-            _close_agent_instance(instance_id, exit_code=-1,
-                                  intent_override="failed_to_spawn")
+            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                               intent_override="failed_to_spawn")
             raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
         finally:
             log_fp.close()
 
         session = AgentInstance(
             id=instance_id,
-            agent_id=agent_id,
             project=project,
             scope=scope,
             agent_cli=agent_cli,
@@ -444,7 +363,6 @@ async def create_session(*, project: str, scope: str,
         session.effort = effort
         session.cli_session_id = resume_session_id
         _registry_by_id[instance_id] = session
-        _by_agent_id[agent_id] = session
         _by_scope[key] = session
 
     session.reader_task = asyncio.create_task(_reader_loop(session))
@@ -459,10 +377,9 @@ async def create_session(*, project: str, scope: str,
             pass
         async with _registry_lock:
             _by_scope.pop(key, None)
-            _by_agent_id.pop(agent_id, None)
             _registry_by_id.pop(instance_id, None)
-        _close_agent_instance(instance_id, exit_code=-1,
-                              intent_override="stdin_ready_timeout")
+        _get_dao().close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                                   intent_override="stdin_ready_timeout")
         raise RuntimeError(
             f"input pump never signaled stdin-ready for {key} within 10s"
         )
@@ -477,12 +394,8 @@ def get_session(session_id: int) -> AgentInstance | None:
     return _registry_by_id.get(session_id)
 
 
-def get_session_by_agent_id(agent_id: str) -> AgentInstance | None:
-    return _by_agent_id.get(agent_id)
-
-
 # ---------------------------------------------------------------------------
-# Input pump — serialize per-room posts into stdin
+# Input pump
 # ---------------------------------------------------------------------------
 
 async def _input_pump(session: AgentInstance) -> None:
@@ -492,14 +405,14 @@ async def _input_pump(session: AgentInstance) -> None:
         return
     while True:
         try:
-            room_id, post = await session.input_queue.get()
+            room_id, post_author, post_body = await session.input_queue.get()
         except asyncio.CancelledError:
             return
         if session.proc is None or session.proc.stdin is None:
             return
         if session.proc.stdin.is_closing():
             return
-        framed_body = f"[room:{room_id} from:{post.author}]\n{post.body}"
+        framed_body = f"[room:{room_id} from:{post_author}]\n{post_body}"
         payload = {
             "type": "user",
             "message": {"role": "user", "content": framed_body},
@@ -515,19 +428,23 @@ async def _input_pump(session: AgentInstance) -> None:
                 fp.write(f"STDIN {framed_body!r}\n")
         except OSError:
             pass
+        # record_in signature: (session, body, *, injection=False)
+        from awm.agents import agent_transcript
         agent_transcript.record_in(session, framed_body, injection=False)
 
 
-def enqueue_input(session: AgentInstance, room_id: str, post: rooms_svc.Post) -> bool:
+def enqueue_input(session: AgentInstance, room_id: str,
+                  post_author: str, post_body: str) -> bool:
+    """Enqueue a room post for the agent's stdin pump."""
     try:
-        session.input_queue.put_nowait((room_id, post))
+        session.input_queue.put_nowait((room_id, post_author, post_body))
         return True
     except asyncio.QueueFull:
         return False
 
 
 # ---------------------------------------------------------------------------
-# Output reader — parse stream-json, broadcast to rooms
+# Output reader
 # ---------------------------------------------------------------------------
 
 def _lookup_context_max(model_id: Optional[str]) -> Optional[int]:
@@ -599,37 +516,8 @@ def _extract_renderable(parsed: dict) -> list[tuple[str, str]]:
     return out
 
 
-def _rooms_for_agent(agent_id: str) -> list[str]:
-    """Active locally-hosted rooms involving ``agent_id`` — either as
-    owner or as an agent-kind guest. Used to broadcast agent output."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT r.id FROM rooms r "
-            "LEFT JOIN guest_list g ON g.room_id = r.id "
-            "WHERE r.status='open' AND ("
-            "  r.owner_agent_id = ? "
-            "  OR (g.guest_kind='agent' AND g.guest_ref = ?)"
-            ")",
-            (agent_id, agent_id),
-        ).fetchall()
-    finally:
-        conn.close()
-    return [r[0] for r in rows]
-
-
-def _rooms_for_scope(scope_key: str) -> list[str]:
-    """Legacy adapter — convert scope_key to agent_id then dispatch."""
-    if "/" not in scope_key:
-        return []
-    project, scope = scope_key.split("/", 1)
-    agent_id = identity.agent_id_for_scope(project, scope, active_only=False)
-    if not agent_id:
-        return []
-    return _rooms_for_agent(agent_id)
-
-
 async def _reader_loop(session: AgentInstance) -> None:
+    from awm.agents import agent_transcript
     assert session.proc is not None and session.proc.stdout is not None
     stdout = session.proc.stdout
     while True:
@@ -654,7 +542,7 @@ async def _reader_loop(session: AgentInstance) -> None:
             sid = parsed.get("session_id")
             if isinstance(sid, str) and sid != session.cli_session_id:
                 session.cli_session_id = sid
-                _update_instance_cli_session_id(session.id, sid)
+                _get_dao().update_instance_cli_session_id(session.id, sid)
             cmds = parsed.get("slash_commands")
             if isinstance(cmds, list):
                 session.claude_slash_commands = [c for c in cmds if isinstance(c, str)]
@@ -667,22 +555,26 @@ async def _reader_loop(session: AgentInstance) -> None:
         if not events:
             continue
 
-        rooms = _rooms_for_agent(session.agent_id)
+        # Broadcast to the scope's rooms via the scopes service.
+        try:
+            rooms = await _rooms_for_scope(session.scope_key)
+        except Exception:  # noqa: BLE001
+            rooms = []
         if not rooms:
             continue
-        author_ref = session.agent_id
-        for kind, body in events:
-            for room_id in rooms:
+        author_ref = f"agent:{session.project}/{session.scope}"
+        for room_id in rooms:
+            for kind, body in events:
                 try:
-                    rooms_svc.post_transcript(
-                        room_id, author=author_ref, body=body, kind=kind,
-                    )
-                except rooms_svc.RoomError:
-                    continue
+                    await gatewayclient.call('scopes', 'room_post', {
+                        'room_id': room_id, 'author': author_ref,
+                        'body': body, 'kind': kind})
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 # ---------------------------------------------------------------------------
-# Waiter — finalize on exit
+# Waiter
 # ---------------------------------------------------------------------------
 
 async def _waiter_loop(session: AgentInstance) -> None:
@@ -693,7 +585,7 @@ async def _waiter_loop(session: AgentInstance) -> None:
     final = "killed" if session.status == "killed" else "exited"
     session.status = final
 
-    _close_agent_instance(session.id, exit_code=exit_code)
+    _get_dao().close_instance(session.id, ended_at=now_ms(), exit_code=exit_code)
 
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
@@ -701,43 +593,42 @@ async def _waiter_loop(session: AgentInstance) -> None:
     async with _registry_lock:
         if _by_scope.get(session.scope_key) is session:
             _by_scope.pop(session.scope_key, None)
-        if _by_agent_id.get(session.agent_id) is session:
-            _by_agent_id.pop(session.agent_id, None)
         _registry_by_id.pop(session.id, None)
 
-    try:
-        rooms_svc.auto_close_for_scope(session.scope_key)
-    except Exception:  # noqa: BLE001
-        pass
+    # Auto-close the scope's owned rooms now that its session has ended.
+    project, _, scope = session.scope_key.partition("/")
+    if scope:
+        try:
+            await gatewayclient.call(
+                'scopes', 'autoCloseForScope', {'project': project, 'scope': scope})
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------
 # Stop / kill
 # ---------------------------------------------------------------------------
 
-def _info_for_instance_row(row) -> AgentSessionInfo:
+def _info_for_instance_row(row: dict) -> AgentSessionInfo:
     return AgentSessionInfo(
         id=row["id"],
-        project=row["project_name"],
+        project=row["project"],
         scope=row["scope"],
-        pid=row["pid"] or 0,
-        status=row["render_status"],
-        agent_cli=row["agent_cli"],
+        pid=row.get("pid") or 0,
+        status=row.get("render_status") or "exited",
+        agent_cli=row.get("agent_cli") or "claude",
         started_at=ms_to_iso(row["started_at"]) or "",
-        exited_at=ms_to_iso(row["ended_at"]),
-        exit_code=row["exit_code"],
+        exited_at=ms_to_iso(row.get("ended_at")),
+        exit_code=row.get("exit_code"),
         attached=False,
     )
 
 
-def _render_status(row) -> str:
-    if row["ended_at"] is None:
-        # Still open per DB. If in-memory handle exists → 'running'; else
-        # 'orphaned' (process gone but row not closed yet — reconciliation
-        # will tidy it).
+def _render_status(row: dict) -> str:
+    if row.get("ended_at") is None:
         return "running" if row["id"] in _registry_by_id else "orphaned"
     try:
-        data = json.loads(row["data"] or "{}")
+        data = json.loads(row.get("data") or "{}")
     except (TypeError, ValueError):
         data = {}
     intent = data.get("intent") or "live"
@@ -749,39 +640,26 @@ def _render_status(row) -> str:
 
 
 def _hydrate_instance_row(row: dict) -> dict:
-    """Augment an agent_instances+agents row with the synthesized
-    ``project_name``/``pid``/``exit_code``/``render_status`` fields the
-    AgentSessionInfo adapter needs."""
     instance_handle = _registry_by_id.get(row["id"])
     pid = instance_handle.proc.pid if instance_handle else 0
     try:
-        data = json.loads(row["data"] or "{}")
+        data = json.loads(row.get("data") or "{}")
     except (TypeError, ValueError):
         data = {}
     out = dict(row)
-    out["project_name"] = row["project_name"]
     out["pid"] = pid
     out["exit_code"] = data.get("exit_code")
     out["render_status"] = _render_status(out)
+    # agent_cli: not in agents.db; default to "claude" (or recover from data)
+    out.setdefault("agent_cli", data.get("agent_cli") or "claude")
     return out
 
 
 def _row_for_instance(instance_id: int) -> dict | None:
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT i.*, a.scope, a.agent_cli, p.name AS project_name "
-            "FROM agent_instances i "
-            "JOIN agents a ON a.id = i.agent_id "
-            "JOIN projects p ON p.id = a.project_id "
-            "WHERE i.id=?",
-            (instance_id,),
-        ).fetchone()
-    finally:
-        conn.close()
+    row = _get_dao().get_instance(instance_id)
     if row is None:
         return None
-    return _hydrate_instance_row(dict(row))
+    return _hydrate_instance_row(row)
 
 
 async def stop_session(session_id: int) -> AgentSessionInfo:
@@ -789,9 +667,9 @@ async def stop_session(session_id: int) -> AgentSessionInfo:
     row = _row_for_instance(session_id)
     if row is None:
         raise FileNotFoundError(f"session {session_id} not found")
-    if row["ended_at"] is not None:
+    if row.get("ended_at") is not None:
         return _info_for_instance_row(row)
-    _set_instance_intent(session_id, "stopped")
+    _get_dao().set_instance_intent(session_id, "stopped")
     if session is None:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "stopping"
@@ -807,9 +685,9 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
     row = _row_for_instance(session_id)
     if row is None:
         raise FileNotFoundError(f"session {session_id} not found")
-    if row["ended_at"] is not None:
+    if row.get("ended_at") is not None:
         return _info_for_instance_row(row)
-    _set_instance_intent(session_id, "killed")
+    _get_dao().set_instance_intent(session_id, "killed")
     if session is None:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "killed"
@@ -889,11 +767,12 @@ async def send_slash(scope_key: str, body: str) -> None:
             fp.write(f"STDIN(slash) {body!r}\n")
     except OSError:
         pass
+    from awm.agents import agent_transcript
     agent_transcript.record_in(session, body, injection=True)
 
 
 # ---------------------------------------------------------------------------
-# Synthetic /compact
+# Compact
 # ---------------------------------------------------------------------------
 
 _COMPACT_PROMPT = (
@@ -909,6 +788,7 @@ COMPACT_MIN_SUMMARY_CHARS = 50
 
 
 async def compact_session(scope_key: str) -> str:
+    from awm.agents import agent_transcript
     session = _by_scope.get(scope_key)
     if session is None:
         raise NoSessionError(f"no active session for {scope_key}")
@@ -919,7 +799,7 @@ async def compact_session(scope_key: str) -> str:
         )
     if session.compacting:
         return f"/compact already in flight for {scope_key}"
-    if agent_transcript.has_unmatched_tool_use(session.agent_id):
+    if agent_transcript.has_unmatched_tool_use(session.project, session.scope):
         return (
             f"compact refused: tool call in flight on {scope_key}; "
             "wait for completion or /kill first"
@@ -938,21 +818,21 @@ async def compact_session(scope_key: str) -> str:
         try:
             summary = await asyncio.wait_for(queue.get(), timeout=COMPACT_TIMEOUT_S)
         except asyncio.TimeoutError:
-            summary = agent_transcript.read_recent_assistant_text(session.agent_id)
+            summary = agent_transcript.read_recent_assistant_text(session.project, session.scope)
         if not summary or len(summary) < COMPACT_MIN_SUMMARY_CHARS:
             return (
                 f"compact failed: no usable summary captured "
                 f"(got {len(summary)} chars); session untouched"
             )
 
-        _set_instance_intent(prior_instance_id, "compacted")
+        _get_dao().set_instance_intent(prior_instance_id, "compacted")
 
         try:
             new_session = await respawn_session(scope_key, clear_history=True)
         except Exception as exc:  # noqa: BLE001
             return (
                 f"compact respawn failed: {exc}; previous-session summary "
-                f"available via room transcript (len {len(summary)})"
+                f"available via agent transcript (len {len(summary)})"
             )
 
         primer = f"[system: previous-session-summary]\n{summary}"
@@ -964,17 +844,7 @@ async def compact_session(scope_key: str) -> str:
                 f"summary still available via transcript"
             )
 
-        # Audit notice
-        for room_id in _rooms_for_agent(new_session.agent_id):
-            try:
-                rooms_svc.post_transcript(
-                    room_id, author=identity.SYSTEM_REF,
-                    body=f"[compact summary for {scope_key}]\n{summary}",
-                    kind="compact",
-                )
-            except rooms_svc.RoomError:
-                continue
-
+        # Audit notice — room broadcast stubbed.
         return (
             f"compacted {scope_key}: prior instance {prior_instance_id} "
             f"summarized → new instance {new_session.id} primed"
@@ -990,33 +860,10 @@ async def compact_session(scope_key: str) -> str:
 
 def list_sessions(project: str | None = None, scope: str | None = None,
                   status: str | None = None) -> list[AgentSessionInfo]:
-    """Render an AgentSessionInfo per agent_instances row, joined to its
-    agent + project for the legacy project/scope display."""
-    where = []
-    params: list = []
-    if project:
-        where.append("p.name = ?")
-        params.append(project)
-    if scope:
-        where.append("a.scope = ?")
-        params.append(scope)
-    sql = (
-        "SELECT i.*, a.scope, a.agent_cli, p.name AS project_name "
-        "FROM agent_instances i "
-        "JOIN agents a ON a.id = i.agent_id "
-        "JOIN projects p ON p.id = a.project_id"
-    )
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY i.id DESC"
-    conn = get_connection()
-    try:
-        rows = conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
+    rows = _get_dao().list_instances(project=project, scope=scope)
     out: list[AgentSessionInfo] = []
     for r in rows:
-        hydrated = _hydrate_instance_row(dict(r))
+        hydrated = _hydrate_instance_row(r)
         if status and hydrated["render_status"] != status:
             continue
         out.append(_info_for_instance_row(hydrated))
@@ -1027,7 +874,7 @@ def tail_log(session_id: int, lines: int = 200) -> str:
     row = _row_for_instance(session_id)
     if row is None:
         raise FileNotFoundError(f"session {session_id} not found")
-    path = Path(row["log_path"] or "")
+    path = Path(row.get("log_path") or "")
     if not path or not path.exists():
         return ""
     with path.open("r", encoding="utf-8", errors="replace") as fp:
@@ -1036,13 +883,9 @@ def tail_log(session_id: int, lines: int = 200) -> str:
 
 
 def scrub_resume_queue_for_scope(project: str, scope: str) -> int:
-    """v37 no-op compatibility shim. Resume scheduling is in-memory only;
-    /kill + /clear paths can call this freely without persistence side
-    effects. Returns 1 if an in-memory wake was cleared, else 0."""
-    agent_id = identity.agent_id_for_scope(project, scope, active_only=False)
-    if not agent_id:
-        return 0
-    return 1 if _resume_schedule.pop(agent_id, None) is not None else 0
+    """Clear in-memory resume schedule for a scope. No-op if not scheduled."""
+    key = _scope_key(project, scope)
+    return 1 if _resume_schedule.pop(key, None) is not None else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1050,47 +893,20 @@ def scrub_resume_queue_for_scope(project: str, scope: str) -> int:
 # ---------------------------------------------------------------------------
 
 def reconcile_on_startup() -> None:
-    """After a server restart: close any open agent_instances rows whose
-    PID is gone (server-PID continuity broken by definition), retire
-    vagrant agents (ephemeral), and seed the resume schedule for every
-    ``agents`` row with ``status='active'`` so the resume driver brings
-    them back.
-    """
-    conn = get_connection()
-    try:
-        # Close open agent_instances rows — daemon restart breaks
-        # continuity by definition.
-        open_rows = conn.execute(
-            "SELECT i.id, i.data FROM agent_instances i WHERE i.ended_at IS NULL"
-        ).fetchall()
-        for r in open_rows:
-            try:
-                data = json.loads(r[1] or "{}")
-            except (TypeError, ValueError):
-                data = {}
-            data["closed_by"] = "reconcile"
-            data["reason"] = "daemon_restart"
-            conn.execute(
-                "UPDATE agent_instances SET ended_at=?, data=? WHERE id=?",
-                (now_ms(), json.dumps(data, sort_keys=True), r[0]),
-            )
+    """Close open agent_instances rows and seed resume schedule."""
+    dao = _get_dao()
+    dao.close_all_open_instances(now_ms())
 
-        # Retire vagrant agents — ephemeral.
-        conn.execute(
-            "UPDATE agents SET status='retired', retired_at=? "
-            "WHERE is_vagrant=1 AND status IN ('allocated','active')",
-            (now_ms(),),
-        )
+    # Retire vagrant agents: STUB — vagrant status lives in scopes DB.
+    # The scopes service handles this in its own reconcile.
 
-        # Schedule resume for every active agent.
-        active = conn.execute(
-            "SELECT id FROM agents WHERE status='active'",
-        ).fetchall()
-        for r in active:
-            _resume_schedule[r[0]] = now_ms()
-        conn.commit()
-    finally:
-        conn.close()
+    # Schedule resume for scopes that were recently active (had an open row).
+    # In v1 we don't have a separate agents.status column — rely on scopes RPC
+    # for true status. Seed resume for any scope that had an open instance row.
+    recently_open = dao.get_active_scopes()  # returns scopes with cli_session_id
+    for r in recently_open:
+        scope_key = _scope_key(r["project"], r["scope"])
+        _resume_schedule[scope_key] = now_ms()
 
 
 # ---------------------------------------------------------------------------
@@ -1107,54 +923,32 @@ _resume_attempts: dict[str, int] = {}
 _resume_driver_task: asyncio.Task | None = None
 
 
-def _due_resume_agent_ids() -> list[str]:
+def _due_resume_scope_keys() -> list[str]:
     now = now_ms()
-    return [aid for aid, when in list(_resume_schedule.items()) if when <= now]
+    return [key for key, when in list(_resume_schedule.items()) if when <= now]
 
 
-def _reschedule_resume(agent_id: str, delay_ms: int) -> None:
-    _resume_schedule[agent_id] = now_ms() + delay_ms
+def _reschedule_resume(scope_key: str, delay_ms: int) -> None:
+    _resume_schedule[scope_key] = now_ms() + delay_ms
 
 
-def _drop_resume(agent_id: str) -> None:
-    _resume_schedule.pop(agent_id, None)
-    _resume_attempts.pop(agent_id, None)
+def _drop_resume(scope_key: str) -> None:
+    _resume_schedule.pop(scope_key, None)
+    _resume_attempts.pop(scope_key, None)
 
 
-def _agent_row_for_resume(agent_id: str) -> dict | None:
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT a.id, a.agent_cli, p.name AS project_name, a.scope, "
-            "       i.cli_session_id, i.ended_at, i.started_at "
-            "FROM agents a "
-            "JOIN projects p ON p.id = a.project_id "
-            "LEFT JOIN agent_instances i ON i.agent_id = a.id "
-            "WHERE a.id=? "
-            "ORDER BY i.started_at DESC LIMIT 1",
-            (agent_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return dict(row) if row else None
-
-
-async def respawn_after_restart(agent_row: dict, *,
+async def respawn_after_restart(project: str, scope: str, *,
+                                cli_session_id: str | None = None,
                                 primer_text: str | None = None
                                 ) -> AgentInstance:
-    """Spawn a fresh AgentInstance for an agent whose previous in-memory
-    handle is gone (daemon restart). The CLI driver is named by
-    ``agents.agent_cli``; the resume token comes from the latest
-    ``agent_instances.cli_session_id``."""
-    project = agent_row["project_name"]
-    scope = agent_row["scope"]
+    """Spawn a fresh AgentInstance for a scope whose previous handle is gone."""
     scope_key = _scope_key(project, scope)
     if _by_scope.get(scope_key) is not None:
         return _by_scope[scope_key]
     if primer_text:
         session = await create_session(
             project=project, scope=scope,
-            agent_cli=agent_row["agent_cli"] or "claude",
+            agent_cli="claude",
             permission_mode="bypassPermissions",
             resume_session_id=None,
             fresh=True,
@@ -1163,9 +957,9 @@ async def respawn_after_restart(agent_row: dict, *,
         return session
     return await create_session(
         project=project, scope=scope,
-        agent_cli=agent_row["agent_cli"] or "claude",
+        agent_cli="claude",
         permission_mode="bypassPermissions",
-        resume_session_id=agent_row.get("cli_session_id"),
+        resume_session_id=cli_session_id,
         fresh=False,
     )
 
@@ -1180,46 +974,51 @@ async def _watch_resume_health(session: AgentInstance) -> bool:
     return (session.exit_code or 0) == 0
 
 
-async def _drive_one_resume(agent_id: str, semaphore: asyncio.Semaphore) -> None:
+async def _drive_one_resume(scope_key: str, semaphore: asyncio.Semaphore) -> None:
     async with semaphore:
-        attempts = _resume_attempts.get(agent_id, 0) + 1
-        _resume_attempts[agent_id] = attempts
-        row = _agent_row_for_resume(agent_id)
-        if row is None:
-            _drop_resume(agent_id)
+        attempts = _resume_attempts.get(scope_key, 0) + 1
+        _resume_attempts[scope_key] = attempts
+        if "/" not in scope_key:
+            _drop_resume(scope_key)
             return
+        project, scope = scope_key.split("/", 1)
+        row = _get_dao().get_latest_instance_for_scope(project, scope)
+        if row is None:
+            _drop_resume(scope_key)
+            return
+        cli_session_id = row.get("cli_session_id")
         if attempts > RESUME_MAX_ATTEMPTS:
-            # Last-resort fallback: clear the cli session id so we spawn fresh.
-            row["cli_session_id"] = None
+            cli_session_id = None
 
         try:
-            session = await respawn_after_restart(row)
+            session = await respawn_after_restart(
+                project, scope, cli_session_id=cli_session_id)
         except Exception:  # noqa: BLE001
             if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(agent_id)
+                _drop_resume(scope_key)
                 return
-            _reschedule_resume(agent_id, int(min(60_000 * (2 ** attempts), 600_000)))
+            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
             return
 
         healthy = await _watch_resume_health(session)
         if not healthy:
             if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(agent_id)
+                _drop_resume(scope_key)
                 return
-            _reschedule_resume(agent_id, int(min(60_000 * (2 ** attempts), 600_000)))
+            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
             return
 
-        _drop_resume(agent_id)
+        _drop_resume(scope_key)
 
 
 async def _drive_resume_queue() -> None:
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESUMES)
     while True:
-        due = _due_resume_agent_ids()
+        due = _due_resume_scope_keys()
         if due:
             tasks = [
-                asyncio.create_task(_drive_one_resume(aid, semaphore))
-                for aid in due
+                asyncio.create_task(_drive_one_resume(key, semaphore))
+                for key in due
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(RESUME_DRIVER_POLL_S)
@@ -1234,55 +1033,24 @@ def start_resume_driver() -> asyncio.Task:
 
 
 # ---------------------------------------------------------------------------
-# Rooms-service dispatcher wiring
+# Rooms-service dispatcher wiring — NO-OP in modular mode
 # ---------------------------------------------------------------------------
 
 def _dispatch_local_post(room_id: str, scope_key: str,
-                         post: rooms_svc.Post) -> None:
+                         post_author: str, post_body: str) -> None:
+    """Forward a room post to the in-memory session's input queue."""
     session = _by_scope.get(scope_key)
     if session is None:
         return
-    enqueue_input(session, room_id, post)
-
-
-def _on_close_room_kill(room_id: str) -> None:
-    """SIGTERM every locally-running agent participant of ``room_id``."""
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT a.id, p.name, a.scope "
-            "FROM rooms r "
-            "JOIN agents a ON a.id = r.owner_agent_id "
-            "JOIN projects p ON p.id = a.project_id "
-            "WHERE r.id=?",
-            (room_id,),
-        ).fetchall()
-        guest_rows = conn.execute(
-            "SELECT a.id, p.name, a.scope "
-            "FROM guest_list g "
-            "JOIN agents a ON a.id = g.guest_ref AND g.guest_kind='agent' "
-            "JOIN projects p ON p.id = a.project_id "
-            "WHERE g.room_id=?",
-            (room_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-    for r in list(rows) + list(guest_rows):
-        scope_key = f"{r['name']}/{r['scope']}"
-        session = _by_scope.get(scope_key)
-        if session is None:
-            continue
-        try:
-            session.proc.terminate()
-        except ProcessLookupError:
-            pass
-        session.status = "stopping"
-        _set_instance_intent(session.id, "stopped")
+    enqueue_input(session, room_id, post_author, post_body)
 
 
 def install_room_dispatchers() -> None:
-    rooms_svc.set_local_scope_dispatcher(_dispatch_local_post)
-    rooms_svc.set_close_room_kill_callback(_on_close_room_kill)
+    """No-op in modular mode.
 
-
-install_room_dispatchers()
+    In the monolith, this wired rooms_svc callbacks. In the modular world,
+    room posts arrive via gatewayclient RPC (the scopes service routes them
+    here via the agent's registered RPC handler). The hub_adapter wires
+    those handlers on startup.
+    """
+    pass

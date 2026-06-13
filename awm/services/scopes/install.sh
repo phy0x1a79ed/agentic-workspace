@@ -12,6 +12,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
+run "$WS/awm/service_components/gatewayclient" --no-deps
 run "$WS/awm/services/scopes"
 
 echo "Installed awm-scopes into env '$ENV'."

@@ -18,7 +18,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
-from awm.services import agent_instances
+from awm.agents import agent_instances
 
 
 @dataclass

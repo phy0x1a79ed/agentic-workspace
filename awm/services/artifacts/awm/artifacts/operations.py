@@ -1,14 +1,67 @@
-"""Artifact operation definitions for the registry."""
+"""Artifact operation definitions for the registry.
 
-from awm.models import ArtifactRegisterRequest
-from awm._lib.operations import (
-    Column,
-    JsonOutput,
-    Operation,
-    Param,
-    TableOutput,
-)
-from awm.services import artifacts
+These are kept for documentation / CLI compatibility. The hub adapter
+(hub_adapter.py) drives the live gateway dispatch; these Operation objects
+describe the same surface for tooling that reads the op catalog.
+"""
+
+from __future__ import annotations
+
+from awm.artifacts.models import ArtifactRegisterRequest
+from awm.artifacts import artifacts
+
+
+# ---------------------------------------------------------------------------
+# Minimal operation types (inline so this dist has no dep on awm._lib)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class Param:
+    name: str
+    type: str = "string"
+    required: bool = False
+    description: str = ""
+    default: Any = None
+    cli_name: str = ""
+    cli_type: str = "option"
+
+
+@dataclass
+class Column:
+    key: str
+    header: str
+    width: int = 20
+    max_len: int | None = None
+
+
+@dataclass
+class TableOutput:
+    list_key: str
+    columns: list[Column] = field(default_factory=list)
+
+
+@dataclass
+class JsonOutput:
+    pass
+
+
+@dataclass
+class Operation:
+    name: str
+    description: str
+    service_func: Any
+    http_method: str = "GET"
+    http_path: str = "/"
+    cli_group: str = ""
+    cli_command: str = ""
+    output: Any = None
+    request_model: Any = None
+    params: list[Param] = field(default_factory=list)
+
 
 ARTIFACT_OPERATIONS: list[Operation] = [
     Operation(
@@ -22,14 +75,25 @@ ARTIFACT_OPERATIONS: list[Operation] = [
         output=JsonOutput(),
         request_model=ArtifactRegisterRequest,
         params=[
-            Param(name="project", type="string", required=True, description="Project name", cli_type="argument"),
-            Param(name="scope", type="string", required=True, description="Scope name", cli_type="argument"),
-            Param(name="name", type="string", required=True, description="Human-readable name", cli_name="--name"),
-            Param(name="artifact_type", type="string", required=True, description="figure, dataset, report, model, script, other", cli_name="--type"),
-            Param(name="path", type="string", required=True, description="Path relative to workspace root", cli_name="--path"),
-            Param(name="description", type="string", description="What it contains", cli_name="--description"),
-            Param(name="format", type="string", description="File format (svg, csv, parquet, etc.)", cli_name="--format"),
-            Param(name="tags", type="string", description="Comma-separated tags", cli_name="--tags"),
+            Param(name="project", type="string", required=True,
+                  description="Project name", cli_type="argument"),
+            Param(name="scope", type="string", required=True,
+                  description="Scope name", cli_type="argument"),
+            Param(name="name", type="string", required=True,
+                  description="Human-readable name", cli_name="--name"),
+            Param(name="artifact_type", type="string", required=True,
+                  description="figure, dataset, report, model, script, other",
+                  cli_name="--type"),
+            Param(name="path", type="string", required=True,
+                  description="Path relative to workspace root",
+                  cli_name="--path"),
+            Param(name="description", type="string",
+                  description="What it contains", cli_name="--description"),
+            Param(name="format", type="string",
+                  description="File format (svg, csv, parquet, etc.)",
+                  cli_name="--format"),
+            Param(name="tags", type="string",
+                  description="Comma-separated tags", cli_name="--tags"),
         ],
     ),
     Operation(
@@ -52,11 +116,16 @@ ARTIFACT_OPERATIONS: list[Operation] = [
             ],
         ),
         params=[
-            Param(name="project", type="string", description="Filter by project", cli_name="--project"),
-            Param(name="scope", type="string", description="Filter by scope", cli_name="--scope"),
-            Param(name="artifact_type", type="string", description="Filter by type", cli_name="--type"),
-            Param(name="query", type="string", description="Free-text search", cli_name="--query"),
-            Param(name="limit", type="integer", default=50, description="Max entries", cli_name="--limit"),
+            Param(name="project", type="string",
+                  description="Filter by project", cli_name="--project"),
+            Param(name="scope", type="string",
+                  description="Filter by scope", cli_name="--scope"),
+            Param(name="artifact_type", type="string",
+                  description="Filter by type", cli_name="--type"),
+            Param(name="query", type="string",
+                  description="Free-text search", cli_name="--query"),
+            Param(name="limit", type="integer", default=50,
+                  description="Max entries", cli_name="--limit"),
         ],
     ),
 ]

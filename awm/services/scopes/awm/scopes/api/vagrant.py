@@ -1,10 +1,22 @@
 """Vagrant-session endpoint: provision a per-user vagrant scope + default room.
 
-Mounted from :mod:`awm.exposed` at ``POST /vagrant/session``. The web-UI calls
-this after sign-in so the SPA can land the user inside a room owned by their
-vagrant scope on the host peer. We also (idempotently) spawn a Claude
-``AgentInstance`` against the vagrant scope so the user has a live "manager"
-ready to receive room posts addressed to it.
+Mounted at ``POST /vagrant/session``. The web-UI calls this after sign-in
+so the SPA can land the user inside a room owned by their vagrant scope.
+
+v1 modular: agent_instances is the agents service (out-of-process).
+Manager spawn is deferred via gatewayclient.call('agents', 'createSession', ...)
+once the agents service publishes that RPC. Until then, ``manager_live``
+always returns False (the scope and room are still created; the manager
+agent is just not auto-spawned).
+
+BLOCKER: agents RPC ``createSession(project, scope, ...)`` not yet in
+the frozen contract. When it is, replace the stub below with:
+    await gatewayclient.call('agents', 'createSession', {
+        'project': VAGRANT_PROJECT,
+        'scope': scope_name,
+        'agent_cli': 'claude',
+        'permission_mode': 'bypassPermissions',
+    })
 """
 
 from __future__ import annotations
@@ -15,15 +27,14 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from awm.config import VAGRANT_PROJECT
-from awm.services import agent_instances
-from awm.services.scopes import (
+from awm.scopes.scopes import (
     _vagrant_scope_name,
     ensure_vagrant_session,
     vagrant_scope_identifier,
 )
 
 
-log = logging.getLogger("awm.api.vagrant")
+log = logging.getLogger("awm.scopes.api.vagrant")
 
 
 router = APIRouter(prefix="/vagrant", tags=["vagrant"])
@@ -32,13 +43,7 @@ router = APIRouter(prefix="/vagrant", tags=["vagrant"])
 class VagrantSessionResponse(BaseModel):
     scope_uuid: str
     room_id: str
-    # ``project/scope`` identifier for the vagrant scope. Matches the
-    # ``scope`` field of ``GET /rooms/{id}/agents`` so the UI can mark
-    # which agent in a room is "the manager".
     scope_identifier: str
-    # True once a Claude AgentInstance is registered for the vagrant
-    # scope (the manager can receive posts). False if auto-spawn failed —
-    # the UI surfaces a hint so the user can restart manually.
     manager_live: bool
 
 
@@ -48,28 +53,26 @@ async def session(request: Request) -> VagrantSessionResponse:
     try:
         scope_uuid, room_id = ensure_vagrant_session(user_as)
     except FileNotFoundError as exc:
-        # 503: server-side bootstrap missing (run `awm vagrant-init`).
         raise HTTPException(status_code=503, detail=str(exc))
 
     scope_name = _vagrant_scope_name(user_as)
-    manager_live = True
-    if agent_instances.get_session_by_scope(VAGRANT_PROJECT, scope_name) is None:
-        try:
-            await agent_instances.create_session(
-                project=VAGRANT_PROJECT,
-                scope=scope_name,
-                agent_cli="claude",
-                # Vagrant manager needs free MCP-tool access to reply in rooms
-                # (mcp__awm__room_post). Mirrors how an operator's manual
-                # claude session runs with --dangerously-skip-permissions.
-                permission_mode="bypassPermissions",
-            )
-        except agent_instances.ScopeBusyError:
-            # Race with another spawn — that's success for our purposes.
-            pass
-        except Exception:  # noqa: BLE001
-            log.exception("vagrant manager spawn failed for %s", user_as)
-            manager_live = False
+    manager_live = False
+    # STUB: agents service RPC createSession not yet published.
+    # When agents exposes it, wire:
+    #   try:
+    #       import awm.gatewayclient as gatewayclient
+    #       await gatewayclient.call('agents', 'createSession', {
+    #           'project': VAGRANT_PROJECT, 'scope': scope_name,
+    #           'agent_cli': 'claude', 'permission_mode': 'bypassPermissions',
+    #       })
+    #       manager_live = True
+    #   except Exception:
+    #       log.exception("vagrant manager spawn failed for %s", user_as)
+    log.info(
+        "vagrant session created for %s: scope=%s/%s room=%s "
+        "(manager_live=False — agents RPC createSession not yet wired)",
+        user_as, VAGRANT_PROJECT, scope_name, room_id,
+    )
 
     return VagrantSessionResponse(
         scope_uuid=scope_uuid,

@@ -1,30 +1,97 @@
-"""Artifact registry — track outputs across scopes (v37).
+"""Artifact registry — track outputs across scopes (modular v1).
 
-Artifacts no longer replicate cross-peer in v37; the legacy
-``origin_peer``/``legacy_id`` plumbing is gone and the INTEGER PK is
-authoritative for a single workspace. Phase-6 cross-peer fetch becomes a
-future fetch-not-sync design.
+Re-keyed to natural keys: ``project`` / ``scope`` are native columns on
+``artifacts``; the legacy ``agent_id`` FK is gone. Identity is validated by
+calling the ``scopes`` service over gateway RPC (via ``gatewayclient``), cached
+in a module-level ``RefCache``. Embeddings are per-service — this module calls
+into the ``persistence.embeddings`` engine against the artifacts service's own
+connection.
 """
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
+
 from awm.config import WORKSPACE_ROOT
-from awm.db import get_connection
-from awm.models import (
+from awm.gatewayclient import RefCache, GatewayCallError, call_sync
+from awm.artifacts.dao import ArtifactsDAO, init as dao_init
+from awm.artifacts.models import (
     ArtifactRegisterRequest,
     ArtifactInfo,
     ArtifactSearchResponse,
 )
-from awm.services import identity
-from awm.services._validation import validate_name
-from awm.services.identity import ms_to_iso, now_ms
+
+# ---------------------------------------------------------------------------
+# Time helpers (re-homed from identity — no import from scopes)
+# ---------------------------------------------------------------------------
 
 
-def _row_to_info(row) -> ArtifactInfo:
+def now_ms() -> int:
+    """Current time as unix milliseconds."""
+    return int(time.time() * 1000)
+
+
+def ms_to_iso(ms: int | None) -> str | None:
+    """Convert unix-ms to an ISO 8601 string, or None for falsy input."""
+    if not ms:
+        return None
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Validation helper (inline copy — avoids importing from scopes)
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_CHARS = ("/", "\\", "\x00")
+
+
+def _validate_name(name: str, kind: str = "name") -> str:
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{kind} must be a non-empty string")
+    if name in (".", ".."):
+        raise ValueError(f"{kind} cannot be '.' or '..'")
+    if name.startswith("."):
+        raise ValueError(f"{kind} cannot start with '.' (got {name!r})")
+    for ch in _FORBIDDEN_CHARS:
+        if ch in name:
+            raise ValueError(f"{kind} cannot contain {ch!r} (got {name!r})")
+    return name
+
+
+# ---------------------------------------------------------------------------
+# Module-level RefCache for resolveScope calls
+# ---------------------------------------------------------------------------
+
+_scope_cache: RefCache = RefCache(ttl=60.0)
+
+
+def _resolve_scope(project: str, scope: str) -> dict | None:
+    """Call scopes.resolveScope synchronously via the gateway; cache positives.
+
+    Returns the result dict ``{exists, project, scope, status}`` on success,
+    or None / falsy on "not found". Raises ``GatewayCallError`` on transport
+    failure.
+    """
+    # RefCache.validate is async; we use call_sync here since artifacts.py
+    # functions are sync (called from the ServiceAdapter thread pool).
+    result = call_sync("scopes", "resolveScope", {"project": project, "scope": scope})
+    # gateway returns {} for null — normalise falsy/empty to None
+    if not result or not result.get("exists"):
+        return None
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Row → model
+# ---------------------------------------------------------------------------
+
+
+def _row_to_info(row: dict) -> ArtifactInfo:
     return ArtifactInfo(
         id=row["id"],
-        project=row["project_name"],
-        scope=row["scope_name"],
+        project=row["project"],
+        scope=row["scope"],
         name=row["name"],
         artifact_type=row["artifact_type"],
         path=row["path"],
@@ -37,74 +104,117 @@ def _row_to_info(row) -> ArtifactInfo:
     )
 
 
-_BASE_SELECT = (
-    "SELECT a.*, p.name AS project_name, ag.scope AS scope_name "
-    "FROM artifacts a "
-    "JOIN agents ag ON ag.id = a.agent_id "
-    "JOIN projects p ON p.id = ag.project_id"
-)
+# ---------------------------------------------------------------------------
+# Per-service artifact indexer
+# ---------------------------------------------------------------------------
 
 
-def _ensure_agent_for_artifact(project: str, scope: str, *, conn) -> str:
-    """Resolve (project, scope) → agent id, materializing missing rows."""
-    pid = identity.project_id_for_name(project, conn=conn)
-    if pid is None:
-        from awm.config import PROJECTS_DIR
-        bare = PROJECTS_DIR / project / ".bare"
-        identity.ensure_project(project, repo_path=str(bare), conn=conn)
-    return identity.ensure_agent(project, scope, conn=conn)
+def _index_artifact(artifact_id: int) -> None:
+    """Embed the artifact's text and upsert into this service's embeddings table.
+
+    Degrades gracefully when sentence-transformers / sqlite-vec are not installed.
+    """
+    try:
+        from awm.persistence.embeddings import upsert_embedding
+        from awm.persistence.databases import get_connection
+    except ImportError:
+        return
+
+    dao = ArtifactsDAO()
+    row = dao.get_by_id(artifact_id)
+    if not row:
+        return
+
+    parts = [row["name"] or "", row["artifact_type"] or "", row["description"] or "",
+             row["tags"] or ""]
+    text = " ".join(p for p in parts if p).strip()
+    if not text:
+        return
+
+    try:
+        from awm.persistence.databases import get_connection as _gc
+        conn = _gc("artifacts")
+        try:
+            upsert_embedding(conn, "artifact", str(artifact_id), text)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Public API — register
+# ---------------------------------------------------------------------------
 
 
 def register_artifact(req: ArtifactRegisterRequest) -> ArtifactInfo:
-    """Upserts on (path, agent's project) — two scopes in the same project
-    cannot independently register the same path. Cross-project collisions
-    are allowed (each project owns its own filesystem subtree)."""
-    validate_name(req.project, kind="project name")
-    validate_name(req.scope, kind="scope name")
-    conn = get_connection()
+    """Upserts on (path, project) — validate (project, scope) via scopes RPC
+    BEFORE writing. On unresolvable scope, fail LOUDLY — no orphan rows."""
+    _validate_name(req.project, kind="project name")
+    _validate_name(req.scope, kind="scope name")
+
+    # RPC-validate: reject unresolvable scopes
     try:
-        agent_id = _ensure_agent_for_artifact(req.project, req.scope, conn=conn)
-        project_id = identity.project_id_for_name(req.project, conn=conn)
-        existing = conn.execute(
-            "SELECT a.id FROM artifacts a "
-            "JOIN agents ag ON ag.id = a.agent_id "
-            "WHERE a.path = ? AND ag.project_id = ? LIMIT 1",
-            (req.path, project_id),
-        ).fetchone()
+        resolved = _resolve_scope(req.project, req.scope)
+    except GatewayCallError as exc:
+        raise ValueError(
+            f"Could not validate scope {req.project!r}/{req.scope!r} "
+            f"via scopes service: {exc}"
+        ) from exc
+
+    if not resolved:
+        raise ValueError(
+            f"Scope {req.project!r}/{req.scope!r} does not exist. "
+            "Register the scope with the scopes service before registering artifacts."
+        )
+
+    dao = ArtifactsDAO()
+    with dao.transaction() as conn:
+        existing = dao.get_by_path_and_project(req.path, req.project, conn=conn)
+        ts = now_ms()
         if existing:
-            conn.execute(
-                "UPDATE artifacts SET "
-                " agent_id=?, name=?, artifact_type=?, description=?, "
-                " format=?, tags=?, status='current', updated_at=? "
-                "WHERE id=?",
-                (agent_id, req.name, req.artifact_type, req.description,
-                 req.format, req.tags, now_ms(), existing[0]),
+            dao.update_artifact(
+                existing["id"],
+                project=req.project,
+                scope=req.scope,
+                name=req.name,
+                artifact_type=req.artifact_type,
+                description=req.description,
+                format=req.format,
+                tags=req.tags,
+                updated_at=ts,
+                conn=conn,
             )
-            target_id = existing[0]
+            target_id = existing["id"]
         else:
-            cur = conn.execute(
-                "INSERT INTO artifacts "
-                "(agent_id, name, artifact_type, path, description, "
-                " format, tags, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'current', ?, ?)",
-                (agent_id, req.name, req.artifact_type, req.path,
-                 req.description, req.format, req.tags,
-                 now_ms(), now_ms()),
+            target_id = dao.insert_artifact(
+                project=req.project,
+                scope=req.scope,
+                name=req.name,
+                artifact_type=req.artifact_type,
+                path=req.path,
+                description=req.description,
+                format=req.format,
+                tags=req.tags,
+                created_at=ts,
+                updated_at=ts,
+                conn=conn,
             )
-            target_id = cur.lastrowid
-        conn.commit()
-        row = conn.execute(f"{_BASE_SELECT} WHERE a.id=?", (target_id,)).fetchone()
-        info = _row_to_info(row)
-    finally:
-        conn.close()
+        row = dao.get_by_id(target_id, conn=conn)
+
+    info = _row_to_info(row)
 
     try:
-        from awm.services.embeddings import index_artifact
-        index_artifact(info.id)
+        _index_artifact(info.id)
     except Exception:
         pass
 
     return info
+
+
+# ---------------------------------------------------------------------------
+# Public API — delete
+# ---------------------------------------------------------------------------
 
 
 def delete_artifact(artifact_id: int | str) -> dict:
@@ -112,22 +222,20 @@ def delete_artifact(artifact_id: int | str) -> dict:
         aid = int(str(artifact_id).split("@", 1)[0])
     except ValueError as exc:
         raise ValueError(f"Artifact {artifact_id} not found") from exc
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT id, name, path FROM artifacts WHERE id=?", (aid,),
-        ).fetchone()
+
+    dao = ArtifactsDAO()
+    with dao.transaction() as conn:
+        row = dao.delete_artifact(aid, conn=conn)
         if not row:
             raise ValueError(f"Artifact {artifact_id} not found")
-        conn.execute("DELETE FROM artifacts WHERE id=?", (aid,))
-        conn.execute(
-            "DELETE FROM embeddings WHERE source_type='artifact' AND source_id=?",
-            (str(aid),),
-        )
-        conn.commit()
-        return {"deleted": True, "id": aid, "name": row["name"], "path": row["path"]}
-    finally:
-        conn.close()
+        dao.delete_embedding_by_source_id(str(aid), conn=conn)
+
+    return {"deleted": True, "id": aid, "name": row["name"], "path": row["path"]}
+
+
+# ---------------------------------------------------------------------------
+# Public API — search
+# ---------------------------------------------------------------------------
 
 
 def search_artifacts(
@@ -138,31 +246,18 @@ def search_artifacts(
     limit: int = 50,
     offset: int = 0,
 ) -> ArtifactSearchResponse:
-    """Search/filter artifacts. When `query` is set, returns keyword (LIKE on
-    name/description/tags) hits first, then semantic top-up via the shared
-    embeddings helper."""
-    conn = get_connection()
-    try:
-        sql = f"{_BASE_SELECT} WHERE a.status='current'"
-        params: list = []
-        if project:
-            sql += " AND p.name = ?"
-            params.append(project)
-        if scope:
-            sql += " AND ag.scope = ?"
-            params.append(scope)
-        if artifact_type:
-            sql += " AND a.artifact_type = ?"
-            params.append(artifact_type)
-        if query:
-            sql += " AND (a.name LIKE ? OR a.description LIKE ? OR a.tags LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like, like])
-        sql += " ORDER BY p.name, a.artifact_type, a.name LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        rows = conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
+    """Search/filter artifacts. When ``query`` is set, returns keyword (LIKE on
+    name/description/tags) hits first, then semantic top-up via this service's
+    own embeddings table."""
+    dao = ArtifactsDAO()
+    rows = dao.search(
+        project=project,
+        scope=scope,
+        artifact_type=artifact_type,
+        query=query,
+        limit=limit,
+        offset=offset,
+    )
     items = [_row_to_info(r) for r in rows]
 
     if not query:
@@ -170,44 +265,46 @@ def search_artifacts(
 
     keyword_keys = {str(i.id) for i in items}
 
-    def _materialize(source_id: str):
+    def _materialize(source_id: str) -> ArtifactInfo | None:
         try:
             aid = int(source_id)
         except ValueError:
             return None
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                f"{_BASE_SELECT} WHERE a.id = ? AND a.status = 'current'",
-                (aid,),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
+        row = dao.get_by_id(aid)
+        if row is None or row.get("status") != "current":
             return None
-        if project and row["project_name"] != project:
+        if project and row["project"] != project:
             return None
-        if scope and row["scope_name"] != scope:
+        if scope and row["scope"] != scope:
             return None
         if artifact_type and row["artifact_type"] != artifact_type:
             return None
         return _row_to_info(row)
 
     try:
-        from awm.services.embeddings import hybrid_augment
-        merged = hybrid_augment(
-            query, source_type="artifact",
-            keyword_hits=items, keyword_keys=keyword_keys,
-            materialize=_materialize,
-        )
+        from awm.persistence.embeddings import hybrid_augment
+        from awm.persistence.databases import get_connection
+        conn = get_connection("artifacts")
+        try:
+            merged = hybrid_augment(
+                conn, query,
+                source_type="artifact",
+                keyword_hits=items,
+                keyword_keys=keyword_keys,
+                materialize=_materialize,
+            )
+        finally:
+            conn.close()
     except Exception:
         merged = items
+
     return ArtifactSearchResponse(artifacts=merged, total=len(merged))
 
 
 # ---------------------------------------------------------------------------
-# Content read — v37: local-only, no federation routing
+# Content read — local-only, no federation
 # ---------------------------------------------------------------------------
+
 
 class ArtifactNotFound(Exception):
     pass
@@ -229,53 +326,34 @@ def get_content(artifact_ref: int | str) -> bytes:
         aid = int(str(artifact_ref).split("@", 1)[0])
     except ValueError as exc:
         raise ArtifactNotFound(f"artifact {artifact_ref} not found") from exc
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT path FROM artifacts WHERE id=?", (aid,),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
+    dao = ArtifactsDAO()
+    path = dao.get_path_by_id(aid)
+    if path is None:
         raise ArtifactNotFound(f"artifact {artifact_ref} not found")
-    return _read_local_content(row["path"])
+    return _read_local_content(path)
 
 
 # ---------------------------------------------------------------------------
-# Sync — flip artifact status based on on-disk presence and prune embeddings
+# Sync — flip artifact status based on on-disk presence, prune embeddings
 # ---------------------------------------------------------------------------
 
 _SYNC_FP_KEY = "artifacts_sync_fp"
 
 
-def _fingerprint_artifacts_db() -> str:
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM artifacts"
-        ).fetchone()
-    finally:
-        conn.close()
-    return f"{row[0]}|{row[1]}"
-
-
 def sync_artifacts(force: bool = False) -> dict:
-    from awm.services.config_service import get_config, set_config
+    from awm.persistence.config_service import get_config, set_config
 
-    fp = _fingerprint_artifacts_db()
+    dao = ArtifactsDAO()
+    fp = dao.get_fingerprint()
     if not force and get_config(_SYNC_FP_KEY) == fp:
         return {"skipped": True, "reason": "fingerprint_unchanged"}
 
     marked_stale: list[int] = []
     restored: list[int] = []
     restored_ids: list[int] = []
-    stale_embeddings: list[str] = []
 
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT id, path, status FROM artifacts"
-        ).fetchall()
+    with dao.transaction() as conn:
+        rows = dao.get_all_for_sync(conn=conn)
 
         for r in rows:
             aid, rel_path, status = r["id"], r["path"], r["status"]
@@ -286,53 +364,30 @@ def sync_artifacts(force: bool = False) -> dict:
                 restored.append(aid)
                 restored_ids.append(aid)
 
+        ts = now_ms()
         if marked_stale:
-            conn.executemany(
-                "UPDATE artifacts SET status='stale', updated_at=? WHERE id=?",
-                [(now_ms(), aid) for aid in marked_stale],
-            )
+            dao.mark_stale(marked_stale, ts, conn=conn)
         if restored:
-            conn.executemany(
-                "UPDATE artifacts SET status='current', updated_at=? WHERE id=?",
-                [(now_ms(), aid) for aid in restored],
-            )
+            dao.restore_current(restored, ts, conn=conn)
 
-        current_ids = {
-            str(r[0]) for r in conn.execute(
-                "SELECT id FROM artifacts WHERE status='current'"
-            ).fetchall()
-        }
-        embedding_ids = [
-            r[0] for r in conn.execute(
-                "SELECT source_id FROM embeddings WHERE source_type='artifact'"
-            ).fetchall()
-        ]
+        # Prune embeddings for artifacts that are no longer current
+        current_ids = dao.get_current_ids(conn=conn)
+        embedding_ids = dao.get_embedding_source_ids(conn=conn)
         stale_embeddings = [sid for sid in embedding_ids if sid not in current_ids]
         if stale_embeddings:
-            conn.executemany(
-                "DELETE FROM embeddings WHERE source_type='artifact' AND source_id=?",
-                [(sid,) for sid in stale_embeddings],
-            )
-
-        conn.commit()
-    finally:
-        conn.close()
+            dao.delete_stale_embeddings(stale_embeddings, conn=conn)
 
     if restored_ids:
-        try:
-            from awm.services.embeddings import index_artifact
-            for aid in restored_ids:
-                try:
-                    index_artifact(aid)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        for aid in restored_ids:
+            try:
+                _index_artifact(aid)
+            except Exception:
+                pass
 
-    set_config(_SYNC_FP_KEY, _fingerprint_artifacts_db())
+    set_config(_SYNC_FP_KEY, dao.get_fingerprint())
     return {
         "skipped": False,
         "marked_stale": len(marked_stale),
         "restored": len(restored),
-        "embeddings_pruned": len(stale_embeddings),
+        "embeddings_pruned": len(stale_embeddings) if stale_embeddings else 0,
     }

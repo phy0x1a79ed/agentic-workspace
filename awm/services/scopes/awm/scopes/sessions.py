@@ -1,4 +1,12 @@
-"""Session log CRUD: DB-only storage (v37)."""
+"""Session log CRUD (v1 modular).
+
+v1 schema change: ``session_logs`` no longer carries ``agent_id`` (an
+agents-table FK); instead it carries ``project`` and ``scope`` inline.
+All SQL goes through ScopesDAO.
+
+Embeddings indexing is reimplemented against the scopes service's own
+``embeddings`` table via ``awm.persistence.embeddings``.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +14,9 @@ import json
 import subprocess
 
 from awm.config import SKILLS_DIR
-from awm.db import get_connection
-from awm.models import (
+from awm.scopes.dao import ScopesDAO
+from awm.scopes.identity import ms_to_iso, now_ms
+from awm.scopes.models import (
     SessionLogCreateRequest,
     SessionLogEntry,
     SessionLogListResponse,
@@ -15,8 +24,6 @@ from awm.models import (
     SessionLogPreview,
     SessionSearchResponse,
 )
-from awm.services import identity
-from awm.services.identity import iso_to_ms, ms_to_iso, now_ms
 
 _SUMMARY_PREVIEW_CHARS = 240
 
@@ -36,15 +43,16 @@ def _get_skills_git_hash() -> str | None:
 
 
 def _row_to_entry(row) -> SessionLogEntry:
+    """Map a session_logs row (with inline project/scope) to SessionLogEntry."""
     return SessionLogEntry(
         id=row["id"],
-        project=row["project_name"],
-        scope=row["scope_name"],
+        project=row["project"],
+        scope=row["scope"],
         file_path=row["file_path"] or "",
         git_commit=row["git_commit"],
         logged_at=ms_to_iso(row["created_at"]) or "",
         title=row["title"],
-        agent_id=row["agent_id"],
+        agent_id=f"{row['project']}/{row['scope']}",  # synthetic for API compat
         skill_path=row["skill_path"],
         outcome=row["outcome"],
         deviations=row["deviations"],
@@ -53,14 +61,6 @@ def _row_to_entry(row) -> SessionLogEntry:
         resolved_at=ms_to_iso(row["resolved_at"]),
         resolution=row["resolution"],
     )
-
-
-_BASE_SELECT = (
-    "SELECT s.*, p.name AS project_name, a.scope AS scope_name "
-    "FROM session_logs s "
-    "JOIN agents a ON a.id = s.agent_id "
-    "JOIN projects p ON p.id = a.project_id"
-)
 
 
 def _format_entry(req: SessionLogCreateRequest, logged_at_iso: str) -> str:
@@ -85,42 +85,49 @@ def _format_entry(req: SessionLogCreateRequest, logged_at_iso: str) -> str:
         "",
         req.summary,
     ])
-
     if req.decisions:
         lines.extend(["", "## Decisions Made", ""])
         for d in req.decisions:
             lines.append(f"- {d}")
-
     if req.issues:
         lines.extend(["", "## Gotchas / Issues", ""])
         for i in req.issues:
             lines.append(f"- {i}")
-
     if req.next_steps:
         lines.extend(["", "## Next Steps", ""])
         for ns in req.next_steps:
             lines.append(f"- [ ] {ns}")
-
     if req.deviations:
         lines.extend(["", "## Deviations", "", req.deviations])
-
     if req.suggestions:
         lines.extend(["", "## Suggestions", "", req.suggestions])
-
     lines.extend(["", "---", ""])
     return "\n".join(lines)
 
 
-def _ensure_agent_for_log(project: str, scope: str, *, conn) -> str:
-    """Resolve (project, scope) to an agent id, creating allocated rows
-    (and the project) on demand so a fresh session_log doesn't blow up
-    on an unseeded scope."""
-    pid = identity.project_id_for_name(project, conn=conn)
-    if pid is None:
-        from awm.config import PROJECTS_DIR
-        bare = PROJECTS_DIR / project / ".bare"
-        identity.ensure_project(project, repo_path=str(bare), conn=conn)
-    return identity.ensure_agent(project, scope, conn=conn)
+def _index_session(session_id: int) -> None:
+    """Upsert a session embedding in the scopes DB. Silently no-ops on failure."""
+    try:
+        from awm.persistence.embeddings import upsert_embedding
+        from awm.persistence.databases import get_connection
+        dao = ScopesDAO()
+        row = dao.query_one(
+            "SELECT id, project, scope, summary, title FROM session_logs WHERE id=?",
+            (session_id,),
+        )
+        if row is None:
+            return
+        text = " ".join(filter(None, [
+            row["title"], row["summary"],
+            f"{row['project']}/{row['scope']}",
+        ]))
+        conn = get_connection("scopes")
+        try:
+            upsert_embedding(conn, "session", str(session_id), text[:500])
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
@@ -141,79 +148,71 @@ def log_session(req: SessionLogCreateRequest) -> SessionLogEntry:
             "next_steps": req.next_steps,
         })
 
-    conn = get_connection()
-    try:
-        agent_id = _ensure_agent_for_log(req.project, req.scope, conn=conn)
-        cur = conn.execute(
+    dao = ScopesDAO()
+    with dao.transaction() as conn:
+        dao2 = ScopesDAO(conn=conn)
+        dao2.execute(
             "INSERT INTO session_logs "
-            "(agent_id, created_at, file_path, git_commit, summary, "
+            "(project, scope, created_at, file_path, git_commit, summary, "
             " metadata, content, skill_path, outcome, deviations, "
             " suggestions, skill_version, title) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (agent_id, created_at_ms, "", None, req.summary,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (req.project, req.scope, created_at_ms, "", None, req.summary,
              metadata, content, req.skill_path, req.outcome,
              req.deviations, req.suggestions, skill_version, req.title),
         )
-        sid = cur.lastrowid
-        conn.commit()
-        row = conn.execute(
-            f"{_BASE_SELECT} WHERE s.id=?", (sid,),
-        ).fetchone()
-        entry = _row_to_entry(row)
-    finally:
-        conn.close()
 
-    try:
-        from awm.services.embeddings import index_session
-        index_session(entry.id)
-    except Exception:
-        pass
+    row = dao.query_one(
+        "SELECT * FROM session_logs WHERE project=? AND scope=? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (req.project, req.scope),
+    )
+    entry = _row_to_entry(row)
+
+    _index_session(entry.id)
 
     return entry
 
 
 def get_session(session_id: int | str) -> SessionLogContentResponse:
-    """Look up a session by its INTEGER id. Cross-peer ``42@peer`` ids
-    are no longer routable post-v37 (session_logs aren't replicated)."""
+    """Look up a session by its integer id."""
     try:
         sid = int(str(session_id).split("@", 1)[0])
     except ValueError as exc:
         raise FileNotFoundError(f"Session log {session_id} not found") from exc
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            f"{_BASE_SELECT} WHERE s.id=?", (sid,),
-        ).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"Session log {session_id} not found")
-        entry = _row_to_entry(row)
-        content = row["content"] or ""
-        if not content:
-            meta: dict = {}
-            if row["metadata"]:
-                try:
-                    meta = json.loads(row["metadata"])
-                except json.JSONDecodeError:
-                    pass
-            parts = [row["summary"]]
-            if row["outcome"]:
-                parts.append(f"\nOutcome: {row['outcome']}")
-            if meta.get("decisions"):
-                parts.append("\nDecisions: " + ", ".join(meta["decisions"]))
-            if meta.get("issues"):
-                parts.append("\nIssues: " + ", ".join(meta["issues"]))
-            if meta.get("next_steps"):
-                parts.append("\nNext steps: " + ", ".join(meta["next_steps"]))
-            if row["deviations"]:
-                parts.append(f"\nDeviations: {row['deviations']}")
-            if row["suggestions"]:
-                parts.append(f"\nSuggestions: {row['suggestions']}")
-            content = "\n".join(parts)
-    finally:
-        conn.close()
+    dao = ScopesDAO()
+    row = dao.query_one("SELECT * FROM session_logs WHERE id=?", (sid,))
+    if row is None:
+        raise FileNotFoundError(f"Session log {session_id} not found")
+    entry = _row_to_entry(row)
+    content = row["content"] or ""
+    if not content:
+        meta: dict = {}
+        if row["metadata"]:
+            try:
+                meta = json.loads(row["metadata"])
+            except json.JSONDecodeError:
+                pass
+        parts = [row["summary"]]
+        if row["outcome"]:
+            parts.append(f"\nOutcome: {row['outcome']}")
+        if meta.get("decisions"):
+            parts.append("\nDecisions: " + ", ".join(meta["decisions"]))
+        if meta.get("issues"):
+            parts.append("\nIssues: " + ", ".join(meta["issues"]))
+        if meta.get("next_steps"):
+            parts.append("\nNext steps: " + ", ".join(meta["next_steps"]))
+        if row["deviations"]:
+            parts.append(f"\nDeviations: {row['deviations']}")
+        if row["suggestions"]:
+            parts.append(f"\nSuggestions: {row['suggestions']}")
+        content = "\n".join(parts)
 
     if entry.resolved_at:
-        content += f"\n## Resolution\n\n**Resolved:** {entry.resolved_at[:10]}\n\n{entry.resolution}\n"
+        content += (
+            f"\n## Resolution\n\n**Resolved:** {entry.resolved_at[:10]}\n\n"
+            f"{entry.resolution}\n"
+        )
 
     return SessionLogContentResponse(entry=entry, content=content)
 
@@ -226,19 +225,19 @@ def _display_title(row) -> str:
 
 
 def _row_to_preview(row) -> SessionLogPreview:
-    raw_len = row["summary_len"] or 0
-    truncated = raw_len > _SUMMARY_PREVIEW_CHARS
-    summary = row["summary_preview"] or ""
+    raw_summary = row.get("summary") or ""
+    truncated = len(raw_summary) > _SUMMARY_PREVIEW_CHARS
+    summary = raw_summary[:_SUMMARY_PREVIEW_CHARS]
     if truncated:
         summary = summary + "…"
     return SessionLogPreview(
         id=row["id"],
-        project=row["project_name"],
-        scope=row["scope_name"],
+        project=row["project"],
+        scope=row["scope"],
         logged_at=ms_to_iso(row["created_at"]) or "",
         summary=summary,
         title=row["title"],
-        agent_id=row["agent_id"],
+        agent_id=f"{row['project']}/{row['scope']}",
         skill_path=row["skill_path"],
         outcome=row["outcome"],
         resolved_at=ms_to_iso(row["resolved_at"]),
@@ -251,22 +250,17 @@ def resolve_session(session_id: int | str, resolution: str) -> SessionLogEntry:
         sid = int(str(session_id).split("@", 1)[0])
     except ValueError as exc:
         raise FileNotFoundError(f"Session log {session_id} not found") from exc
-    conn = get_connection()
-    try:
-        existing = conn.execute(
-            "SELECT id FROM session_logs WHERE id=?", (sid,),
-        ).fetchone()
-        if existing is None:
-            raise FileNotFoundError(f"Session log {session_id} not found")
-        conn.execute(
+    dao = ScopesDAO()
+    existing = dao.query_one("SELECT id FROM session_logs WHERE id=?", (sid,))
+    if existing is None:
+        raise FileNotFoundError(f"Session log {session_id} not found")
+    with dao.transaction() as conn:
+        ScopesDAO(conn=conn).execute(
             "UPDATE session_logs SET resolved_at=?, resolution=? WHERE id=?",
             (now_ms(), resolution, sid),
         )
-        conn.commit()
-        row = conn.execute(f"{_BASE_SELECT} WHERE s.id=?", (sid,)).fetchone()
-        return _row_to_entry(row)
-    finally:
-        conn.close()
+    row = dao.query_one("SELECT * FROM session_logs WHERE id=?", (sid,))
+    return _row_to_entry(row)
 
 
 def search_sessions(
@@ -278,45 +272,31 @@ def search_sessions(
     limit: int = 50,
     offset: int = 0,
 ) -> SessionSearchResponse:
-    """Search session logs, returning previews (no content). Defaults to
-    status='open' (unresolved); pass status='all' for the full history."""
-    conn = get_connection()
-    try:
-        sql = (
-            "SELECT s.id, s.created_at, s.title, s.skill_path, s.outcome, "
-            "       s.resolved_at, s.agent_id, "
-            "       SUBSTR(s.summary, 1, ?) AS summary_preview, "
-            "       LENGTH(s.summary) AS summary_len, "
-            "       p.name AS project_name, a.scope AS scope_name "
-            "FROM session_logs s "
-            "JOIN agents a ON a.id = s.agent_id "
-            "JOIN projects p ON p.id = a.project_id "
-            "WHERE 1=1"
-        )
-        params: list = [_SUMMARY_PREVIEW_CHARS]
-        if project:
-            sql += " AND p.name = ?"
-            params.append(project)
-        if scope:
-            sql += " AND a.scope = ?"
-            params.append(scope)
-        if skill_path:
-            sql += " AND s.skill_path = ?"
-            params.append(skill_path)
-        if query:
-            sql += " AND (s.title LIKE ? OR s.summary LIKE ? OR s.content LIKE ?)"
-            like = f"%{query}%"
-            params.extend([like, like, like])
-        if status == "open":
-            sql += " AND s.resolved_at IS NULL"
-        elif status == "resolved":
-            sql += " AND s.resolved_at IS NOT NULL"
-        # status == "all" → no filter
-        sql += " ORDER BY s.created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        rows = conn.execute(sql, params).fetchall()
-    finally:
-        conn.close()
+    """Search session logs, returning previews. Defaults to status='open'."""
+    dao = ScopesDAO()
+    sql = "SELECT * FROM session_logs WHERE 1=1"
+    params: list = []
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    if scope:
+        sql += " AND scope = ?"
+        params.append(scope)
+    if skill_path:
+        sql += " AND skill_path = ?"
+        params.append(skill_path)
+    if query:
+        sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    if status == "open":
+        sql += " AND resolved_at IS NULL"
+    elif status == "resolved":
+        sql += " AND resolved_at IS NOT NULL"
+    # status == "all" → no filter
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = dao.query_all(sql, params)
     entries = [_row_to_preview(r) for r in rows]
 
     if not query:
@@ -329,46 +309,34 @@ def search_sessions(
             sid = int(source_id)
         except ValueError:
             return None
-        conn = get_connection()
-        try:
-            row = conn.execute(
-                "SELECT s.id, s.created_at, s.title, s.skill_path, s.outcome, "
-                "       s.resolved_at, s.agent_id, "
-                "       SUBSTR(s.summary, 1, ?) AS summary_preview, "
-                "       LENGTH(s.summary) AS summary_len, "
-                "       p.name AS project_name, a.scope AS scope_name "
-                "FROM session_logs s "
-                "JOIN agents a ON a.id = s.agent_id "
-                "JOIN projects p ON p.id = a.project_id "
-                "WHERE s.id = ?",
-                (_SUMMARY_PREVIEW_CHARS, sid),
-            ).fetchone()
-        finally:
-            conn.close()
-        if row is None:
+        d = ScopesDAO()
+        r = d.query_one("SELECT * FROM session_logs WHERE id=?", (sid,))
+        if r is None:
             return None
-        if status == "open" and row["resolved_at"]:
+        if status == "open" and r["resolved_at"]:
             return None
-        if status == "resolved" and not row["resolved_at"]:
+        if status == "resolved" and not r["resolved_at"]:
             return None
-        if project and row["project_name"] != project:
+        if project and r["project"] != project:
             return None
-        if scope and row["scope_name"] != scope:
+        if scope and r["scope"] != scope:
             return None
-        if skill_path and row["skill_path"] != skill_path:
+        if skill_path and r["skill_path"] != skill_path:
             return None
-        return _row_to_preview(row)
+        return _row_to_preview(r)
 
     try:
-        from awm.services.embeddings import hybrid_augment
-        merged = hybrid_augment(
-            query, source_type="session",
-            keyword_hits=entries, keyword_keys=keyword_keys,
-            materialize=_materialize,
-        )
+        from awm.persistence.embeddings import hybrid_augment
+        from awm.persistence.databases import get_connection
+        conn = get_connection("scopes")
+        try:
+            merged = hybrid_augment(
+                conn, query, source_type="session",
+                keyword_hits=entries, keyword_keys=keyword_keys,
+                materialize=_materialize,
+            )
+        finally:
+            conn.close()
     except Exception:
         merged = entries
     return SessionSearchResponse(entries=merged, total=len(merged))
-
-
-

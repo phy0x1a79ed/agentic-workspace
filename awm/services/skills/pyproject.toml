@@ -10,6 +10,7 @@ description = "AWM skills service: skill protocol catalog and search."
 dependencies = [
     "awm-config",
     "awm-persistence",
+    "awm-gatewayclient",
     "pyyaml",
 ]
 

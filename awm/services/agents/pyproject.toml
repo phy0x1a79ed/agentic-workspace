@@ -10,10 +10,18 @@ description = "AWM agents service: agent runtime spawn/IO/lifecycle/resume and o
 dependencies = [
     "awm-config",
     "awm-persistence",
+    "awm-gatewayclient",
     "httpx",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
 ]
 
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/agents/.
 [tool.setuptools.packages.find]
-include = ["awm.agents*"]
+include = ["awm.agents*", "awm.tests*"]
 namespaces = true
