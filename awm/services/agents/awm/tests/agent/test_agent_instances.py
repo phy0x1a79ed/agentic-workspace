@@ -223,72 +223,81 @@ class TestOpencodeArgv:
         assert argv[0] == "/usr/local/bin/opencode"
 
 
-class _FakeStream:
-    """Stand-in for the ``.stdin``/``.stdout`` attrs of a real Process.
-    The reader/pump loops are patched to no-ops, so these never get used —
-    but ``AgentInstance.__init__`` reads ``proc.stdin`` etc. for assignment."""
+# ---------------------------------------------------------------------------
+# create_session now drives an agentcore AgentSession — _build_core_config
+# maps the spawn args onto an AgentConfig and open_agent() selects the backend.
+# The subprocess + stream parsing live in agentcore (tested in that dist); here
+# we pin that create_session builds the right AgentConfig and wires it up.
+# ---------------------------------------------------------------------------
+
+
+class _FakeCoreSession:
+    """Stand-in for an agentcore AgentSession.
+
+    Records sends, exposes a no-op proc, and yields no events (its subscribe
+    stream ends immediately so _reader_loop returns). The reader/waiter loops
+    run for real against it — verifying the wiring without a subprocess."""
+
     def __init__(self):
-        self._closing = False
-    def is_closing(self): return self._closing
-    def write(self, _data): pass
-    async def drain(self): pass
+        self.config = None
+        self.sent: list[str] = []
+        self.started = False
+        self.closed = False
+        self._proc = _FakeProc()
+
+    def subscribe(self):
+        async def _gen():
+            if False:
+                yield  # pragma: no cover — empty async iterator
+        return _gen()
+
+    async def start(self):
+        self.started = True
+
+    async def send(self, text):
+        self.sent.append(text)
+
+    async def close(self):
+        self.closed = True
 
 
 class _FakeProc:
     def __init__(self, pid=4321):
         self.pid = pid
-        self.stdin = _FakeStream()
-        self.stdout = _FakeStream()
         self.returncode = None
-    async def wait(self): return 0
+    async def wait(self):
+        # Never return so _waiter_loop doesn't tear the session down mid-test.
+        import asyncio as _a
+        await _a.Event().wait()
 
 
 @pytest.fixture()
-def stub_subprocess(monkeypatch):
-    """Capture asyncio.create_subprocess_exec args and return a fake proc.
+def stub_agentcore(monkeypatch):
+    """Patch open_agent to capture the AgentConfig + return a fake session.
 
-    Also stubs out the three lifecycle pumps (reader/waiter/input) so they
-    don't block on the fake streams. Resets the registry between tests so
-    the per-scope uniqueness check doesn't leak across cases.
+    Resets the registry between tests so the per-scope uniqueness check doesn't
+    leak across cases. Returns the dict holding the last-built config + session.
     """
-    calls = {}
+    captured: dict = {}
 
-    async def fake_exec(*argv, **kwargs):
-        calls["argv"] = list(argv)
-        calls["env"] = kwargs.get("env")
-        calls["cwd"] = kwargs.get("cwd")
-        return _FakeProc()
+    def fake_open_agent(config):
+        sess = _FakeCoreSession()
+        sess.config = config
+        captured["config"] = config
+        captured["session"] = sess
+        return sess
 
-    async def _noop(_session): return None
-
-    async def _stdin_ready_pump(session):
-        # The real _input_pump verifies proc.stdin is usable, then sets
-        # stdin_ready so create_session can return. Mirror that single
-        # behavior so the unconditional `stdin_ready.wait()` at the end
-        # of create_session doesn't time out (and try to kill the fake).
-        session.stdin_ready.set()
-
-    monkeypatch.setattr(ai_mod.asyncio, "create_subprocess_exec", fake_exec)
-    monkeypatch.setattr(ai_mod, "_reader_loop", _noop)
-    monkeypatch.setattr(ai_mod, "_waiter_loop", _noop)
-    monkeypatch.setattr(ai_mod, "_input_pump", _stdin_ready_pump)
-    monkeypatch.setattr(ai_mod, "resolve_bin",
-                        lambda name: f"/fake/bin/{name}")
-    # PROJECTS_DIR is a name-imported binding on agent_instances; if the
-    # awm_workspace fixture already patched it, don't re-patch here (the
-    # awm_workspace fixture's tmp_path version must win).
-    pass
-    # Clear the per-scope guard so each test starts clean.
+    monkeypatch.setattr(ai_mod, "open_agent", fake_open_agent)
     ai_mod._registry_by_id.clear()
     ai_mod._by_scope.clear()
-    yield calls
+    yield captured
     ai_mod._registry_by_id.clear()
     ai_mod._by_scope.clear()
 
 
 class TestCreateSessionDispatch:
-    """``create_session`` branches on ``agent_cli`` to choose argv shape and
-    env. These tests pin that dispatch contract."""
+    """``create_session`` builds an :class:`AgentConfig` and drives an agentcore
+    session. These tests pin that config-mapping contract."""
 
     @pytest.mark.asyncio
     async def test_rejects_unknown_agent_cli(self, awm_workspace):
@@ -296,76 +305,94 @@ class TestCreateSessionDispatch:
             await create_session(project="p", scope="s", agent_cli="codex")
 
     @pytest.mark.asyncio
-    async def test_opencode_branch_argv_and_env(self, awm_workspace,
-                                                  stub_subprocess):
-        # Scope workspace must exist for create_session to proceed.
-        ws = awm_workspace["projects_dir"] / "p" / "s"
-        ws.mkdir(parents=True)
-        # OPENCODE_CONFIG gets injected only when the exporter actually
-        # wrote the file — simulate that.
-        cfg = awm_workspace["awm_dir"] / "mcp-opencode.json"
-        cfg.write_text('{"mcp": {}}')
-
-        await create_session(project="p", scope="s", agent_cli="opencode")
-
-        argv = stub_subprocess["argv"]
-        assert argv[0] == "/fake/bin/opencode"
-        assert "run" in argv
-        assert "--dir" in argv
-        assert argv[argv.index("--dir") + 1] == str(ws)
-        env = stub_subprocess["env"]
-        assert env is not None
-        assert env["OPENCODE_CONFIG"] == str(cfg)
-        # cwd matches workspace dir.
-        assert stub_subprocess["cwd"] == str(ws)
-
-    @pytest.mark.asyncio
-    async def test_opencode_branch_no_env_when_config_missing(
-        self, awm_workspace, stub_subprocess,
+    async def test_opencode_config_harness_and_workdir(
+        self, awm_workspace, stub_agentcore,
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        # No mcp-opencode.json in AWM_DIR — env stays None (inherit parent).
+
         await create_session(project="p", scope="s", agent_cli="opencode")
-        assert stub_subprocess["env"] is None
-        assert stub_subprocess["argv"][0] == "/fake/bin/opencode"
+
+        cfg = stub_agentcore["config"]
+        assert cfg.harness == "opencode"
+        assert cfg.mode == "live"
+        assert cfg.workdir == str(ws)
 
     @pytest.mark.asyncio
-    async def test_claude_branch_does_not_set_opencode_env(
-        self, awm_workspace, stub_subprocess,
+    async def test_bypass_maps_to_full_permissions(
+        self, awm_workspace, stub_agentcore,
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        # Even if an opencode config exists, the claude branch must not
-        # leak OPENCODE_CONFIG into its env.
-        (awm_workspace["awm_dir"] / "mcp-opencode.json").write_text("{}")
+
+        await create_session(project="p", scope="s", agent_cli="claude",
+                             permission_mode="bypassPermissions")
+
+        assert stub_agentcore["config"].permissions == "full"
+
+    @pytest.mark.asyncio
+    async def test_default_mode_maps_to_default_permissions(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+
+        await create_session(project="p", scope="s", agent_cli="claude",
+                             permission_mode="default")
+
+        assert stub_agentcore["config"].permissions == "default"
+
+    @pytest.mark.asyncio
+    async def test_claude_threads_spawn_mcp_config(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+        spawn_mcp = awm_workspace["awm_dir"] / "spawn-mcp.json"
+        spawn_mcp.write_text('{"mcpServers": {}}')
 
         await create_session(project="p", scope="s", agent_cli="claude")
 
-        argv = stub_subprocess["argv"]
-        assert argv[0] == "/fake/bin/claude"
-        # Claude harness inherits parent env (env=None).
-        assert stub_subprocess["env"] is None
+        assert stub_agentcore["config"].mcp_config == str(spawn_mcp)
 
     @pytest.mark.asyncio
-    async def test_opencode_prefers_per_scope_config(
-        self, awm_workspace, stub_subprocess,
+    async def test_effort_rides_params(
+        self, awm_workspace, stub_agentcore,
     ):
-        # Per-scope `<worktree>/.awm/mcp-opencode.json` wins over the
-        # workspace-level fallback — that's how `instructions` for the
-        # current scope's `.awm/context.md` reach opencode.
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        scope_awm = ws / ".awm"
-        scope_awm.mkdir()
-        scope_cfg = scope_awm / "mcp-opencode.json"
-        scope_cfg.write_text('{"mcp": {}, "instructions": [".awm/context.md"]}')
-        # Workspace fallback also present — should NOT be used.
-        workspace_cfg = awm_workspace["awm_dir"] / "mcp-opencode.json"
-        workspace_cfg.write_text('{"mcp": {"awm": {"type": "local"}}}')
 
-        await create_session(project="p", scope="s", agent_cli="opencode")
+        await create_session(project="p", scope="s", agent_cli="claude",
+                             effort="high")
 
-        env = stub_subprocess["env"]
-        assert env is not None
-        assert env["OPENCODE_CONFIG"] == str(scope_cfg)
+        assert stub_agentcore["config"].params.get("effort") == "high"
+
+
+class TestBuildCoreConfig:
+    """``_build_core_config`` — the pure spawn-args → AgentConfig mapping."""
+
+    def test_full_open_and_model(self, awm_workspace):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        cfg = ai_mod._build_core_config(
+            agent_cli="claude", permission_mode="bypassPermissions",
+            model="opus", effort=None, resume_session_id="sid-1",
+            workspace_dir=ws, awm_dir=ws / ".awm",
+        )
+        assert cfg.harness == "claude"
+        assert cfg.permissions == "full"
+        assert cfg.model == "opus"
+        assert cfg.resume_id == "sid-1"
+        assert cfg.workdir == str(ws)
+
+    def test_opencode_no_claude_mcp(self, awm_workspace):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        # Even with a spawn-mcp.json present, opencode doesn't thread it
+        # (claude-only flag).
+        (awm_workspace["awm_dir"] / "spawn-mcp.json").write_text("{}")
+        cfg = ai_mod._build_core_config(
+            agent_cli="opencode", permission_mode="default",
+            model=None, effort=None, resume_session_id=None,
+            workspace_dir=ws, awm_dir=ws / ".awm",
+        )
+        assert cfg.mcp_config is None
+        assert cfg.permissions == "default"
