@@ -6,28 +6,32 @@
 # service, then the gateway itself (which provides the `awm` / `awm-mcp`
 # console scripts). This is also the de-facto "install everything" path; there
 # is no separate central orchestrator. Override the target env with AWM_ENV.
+#
+# Service installation is single-source: there is no hardcoded list of service
+# names here. Every dir under awm/services/ that ships its own install.sh is
+# discovered by glob and installed by running that script — each one owns its
+# own `.runtime-env` sidecar. Dirs without an install.sh (tts, ptt, network,
+# packages, hub) are correctly skipped.
 set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-ENV="${AWM_ENV:-awm}"
+export AWM_ENV="${AWM_ENV:-awm}"
+ENV="$AWM_ENV"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-# Component libraries (imported, not run on their own).
+# Component libraries (imported, not run on their own). The per-service
+# installs re-install these idempotently; installing them here keeps the
+# gateway self-sufficient if no services ship an install.sh.
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
 
-# Resolve the target env's absolute interpreter so each service's start.sh can
-# exec it directly. The hub supervisor respawns services under systemd's
-# minimal PATH (no `mamba`), so baking the interpreter here is what keeps
-# respawn (and reboot) working. Written as a gitignored `.runtime-env` sidecar.
-PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
-echo "+ baking AWM_PYTHON=$PYBIN into service .runtime-env sidecars"
-
-# Feature services the gateway loads.
-for svc in scopes agents artifacts skills discord; do
-    run "$WS/awm/services/$svc" --no-deps
-    printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
-        > "$WS/awm/services/$svc/.runtime-env"
+# Feature services the gateway loads. Each install.sh owns its own
+# `.runtime-env` sidecar. The glob may match nothing; guard so set -u/-e does
+# not choke on the literal unexpanded pattern.
+for s in "$WS"/awm/services/*/install.sh; do
+    [ -e "$s" ] || continue
+    echo "+ installing service: $s"
+    bash "$s"
 done
 
 # The gateway itself — third-party deps resolved here; awm-* already satisfied.

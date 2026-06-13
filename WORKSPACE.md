@@ -111,12 +111,12 @@ When you don't know the procedure for a verb (e.g. "create scope", "debrief", "r
 
 ## Scope Naming Convention
 
-New scopes use a prefix family to signal what kind of work they own. Names are flat (slashes are rejected — see `awm/services/_validation.py`), so the family is encoded as a hyphen-prefix.
+New scopes use a prefix family to signal what kind of work they own. Names are flat (slashes are rejected — see `awm/services/scopes/awm/scopes/_validation.py`), so the family is encoded as a hyphen-prefix.
 
 | Prefix | Family | What it owns |
 |--------|--------|-------------|
 | `comp-*` | component | Cross-cutting work on a single shared frontend component (a deeper rework than a normal PR). The component itself lives in `packages/components/<name>/` regardless of which scope is editing it. |
-| `svc-*`  | service   | Cross-cutting work on a single long-running backend service. The service itself lives in `packages/services/<name>/`. |
+| `svc-*`  | service   | Cross-cutting work on a single long-running backend service. The service itself lives in `awm/services/<name>/`. |
 | `feat-*` | feature   | Multi-package composition that wires components, services, and pages together (e.g. `feat-stt`, `feat-rooms`). |
 | `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners, the service hub itself. |
 
@@ -169,4 +169,4 @@ mamba run -n <project-env> python script.py
 mamba run -n <project-env> pip install <package>
 ```
 
-For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `./setup.sh`).
+For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `awm/gateway/setup.sh`).

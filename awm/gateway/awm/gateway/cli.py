@@ -28,6 +28,7 @@ app = typer.Typer(name="awm", help="Agentic Workspace Manager", no_args_is_help=
 hub_app = typer.Typer(help="Service hub: register + lease external services", no_args_is_help=True)
 packages_app = typer.Typer(help="Packages: generate manifests + sync packages/{services,pages}/ with the hub", no_args_is_help=True)
 dev_app = typer.Typer(help="Dev workflows: shadow packages into the running hub", no_args_is_help=True)
+services_app = typer.Typer(help="Feature services: list / start / stop / restart / enable / disable the folders the gateway runs", no_args_is_help=True)
 
 context_app = typer.Typer(help="Scope context: emit .awm/context.md for harness SessionStart hooks", no_args_is_help=True)
 
@@ -35,6 +36,7 @@ app.add_typer(context_app, name="context")
 app.add_typer(hub_app, name="hub")
 app.add_typer(packages_app, name="packages")
 app.add_typer(dev_app, name="dev")
+app.add_typer(services_app, name="services")
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +202,7 @@ def restart():
         if result.returncode != 0:
             typer.echo(f"systemctl restart failed: {result.stderr.strip() or result.stdout.strip()}", err=True)
             typer.echo("Hint: install the unit at ~/.config/systemd/user/awm.service first "
-                       "(see projects/awm/release/deploy/awm.service).", err=True)
+                       "(see awm/gateway/deploy/awm.service).", err=True)
             raise typer.Exit(result.returncode)
         typer.echo("awm core restarted (direct systemctl fallback). MCP clients reconnect on next tool call.")
 
@@ -417,6 +419,104 @@ def hub_deregister(
     _print_json(r)
 
 
+# ---------------------------------------------------------------------------
+# Services: list / start / stop / restart / enable / disable
+# ---------------------------------------------------------------------------
+#
+# A service is just a folder under awm/services/<name>/ with a run.sh. The
+# running gateway discovers, starts, and supervises it; these commands are a
+# thin control surface over its /hub/services/* endpoints (the gateway is
+# authoritative for discovery root + enable-state + journal).
+
+
+def _require_server() -> None:
+    if not _server_running():
+        typer.echo("gateway is not running (start it with `awm serve` or "
+                   "`awm dev start`)", err=True)
+        raise typer.Exit(1)
+
+
+def _services_action(name: str, action: str) -> dict:
+    _require_server()
+    r = _local_api("POST", f"/hub/services/{name}/{action}")
+    if r.status_code >= 400:
+        typer.echo(f"{action} {name} failed ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    return r.json()
+
+
+@services_app.command("list")
+def services_list():
+    """List discovered services with their enable + running state."""
+    if not _server_running():
+        # Best-effort offline view straight from local discovery.
+        from awm.gateway.hub import discovery
+        specs = discovery.discover_services()
+        if not specs:
+            typer.echo("no services discovered under awm/services/*")
+            return
+        for s in specs:
+            typer.echo(f"{s.name:14} enabled={s.enabled}  (gateway down)")
+        return
+    r = _local_api("GET", "/hub/services/discovered")
+    if r.status_code >= 400:
+        typer.echo(f"error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    rows = r.json().get("services", [])
+    if not rows:
+        typer.echo("no services discovered under awm/services/*")
+        return
+    typer.echo(f"{'NAME':14} {'ENABLED':8} {'RUNNING':8} STATUS")
+    for row in rows:
+        typer.echo(f"{row['name']:14} {str(row['enabled']):8} "
+                   f"{str(row['running']):8} {row['status']}")
+
+
+@services_app.command("start")
+def services_start(
+    name: Optional[str] = typer.Argument(
+        None, help="Service to start (omit when using --all)"),
+    all_: bool = typer.Option(False, "--all", help="Start every enabled service"),
+):
+    """Start a stopped service (idempotent — a running one is left alone)."""
+    _require_server()
+    if all_:
+        r = _local_api("GET", "/hub/services/discovered")
+        names = [s["name"] for s in r.json().get("services", []) if s["enabled"]]
+    elif name:
+        names = [name]
+    else:
+        typer.echo("give a service name or --all", err=True)
+        raise typer.Exit(1)
+    for n in names:
+        typer.echo(json.dumps(_services_action(n, "start")))
+
+
+@services_app.command("stop")
+def services_stop(name: str = typer.Argument(..., help="Service to stop")):
+    """Stop a running service (evict + kill + drop journal)."""
+    typer.echo(json.dumps(_services_action(name, "stop")))
+
+
+@services_app.command("restart")
+def services_restart(name: str = typer.Argument(..., help="Service to restart")):
+    """Stop then start a service."""
+    _services_action(name, "stop")
+    typer.echo(json.dumps(_services_action(name, "start")))
+
+
+@services_app.command("enable")
+def services_enable(name: str = typer.Argument(..., help="Service to enable")):
+    """Enable a service (persists across restart) and start it now."""
+    typer.echo(json.dumps(_services_action(name, "enable")))
+
+
+@services_app.command("disable")
+def services_disable(name: str = typer.Argument(..., help="Service to disable")):
+    """Disable a service (stays down across restart) and stop it now."""
+    typer.echo(json.dumps(_services_action(name, "disable")))
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -431,12 +531,12 @@ def hub_deregister(
 # `awm packages sync <repo_root>` — register every packages/services/<name>
 #   (kind="service") and packages/pages/<name> (kind="page") with the hub.
 #   Holds N concurrent leases until Ctrl-C. Services do not get a port;
-#   their start.sh is invoked with AWM_HUB_URL + AWM_HUB_TOKEN in env so
-#   they can call /hub/service/register themselves.
+#   their start.sh is invoked with AWM_HUB_URL in env (no auth) so they can
+#   call /hub/service/register themselves.
 #
-# `awm dev shadow services/tts pages/dashboard ...` — from a scope worktree,
-#   push the same-prefix packages as overlays onto the dev sandbox's hub;
-#   Ctrl-C pops them (no respawn — base traffic resumes).
+# `awm dev shadow <path>` — overlay one service (exec its run.sh with
+#   AWM_SERVICE_OVERLAY=1) or a built page onto the running hub; Ctrl-C pops
+#   the overlay (no respawn — base traffic resumes).
 
 
 async def _hold_one_lease(name: str, lease_path: str) -> None:
@@ -572,8 +672,8 @@ def packages_sync(
     """Discover and register every packages/services/<name> (kind=service)
     and packages/pages/<name> (kind=page) with the hub.
 
-    For each service: spawns ``start.sh`` with AWM_HUB_URL/AWM_HUB_TOKEN in
-    env; the service then registers itself + opens its control WS.
+    For each service: spawns ``start.sh`` with AWM_HUB_URL in env (no auth);
+    the service then registers itself + opens its control WS.
 
     For each page: POST /hub/register with the static spec at prefix
     ``/ui/<name>``; this command holds one lease per page until Ctrl-C.
@@ -658,118 +758,189 @@ def packages_list():
     _print_json(r)
 
 
+def _dev_run_sh() -> pathlib.Path:
+    """Locate this worktree's dev sandbox script: walk up from CWD to the
+    worktree root, then ``awm/gateway/dev/run.sh``."""
+    cur = pathlib.Path.cwd().resolve()
+    for parent in [cur, *cur.parents]:
+        cand = parent / "awm" / "gateway" / "dev" / "run.sh"
+        if cand.is_file():
+            return cand
+    typer.echo("no awm/gateway/dev/run.sh above the current directory "
+               "(run this from inside a worktree)", err=True)
+    raise typer.Exit(1)
+
+
+def _dev_exec(action: str) -> None:
+    rc = subprocess.run(["bash", str(_dev_run_sh()), action]).returncode
+    if rc != 0:
+        raise typer.Exit(rc)
+
+
+@dev_app.command("start")
+def dev_start():
+    """Start this worktree's dev sandbox (gateway + bootstrapped services)."""
+    _dev_exec("start")
+
+
+@dev_app.command("stop")
+def dev_stop():
+    """Stop this worktree's dev sandbox (services + gateway)."""
+    _dev_exec("stop")
+
+
+@dev_app.command("restart")
+def dev_restart():
+    """Restart this worktree's dev sandbox."""
+    _dev_exec("restart")
+
+
+@dev_app.command("seed")
+def dev_seed():
+    """(Re)seed the dev sandbox DB without restarting."""
+    _dev_exec("seed")
+
+
+@dev_app.command("status")
+def dev_status():
+    """Show what this worktree's dev sandbox is running."""
+    _dev_exec("status")
+
+
+def _shadow_dev_pythonpath(service_dir: pathlib.Path) -> str:
+    """Build a DEV_PYTHONPATH of the shadowed worktree's dist roots so the
+    overlay runs THAT worktree's code, not the installed tree. Walk up to the
+    worktree root (the dir with AGENTS.md), then collect every dist root that
+    has an inner ``awm/`` package — same shape the dev sandbox uses."""
+    root = None
+    for parent in [service_dir, *service_dir.parents]:
+        if (parent / "AGENTS.md").is_file():
+            root = parent
+            break
+    if root is None:
+        return ""
+    candidates = [root / "awm" / "gateway"]
+    for sub in ("service_components", "services"):
+        d = root / "awm" / sub
+        if d.is_dir():
+            candidates.extend(sorted(d.iterdir()))
+    return ":".join(str(c) for c in candidates if (c / "awm").is_dir())
+
+
 @dev_app.command("shadow")
 def dev_shadow(
-    targets: list[str] = typer.Argument(
+    target: str = typer.Argument(
         ...,
-        help="One or more package shadows of the form "
-             "'services/<name>' or 'pages/<name>'. Components are not "
-             "shadowable directly (they're build-time deps).",
+        help="Explicit path to a service folder (or its run.sh) to overlay — "
+             "e.g. awm/services/scopes or "
+             "projects/awm/web-ptt/awm/services/scopes. Or 'pages/<name>' to "
+             "overlay a built page from ./packages/pages/<name>/dist.",
+    ),
+    name: Optional[str] = typer.Option(
+        None, "--name",
+        help="Override the overlay name (defaults to the folder basename).",
     ),
 ):
-    """Push selected packages as shadow overlays onto the running hub.
+    """Overlay a service (or page) onto the running hub.
 
-    Resolves each target relative to the current scope worktree
-    (``./packages/<target>/``), then POSTs /hub/shadow/register once per
-    target and holds one lease each. Ctrl-C pops the overlays; base
-    traffic resumes instantly with no respawn or warmup.
+    Service: execs the folder's ``run.sh`` with ``AWM_SERVICE_OVERLAY=1`` so the
+    process registers as a shadow overlay on the existing ``/svc/<name>`` base —
+    one process, one identity, its own control WS as the lease. Ctrl-C pops the
+    overlay and the base resumes. No second registration, no token, no key file.
+
+    Page ('pages/<name>'): pushes ``./packages/pages/<name>/dist`` as a page
+    overlay on ``/ui/<name>`` and holds a lease until Ctrl-C (legacy path).
     """
-    import asyncio as _asyncio
+    # Legacy page-overlay path (relative pages/<name> from a scope worktree).
+    if target.startswith("pages/"):
+        _dev_shadow_page(target.split("/", 1)[1], name)
+        return
 
-    here = pathlib.Path.cwd()
-    leases: list[tuple[str, str]] = []
-    spawned_pids: list[int] = []
-
-    for target in targets:
-        target = target.strip().lstrip("/")
-        if "/" not in target:
-            typer.echo(f"skip {target!r}: expected 'services/<name>' or "
-                       f"'pages/<name>'", err=True)
-            continue
-        kind, name = target.split("/", 1)
-        pkg_dir = (here / "packages" / kind / name).expanduser().resolve()
-        if not pkg_dir.is_dir():
-            typer.echo(f"skip {target}: {pkg_dir} not a directory", err=True)
-            continue
-        shadow_name = f"shadow:{name}:{pkg_dir.parent.parent.parent.name}"
-        if kind == "components":
-            typer.echo(f"skip {target}: components are build-time deps; "
-                       f"rebuild + shadow the page that imports them instead",
-                       err=True)
-            continue
-        if kind == "pages":
-            dist = pkg_dir / "dist"
-            if not dist.is_dir():
-                typer.echo(f"skip {target}: no dist/ — build first", err=True)
-                continue
-            prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
-            payload = {
-                "name": shadow_name,
-                "prefix": prefix,
-                "page": {"dir": str(dist)},
-            }
-        elif kind == "services":
-            if not (pkg_dir / "start.sh").is_file():
-                typer.echo(f"skip {target}: no start.sh", err=True)
-                continue
-            try:
-                pid = _spawn_service_local(pkg_dir)
-                spawned_pids.append(pid)
-            except (OSError, ValueError) as exc:
-                typer.echo(f"skip {target}: spawn failed: {exc}", err=True)
-                continue
-            payload = {
-                "name": shadow_name,
-                "prefix": f"/svc/{name}",
-                "service": {
-                    "name": shadow_name,
-                    "prefix": f"/svc/{name}",
-                    "pid": pid,
-                    "start": ["bash", str(pkg_dir / "start.sh")],
-                    "cwd": str(pkg_dir),
-                },
-            }
-        else:
-            typer.echo(f"skip {target}: unknown kind {kind!r}", err=True)
-            continue
-
-        try:
-            r = httpx.post(
-                f"{BASE_URL}/hub/shadow/register",
-                json=payload,
-                timeout=15,
-            )
-        except httpx.HTTPError as exc:
-            typer.echo(f"skip {target}: hub unreachable: {exc}", err=True)
-            continue
-        if r.status_code >= 400:
-            typer.echo(f"skip {target}: shadow register failed "
-                       f"({r.status_code}): {r.text}", err=True)
-            continue
-        body = r.json()
-        leases.append((target, body["lease_ws_path"]))
-        typer.echo(f"shadow {target} → prefix={payload['prefix']} "
-                   f"id={body['service_id']}")
-
-    if not leases:
-        # Clean up any spawned services if no overlay actually landed.
-        for pid in spawned_pids:
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-        typer.echo("no shadows pushed", err=True)
+    # Service overlay: resolve the explicit path to a run.sh.
+    p = pathlib.Path(target).expanduser().resolve()
+    if p.is_dir():
+        service_dir, run_sh = p, p / "run.sh"
+    elif p.name == "run.sh" and p.is_file():
+        service_dir, run_sh = p.parent, p
+    else:
+        typer.echo(f"{target}: expected a service folder containing run.sh "
+                   f"(or the run.sh itself); got {p}", err=True)
+        raise typer.Exit(1)
+    if not run_sh.is_file():
+        typer.echo(f"{service_dir}: no run.sh — not a service folder", err=True)
         raise typer.Exit(1)
 
-    typer.echo(f"holding {len(leases)} shadow lease(s) (Ctrl-C to pop)…")
-    async def _hold_all():
-        await _asyncio.gather(*(
-            _hold_one_lease(name, path) for name, path in leases
-        ))
+    base_name = name or service_dir.name      # the service to shadow (its prefix)
+    overlay_name = f"{base_name}-shadow"       # unique registry identity
+    _require_server()
+    # A base must already exist for /svc/<base>, else the overlay register 409s
+    # and the adapter retries forever — fail fast with a clear message.
+    disc = _local_api("GET", "/hub/services/discovered")
+    running = ({s["name"] for s in disc.json().get("services", []) if s["running"]}
+               if disc.status_code < 400 else set())
+    if base_name not in running:
+        typer.echo(f"no running base for /svc/{base_name} — start it first "
+                   f"(e.g. `awm services start {base_name}`), then shadow.",
+                   err=True)
+        raise typer.Exit(1)
+
+    env = os.environ.copy()
+    env["AWM_HUB_URL"] = BASE_URL
+    env["AWM_SERVICE_NAME"] = overlay_name
+    env["AWM_SERVICE_PREFIX"] = f"/svc/{base_name}"
+    env["AWM_SERVICE_OVERLAY"] = "1"
+    env.setdefault("AWM_ENV", "awm")
+    pp = _shadow_dev_pythonpath(service_dir)
+    if pp:
+        env["DEV_PYTHONPATH"] = pp
+
+    typer.echo(f"shadow {overlay_name} → /svc/{base_name} (overlay); Ctrl-C to pop")
+    proc = subprocess.Popen(
+        ["bash", str(run_sh)], cwd=str(service_dir), env=env,
+        start_new_session=True,
+    )
     try:
-        _asyncio.run(_hold_all())
+        proc.wait()
     except KeyboardInterrupt:
-        typer.echo("all shadow leases closed — base traffic resumes")
+        typer.echo("popping overlay…")
+    finally:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    typer.echo("overlay popped — base traffic resumes")
+
+
+def _dev_shadow_page(name: str, override_name: Optional[str]) -> None:
+    """Legacy: overlay ./packages/pages/<name>/dist on /ui/<name> until Ctrl-C."""
+    import asyncio as _asyncio
+
+    pkg_dir = (pathlib.Path.cwd() / "packages" / "pages" / name).expanduser().resolve()
+    if not pkg_dir.is_dir():
+        typer.echo(f"pages/{name}: {pkg_dir} not a directory", err=True)
+        raise typer.Exit(1)
+    dist = pkg_dir / "dist"
+    if not dist.is_dir():
+        typer.echo(f"pages/{name}: no dist/ — build first", err=True)
+        raise typer.Exit(1)
+    prefix = _read_prefix_txt(pkg_dir, f"/ui/{name}")
+    shadow_name = override_name or f"shadow:{name}:{pkg_dir.parent.parent.parent.name}"
+    payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)}}
+    try:
+        r = httpx.post(f"{BASE_URL}/hub/shadow/register", json=payload, timeout=15)
+    except httpx.HTTPError as exc:
+        typer.echo(f"hub unreachable: {exc}", err=True)
+        raise typer.Exit(1)
+    if r.status_code >= 400:
+        typer.echo(f"shadow register failed ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    body = r.json()
+    typer.echo(f"shadow pages/{name} → prefix={prefix} id={body['service_id']}")
+    typer.echo("holding shadow lease (Ctrl-C to pop)…")
+    try:
+        _asyncio.run(_hold_one_lease(f"pages/{name}", body["lease_ws_path"]))
+    except KeyboardInterrupt:
+        typer.echo("shadow lease closed — base traffic resumes")
     finally:
         for pid in spawned_pids:
             try:

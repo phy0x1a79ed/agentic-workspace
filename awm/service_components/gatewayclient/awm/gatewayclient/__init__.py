@@ -37,11 +37,8 @@ Transport notes (mirrored from ``proxy_service_http``)
 * Identity rides ``X-Awm-As: <as_>`` when ``as_`` is given — the same header
   the gateway route reads to populate ``as_`` on the upstream ``call``.
 * The gateway binds loopback-only with no auth layer on the ``/svc`` surface
-  (federation is retired), so no bearer is required there. For
-  forward-compatibility we DO attach ``Authorization: Bearer <AWM_HUB_TOKEN>``
-  when that env var is set (it is the token the hub hands services for the
-  ``/hub/service/*`` control plane; harmless on ``/svc`` and future-proof if
-  the surface ever gains auth).
+  (federation is retired), so no bearer is required — the registration
+  handshake carries no token at all.
 * The reply is JSON. ``proxy_service_http`` returns the raw result, or ``{}``
   when the service returned ``None`` — so callers see ``{}`` for a null
   result, never Python ``None``, over this boundary.
@@ -115,12 +112,6 @@ def _headers(as_: str | None) -> dict[str, str]:
     h: dict[str, str] = {"Content-Type": "application/json"}
     if as_ is not None:
         h["X-Awm-As"] = as_
-    token = os.environ.get("AWM_HUB_TOKEN")
-    if token:
-        # Not required on the loopback /svc surface today; sent for
-        # forward-compatibility (mirrors the bearer the hub_adapters use
-        # for the /hub/service/* control plane).
-        h["Authorization"] = f"Bearer {token}"
     return h
 
 

@@ -3,10 +3,10 @@
 Two distinct surfaces share this module:
 
 * **URL proxy** (``proxy_http`` / ``proxy_ws``) — ``kind="url"``
-  registrations. The hub authenticates to the upstream service AS
-  ITSELF (injects ``Authorization: Bearer <local-auth.token>`` +
-  ``X-Awm-From: <self-peer-id>``), strips the user's bearer/cookie,
-  preserves ``X-Awm-As``.
+  registrations. The hub forwards to the upstream service with the user's
+  bearer/cookie stripped and any caller-supplied ``extra_headers`` merged in,
+  preserving ``X-Awm-As`` (federation/peer auth is retired — no bearer is
+  injected).
 * **Service RPC translator** (``proxy_service_http``,
   ``proxy_service_emit_ws``, ``proxy_session_ws``) — ``kind="service"``
   registrations. Translates browser-side REST/WS calls into JSON
