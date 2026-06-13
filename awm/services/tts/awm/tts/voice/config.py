@@ -7,7 +7,7 @@ instantiation time.
 This module used to also carry ``CallConfig`` (stt/tts/llm triple) and the
 defaults/env/file resolution chain for the standalone STT conversation loop.
 That loop (``orchestrator``/``service``/``llm_binding`` + the STT engines) was
-pruned in the modular migration — ``ptt`` owns STT now — so only the TTS
+pruned in the modular migration — ``stt`` owns STT now — so only the TTS
 ``EngineRef`` selection shape remains here.
 """
 

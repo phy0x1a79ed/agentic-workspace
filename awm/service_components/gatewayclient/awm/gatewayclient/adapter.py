@@ -9,7 +9,7 @@ client that POSTs ``/hub/service/register``, opens ``WS
 then answers inbound ``call`` / ``notify`` / ``session.open`` envelopes.
 
 Before this module, every service hand-rolled that ~250-line loop (see the
-``tts`` / ``ptt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
+``tts`` / ``stt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
 boilerplate out so a feature service's adapter is just: build a manifest +
 a ``{fn: callable}`` dispatch map, then ``await ServiceAdapter(...).run()``.
 
@@ -81,7 +81,7 @@ class SessionContext:
     """Everything a ``session.open`` handler needs to run a direct session.
 
     ``open_bridge()`` opens the upstream side of the hub bridge so the handler
-    can byte-relay frames (the PCM-audio case for tts/ptt). Most feature
+    can byte-relay frames (the PCM-audio case for tts/stt). Most feature
     services have no sessions and never use this.
     """
     hub_url: str
@@ -122,7 +122,7 @@ class ServiceAdapter:
         reply ``result`` (return ``None`` for fire-and-forget / no payload).
     session_handlers:
         Optional ``{session_kind: async callable(SessionContext)}`` for
-        services that expose direct sessions (tts/ptt PCM bridges).
+        services that expose direct sessions (tts/stt PCM bridges).
     on_start:
         Optional sync-or-async zero-arg callable run once before the first
         connect — the place to call ``init_service_db`` so the service's own

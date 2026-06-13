@@ -835,7 +835,7 @@ def dev_shadow(
              "either 'pages/<name>' (a built page from awm/pages/<name>/dist) or a "
              "path to a service folder / its run.sh (e.g. awm/services/agents). "
              "Example: awm dev shadow --port 7821 pages/agent awm/services/agents "
-             "awm/services/tts awm/services/ptt",
+             "awm/services/tts awm/services/stt",
     ),
     port: int = typer.Option(
         7821, "--port", "-p",

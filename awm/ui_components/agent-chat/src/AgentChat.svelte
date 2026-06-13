@@ -4,7 +4,7 @@
    *
    * Composes:
    *   - a project/scope connect bar (this component);
-   *   - <PttComposer> from @awm/ptt-composer — text + mic (STT) input;
+   *   - <SttComposer> from @awm/stt-composer — text + mic (STT) input;
    *   - <TtsHistory> from @awm/tts-history — the transcript + per-row TTS replay.
    *
    * All business logic lives HERE, not in the page that mounts it. On connect
@@ -32,7 +32,7 @@
   } from '@awm/client';
   import { TtsHistory, playOnce } from '@awm/tts-history';
   import type { Post } from '@awm/tts-history';
-  import { PttComposer } from '@awm/ptt-composer';
+  import { SttComposer } from '@awm/stt-composer';
   import { TranscriptFold, agentAuthor } from './agent-acts';
 
   interface Props {
@@ -236,7 +236,7 @@
     }
   }
 
-  // PttComposer convo mode emits onText on each silence-segmented utterance;
+  // SttComposer convo mode emits onText on each silence-segmented utterance;
   // onsend fires on the SEND button. Both post a human turn.
   function onComposerText(text: string) {
     void send(text);
@@ -304,7 +304,7 @@
   </div>
 
   <div class="composer-wrap">
-    <PttComposer
+    <SttComposer
       onsend={onComposerText}
       onText={onComposerText}
       {chatContext}

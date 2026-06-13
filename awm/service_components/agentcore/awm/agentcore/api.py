@@ -1,7 +1,7 @@
 """Public entry points: ``open_agent`` (the config factory) + ``run_once``.
 
 These are the single dynamic entry points both callers (the agents service,
-the ptt cleanup) use. ``open_agent(config)`` selects the backend from
+the stt cleanup) use. ``open_agent(config)`` selects the backend from
 ``config.harness`` and threads everything else in. ``run_once`` is generic over
 the session — open → send → drain until terminal → close — so a one-shot is
 just a wrapped live session.
