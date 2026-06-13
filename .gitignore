@@ -1,8 +1,14 @@
 # AWM runtime state
 .awm/
 
-# Per-worktree dev sandbox env override (port pins, AWM_API_TARGET, etc.)
-dev/.env
+# Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
+awm/services/*/.runtime-env
+
+# Per-worktree dev sandbox (lives at awm/gateway/dev/): env override + the
+# generated per-sandbox MCP config symlink. State dirs (.awm/, data/, projects/)
+# are covered by the global patterns below.
+awm/gateway/dev/.env
+awm/gateway/dev/.mcp.json
 
 # Per-host orientation symlink. AGENTS.md is the canonical tracked source;
 # CLAUDE.md is a host-local symlink to it (see .awm/context.md for the

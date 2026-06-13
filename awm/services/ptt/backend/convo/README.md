@@ -21,7 +21,10 @@ registry.py (STT)                 convo/ (this package)            agent/ (lifta
 - **`convo/`** (this package) — voice-cleanup domain logic. `ConvoSession` holds
   `raw_log` (verbatim, reset on submit), `composer` (latest cleaned), `notes_pad`
   (persists across submits), and the frontend-supplied `context`. `on_silence_cut`
-  accumulates until the LLM says `should_submit`, then flushes.
+  accumulates and returns the LLM's `should_submit` *completeness* judgement — it
+  does NOT flush. The registry driver gates the actual send on **complete AND no
+  new speech** (a confirm-window debounce, `PTT_SUBMIT_CONFIRM`) and calls
+  `take_submission()` to flush once the user stays silent.
 
 ## Flow per silence-cut
 
@@ -29,8 +32,11 @@ registry.py (STT)                 convo/ (this package)            agent/ (lifta
 2. Build a prompt: instructions + notes + 2k chat-history context + transcript
    split into `prior_raw` (already composed) and `new_since_last_cut`.
 3. LLM → `{cleaned_text, should_submit, notes_update?}`.
-4. Broadcast `{type:"composer", text}` (always); on submit also `{type:"submit", text}`.
-5. On submit, clear `raw_log`/`composer` (notes persist).
+4. Broadcast `{type:"composer", text}` (always).
+5. If `should_submit`, arm a confirm-window debounce (`PTT_SUBMIT_CONFIRM`, default
+   2.5s). It fires `{type:"submit", text}` + flushes (`take_submission`) only if no
+   new partial (= no new STT raw) arrives in the window; any new speech aborts it
+   and the next cut keeps building the same message.
 
 LLM failure degrades to the raw accumulated text with no auto-submit.
 

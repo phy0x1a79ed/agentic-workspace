@@ -41,7 +41,7 @@ def restart_core() -> dict[str, str]:
     except FileNotFoundError:
         raise RuntimeError(
             "systemctl not found. Install the awm.service unit "
-            "(see deploy/awm.service) and ensure systemd is available."
+            "(see awm/gateway/deploy/awm.service) and ensure systemd is available."
         )
     result: dict[str, object] = {
         "status": "restarting",

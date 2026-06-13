@@ -833,7 +833,11 @@ async def compact_session(scope_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 def list_sessions(project: str | None = None, scope: str | None = None,
-                  status: str | None = None) -> list[AgentSessionInfo]:
+                  status: str | None = None,
+                  limit: int | None = None) -> list[AgentSessionInfo]:
+    # DAO returns rows newest-first (ORDER BY id DESC). The optional `limit`
+    # caps to the most recent N — applied AFTER the Python-side status filter,
+    # so a status filter never undercounts the cap.
     rows = _get_dao().list_instances(project=project, scope=scope)
     out: list[AgentSessionInfo] = []
     for r in rows:
@@ -841,6 +845,8 @@ def list_sessions(project: str | None = None, scope: str | None = None,
         if status and hydrated["render_status"] != status:
             continue
         out.append(_info_for_instance_row(hydrated))
+    if limit is not None:
+        out = out[: int(limit)]
     return out
 
 

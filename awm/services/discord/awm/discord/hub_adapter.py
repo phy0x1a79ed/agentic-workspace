@@ -28,10 +28,12 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "list_operators",
+            "tool": "discord_operators",
             "description": "List whitelisted Discord operators.",
         },
         {
             "name": "add_operator",
+            "tool": "discord_operator_add",
             "description": "Whitelist a Discord user and map them to an awm_user.",
             "params": [
                 {"name": "discord_user_id", "type": "string", "required": True},
@@ -40,6 +42,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "remove_operator",
+            "tool": "discord_operator_remove",
             "description": "Remove a Discord user from the whitelist.",
             "params": [
                 {"name": "discord_user_id", "type": "string", "required": True},

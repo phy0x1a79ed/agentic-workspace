@@ -33,15 +33,23 @@ API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "list_sessions",
-            "description": "List agent sessions (optionally filtered by project/scope/status).",
+            "tool": "agent_list",
+            "description": (
+                "List agent sessions newest-first (optionally filtered by "
+                "project/scope/status). Pass limit for the most recent / last N "
+                "sessions."
+            ),
             "params": [
                 {"name": "project", "type": "string", "required": False},
                 {"name": "scope", "type": "string", "required": False},
                 {"name": "status", "type": "string", "required": False},
+                {"name": "limit", "type": "integer", "required": False,
+                 "description": "Return only the most recent N sessions (newest first)."},
             ],
         },
         {
             "name": "create_session",
+            "tool": "agent_spawn",
             "description": "Spawn a new agent subprocess for (project, scope).",
             "params": [
                 {"name": "project", "type": "string", "required": True},
@@ -54,6 +62,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop_session",
+            "tool": "agent_stop",
             "description": "Send SIGTERM to a session by id.",
             "params": [
                 {"name": "session_id", "type": "integer", "required": True},
@@ -61,6 +70,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "kill_session",
+            "tool": "agent_kill",
             "description": "Send SIGKILL to a session by id.",
             "params": [
                 {"name": "session_id", "type": "integer", "required": True},
@@ -68,7 +78,11 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "tail_log",
-            "description": "Return the last N lines from a session's stderr log.",
+            "tool": "agent_log",
+            "description": (
+                "Tail an agent session's log: return the last N lines (most "
+                "recent output) from its stderr log, by session id."
+            ),
             "params": [
                 {"name": "session_id", "type": "integer", "required": True},
                 {"name": "lines", "type": "integer", "required": False},
@@ -76,6 +90,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "slash_command",
+            "tool": "agent_slash",
             "description": "Dispatch a slash command to a running agent scope.",
             "params": [
                 {"name": "scope_key", "type": "string", "required": True},
@@ -84,6 +99,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "enqueue_post",
+            "tool": "agent_post",
             "description": "Enqueue a scope-channel post into a running agent's stdin.",
             "params": [
                 {"name": "project", "type": "string", "required": True},
@@ -94,6 +110,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "agent_subscribe",
+            "tool": "agent_subscribe",
             "description": (
                 "Read an agent's raw act stream (the structured stdout event log "
                 "from agents.db) for (project, scope). Subscribe to an AGENT for "
@@ -108,10 +125,12 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get_slash_catalog",
+            "tool": "slash_catalog",
             "description": "Return the server slash-command catalog.",
         },
         {
             "name": "reconcile",
+            "tool": "agent_reconcile",
             "description": "Run startup reconciliation (close stale instance rows, seed resume).",
         },
     ],
@@ -121,10 +140,12 @@ API_MANIFEST: dict[str, Any] = {
 
 
 async def _h_list_sessions(args: dict) -> dict:
+    _limit = args.get("limit")
     sessions = ai.list_sessions(
         project=args.get("project"),
         scope=args.get("scope"),
         status=args.get("status"),
+        limit=int(_limit) if _limit is not None else None,
     )
     return {
         "sessions": [_serialize_session(s) for s in sessions],
