@@ -2,8 +2,9 @@
 
 Mirrors tts/backend/hub_adapter.py shape. Exposes one direct session
 kind (``stream``) that bridges to the existing PTT session handler in
-``backend.registry.run_ptt_ws_session``, plus one RPC function
-(``transcribe``) for the HTTP-fallback path.
+``backend.registry.run_ptt_ws_session``, plus RPC functions: ``transcribe``
+(HTTP-fallback STT) and ``chat`` (the mock conversational partner that drives
+the convo demo).
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ log = logging.getLogger("ptt.hub_adapter")
 API_MANIFEST: dict = {
     "functions": [
         {"name": "transcribe"},
+        # Mock conversational partner for driving the convo demo (test harness).
+        {"name": "chat"},
     ],
     "emitters": [],
     "sessions": [
@@ -69,6 +72,26 @@ async def _dispatch_call(fn: str, args) -> object:
             None, get_transcriber().transcribe, pcm, 16000,
         )
         return {"text": text or ""}
+    if fn == "chat":
+        # Mock partner: forward the user's message to a persistent-session
+        # opencode agent and return its reply. Degrades to a visible
+        # "unavailable" reply (rather than an RPC error) when the LLM backend
+        # is down/unauthed, so the demo still renders something useful.
+        text = args.get("text") if isinstance(args, dict) else None
+        reset = bool(args.get("reset")) if isinstance(args, dict) else False
+        from backend.chatbot import get_chatbot
+        from backend.convo.manager import get_convo_manager
+
+        await get_convo_manager().ensure_started()  # best-effort warm
+        bot = get_chatbot()
+        try:
+            if reset:
+                await bot.reset()
+            reply = await bot.reply(text or "")
+            return {"reply": reply}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("chat reply failed: %s", exc)
+            return {"reply": f"[test agent unavailable: {exc}]"}
     raise RuntimeError(f"unknown function {fn!r}")
 
 

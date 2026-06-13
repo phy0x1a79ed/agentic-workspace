@@ -24,6 +24,10 @@
     initialChips?: string[];
     voiceControls?: Snippet;
     voiceMeter?: Snippet;
+    // Convo display: when a continuous session is live, the Voice pane renders
+    // a flowing text panel of the accumulating message instead of chips.
+    convo?: boolean;
+    convoText?: string;
   }
   let {
     onsend,
@@ -31,6 +35,8 @@
     initialChips,
     voiceControls,
     voiceMeter,
+    convo = false,
+    convoText = '',
   }: Props = $props();
 
   let activeTab = $state<Tab>('voice');
@@ -89,6 +95,8 @@
     <VoiceTab
       bind:this={voiceTab}
       {initialChips}
+      {convo}
+      {convoText}
       controls={voiceControls}
       meter={voiceMeter}
       onsend={onSendClick}

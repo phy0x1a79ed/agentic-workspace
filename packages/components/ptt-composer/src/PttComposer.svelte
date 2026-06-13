@@ -18,7 +18,9 @@
   //   - START CONVO → continuous session ({type:start, mode:continuous});
   //     the backend silence-segments each utterance. PAUSE gates mic audio
   //     for a manual thinking break without ending the statement.
-  // Both feed the shell's single uneditable Voice chip list.
+  // PTT feeds the shell's uneditable Voice chip list (one chip per press);
+  // Convo feeds a single flowing text panel (the accumulating cleaned message)
+  // and posts each completed message to the chat history.
 
   type PartialStep = { delayMs: number; text: string | null };
 
@@ -31,6 +33,10 @@
     onText?: (text: string) => void;
     /** Override the service prefix. Defaults to /svc/ptt. */
     svcPrefix?: string;
+    /** Recent chat-history context (page-owned) for the convo cleanup LLM.
+     *  Sent up — capped to ~2k chars — on convo start and whenever it
+     *  changes while a convo session is live. */
+    chatContext?: string;
     // Offline-only: seed the Voice-tab chip list on mount.
     mockInitialChips?: string[];
     // Offline-only: scripted partial→finalize walk for vitest / dev pages.
@@ -40,11 +46,24 @@
     onsend,
     onText,
     svcPrefix = '/svc/ptt',
+    chatContext,
     mockInitialChips,
     mockPartialScript,
   }: Props = $props();
 
   const isMock = $derived(!!(mockInitialChips || mockPartialScript));
+
+  // Convo composer assembly. `convoComposer` is the LLM-cleaned accumulated
+  // message (updated after each silence-cut); `convoPartial` is the live raw
+  // utterance in progress. `convoText` is their join — the flowing message the
+  // Voice pane renders (as text, not chips) while a convo session is live, so
+  // you get both cleaned accumulation and word-by-word feedback. PTT uses none.
+  const CONTEXT_CAP = 2000;
+  let convoComposer = $state('');
+  let convoPartial = $state('');
+  const convoText = $derived((convoComposer + ' ' + convoPartial).trim());
+  function resetConvoText() { convoComposer = ''; convoPartial = ''; }
+  function contextSlice(): string { return (chatContext ?? '').slice(-CONTEXT_CAP); }
 
   let status = $state<'idle' | 'recording' | 'transcribing' | 'error'>('idle');
   let statusText = $state('');
@@ -156,17 +175,35 @@
     let msg: any;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'stt_result' && typeof msg.text === 'string') {
+      // PTT path: one finalized chip per press. (Convo mode no longer emits
+      // stt_result — it sends composer/submit instead.)
       composer?.finalizeLiveChunk(msg.text);
-      // Live-text callback fires on every silence segment (even in
-      // convo mode), independent of the user pressing Send.
       if (msg.text.trim()) onText?.(msg.text);
       if (!convoListening) {
         status = 'idle';
         statusText = '';
       }
       reconnectDelay = 1000;
+    } else if (msg.type === 'composer' && typeof msg.text === 'string') {
+      // Convo: LLM-cleaned accumulated message after a silence-cut. The live
+      // raw tail is now folded into it, so clear the tail and show the cleaned
+      // text. The Voice pane reads `convoText` reactively — no chips here.
+      convoComposer = msg.text;
+      convoPartial = '';
+    } else if (msg.type === 'submit' && typeof msg.text === 'string') {
+      // Convo: message judged complete → post it to history and clear the
+      // composer text so the panel is ready for the next message.
+      if (msg.text.trim()) onText?.(msg.text);
+      resetConvoText();
+      reconnectDelay = 1000;
     } else if (msg.type === 'partial' && typeof msg.text === 'string') {
-      composer?.updateLiveChunk(msg.text);
+      if (convoListening) {
+        // Live raw tail of the current utterance; `convoText` joins it onto the
+        // cleaned accumulation from earlier silence-cuts.
+        convoPartial = msg.text;
+      } else {
+        composer?.updateLiveChunk(msg.text);
+      }
     } else if (msg.type === 'status') {
       if (!convoListening || msg.stage === 'recording' || msg.stage === 'error') {
         status = msg.stage as typeof status;
@@ -249,6 +286,7 @@
       convoListening = false;
       paused = false;
       resetLevel();
+      resetConvoText();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
       }
@@ -270,8 +308,8 @@
     }
     convoListening = true;
     paused = false;
-    composer?.beginLiveChunk();
-    ws.send(JSON.stringify({ type: 'start', mode: 'continuous' }));
+    resetConvoText();
+    ws.send(JSON.stringify({ type: 'start', mode: 'continuous', context: contextSlice() }));
     status = 'recording';
     statusText = 'listening…';
   }
@@ -306,6 +344,7 @@
       convoListening = false;
       paused = false;
       resetLevel();
+      resetConvoText();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
       }
@@ -314,6 +353,16 @@
     }
     return true;
   }
+
+  // Push recent-chat-history context up while a convo session is live, so the
+  // cleanup LLM stays current as the conversation grows. Tracks chatContext
+  // and convoListening; the start frame carries the initial slice.
+  $effect(() => {
+    const ctx = chatContext; // track
+    if (isMock || !convoListening) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'context', text: (ctx ?? '').slice(-CONTEXT_CAP) }));
+  });
 
   $effect(() => {
     if (isMock) {
@@ -364,6 +413,8 @@
     bind:this={composer}
     {onsend}
     {onTabSwitchRequest}
+    convo={convoListening}
+    {convoText}
     initialChips={mockInitialChips}
   >
     {#snippet voiceControls()}
