@@ -2,10 +2,10 @@
   "name": "awm-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "Packages workspace. packages/components/* are importable libraries; packages/pages/* are static bundles served at /ui/<name>; packages/services/* are RPC-over-WS services served at /svc/<name>. Per-package package.json + vite.config.ts are GENERATED from layout — see awm/services/packages/gen.py.",
+  "description": "Frontend workspace for the modular awm tree. awm/ui_components/* are importable libraries; awm/pages/* are static bundles served at /ui/<name>; awm/services/{tts,ptt} are RPC-over-WS services served at /svc/<name>. Per-package package.json + vite.config.ts are GENERATED from layout — see awm/gateway/awm/gateway/packages/gen.py.",
   "workspaces": [
-    "packages/components/*",
-    "packages/pages/*"
+    "awm/ui_components/*",
+    "awm/pages/*"
   ],
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
