@@ -76,6 +76,13 @@ PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
 # left uncommitted, so the tail always retained the final words and never
 # transcribed empty — convo never cut, never refined, never submitted.
 SILENCE_HANG_SEC = float(os.environ.get("PTT_SILENCE_HANG", "1.2"))
+# Continuous/convo mode: after a silence-cut the LLM judges complete, we wait
+# this many seconds of CONTINUED silence before actually sending. Any new speech
+# (a fresh partial) in this window aborts the send — this is the "AND no new STT
+# raw" half of the submit gate. Keep it >= PARTIAL_MIN_GAP_SEC so at least one
+# partial pass can observe resumed speech inside the window (a same-pass resume
+# would otherwise slip through and submit prematurely).
+SUBMIT_CONFIRM_SEC = float(os.environ.get("PTT_SUBMIT_CONFIRM", "2.5"))
 SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2  # int16 LE
 
@@ -139,6 +146,11 @@ class PttAgent:
         # None and keeps the raw stt_result path). Typed loosely to keep the
         # convo/agent/opencode import chain off the PTT-only code path.
         self.convo = None  # Optional[ConvoSession]
+        # Convo submit debounce. ``_speech_seq`` bumps on every partial we
+        # broadcast (= new STT raw); a pending submit captures the seq at its
+        # cut and only fires if it hasn't changed (the user stayed silent).
+        self._speech_seq: int = 0
+        self._pending_submit: Optional[asyncio.Task] = None
 
     # ---- client management ----
 
@@ -152,6 +164,7 @@ class PttAgent:
         if self.recording_client is ws:
             self.recording_client = None
             self._cancel_partial_task()
+            self._cancel_pending_submit()
             self.pcm_chunks.clear()
             self.committed_text = ""
             self.committed_bytes = 0
@@ -187,13 +200,45 @@ class PttAgent:
     async def _status(self, stage: str, text: str = "") -> None:
         await self.broadcast_json({"type": "status", "stage": stage, "text": text})
 
+    def _cancel_pending_submit(self) -> None:
+        task = self._pending_submit
+        self._pending_submit = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _arm_pending_submit(self, convo, seq_at_cut: int) -> None:
+        """Defer the actual send until the user has stayed silent for
+        ``SUBMIT_CONFIRM_SEC`` after a complete-thought cut. The send fires only
+        if no new partial (no new STT raw) has arrived since the cut — the
+        "AND no new STT raw" gate. Any newer cut re-arms this."""
+        self._cancel_pending_submit()
+
+        async def _confirm() -> None:
+            try:
+                await asyncio.sleep(SUBMIT_CONFIRM_SEC)
+            except asyncio.CancelledError:
+                return
+            # New speech since the complete cut → not done; a later cut handles it.
+            if self._speech_seq != seq_at_cut:
+                return
+            text = await convo.take_submission()
+            if text:
+                await self.broadcast_json({"type": "submit", "text": text})
+            await self._status("recording", "listening…")
+
+        self._pending_submit = asyncio.create_task(_confirm())
+
     def _dispatch_convo_cut(self, cut_text: str) -> None:
         """Run the convo inner loop for one silence-cut off the partial loop's
-        critical path, then broadcast the cleaned composer (and a submit frame
-        when the model judges the message complete)."""
+        critical path, then broadcast the cleaned composer. A "complete" verdict
+        does NOT submit immediately — it arms a debounce that fires only if the
+        user stays silent (see :meth:`_arm_pending_submit`)."""
         convo = self.convo
         if convo is None:
             return
+        # Snapshot speech progress at the cut; the debounce submits only if this
+        # hasn't advanced (no new raw) by the time the confirm window elapses.
+        seq_at_cut = self._speech_seq
 
         async def _run() -> None:
             # Surface the LLM refine step — without this the indicator sits on
@@ -206,8 +251,9 @@ class PttAgent:
                 await self._status("recording", "listening…")
                 return
             await self.broadcast_json({"type": "composer", "text": res.cleaned_text})
-            if res.should_submit:
-                await self.broadcast_json({"type": "submit", "text": res.cleaned_text})
+            if res.should_submit and not res.fallback:
+                # Complete thought — but only send once the user actually stops.
+                self._arm_pending_submit(convo, seq_at_cut)
                 await self._status("recording", "listening…")
             elif res.fallback:
                 # LLM unavailable: composer shows raw text, no submit. Flag it so
@@ -249,6 +295,7 @@ class PttAgent:
     ) -> None:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
+        self._cancel_pending_submit()
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
@@ -279,6 +326,7 @@ class PttAgent:
     async def handle_cancel(self) -> None:
         self.recording_client = None
         self._cancel_partial_task()
+        self._cancel_pending_submit()
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
@@ -293,6 +341,7 @@ class PttAgent:
             return
         self.recording_client = None
         self._cancel_partial_task()
+        self._cancel_pending_submit()
         if self.continuous or self.convo is not None:
             # Convo mode emits a result per silence-cut; stopping just tears the
             # session down. No final full-PCM pass — in continuous mode
@@ -429,6 +478,8 @@ class PttAgent:
                     trailing_gap, merged,
                 )
                 await self.broadcast_json({"type": "partial", "text": merged})
+                # New speech: invalidates any pending convo submit awaiting silence.
+                self._speech_seq += 1
                 if self.continuous and trailing_gap >= SILENCE_HANG_SEC:
                     # PHASE 2 SEAM (see above): end-of-utterance silence-cut.
                     await self._silence_cut(joined)
