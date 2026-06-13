@@ -51,9 +51,12 @@ class ConvoSession:
         """Run the inner loop for one finalized utterance.
 
         Appends ``new_raw`` to the raw log, asks the LLM for a faithful clean +
-        submit decision, updates state, and returns what to show. On submit,
-        resets ``raw_log`` and ``composer`` (notes persist). Never raises — an
-        LLM failure falls back to the accumulated raw text, no submit.
+        submit decision, updates state, and returns what to show. ``should_submit``
+        in the result is the LLM's *completeness* judgement only — it does NOT
+        flush here. The driver (registry) gates the actual submit on
+        "complete AND no new speech" and calls :meth:`take_submission` to flush.
+        Never raises — an LLM failure falls back to the accumulated raw text,
+        ``should_submit=False``.
         """
         new_raw = (new_raw or "").strip()
         async with self._lock:
@@ -105,13 +108,23 @@ class ConvoSession:
             if isinstance(notes_update, str) and notes_update.strip():
                 self.notes_pad = notes_update.strip()
 
-            if should_submit:
-                # Flush: the returned text is the submitted message; clear the
-                # working logs so the next utterance starts a fresh message.
-                self.raw_log = []
-                self.composer = ""
-
+            # NOTE: no flush here even when should_submit. The message is only
+            # actually sent once the user stops speaking; the driver confirms
+            # that and calls take_submission() to flush. Holding state means a
+            # user who keeps talking after a "complete" cut just keeps building
+            # the same message.
             return ConvoResult(cleaned, should_submit, fallback)
+
+    async def take_submission(self) -> str:
+        """Confirm the current composed message as sent: return it and clear the
+        working logs so the next utterance starts fresh. Notes persist across
+        submits. Lock-shared with :meth:`on_silence_cut` so a flush can't race a
+        concurrent cut."""
+        async with self._lock:
+            text = self.composer
+            self.raw_log = []
+            self.composer = ""
+            return text
 
     def reset(self) -> None:
         """Drop all working state (e.g. session torn down). Notes go too —

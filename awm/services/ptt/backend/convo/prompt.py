@@ -30,9 +30,12 @@ CONVO_SCHEMA: dict = {
         "should_submit": {
             "type": "boolean",
             "description": (
-                "True only if the user appears to have FINISHED the message "
-                "(a complete thought, or an explicit send cue). False if they "
-                "are mid-thought or likely to keep speaking."
+                "True if the latest text is a complete, self-contained "
+                "utterance — a full sentence, question, greeting, or command "
+                "— or an explicit send cue. False only if it is clearly "
+                "unfinished (ends mid-phrase or is an obvious fragment). "
+                "Completeness only; a separate stage waits for the user to "
+                "stop speaking before the message is sent."
             ),
         },
         "notes_update": {
@@ -62,9 +65,15 @@ punctuation and capitalization. DO NOT add information, answer the user, or \
 change meaning. Preserve their words and intent. Stay stable: keep your prior \
 cleaned version and only integrate the new chunk unless it corrects earlier text.
 
-2. should_submit (boolean) — true ONLY if the user seems to have finished the \
-message (a complete thought, a natural sign-off, or an explicit cue like "send \
-it"). False if they are mid-thought or likely to continue speaking.
+2. should_submit (boolean) — true if the latest text forms a complete, \
+self-contained utterance that could stand on its own: a full sentence, \
+question, greeting, or command, OR an explicit send cue ("send it", "that's \
+all"). Greetings and short questions DO count as complete. Set false ONLY when \
+the text is clearly unfinished — it ends mid-phrase, trails off, or is a \
+grammatical fragment that obviously expects a continuation (e.g. "so I was \
+thinking", "can you", "the thing is"). When genuinely unsure, prefer true. \
+(Completeness only — a separate stage waits for the user to actually stop \
+speaking before this message is sent.)
 
 3. notes_update (string or null) — optionally a short scratchpad of proper \
 nouns, spellings, domain terms, or context worth remembering for cleaning later \
