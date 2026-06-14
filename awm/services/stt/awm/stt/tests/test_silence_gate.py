@@ -7,8 +7,9 @@ rows of the plan's case table:
   1. complete + silent window  → submit
   2. complete + voiced window  → held (no submit), folds forward
   3. incomplete                → no arm, no submit
-  4. the cut transcribes its OWN text (works with empty committed prefix)
+  4. the background pass transcribes the tail (works with empty committed prefix)
   5. the fast poll fires a cut on voice-then-silence, and holds otherwise
+  6. the raw preview is broadcast BEFORE the cleaned composer (responsiveness)
 
 Run via the per-dist runner, or directly:
 
@@ -130,6 +131,31 @@ async def test_cut_builds_text_from_tail_with_empty_prefix(monkeypatch):
         window_voiced=False, committed_prefix="",
     )
     assert _types(sent, "submit") and _types(sent, "submit")[0]["text"] == cleaned
+
+
+async def test_preview_raw_broadcast_before_cleaned(monkeypatch):
+    # The core responsiveness change: the cut broadcasts the RAW preview (text the
+    # cosmetic stream already produced, here the committed prefix) immediately,
+    # BEFORE the accurate re-pass + LLM cleanup land the cleaned composer. So the
+    # first composer frame is raw, a later one is cleaned — never gated behind the
+    # LLM round-trip.
+    agent, sent, cleaned = await _run_cut(
+        monkeypatch, cut_text="add a login button",
+        should_submit=False, window_voiced=False,
+        committed_prefix="please",  # non-empty → a preview is available
+    )
+    composers = _types(sent, "composer")
+    assert len(composers) >= 2, "expected a raw preview then a cleaned composer"
+    assert composers[0]["text"] == "please", "first composer must be the raw preview"
+    assert composers[-1]["text"] == cleaned, "last composer must be the cleaned text"
+    # The raw preview is emitted before any 'refining' status (it's the very first
+    # thing the cut does).
+    first_composer_idx = next(i for i, p in enumerate(sent) if p.get("type") == "composer")
+    first_refining_idx = next(
+        i for i, p in enumerate(sent)
+        if p.get("type") == "status" and p.get("stage") == "refining"
+    )
+    assert first_composer_idx < first_refining_idx
 
 
 async def test_silence_loop_fires_on_voice_then_silence(monkeypatch):

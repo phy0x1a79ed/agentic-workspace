@@ -59,12 +59,15 @@ log = logging.getLogger("awm.services.stt.registry")
 
 IDLE_TIMEOUT_SEC = int(os.environ.get("PTT_IDLE_SEC", os.environ.get("VOICE_IDLE_SEC", "1800")))
 
-# Partial-streaming cadence. 2.0s lets each whisper pass on the tail finish
-# comfortably on small.en int8 CPU before the next one starts, and gives the
-# user enough new audio per pass that segment boundaries actually appear (so
-# the splicer commits forward rather than re-transcribing the same tail).
-# Min-tail keeps us from running whisper on sub-word slivers.
-PARTIAL_MIN_GAP_SEC = float(os.environ.get("PTT_PARTIAL_GAP", "2.0"))
+# Partial-streaming cadence. This is now a *floor* on the period between pass
+# STARTS, not a fixed dead-wait before each pass: the loop streams whisper output
+# as fast as a tail pass completes, only napping out the remainder of the floor
+# when a pass finished quicker (see ``_partial_loop``). The cosmetic stream is the
+# user's primary, fast feed — so we keep it tight. Because each pass is awaited,
+# the loop can never outrun the model: a long pauseless tail self-throttles to its
+# own (growing) pass duration rather than piling passes up. Min-tail keeps us off
+# sub-word slivers. (Was a fixed 2.0s gap; lowered + redefined for responsiveness.)
+PARTIAL_MIN_GAP_SEC = float(os.environ.get("PTT_PARTIAL_GAP", "0.3"))
 PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
 # Continuous mode: trailing-silence hang time. A silence-cut fires once the
 # rolling tail ends with at least this many seconds of non-speech AFTER the last
@@ -257,23 +260,55 @@ class SttAgent:
 
         self._pending_submit = asyncio.create_task(_confirm())
 
-    def _dispatch_convo_cut(self, cut_text: str, cut_byte: int) -> None:
-        """Run the convo inner loop for one silence-cut off the poll's critical
-        path, then broadcast the cleaned composer. A "complete" verdict does NOT
-        submit immediately — it arms a debounce that fires only if the user stays
-        silent (see :meth:`_arm_pending_submit`). ``cut_byte`` is the PCM offset
-        at the cut; the debounce VADs the audio after it."""
+    def _dispatch_convo_cut(
+        self, preview: str, tail: bytes, committed_prefix: str, cut_byte: int
+    ) -> None:
+        """Show the just-cut utterance immediately, then smooth it in the
+        background. ``preview`` (raw text the cosmetic stream already produced) is
+        broadcast at once so the panel updates the instant the cut fires; the
+        accurate whisper re-pass and the LLM cleanup then run OFF the poll's
+        critical path and replace it in place. Nothing the user sees waits on the
+        cleanup service. A "complete" verdict does NOT submit immediately — it arms
+        a debounce that fires only if the user stays silent (see
+        :meth:`_arm_pending_submit`). ``cut_byte`` is the PCM offset at the cut; the
+        debounce VADs the audio after it."""
         convo = self.convo
         if convo is None:
             return
-        # A real (non-empty) cut means new speech happened — drop any submit that
-        # was waiting out an earlier complete cut; this cut's verdict re-arms it.
+        # A real cut means new speech happened — drop any submit that was waiting
+        # out an earlier complete cut; this cut's verdict re-arms it.
         self._cancel_pending_submit()
 
         async def _run() -> None:
-            # Surface the LLM refine step — without this the indicator sits on
-            # "listening…" through the whole cut→clean→submit round-trip.
+            # 1. INSTANT: surface the raw preview now. Keep the already-cleaned
+            #    prefix (convo.composer) clean and show only the new chunk raw, so
+            #    nothing visibly "un-cleans" when the cleaned text lands next.
+            if preview:
+                await self.broadcast_json(
+                    {"type": "composer", "text": (convo.composer + " " + preview).strip()}
+                )
+            # Surface the LLM refine step (amber pulsing dot) while we smooth.
             await self._status("refining", "refining…")
+            # 2. SECONDARY smoothing pass: re-transcribe the tail accurately, off
+            #    the critical path, and splice onto the committed prefix. Falls back
+            #    to the streamed preview if the pass comes up empty (e.g. an
+            #    ultra-short utterance). The lock serializes model use with the
+            #    cosmetic loop (the model is not concurrency-safe).
+            loop = asyncio.get_running_loop()
+            try:
+                async with self._whisper_lock:
+                    segments = await loop.run_in_executor(
+                        None, _transcribe_segments, tail, self.continuous,
+                    )
+            except Exception:  # noqa: BLE001
+                log.exception("cut whisper pass failed for %s", self.user_id)
+                segments = []
+            tail_text = " ".join(s[0] for s in segments if s[0]).strip()
+            cut_text = (committed_prefix + " " + tail_text).strip() or preview
+            if not cut_text:
+                await self._status("recording", "listening…")
+                return
+            # 3. LLM cleanup → replace the preview in place.
             try:
                 res = await convo.on_silence_cut(cut_text)
             except Exception:  # noqa: BLE001 — on_silence_cut self-handles; belt-and-suspenders
@@ -295,19 +330,20 @@ class SttAgent:
         asyncio.create_task(_run())
 
     async def _silence_cut(self, joined: bytes, tail: bytes, committed_prefix: str) -> None:
-        """Fire one silence-cut: finalize the utterance text, dispatch it (convo →
-        LLM inner loop; PTT-continuous → raw stt_result), and reset the splice
-        window so the next utterance transcribes from a fresh tail.
+        """Fire one silence-cut and reset the splice window so the next utterance
+        transcribes from a fresh tail.
+
+        The critical path stays whisper-free: instead of transcribing here, we hand
+        off a ``preview`` built from text the cosmetic stream has ALREADY produced
+        (committed prefix + last rolling tail), so the just-finished words hit the
+        UI the instant the cut fires. The accurate re-pass and the LLM cleanup run
+        off this path, inside the dispatched task, and replace the preview in place.
 
         Called by the fast VAD poll once ``tail`` ends with ``SILENCE_HANG_SEC`` of
-        non-speech. The cut runs its OWN whisper pass on ``tail`` so the cut text
-        is current even if the cosmetic streaming loop hasn't transcribed the
-        final words yet. ``joined``/``tail``/``committed_prefix`` are snapshotted
-        together by the poll (before its VAD await), so they are mutually
-        consistent: ``committed_prefix`` covers exactly the audio before ``tail``,
-        and ``cut_text = committed_prefix + transcribe(tail)`` is the full
-        utterance with no overlap — even if the cosmetic loop committed the same
-        tail audio meanwhile (that commit is discarded by the window reset below).
+        non-speech. ``joined``/``tail``/``committed_prefix`` are snapshotted together
+        by the poll (before its VAD await), so they are mutually consistent:
+        ``committed_prefix`` covers exactly the audio before ``tail``; the task's
+        accurate pass transcribes ``tail`` and splices it onto that prefix.
         """
         # Invalidate any in-flight streaming pass (its splice offsets are about to
         # be stale) and reset the window NOW so a concurrent pass / the next poll
@@ -316,30 +352,25 @@ class SttAgent:
         cut_byte = len(joined)
         self.committed_bytes = cut_byte
         self.committed_text = ""
+        last_partial = self._last_partial
         self._last_partial = ""
         self._silent_passes = 0
 
-        loop = asyncio.get_running_loop()
-        try:
-            async with self._whisper_lock:
-                segments = await loop.run_in_executor(
-                    None, _transcribe_segments, tail, self.continuous,
-                )
-        except Exception:  # noqa: BLE001
-            log.exception("cut whisper pass failed for %s", self.user_id)
-            segments = []
-        tail_text = " ".join(s[0] for s in segments if s[0]).strip()
-        cut_text = (committed_prefix + " " + tail_text).strip()
-        if not cut_text:
-            return
+        # Preview from already-streamed text — no whisper pass on the critical path.
+        # Empty only for an utterance so short the cosmetic loop never transcribed it
+        # (rare with the fast stream); the task's accurate pass still recovers it.
+        preview = (committed_prefix + " " + last_partial).strip()
         log.debug(
-            "stt silence-cut for %s: cut_byte=%d epoch=%d text=%r",
-            self.user_id, cut_byte, self._cut_epoch, cut_text,
+            "stt silence-cut for %s: cut_byte=%d epoch=%d preview=%r",
+            self.user_id, cut_byte, self._cut_epoch, preview,
         )
         if self.convo is not None:
-            self._dispatch_convo_cut(cut_text, cut_byte)
-        else:
-            await self.broadcast_json({"type": "stt_result", "text": cut_text})
+            self._dispatch_convo_cut(preview, tail, committed_prefix, cut_byte)
+        elif preview:
+            # PTT-continuous without a convo session (defensive — continuous always
+            # builds one today): no LLM smoothing, so the streamed preview IS the
+            # result.
+            await self.broadcast_json({"type": "stt_result", "text": preview})
 
     # ---- input handlers ----
 
@@ -496,56 +527,70 @@ class SttAgent:
         """
         loop = asyncio.get_running_loop()
         min_tail_bytes = int(PARTIAL_MIN_TAIL_SEC * SAMPLE_RATE * SAMPLE_BYTES)
+
+        async def _one_pass() -> bool:
+            """Run one cosmetic partial pass. Returns ``False`` when the recording
+            client went away (caller should stop the loop), ``True`` otherwise —
+            including the no-op cases (tail too short, stale epoch, empty result),
+            so the caller still applies the cadence floor between attempts."""
+            tail = b"".join(self.pcm_chunks)[self.committed_bytes:]
+            if len(tail) < min_tail_bytes:
+                return True
+            # Snapshot the cut epoch before the (slow) whisper pass; if a
+            # silence-cut bumps it meanwhile, our splice offsets are stale and
+            # this pass must be dropped. The lock serializes model use with the
+            # cut's own pass (the model is not concurrency-safe).
+            epoch = self._cut_epoch
+            try:
+                async with self._whisper_lock:
+                    segments = await loop.run_in_executor(
+                        None, _transcribe_segments, tail, self.continuous,
+                    )
+            except Exception:  # noqa: BLE001
+                log.exception("partial whisper pass failed for %s", self.user_id)
+                return True
+            if self.recording_client is not ws:
+                return False
+            if epoch != self._cut_epoch:
+                # A silence-cut reset the splice window mid-pass; drop this
+                # result — the next pass starts from the post-cut tail.
+                return True
+            if not segments:
+                return True
+            if len(segments) >= 2:
+                stable = segments[:-1]
+                stable_text = " ".join(s[0] for s in stable if s[0]).strip()
+                if stable_text:
+                    self.committed_text = (
+                        self.committed_text + " " + stable_text
+                    ).strip()
+                last_stable_end_s = stable[-1][2]
+                self.committed_bytes += int(
+                    last_stable_end_s * SAMPLE_RATE * SAMPLE_BYTES
+                )
+            tail_text = segments[-1][0]
+            merged = (self.committed_text + " " + tail_text).strip()
+            if not merged:
+                return True
+            self._last_partial = tail_text
+            log.debug(
+                "stt partial for %s: committed_bytes=%d segs=%d text=%r",
+                self.user_id, self.committed_bytes, len(segments), merged,
+            )
+            await self.broadcast_json({"type": "partial", "text": merged})
+            return True
+
         try:
             while self.recording_client is ws:
-                await asyncio.sleep(PARTIAL_MIN_GAP_SEC)
-                if self.recording_client is not ws:
+                pass_start = loop.time()
+                if not await _one_pass():
                     return
-                tail = b"".join(self.pcm_chunks)[self.committed_bytes:]
-                if len(tail) < min_tail_bytes:
-                    continue
-                # Snapshot the cut epoch before the (slow) whisper pass; if a
-                # silence-cut bumps it meanwhile, our splice offsets are stale and
-                # this pass must be dropped. The lock serializes model use with
-                # the cut's own pass (the model is not concurrency-safe).
-                epoch = self._cut_epoch
-                try:
-                    async with self._whisper_lock:
-                        segments = await loop.run_in_executor(
-                            None, _transcribe_segments, tail, self.continuous,
-                        )
-                except Exception:  # noqa: BLE001
-                    log.exception("partial whisper pass failed for %s", self.user_id)
-                    continue
-                if self.recording_client is not ws:
-                    return
-                if epoch != self._cut_epoch:
-                    # A silence-cut reset the splice window mid-pass; drop this
-                    # result — the next pass starts from the post-cut tail.
-                    continue
-                if not segments:
-                    continue
-                if len(segments) >= 2:
-                    stable = segments[:-1]
-                    stable_text = " ".join(s[0] for s in stable if s[0]).strip()
-                    if stable_text:
-                        self.committed_text = (
-                            self.committed_text + " " + stable_text
-                        ).strip()
-                    last_stable_end_s = stable[-1][2]
-                    self.committed_bytes += int(
-                        last_stable_end_s * SAMPLE_RATE * SAMPLE_BYTES
-                    )
-                tail_text = segments[-1][0]
-                merged = (self.committed_text + " " + tail_text).strip()
-                if not merged:
-                    continue
-                self._last_partial = tail_text
-                log.debug(
-                    "stt partial for %s: committed_bytes=%d segs=%d text=%r",
-                    self.user_id, self.committed_bytes, len(segments), merged,
-                )
-                await self.broadcast_json({"type": "partial", "text": merged})
+                # Floor the cadence on pass *starts*: nap only the leftover of the
+                # floor when the pass beat it; if the pass already ran past the
+                # floor (a long tail), loop immediately — as fast as the model goes.
+                nap = PARTIAL_MIN_GAP_SEC - (loop.time() - pass_start)
+                if nap > 0:
+                    await asyncio.sleep(nap)
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001
