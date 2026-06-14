@@ -132,6 +132,8 @@ awm services stop <name>          # evict + kill + drop its journal entry
 awm services restart <name>
 awm services enable <name>        # clear the disable flag (won't auto-start)
 awm services disable <name>       # stop it and keep it down across restarts
+awm services reap                 # kill orphaned hub_adapters targeting this hub
+                                  #   that hold no live lease (--dry-run lists only)
 ```
 
 ### Iterating with `awm dev shadow`
