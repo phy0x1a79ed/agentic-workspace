@@ -270,6 +270,9 @@ class ServiceAdapter:
                     # never stomp each other's deadline (see ``run``).
                     if state is not None:
                         state["last_up"] = monotonic()
+                    # Stop originating emits until the next connection re-exposes a WS.
+                    if self._control_ws is ws:
+                        self._control_ws = None
         except ConnectionClosed as exc:
             # The hub closed the control WS with a terminal code: 4409 = the
             # lease is already held by a live incumbent, 4404 = the service_id
