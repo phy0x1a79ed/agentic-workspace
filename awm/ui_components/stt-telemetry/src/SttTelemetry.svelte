@@ -166,4 +166,7 @@
   .row[data-dir='out'] .ev { color: var(--recording, #a855f7); }
   .row[data-dir='in'] .ev { color: var(--text, #ddd); }
   .row[data-dir='backend'] .ev { color: var(--atomizer, #ffb74d); }
+  /* coalesced heartbeat run — dimmed so it recedes behind real events */
+  .row[data-dir='quiet'] .ev { color: var(--text3, #888); font-style: italic; }
+  .row[data-dir='quiet'] { opacity: 0.7; }
 </style>

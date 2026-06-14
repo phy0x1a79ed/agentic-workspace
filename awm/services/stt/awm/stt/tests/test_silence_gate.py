@@ -66,18 +66,27 @@ def _agent_with_capture(convo):
 
 
 async def _run_cut(monkeypatch, *, cut_text, should_submit, window_voiced,
-                   committed_prefix="", telemetry=False):
-    """Drive one silence-cut end-to-end and return the broadcast payloads."""
+                   committed_prefix="", telemetry=False, refine=True):
+    """Drive one silence-cut end-to-end and return the broadcast payloads.
+
+    ``refine`` selects the convo path: True exercises the LLM cleanup (the
+    scripted StubCleanupAgent reply), False the default raw-whisper + auto-submit
+    path (no LLM)."""
     monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments(cut_text))
     monkeypatch.setattr(reg, "SUBMIT_CONFIRM_SEC", 0.05)
     monkeypatch.setattr(
         vad, "has_speech", lambda pcm, sample_rate=16000: window_voiced,
     )
 
-    cleaned = (committed_prefix + " " + cut_text).strip().capitalize()
-    convo = ConvoSession(StubCleanupAgent(
-        [{"cleaned_text": cleaned, "should_submit": should_submit}],
-    ))
+    if refine:
+        cleaned = (committed_prefix + " " + cut_text).strip().capitalize()
+        convo = ConvoSession(StubCleanupAgent(
+            [{"cleaned_text": cleaned, "should_submit": should_submit}],
+        ), refine=True)
+    else:
+        # No-refine: the composer is the raw (whisper) text, no LLM call.
+        cleaned = (committed_prefix + " " + cut_text).strip()
+        convo = ConvoSession(StubCleanupAgent([]), refine=False)
     agent, sent = _agent_with_capture(convo)
     agent.committed_text = committed_prefix
     agent.telemetry = telemetry
@@ -184,6 +193,30 @@ async def test_metric_frames_on_cut(monkeypatch):
     refine = next(m for m in metrics if m["event"] == "llm_refine")
     assert refine["should_submit"] is True
     assert refine["fallback"] is False
+
+
+async def test_no_refine_submits_raw_without_llm(monkeypatch):
+    # Default convo path (refine off): the cut auto-submits the raw whisper text
+    # with no LLM call. The cut path emits `convo_cut` (not `llm_refine`) and the
+    # interim status is `transcribing`, never `refining`.
+    agent, sent, cleaned = await _run_cut(
+        monkeypatch, cut_text="add a login button",
+        should_submit=True, window_voiced=False,
+        committed_prefix="please", telemetry=True, refine=False,
+    )
+    # composer is the raw committed-prefix + tail (not capitalized/cleaned).
+    composers = _types(sent, "composer")
+    assert composers and composers[-1]["text"] == cleaned == "please add a login button"
+    # complete + silent → submits the raw text.
+    submits = _types(sent, "submit")
+    assert submits and submits[0]["text"] == cleaned
+    # metric framing reflects no-LLM.
+    events = [m["event"] for m in _types(sent, "metric")]
+    assert "convo_cut" in events
+    assert "llm_refine" not in events
+    # status never claims to be "refining".
+    stages = [p.get("stage") for p in _types(sent, "status")]
+    assert "refining" not in stages
 
 
 async def test_no_metrics_when_off(monkeypatch):

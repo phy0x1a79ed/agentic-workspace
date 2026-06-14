@@ -350,8 +350,13 @@ class SttAgent:
                     {"type": "composer", "text": (convo.composer + " " + preview).strip()}
                 )
             await self._metric("refine_preview", preview_len=len(preview))
-            # Surface the LLM refine step (amber pulsing dot) while we smooth.
-            await self._status("refining", "refining…")
+            # The amber "refining…" pulse + LLM-refine framing only make sense
+            # when the LLM cleanup actually runs. With refine off we still do the
+            # accurate whisper re-pass below (that's not the LLM), so show plain
+            # "transcribing…" instead of mislabeling the cut as refining.
+            refine = convo.refine
+            await self._status("refining" if refine else "recording",
+                               "refining…" if refine else "transcribing…")
             # 2. SECONDARY smoothing pass: re-transcribe the tail accurately, off
             #    the critical path, and splice onto the committed prefix. Falls back
             #    to the streamed preview if the pass comes up empty (e.g. an
@@ -386,7 +391,8 @@ class SttAgent:
                 await self._status("recording", "listening…")
                 return
             await self._metric(
-                "llm_refine", dur_ms=round((time.perf_counter() - t0) * 1000, 1),
+                "llm_refine" if refine else "convo_cut",
+                dur_ms=round((time.perf_counter() - t0) * 1000, 1),
                 should_submit=res.should_submit, fallback=res.fallback,
             )
             await self.broadcast_json({"type": "composer", "text": res.cleaned_text})

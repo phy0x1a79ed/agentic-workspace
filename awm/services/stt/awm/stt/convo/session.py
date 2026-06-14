@@ -32,11 +32,15 @@ class ConvoResult:
 class ConvoSession:
     """The convo inner loop for a single user's continuous session."""
 
-    def __init__(self, agent: Any) -> None:
+    def __init__(self, agent: Any, *, refine: bool = False) -> None:
         # ``agent`` is any object exposing ``async complete_json(prompt) -> dict``
         # — the production seam is ``awm.stt.convo.cleanup.CleanupAgent`` (an
         # agentcore opencode one-shot per cut); headless tests pass a stub.
+        # ``refine`` gates the LLM cleanup: when False (the default), each cut is
+        # taken verbatim (raw whisper text) and auto-submits, with no LLM call on
+        # the path — the ~6s one-shot is opt-in via ``CONVO_REFINE=1``.
         self._agent = agent
+        self._refine = refine
         self.raw_log: list[str] = []
         self.composer: str = ""
         self.notes_pad: str = ""
@@ -45,6 +49,11 @@ class ConvoSession:
         # composer/notes updates apply in arrival order even if a slow call
         # overlaps a newer cut.
         self._lock = asyncio.Lock()
+
+    @property
+    def refine(self) -> bool:
+        """Whether this session runs the LLM cleanup per cut (vs raw + submit)."""
+        return self._refine
 
     def set_context(self, text: str) -> None:
         """Update the recent-chat-history buffer the frontend ships up."""
@@ -67,6 +76,18 @@ class ConvoSession:
                 return ConvoResult(self.composer, False)
             prior_raw = " ".join(self.raw_log).strip()
             self.raw_log.append(new_raw)
+
+            # Refine disabled (default): no LLM on the path. Every confirmed
+            # silence-cut is a complete utterance; the composer is just the
+            # accumulated raw transcript, and we always vote to submit (the
+            # driver still gates the actual flush on confirmed silence, so brief
+            # pauses accumulate into one message). Keeps the lock / raw_log /
+            # composer / take_submission machinery identical to the refine path.
+            if not self._refine:
+                cleaned = " ".join(self.raw_log).strip()
+                self.composer = cleaned
+                log.info("convo cut (no-refine): cleaned=%r", cleaned[:120])
+                return ConvoResult(cleaned, should_submit=True, fallback=False)
 
             prompt = build_prompt(
                 prior_raw=prior_raw,

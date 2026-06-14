@@ -12,6 +12,7 @@ calls stay valid without a process to manage.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from .cleanup import CleanupAgent
@@ -20,9 +21,24 @@ from .session import ConvoSession
 log = logging.getLogger("awm.stt.convo.manager")
 
 
+def _refine_enabled() -> bool:
+    """Whether the LLM cleanup runs per cut. Defaults OFF — the ~6s one-shot
+    adds too much lag on the submit path for most use; opt in with
+    ``CONVO_REFINE=1`` (matching the ``CONVO_PROVIDER``/``CONVO_MODEL`` env
+    convention in ``cleanup.py``)."""
+    return os.environ.get("CONVO_REFINE", "0").strip().lower() in ("1", "true", "yes")
+
+
 class ConvoManager:
     def __init__(self) -> None:
         self._agent = CleanupAgent()
+        self._refine = _refine_enabled()
+        log.info("convo refine %s", "ON (CONVO_REFINE)" if self._refine else "OFF")
+
+    @property
+    def refine(self) -> bool:
+        """Whether sessions from this manager run the LLM cleanup per cut."""
+        return self._refine
 
     @property
     def agent(self) -> CleanupAgent:
@@ -36,7 +52,7 @@ class ConvoManager:
         return None
 
     def new_session(self) -> ConvoSession:
-        return ConvoSession(self._agent)
+        return ConvoSession(self._agent, refine=self._refine)
 
     async def shutdown(self) -> None:
         """No-op: nothing long-lived to tear down (one-shot per cut)."""

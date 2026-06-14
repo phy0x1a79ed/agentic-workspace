@@ -51,7 +51,7 @@ def test_accumulate_until_submit():
         {"cleaned_text": "Add a login button.", "should_submit": False},
         {"cleaned_text": "Add a login button to the navbar.", "should_submit": True},
     ])
-    s = ConvoSession(agent)
+    s = ConvoSession(agent, refine=True)
 
     async def body():
         r1 = await s.on_silence_cut("add a login button")
@@ -85,7 +85,7 @@ def test_prior_vs_new_framing():
         {"cleaned_text": "First.", "should_submit": False},
         {"cleaned_text": "First. Second.", "should_submit": False},
     ])
-    s = ConvoSession(agent)
+    s = ConvoSession(agent, refine=True)
 
     async def body():
         await s.on_silence_cut("first")
@@ -109,7 +109,7 @@ def test_notes_persist_and_feed_forward():
          "notes_update": "Project name is 'Hyperion' (not 'hyperon')."},
         {"cleaned_text": "Deploy Hyperion now.", "should_submit": True},
     ])
-    s = ConvoSession(agent)
+    s = ConvoSession(agent, refine=True)
 
     async def body():
         await s.on_silence_cut("deploy hyperon")
@@ -125,7 +125,7 @@ def test_notes_persist_and_feed_forward():
 
 def test_fallback_on_agent_error():
     agent = StubAgent([CleanupError("zen down")])
-    s = ConvoSession(agent)
+    s = ConvoSession(agent, refine=True)
 
     async def body():
         return await s.on_silence_cut("hello world")
@@ -135,6 +135,32 @@ def test_fallback_on_agent_error():
     assert r.should_submit is False
     assert r.cleaned_text == "hello world"
     assert s.composer == "hello world"
+
+
+def test_no_refine_skips_llm_and_submits_raw():
+    # Default path (refine off): the LLM is never called; each cut accumulates
+    # the raw transcript and votes to submit. The driver still gates the actual
+    # flush, so multi-cut messages assemble via take_submission().
+    agent = StubAgent([])  # any call would IndexError → proves the LLM is skipped
+    s = ConvoSession(agent)  # refine defaults False
+
+    async def body():
+        r1 = await s.on_silence_cut("add a login button")
+        assert r1.cleaned_text == "add a login button"
+        assert r1.should_submit is True
+        assert r1.fallback is False
+
+        r2 = await s.on_silence_cut("to the navbar")
+        assert r2.cleaned_text == "add a login button to the navbar"
+        assert r2.should_submit is True
+        assert s.raw_log == ["add a login button", "to the navbar"]
+
+        flushed = await s.take_submission()
+        assert flushed == "add a login button to the navbar"
+        assert s.raw_log == []
+
+    run(body)
+    assert agent.prompts == [], "no-refine path must not invoke the LLM"
 
 
 def test_context_capped():
