@@ -65,18 +65,19 @@ snapshot.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
-import os
-import sys
 import time
-from typing import Any, Callable
+from typing import Any
 
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
+from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
+from awm.gateway.operations import _call_service, operations_to_mcp_tools
 
 log = logging.getLogger("awm.gateway.catalog")
 
@@ -94,6 +95,12 @@ def mark_core_start() -> None:
     _CORE_START = time.time()
 
 
+def core_uptime() -> int | None:
+    """Seconds since :func:`mark_core_start`, or ``None`` if never marked.
+    Read by the ``awm_status`` Operation handler in ``gateway_ops``."""
+    return int(time.time() - _CORE_START) if _CORE_START else None
+
+
 def _serialize(obj: Any) -> str:
     """Render a dispatch result as the string ``/invoke`` returns and the MCP
     proxy hands straight to ``TextContent``."""
@@ -103,68 +110,16 @@ def _serialize(obj: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Native ops — operations the gateway owns in-process
+# Gateway control ops — generated from the declarative GATEWAY_OPERATIONS
+# registry (the gateway's own control plane: status / restart / mcp-sync /
+# hub list+deregister / services lifecycle). Their MCP tools + HTTP routes +
+# CLI commands all come from one Operation each — see gateway_ops.py.
 # ---------------------------------------------------------------------------
 
-
-def _native_status(args: dict) -> dict:
-    """Gateway-native status. Carries no feature data — ``active_scopes`` is 0
-    until a scopes service registers (the field is kept for shape stability and
-    the ``probe_existing_awm`` health check)."""
-    from awm.config import WORKSPACE_ROOT
-
-    uptime = int(time.time() - _CORE_START) if _CORE_START else None
-    return {
-        "status": "ok",
-        "workspace_root": str(WORKSPACE_ROOT),
-        "active_scopes": 0,
-        "core_pid": os.getpid(),
-        "core_uptime_s": uptime,
-        "core_workspace_root": os.environ.get("AWM_WORKSPACE"),
-        "core_python": sys.executable,
-        "core_sys_path_head": sys.path[:3],
-    }
-
-
-def _native_restart(args: dict) -> Any:
-    from awm.gateway.core import restart_core
-
-    return restart_core()
-
-
-def _native_mcp_sync(args: dict) -> Any:
-    from awm.gateway.exports import sync_mcp_configs
-
-    return sync_mcp_configs()
-
-
-_EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
-
-NATIVE_TOOLS: dict[str, tuple[Tool, Callable[[dict], Any]]] = {
-    "awm_status": (
-        Tool(
-            name="awm_status",
-            description="Get AWM gateway status: workspace root, core process info, uptime.",
-            inputSchema=_EMPTY_SCHEMA,
-        ),
-        _native_status,
-    ),
-    "awm_restart": (
-        Tool(
-            name="awm_restart",
-            description="Restart the AWM core systemd unit (awm.service).",
-            inputSchema=_EMPTY_SCHEMA,
-        ),
-        _native_restart,
-    ),
-    "awm_mcp_sync": (
-        Tool(
-            name="awm_mcp_sync",
-            description="Read workspace .mcp.json and regenerate backend-specific MCP configs under .awm/.",
-            inputSchema=_EMPTY_SCHEMA,
-        ),
-        _native_mcp_sync,
-    ),
+# MCP-surface gateway tools, keyed by name for dispatch + uniqueness reservation.
+_GATEWAY_MCP_TOOLS: list[Tool] = operations_to_mcp_tools(GATEWAY_OPERATIONS)
+_GATEWAY_OPS_BY_NAME = {
+    op.name: op for op in GATEWAY_OPERATIONS if "mcp" in op.surfaces
 }
 
 
@@ -222,9 +177,10 @@ def list_tools() -> list[Tool]:
     collision-free (service names are unique), but explicit ``"tool"`` overrides
     are not — so we warn-and-skip duplicates (first registrant wins) rather than
     raise: a raised error here would 500 ``/tools`` and blind every MCP client,
-    which re-fetches it constantly. Native op names are reserved up front."""
-    tools: list[Tool] = [t for (t, _) in NATIVE_TOOLS.values()]
-    seen: set[str] = set(NATIVE_TOOLS.keys())
+    which re-fetches it constantly. Gateway control-op names are reserved up
+    front (generated from GATEWAY_OPERATIONS, not hand-rolled)."""
+    tools: list[Tool] = list(_GATEWAY_MCP_TOOLS)
+    seen: set[str] = {t.name for t in _GATEWAY_MCP_TOOLS}
     for rec in get_registry().service_records():
         for fn in (rec.api or {}).get("functions", []) or []:
             if not (isinstance(fn, dict) and fn.get("name")):
@@ -252,15 +208,19 @@ def _find_service_fn(name: str) -> tuple[ServiceRecord | None, str | None]:
 async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     """Route a tool call to its handler and return the serialized result.
 
-    Native ops run sync in a threadpool; service ops are awaited over the
-    service's control WS on the server loop. See the module concurrency note.
-    Raises ``ValueError`` for an unknown tool (→ 404) and ``RuntimeError`` when
-    a service's control channel is not open (→ 500), matching ``/invoke``'s
-    existing exception→HTTP translation.
+    Gateway control ops dispatch through their ``Operation`` (the same handler
+    that backs the HTTP route + CLI command): async ones are awaited on the
+    server loop, sync ones run in a threadpool. Service ops are awaited over the
+    service's control WS. See the module concurrency note. Raises ``ValueError``
+    for an unknown tool (→ 404) and ``RuntimeError`` when a service's control
+    channel is not open (→ 500), matching ``/invoke``'s existing exception→HTTP
+    translation.
     """
-    if name in NATIVE_TOOLS:
-        _, handler = NATIVE_TOOLS[name]
-        return _serialize(await run_in_threadpool(handler, args))
+    op = _GATEWAY_OPS_BY_NAME.get(name)
+    if op is not None:
+        if inspect.iscoroutinefunction(op.service_func):
+            return _serialize(await _call_service(op, args))
+        return _serialize(await run_in_threadpool(_call_service, op, args))
 
     rec, fn = _find_service_fn(name)
     if rec is None or fn is None:

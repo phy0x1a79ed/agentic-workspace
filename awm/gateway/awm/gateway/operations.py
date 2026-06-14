@@ -217,13 +217,37 @@ def register_fastapi_routes(
         )
 
 
+async def _await_if_needed(result: Any) -> Any:
+    """Resolve a handler result that may be a coroutine. Lets a single
+    ``service_func`` be sync (the native lifecycle ops) or async (the hub /
+    services ops that drive the async registry) without the caller caring."""
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 def _make_fastapi_handler(op: Operation):
-    if op.http_method == "POST" and op.request_model:
+    """Build a FastAPI route handler for ``op``.
+
+    Always ``async`` so an async ``service_func`` (the registry-touching hub /
+    services handlers) can be awaited; a sync one returns immediately. Covers:
+
+    * **POST/PUT/PATCH with a ``request_model``** — body-parsed.
+    * **GET / DELETE / POST with path + query params and no body** — the
+      ``services/{name}/start`` and ``deregister`` shapes; the signature is
+      synthesized via ``exec`` so FastAPI's introspection extracts path vs
+      query correctly, method-agnostically.
+
+    Exception → HTTP: ``FileNotFoundError`` → 404, ``FileExistsError`` → 409,
+    ``RuntimeError`` / ``ValueError`` → 400 (matching the catalog ``/invoke``
+    translation, so a handler raises the same plain exceptions on every
+    surface)."""
+    if op.http_method in ("POST", "PUT", "PATCH") and op.request_model:
         svc = op.service_func
 
-        def post_handler(req):
+        async def body_handler(req):
             try:
-                return svc(req)
+                return await _await_if_needed(svc(req))
             except FileNotFoundError as e:
                 raise HTTPException(404, str(e))
             except FileExistsError as e:
@@ -231,10 +255,11 @@ def _make_fastapi_handler(op: Operation):
             except (RuntimeError, ValueError) as e:
                 raise HTTPException(400, str(e))
 
-        post_handler.__annotations__ = {"req": op.request_model}
-        return post_handler
+        body_handler.__annotations__ = {"req": op.request_model}
+        return body_handler
 
-    # GET — build function dynamically for FastAPI signature inspection
+    # Path/query params, no body — build the signature dynamically so FastAPI
+    # can inspect it. Works for GET, DELETE, and POST-without-a-body alike.
     path_params = _extract_path_params(op.http_path)
     sig_parts = []
     for p in op.params:
@@ -251,11 +276,13 @@ def _make_fastapi_handler(op: Operation):
     sig = ", ".join(sig_parts)
 
     code = (
-        f"def handler({sig}):\n"
+        f"async def handler({sig}):\n"
         f"    try:\n"
-        f"        return _call({param_dict})\n"
+        f"        return await _resolve(_call({param_dict}))\n"
         f"    except FileNotFoundError as e:\n"
         f"        raise HTTPException(404, str(e))\n"
+        f"    except FileExistsError as e:\n"
+        f"        raise HTTPException(409, str(e))\n"
         f"    except (RuntimeError, ValueError) as e:\n"
         f"        raise HTTPException(400, str(e))\n"
     )
@@ -268,6 +295,7 @@ def _make_fastapi_handler(op: Operation):
         "HTTPException": HTTPException,
         "Optional": Optional,
         "_call": call,
+        "_resolve": _await_if_needed,
     }
     exec(code, ns)  # noqa: S102
     return ns["handler"]
@@ -345,23 +373,27 @@ def _make_cli_handler(op: Operation, api_func: Callable) -> Callable:
 
 
 def _cli_dispatch(op: Operation, api_func: Callable, kwargs: dict) -> None:
-    """Execute a CLI command via the HTTP API and render output."""
-    path_params = _extract_path_params(op.http_path)
+    """Execute a CLI command via the HTTP API and render output.
 
-    if op.http_method == "POST":
-        payload = {k: v for k, v in kwargs.items() if v is not None}
-        r = api_func("POST", op.http_path, json=payload)
+    Path params are substituted into the URL for every method (so
+    ``services stop <name>`` → ``POST /hub/services/<name>/stop`` works); the
+    rest go in the JSON body for body-methods and the query string otherwise."""
+    path_params = _extract_path_params(op.http_path)
+    url = op.http_path
+    rest: dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        if k in path_params:
+            url = url.replace(f"{{{k}}}", str(v))
+        else:
+            rest[k] = v
+
+    if op.http_method in ("POST", "PUT", "PATCH"):
+        r = api_func(op.http_method, url, json=rest)
     else:
-        url = op.http_path
-        query: dict[str, Any] = {}
-        for k, v in kwargs.items():
-            if v is None:
-                continue
-            if k in path_params:
-                url = url.replace(f"{{{k}}}", str(v))
-            else:
-                query[k] = v
-        r = api_func("GET", url, params=query)
+        # GET / DELETE — no body; non-path params ride the query string.
+        r = api_func(op.http_method, url, params=rest)
 
     _render_output(op, r)
 

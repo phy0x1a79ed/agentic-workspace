@@ -122,7 +122,7 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
-For the day-to-day workflow of authoring/iterating on a package — what files you write, how `awm packages gen` + `awm packages sync` work, the shadow flow — see § *Developing a package* in the awm-internal AGENTS.md (auto-loaded inside any `projects/awm/*` scope).
+For the day-to-day workflow of authoring/iterating on a package — what files you write, the shadow flow — see § *Developing a package* in the awm-internal AGENTS.md (auto-loaded inside any `projects/awm/*` scope).
 
 ## Git Model
 
@@ -138,14 +138,13 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 
 | Command | Purpose |
 |---|---|
-| `awm status` / `awm serve` / `awm stop` / `awm restart` | Core lifecycle |
+| `awm gateway init` / `awm gateway status` / `awm gateway serve` / `awm gateway stop` / `awm gateway restart` | Core lifecycle |
 | `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
 | `awm skill list / search / get / reindex` | Skill catalog |
-| `awm hub register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
-| `awm context emit --cwd <path>` | Render the 3-tier context as XML blocks (utility for awm tooling that bundles context into spawned sessions; no harness hook calls it) |
+| `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules
 

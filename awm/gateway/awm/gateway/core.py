@@ -14,8 +14,8 @@ def restart_core() -> dict[str, str]:
     systemctl delivers SIGTERM.  The systemd unit uses ``Restart=on-failure``,
     so a self-SIGTERM would NOT restart — we must go through systemctl.
 
-    Before bouncing the unit, sweep any ``awm serve`` processes outside the
-    awm.service cgroup so a stale orphan can't grab :7819 ahead of the new
+    Before bouncing the unit, sweep any ``awm gateway serve`` processes outside
+    the awm.service cgroup so a stale orphan can't grab :7819 ahead of the new
     instance (inbox #232).
     """
     sweep_reports: list[dict[str, str | int | None]] = []
@@ -26,7 +26,7 @@ def restart_core() -> dict[str, str]:
             })
             if r.action == "killed":
                 print(
-                    f"[awm] restart: swept orphan awm serve pid={r.pid} ({r.detail})",
+                    f"[awm] restart: swept orphan awm gateway serve pid={r.pid} ({r.detail})",
                     flush=True,
                 )
     except Exception as exc:  # noqa: BLE001 — sweep is best-effort

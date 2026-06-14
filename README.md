@@ -190,27 +190,34 @@ packages/components/<name>/   ← library; importable across the workspace; no U
 | Component | `src/index.ts` (barrel re-exporting each public component) plus `.svelte` / `.ts` / `.css` files it ships. That's it. |
 | Page | `src/main.ts` (entry; calls `mount(App, …)`), `src/App.svelte` (root component), `index.html`, plus any per-page components in `src/components/`. Prefix defaults to `/ui/<dirname>`; an alternative prefix lives in an optional one-line `prefix.txt` at the package root. |
 
-`package.json` and `vite.config.ts` are generated, not authored. The generator
-scans `src/` for `from '@awm/<x>'` imports and writes the inferred
-`dependencies`; the per-page Vite config is a one-line re-export of the shared
-Vite config base. It's idempotent. CI gates on `git diff --quiet` after a
-fresh run.
+`package.json` and `vite.config.ts` are generated out-of-band, not authored —
+the generated files are checked in (the `packages` CLI wrapper that used to
+drive this was removed). The `dependencies` mirror the `from '@awm/<x>'` imports
+found in `src/`; the per-page Vite config is a one-line re-export of the shared
+Vite config base. Regenerate and commit them by hand when imports change.
 
 ### Building a page
 
+Each package's `package.json` + `vite.config.ts` are checked in (generated
+out-of-band — the old `packages` CLI wrapper was removed), so rebuilding is
+just an npm build from the workspace root:
+
 ```
-awm packages gen $REPO_ROOT            # write per-package package.json + vite.config.ts
 npm install --no-audit --no-fund       # symlink workspace deps
 npm run build --workspaces --if-present # vite build per page → awm/pages/<name>/dist/
-awm packages sync $REPO_ROOT           # register pages with the hub
 ```
 
-The npm workspace root is `awm/package.json`.
+The npm workspace root is `awm/package.json`. To serve a freshly built page
+against a running hub, register its bundle with `awm dev shadow`:
+
+```bash
+awm dev shadow --port 7821 pages/<name>   # serve awm/pages/<name>/dist at /ui/<name>
+```
 
 ### Composing components into a page
 
-Just `import` from `@awm/<name>` in the page's `src/`. The generator's next
-run scans for it and adds the dep to the page's `package.json`. Vite +
+Just `import` from `@awm/<name>` in the page's `src/`, then add the matching
+entry to the page's checked-in `package.json` `dependencies`. Vite +
 `@sveltejs/vite-plugin-svelte` compiles the source in at build time.
 
 ```svelte
@@ -223,7 +230,7 @@ run scans for it and adds the dep to the page's `package.json`. Vite +
 ```
 
 Global CSS doesn't ride the component barrel — `import '@awm/primitives/style.css'`
-explicitly. The generator picks up subpath imports too.
+explicitly. Subpath imports go in `dependencies` the same way.
 
 ### Talking to the hub from a page — `@awm/client`
 
@@ -311,7 +318,6 @@ Browser-side, the hub exposes:
 - **10s reconnect window.** On gateway restart, services have 10 seconds to re-open their control WS. After that the supervisor `SIGTERM`s the last-known PID (from `<AWM_DIR>/state/services.json`) and respawns from the service's `run.sh`.
 - **Shadow can't displace a component.** Edit the component, rebuild the page that imports it, then shadow the page.
 - **`run.sh` must be self-contained.** The gateway runs `bash run.sh` with only the three injected env vars on a minimal systemd `PATH`. A Python `run.sh` that relies on `mamba` being on `PATH` breaks on respawn — source the `.runtime-env` sidecar and exec the baked `AWM_PYTHON` interpreter (see *Authoring a service*).
-- **Generator stale imports.** Adding a `from '@awm/foo'` import without rerunning `awm packages gen` leaves `dependencies` missing the entry; npm install won't symlink it. The CI guard catches this.
 
 See `AGENTS.md` for **awm-internal** architecture — the registry overlay, supervisor PID journal, `rpc.py` envelope schemas, and how to modify the hub itself.
 
@@ -320,11 +326,11 @@ See `AGENTS.md` for **awm-internal** architecture — the registry overlay, supe
 The server auto-starts when you run any CLI command. To run manually:
 
 ```bash
-awm serve          # foreground, local-only listener on 127.0.0.1:7819
-awm status         # health check (auto-starts if needed)
-awm stop           # stop the server
-awm restart        # restart core via systemd (transparent to MCP clients)
-awm refresh        # restart server to pick up source changes (dev mode)
+awm gateway serve     # foreground, local-only listener on 127.0.0.1:7819
+awm gateway status    # health check (auto-starts if needed)
+awm gateway stop      # stop the server
+awm gateway restart   # restart core via systemd (transparent to MCP clients)
+awm gateway refresh   # restart server to pick up source changes (dev mode)
 ```
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
@@ -333,7 +339,7 @@ The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM
 
 ### Per-workspace env file
 
-`awm serve` and `awm-mcp` read `$AWM_WORKSPACE/.awm/env` at startup
+`awm gateway serve` and `awm-mcp` read `$AWM_WORKSPACE/.awm/env` at startup
 (if present) and merge its `KEY=VAL` lines into the process env before
 doing anything else. Use it to plumb things into the daemon that
 systemd doesn't forward by default — the canonical case is
@@ -420,7 +426,7 @@ envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
 
 ## Troubleshooting
 
-**Port in use**: `awm stop` then retry, or `lsof -i :7819` to find the process.
+**Port in use**: `awm gateway stop` then retry, or `lsof -i :7819` to find the process.
 
 **Server won't start**: Check `.awm/awm.log` for errors. Ensure port 7819 is free.
 

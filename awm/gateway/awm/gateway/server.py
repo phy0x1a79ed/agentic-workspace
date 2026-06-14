@@ -26,7 +26,8 @@ from awm.config import (
     IDLE_SHUTDOWN_SECONDS,
 )
 from awm.gateway import catalog
-from awm.gateway.core import restart_core
+from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
+from awm.gateway.operations import register_fastapi_routes
 
 __version__ = "0.1.0"
 
@@ -352,36 +353,16 @@ async def track_activity(request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# Status
+# Generated control-plane routes
 # ---------------------------------------------------------------------------
-
-@app.get("/status")
-def get_status():
-    """Gateway-native status. ``active_scopes`` is 0 until a scopes service
-    registers — kept in the shape so ``_process_utils.probe_existing_awm``
-    (which validates ``status == "ok"``) classifies the daemon correctly."""
-    return {
-        "status": "ok",
-        "workspace_root": str(WORKSPACE_ROOT),
-        "active_scopes": 0,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Restart
-# ---------------------------------------------------------------------------
-
-@app.post("/restart")
-def restart_core_endpoint():
-    """Restart the AWM core via systemd.
-
-    Returns immediately; the actual restart happens asynchronously.
-    MCP clients reconnect transparently on the next tool call.
-    """
-    try:
-        return restart_core()
-    except RuntimeError as e:
-        raise HTTPException(500, str(e))
+# The gateway's own control ops (status / restart / mcp-sync / hub list +
+# deregister / services lifecycle) are declared once in GATEWAY_OPERATIONS and
+# their HTTP routes generated here — GET /status, POST /restart, POST /mcp-sync,
+# GET /hub/services, DELETE /hub/services/{name}, POST /hub/services/{name}/*.
+# No hand-rolled duplicates: the same Operation also drives the MCP tool
+# (catalog) and the CLI command (cli.py). Add a new control op as an Operation,
+# not a hand-written route here.
+register_fastapi_routes(app, GATEWAY_OPERATIONS)
 
 
 # ---------------------------------------------------------------------------
