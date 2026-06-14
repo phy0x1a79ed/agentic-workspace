@@ -142,6 +142,53 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_reconcile",
             "description": "Run startup reconciliation (close stale instance rows, seed resume).",
         },
+        # -- Worker tools (contract D). MCP-visible (`tool` set) so a placed
+        # worker sees them in its spawn-mcp config. The worker holds only its
+        # own placement_token ⇒ can act only on its own task. Handlers relay to
+        # the orchestrator as the RESOLVED refs (never worker-supplied).
+        {
+            "name": "task_deliver",
+            "tool": "task_deliver",
+            "description": (
+                "Finish your placed task: deliver the required output. Call with "
+                "your placement_token, the contract you are satisfying, and a "
+                "payload_ref (artifact reference)."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "contract", "type": "string", "required": False},
+                {"name": "payload_ref", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "task_fail",
+            "tool": "task_fail",
+            "description": (
+                "Give up on your placed task. Call with your placement_token, a "
+                "reason_type and reason_text, and optionally a partial_ref to "
+                "preserve partial work."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "reason_type", "type": "string", "required": False},
+                {"name": "reason_text", "type": "string", "required": False},
+                {"name": "partial_ref", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "task_decompose",
+            "tool": "task_decompose",
+            "description": (
+                "Hand your placed task back as a sub-DAG (planner). Call with your "
+                "placement_token, the children tasks, their edges, and contracts."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "children", "type": "array", "required": False},
+                {"name": "edges", "type": "array", "required": False},
+                {"name": "contracts", "type": "array", "required": False},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [
@@ -315,6 +362,39 @@ def _h_reconcile(args: dict) -> dict:
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator-facing + worker-tool handlers (task-bounded placement, T2)
+# ---------------------------------------------------------------------------
+# place_on_task (contract A) and stop_tree (contract F) are orchestrator-called,
+# NOT worker tools, so they are omitted from API_MANIFEST and reached only via
+# the gateway catch-all dispatch (keyed off HANDLERS). The task_* relays ARE in
+# the manifest (MCP-visible to placed workers).
+
+async def _h_place_on_task(args: dict) -> dict:
+    from awm.agents import placement
+    return await placement.place_on_task(args)
+
+
+async def _h_task_deliver(args: dict) -> dict:
+    from awm.agents import placement
+    return await placement.relay_deliver(args)
+
+
+async def _h_task_fail(args: dict) -> dict:
+    from awm.agents import placement
+    return await placement.relay_fail(args)
+
+
+async def _h_task_decompose(args: dict) -> dict:
+    from awm.agents import placement
+    return await placement.relay_decompose(args)
+
+
+async def _h_stop_tree(args: dict) -> dict:
+    from awm.agents import placement
+    return await placement.stop_tree(args)
+
+
 HANDLERS = {
     "list_sessions": _h_list_sessions,
     "create_session": _h_create_session,
@@ -326,6 +406,13 @@ HANDLERS = {
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
+    # Task-bounded placement (manifest-omitted ops reached via catch-all).
+    "place_on_task": _h_place_on_task,
+    "stop_tree": _h_stop_tree,
+    # Worker tools (also in the manifest, MCP-visible).
+    "task_deliver": _h_task_deliver,
+    "task_fail": _h_task_fail,
+    "task_decompose": _h_task_decompose,
 }
 
 
