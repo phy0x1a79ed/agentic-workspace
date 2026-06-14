@@ -111,10 +111,9 @@ The web UI is composed of per-page stripes under `../packages/pages/<name>/`
 `/ui/<name>/`. The active pages are `agent`, `tts`, `ptt`, and
 `primitives-gallery`.
 
-`./run.sh start` runs `awm packages gen` + `npm run build --workspaces` +
-`awm packages sync` automatically — pages are built into `dist/` and
-registered as the hub comes up. See the root `README.md` § *Developing a
-package* for the authoring workflow.
+`./run.sh start` builds the pages (`npm run build --workspaces`) into `dist/`
+as the hub comes up. See the root `README.md` § *Developing a package* for the
+authoring workflow.
 
 ## Don't use this directory as an agent CWD
 

@@ -82,7 +82,7 @@ def update_service_journal_entry(name: str, patch: dict) -> None:
     """Read-modify-write one service entry. Called on register, control-WS
     open, control-WS close. Not atomic across writers — one event loop
     owns the supervisor so concurrent updates from the hub itself can't
-    race; external `awm packages list` reads are tolerant of partial
+    race; external `awm services list` reads are tolerant of partial
     writes (tmp-then-rename above)."""
     state = load_service_journal()
     entry = state.get(name, {})

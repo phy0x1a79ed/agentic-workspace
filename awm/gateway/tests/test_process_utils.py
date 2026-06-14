@@ -65,7 +65,7 @@ def test_probe_foreign_holder_wrong_workspace(monkeypatch):
         pu.urllib.request, "urlopen",
         _mock_urlopen({"status": "ok", "workspace_root": "/elsewhere", "active_scopes": 5}),
     )
-    monkeypatch.setattr(pu, "_find_port_holder", lambda h, p: (12345, "awm serve"))
+    monkeypatch.setattr(pu, "_find_port_holder", lambda h, p: (12345, "awm gateway serve"))
     result = pu.probe_existing_awm("127.0.0.1", 7819, "/ws")
     assert result.state == "foreign_holder"
     assert result.holder_pid == 12345
@@ -134,13 +134,13 @@ def test_exit_if_healthy_peer_returns_on_free(monkeypatch):
 
 
 def test_is_awm_serve_cmdline_matches_serve():
-    assert pu._is_awm_serve_cmdline("/home/x/awm serve")
-    assert pu._is_awm_serve_cmdline("awm serve --port 7819")
-    assert pu._is_awm_serve_cmdline("python /usr/bin/awm serve")
+    assert pu._is_awm_serve_cmdline("/home/x/awm gateway serve")
+    assert pu._is_awm_serve_cmdline("awm gateway serve --port 7819")
+    assert pu._is_awm_serve_cmdline("python /usr/bin/awm gateway serve")
 
 
 def test_is_awm_serve_cmdline_rejects_mcp():
-    # awm-mcp must not be confused with `awm serve`.
+    # awm-mcp must not be confused with `awm gateway serve`.
     assert not pu._is_awm_serve_cmdline("/home/x/awm-mcp")
     assert not pu._is_awm_serve_cmdline("awm status")
     assert not pu._is_awm_serve_cmdline("awmctl serve")
@@ -157,7 +157,7 @@ def _run_factory(by_cmd):
 def test_sweep_no_processes(monkeypatch):
     monkeypatch.setattr(
         pu.subprocess, "run",
-        _run_factory({"pgrep -f awm serve": MagicMock(returncode=1, stdout="")}),
+        _run_factory({"pgrep -f gateway serve": MagicMock(returncode=1, stdout="")}),
     )
     reports = pu.sweep_orphan_awm_serves(self_pid=1)
     assert reports == []
@@ -167,11 +167,11 @@ def test_sweep_skips_in_cgroup(monkeypatch):
     monkeypatch.setattr(
         pu.subprocess, "run",
         _run_factory({
-            "pgrep -f awm serve": MagicMock(returncode=0, stdout="100\n"),
+            "pgrep -f gateway serve": MagicMock(returncode=0, stdout="100\n"),
             "systemctl --user show": MagicMock(returncode=0, stdout="MainPID=100\n"),
         }),
     )
-    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm serve")
+    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm gateway serve")
     monkeypatch.setattr(pu, "_is_in_awm_service_cgroup", lambda pid: True)
     kills = []
     monkeypatch.setattr(pu.os, "kill", lambda pid, sig: kills.append((pid, sig)))
@@ -184,11 +184,11 @@ def test_sweep_kills_orphan(monkeypatch):
     monkeypatch.setattr(
         pu.subprocess, "run",
         _run_factory({
-            "pgrep -f awm serve": MagicMock(returncode=0, stdout="264\n"),
+            "pgrep -f gateway serve": MagicMock(returncode=0, stdout="264\n"),
             "systemctl --user show": MagicMock(returncode=0, stdout="MainPID=54311\n"),
         }),
     )
-    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm serve")
+    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm gateway serve")
     monkeypatch.setattr(pu, "_is_in_awm_service_cgroup", lambda pid: False)
     monkeypatch.setattr(pu, "_pid_alive", lambda pid: False)
     kills = []
@@ -202,11 +202,11 @@ def test_sweep_skips_self(monkeypatch):
     monkeypatch.setattr(
         pu.subprocess, "run",
         _run_factory({
-            "pgrep -f awm serve": MagicMock(returncode=0, stdout="42\n"),
+            "pgrep -f gateway serve": MagicMock(returncode=0, stdout="42\n"),
             "systemctl --user show": MagicMock(returncode=0, stdout="MainPID=99\n"),
         }),
     )
-    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm serve")
+    monkeypatch.setattr(pu, "_read_cmdline", lambda pid: "/usr/bin/awm gateway serve")
     kills = []
     monkeypatch.setattr(pu.os, "kill", lambda pid, sig: kills.append((pid, sig)))
     reports = pu.sweep_orphan_awm_serves(self_pid=42)
@@ -219,7 +219,7 @@ def test_sweep_skips_non_awm_serve_match(monkeypatch):
     monkeypatch.setattr(
         pu.subprocess, "run",
         _run_factory({
-            "pgrep -f awm serve": MagicMock(returncode=0, stdout="555\n"),
+            "pgrep -f gateway serve": MagicMock(returncode=0, stdout="555\n"),
             "systemctl --user show": MagicMock(returncode=0, stdout="MainPID=99\n"),
         }),
     )
