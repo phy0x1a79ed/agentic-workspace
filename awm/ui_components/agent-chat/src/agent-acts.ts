@@ -43,14 +43,21 @@ function coalesceKey(act: AgentAct): string {
 
 /** A tool act renders collapsed/secondary via tts-history's tool grouping. */
 const TOOL_KINDS = new Set(['tool_use', 'tool_result']);
-/** Kinds we never surface as chat rows (pure stream bookkeeping). */
-const HIDDEN_KINDS = new Set(['status', 'partial-noise']);
+/**
+ * Kinds we never surface as chat rows. `status` is pure stream bookkeeping;
+ * `result` is the terminal turn echo whose text duplicates the final message —
+ * hiding it kills the duplicate final line (its usage/session meta is still
+ * persisted upstream, just not re-rendered). `partial` stays visible: it now
+ * drives the single growing assistant bubble.
+ */
+const HIDDEN_KINDS = new Set(['status', 'result', 'partial-noise']);
 
 /**
  * Project one act's kind onto the `Post.kind` `<TtsHistory>` understands.
- * `message`/`partial`/`result` become plain text rows (speakable, grouped as
- * solo); tool acts keep their kind so tts-history collapses them; `error`
- * renders as a system row.
+ * `message`/`partial` become plain text rows (speakable, grouped as solo) and
+ * are handled by the fold directly; tool acts keep their kind so tts-history
+ * collapses them; `error` renders as a system row. (`result`/`status` are
+ * hidden before they reach here.)
  */
 function postKind(actKind: string): string {
   if (TOOL_KINDS.has(actKind)) return actKind;
@@ -71,77 +78,92 @@ function actBody(act: AgentAct): string {
   return typeof t === 'string' ? t : '';
 }
 
+/** One folded entry: the rendered post plus its sort key (ts, then arrival). */
+interface FoldEntry {
+  ts: number;
+  seq: number;
+  post: Post;
+}
+
 /**
  * Stateful folder: feed it acts (from backfill and live frames, in any
- * interleaving) and read `.posts` for the current transcript view. Dedupes by
- * act id, coalesces partials/final-message by their shared message id, and maps
- * each surviving act to a `Post`. Insertion order is transcript order (acts
- * arrive ordered by (ts, id) within a frame; across frames the live tail is
- * always newer than the backfill).
+ * interleaving) and read `.posts` for the current transcript view.
+ *
+ * It is an **idempotent, time-ordered upsert**. Each act maps to a stable
+ * `key`: message/partial acts key on their shared `message_id` (so a turn's
+ * partials and its finalized message all land on one row); every other act
+ * keys on its own id. For a known key a later update replaces the row in place;
+ * a stale or duplicate update (ts not newer) is a no-op; a new key is slotted
+ * into the transcript at the position sorted by `ts`. The (key, ts) upsert is
+ * what makes the stream dedupe by construction — a flood of partials, an
+ * out-of-order frame, or a backfill/live overlap all converge to one stable
+ * row.
  */
 export class TranscriptFold {
-  /** Visible posts, in render order. The component binds this to <TtsHistory>. */
+  /** Visible posts, in render order (sorted by ts, then arrival). */
   posts: Post[] = [];
 
-  /** Act ids already folded — the dedupe set across backfill/live overlap. */
-  private seenIds = new Set<string>();
+  /** key → folded entry (the upsert table). */
+  private entries = new Map<string, FoldEntry>();
 
-  /** coalesceKey → index into `posts` for the growing message bubble. */
-  private msgIndex = new Map<string, number>();
+  /** Monotonic arrival counter — the tiebreak for equal-ts rows. */
+  private seq = 0;
 
-  /** The highest act id seen, for the reconnect cursor on `lagged`. */
+  /** The id of the most recent act folded, for the reconnect cursor on `lagged`. */
   lastId: string | undefined;
-  /** ISO of the highest-ts act seen, for the reconnect cursor on `lagged`. */
+  /** ISO of the most recent act's ts, for the reconnect cursor on `lagged`. */
   lastTs: string | undefined;
 
   /**
-   * Fold one act in. Returns the `Post` if a NEW, speakable assistant
-   * `message` row was produced (so the caller can auto-speak it), else null.
-   * Partials never trigger speech (only the finalized message does), and an
-   * already-seen id is a no-op.
+   * Fold one act in. Returns the `Post` when a finalized assistant `message`
+   * was folded (so the caller may auto-speak it — the caller dedupes repeat
+   * speech by post id), else null. Partials never trigger speech; a stale /
+   * duplicate update is a no-op.
    */
   push(act: AgentAct): Post | null {
-    if (this.seenIds.has(act.id)) return null;
-    this.seenIds.add(act.id);
+    // Cursor tracking advances for every act (including hidden ones) so a
+    // reconnect resumes past exactly what we've consumed.
     this.lastId = act.id;
     this.lastTs = tsToIso(act.ts);
 
     const kind = act.kind;
     if (HIDDEN_KINDS.has(kind)) return null;
 
-    // message / partial → coalesce into one bubble per logical message.
-    if (kind === 'message' || kind === 'partial') {
-      const key = coalesceKey(act);
-      const post: Post = {
-        id: key,
-        ts: tsToIso(act.ts),
-        author: this.author,
-        kind: 'text',
-        body: actBody(act),
-      };
-      const at = this.msgIndex.get(key);
-      if (at !== undefined) {
-        this.posts[at] = post;
-        this.posts = [...this.posts];
-        return null; // in-place update of an existing bubble — never re-speak
-      }
-      this.msgIndex.set(key, this.posts.length);
-      this.posts = [...this.posts, post];
-      // Speak only finalized messages, not the first partial of a turn.
-      return kind === 'message' ? post : null;
-    }
+    const isMsg = kind === 'message' || kind === 'partial';
+    const key = isMsg ? coalesceKey(act) : act.id;
+    const ts = typeof act.ts === 'number' && Number.isFinite(act.ts) ? act.ts : 0;
 
-    // Everything else (tool_use / tool_result / result / error) is its own row.
+    const existing = this.entries.get(key);
+    // Stale / out-of-order: an update older than what we already have is dropped.
+    if (existing && ts < existing.ts) return null;
+
     const post: Post = {
-      id: act.id,
+      id: key,
       ts: tsToIso(act.ts),
       author: this.author,
-      kind: postKind(kind),
+      kind: isMsg ? 'text' : postKind(kind),
       body: actBody(act),
     };
-    this.posts = [...this.posts, post];
-    return null;
+    // Keep the original arrival slot on an in-place update; new keys append.
+    const seq = existing ? existing.seq : this.seq++;
+    this.entries.set(key, { ts, seq, post });
+    this.render();
+
+    // Speak only the finalized message (not partials). The caller dedupes
+    // repeat speech by post id, so returning it on an idempotent re-fold is safe.
+    return kind === 'message' ? post : null;
   }
 
-  constructor(private author: string) {}
+  /** Rebuild `posts` time-ordered (ts asc, arrival tiebreak). */
+  private render(): void {
+    this.posts = [...this.entries.values()]
+      .sort((a, b) => a.ts - b.ts || a.seq - b.seq)
+      .map((e) => e.post);
+  }
+
+  private author: string;
+
+  constructor(author: string) {
+    this.author = author;
+  }
 }

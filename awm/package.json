@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Frontend workspace for the modular awm tree (lives at awm/package.json). ui_components/* are importable libraries; pages/* are static bundles served at /ui/<name>; services/{tts,ptt} are RPC-over-WS services served at /svc/<name>. Per-package package.json + vite.config.ts are GENERATED from layout — see awm/gateway/awm/gateway/packages/gen.py.",
+  "description": "Frontend workspace for the modular awm tree (lives at awm/package.json). ui_components/* are importable libraries; pages/* are static bundles served at /ui/<name>; services/{tts,stt} are RPC-over-WS services served at /svc/<name>. Per-package package.json + vite.config.ts are GENERATED from layout — see awm/gateway/awm/gateway/packages/gen.py.",
   "workspaces": [
     "ui_components/*",
     "pages/*"
   ],
   "scripts": {
     "typecheck": "tsc -p ui_components/client/tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.components.json",
-    "typecheck:pages": "svelte-check --tsconfig ./tsconfig.pages.json"
+    "typecheck:pages": "svelte-check --tsconfig ./tsconfig.pages.json",
+    "test": "node --test 'ui_components/**/*.test.ts'"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
