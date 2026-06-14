@@ -221,6 +221,10 @@
     flex-direction: column;
     gap: var(--space-2, 8px);
     width: 100%;
+    /* Intrinsic floor for content-hugging containers (gallery card); inert
+       when the parent is wider (agent/stt pages). The fixed-width button-col
+       (140px) already sets the hard floor; this keeps the surface usable. */
+    min-width: 300px;
   }
 
   /* chip list on the left, vertical button column on the right */

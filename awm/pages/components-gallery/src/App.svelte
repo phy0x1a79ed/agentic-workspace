@@ -310,31 +310,33 @@
 <!-- Live demo per component, reusing the existing offline mock props. -->
 {#snippet liveDemo(name: string)}
   {#if name === 'AgentChat'}
-    <div class="agent-frame"><AgentChat autoConnect={false} offline /></div>
+    <div class="live-frame"><AgentChat autoConnect={false} offline /></div>
   {:else if name === 'SttComposer'}
-    <SttComposer mockInitialChips={composerChips} />
+    <div class="live-frame"><SttComposer mockInitialChips={composerChips} /></div>
   {:else if name === 'SttComposerShell'}
-    <SttComposerShell initialChips={shellChips}>
-      {#snippet voiceControls()}
-        <button type="button" class="demo-ctl mono">PTT</button>
-      {/snippet}
-      {#snippet voiceMeter()}
-        <div class="demo-meter"><div class="demo-meter-bar"></div></div>
-      {/snippet}
-    </SttComposerShell>
+    <div class="live-frame">
+      <SttComposerShell initialChips={shellChips}>
+        {#snippet voiceControls()}
+          <button type="button" class="demo-ctl mono">PTT</button>
+        {/snippet}
+        {#snippet voiceMeter()}
+          <div class="demo-meter"><div class="demo-meter-bar"></div></div>
+        {/snippet}
+      </SttComposerShell>
+    </div>
   {:else if name === 'SttButton'}
     <div class="stage narrow"><SttButton onpttdown={() => {}} onpttup={() => {}} /></div>
   {:else if name === 'TextTab'}
-    <TextTab />
+    <div class="live-frame"><TextTab /></div>
   {:else if name === 'VoiceTab'}
-    <VoiceTab initialChips={voiceTabChips} />
+    <div class="live-frame"><VoiceTab initialChips={voiceTabChips} /></div>
   {:else if name === 'VoiceChip'}
     <div class="stage col chips">
       <VoiceChip text="a settled voice chip" />
       <VoiceChip text="a live, streaming chip" live />
     </div>
   {:else if name === 'TtsHistory'}
-    <div class="tts-frame"><TtsHistory posts={mockPosts} onspeak={noopSpeak} /></div>
+    <div class="live-frame"><TtsHistory posts={mockPosts} onspeak={noopSpeak} /></div>
   {/if}
 {/snippet}
 
@@ -801,21 +803,28 @@
     opacity: 0.6;
   }
 
-  .tts-frame {
-    height: 340px;
-    display: flex;
+  /* One uniform live-demo container for every composite. Fixed width (spans
+     the card); height hugs the component's own intrinsic min-height (no fixed
+     height here). overflow-x:auto means a horizontal scrollbar appears only
+     when the component's intrinsic min-width exceeds the card. */
+  .live-frame {
     width: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow-x: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    background: var(--surface2);
   }
-  .agent-frame {
-    height: 460px;
-    display: flex;
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    overflow: hidden;
+  /* The global @awm/primitives/style.css (imported for the gallery chrome) has
+     a generic `.shell { height: 100vh }` page-layout rule. SttComposerShell's
+     root is <section class="shell">, so that height leaks onto every embedded
+     composer and forces it to full-viewport height — the SttComposer sprawl and
+     the AgentChat clip both trace to this. The component's own scoped rule wins
+     on `display` but declares no height, so we neutralize the leaked height
+     here for any composer shell rendered inside a live demo. */
+  .live-frame :global(.shell) {
+    height: auto;
   }
 
   /* ── components explorer ── */

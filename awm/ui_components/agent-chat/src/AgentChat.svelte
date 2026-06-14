@@ -326,7 +326,12 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    min-height: 0;
+    /* Intrinsic floors: when the parent has a fixed height (agent page),
+       height:100% wins and these are inert. When the parent hugs content
+       (gallery card), height:100% resolves to auto and these become the
+       effective size — so the component renders fully instead of collapsing. */
+    min-height: 440px;
+    min-width: 360px;
     max-width: 720px;
     margin: 0 auto;
     width: 100%;

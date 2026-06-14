@@ -183,7 +183,11 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    min-height: 0;
+    /* Intrinsic floor: standalone (gallery card) the transcript has no
+       height-constrained flex parent, so without this it collapses to its
+       content. Inside a height-constrained flex parent (agent/stt pages)
+       flex:1 grows it past this floor, so the floor is inert there. */
+    min-height: 280px;
     position: relative;
     background:
       linear-gradient(to bottom, color-mix(in oklab, var(--bg, #111) 50%, var(--surface, #1a1a1a)) 0, transparent 60px),
