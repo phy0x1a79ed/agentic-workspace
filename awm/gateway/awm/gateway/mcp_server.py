@@ -2,7 +2,7 @@
 
 This module is a minimal bridge: Claude Code (or any MCP client) launches
 ``awm-mcp`` as a stdio child, and every request is forwarded over HTTP to
-the long-running ``awm serve`` core (managed by systemd).
+the long-running ``awm gateway serve`` core (managed by systemd).
 
 Design invariant — the proxy is **stateless**. It holds no application data
 (tool definitions, schemas, models, service objects). The only things imported
@@ -122,7 +122,7 @@ async def _request_with_retry(
 def _ensure_core_running() -> None:
     """Start the awm daemon via systemd if it's not already up.
 
-    Best-effort — falls back to detached ``awm serve`` in dev setups
+    Best-effort — falls back to detached ``awm gateway serve`` in dev setups
     without systemd. Port-checks before spawning the fallback to avoid
     racing into a zombie binding the listener.
     """
@@ -143,7 +143,7 @@ def _ensure_core_running() -> None:
         except OSError:
             pass
     subprocess.Popen(
-        [resolve_bin("awm"), "serve"],
+        [resolve_bin("awm"), "gateway", "serve"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

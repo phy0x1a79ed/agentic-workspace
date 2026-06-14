@@ -28,17 +28,23 @@ cd "$WS"
 COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"
 
 # dist name -> "<source-root-dir>::<test-dir>"
+# agentcore is a leaf component (no service folder) — it has its own source
+# root + tests/ like the feature dists; it ships in the same per-dist runner.
 declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
+  [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
+  [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [skills]="$WS/awm/services/skills::$WS/awm/services/skills/tests"
   [discord]="$WS/awm/services/discord::$WS/awm/services/discord/tests"
+  [ptt]="$WS/awm/services/ptt::$WS/awm/services/ptt/awm/ptt/tests"
+  [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
 )
 
 # Stable run order.
-ORDER=(gateway scopes agents artifacts skills discord)
+ORDER=(gateway agentcore gatewayclient scopes agents artifacts skills discord ptt tts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

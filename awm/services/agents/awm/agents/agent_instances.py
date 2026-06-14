@@ -44,9 +44,18 @@ from awm.agents._path import resolve_bin
 from awm.agents.models import AgentSessionInfo
 import awm.gatewayclient as gatewayclient
 
+from awm.agentcore import AgentConfig, open_agent
+from awm.agentcore.session import AgentSession as _CoreSession
+
 
 _SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
+
+# Scope→stdin delivery: how often the per-session poller pulls new scope-channel
+# posts to route into the agent's stdin (cross-service; the scopes service
+# exposes no live emitter/session for posts, only the scope_fetch RPC).
+_SCOPE_POLL_INTERVAL_S = 1.0
+_SCOPE_POLL_BATCH = 50
 
 # Module-level DAO instance (initialized after dao.init() is called).
 _dao: AgentsDAO | None = None
@@ -72,6 +81,12 @@ class AgentInstance:
 
     ``id`` is the ``agent_instances.id`` (per-spawn integer). ``project`` and
     ``scope`` are the natural key — no ``agent_id`` uuid is stored.
+
+    The subprocess + stream parsing are owned by an agentcore
+    :class:`AgentSession` (``agent_session``); this class keeps the supervisor
+    concerns (registry, transcript, scope-attach, resume, slash/compact). The
+    ``proc`` property surfaces the agentcore session's underlying process so the
+    existing stop/kill/slash/pid paths keep working unchanged.
     """
 
     def __init__(
@@ -82,7 +97,7 @@ class AgentInstance:
         scope: str,
         agent_cli: str,
         log_path: Path,
-        proc: asyncio.subprocess.Process,
+        agent_session: _CoreSession,
     ):
         self.id = id
         self.project = project
@@ -90,7 +105,7 @@ class AgentInstance:
         self.scope_key = _scope_key(project, scope)
         self.agent_cli = agent_cli
         self.log_path = log_path
-        self.proc = proc
+        self.agent_session = agent_session
         self.status: str = "running"
         self.started_at_ms: int = now_ms()
         self.exited_at_ms: Optional[int] = None
@@ -99,6 +114,9 @@ class AgentInstance:
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
+        self.scope_poll_task: Optional[asyncio.Task] = None
+        # Cursor for the scope→stdin poller (ISO ts of the last post delivered).
+        self.scope_poll_after_ts: Optional[str] = None
         self.stdin_ready: asyncio.Event = asyncio.Event()
         self.stdin_frames_log = log_path.parent / "agent.log"
         self.permission_mode: str = "default"
@@ -110,6 +128,14 @@ class AgentInstance:
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         self.compacting: bool = False
+
+    @property
+    def proc(self):
+        """The agentcore session's underlying subprocess (``_proc``).
+
+        Surfaced so the supervisor's stop/kill/slash/pid code keeps reaching
+        the real process without knowing about agentcore internals."""
+        return getattr(self.agent_session, "_proc", None)
 
     @property
     def claude_session_id(self) -> Optional[str]:
@@ -234,6 +260,45 @@ def _build_opencode_argv(
 
 
 # ---------------------------------------------------------------------------
+# agentcore config builder
+# ---------------------------------------------------------------------------
+
+def _build_core_config(
+    *, agent_cli: str, permission_mode: str, model: Optional[str],
+    effort: Optional[str], resume_session_id: Optional[str],
+    workspace_dir: Path, awm_dir: Path,
+) -> AgentConfig:
+    """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
+
+    ``permission_mode == 'bypassPermissions'`` → full-open (``permissions='full'``);
+    everything else maps to ``permissions='default'`` (the harness's own
+    default). ``effort`` rides ``params`` (claude). ``mcp_config`` is the
+    workspace ``spawn-mcp.json`` for claude; opencode is configured via the
+    ``OPENCODE_CONFIG`` env it inherits from this process, so it is not threaded
+    through the config here.
+    """
+    permissions = "full" if permission_mode == "bypassPermissions" else "default"
+    params: dict = {}
+    if effort:
+        params["effort"] = effort
+    mcp_config: Optional[str] = None
+    if agent_cli == "claude":
+        spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
+        if spawn_mcp.exists():
+            mcp_config = str(spawn_mcp)
+    return AgentConfig(
+        harness=agent_cli,
+        mode="live",
+        model=model,
+        params=params,
+        permissions=permissions,
+        workdir=str(workspace_dir),
+        resume_id=resume_session_id,
+        mcp_config=mcp_config,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API: create / lookup
 # ---------------------------------------------------------------------------
 
@@ -271,7 +336,7 @@ async def create_session(*, project: str, scope: str,
         if key in _by_scope:
             raise ScopeBusyError(
                 f"scope {key} already has an active session "
-                f"(pid={_by_scope[key].proc.pid})"
+                f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
             )
 
         # Ensure project + scope exist in the scopes service.
@@ -300,44 +365,29 @@ async def create_session(*, project: str, scope: str,
         # A scope IS the channel — it exists once the scope does (ensured
         # above); no separate room to provision.
 
-        # Spawn the subprocess.
-        spawn_env: dict[str, str] | None = None
-        if agent_cli == "opencode":
-            argv = _build_opencode_argv(
-                workspace_dir=workspace_dir,
-                permission_mode=permission_mode, model=model,
-            )
-            scope_opencode_cfg = awm_dir / "mcp-opencode.json"
-            workspace_opencode_cfg = config.AWM_DIR / "mcp-opencode.json"
-            opencode_cfg = (
-                scope_opencode_cfg if scope_opencode_cfg.exists()
-                else workspace_opencode_cfg
-            )
-            if opencode_cfg.exists():
-                spawn_env = {**os.environ, "OPENCODE_CONFIG": str(opencode_cfg)}
-        else:
-            argv = _build_claude_argv(
-                permission_mode=permission_mode, model=model, effort=effort,
-                resume_session_id=resume_session_id,
-            )
-        log_fp = open(log_path, "ab")
+        # Build the agentcore config and drive an AgentSession. The subprocess
+        # + stream parsing live in agentcore now; we keep only the supervisor.
+        core_config = _build_core_config(
+            agent_cli=agent_cli, permission_mode=permission_mode,
+            model=model, effort=effort, resume_session_id=resume_session_id,
+            workspace_dir=workspace_dir, awm_dir=awm_dir,
+        )
+        agent_session = open_agent(core_config)
+
+        # Subscribe BEFORE the first send so the claude init `status` event and
+        # any early acts are captured (the pump-drained-past-us race).
+        event_stream = agent_session.subscribe()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(workspace_dir),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=log_fp,
-                start_new_session=True,
-                env=spawn_env,
-            )
+            await agent_session.start()
         except FileNotFoundError as exc:
-            log_fp.close()
             dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
                                intent_override="failed_to_spawn")
             raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
-        finally:
-            log_fp.close()
+        except Exception as exc:  # noqa: BLE001
+            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                               intent_override="failed_to_spawn")
+            raise RuntimeError(
+                f"failed to start {agent_cli} for {key}: {exc}") from exc
 
         session = AgentInstance(
             id=instance_id,
@@ -345,7 +395,7 @@ async def create_session(*, project: str, scope: str,
             scope=scope,
             agent_cli=agent_cli,
             log_path=log_path,
-            proc=proc,
+            agent_session=agent_session,
         )
         session.permission_mode = permission_mode
         session.model = model
@@ -354,16 +404,20 @@ async def create_session(*, project: str, scope: str,
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
-    session.reader_task = asyncio.create_task(_reader_loop(session))
+    session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
+    # Subscribe to the scope's channel so human posts reach the agent's stdin.
+    session.scope_poll_task = asyncio.create_task(_scope_delivery_loop(session))
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
-        try:
-            session.proc.kill()
-        except ProcessLookupError:
-            pass
+        proc = session.proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         async with _registry_lock:
             _by_scope.pop(key, None)
             _registry_by_id.pop(instance_id, None)
@@ -388,29 +442,26 @@ def get_session(session_id: int) -> AgentInstance | None:
 # ---------------------------------------------------------------------------
 
 async def _input_pump(session: AgentInstance) -> None:
+    """Drain the input queue into the agentcore session, one user turn each.
+
+    The ``[from:author]`` framing (multi-party attribution) is preserved — it
+    is the body the agent sees and what we record as the inbound transcript
+    entry. ``enqueue_input`` stays the only path into this queue."""
     session.stdin_ready.set()
-    if (session.proc is None or session.proc.stdin is None
-            or session.proc.stdin.is_closing()):
-        return
     while True:
         try:
             post_author, post_body = await session.input_queue.get()
         except asyncio.CancelledError:
             return
-        if session.proc is None or session.proc.stdin is None:
-            return
-        if session.proc.stdin.is_closing():
-            return
         framed_body = f"[from:{post_author}]\n{post_body}"
-        payload = {
-            "type": "user",
-            "message": {"role": "user", "content": framed_body},
-        }
-        line = (json.dumps(payload) + "\n").encode("utf-8")
         try:
-            session.proc.stdin.write(line)
-            await session.proc.stdin.drain()
+            await session.agent_session.send(framed_body)
         except (ConnectionResetError, BrokenPipeError):
+            return
+        except RuntimeError:
+            # Session stdin not available (closing / not started) — stop pumping.
+            return
+        except Exception:  # noqa: BLE001
             return
         try:
             with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
@@ -430,6 +481,84 @@ def enqueue_input(session: AgentInstance, post_author: str,
         return True
     except asyncio.QueueFull:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Scope → stdin delivery (cross-service)
+# ---------------------------------------------------------------------------
+# A scope IS the channel. Human `message`-kind posts to the scope must reach
+# the agent's stdin. The scopes service exposes no live emitter/session for
+# posts (only the `scope_fetch` RPC), so the agents service polls the channel
+# cursored on ts and routes new human posts into `enqueue_input`. The agent's
+# OWN posts (author `agent:proj/scope`) are ignored — agent output lives in the
+# transcript, not re-delivered to itself.
+
+def _is_own_author(session: AgentInstance, author: str) -> bool:
+    """True if `author` is this agent's own scope ref (don't self-deliver)."""
+    if not author:
+        return False
+    a = author
+    if a.startswith(("agent:", "scope:")):
+        a = a.split(":", 1)[1]
+    return a == f"{session.project}/{session.scope}"
+
+
+async def _scope_delivery_loop(session: AgentInstance) -> None:
+    """Poll the scope channel and route new human posts into the agent stdin.
+
+    Cursored on the ISO ts of the last delivered post. Only ``message``-kind
+    posts not authored by the agent itself are routed. Cross-service via the
+    ``scopes`` service's ``scope_fetch`` RPC (best-effort; transient RPC
+    failures are swallowed and retried on the next tick)."""
+    # Seed the cursor at the newest existing post so we don't replay history
+    # into stdin on attach (the transcript/backfill carries history already).
+    try:
+        recent = await gatewayclient.call('scopes', 'scope_fetch', {
+            'project': session.project, 'scope': session.scope,
+            'kind': 'message', 'limit': 1, 'order': 'desc',
+        })
+        posts = (recent or {}).get('posts') or []
+        if posts:
+            session.scope_poll_after_ts = posts[0].get('ts')
+    except Exception:  # noqa: BLE001
+        pass
+
+    while True:
+        try:
+            await asyncio.sleep(_SCOPE_POLL_INTERVAL_S)
+        except asyncio.CancelledError:
+            return
+        try:
+            # Newest-first with a batch cap; we filter to posts after the
+            # cursor and process them oldest→newest. scope_fetch has no
+            # `after_ts` param, so the cursor filter is client-side.
+            res = await gatewayclient.call('scopes', 'scope_fetch', {
+                'project': session.project, 'scope': session.scope,
+                'kind': 'message',
+                'limit': _SCOPE_POLL_BATCH,
+                'order': 'desc',
+            })
+        except Exception:  # noqa: BLE001
+            continue
+        posts = (res or {}).get('posts') or []
+        cursor_ms = iso_to_ms(session.scope_poll_after_ts)
+        # Oldest→newest of the (newest-first) batch.
+        fresh = []
+        for post in reversed(posts):
+            ts_ms = iso_to_ms(post.get('ts'))
+            if cursor_ms is not None and ts_ms is not None and ts_ms <= cursor_ms:
+                continue
+            fresh.append(post)
+        for post in fresh:
+            ts = post.get('ts')
+            author = post.get('author') or ''
+            if ts:
+                session.scope_poll_after_ts = ts
+            if _is_own_author(session, author):
+                continue
+            if post.get('kind') != 'message':
+                continue
+            enqueue_input(session, author, post.get('body') or '')
 
 
 # ---------------------------------------------------------------------------
@@ -505,52 +634,61 @@ def _extract_renderable(parsed: dict) -> list[tuple[str, str]]:
     return out
 
 
-async def _reader_loop(session: AgentInstance) -> None:
+def _update_usage_from_data(session: "AgentInstance", data: dict | None) -> None:
+    """Update context_used from an event's ``data['usage']`` block."""
+    if not isinstance(data, dict):
+        return
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+    try:
+        inp = usage.get("input_tokens") or 0
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        cache_create = usage.get("cache_creation_input_tokens") or 0
+        total = int(inp) + int(cache_read) + int(cache_create)
+        if total > 0:
+            session.context_used = total
+    except (TypeError, ValueError):
+        return
+
+
+async def _reader_loop(session: AgentInstance, event_stream) -> None:
+    """Consume agentcore :class:`AgentEvent`s: persist + fan out live.
+
+    Each event is persisted to ``agent_transcript`` (carrying its uuid) and
+    published to the in-process bus so a live ``agent_subscribe`` WS streams it
+    after replaying the backfill. The agent's output is **not** posted back to
+    its scope channel (transcript only) — deliberate agent messages (debrief)
+    stay an explicit ``scope_post`` elsewhere.
+
+    The ``status`` (init) event carries the resolved harness session id (for
+    resume) + slash commands + model; ``result``/``status`` carry usage."""
     from awm.agents import agent_transcript
-    assert session.proc is not None and session.proc.stdout is not None
-    stdout = session.proc.stdout
-    while True:
-        line = await stdout.readline()
-        if not line:
-            return
-        text = line.decode("utf-8", errors="replace").rstrip("\n")
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            try:
-                with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
-                    fp.write(f"STDOUT(raw) {text}\n")
-            except OSError:
-                pass
-            agent_transcript.record_raw_out(session, text)
-            continue
+    from awm.agents import agent_bus
 
-        agent_transcript.record_out(session, parsed)
+    async for event in event_stream:
+        data = getattr(event, "data", None) or {}
 
-        if parsed.get("type") == "system" and parsed.get("subtype") == "init":
-            sid = parsed.get("session_id")
+        # Lifecycle metadata off the status(init) event.
+        if event.kind == "status" and data.get("subtype") == "init":
+            sid = data.get("session_id")
             if isinstance(sid, str) and sid != session.cli_session_id:
                 session.cli_session_id = sid
                 _get_dao().update_instance_cli_session_id(session.id, sid)
-            cmds = parsed.get("slash_commands")
+            cmds = data.get("slash_commands")
             if isinstance(cmds, list):
-                session.claude_slash_commands = [c for c in cmds if isinstance(c, str)]
-            init_model = parsed.get("model") or session.model
+                session.claude_slash_commands = [
+                    c for c in cmds if isinstance(c, str)
+                ]
+            init_model = data.get("model") or session.model
             session.context_max = _lookup_context_max(init_model)
 
-        _update_usage_from_event(session, parsed)
+        _update_usage_from_data(session, data)
 
-        events = _extract_renderable(parsed)
-        if not events:
-            continue
-
-        # Post the agent's rendered output to its own scope channel.
-        author_ref = f"agent:{session.project}/{session.scope}"
-        for kind, body in events:
-            await _post_to_scope(
-                project=session.project, scope=session.scope,
-                author=author_ref, body=body, kind=kind,
-            )
+        # Persist the act (with its uuid) and fan it out to live subscribers.
+        act = agent_transcript.record_event(session, event)
+        if act is not None:
+            agent_bus.publish_act(session.project, session.scope, act)
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +696,10 @@ async def _reader_loop(session: AgentInstance) -> None:
 # ---------------------------------------------------------------------------
 
 async def _waiter_loop(session: AgentInstance) -> None:
-    assert session.proc is not None
-    exit_code = await session.proc.wait()
+    proc = session.proc
+    if proc is None:
+        return
+    exit_code = await proc.wait()
     session.exit_code = exit_code
     session.exited_at_ms = now_ms()
     final = "killed" if session.status == "killed" else "exited"
@@ -569,6 +709,8 @@ async def _waiter_loop(session: AgentInstance) -> None:
 
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
+    if session.scope_poll_task is not None:
+        session.scope_poll_task.cancel()
 
     async with _registry_lock:
         if _by_scope.get(session.scope_key) is session:

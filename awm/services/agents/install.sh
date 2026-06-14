@@ -8,6 +8,9 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
+# agentcore is a leaf component (no install.sh) the agents service drives for
+# the harness subprocess; editable-install it before agents so the dep resolves.
+run "$WS/awm/service_components/agentcore" --no-deps
 run "$WS/awm/services/agents"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

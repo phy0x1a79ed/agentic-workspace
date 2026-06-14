@@ -1,0 +1,191 @@
+"""T2 — agentcore adoption + live agent_subscribe + scope→stdin delivery.
+
+Covers the pieces that landed when the agents service moved onto agentcore:
+  - record_event: persists a normalized AgentEvent + returns the wire act.
+  - read_acts_after / DAO cursor: monotonic (ts, id) cursored backfill.
+  - agent_bus: in-process live fan-out + lagged backpressure sentinel.
+  - _is_own_author: the don't-self-deliver filter for scope→stdin delivery.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+pytestmark = [pytest.mark.agent, pytest.mark.smoke]
+
+import awm.agents.agent_instances as ai_mod
+import awm.agents.agent_transcript as transcript_mod
+import awm.agents.agent_bus as bus_mod
+from awm.agents.dao import AgentsDAO, init as dao_init
+from awm.agents._time import now_ms
+
+
+@pytest.fixture(autouse=True)
+def _agents_db(tmp_path, monkeypatch):
+    import awm.agents.dao as dao_mod
+    import awm.persistence.databases as dbs_mod
+    monkeypatch.setattr("awm.config.AWM_DIR", tmp_path)
+    monkeypatch.setattr(dbs_mod, "SERVICES_DIR", tmp_path / "services")
+    dao_mod._initialized = False
+    ai_mod._dao = None
+    dao_init()
+    yield
+    dao_mod._initialized = False
+    ai_mod._dao = None
+
+
+class _Ev:
+    """Minimal agentcore AgentEvent stand-in (duck-typed)."""
+    def __init__(self, kind, text=None, data=None, id="evid", ts=123):
+        self.kind = kind
+        self.text = text
+        self.data = data
+        self.id = id
+        self.ts = ts
+
+
+class _Sess:
+    def __init__(self, project="p", scope="s", instance_id=1):
+        self.project = project
+        self.scope = scope
+        self.id = instance_id
+
+
+# ---------------------------------------------------------------------------
+# record_event → wire act + persistence
+# ---------------------------------------------------------------------------
+
+class TestRecordEvent:
+    def test_persists_and_returns_wire_act(self):
+        act = transcript_mod.record_event(
+            _Sess(), _Ev("message", text="hello", data={"x": 1}))
+        assert act is not None
+        assert act["kind"] == "message"
+        assert act["body"] == "hello"
+        assert "id" in act and act["id"]
+        # The wire act id is the agent_transcript row id (the dedupe key).
+        rows = transcript_mod.read_session("p", "s")
+        assert len(rows) == 1
+        assert rows[0]["id"] == act["id"]
+        assert rows[0]["kind"] == "message"
+
+    def test_preserves_event_kinds_verbatim(self):
+        for kind in ("partial", "tool_use", "tool_result", "status"):
+            transcript_mod.record_event(_Sess(), _Ev(kind, text="t"))
+        kinds = [r["kind"] for r in transcript_mod.read_session("p", "s")]
+        assert kinds == ["partial", "tool_use", "tool_result", "status"]
+
+    def test_message_event_wakes_assistant_turn_subscriber(self):
+        sess = _Sess(instance_id=99)
+        q = transcript_mod.subscribe_assistant_turns(99)
+        try:
+            transcript_mod.record_event(sess, _Ev("message", text="done"))
+            assert q.get_nowait() == "done"
+        finally:
+            transcript_mod.unsubscribe_assistant_turns(99, q)
+
+
+# ---------------------------------------------------------------------------
+# Cursored backfill (ts ms + id tiebreak)
+# ---------------------------------------------------------------------------
+
+class TestCursorReplay:
+    def _insert(self, kind, body, ts, rid):
+        dao = AgentsDAO()
+        import json as _j
+        dao.execute(
+            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rid, "p", "s", kind, body, _j.dumps({}), ts),
+        )
+
+    def test_no_cursor_returns_all_ordered(self):
+        self._insert("message", "a", 100, "id-a")
+        self._insert("message", "b", 200, "id-b")
+        acts = transcript_mod.read_acts_after("p", "s")
+        assert [a["body"] for a in acts] == ["a", "b"]
+
+    def test_cursor_excludes_seen_and_keeps_newer(self):
+        self._insert("message", "a", 100, "id-a")
+        self._insert("message", "b", 200, "id-b")
+        self._insert("message", "c", 300, "id-c")
+        acts = transcript_mod.read_acts_after("p", "s", after_ts=200, after_id="id-b")
+        assert [a["body"] for a in acts] == ["c"]
+
+    def test_same_ts_id_tiebreak(self):
+        # Two acts at the same ts: the id tiebreak keeps ordering deterministic
+        # and the cursor at (ts, id-a) excludes id-a but keeps id-b.
+        self._insert("message", "a", 500, "id-a")
+        self._insert("message", "b", 500, "id-b")
+        acts = transcript_mod.read_acts_after("p", "s", after_ts=500, after_id="id-a")
+        assert [a["body"] for a in acts] == ["b"]
+
+
+# ---------------------------------------------------------------------------
+# In-process act bus
+# ---------------------------------------------------------------------------
+
+class TestAgentBus:
+    @pytest.mark.asyncio
+    async def test_publish_reaches_live_subscriber(self):
+        q: asyncio.Queue = asyncio.Queue(maxsize=8)
+        await bus_mod.attach_live("p", "s", q)
+        try:
+            bus_mod.publish_act("p", "s", {"id": "1", "kind": "message"})
+            ev = q.get_nowait()
+            assert ev["type"] == "act"
+            assert ev["act"]["id"] == "1"
+        finally:
+            await bus_mod.detach_live("p", "s", q)
+
+    @pytest.mark.asyncio
+    async def test_full_queue_drops_without_raising(self):
+        # Mirrors the scopes channel `lagged` backpressure pattern: a publish to
+        # a full subscriber queue drops (best-effort lagged sentinel) rather
+        # than block the reader loop or raise. The already-queued acts survive;
+        # the live session writer (which sees the `lagged` sentinel under real
+        # load) closes 1011 and the client reconnects with its cursor.
+        q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        await bus_mod.attach_live("p", "s", q)
+        try:
+            bus_mod.publish_act("p", "s", {"id": "1", "kind": "partial"})
+            bus_mod.publish_act("p", "s", {"id": "2", "kind": "partial"})
+            # Full now — these must not raise (the reader loop must never be
+            # stalled or crashed by a slow subscriber).
+            bus_mod.publish_act("p", "s", {"id": "3", "kind": "partial"})
+            bus_mod.publish_act("p", "s", {"id": "4", "kind": "message"})
+            assert q.get_nowait()["act"]["id"] == "1"
+            assert q.get_nowait()["act"]["id"] == "2"
+            assert q.empty()
+        finally:
+            await bus_mod.detach_live("p", "s", q)
+
+    @pytest.mark.asyncio
+    async def test_detach_stops_delivery(self):
+        q: asyncio.Queue = asyncio.Queue(maxsize=8)
+        await bus_mod.attach_live("p", "s", q)
+        await bus_mod.detach_live("p", "s", q)
+        bus_mod.publish_act("p", "s", {"id": "1", "kind": "message"})
+        assert q.empty()
+
+
+# ---------------------------------------------------------------------------
+# scope → stdin: don't-self-deliver filter
+# ---------------------------------------------------------------------------
+
+class TestOwnAuthorFilter:
+    def _sess(self):
+        s = _Sess(project="awm", scope="dev")
+        return s
+
+    def test_own_agent_ref_is_self(self):
+        assert ai_mod._is_own_author(self._sess(), "agent:awm/dev") is True
+        assert ai_mod._is_own_author(self._sess(), "scope:awm/dev") is True
+        assert ai_mod._is_own_author(self._sess(), "awm/dev") is True
+
+    def test_other_authors_are_not_self(self):
+        assert ai_mod._is_own_author(self._sess(), "user:alice") is False
+        assert ai_mod._is_own_author(self._sess(), "agent:awm/other") is False
+        assert ai_mod._is_own_author(self._sess(), "") is False

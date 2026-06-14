@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-ptt"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM ptt service: STT-only — faster-whisper transcription, the direct PCM `stream` PTT/continuous session, and the convo dictation-cleanup loop (agentcore opencode one-shot)."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+    "httpx",
+    "numpy",
+    "faster-whisper",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/ptt/.
+[tool.setuptools.packages.find]
+include = ["awm.ptt*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

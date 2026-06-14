@@ -1,0 +1,20 @@
+{
+  // GATING type-check scope: the shared component libraries under
+  // ui_components/* (@awm/client, @awm/primitives, @awm/ptt-composer,
+  // @awm/tts-history, and any future @awm/<x> such as @awm/agent-chat).
+  //
+  // These are the contract-bearing surface every page imports, so this is the
+  // pass `npm run typecheck` grades on. The `include` globs existing dirs, so
+  // it is resilient to packages that don't exist yet.
+  "extends": "./tsconfig.json",
+  "include": [
+    "ui_components/**/*.ts",
+    "ui_components/**/*.svelte"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    // The shared Vite config base is build tooling, not app source.
+    "ui_components/_shared/vite.config.base.ts"
+  ]
+}

@@ -38,7 +38,7 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 from fastapi import (
-    APIRouter, HTTPException, Request, WebSocket, status,
+    APIRouter, HTTPException, WebSocket, status,
 )
 from pydantic import BaseModel, Field, model_validator
 
@@ -47,10 +47,7 @@ from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.gateway.hub.supervisor import (
-    remove_service_journal_entry,
-    update_service_journal_entry,
-)
+from awm.gateway.hub.supervisor import update_service_journal_entry
 
 log = logging.getLogger("awm.api.hub")
 
@@ -221,6 +218,20 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
             )
             rec = await registry.push_shadow(rec)
         else:
+            # Duplicate-instance guard (T3): if a record for this name already
+            # exists AND its control-WS lease is currently held, a live
+            # instance is connected — turn the newcomer away with 409 so it
+            # stands down (the adapter raises GiveUp and exits 0) and the
+            # incumbent's service_id + lease are left untouched. A record whose
+            # lease is NOT held is dead (or a benign reconcile placeholder), so
+            # we fall through to the existing replace-in-place takeover.
+            existing = registry.get_by_name("service", req.name)
+            if existing is not None and get_lease_manager().is_held(
+                    existing.service_id):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"service {req.name!r} already has a live instance connected",
+                )
             rec = await registry.register_service(
                 req.name, prefix,
                 pid=req.pid,
@@ -349,6 +360,23 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
             await websocket.close()
         except Exception:
             pass
+        # Runtime crash-respawn watchdog (T5): the service's control WS just
+        # dropped and the lease was released (eviction ran inside lm.hold).
+        # If this wasn't a deliberate stop, a gateway teardown, or an overlay,
+        # give the service the reconnect window to come back, else respawn it.
+        # The journal-entry check (a deliberate `awm services stop` drops the
+        # entry *before* killing) and the shutting-down flag keep this from
+        # resurrecting something that is supposed to stay down.
+        try:
+            from awm.gateway.hub import discovery, supervisor
+            if (not supervisor.is_shutting_down()
+                    and not rec.is_overlay
+                    and supervisor.load_service_journal().get(rec.name)
+                    and discovery.is_enabled(rec.name)):
+                asyncio.create_task(supervisor.supervise_disconnect(rec.name))
+        except Exception:
+            log.debug("disconnect watchdog hook skipped for %s",
+                      rec.name, exc_info=True)
 
 
 def _route_inbound(ch: "rpc.ControlChannel", rec: ServiceRecord,
@@ -542,125 +570,12 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
             pass
 
 
-@router.get("/services")
-async def list_services() -> dict[str, Any]:
-    registry = get_registry()
-    lm = get_lease_manager()
-    out = []
-    for rec in await registry.list():
-        entry: dict[str, Any] = {
-            "name": rec.name,
-            "prefix": rec.prefix,
-            "kind": rec.kind,
-            "service_id": rec.service_id,
-            "lease_held": lm.is_held(rec.service_id),
-            "is_overlay": rec.is_overlay,
-            "backend_status": rec.backend_status,
-            "backend_pid": rec.backend_pid,
-        }
-        if rec.kind == "url":
-            entry["url"] = rec.url
-        elif rec.kind in ("static", "page"):
-            entry["dir"] = rec.static_dir
-        elif rec.kind == "service":
-            entry["api"] = rec.api
-        out.append(entry)
-    return {"services": out}
-
-
-@router.delete("/services/{name}")
-async def deregister(name: str, request: Request, kind: str | None = None) -> dict[str, Any]:
-    registry = get_registry()
-    from awm.gateway.hub.registry import PrefixConflict
-    try:
-        rec = await registry.evict_by_name(name, kind=kind)
-    except PrefixConflict as e:
-        raise HTTPException(409, str(e))
-    if rec is None:
-        raise HTTPException(404, f"unknown service: {name}")
-    log.info("deregistered service %s (id=%s)", name, rec.service_id)
-    return {"evicted": {
-        "name": rec.name,
-        "prefix": rec.prefix,
-        "kind": rec.kind,
-        "service_id": rec.service_id,
-    }}
-
-
 # ============================================================================
-# Feature-service lifecycle — the `awm services` control surface.
-#
-# The running gateway is authoritative: it owns the discovery root, the
-# enable-state file, the PID journal, and the registry. So `awm services`
-# routes everything here rather than re-deriving locally (which would resolve
-# the wrong tree under a dev-sandbox shadow). One spawn path
-# (supervisor.spawn_and_journal, shared with first-boot bootstrap); one stop
-# path (evict + kill pid group + drop journal) so reconcile never resurrects a
-# stopped service.
+# Hub list / deregister and the feature-service lifecycle (`awm services …`)
+# moved onto the declarative generation system — see
+# ``awm.gateway.gateway_ops.GATEWAY_OPERATIONS``. Their HTTP routes
+# (GET /hub/services, DELETE /hub/services/{name}, GET /hub/services/discovered,
+# POST /hub/services/{name}/{start,stop,restart,enable,disable}) are generated
+# in ``server.py`` via ``register_fastapi_routes`` from the same Operations that
+# drive the MCP tools + CLI commands. Do not re-add hand-rolled duplicates here.
 # ============================================================================
-
-
-@router.get("/services/discovered")
-async def list_discovered_services() -> dict[str, Any]:
-    """Discovery ⋈ enable-state ⋈ live registration — the `awm services list`
-    view."""
-    from awm.gateway.hub import discovery
-    registry = get_registry()
-    out = []
-    for spec in discovery.discover_services():
-        rec = registry.get_by_name("service", spec.name)
-        out.append({
-            "name": spec.name,
-            "enabled": spec.enabled,
-            "running": rec is not None,
-            "status": rec.backend_status if rec is not None else "stopped",
-            "pid": rec.backend_pid if rec is not None else None,
-        })
-    return {"services": out}
-
-
-@router.post("/services/{name}/start")
-async def start_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery, supervisor
-    registry = get_registry()
-    if registry.get_by_name("service", name) is not None:
-        return {"name": name, "started": False, "reason": "already-running"}
-    spec = discovery.discover_service(name)
-    if spec is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            f"no service folder {name!r} with a run.sh")
-    pid = supervisor.spawn_and_journal(name, list(spec.start_cmd), spec.cwd)
-    return {"name": name, "started": True, "pid": pid}
-
-
-@router.post("/services/{name}/stop")
-async def stop_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import supervisor
-    registry = get_registry()
-    entry = supervisor.load_service_journal().get(name) or {}
-    rec = registry.get_by_name("service", name)
-    pid = (rec.backend_pid if rec is not None else None) or entry.get("last_pid")
-    if rec is not None:
-        try:
-            await registry.evict_by_name(name, kind="service")
-        except PrefixConflict as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
-    if pid:
-        await asyncio.get_event_loop().run_in_executor(
-            None, supervisor.kill_pid_group, pid)
-    supervisor.remove_service_journal_entry(name)
-    return {"name": name, "stopped": True, "killed_pid": pid}
-
-
-@router.post("/services/{name}/enable")
-async def enable_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery
-    discovery.set_enabled(name, True)
-    return {"name": name, "enabled": True, "start": await start_service(name)}
-
-
-@router.post("/services/{name}/disable")
-async def disable_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery
-    discovery.set_enabled(name, False)
-    return {"name": name, "enabled": False, "stop": await stop_service(name)}

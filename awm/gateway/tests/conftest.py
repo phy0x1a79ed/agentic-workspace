@@ -38,6 +38,15 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(cfg, "DATA_DIR", data_dir)
     monkeypatch.setattr(cfg, "SKILLS_DIR", skills_dir)
+    # SERVICES_DIR is a module constant frozen at import (= AWM_DIR / "services"),
+    # so patching AWM_DIR alone leaves it pointing at the REAL workspace. The
+    # service-enable state (`discovery.is_enabled` → SERVICES_DIR/enabled.json)
+    # lives under it; without this patch, supervisor/discovery tests read AND
+    # write the live workspace's enabled.json — a service disabled there
+    # silently skips a respawn assertion, and a test's set_enabled pollutes
+    # prod. Redirect it into tmp_path too.
+    if hasattr(cfg, "SERVICES_DIR"):
+        monkeypatch.setattr(cfg, "SERVICES_DIR", awm_dir / "services")
     if hasattr(cfg, "ACCESS_LOG"):
         monkeypatch.setattr(cfg, "ACCESS_LOG", awm_dir / "access.log")
 

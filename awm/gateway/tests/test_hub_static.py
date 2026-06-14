@@ -24,7 +24,7 @@ from awm.gateway.hub.registry import ServiceRecord
 from awm.gateway.hub.static import serve_static
 
 
-def _request(path: str, *, accept: str | None = None) -> Request:
+def _request(path: str, *, accept: str | None = None, query: str = "") -> Request:
     headers: list[tuple[bytes, bytes]] = []
     if accept is not None:
         headers.append((b"accept", accept.encode()))
@@ -33,7 +33,7 @@ def _request(path: str, *, accept: str | None = None) -> Request:
         "method": "GET",
         "path": path,
         "raw_path": path.encode(),
-        "query_string": b"",
+        "query_string": query.encode(),
         "headers": headers,
     }
     return Request(scope)
@@ -217,3 +217,51 @@ class TestTraversalContainment:
         resp = _run(serve_static(_request("/app/../secret"), rec))
         assert resp.status_code == 404
         assert b"nope" not in _read(resp)
+
+
+class TestPrefixRootTrailingSlashRedirect:
+    """A bare prefix (``/app``) is the bundle's directory: redirect it to the
+    canonical ``/app/`` so the bundle's relative ``./assets/...`` refs resolve
+    against the bundle, not its parent. nginx/Apache/GitHub-Pages do the same.
+    Only the prefix root redirects; sub-paths stay byte-serves.
+    """
+
+    def test_bare_prefix_redirects_to_trailing_slash(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/app/"
+
+    def test_redirect_preserves_query_string(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app", query="x=1&y=2"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/app/?x=1&y=2"
+
+    def test_trailing_slash_serves_index_not_redirect(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app/"), rec))
+        assert resp.status_code == 200
+        assert b"root shell" in _read(resp)
+
+    def test_naked_bundle_bare_prefix_redirects(self, naked_bundle):
+        # No index.html but an ``entry`` → still served at the root, so the
+        # bare prefix redirects to the slash form (then the auto-shell serves).
+        rec = _rec("/c", naked_bundle, entry="main.js")
+        resp = _run(serve_static(_request("/c"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/c/"
+
+    def test_bare_prefix_no_index_no_entry_is_404_not_redirect(self, naked_bundle):
+        # Nothing to serve at the root → 404, never a redirect to a dead URL.
+        rec = _rec("/c", naked_bundle)  # no entry, no index.html
+        resp = _run(serve_static(_request("/c"), rec))
+        assert resp.status_code == 404
+
+    def test_subpath_directory_does_not_redirect(self, spa_bundle):
+        # /app/focus is a sub-directory with its own index.html — the contract
+        # serves it in place (no redirect); only the prefix ROOT redirects.
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app/focus"), rec))
+        assert resp.status_code == 200
+        assert b"focus shell" in _read(resp)

@@ -7,8 +7,6 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@awm/client": "*",
-    "@awm/ptt-composer": "*",
-    "@awm/tts-history": "*"
+    "@awm/agent-chat": "*"
   }
 }

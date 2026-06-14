@@ -1,3 +1,0 @@
-# Service-local runtime state (presets, last-used, ui-state) — stop-gap
-# JSON persistence; see backend/_store.py.
-.state/

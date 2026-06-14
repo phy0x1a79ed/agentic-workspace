@@ -1,0 +1,19 @@
+{
+  // ADVISORY type-check scope: pages/* thin static-bundle mounts.
+  //
+  // Run via `npm run typecheck:pages` (NOT part of the gating `typecheck`).
+  // Pages use SvelteKit-style page-local `$lib/...` aliases that resolve only
+  // through each page's Vite config; svelte-check cannot load those configs
+  // under this vite 5.x / @sveltejs/load-config combo ("vite.resolveConfig is
+  // not a function"), so `$lib` imports report as unresolved here. Run it to
+  // surface real page-source drift, but expect alias-resolution noise.
+  "extends": "./tsconfig.json",
+  "include": [
+    "pages/**/*.ts",
+    "pages/**/*.svelte"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/dist"
+  ]
+}
