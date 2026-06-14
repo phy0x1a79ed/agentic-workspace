@@ -15,6 +15,10 @@
     "**/node_modules",
     "**/dist",
     // The shared Vite config base is build tooling, not app source.
-    "ui_components/_shared/vite.config.base.ts"
+    "ui_components/_shared/vite.config.base.ts",
+    // Unit tests run under Node's test runner (TS type-stripping needs explicit
+    // `.ts` import extensions, which this bundler-resolution pass rejects) —
+    // they aren't part of the contract-bearing surface this pass grades.
+    "ui_components/**/*.test.ts"
   ]
 }

@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "typecheck": "tsc -p ui_components/client/tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.components.json",
-    "typecheck:pages": "svelte-check --tsconfig ./tsconfig.pages.json"
+    "typecheck:pages": "svelte-check --tsconfig ./tsconfig.pages.json",
+    "test": "node --test 'ui_components/**/*.test.ts'"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",

@@ -151,6 +151,30 @@ class ServiceAdapter:
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
         self.start_cmd = start_cmd or ["bash", "run.sh"]
+        # The currently-connected control WS, or None between reconnects. Held
+        # so the service can originate `emit` frames (pub/sub) on it.
+        self._control_ws: Any | None = None
+
+    # -- service-originated emit -------------------------------------------
+
+    async def emit(self, topic: str, payload: Any) -> None:
+        """Publish one ``emit`` event on the live control WS (pub/sub).
+
+        Sends the contract envelope the hub routes
+        (``ControlChannel.handle_emit``):
+        ``{"kind": "emit", "topic": <str>, "payload": <json>}`` — fanned out to
+        every browser/service subscriber on ``/svc/<name>/emit/<topic>``. A safe
+        no-op when no control WS is currently connected (between reconnects);
+        emit is best-effort live signalling, never durable delivery.
+        """
+        ws = self._control_ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps(
+                {"kind": "emit", "topic": topic, "payload": payload}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("%s: emit on %s dropped: %s", self.name, topic, exc)
 
     # -- dispatch ----------------------------------------------------------
 
@@ -186,24 +210,30 @@ class ServiceAdapter:
         ) as ws:
             await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
             log.info("%s: control WS open, ready sent", self.name)
-
-            async for raw in ws:
-                try:
-                    env = json.loads(raw) if isinstance(raw, str) else None
-                except json.JSONDecodeError:
-                    continue
-                if env is None:
-                    continue
-                kind = env.get("kind")
-                if kind == "call":
-                    asyncio.create_task(self._handle_call(ws, env))
-                elif kind == "notify":
-                    asyncio.create_task(self._handle_notify(env))
-                elif kind == "session.open":
-                    asyncio.create_task(self._handle_session_open(
-                        ws, hub_url, sid, env))
-                else:
-                    log.debug("%s: ignored inbound kind=%s", self.name, kind)
+            # Expose the live socket so the service can originate `emit`s; clear
+            # it when this connection ends so emit no-ops between reconnects.
+            self._control_ws = ws
+            try:
+                async for raw in ws:
+                    try:
+                        env = json.loads(raw) if isinstance(raw, str) else None
+                    except json.JSONDecodeError:
+                        continue
+                    if env is None:
+                        continue
+                    kind = env.get("kind")
+                    if kind == "call":
+                        asyncio.create_task(self._handle_call(ws, env))
+                    elif kind == "notify":
+                        asyncio.create_task(self._handle_notify(env))
+                    elif kind == "session.open":
+                        asyncio.create_task(self._handle_session_open(
+                            ws, hub_url, sid, env))
+                    else:
+                        log.debug("%s: ignored inbound kind=%s", self.name, kind)
+            finally:
+                if self._control_ws is ws:
+                    self._control_ws = None
 
     async def _handle_call(self, ws: Any, env: dict[str, Any]) -> None:
         try:

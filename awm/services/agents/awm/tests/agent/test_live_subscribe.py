@@ -53,6 +53,26 @@ class _Sess:
         self.id = instance_id
 
 
+class _ReaderSess:
+    """Fuller session stand-in for driving ``_reader_loop`` directly."""
+    def __init__(self, project="p", scope="s", instance_id=1):
+        self.project = project
+        self.scope = scope
+        self.id = instance_id
+        self._partial_accum: dict = {}
+        self._msg_accum: dict = {}
+        self.cli_session_id = None
+        self.model = None
+        self.context_max = None
+        self.context_used = 0
+        self.claude_slash_commands: list = []
+
+
+async def _aiter(events):
+    for ev in events:
+        yield ev
+
+
 # ---------------------------------------------------------------------------
 # record_event → wire act + persistence
 # ---------------------------------------------------------------------------
@@ -189,3 +209,177 @@ class TestOwnAuthorFilter:
         assert ai_mod._is_own_author(self._sess(), "user:alice") is False
         assert ai_mod._is_own_author(self._sess(), "agent:awm/other") is False
         assert ai_mod._is_own_author(self._sess(), "") is False
+
+
+# ---------------------------------------------------------------------------
+# Idempotent streaming dedupe — partials live-only, message upserts once
+# ---------------------------------------------------------------------------
+
+class TestStreamingDedupe:
+    @pytest.mark.asyncio
+    async def test_partials_live_only_message_upserts_once(self):
+        sess = _ReaderSess()
+        events = [
+            _Ev("partial", text="An", data={"message_id": "m1"}, id="p1"),
+            _Ev("partial", text="ytime! 👋", data={"message_id": "m1"}, id="p2"),
+            _Ev("message", text="Anytime! 👋", data={"message_id": "m1"}, id="a1"),
+            _Ev("result", text="Anytime! 👋",
+                data={"usage": {}, "session_id": "s"}, id="r1"),
+        ]
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        await bus_mod.attach_live(sess.project, sess.scope, q)
+        try:
+            await ai_mod._reader_loop(sess, _aiter(events))
+        finally:
+            await bus_mod.detach_live(sess.project, sess.scope, q)
+
+        rows = transcript_mod.read_session(sess.project, sess.scope)
+        kinds = [r["kind"] for r in rows]
+        # No partial flood persisted; exactly one durable message row (upsert).
+        assert kinds.count("partial") == 0
+        assert kinds.count("message") == 1
+        msg = next(r for r in rows if r["kind"] == "message")
+        # The durable row id IS the message id (the stable dedupe/coalesce key).
+        assert msg["id"] == "m1"
+        assert msg["body"] == "Anytime! 👋"
+        import json as _j
+        assert _j.loads(msg["meta"])["message_id"] == "m1"
+        # result is still persisted (kept for usage/session meta, hidden in UI).
+        assert kinds.count("result") == 1
+
+        # The live bus saw the growing partial bubble (accumulated text), each
+        # tagged with the shared message id, then the finalized message — and
+        # NO duplicate final row.
+        published = []
+        while not q.empty():
+            published.append(q.get_nowait())
+        partial_acts = [e["act"] for e in published
+                        if e.get("type") == "act" and e["act"]["kind"] == "partial"]
+        assert [a["body"] for a in partial_acts] == ["An", "Anytime! 👋"]
+        assert all(a["meta"]["message_id"] == "m1" for a in partial_acts)
+        msg_acts = [e["act"] for e in published
+                    if e.get("type") == "act" and e["act"]["kind"] == "message"]
+        assert [a["body"] for a in msg_acts] == ["Anytime! 👋"]
+        assert msg_acts[0]["id"] == "m1"
+
+        # Accumulators reset at the turn boundary (`result`).
+        assert sess._partial_accum == {}
+        assert sess._msg_accum == {}
+
+    @pytest.mark.asyncio
+    async def test_multi_block_message_accumulates_into_one_row(self):
+        sess = _ReaderSess()
+        events = [
+            _Ev("message", text="first block", data={"message_id": "m2"}, id="a1"),
+            _Ev("message", text="second block", data={"message_id": "m2"}, id="a2"),
+        ]
+        await ai_mod._reader_loop(sess, _aiter(events))
+        rows = transcript_mod.read_session(sess.project, sess.scope)
+        msgs = [r for r in rows if r["kind"] == "message"]
+        assert len(msgs) == 1
+        assert msgs[0]["id"] == "m2"
+        assert msgs[0]["body"] == "first block\nsecond block"
+
+
+# ---------------------------------------------------------------------------
+# Scope → stdin: live subscription delivery (not a poll)
+# ---------------------------------------------------------------------------
+
+from awm.agents._time import ms_to_iso  # noqa: E402
+
+
+class _DeliverSess:
+    def __init__(self, project="awm", scope="dev"):
+        self.project = project
+        self.scope = scope
+        self.scope_poll_after_ts = None
+        self.input_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
+
+
+class TestScopeDelivery:
+    def test_maybe_deliver_filters_and_cursors(self):
+        s = _DeliverSess()
+        # non-message ignored, cursor untouched
+        ai_mod._maybe_deliver_post(s, {
+            "kind": "journal", "ts": ms_to_iso(100),
+            "author": "user:bob", "body": "x"})
+        assert s.input_queue.empty()
+        # own-author message skipped (but the cursor advances past it)
+        ai_mod._maybe_deliver_post(s, {
+            "kind": "message", "ts": ms_to_iso(100),
+            "author": "agent:awm/dev", "body": "self"})
+        assert s.input_queue.empty()
+        # a fresh human message is delivered
+        ai_mod._maybe_deliver_post(s, {
+            "kind": "message", "ts": ms_to_iso(200),
+            "author": "user:bob", "body": "hi"})
+        assert s.input_queue.get_nowait() == ("user:bob", "hi")
+        # a stale (≤ cursor) message never regresses / re-delivers
+        ai_mod._maybe_deliver_post(s, {
+            "kind": "message", "ts": ms_to_iso(150),
+            "author": "user:bob", "body": "old"})
+        assert s.input_queue.empty()
+
+    @pytest.mark.asyncio
+    async def test_resync_delivers_gap_oldest_first(self, monkeypatch):
+        s = _DeliverSess()
+        # scope_fetch(order='desc') returns newest-first.
+        posts = [
+            {"kind": "message", "ts": ms_to_iso(300), "author": "user:bob", "body": "c"},
+            {"kind": "message", "ts": ms_to_iso(200), "author": "user:bob", "body": "b"},
+            {"kind": "message", "ts": ms_to_iso(100), "author": "user:bob", "body": "a"},
+        ]
+
+        async def fake_call(service, fn, args, **kw):
+            assert service == "scopes" and fn == "scope_fetch"
+            return {"posts": posts}
+
+        monkeypatch.setattr(ai_mod.gatewayclient, "call", fake_call)
+        await ai_mod._resync_scope_posts(s)
+        drained = []
+        while not s.input_queue.empty():
+            drained.append(s.input_queue.get_nowait())
+        assert drained == [("user:bob", "a"), ("user:bob", "b"), ("user:bob", "c")]
+
+    @pytest.mark.asyncio
+    async def test_delivery_loop_subscribes_and_filters_scope(self, monkeypatch):
+        s = _DeliverSess()
+
+        async def fake_call(service, fn, args, **kw):
+            return {"posts": []}  # empty seed + resync
+
+        events = [
+            {"project": "awm", "scope": "dev",
+             "post": {"kind": "message", "ts": ms_to_iso(500),
+                      "author": "user:bob", "body": "live!"}},
+            {"project": "other", "scope": "x",
+             "post": {"kind": "message", "ts": ms_to_iso(600),
+                      "author": "user:bob", "body": "nope"}},
+        ]
+
+        async def fake_subscribe(service, topic, **kw):
+            assert service == "scopes" and topic == "posts"
+            for e in events:
+                yield e
+            await asyncio.sleep(3600)  # stay "live" so the loop doesn't respin
+
+        monkeypatch.setattr(ai_mod.gatewayclient, "call", fake_call)
+        monkeypatch.setattr(ai_mod.gatewayclient, "subscribe", fake_subscribe)
+
+        task = asyncio.create_task(ai_mod._scope_delivery_loop(s))
+        for _ in range(100):
+            if not s.input_queue.empty():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        drained = []
+        while not s.input_queue.empty():
+            drained.append(s.input_queue.get_nowait())
+        # Only this session's (project, scope) is routed; the other-scope event
+        # is filtered out.
+        assert drained == [("user:bob", "live!")]

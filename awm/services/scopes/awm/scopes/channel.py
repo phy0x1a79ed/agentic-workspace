@@ -204,6 +204,26 @@ def set_delivery_sink(fn) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cross-service emitter (the `posts` pub/sub topic the agents service subs to)
+# ---------------------------------------------------------------------------
+
+_emitter = None  # Callable[[dict], None] | None
+
+
+def set_emitter(fn) -> None:
+    """Register a fire-and-forget emitter called on every new post.
+
+    The scopes service declares a ``posts`` emitter; on start the hub adapter
+    sets this to a thread-safe scheduler that ``emit``s ``{project, scope,
+    post}`` over the gateway. The agents service subscribes to it to feed human
+    messages into a live agent's stdin (a live subscription, not a poll).
+    ``post()`` runs in a worker thread, so the registered callable must hand
+    the coroutine to the service's event loop itself."""
+    global _emitter
+    _emitter = fn
+
+
+# ---------------------------------------------------------------------------
 # Embeddings (degrade gracefully)
 # ---------------------------------------------------------------------------
 
@@ -247,6 +267,14 @@ def post(project: str, scope: str, *, author: str, body: str,
     post_obj = _row_to_post(row)
 
     _broadcast(project, scope, {"type": "post", "post": post_obj.to_dict()})
+    # One post → one cross-service `emit` on the `posts` topic (fan-out to all
+    # subscribers; each filters by its own (project, scope)).
+    if _emitter is not None:
+        try:
+            _emitter({"project": project, "scope": scope,
+                      "post": post_obj.to_dict()})
+        except Exception:
+            pass
     if _delivery_sink is not None and not (to_scope and to_scope != f"{project}/{scope}"):
         try:
             _delivery_sink(project, scope, post_obj)
