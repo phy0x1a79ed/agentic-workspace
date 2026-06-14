@@ -55,7 +55,20 @@ def test_enrich_piper_enums_stamps_dropdowns(tmp_path, monkeypatch):
     entry = registry.list_engines()["tts"]["piper"]
     asyncio.run(_enrich_piper_enums(entry))
     props = entry["schema"]["properties"]
-    assert props["voice"]["enum"] == ["en_US-test-medium.onnx"]
+    assert props["base_voice"]["enum"] == ["en_US-test-medium.onnx"]
+    assert props["rvc_voice"]["enum"] == ["off"]
+
+
+def test_enrich_piper_enums_stamps_empty_base_voice(tmp_path, monkeypatch):
+    """No models installed -> base_voice still carries an (empty) enum, so the
+    UI renders a disabled 'none' dropdown rather than a free-text box."""
+    monkeypatch.setenv("AWM_DATA_DIR", str(tmp_path))  # no tts-models dir
+    monkeypatch.setenv("TTS_RVC_URL", "http://127.0.0.1:1")
+
+    entry = registry.list_engines()["tts"]["piper"]
+    asyncio.run(_enrich_piper_enums(entry))
+    props = entry["schema"]["properties"]
+    assert props["base_voice"]["enum"] == []
     assert props["rvc_voice"]["enum"] == ["off"]
 
 

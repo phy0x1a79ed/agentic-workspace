@@ -4,8 +4,10 @@
    * stored preset back into the composer, and one-click restore the
    * last-used config on page reload.
    *
-   * Talks to the supervised backend's /presets surface. State here is
-   * pure UI; canonical truth is in `.awm/state.db`'s config table.
+   * Self-contained projection of the service's /presets surface — it owns
+   * its own fetch with loading / loaded / down states. When the fetch fails
+   * the service is unreachable, so the card shows a disabled "TTS service
+   * unavailable" shell rather than a raw error string.
    */
   import { Button, Card, Input, PanelLabel } from '@awm/primitives';
   import {
@@ -23,12 +25,12 @@
   }
   let { currentEngine, currentParams, onload }: Props = $props();
 
+  type CardState = 'loading' | 'loaded' | 'down';
+  let cardState = $state<CardState>('loading');
   let presets = $state<Record<string, Preset>>({});
   let lastUsed = $state<{ engine: string; params: Record<string, unknown> } | null>(null);
-  let loaded = $state(false);
-  let loadError = $state<string | null>(null);
   let saveName = $state('');
-  let saveError = $state<string | null>(null);
+  let opError = $state<string | null>(null);  // operational (save/delete) errors
   let busyName = $state<string | null>(null);  // name of preset mid-load/-delete
 
   async function refresh() {
@@ -36,10 +38,9 @@
       const r: PresetsResponse = await listPresets();
       presets = r.presets;
       lastUsed = r.last_used;
-      loaded = true;
-      loadError = null;
-    } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      cardState = 'loaded';
+    } catch {
+      cardState = 'down';
     }
   }
 
@@ -80,23 +81,24 @@
   async function doSave() {
     const name = saveName.trim();
     if (!name || !currentEngine) return;
-    saveError = null;
+    opError = null;
     try {
       await savePreset(name, currentEngine, currentParams);
       saveName = '';
       await refresh();
     } catch (err) {
-      saveError = err instanceof Error ? err.message : String(err);
+      opError = err instanceof Error ? err.message : String(err);
     }
   }
 
   async function doDelete(name: string) {
     busyName = name;
+    opError = null;
     try {
       await deletePreset(name);
       await refresh();
     } catch (err) {
-      loadError = err instanceof Error ? err.message : String(err);
+      opError = err instanceof Error ? err.message : String(err);
     } finally {
       busyName = null;
     }
@@ -116,6 +118,8 @@
     if (ka.length !== kb.length) return true;
     return ka.some((k) => !Object.is(a[k], b[k]));
   });
+
+  const down = $derived(cardState === 'down');
 </script>
 
 <Card rail="atomizer">
@@ -125,47 +129,49 @@
       <span class="hint mono">save / load engine config</span>
     </header>
 
-    {#if lastUsed && lastUsedDiffers}
-      <Button
-        kind="ghost"
-        size="md"
-        onclick={() => void doLoadLastUsed()}
-        disabled={busyName !== null}
-      >↺ restore last config — {lastUsed.engine}</Button>
-    {/if}
-
-    {#if loadError}
-      <div class="err mono">{loadError}</div>
-    {:else if !loaded}
+    {#if cardState === 'down'}
+      <div class="down mono">TTS service unavailable</div>
+    {:else if cardState === 'loading'}
       <div class="loading mono">loading presets…</div>
-    {:else if sortedNames.length === 0}
-      <div class="empty mono">no presets yet — save the current config below</div>
     {:else}
-      <ul class="list">
-        {#each sortedNames as name (name)}
-          {@const p = presets[name]}
-          <li class="row">
-            <span class="name mono">{name}</span>
-            {#if p.builtin}<span class="badge mono">built-in</span>{/if}
-            <span class="engine mono">{p.engine}</span>
-            <span class="spacer"></span>
-            <Button
-              kind="ghost"
-              size="sm"
-              onclick={() => void doLoad(name)}
-              disabled={busyName !== null}
-            >load</Button>
-            {#if !p.builtin}
+      {#if lastUsed && lastUsedDiffers}
+        <Button
+          kind="ghost"
+          size="md"
+          onclick={() => void doLoadLastUsed()}
+          disabled={busyName !== null}
+        >↺ restore last config — {lastUsed.engine}</Button>
+      {/if}
+
+      {#if sortedNames.length === 0}
+        <div class="empty mono">no presets yet — save the current config below</div>
+      {:else}
+        <ul class="list">
+          {#each sortedNames as name (name)}
+            {@const p = presets[name]}
+            <li class="row">
+              <span class="name mono">{name}</span>
+              {#if p.builtin}<span class="badge mono">built-in</span>{/if}
+              <span class="engine mono">{p.engine}</span>
+              <span class="spacer"></span>
               <Button
-                kind="danger"
+                kind="ghost"
                 size="sm"
-                onclick={() => void doDelete(name)}
+                onclick={() => void doLoad(name)}
                 disabled={busyName !== null}
-              >del</Button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+              >load</Button>
+              {#if !p.builtin}
+                <Button
+                  kind="danger"
+                  size="sm"
+                  onclick={() => void doDelete(name)}
+                  disabled={busyName !== null}
+                >del</Button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
 
     <div class="save-row">
@@ -173,16 +179,17 @@
         bind:value={saveName}
         placeholder="name (e.g. chelly, my-narrator)"
         onkeydown={onSaveKey}
+        disabled={down}
       />
       <Button
         kind="primary"
         size="md"
         onclick={() => void doSave()}
-        disabled={!saveName.trim() || !currentEngine}
+        disabled={down || !saveName.trim() || !currentEngine}
       >save</Button>
     </div>
-    {#if saveError}
-      <div class="err mono">{saveError}</div>
+    {#if opError}
+      <div class="err mono">{opError}</div>
     {/if}
   </div>
 </Card>
@@ -219,6 +226,6 @@
 
   .save-row { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2); align-items: center; }
 
-  .empty, .loading { color: var(--text3); font-size: 11px; font-style: italic; padding: var(--space-2) 0; }
+  .empty, .loading, .down { color: var(--text3); font-size: 11px; font-style: italic; padding: var(--space-2) 0; }
   .err { color: var(--danger); font-size: 11px; }
 </style>
