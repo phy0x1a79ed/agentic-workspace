@@ -177,53 +177,57 @@ gateway. To install one service standalone (respawnable on its own), run
 
 ## Authoring a page
 
-Pages and shared components still live under the package tree as static
-front-end bundles:
+The frontend follows the same "just source" model as the Python components: a
+shared component is a source folder imported by name, with **no per-unit
+`package.json` or `vite.config.ts` and no hand-maintained dependency list.**
 
 ```
-awm/pages/<name>/        ← static bundle; served at /ui/<name>/
-packages/components/<name>/   ← library; importable across the workspace; no URL
+awm/ui_components/<name>/   ← shared Svelte library; imported as @awm/<name>; no URL
+awm/pages/<name>/           ← static bundle; built to dist/ and served at /ui/<name>/
 ```
 
 ### What you author on disk
 
 | Kind | Files you write |
 |---|---|
-| Component | `src/index.ts` (barrel re-exporting each public component) plus `.svelte` / `.ts` / `.css` files it ships. That's it. |
-| Page | `src/main.ts` (entry; calls `mount(App, …)`), `src/App.svelte` (root component), `index.html`, plus any per-page components in `src/components/`. Prefix defaults to `/ui/<dirname>`; an alternative prefix lives in an optional one-line `prefix.txt` at the package root. |
+| Component | `src/index.ts` (barrel re-exporting each public component) plus the `.svelte` / `.ts` / `.css` files it ships. That's it. |
+| Page | `index.html`, `src/main.ts` (entry; calls `mount(App, …)`), `src/App.svelte` (root component), plus any page-local code under `src/lib/`. Prefix defaults to `/ui/<dirname>`; override it with an optional one-line `prefix.txt` at the page root. |
 
-`package.json` and `vite.config.ts` are generated out-of-band, not authored —
-the generated files are checked in (the `packages` CLI wrapper that used to
-drive this was removed). The `dependencies` mirror the `from '@awm/<x>'` imports
-found in `src/`; the per-page Vite config is a one-line re-export of the shared
-Vite config base. Regenerate and commit them by hand when imports change.
+There is nothing else to write — no manifest, no per-page build config. The
+single root `awm/vite.config.ts` resolves `@awm/<name>` (and subpaths like
+`@awm/primitives/style.css`) to component source by path alias, and the root
+build loop builds every page with it. Third-party deps (svelte, vite, `bits-ui`,
+…) are declared once in the root `awm/package.json`, not per component.
 
 ### Building a page
 
-Each package's `package.json` + `vite.config.ts` are checked in (generated
-out-of-band — the old `packages` CLI wrapper was removed), so rebuilding is
-just an npm build from the workspace root:
+Build from the `awm/` directory:
 
 ```
-npm install --no-audit --no-fund       # symlink workspace deps
-npm run build --workspaces --if-present # vite build per page → awm/pages/<name>/dist/
+npm install        # once per machine — installs the central third-party deps
+npm run build      # builds every page → awm/pages/<name>/dist/
 ```
 
-The npm workspace root is `awm/package.json`. To serve a freshly built page
-against a running hub, register its bundle with `awm dev shadow`:
+`npm run build` runs `scripts/build.sh`, which builds each `pages/*/` that has
+an `index.html` (source-only placeholder dirs are skipped). To serve a freshly
+built page against a running hub, overlay its bundle with `awm dev shadow`:
 
 ```bash
 awm dev shadow --port 7821 pages/<name>   # serve awm/pages/<name>/dist at /ui/<name>
 ```
 
+Build first — the shadow (and prod) serve the built `dist/` directory, not the
+source. (See `AGENTS.md` § *Frontend component system* for the canonical
+build/shadow SOP and how resolution works.)
+
 ### Composing components into a page
 
-Just `import` from `@awm/<name>` in the page's `src/`, then add the matching
-entry to the page's checked-in `package.json` `dependencies`. Vite +
-`@sveltejs/vite-plugin-svelte` compiles the source in at build time.
+Just `import` from `@awm/<name>` in the page's `src/` — no dependency entry to
+add anywhere. Vite + `@sveltejs/vite-plugin-svelte` resolves the alias and
+compiles the source in at build time.
 
 ```svelte
-<!-- packages/pages/dashboard/src/App.svelte -->
+<!-- awm/pages/dashboard/src/App.svelte -->
 <script>
   import { Button, Card } from '@awm/primitives';
   import '@awm/primitives/style.css';
@@ -232,7 +236,7 @@ entry to the page's checked-in `package.json` `dependencies`. Vite +
 ```
 
 Global CSS doesn't ride the component barrel — `import '@awm/primitives/style.css'`
-explicitly. Subpath imports go in `dependencies` the same way.
+explicitly. A page bundles only the components it actually imports.
 
 ### Talking to the hub from a page — `@awm/client`
 
@@ -276,9 +280,9 @@ tree doesn't carry — come up as fresh (un-journaled) bases automatically; no
 manual base-wrangling. The bare `/ui/agent` URL works (the hub redirects it to
 `/ui/agent/`).
 
-Shadows of `components/` are an error — components are build-time deps.
-Edit the component locally, rebuild the *page* that imports it
-(`npm run build -w @awm/<page-name>`), and shadow the page instead.
+Shadows of `ui_components/` are an error — components are build-time deps.
+Edit the component locally, rebuild (`npm run build`, from `awm/`), and shadow
+the *page* that imports it instead.
 
 ### Hub-service control plane
 
@@ -406,14 +410,17 @@ awm/                          # nested tree of pip dists (PEP 420 namespace layo
       server.py               # FastAPI app: awm.gateway.server:app
       cli.py                  # Typer CLI
       hub/discovery.py        # filesystem scan of awm/services/* for run.sh
-  service_components/         # shared imported source (no install.sh)
-    config/  persistence/  gatewayclient/  ui_components/
+  service_components/         # shared Python imported source (no install.sh)
+    config/  persistence/  gatewayclient/  agentcore/
   services/                   # one folder per feature service (discovered)
     scopes/  agents/  artifacts/  skills/  discord/
       run.sh                  # the only entry the gateway runs (bash run.sh)
       INSTALL.md  install.sh
-  pages/<name>/               # static front-end bundles served at /ui/<name>/
-  package.json                # npm workspace root
+  ui_components/<name>/       # shared Svelte libraries, imported as @awm/<name>
+  pages/<name>/               # static front-end bundles built to dist/, served at /ui/<name>/
+  vite.config.ts              # one root config: @awm/* alias + per-page build
+  scripts/build.sh            # build loop: each page → pages/<name>/dist/
+  package.json                # central third-party frontend deps + `npm run build`
 .awm/                         # runtime state (gitignored)
   services/<svc>/<svc>.db     # per-service SQLite DBs
   services/enabled.json       # per-service enable/disable state
@@ -437,3 +444,7 @@ envelope layer, manifest generator), see [`AGENTS.md`](AGENTS.md).
 **Services stuck at "down"**: `awm services list` shows each service's enabled/running state. `awm services start --all` brings up every enabled service; a fresh clone or wiped `.awm/state/services.json` self-heals on the next gateway boot (reconcile-then-bootstrap).
 
 **MCP not connecting**: Verify `.mcp.json` exists at workspace root. Check that `awm-mcp` is on PATH (`mamba run -n awm which awm-mcp`). Restart Claude Code to pick up changes.
+
+## What goes in this file
+
+README.md is the human-facing setup + usage guide for awm: how to install it, wire up harness integration, and the *usage* side of the package model — the day-to-day workflows for authoring a service, a page, or a component, controlling and shadowing services, talking to the hub from a page, and operating the server. Agent-facing structural orientation goes in `WORKSPACE.md`; awm-internal architecture and implementation detail go in `AGENTS.md`.
