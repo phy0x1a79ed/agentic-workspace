@@ -388,11 +388,24 @@ def services_start(
 # lease-holding helpers below are shared with the dev shadow flow.
 # ---------------------------------------------------------------------------
 
+# Hub WS close code for "a newer shadow took over this prefix" (mirrors
+# awm.gateway.api.hub._EVICTED_BY_SHADOW). Last connect wins: when another
+# shadow overlays a prefix we hold, the hub closes our lease with this code and
+# a "evicted by <who>: <why>" reason.
+_EVICTED_BY_SHADOW = 4410
+
+
+class _ShadowEvicted(Exception):
+    """A held shadow lease was evicted by a newer shadow. Carries the hub's
+    "evicted by <who>: <why>" reason; aborts the whole `dev shadow` stack."""
+
 
 async def _hold_one_lease(name: str, lease_path: str) -> None:
     """Open the lease WS and idle until close. Used by `awm dev shadow`
-    (one lease per page overlay/base it brings up)."""
+    (one lease per page overlay/base it brings up). A 4410 close means a newer
+    shadow evicted us → raise `_ShadowEvicted` to tear the whole stack down."""
     import websockets as _ws
+    from websockets.exceptions import ConnectionClosed
 
     ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
     async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
@@ -407,6 +420,16 @@ async def _hold_one_lease(name: str, lease_path: str) -> None:
         try:
             async for _ in wsconn:
                 pass
+        except ConnectionClosed as exc:
+            # Catch ConnectionClosed before the generic WebSocketException so we
+            # can read the close code/reason. 4410 = evicted by a newer shadow.
+            code = exc.rcvd.code if exc.rcvd is not None else None
+            reason = exc.rcvd.reason if exc.rcvd is not None else None
+            if code == _EVICTED_BY_SHADOW:
+                raise _ShadowEvicted(
+                    reason or f"shadow {name} evicted by a newer shadow"
+                ) from exc
+            return
         except _ws.WebSocketException:
             return
 
@@ -657,7 +680,15 @@ def dev_shadow(
         raise typer.Exit(1)
 
     async def _hold_all():
-        await _asyncio.gather(*(_hold_one_lease(n, p) for n, p in leases))
+        tasks = [_asyncio.create_task(_hold_one_lease(n, p)) for n, p in leases]
+        try:
+            await _asyncio.gather(*tasks)
+        except _ShadowEvicted:
+            # One lease was evicted by a newer shadow: cancel the rest and
+            # propagate so the whole stack tears down (matches Ctrl-C).
+            for t in tasks:
+                t.cancel()
+            raise
     try:
         if leases:
             typer.echo(f"holding {len(leases)} page lease(s) + {len(spawned_pids)} "
@@ -669,6 +700,8 @@ def dev_shadow(
             signal.pause()
     except KeyboardInterrupt:
         typer.echo("tearing down…")
+    except _ShadowEvicted as exc:
+        typer.echo(f"evicted: {exc} — tearing down this shadow stack")
     finally:
         for pid in spawned_pids:
             try:
@@ -700,7 +733,8 @@ def _shadow_page_target(
     if prefix in page_prefixes:
         worktree = pkg_dir.parents[2].name   # <root>/awm/pages/<name> → <root>
         shadow_name = override_name or f"shadow:{name}:{worktree}"
-        payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)}}
+        payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)},
+                   "origin": f"{shadow_name} @ {worktree}"}
         try:
             r = httpx.post(f"{BASE_URL}/hub/shadow/register", json=payload, timeout=15)
         except httpx.HTTPError as exc:
@@ -761,6 +795,10 @@ def _shadow_service_target(
         env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"
         env["AWM_SERVICE_PREFIX"] = f"/svc/{base_name}"
         env["AWM_SERVICE_OVERLAY"] = "1"
+        # "who" label surfaced to an incumbent overlay this one evicts.
+        worktree = (service_dir.parents[2].name
+                    if len(service_dir.parents) >= 3 else service_dir.name)
+        env["AWM_SERVICE_ORIGIN"] = f"{base_name}-shadow @ {worktree}"
     else:
         # Self-register as a fresh base: a unique name, no overlay flag, no
         # pre-assigned id (the adapter POSTs /hub/service/register itself).

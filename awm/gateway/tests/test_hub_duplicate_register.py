@@ -89,3 +89,34 @@ def test_overlay_branch_unaffected_by_guard():
             "service", "scopes").service_id == rec.service_id
 
     asyncio.run(go())
+
+
+def test_last_overlay_evicts_incumbent_and_notifies():
+    """Last connect wins: a second overlay evicts the first (no 409), the base
+    survives, and the evicted overlay is staged a who/why eviction notice."""
+    async def go():
+        base = await _register_base("scopes")
+        _hold_lease(base.service_id)
+        # First overlay holds the prefix.
+        r1 = await service_register(ServiceRegisterRequest(
+            name="scopes-shadow", prefix="/svc/scopes", overlay=True,
+            origin="scopes-shadow @ wt-a"))
+        _hold_lease(r1.service_id)
+        # Second overlay (even same name) takes over.
+        r2 = await service_register(ServiceRegisterRequest(
+            name="scopes-shadow", prefix="/svc/scopes", overlay=True,
+            origin="scopes-shadow @ wt-b"))
+        reg = reg_mod.get_registry()
+        # The newcomer is the active overlay; the first is gone from the registry.
+        assert reg.longest_match("/svc/scopes").service_id == r2.service_id
+        assert reg.get_by_id(r1.service_id) is None
+        # Base survives underneath.
+        assert reg.get_by_name("service", "scopes").service_id == base.service_id
+        # The evicted overlay was staged a (reason, evictor) notice.
+        notice = lease_mod.get_lease_manager().take_eviction(r1.service_id)
+        assert notice is not None
+        reason, evictor = notice
+        assert reason == "a newer shadow connected"
+        assert evictor == "scopes-shadow @ wt-b"
+
+    asyncio.run(go())

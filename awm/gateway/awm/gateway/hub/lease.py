@@ -19,6 +19,10 @@ class LeaseManager:
     def __init__(self, registry: Registry | None = None) -> None:
         self._registry = registry or get_registry()
         self._holders: dict[str, asyncio.Event] = {}
+        # service_id -> (reason, evictor) staged by ``signal_evicted`` for the
+        # WS handler to read (via ``take_eviction``) once ``hold`` returns, so
+        # it can close the socket with a who/why notice instead of bare.
+        self._eviction: dict[str, tuple[str, str]] = {}
         self._lock = asyncio.Lock()
 
     async def hold(self, service_id: str, disconnect: asyncio.Event) -> None:
@@ -40,6 +44,23 @@ class LeaseManager:
 
     def is_held(self, service_id: str) -> bool:
         return service_id in self._holders
+
+    def signal_evicted(self, service_id: str, reason: str, evictor: str) -> None:
+        """Stage a who/why notice and wake the holder's WS handler.
+
+        Setting the holder's disconnect Event is exactly what a client-side WS
+        close does, so ``hold`` unwinds through its normal path. The handler
+        then reads the staged notice via ``take_eviction`` and closes the
+        socket with code 4410 + ``"evicted by {evictor}: {reason}"``.
+        """
+        self._eviction[service_id] = (reason, evictor)
+        ev = self._holders.get(service_id)
+        if ev is not None:
+            ev.set()
+
+    def take_eviction(self, service_id: str) -> tuple[str, str] | None:
+        """Pop the staged (reason, evictor) notice for ``service_id``, if any."""
+        return self._eviction.pop(service_id, None)
 
 
 class LeaseAlreadyHeld(Exception):
