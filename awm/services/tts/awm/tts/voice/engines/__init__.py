@@ -9,7 +9,7 @@ Engines self-register on import. Adding an engine = drop a file in
 voice/engines/tts/ and add an import line below.
 
 TTS-only: the STT half (whisper/sherpa engines + the orchestrator conversation
-loop) was pruned in the modular migration; ``ptt`` now owns STT. The registry
+loop) was pruned in the modular migration; ``stt`` now owns STT. The registry
 keeps a single ``tts`` kind.
 """
 

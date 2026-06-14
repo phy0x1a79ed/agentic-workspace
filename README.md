@@ -141,7 +141,7 @@ worktree's pages **and** services up against a hub in one command:
 
 ```bash
 awm dev shadow --port 7821 pages/agent \
-  awm/services/agents awm/services/tts awm/services/ptt
+  awm/services/agents awm/services/tts awm/services/stt
 ```
 
 `--port` selects the hub (**default `7821`, the dev sandbox**) — the CLI
@@ -262,14 +262,14 @@ explicit path, pages by `pages/<name>`):
 ```bash
 cd /home/tony/agentic_workspace/projects/awm/<scope>   # NOT projects/awm/dev
 awm dev shadow --port 7821 pages/agent \
-  awm/services/agents awm/services/tts awm/services/ptt
+  awm/services/agents awm/services/tts awm/services/stt
 # One process, all of it. Each target auto-picks overlay (a base exists) or a
 # fresh base (none does). Ctrl-C tears the whole stack down; dev's bases resume.
 # Visit http://127.0.0.1:7821/ui/agent — same origin as the dev sandbox.
 ```
 
 `--port 7821` targets the dev sandbox (the CLI otherwise hits prod `7819`).
-Services with no base on the dev hub — e.g. `tts`/`ptt`, whose `run.sh` the dev
+Services with no base on the dev hub — e.g. `tts`/`stt`, whose `run.sh` the dev
 tree doesn't carry — come up as fresh (un-journaled) bases automatically; no
 manual base-wrangling. The bare `/ui/agent` URL works (the hub redirects it to
 `/ui/agent/`).

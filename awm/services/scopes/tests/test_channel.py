@@ -82,6 +82,40 @@ class TestChannelOps:
         posts = channel.fetch(project="", scope="user:alice")
         assert [p.body for p in posts] == ["for alice"]
 
+    def test_post_fires_emitter(self, scopes_workspace):
+        """Every post fans out one cross-service `posts` emit (the live
+        subscription the agents service rides instead of a poll)."""
+        from awm.scopes import channel
+        seen: list[dict] = []
+        channel.set_emitter(lambda payload: seen.append(payload))
+        try:
+            channel.post("awm", "dev", author="user:alice",
+                         body="ping", kind="message")
+        finally:
+            channel.set_emitter(None)
+        assert len(seen) == 1
+        ev = seen[0]
+        assert ev["project"] == "awm"
+        assert ev["scope"] == "dev"
+        assert ev["post"]["body"] == "ping"
+        assert ev["post"]["author"] == "user:alice"
+        assert ev["post"]["kind"] == "message"
+
+    def test_emitter_failure_does_not_break_post(self, scopes_workspace):
+        """A throwing emitter never fails the post (best-effort signalling)."""
+        from awm.scopes import channel
+
+        def _boom(_payload):
+            raise RuntimeError("emit down")
+
+        channel.set_emitter(_boom)
+        try:
+            p = channel.post("awm", "dev", author="user:alice",
+                             body="still saved", kind="message")
+        finally:
+            channel.set_emitter(None)
+        assert channel.get_post(p.id) is not None
+
 
 # ---------------------------------------------------------------------------
 # Legacy seed fold

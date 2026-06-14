@@ -14,7 +14,7 @@
   ],
   "dependencies": {
     "@awm/client": "*",
-    "@awm/ptt-composer": "*",
+    "@awm/stt-composer": "*",
     "@awm/tts-history": "*"
   }
 }

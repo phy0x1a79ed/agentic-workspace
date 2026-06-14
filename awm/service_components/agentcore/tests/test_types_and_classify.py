@@ -107,6 +107,79 @@ def test_classify_partial():
     assert evts[0].text == "he"
 
 
+def test_classify_partial_stamps_message_id():
+    # The streaming message id (tracked off message_start) is threaded in as
+    # cur_msg_id and stamped onto each partial so the fold coalesces a turn.
+    evts = _classify(
+        {"type": "stream_event",
+         "event": {"type": "content_block_delta", "index": 0,
+                   "delta": {"type": "text_delta", "text": "he"}}},
+        cur_msg_id="msg_abc",
+    )
+    assert evts[0].data["message_id"] == "msg_abc"
+
+
+def test_classify_assistant_stamps_message_id():
+    # Both the text message and a tool_use under one assistant message carry the
+    # same message.id read straight off the parsed frame.
+    evts = _classify({
+        "type": "assistant",
+        "message": {"id": "msg_xyz", "content": [
+            {"type": "text", "text": "hello"},
+            {"type": "tool_use", "name": "Bash", "id": "t1",
+             "input": {"command": "ls"}},
+        ]},
+    })
+    assert evts[0].kind == "message"
+    assert evts[0].data["message_id"] == "msg_xyz"
+    assert evts[1].kind == "tool_use"
+    assert evts[1].data["message_id"] == "msg_xyz"
+    # tool_use's own block id is distinct from the message id.
+    assert evts[1].data["id"] == "t1"
+
+
+def test_event_source_tracks_message_start_id():
+    # message_start sets the session's current message id; the partials that
+    # follow inherit it even though their own frames omit it.
+    import asyncio
+    import json as _j
+
+    from awm.agentcore.claude_backend import ClaudeSession
+
+    sess = ClaudeSession(AgentConfig(harness="claude"))
+
+    class _FakeStdout:
+        def __init__(self, lines):
+            self._lines = list(lines)
+
+        async def readline(self):
+            if not self._lines:
+                return b""
+            return self._lines.pop(0)
+
+    class _FakeProc:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    lines = [
+        (_j.dumps({"type": "stream_event",
+                   "event": {"type": "message_start",
+                             "message": {"id": "msg_live"}}}) + "\n").encode(),
+        (_j.dumps({"type": "stream_event",
+                   "event": {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "text_delta",
+                                       "text": "hi"}}}) + "\n").encode(),
+    ]
+    sess._proc = _FakeProc(_FakeStdout(lines))
+
+    async def _drain():
+        return [ev async for ev in sess._event_source()]
+
+    evts = asyncio.run(_drain())
+    partials = [e for e in evts if e.kind == "partial"]
+    assert partials and partials[0].data["message_id"] == "msg_live"
+
+
 def test_classify_result_ok_and_error():
     ok = _classify({"type": "result", "result": "done", "usage": {}})
     assert ok[0].kind == "result"

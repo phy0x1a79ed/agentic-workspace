@@ -57,7 +57,7 @@
       "@awm/client": ["./ui_components/client/src/index.ts"],
       "@awm/primitives": ["./ui_components/primitives/src/index.ts"],
       "@awm/primitives/*": ["./ui_components/primitives/src/*"],
-      "@awm/ptt-composer": ["./ui_components/ptt-composer/src/index.ts"],
+      "@awm/stt-composer": ["./ui_components/stt-composer/src/index.ts"],
       "@awm/tts-history": ["./ui_components/tts-history/src/index.ts"],
       "@awm/*": ["./ui_components/*/src/index.ts"]
     }

@@ -9,7 +9,7 @@ client that POSTs ``/hub/service/register``, opens ``WS
 then answers inbound ``call`` / ``notify`` / ``session.open`` envelopes.
 
 Before this module, every service hand-rolled that ~250-line loop (see the
-``tts`` / ``ptt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
+``tts`` / ``stt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
 boilerplate out so a feature service's adapter is just: build a manifest +
 a ``{fn: callable}`` dispatch map, then ``await ServiceAdapter(...).run()``.
 
@@ -95,7 +95,7 @@ class SessionContext:
     """Everything a ``session.open`` handler needs to run a direct session.
 
     ``open_bridge()`` opens the upstream side of the hub bridge so the handler
-    can byte-relay frames (the PCM-audio case for tts/ptt). Most feature
+    can byte-relay frames (the PCM-audio case for tts/stt). Most feature
     services have no sessions and never use this.
     """
     hub_url: str
@@ -136,7 +136,7 @@ class ServiceAdapter:
         reply ``result`` (return ``None`` for fire-and-forget / no payload).
     session_handlers:
         Optional ``{session_kind: async callable(SessionContext)}`` for
-        services that expose direct sessions (tts/ptt PCM bridges).
+        services that expose direct sessions (tts/stt PCM bridges).
     on_start:
         Optional sync-or-async zero-arg callable run once before the first
         connect — the place to call ``init_service_db`` so the service's own
@@ -165,6 +165,30 @@ class ServiceAdapter:
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
         self.start_cmd = start_cmd or ["bash", "run.sh"]
+        # The currently-connected control WS, or None between reconnects. Held
+        # so the service can originate `emit` frames (pub/sub) on it.
+        self._control_ws: Any | None = None
+
+    # -- service-originated emit -------------------------------------------
+
+    async def emit(self, topic: str, payload: Any) -> None:
+        """Publish one ``emit`` event on the live control WS (pub/sub).
+
+        Sends the contract envelope the hub routes
+        (``ControlChannel.handle_emit``):
+        ``{"kind": "emit", "topic": <str>, "payload": <json>}`` — fanned out to
+        every browser/service subscriber on ``/svc/<name>/emit/<topic>``. A safe
+        no-op when no control WS is currently connected (between reconnects);
+        emit is best-effort live signalling, never durable delivery.
+        """
+        ws = self._control_ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps(
+                {"kind": "emit", "topic": topic, "payload": payload}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("%s: emit on %s dropped: %s", self.name, topic, exc)
 
     # -- dispatch ----------------------------------------------------------
 
@@ -204,6 +228,10 @@ class ServiceAdapter:
             ) as ws:
                 await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
                 log.info("%s: control WS open, ready sent", name)
+                # Expose the live socket so the service can originate `emit`s;
+                # cleared when this connection ends so emit no-ops between
+                # reconnects.
+                self._control_ws = ws
                 try:
                     async for raw in ws:
                         try:
@@ -230,6 +258,10 @@ class ServiceAdapter:
                             log.debug("%s: ignored inbound kind=%s",
                                       self.name, kind)
                 finally:
+                    # The control WS ended: clear the exposed socket so emit
+                    # no-ops between reconnects.
+                    if self._control_ws is ws:
+                        self._control_ws = None
                     # The control WS was actually established this round; record
                     # when it ended so the loop's give-up deadline counts the
                     # *retry* window from the disconnect, not from process start

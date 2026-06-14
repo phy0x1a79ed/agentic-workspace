@@ -63,12 +63,19 @@ def build_claude_argv(config: AgentConfig) -> list[str]:
     return argv
 
 
-def _classify(parsed: dict) -> list[AgentEvent]:
+def _classify(parsed: dict, cur_msg_id: str | None = None) -> list[AgentEvent]:
     """Map one parsed claude stream-json object → zero-or-more AgentEvents.
 
     Mirrors the monolith's ``_extract_renderable`` classification, extended to
     carry structured ``data`` and to cover ``stream_event`` partials, the
     ``system/init`` status, and the terminal ``result``.
+
+    ``cur_msg_id`` is the id of the claude ``message`` currently streaming (set
+    from the ``message_start`` frame by :meth:`ClaudeSession._event_source`). It
+    is stamped as ``data['message_id']`` on each ``partial`` so the downstream
+    fold coalesces a turn's token deltas into one growing bubble. The terminal
+    ``message`` / ``tool_use`` events carry the same id read straight off
+    ``parsed['message']['id']`` — the stable per-turn key end-to-end.
     """
     out: list[AgentEvent] = []
     t = parsed.get("type")
@@ -96,12 +103,18 @@ def _classify(parsed: dict) -> list[AgentEvent]:
             if piece:
                 out.append(AgentEvent(
                     kind="partial", text=piece,
-                    data={"index": ev.get("index")},
+                    data={"index": ev.get("index"),
+                          "message_id": cur_msg_id},
                 ))
         return out
 
     if t == "assistant":
-        content = parsed.get("message", {}).get("content", [])
+        # One claude assistant message may carry several content blocks (text +
+        # tool_use) under a single message.id — that id is the per-turn bubble
+        # key the downstream fold groups by (accumulate text across blocks).
+        msg = parsed.get("message", {})
+        msg_id = msg.get("id")
+        content = msg.get("content", [])
         for block in content if isinstance(content, list) else []:
             if not isinstance(block, dict):
                 continue
@@ -109,7 +122,10 @@ def _classify(parsed: dict) -> list[AgentEvent]:
             if btype == "text":
                 text = (block.get("text") or "").strip()
                 if text:
-                    out.append(AgentEvent(kind="message", text=text))
+                    out.append(AgentEvent(
+                        kind="message", text=text,
+                        data={"message_id": msg_id},
+                    ))
             elif btype == "tool_use":
                 name = block.get("name", "?")
                 out.append(AgentEvent(
@@ -119,6 +135,7 @@ def _classify(parsed: dict) -> list[AgentEvent]:
                         "name": name,
                         "id": block.get("id"),
                         "input": block.get("input"),
+                        "message_id": msg_id,
                     },
                 ))
         return out
@@ -180,6 +197,9 @@ class ClaudeSession(AgentSession):
         super().__init__(config)
         self._proc: Optional[asyncio.subprocess.Process] = None
         self.session_id: Optional[str] = config.resume_id
+        # The id of the message currently streaming, set off `message_start`;
+        # stamped onto each `partial` so a turn's deltas coalesce by message id.
+        self._cur_message_id: Optional[str] = None
 
     async def _start(self) -> None:
         argv = build_claude_argv(self.config)
@@ -229,7 +249,16 @@ class ClaudeSession(AgentSession):
                 sid = parsed.get("session_id")
                 if isinstance(sid, str):
                     self.session_id = sid
-            for event in _classify(parsed):
+            # Track the streaming message id off `message_start` so the partials
+            # that follow are stamped with it (claude's content_block_delta
+            # frames don't carry the message id themselves).
+            if parsed.get("type") == "stream_event":
+                ev = parsed.get("event") or {}
+                if ev.get("type") == "message_start":
+                    mid = (ev.get("message") or {}).get("id")
+                    if isinstance(mid, str):
+                        self._cur_message_id = mid
+            for event in _classify(parsed, self._cur_message_id):
                 yield event
 
     async def close(self) -> None:
