@@ -81,6 +81,15 @@ export DEV_PYTHONPATH
 export AWM_WORKSPACE="$HERE"
 export AWM_PORT="${AWM_PORT:-${_PORT_BASE}1}"
 export VITE_PORT="${VITE_PORT:-$_VITE_PORT}"
+
+# Self-shadow signal for the `dev` service ONLY (it's the one service that reads
+# AWM_SHADOW_HUB_URL and passes it to ServiceAdapter.run). Flows via
+# spawn_service's os.environ.copy() into every service's run.sh, but only the
+# dev adapter acts on it: when the sandbox brings up its dev service, that
+# service ALSO registers a self-cleaning overlay of /svc/dev onto prod, so
+# `awm dev <op>` (which targets prod by default) is served by THIS sandbox's
+# worktree code. Prod's own gateway never sets this → prod's dev is a plain base.
+export AWM_SHADOW_HUB_URL="${AWM_SHADOW_HUB_URL:-http://127.0.0.1:7819/}"
 export AWM_ALLOW_DESTRUCTIVE=1
 export AWM_IDLE_SHUTDOWN=999999
 export AWM_GITHUB_USER="${AWM_GITHUB_USER:-dev-sandbox}"

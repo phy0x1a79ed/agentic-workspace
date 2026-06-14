@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
 import typer
@@ -777,34 +778,103 @@ def _dev_exec(action: str) -> None:
         raise typer.Exit(rc)
 
 
+def _print_dev_result(payload) -> None:
+    """Print a dev-service lifecycle result (the {action,rc,stdout,stderr} dict
+    a handler returned) as if run.sh had run on this terminal."""
+    if not isinstance(payload, dict):
+        typer.echo(payload)
+        return
+    out = payload.get("stdout") or ""
+    err = payload.get("stderr") or ""
+    if out:
+        typer.echo(out.rstrip("\n"))
+    if err:
+        typer.echo(err.rstrip("\n"), err=True)
+    if "error" in payload:
+        typer.echo(f"dev: {payload['error']}", err=True)
+
+
+def _dev_op(op: str, local: bool) -> None:
+    """Run a dev lifecycle op (start/stop/restart/seed/status).
+
+    Default: invoke the ``dev`` service tool on the hub (``BASE_URL`` — prod
+    :7819 unless overridden). When a dev sandbox is live its self-shadow overlay
+    serves the call against *its* worktree, so ``awm dev`` reaches the sandbox
+    through prod without retargeting. Falls back to running ``run.sh`` locally in
+    the current worktree when ``--local`` is given, the hub is unreachable, no
+    ``dev`` service is registered, or the hub's ``dev`` base is inert (no sandbox
+    shadowing it). ``start`` always runs locally — it bootstraps the sandbox that
+    does the shadowing, so there is nothing on the bus to route it yet.
+    """
+    if local or op == "start":
+        _dev_exec(op)
+        return
+    try:
+        r = _local_api("POST", "/invoke", json={"name": f"dev_{op}", "args": {}})
+    except httpx.HTTPError as exc:
+        typer.echo(f"dev: hub unreachable ({exc}); running locally", err=True)
+        _dev_exec(op)
+        return
+    if r.status_code == 404:
+        typer.echo("dev: no `dev` service on the hub; running locally", err=True)
+        _dev_exec(op)
+        return
+    if r.status_code >= 400:
+        typer.echo(f"dev: hub error ({r.status_code}): {r.text}", err=True)
+        raise typer.Exit(1)
+    payload = r.json().get("result")
+    if isinstance(payload, dict) and payload.get("inert"):
+        typer.echo(f"dev: {payload.get('reason', 'prod base is inert')}; "
+                   f"running locally", err=True)
+        _dev_exec(op)
+        return
+    _print_dev_result(payload)
+    rc = payload.get("rc") if isinstance(payload, dict) else None
+    if rc not in (None, 0):
+        raise typer.Exit(int(rc))
+
+
+_LOCAL_OPT = typer.Option(
+    False, "--local", "-l",
+    help="Run run.sh in THIS worktree directly instead of routing through the "
+         "hub's dev service (the self-shadow path).",
+)
+
+
 @dev_app.command("start")
-def dev_start():
-    """Start this worktree's dev sandbox (gateway + bootstrapped services)."""
-    _dev_exec("start")
+def dev_start(local: bool = _LOCAL_OPT):
+    """Start this worktree's dev sandbox (gateway + bootstrapped services).
+
+    Always local — `start` bootstraps the sandbox whose dev service then
+    self-shadows prod, so there is nothing on the bus to route it through yet.
+    """
+    _dev_op("start", local)
 
 
 @dev_app.command("stop")
-def dev_stop():
-    """Stop this worktree's dev sandbox (services + gateway)."""
-    _dev_exec("stop")
+def dev_stop(local: bool = _LOCAL_OPT):
+    """Stop the dev sandbox (services + gateway). Routes through the hub's dev
+    service so a live sandbox stops itself (overlay drops, prod base resumes)."""
+    _dev_op("stop", local)
 
 
 @dev_app.command("restart")
-def dev_restart():
-    """Restart this worktree's dev sandbox."""
-    _dev_exec("restart")
+def dev_restart(local: bool = _LOCAL_OPT):
+    """Restart the dev sandbox."""
+    _dev_op("restart", local)
 
 
 @dev_app.command("seed")
-def dev_seed():
+def dev_seed(local: bool = _LOCAL_OPT):
     """(Re)seed the dev sandbox DB without restarting."""
-    _dev_exec("seed")
+    _dev_op("seed", local)
 
 
 @dev_app.command("status")
-def dev_status():
-    """Show what this worktree's dev sandbox is running."""
-    _dev_exec("status")
+def dev_status(local: bool = _LOCAL_OPT):
+    """Show what the dev sandbox is running (served by the live sandbox via the
+    hub's dev overlay; falls back to this worktree's run.sh)."""
+    _dev_op("status", local)
 
 
 def _shadow_dev_pythonpath(service_dir: pathlib.Path) -> str:
@@ -996,6 +1066,12 @@ def _shadow_service_target(
 
     env = os.environ.copy()
     env["AWM_HUB_URL"] = BASE_URL
+    # Pin AWM_PORT to the shadow hub's port too, so anything this service spawns
+    # (e.g. a shadowed `agents` service's child agents, whose awm-mcp reads
+    # config.PORT) targets THIS sandbox — not prod :7819, the import-time default.
+    _port = urlsplit(BASE_URL).port
+    if _port:
+        env["AWM_PORT"] = str(_port)
     env.setdefault("AWM_ENV", "awm")
     if is_overlay:
         env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"
