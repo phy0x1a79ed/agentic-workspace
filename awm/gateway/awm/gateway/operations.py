@@ -120,6 +120,8 @@ def _extract_path_params(path: str) -> set[str]:
 def _py_type(p: Param):
     if p.type == "integer":
         return int
+    if p.type == "boolean":
+        return bool
     if p.type == "array":
         return list[str]
     return str
