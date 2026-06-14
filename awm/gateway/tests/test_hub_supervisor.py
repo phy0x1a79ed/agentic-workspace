@@ -102,6 +102,24 @@ class TestKillPidGroup:
         # (no such pgrp) or no-op completion. Either way: no exception.
         supervisor.kill_pid_group(proc.pid)
 
+    def test_reaps_killed_child_no_zombie(self):
+        """Killing a service child must REAP it — no ``<defunct>`` zombie left.
+
+        Mirrors how the gateway spawns services: a Popen in its own session
+        whose handle is discarded, so only ``kill_pid_group`` can reap it.
+        Regression for prod zombies left by ``awm services stop/restart``."""
+        proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        pid = proc.pid
+        supervisor.kill_pid_group(pid, grace_s=2.0)
+        # Fully reaped → not our child anymore: waitpid raises ChildProcessError
+        # (a lingering zombie would instead return (pid, status)).
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
+        # …and the pid is gone from the table entirely.
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        proc.returncode = -signal.SIGKILL  # mark handled so Popen.__del__ is quiet
+
 
 # ---------------------------------------------------------------------------
 # reconcile_journaled_services — happy path (reconnect within window)

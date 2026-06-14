@@ -165,9 +165,6 @@ class ServiceAdapter:
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
         self.start_cmd = start_cmd or ["bash", "run.sh"]
-        # Last monotonic time the control WS was confirmed up; drives the
-        # reconnect-deadline give-up in run(). Updated in run() and _serve.
-        self._last_up = monotonic()
 
     # -- dispatch ----------------------------------------------------------
 
@@ -192,7 +189,10 @@ class ServiceAdapter:
 
     # -- control-WS receive loop ------------------------------------------
 
-    async def _serve(self, hub_url: str, sid: str) -> None:
+    async def _serve(self, hub_url: str, sid: str, *,
+                     name: str | None = None,
+                     state: dict[str, float] | None = None) -> None:
+        name = name or self.name
         ws_base = _ws_base(hub_url)
         ws_url = f"{ws_base}/hub/service/control/{sid}"
         try:
@@ -203,7 +203,7 @@ class ServiceAdapter:
                 open_timeout=10,
             ) as ws:
                 await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
-                log.info("%s: control WS open, ready sent", self.name)
+                log.info("%s: control WS open, ready sent", name)
                 try:
                     async for raw in ws:
                         try:
@@ -231,10 +231,13 @@ class ServiceAdapter:
                                       self.name, kind)
                 finally:
                     # The control WS was actually established this round; record
-                    # when it ended so run()'s give-up deadline counts the
+                    # when it ended so the loop's give-up deadline counts the
                     # *retry* window from the disconnect, not from process start
-                    # (a brief blip after hours of uptime must still retry).
-                    self._last_up = monotonic()
+                    # (a brief blip after hours of uptime must still retry). The
+                    # ``state`` box is per-loop so concurrent base + overlay loops
+                    # never stomp each other's deadline (see ``run``).
+                    if state is not None:
+                        state["last_up"] = monotonic()
         except ConnectionClosed as exc:
             # The hub closed the control WS with a terminal code: 4409 = the
             # lease is already held by a live incumbent, 4404 = the service_id
@@ -308,19 +311,21 @@ class ServiceAdapter:
 
     # -- registration + reconnect loop ------------------------------------
 
-    async def _register(self, hub_url: str) -> str:
+    async def _register(self, hub_url: str, *, name: str, prefix: str,
+                        overlay: bool) -> str:
         # An overlay carries a UNIQUE name (registry keys records by name) but
         # the BASE's prefix, so it stacks on /svc/<base>. `awm dev shadow` sets
         # AWM_SERVICE_NAME=<unique> + AWM_SERVICE_PREFIX=/svc/<base> +
-        # AWM_SERVICE_OVERLAY=1. A normal service leaves prefix to default.
-        prefix = os.environ.get("AWM_SERVICE_PREFIX") or f"/svc/{self.name}"
+        # AWM_SERVICE_OVERLAY=1. The dev service's *self*-shadow passes the same
+        # shape explicitly for its prod overlay (see ``run``). A normal service
+        # leaves prefix to default and overlay false.
         payload = {
-            "name": self.name,
+            "name": name,
             "prefix": prefix,
             "pid": os.getpid(),
             "start": self.start_cmd,
             "cwd": os.getcwd(),
-            "overlay": bool(os.environ.get("AWM_SERVICE_OVERLAY")),
+            "overlay": overlay,
         }
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
             r = await cli.post(f"{hub_url}/hub/service/register", json=payload)
@@ -332,12 +337,70 @@ class ServiceAdapter:
             r.raise_for_status()
         return r.json()["service_id"]
 
-    async def run(self) -> None:
+    async def _run_target(self, hub_url: str, sid: str, *, name: str,
+                          prefix: str, overlay: bool) -> None:
+        """Register + serve one (hub, prefix) target forever, reconnecting with
+        exponential backoff until the give-up deadline.
+
+        One ``ServiceAdapter`` can drive several of these concurrently (a base on
+        its own hub + a self-shadow overlay on prod — see ``run``). Each gets its
+        own ``state`` box so their reconnect deadlines are independent, and a
+        ``GiveUp`` in one returns *this* loop only, never the siblings.
+        """
+        backoff = 1.0
+        # ``state["last_up"]`` tracks the last moment this target's control WS was
+        # confirmed up (set in ``_serve``'s finally, reached only once the WS
+        # actually connected). Initialised to now so a target that can never
+        # reach its hub still gives up after the deadline rather than spinning.
+        state = {"last_up": monotonic()}
+        while True:
+            try:
+                if not sid:
+                    sid = await self._register(
+                        hub_url, name=name, prefix=prefix, overlay=overlay)
+                    log.info("%s: registered service_id=%s (%s)",
+                             name, sid, "overlay" if overlay else "base")
+                await self._serve(hub_url, sid, name=name, state=state)
+                # Clean return = the WS was up and the gateway closed it
+                # without a terminal code; treat as a fresh disconnect.
+                state["last_up"] = monotonic()
+                backoff = 1.0
+            except GiveUp as exc:
+                # Told to stand down (duplicate reject / terminal close /
+                # shutdown frame). Exit THIS loop cleanly — no retry. A
+                # self-shadow overlay that hits a 409 (no/locked prod base)
+                # gives up here without disturbing the primary base loop.
+                log.info("%s: giving up: %s", name, exc)
+                return
+            except Exception as exc:
+                if monotonic() - state["last_up"] > _RECONNECT_DEADLINE_S:
+                    # The gateway has been unreachable past the deadline — it
+                    # is gone for good (hard kill / idle os._exit, where its
+                    # lifespan shutdown never ran). Stop rather than spin
+                    # forever as an orphan.
+                    log.warning(
+                        "%s: gateway unreachable for >%.0fs; exiting",
+                        name, _RECONNECT_DEADLINE_S)
+                    return
+                log.warning("%s: control WS lost (%s); retry in %.1fs",
+                            name, exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    async def run(self, *, shadow_hub_url: str | None = None) -> None:
         """Register and serve forever, reconnecting with exponential backoff.
 
         Reads ``AWM_HUB_URL`` (required) and ``AWM_SERVICE_ID`` (set by the hub
         on respawn) from env. The registration handshake carries no auth — the
         gateway binds loopback-only.
+
+        ``shadow_hub_url`` opts a service into *self-shadow*: in addition to its
+        normal base on ``AWM_HUB_URL``, it registers a self-cleaning overlay of
+        ``/svc/<name>`` onto that second hub. Only the ``dev`` service passes it
+        (its sandbox sets ``AWM_SHADOW_HUB_URL`` = prod). The two loops run
+        concurrently and independently: the overlay failing closed (409 → give
+        up when prod has no ``dev`` base to overlay) never stops the base loop,
+        and the base resumes on prod when this process exits (overlay WS drop).
         """
         hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
         sid = os.environ.get("AWM_SERVICE_ID", "")
@@ -349,39 +412,22 @@ class ServiceAdapter:
             if inspect.isawaitable(res):
                 await res
 
-        backoff = 1.0
-        # ``_last_up`` tracks the last moment the control WS was confirmed up
-        # (set in ``_serve``'s finally, which is reached only once the WS
-        # actually connected). Initialised to now so a service that can never
-        # reach the gateway still gives up after the deadline rather than
-        # retrying forever.
-        self._last_up = monotonic()
-        while True:
-            try:
-                if not sid:
-                    sid = await self._register(hub_url)
-                    log.info("%s: registered service_id=%s", self.name, sid)
-                await self._serve(hub_url, sid)
-                # Clean return = the WS was up and the gateway closed it
-                # without a terminal code; treat as a fresh disconnect.
-                self._last_up = monotonic()
-                backoff = 1.0
-            except GiveUp as exc:
-                # Told to stand down (duplicate reject / terminal close /
-                # shutdown frame). Exit cleanly — no retry.
-                log.info("%s: giving up: %s", self.name, exc)
-                return
-            except Exception as exc:
-                if monotonic() - self._last_up > _RECONNECT_DEADLINE_S:
-                    # The gateway has been unreachable past the deadline — it
-                    # is gone for good (hard kill / idle os._exit, where its
-                    # lifespan shutdown never ran). Stop rather than spin
-                    # forever as an orphan.
-                    log.warning(
-                        "%s: gateway unreachable for >%.0fs; exiting",
-                        self.name, _RECONNECT_DEADLINE_S)
-                    return
-                log.warning("%s: control WS lost (%s); retry in %.1fs",
-                            self.name, exc, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+        # Primary target: a base (or, when `awm dev shadow` spawned us, an
+        # overlay) on our own hub, exactly as before — params from env.
+        prefix = os.environ.get("AWM_SERVICE_PREFIX") or f"/svc/{self.name}"
+        overlay = bool(os.environ.get("AWM_SERVICE_OVERLAY"))
+        loops = [self._run_target(
+            hub_url, sid, name=self.name, prefix=prefix, overlay=overlay)]
+
+        # Self-shadow target: a uniquely-named overlay of /svc/<name> on the
+        # second hub. Skip when unset or pointed at our own hub (belt-and-braces
+        # against a misconfigured sandbox that shadows itself).
+        shadow = (shadow_hub_url or "").rstrip("/")
+        if shadow and shadow != hub_url:
+            log.info("%s: self-shadowing /svc/%s onto %s",
+                     self.name, self.name, shadow)
+            loops.append(self._run_target(
+                shadow, "", name=f"{self.name}-shadow",
+                prefix=f"/svc/{self.name}", overlay=True))
+
+        await asyncio.gather(*loops)

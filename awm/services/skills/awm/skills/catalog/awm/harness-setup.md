@@ -56,7 +56,7 @@ Required:
 
 - `claude` CLI on `PATH` (Anthropic's `claude-code` package).
 - Global Claude Code instructions at `~/.claude/CLAUDE.md` that direct the agent to Read `./AGENTS.md` (walking up to parents), the workspace's `WORKSPACE.md`, and the scope's `.awm/context.md`. This is THE injection surface for the workspace and scope tiers on CC; no hooks involved.
-- **NO SessionStart hook for context loading.** Earlier wiring put `awm context emit` in `~/.claude/settings.json`'s `hooks.SessionStart`; that approach was abandoned after empirical confirmation that Claude Code truncates SessionStart hook output at ~10K chars (head + tail kept, middle dropped), which silently lost the agents-context and scope-context blocks for any scope with combined orientation > 10K. If you find an old hook entry in `~/.claude/settings.json`, remove it.
+- **NO SessionStart hook for context loading.** Earlier wiring put a `context emit` CLI command (since removed) in `~/.claude/settings.json`'s `hooks.SessionStart`; that approach was abandoned after empirical confirmation that Claude Code truncates SessionStart hook output at ~10K chars (head + tail kept, middle dropped), which silently lost the agents-context and scope-context blocks for any scope with combined orientation > 10K. If you find an old hook entry in `~/.claude/settings.json`, remove it.
 
 Externally-launched claude in a scope dir sees, at session start:
 
@@ -125,14 +125,14 @@ The spawn picks up:
 - **Repo (AGENTS.md) context** via OC's native walk-up (OC) or the global CLAUDE.md Read instruction (CC).
 - **Permission mode** — `bypassPermissions` by default for worker scopes, configurable per session.
 
-### `awm context emit` — for harnessed pipelines
+### Context loading — no CLI command
 
-`awm context emit --cwd <scope>` is retained as a CLI utility that prints the 3-tier context wrapped in `<workspace-context>`, `<agents-context>`, and `<scope-context>` XML blocks. Use cases:
+There is no `context emit` (or equivalent) CLI command — the prior `awm`-level utility was removed. The 3-tier context is loaded directly by each harness, not bundled by AWM tooling:
 
-- AWM tooling that needs to inline-inject the full orientation into a spawned session's prompt or stdin pre-roll (when the harness's native loading mechanism is unavailable or unreliable).
-- Diagnostics — "what would my scope's context look like as a single bundle?"
+- **Claude Code** reads `AGENTS.md` (cwd walk-up), `WORKSPACE.md`, and `.awm/context.md` itself, per the Read instructions in the global `~/.claude/CLAUDE.md` (§3).
+- **OpenCode** picks up `AGENTS.md` via native walk-up and `WORKSPACE.md` + `.awm/context.md` via the per-scope `mcp-opencode.json` `instructions` array (§4).
 
-It is NOT wired into any user-level harness hook (the prior SessionStart hook was removed — see §3).
+No user-level harness hook injects context either — the prior SessionStart hook was removed (see §3).
 
 ## 6. Verifying setup
 
@@ -160,11 +160,6 @@ cd <workspace>/projects/<p>/<scope> && claude -p \
 
 # 6. Externally-launched opencode sees the instructions
 cd <workspace>/projects/<p>/<scope> && opencode run "list your loaded instructions"
-
-# 7. context emit still emits 3 blocks (for awm-spawned use cases)
-cd <workspace>/projects/<p>/<scope>
-awm context emit --cwd "$PWD" | grep -E "^<(workspace|agents|scope)-context"
-# expect: three opening tags (one per tier present at cwd)
 ```
 
 ## 7. Maintenance

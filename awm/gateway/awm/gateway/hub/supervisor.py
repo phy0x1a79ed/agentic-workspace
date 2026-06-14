@@ -82,7 +82,7 @@ def update_service_journal_entry(name: str, patch: dict) -> None:
     """Read-modify-write one service entry. Called on register, control-WS
     open, control-WS close. Not atomic across writers — one event loop
     owns the supervisor so concurrent updates from the hub itself can't
-    race; external `awm packages list` reads are tolerant of partial
+    race; external `awm services list` reads are tolerant of partial
     writes (tmp-then-rename above)."""
     state = load_service_journal()
     entry = state.get(name, {})
@@ -129,28 +129,65 @@ def spawn_service(name: str, start_cmd: list[str], cwd: str,
     return proc.pid
 
 
+def _try_reap(pid: int) -> bool:
+    """Non-blocking ``waitpid`` to clear our child ``pid``'s zombie once it has
+    exited. Returns True only when we actually reaped *this* pid.
+
+    Services are spawned via ``subprocess.Popen`` whose handle we discard
+    (``spawn_service`` returns only the pid), so nothing else ever waits on
+    them — when we kill one it lingers as a ``<defunct>`` zombie under the
+    gateway until the gateway itself exits. Reaping here keeps the process
+    table clean. ``ChildProcessError`` means the pid is not our child (a stale
+    pid from a *previous* gateway, reparented to init, which reaps it) — not
+    something to reap here, so liveness falls back to ``os.kill(pid, 0)``."""
+    try:
+        wpid, _ = os.waitpid(pid, os.WNOHANG)
+    except (ChildProcessError, OSError):
+        return False
+    return wpid == pid
+
+
 def kill_pid_group(pid: int, *, grace_s: float = 5.0) -> None:
-    """SIGTERM the process group of ``pid``, wait ``grace_s``, SIGKILL
-    if still alive. Safe to call on a stale PID — ProcessLookupError is
-    swallowed (the corpse is already reaped)."""
+    """SIGTERM the process group of ``pid``, wait ``grace_s``, SIGKILL if still
+    alive, then reap the corpse so it does not linger as a ``<defunct>`` zombie.
+    Safe to call on a stale PID — ProcessLookupError / ChildProcessError are
+    swallowed (a previous gateway's child is reaped by init, not us).
+
+    Note the reap is also what makes the grace loop terminate promptly for our
+    own children: a zombie still answers ``os.kill(pid, 0)`` (the pid exists
+    until reaped), so without ``waitpid`` the loop would spin the full grace
+    period on every stop."""
     if pid <= 0:
         return
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
+        _try_reap(pid)
         return
     except OSError as exc:
         log.warning("SIGTERM failed for pid=%d: %s", pid, exc)
         return
     deadline = _time.monotonic() + grace_s
     while _time.monotonic() < deadline:
+        if _try_reap(pid):          # our child exited; zombie cleared
+            return
         try:
-            os.kill(pid, 0)
+            os.kill(pid, 0)         # still alive (ours, or a stale reparented one)
         except (ProcessLookupError, PermissionError):
             return
         _time.sleep(0.1)
     with suppress(ProcessLookupError, PermissionError):
         os.killpg(os.getpgid(pid), signal.SIGKILL)
+    # SIGKILL is asynchronous; give the corpse a brief window to appear, then
+    # reap it. Bounded so a pid that isn't ours (never reapable here) can't hang.
+    for _ in range(40):
+        if _try_reap(pid):
+            return
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        _time.sleep(0.05)
 
 
 def default_hub_url() -> str:

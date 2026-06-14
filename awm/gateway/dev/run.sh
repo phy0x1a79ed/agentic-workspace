@@ -54,8 +54,6 @@ esac
 
 PID_FILE="$HERE/.awm/dev.pid"
 LOG_FILE="$HERE/.awm/dev.log"
-SYNC_PID_FILE="$HERE/.awm/stripe-sync.pid"
-SYNC_LOG_FILE="$HERE/.awm/stripe-sync.log"
 JOURNAL_FILE="$HERE/.awm/state/services.json"
 
 # Modular gateway needs the worktree's dist roots on PYTHONPATH so the gateway
@@ -81,6 +79,15 @@ export DEV_PYTHONPATH
 export AWM_WORKSPACE="$HERE"
 export AWM_PORT="${AWM_PORT:-${_PORT_BASE}1}"
 export VITE_PORT="${VITE_PORT:-$_VITE_PORT}"
+
+# Self-shadow signal for the `dev` service ONLY (it's the one service that reads
+# AWM_SHADOW_HUB_URL and passes it to ServiceAdapter.run). Flows via
+# spawn_service's os.environ.copy() into every service's run.sh, but only the
+# dev adapter acts on it: when the sandbox brings up its dev service, that
+# service ALSO registers a self-cleaning overlay of /svc/dev onto prod, so
+# `awm dev <op>` (which targets prod by default) is served by THIS sandbox's
+# worktree code. Prod's own gateway never sets this → prod's dev is a plain base.
+export AWM_SHADOW_HUB_URL="${AWM_SHADOW_HUB_URL:-http://127.0.0.1:7819/}"
 export AWM_ALLOW_DESTRUCTIVE=1
 export AWM_IDLE_SHUTDOWN=999999
 export AWM_GITHUB_USER="${AWM_GITHUB_USER:-dev-sandbox}"
@@ -114,7 +121,6 @@ is_running_pidfile() {
   [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null
 }
 is_running()       { is_running_pidfile "$PID_FILE"; }
-is_sync_running()  { is_running_pidfile "$SYNC_PID_FILE"; }
 
 prep() {
   mkdir -p "$HERE/.awm"
@@ -173,22 +179,6 @@ _stop_one() {
   echo "$stopped"
 }
 
-_stop_sync() {
-  # The stripe-sync process holds N WS leases; SIGTERM is enough — closing the
-  # leases triggers hub eviction. It does not bind a port, so the port-based
-  # straggler sweep doesn't apply.
-  if [ -f "$SYNC_PID_FILE" ]; then
-    local pid
-    pid="$(cat "$SYNC_PID_FILE")"
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "[dev] stopping stripe-sync pid $pid"
-      pkill -TERM -P "$pid" 2>/dev/null || true
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-    rm -f "$SYNC_PID_FILE"
-  fi
-}
-
 # Stop the gateway-bootstrapped feature services. They are spawned by the
 # gateway (their own process groups via setsid), so killing the gateway alone
 # leaves them spinning in adapter reconnect-backoff. We kill them by the PID
@@ -211,14 +201,12 @@ _stop_services() {
 
 do_stop() {
   local s1
-  # stripe-sync first (lease close triggers hub eviction). Then the GATEWAY
-  # itself: a plain SIGTERM runs its lifespan shutdown, which enqueues an
-  # in-band `shutdown` frame to every live service, waits for them to exit,
-  # force-kills stragglers by journaled pid, and clears the journal. Only
-  # AFTER that do we run _stop_services as a BACKSTOP sweep — on a graceful
+  # The GATEWAY itself: a plain SIGTERM runs its lifespan shutdown, which
+  # enqueues an in-band `shutdown` frame to every live service, waits for them
+  # to exit, force-kills stragglers by journaled pid, and clears the journal.
+  # Only AFTER that do we run _stop_services as a BACKSTOP sweep — on a graceful
   # exit it finds an already-cleared journal (no-op); on a hard gateway death
   # (lifespan skipped) it kills the real stragglers the gateway left behind.
-  _stop_sync
   s1="$(_stop_one "$PID_FILE" "$AWM_PORT" "gateway")"
   _stop_services
   if [ "$s1" = "0" ]; then
@@ -265,68 +253,6 @@ _wait_hub() {
   return 1
 }
 
-NODE_BIN="/home/tony/lib/miniforge3/envs/awm/bin"
-
-_build_packages() {
-  # Legacy frontend build (packages/{components,pages}/<name>/). Best-effort,
-  # never fatal. Coupled to the npm workspace at awm/package.json.
-  local pkgs_root="$REPO_ROOT/packages"
-  local root_pj="$REPO_ROOT/awm/package.json"
-  if [ ! -d "$pkgs_root" ] || [ ! -f "$root_pj" ]; then
-    return 0
-  fi
-  echo "[dev] awm packages gen $REPO_ROOT"
-  (cd "$REPO_ROOT" && PYTHONPATH="$DEV_PYTHONPATH" mamba run -n awm --no-capture-output \
-      python -m awm.gateway packages gen "$REPO_ROOT") \
-    >>"$SYNC_LOG_FILE" 2>&1 || {
-      echo "[dev] manifest gen failed — see $SYNC_LOG_FILE"
-      return 1
-    }
-  if [ ! -d "$REPO_ROOT/awm/node_modules" ]; then
-    echo "[dev] npm install (workspace root awm/)…"
-    (cd "$REPO_ROOT/awm" && PATH="$NODE_BIN:$PATH" npm install --no-audit --no-fund) \
-      >>"$SYNC_LOG_FILE" 2>&1 || {
-        echo "[dev] npm install failed — see $SYNC_LOG_FILE"
-        return 1
-      }
-  fi
-  echo "[dev] npm run build --workspaces --if-present"
-  (cd "$REPO_ROOT/awm" && PATH="$NODE_BIN:$PATH" \
-      npm run build --workspaces --if-present) \
-    >>"$SYNC_LOG_FILE" 2>&1 || {
-      echo "[dev] workspace build failed — see $SYNC_LOG_FILE"
-      return 1
-    }
-}
-
-_start_stripe_sync() {
-  # Walk packages/{services,pages}/<name>/ and register each with the hub via
-  # `awm packages sync` (legacy frontend). If nothing is present, skip.
-  local pkgs_root="$REPO_ROOT/packages"
-  if [ ! -d "$pkgs_root" ]; then
-    return 0
-  fi
-  if ! find "$pkgs_root/services" "$pkgs_root/pages" \
-        -maxdepth 2 \( -name start.sh -o -name dist \) -print -quit \
-        2>/dev/null | grep -q .; then
-    return 0
-  fi
-  _build_packages || return 1
-  echo "[dev] packages-sync  $REPO_ROOT/packages/"
-  cd "$REPO_ROOT"
-  PYTHONPATH="$DEV_PYTHONPATH" \
-  nohup setsid mamba run -n awm --no-capture-output \
-      python -m awm.gateway packages sync "$REPO_ROOT" \
-      >>"$SYNC_LOG_FILE" 2>&1 &
-  echo $! >"$SYNC_PID_FILE"
-  sleep 0.5
-  if ! is_sync_running; then
-    echo "[dev] packages-sync failed to start — see $SYNC_LOG_FILE"
-    tail -n 20 "$SYNC_LOG_FILE" || true
-    rm -f "$SYNC_PID_FILE"
-  fi
-}
-
 do_start() {
   if is_running; then
     echo "[dev] already running (pid $(cat "$PID_FILE")) — use restart"
@@ -340,8 +266,6 @@ do_start() {
   # the journal then bootstraps every discovered, enabled service. Check with
   # `awm services list` (or status below).
   echo "[dev] gateway up — services bootstrapping; check: awm services list"
-  # Legacy frontend (packages/*) — best-effort, never fatal.
-  _start_stripe_sync || echo "[dev] stripe-sync (legacy frontend) failed — non-fatal; see $SYNC_LOG_FILE"
   echo "[dev] logs: gateway=$LOG_FILE"
 }
 
@@ -359,10 +283,6 @@ do_status() {
         | grep -oE '"name": *"[^"]+"' \
         | sed -E 's/"name": *"([^"]+)"/\1/' | sort -u | tr '\n' ' ')"
     fi
-  fi
-  if is_sync_running; then
-    echo "[dev] stripe-sync   running (pid $(cat "$SYNC_PID_FILE"))"
-    any=1
   fi
   [ "$any" -eq 0 ] && echo "[dev] not running"
 }

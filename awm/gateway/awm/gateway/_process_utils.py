@@ -3,14 +3,14 @@
 Two helpers used to harden ``awm.service`` against the orphan-holds-port
 restart-loop pattern surfaced by inbox #232:
 
-- ``probe_existing_awm()`` — called from ``awm serve`` before the uvicorn
-  bind. If 7819 already answers ``/status`` with a healthy AWM payload,
+- ``probe_existing_awm()`` — called from ``awm gateway serve`` before the
+  uvicorn bind. If 7819 already answers ``/status`` with a healthy AWM payload,
   exit cleanly so systemd considers the start a success. If 7819 is bound
   but answers with garbage, log the holder PID and exit 1 so the
   ``Errno 98`` restart loop becomes a one-shot diagnostic.
 
 - ``sweep_orphan_awm_serves()`` — called from ``restart_core()`` before
-  ``systemctl --user restart awm.service``. Kills any ``awm serve``
+  ``systemctl --user restart awm.service``. Kills any ``awm gateway serve``
   process that isn't a member of the ``awm.service`` cgroup, so a stale
   orphan can't hold the port across the restart.
 
@@ -224,17 +224,20 @@ def _is_in_awm_service_cgroup(pid: int) -> bool:
 
 
 def _is_awm_serve_cmdline(cmdline: str) -> bool:
-    """Strict match: an ``awm serve`` invocation, not awm-mcp / awm-other.
+    """Strict match: an ``awm gateway serve`` invocation, not awm-mcp / other.
 
     /proc cmdline arrives with NULs already replaced by spaces in
-    ``_read_cmdline``. We need to make sure we only sweep ``awm serve``
-    processes — not ``awm-mcp`` proxies (which match a loose ``awm`` glob).
+    ``_read_cmdline``. We only sweep the gateway server — the ``awm`` (or
+    ``awm.gateway`` under ``python -m``) token followed by ``gateway serve``.
+    The two real launch shapes are the systemd unit's ``…/bin/awm gateway
+    serve`` and the CLI auto-start's ``python -m awm.gateway gateway serve``;
+    both have an ``awm``-ish token immediately preceding ``gateway serve``.
+    ``awm-mcp`` proxies (a loose ``awm`` glob) never carry ``gateway serve``.
     """
     parts = cmdline.split()
-    # Look for an arg ending in "/awm" or equal to "awm" followed by "serve".
-    for i, tok in enumerate(parts[:-1]):
+    for i, tok in enumerate(parts[:-2]):
         base = tok.rsplit("/", 1)[-1]
-        if base == "awm" and parts[i + 1] == "serve":
+        if base in ("awm", "awm.gateway") and parts[i + 1:i + 3] == ["gateway", "serve"]:
             return True
     return False
 
@@ -247,7 +250,7 @@ class OrphanReport(NamedTuple):
 
 
 def sweep_orphan_awm_serves(self_pid: int | None = None) -> list[OrphanReport]:
-    """Kill ``awm serve`` processes that aren't members of the awm.service cgroup.
+    """Kill ``awm gateway serve`` processes outside the awm.service cgroup.
 
     Returns a list of per-PID reports for logging. Best-effort: a failure
     in any single step short-circuits to a skip rather than raising — the
@@ -260,7 +263,7 @@ def sweep_orphan_awm_serves(self_pid: int | None = None) -> list[OrphanReport]:
 
     try:
         out = subprocess.run(
-            ["pgrep", "-f", "awm serve"],
+            ["pgrep", "-f", "gateway serve"],
             capture_output=True, text=True, timeout=2.0,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -281,7 +284,7 @@ def sweep_orphan_awm_serves(self_pid: int | None = None) -> list[OrphanReport]:
             reports.append(OrphanReport(pid, cmdline, "skipped:self", None))
             continue
         if not _is_awm_serve_cmdline(cmdline):
-            # pgrep matches substring; skip non-`awm serve` matches.
+            # pgrep matches substring; skip non-`awm gateway serve` matches.
             reports.append(OrphanReport(pid, cmdline, "skipped:not_awm_serve", None))
             continue
         if pid == systemd_pid:

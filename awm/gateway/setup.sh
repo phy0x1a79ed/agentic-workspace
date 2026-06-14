@@ -27,9 +27,9 @@ AWM_ENV=awm bash "$HERE/install.sh"
 # 3. Create .awm/ runtime directory at the workspace/clone root
 mkdir -p "$WORKSPACE_ROOT/.awm"
 
-# 4. Initialize the database
-echo "Initializing database..."
-mamba run -n awm python -m awm init
+# 4. Initialize the workspace runtime layout
+echo "Initializing workspace..."
+mamba run -n awm python -m awm.gateway gateway init
 
 # 5. Create shell wrappers at ~/.local/bin/{awm,awm-mcp}
 mkdir -p "$HOME/.local/bin"

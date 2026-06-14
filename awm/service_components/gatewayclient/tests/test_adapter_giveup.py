@@ -104,6 +104,11 @@ def _adapter() -> ServiceAdapter:
     return ServiceAdapter("svc-x", {"functions": []}, {})
 
 
+def _register(a: ServiceAdapter, hub_url: str):
+    """Drive ``_register`` with the explicit base params ``run`` now passes."""
+    return a._register(hub_url, name=a.name, prefix=f"/svc/{a.name}", overlay=False)
+
+
 # ---------------------------------------------------------------------------
 # _register: 409 → GiveUp; 2xx → service_id; other 4xx → retryable
 # ---------------------------------------------------------------------------
@@ -113,14 +118,14 @@ def test_register_409_raises_giveup(monkeypatch):
     monkeypatch.setattr(adapter_mod.httpx, "AsyncClient",
                         lambda *a, **k: FakeClient(FakeResp(409, text="dup")))
     with pytest.raises(GiveUp):
-        asyncio.run(_adapter()._register("http://hub"))
+        asyncio.run(_register(_adapter(), "http://hub"))
 
 
 def test_register_2xx_returns_service_id(monkeypatch):
     monkeypatch.setattr(
         adapter_mod.httpx, "AsyncClient",
         lambda *a, **k: FakeClient(FakeResp(200, payload={"service_id": "sid-7"})))
-    sid = asyncio.run(_adapter()._register("http://hub"))
+    sid = asyncio.run(_register(_adapter(), "http://hub"))
     assert sid == "sid-7"
 
 
@@ -129,7 +134,7 @@ def test_register_500_is_retryable_not_giveup(monkeypatch):
                         lambda *a, **k: FakeClient(FakeResp(500)))
     # Not a GiveUp — raise_for_status surfaces a transient HTTP error instead.
     with pytest.raises(httpx.HTTPStatusError):
-        asyncio.run(_adapter()._register("http://hub"))
+        asyncio.run(_register(_adapter(), "http://hub"))
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +188,7 @@ def test_run_returns_on_giveup(monkeypatch):
 
     a = _adapter()
 
-    async def _serve_giveup(hub_url, sid):
+    async def _serve_giveup(hub_url, sid, **kw):
         raise GiveUp("stand down")
 
     monkeypatch.setattr(a, "_serve", _serve_giveup)
@@ -209,7 +214,7 @@ def test_run_returns_after_deadline_of_transient_failures(monkeypatch):
     a = _adapter()
     calls = {"n": 0}
 
-    async def _serve_transient(hub_url, sid):
+    async def _serve_transient(hub_url, sid, **kw):
         calls["n"] += 1
         raise RuntimeError("blip")
 
