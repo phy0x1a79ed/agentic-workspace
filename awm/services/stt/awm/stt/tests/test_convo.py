@@ -1,4 +1,9 @@
-"""Headless tests for the convo inner loop with a stubbed LLM seam.
+"""Headless tests for the convo accumulator (the LLM-free inner loop).
+
+``ConvoSession`` now just accumulates the raw whisper transcript across silence
+cuts into a single composer message and flushes on submit — there is no LLM seam
+and no network. Submit timing lives in the registry's silence poll, exercised in
+``test_silence_gate.py``.
 
 Run via the per-dist runner (PYTHONPATH = the stt dist root + components):
 
@@ -16,28 +21,7 @@ import asyncio
 
 import pytest
 
-from awm.stt.convo.cleanup import CleanupError
-from awm.stt.convo.session import ConvoResult, ConvoSession
-
-
-class StubAgent:
-    """Records prompts and replays a scripted list of complete_json() outcomes.
-
-    Each script entry is either a dict (returned) or an Exception (raised).
-    """
-
-    def __init__(self, script):
-        self.script = list(script)
-        self.prompts: list[str] = []
-        self.i = 0
-
-    async def complete_json(self, prompt_text, *, directory=None):
-        self.prompts.append(prompt_text)
-        item = self.script[self.i]
-        self.i += 1
-        if isinstance(item, Exception):
-            raise item
-        return item
+from awm.stt.convo.session import ConvoSession
 
 
 def run(maker):
@@ -46,128 +30,75 @@ def run(maker):
     return asyncio.run(maker())
 
 
-def test_accumulate_until_submit():
-    agent = StubAgent([
-        {"cleaned_text": "Add a login button.", "should_submit": False},
-        {"cleaned_text": "Add a login button to the navbar.", "should_submit": True},
-    ])
-    s = ConvoSession(agent, refine=True)
+def test_session_takes_no_agent():
+    # The package no longer has an LLM/agent seam — a session is constructed with
+    # no arguments and pulls in nothing network-bound.
+    s = ConvoSession()
+    assert s.raw_log == []
+    assert s.composer == ""
+
+
+def test_accumulate_across_cuts():
+    s = ConvoSession()
 
     async def body():
-        r1 = await s.on_silence_cut("add a login button")
-        assert isinstance(r1, ConvoResult)
-        assert r1.cleaned_text == "Add a login button."
-        assert r1.should_submit is False
-        assert s.composer == "Add a login button."
+        c1 = await s.on_silence_cut("add a login button")
+        assert c1 == "add a login button"
+        assert s.composer == "add a login button"
         assert s.raw_log == ["add a login button"]
 
-        r2 = await s.on_silence_cut("to the navbar")
-        assert r2.should_submit is True
-        assert r2.cleaned_text == "Add a login button to the navbar."
-        # on_silence_cut does NOT flush even when should_submit — the registry
-        # driver gates the actual send on "complete AND no new speech" and calls
-        # take_submission() to flush. So after a complete cut the working state
-        # is still held (a user who keeps talking keeps building the message).
+        # A second cut (a brief pause that didn't submit) keeps building the same
+        # message — the composer is the join of all raw chunks so far.
+        c2 = await s.on_silence_cut("to the navbar")
+        assert c2 == "add a login button to the navbar"
         assert s.raw_log == ["add a login button", "to the navbar"]
-        assert s.composer == "Add a login button to the navbar."
+        assert s.composer == "add a login button to the navbar"
 
-        # Explicit flush (what the driver calls once the user stays silent):
+    run(body)
+
+
+def test_take_submission_flushes():
+    s = ConvoSession()
+
+    async def body():
+        await s.on_silence_cut("first part")
+        await s.on_silence_cut("second part")
         flushed = await s.take_submission()
-        assert flushed == "Add a login button to the navbar."
+        assert flushed == "first part second part"
+        # Working logs reset so the next utterance starts fresh.
         assert s.raw_log == []
         assert s.composer == ""
+        # A fresh cut after a submit starts a brand-new message.
+        c = await s.on_silence_cut("a new message")
+        assert c == "a new message"
+        assert s.composer == "a new message"
 
     run(body)
 
 
-def test_prior_vs_new_framing():
-    agent = StubAgent([
-        {"cleaned_text": "First.", "should_submit": False},
-        {"cleaned_text": "First. Second.", "should_submit": False},
-    ])
-    s = ConvoSession(agent, refine=True)
+def test_empty_cut_is_ignored():
+    s = ConvoSession()
 
     async def body():
-        await s.on_silence_cut("first")
-        await s.on_silence_cut("second")
+        await s.on_silence_cut("hello")
+        # An empty/whitespace cut doesn't append a blank chunk or change state.
+        c = await s.on_silence_cut("   ")
+        assert c == "hello"
+        assert s.raw_log == ["hello"]
 
     run(body)
 
-    # On the second cut, the earlier utterance is the prior_raw, the new one is
-    # in the NEW CHUNK section.
-    p2 = agent.prompts[1]
-    prior = p2.split("[ALREADY COMPOSED — raw]")[1].split("[YOUR PRIOR")[0]
-    new = p2.split("[NEW CHUNK SINCE LAST PAUSE — raw]")[1]
-    assert "first" in prior
-    assert "second" in new
-    assert "second" not in prior
 
-
-def test_notes_persist_and_feed_forward():
-    agent = StubAgent([
-        {"cleaned_text": "Deploy Hyperion.", "should_submit": False,
-         "notes_update": "Project name is 'Hyperion' (not 'hyperon')."},
-        {"cleaned_text": "Deploy Hyperion now.", "should_submit": True},
-    ])
-    s = ConvoSession(agent, refine=True)
+def test_reset_drops_state():
+    s = ConvoSession()
 
     async def body():
-        await s.on_silence_cut("deploy hyperon")
-        assert "Hyperion" in s.notes_pad
-        await s.on_silence_cut("now")
+        await s.on_silence_cut("something")
 
     run(body)
-    # Second prompt carried the notes forward.
-    assert "Hyperion" in agent.prompts[1]
-    # Notes survive a submit-driven flush.
-    assert "Hyperion" in s.notes_pad
-
-
-def test_fallback_on_agent_error():
-    agent = StubAgent([CleanupError("zen down")])
-    s = ConvoSession(agent, refine=True)
-
-    async def body():
-        return await s.on_silence_cut("hello world")
-
-    r = run(body)
-    assert r.fallback is True
-    assert r.should_submit is False
-    assert r.cleaned_text == "hello world"
-    assert s.composer == "hello world"
-
-
-def test_no_refine_skips_llm_and_submits_raw():
-    # Default path (refine off): the LLM is never called; each cut accumulates
-    # the raw transcript and votes to submit. The driver still gates the actual
-    # flush, so multi-cut messages assemble via take_submission().
-    agent = StubAgent([])  # any call would IndexError → proves the LLM is skipped
-    s = ConvoSession(agent)  # refine defaults False
-
-    async def body():
-        r1 = await s.on_silence_cut("add a login button")
-        assert r1.cleaned_text == "add a login button"
-        assert r1.should_submit is True
-        assert r1.fallback is False
-
-        r2 = await s.on_silence_cut("to the navbar")
-        assert r2.cleaned_text == "add a login button to the navbar"
-        assert r2.should_submit is True
-        assert s.raw_log == ["add a login button", "to the navbar"]
-
-        flushed = await s.take_submission()
-        assert flushed == "add a login button to the navbar"
-        assert s.raw_log == []
-
-    run(body)
-    assert agent.prompts == [], "no-refine path must not invoke the LLM"
-
-
-def test_context_capped():
-    agent = StubAgent([{"cleaned_text": "x", "should_submit": False}])
-    s = ConvoSession(agent)
-    s.set_context("y" * 5000)
-    assert len(s.context) <= 2000
+    s.reset()
+    assert s.raw_log == []
+    assert s.composer == ""
 
 
 if __name__ == "__main__":

@@ -51,6 +51,7 @@ mid-recording partials cheap.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -93,13 +94,22 @@ PARTIAL_MIN_TAIL_SEC = float(os.environ.get("PTT_PARTIAL_MIN_TAIL", "0.4"))
 # left uncommitted, so the tail always retained the final words and never
 # transcribed empty — convo never cut, never refined, never submitted.
 SILENCE_HANG_SEC = float(os.environ.get("PTT_SILENCE_HANG", "1.2"))
-# Continuous/convo mode: after a silence-cut the LLM judges complete, we wait
-# this many seconds of CONTINUED silence before actually sending. Any new speech
-# (a fresh partial) in this window aborts the send — this is the "AND no new STT
-# raw" half of the submit gate. Keep it >= PARTIAL_MIN_GAP_SEC so at least one
-# partial pass can observe resumed speech inside the window (a same-pass resume
-# would otherwise slip through and submit prematurely).
-SUBMIT_CONFIRM_SEC = float(os.environ.get("PTT_SUBMIT_CONFIRM", "2.5"))
+# Continuous/convo mode: total trailing silence after which the accumulated
+# message AUTO-SUBMITS. The silence poll re-derives the trailing-silence span
+# from the live audio every tick (a fixed trailing window, see _silence_loop), so
+# this is a GUARANTEE — once the mic stays genuinely silent this long, it submits;
+# there is no one-shot confirm timer that a transient blip can strand. Must be
+# >= SILENCE_HANG_SEC so the finalize-cut populates the composer before submit.
+SUBMIT_SILENCE_SEC = float(os.environ.get("PTT_SUBMIT_SILENCE", "2.0"))
+# Extra audio (beyond SUBMIT_SILENCE_SEC) the submit window includes so the last
+# real speech region is visible inside it, letting us measure trailing silence as
+# (window_dur - last_speech_end) rather than only "is the whole window silent".
+SUBMIT_VAD_PAD_SEC = float(os.environ.get("PTT_SUBMIT_VAD_PAD", "0.6"))
+# Blip floor (ms) for the silence/submit clock: speech regions shorter than this
+# are ignored when locating the last real speech, so a momentary noise (click,
+# cough, breath, VAD false-positive) does NOT reset the submit timer. Applies
+# only to the silence-timing VAD; the cosmetic partial stream stays sensitive.
+VAD_BLIP_MS = int(os.environ.get("PTT_VAD_BLIP_MS", "250"))
 # Continuous mode: cadence of the fast VAD-only silence poll. Silero VAD is
 # ~100x cheaper than a whisper pass, so silence is detected on its own tick
 # (decoupled from PARTIAL_MIN_GAP_SEC) — a short utterance that ends between
@@ -176,15 +186,16 @@ class SttAgent:
         # None and keeps the raw stt_result path). Typed loosely to keep the
         # convo/agent/opencode import chain off the PTT-only code path.
         self.convo = None  # Optional[ConvoSession]
-        # Convo submit debounce. A pending submit captures ``cut_byte`` (the PCM
-        # offset at its cut); when its confirm window elapses it runs the VAD on
-        # the audio captured since that offset and only fires if that window is
-        # silent (the user stayed quiet). No text/seq proxy — ground-truth audio.
-        self._pending_submit: Optional[asyncio.Task] = None
-        # In-flight silence-cut smoothing task (accurate whisper re-pass + LLM
-        # cleanup), dispatched off the cut's critical path. Tracked so a stop /
-        # cancel / barge-in can abort the backend work mid-flight instead of
-        # letting a stale refine land after the user cleared.
+        # Submit is owned by the silence poll (_silence_loop): it re-derives the
+        # trailing-silence span from the live audio each tick and fires once it
+        # reaches SUBMIT_SILENCE_SEC. No separate confirm task to strand. ``True``
+        # once we've submitted the current composer, cleared when a new cut builds
+        # the next message — guards against re-submitting an already-sent message.
+        self._submitted: bool = False
+        # In-flight silence-cut smoothing task (accurate whisper re-pass),
+        # dispatched off the cut's critical path. Tracked so a stop / cancel /
+        # barge-in can abort the backend work mid-flight instead of letting a
+        # stale re-pass land after the user cleared.
         self._cut_task: Optional[asyncio.Task] = None
         # Dev telemetry opt-in (set from the start frame's ``telemetry`` flag). When
         # True, ``_metric`` emits high-res timing frames for each pipeline stage;
@@ -204,7 +215,6 @@ class SttAgent:
             self.recording_client = None
             self._cancel_partial_task()
             self._cancel_silence_task()
-            self._cancel_pending_submit()
             self._cancel_cut_task()
             self.pcm_chunks.clear()
             self.committed_text = ""
@@ -264,104 +274,44 @@ class SttAgent:
             }
         )
 
-    def _cancel_pending_submit(self) -> None:
-        task = self._pending_submit
-        self._pending_submit = None
-        if task is not None and not task.done():
-            task.cancel()
-
     def _cancel_cut_task(self) -> None:
         task = self._cut_task
         self._cut_task = None
         if task is not None and not task.done():
             task.cancel()
 
-    def _arm_pending_submit(self, convo, cut_byte: int) -> None:
-        """Defer the actual send until the user has stayed silent for
-        ``SUBMIT_CONFIRM_SEC`` after a complete-thought cut. When the window
-        elapses, run the VAD on the audio captured since ``cut_byte`` (the cut
-        point) and submit only if that window is silent — the "AND no new speech"
-        gate, read from the raw audio rather than whisper text. Any voiced audio
-        in the window aborts; a later cut folds the resumed speech in. A newer cut
-        re-arms this."""
-        self._cancel_pending_submit()
-
-        async def _confirm() -> None:
-            t0 = time.perf_counter()
-            try:
-                await asyncio.sleep(SUBMIT_CONFIRM_SEC)
-            except asyncio.CancelledError:
-                return
-            from awm.stt import vad
-
-            window = b"".join(self.pcm_chunks)[cut_byte:]
-            loop = asyncio.get_running_loop()
-            try:
-                voiced = await loop.run_in_executor(None, vad.has_speech, window)
-            except Exception:  # noqa: BLE001
-                log.exception("submit-confirm vad failed for %s", self.user_id)
-                voiced = True  # fail safe: never submit on an uncertain gate
-            if voiced:
-                # User resumed during the confirm window → not done; a later cut
-                # folds it into the same message and re-arms.
-                await self._metric(
-                    "submit_confirm",
-                    dur_ms=round((time.perf_counter() - t0) * 1000, 1),
-                    voiced=True, submitted=False,
-                )
-                return
-            text = await convo.take_submission()
-            await self._metric(
-                "submit_confirm",
-                dur_ms=round((time.perf_counter() - t0) * 1000, 1),
-                voiced=False, submitted=bool(text),
-            )
-            if text:
-                await self.broadcast_json({"type": "submit", "text": text})
-            await self._status("recording", "listening…")
-
-        self._pending_submit = asyncio.create_task(_confirm())
-
     def _dispatch_convo_cut(
         self, preview: str, tail: bytes, committed_prefix: str, cut_byte: int
     ) -> None:
-        """Show the just-cut utterance immediately, then smooth it in the
-        background. ``preview`` (raw text the cosmetic stream already produced) is
-        broadcast at once so the panel updates the instant the cut fires; the
-        accurate whisper re-pass and the LLM cleanup then run OFF the poll's
-        critical path and replace it in place. Nothing the user sees waits on the
-        cleanup service. A "complete" verdict does NOT submit immediately — it arms
-        a debounce that fires only if the user stays silent (see
-        :meth:`_arm_pending_submit`). ``cut_byte`` is the PCM offset at the cut; the
-        debounce VADs the audio after it."""
+        """Finalize the just-cut utterance: show it immediately, then re-transcribe
+        it accurately in the background. ``preview`` (raw text the cosmetic stream
+        already produced) is broadcast at once so the panel updates the instant the
+        cut fires; the accurate whisper re-pass then runs OFF the poll's critical
+        path and replaces it in place, accumulating into ``convo.composer``. This
+        path does NOT submit — the silence poll owns submit timing (see
+        :meth:`_silence_loop`). ``cut_byte`` is retained for signature stability."""
         convo = self.convo
         if convo is None:
             return
-        # A real cut means new speech happened — drop any submit that was waiting
-        # out an earlier complete cut; this cut's verdict re-arms it.
-        self._cancel_pending_submit()
+        # A new cut means the user is still building this message → it isn't a
+        # sent message anymore; let the silence poll re-evaluate submit.
+        self._submitted = False
 
         async def _run() -> None:
-            # 1. INSTANT: surface the raw preview now. Keep the already-cleaned
-            #    prefix (convo.composer) clean and show only the new chunk raw, so
-            #    nothing visibly "un-cleans" when the cleaned text lands next.
+            # 1. INSTANT: surface the raw preview now. Keep the already-accumulated
+            #    prefix (convo.composer) and show only the new chunk raw appended,
+            #    so nothing visibly jumps when the re-passed text lands next.
             if preview:
                 await self.broadcast_json(
                     {"type": "composer", "text": (convo.composer + " " + preview).strip()}
                 )
-            await self._metric("refine_preview", preview_len=len(preview))
-            # The amber "refining…" pulse + LLM-refine framing only make sense
-            # when the LLM cleanup actually runs. With refine off we still do the
-            # accurate whisper re-pass below (that's not the LLM), so show plain
-            # "transcribing…" instead of mislabeling the cut as refining.
-            refine = convo.refine
-            await self._status("refining" if refine else "recording",
-                               "refining…" if refine else "transcribing…")
-            # 2. SECONDARY smoothing pass: re-transcribe the tail accurately, off
-            #    the critical path, and splice onto the committed prefix. Falls back
-            #    to the streamed preview if the pass comes up empty (e.g. an
-            #    ultra-short utterance). The lock serializes model use with the
-            #    cosmetic loop (the model is not concurrency-safe).
+            await self._metric("cut_preview", preview_len=len(preview))
+            await self._status("recording", "transcribing…")
+            # 2. ACCURATE re-pass: re-transcribe the tail off the critical path and
+            #    splice onto the committed prefix. Falls back to the streamed
+            #    preview if the pass comes up empty (e.g. an ultra-short utterance).
+            #    The lock serializes model use with the cosmetic loop (the model is
+            #    not concurrency-safe).
             loop = asyncio.get_running_loop()
             repass_ms = 0.0
             try:
@@ -382,32 +332,13 @@ class SttAgent:
             if not cut_text:
                 await self._status("recording", "listening…")
                 return
-            # 3. LLM cleanup → replace the preview in place.
-            t0 = time.perf_counter()
-            try:
-                res = await convo.on_silence_cut(cut_text)
-            except Exception:  # noqa: BLE001 — on_silence_cut self-handles; belt-and-suspenders
-                log.exception("convo cleanup crashed for %s", self.user_id)
-                await self._status("recording", "listening…")
-                return
-            await self._metric(
-                "llm_refine" if refine else "convo_cut",
-                dur_ms=round((time.perf_counter() - t0) * 1000, 1),
-                should_submit=res.should_submit, fallback=res.fallback,
-            )
-            await self.broadcast_json({"type": "composer", "text": res.cleaned_text})
-            if res.should_submit and not res.fallback:
-                # Complete thought — but only send once the user actually stops.
-                self._arm_pending_submit(convo, cut_byte)
-                await self._status("recording", "listening…")
-            elif res.fallback:
-                # LLM unavailable: composer shows raw text, no submit. Flag it so
-                # a stuck convo is visibly "cleanup offline" rather than silent.
-                await self._status("recording", "cleanup offline · listening…")
-            else:
-                await self._status("recording", "listening…")
+            # 3. Accumulate the raw text into the composer and show it.
+            composer = await convo.on_silence_cut(cut_text)
+            await self._metric("convo_cut", composer_len=len(composer))
+            await self.broadcast_json({"type": "composer", "text": composer})
+            await self._status("recording", "listening…")
 
-        # A fresh cut supersedes any still-running refine.
+        # A fresh cut supersedes any still-running re-pass.
         self._cancel_cut_task()
         self._cut_task = asyncio.create_task(_run())
 
@@ -470,7 +401,6 @@ class SttAgent:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
         self._cancel_silence_task()
-        self._cancel_pending_submit()
         self._cancel_cut_task()
         self.pcm_chunks.clear()
         self.committed_text = ""
@@ -478,21 +408,19 @@ class SttAgent:
         self.continuous = (mode == "continuous")
         self._silent_passes = 0
         self._last_partial = ""
+        self._submitted = False
         self.telemetry = telemetry
         self.recording_client = ws
         self.last_active = time.monotonic()
-        # Continuous mode runs the convo inner loop: a per-session cleanup
-        # agent fed by each silence-cut. PTT mode leaves convo None.
+        # Continuous mode runs the convo inner loop: a per-session raw-transcript
+        # accumulator fed by each silence-cut. PTT mode leaves convo None. (The
+        # ``context`` field is still accepted from the frontend but unused now that
+        # there is no LLM prompt to feed it into.)
         self.convo = None
         if self.continuous:
-            from awm.stt.convo import get_convo_manager
+            from awm.stt.convo import ConvoSession
 
-            mgr = get_convo_manager()
-            self.convo = mgr.new_session()
-            if isinstance(context, str):
-                self.convo.set_context(context)
-            # Warm the opencode server ahead of the first cut (best-effort).
-            asyncio.create_task(mgr.ensure_started())
+            self.convo = ConvoSession()
         await self._status("recording", "listening…" if self.continuous else "recording…")
         self._partial_task = asyncio.create_task(self._partial_loop(ws))
         if self.continuous:
@@ -508,7 +436,6 @@ class SttAgent:
         self.recording_client = None
         self._cancel_partial_task()
         self._cancel_silence_task()
-        self._cancel_pending_submit()
         self._cancel_cut_task()
         self.pcm_chunks.clear()
         self.committed_text = ""
@@ -526,7 +453,6 @@ class SttAgent:
         self.recording_client = None
         self._cancel_partial_task()
         self._cancel_silence_task()
-        self._cancel_pending_submit()
         self._cancel_cut_task()
         if self.continuous or self.convo is not None:
             # Convo mode emits a result per silence-cut; stopping just tears the
@@ -722,43 +648,99 @@ class SttAgent:
                 # during the await — see _silence_cut's docstring.
                 committed_prefix = self.committed_text
                 tail = joined[self.committed_bytes:]
-                if len(tail) < min_tail_bytes:
-                    continue
                 from awm.stt import vad
 
-                t0 = time.perf_counter()
-                try:
-                    voice_end = await loop.run_in_executor(
-                        None, vad.last_speech_end_s, tail,
-                    )
-                except Exception:  # noqa: BLE001
-                    log.exception("vad poll failed for %s", self.user_id)
-                    continue
-                vad_ms = (time.perf_counter() - t0) * 1000
-                if self.recording_client is not ws:
-                    return
-                tail_dur = len(tail) / SAMPLE_BYTES / SAMPLE_RATE
-                gap = (tail_dur - voice_end) if voice_end is not None else None
-                # Every poll that ran VAD emits a heartbeat row (silent no-ops too,
-                # where voice_end/gap are None).
-                await self._metric(
-                    "vad_poll",
-                    dur_ms=round(vad_ms, 1),
-                    gap=round(gap, 3) if gap is not None else None,
-                    voice_end=round(voice_end, 3) if voice_end is not None else None,
-                )
-                if voice_end is None:
-                    continue  # no voice in the tail → nothing to cut
-                if gap >= SILENCE_HANG_SEC:
-                    log.debug(
-                        "stt vad cut for %s: tail_dur=%.2f voice_end=%.2f gap=%.2f",
-                        self.user_id, tail_dur, voice_end, gap,
-                    )
-                    await self._silence_cut(joined, tail, committed_prefix)
+                # --- 1. finalize-cut decision (off the splice tail) ---
+                # Needs a long-enough splice tail; the submit check below runs
+                # regardless so a short post-cut tail can't stall the guarantee.
+                if len(tail) >= min_tail_bytes:
+                    t0 = time.perf_counter()
+                    try:
+                        # Blip-tolerant: short noise regions are ignored, so the
+                        # measured trailing gap reflects the last REAL word.
+                        voice_end = await loop.run_in_executor(
+                            None,
+                            functools.partial(
+                                vad.last_speech_end_s, tail, min_region_ms=VAD_BLIP_MS
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.exception("vad poll failed for %s", self.user_id)
+                        voice_end = None
+                    else:
+                        vad_ms = (time.perf_counter() - t0) * 1000
+                        if self.recording_client is not ws:
+                            return
+                        tail_dur = len(tail) / SAMPLE_BYTES / SAMPLE_RATE
+                        gap = (tail_dur - voice_end) if voice_end is not None else None
+                        # Heartbeat row (silent no-ops too, where gap is None).
+                        await self._metric(
+                            "vad_poll",
+                            dur_ms=round(vad_ms, 1),
+                            gap=round(gap, 3) if gap is not None else None,
+                            voice_end=round(voice_end, 3) if voice_end is not None else None,
+                        )
+                        if voice_end is not None and gap >= SILENCE_HANG_SEC:
+                            log.debug(
+                                "stt vad cut for %s: tail_dur=%.2f voice_end=%.2f gap=%.2f",
+                                self.user_id, tail_dur, voice_end, gap,
+                            )
+                            await self._silence_cut(joined, tail, committed_prefix)
+
+                # --- 2. submit decision (the guarantee), owned here ---
+                await self._maybe_submit(joined, loop)
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001
             log.exception("silence loop crashed for %s", self.user_id)
+
+    async def _maybe_submit(self, joined: bytes, loop) -> None:
+        """Auto-submit the accumulated composer once the mic has been genuinely
+        silent for ``SUBMIT_SILENCE_SEC``. Called every poll: it re-derives the
+        trailing-silence span from a FIXED trailing window of the live audio
+        (independent of the cut's splice window, which resets on each cut), so the
+        decision is self-correcting and sustained silence is GUARANTEED to cross
+        the threshold — there is no one-shot timer a transient blip can strand. A
+        lone blip is below ``VAD_BLIP_MS`` and ignored; genuine resumed speech puts
+        voice back in the window and naturally holds the submit (the next cut folds
+        it into the same message)."""
+        convo = self.convo
+        if convo is None or self._submitted or not convo.composer:
+            return
+        # A fixed trailing window long enough to *prove* SUBMIT_SILENCE_SEC of
+        # silence (plus pad so the last real word sits inside it for the gap math).
+        win_bytes = int((SUBMIT_SILENCE_SEC + SUBMIT_VAD_PAD_SEC) * SAMPLE_RATE * SAMPLE_BYTES)
+        sub_win = joined[-win_bytes:] if len(joined) >= win_bytes else joined
+        win_dur = len(sub_win) / SAMPLE_BYTES / SAMPLE_RATE
+        if win_dur < SUBMIT_SILENCE_SEC:
+            return  # not enough audio yet to demonstrate the full silence span
+        from awm.stt import vad
+
+        try:
+            end = await loop.run_in_executor(
+                None,
+                functools.partial(vad.last_speech_end_s, sub_win, min_region_ms=VAD_BLIP_MS),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("submit vad failed for %s", self.user_id)
+            return
+        # Trailing silence = time after the last real speech in the window (or the
+        # whole window when it holds no speech at all → fully silent).
+        trailing = (win_dur - end) if end is not None else win_dur
+        if trailing < SUBMIT_SILENCE_SEC:
+            return
+        text = await convo.take_submission()
+        self._submitted = True
+        # Park the splice window at the current end so the post-submit silence
+        # isn't re-cut; a fresh utterance starts a new tail.
+        self.committed_bytes = len(b"".join(self.pcm_chunks))
+        self.committed_text = ""
+        self._last_partial = ""
+        await self._metric("submit", trailing_silence=round(trailing, 3), submitted=bool(text))
+        if text:
+            log.info("convo auto-submit for %s: %r", self.user_id, text[:120])
+            await self.broadcast_json({"type": "submit", "text": text})
+        await self._status("recording", "listening…")
 
 
 class SttRegistry:
@@ -873,11 +855,10 @@ async def run_stt_ws_session(websocket: WebSocket, user_as: str) -> None:
                     telemetry=bool(payload.get("telemetry")),
                 )
             elif t == "context":
-                # Frontend pushing an updated recent-chat-history buffer for the
-                # convo cleanup LLM. Ignored outside continuous mode.
-                ctx = payload.get("text")
-                if isinstance(ctx, str) and agent.convo is not None:
-                    agent.convo.set_context(ctx)
+                # Frontend still pushes a recent-chat-history buffer; it only ever
+                # fed the (now-removed) convo cleanup LLM, so it's accepted and
+                # ignored. Left wired so no frontend change is required.
+                pass
             elif t == "end":
                 await agent.handle_end(websocket)
             elif t == "cancel":

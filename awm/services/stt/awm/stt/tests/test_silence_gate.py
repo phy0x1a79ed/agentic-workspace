@@ -1,17 +1,20 @@
-"""Deterministic tests for the VAD-driven silence-cut / submit gate.
+"""Deterministic tests for the VAD-driven silence-cut / auto-submit gate.
 
-The real Silero VAD and whisper passes are stubbed so the cut → refine → arm →
-confirm state machine can be exercised without audio or a model. Covers the core
-rows of the plan's case table:
+The real Silero VAD and whisper passes are stubbed so the cut → finalize and the
+loop-owned auto-submit can be exercised without audio or a model. The LLM refiner
+is gone: a cut just accumulates the raw whisper text into the composer, and the
+silence poll owns submit timing — it auto-submits once the mic has been silent for
+``SUBMIT_SILENCE_SEC``, measured blip-tolerantly from a fixed trailing window so a
+momentary noise does not reset the clock.
 
-  1. complete + silent window  → submit
-  2. complete + voiced window  → held (no submit), folds forward
-  3. incomplete                → no arm, no submit
-  4. the background pass transcribes the tail (works with empty committed prefix)
-  5. the fast poll fires a cut on voice-then-silence, and holds otherwise
-  6. the raw preview is broadcast BEFORE the cleaned composer (responsiveness)
-  7. with telemetry opted in, the cut path emits high-res `metric` frames (and
-     none at all when it's off)
+Covers:
+  1. a cut finalizes the composer (raw text) and never submits on its own
+  2. the instant raw preview is broadcast before the accurate re-passed composer
+  3. ``_maybe_submit`` fires once trailing silence >= the threshold
+  4. it holds while speech is recent (trailing silence too small)
+  5. a short blip in the trailing window does NOT stop the submit (blip floor)
+  6. with telemetry on, the cut emits convo_cut (not llm_refine); none when off
+  7. the fast poll fires a cut on voice-then-silence, and holds otherwise
 
 Run via the per-dist runner, or directly:
 
@@ -24,22 +27,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from awm.stt import registry as reg
 from awm.stt import vad
 from awm.stt.convo.session import ConvoSession
 
-
-class StubCleanupAgent:
-    """Replays a scripted list of complete_json() outcomes (dicts)."""
-
-    def __init__(self, script):
-        self.script = list(script)
-        self.i = 0
-
-    async def complete_json(self, prompt_text, *, directory=None):
-        item = self.script[self.i]
-        self.i += 1
-        return item
+SR = 16000
+SB = 2
 
 
 def _fake_segments(text):
@@ -52,10 +47,10 @@ def _fake_segments(text):
     return f
 
 
-def _agent_with_capture(convo):
+def _agent_with_capture():
     agent = reg.SttAgent("u", Path("/tmp"))
     agent.continuous = True
-    agent.convo = convo
+    agent.convo = ConvoSession()
     sent: list[dict] = []
 
     async def cap(payload):
@@ -65,177 +60,184 @@ def _agent_with_capture(convo):
     return agent, sent
 
 
-async def _run_cut(monkeypatch, *, cut_text, should_submit, window_voiced,
-                   committed_prefix="", telemetry=False, refine=True):
-    """Drive one silence-cut end-to-end and return the broadcast payloads.
-
-    ``refine`` selects the convo path: True exercises the LLM cleanup (the
-    scripted StubCleanupAgent reply), False the default raw-whisper + auto-submit
-    path (no LLM)."""
-    monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments(cut_text))
-    monkeypatch.setattr(reg, "SUBMIT_CONFIRM_SEC", 0.05)
-    monkeypatch.setattr(
-        vad, "has_speech", lambda pcm, sample_rate=16000: window_voiced,
-    )
-
-    if refine:
-        cleaned = (committed_prefix + " " + cut_text).strip().capitalize()
-        convo = ConvoSession(StubCleanupAgent(
-            [{"cleaned_text": cleaned, "should_submit": should_submit}],
-        ), refine=True)
-    else:
-        # No-refine: the composer is the raw (whisper) text, no LLM call.
-        cleaned = (committed_prefix + " " + cut_text).strip()
-        convo = ConvoSession(StubCleanupAgent([]), refine=False)
-    agent, sent = _agent_with_capture(convo)
-    agent.committed_text = committed_prefix
-    agent.telemetry = telemetry
-
-    joined = b"\x00" * 64000  # 2s of audio
-    await agent._silence_cut(joined, joined, agent.committed_text)
-    # Let the dispatched refine task and the confirm timer run to completion.
-    await asyncio.sleep(0.2)
-    return agent, sent, cleaned
-
-
 def _types(sent, t):
     return [p for p in sent if p.get("type") == t]
 
 
-async def test_complete_then_silent_submits(monkeypatch):
-    agent, sent, cleaned = await _run_cut(
+async def _run_cut(monkeypatch, *, cut_text, committed_prefix="", telemetry=False):
+    """Drive one silence-cut end-to-end and return the broadcasts. The cut
+    finalizes the composer; it does NOT submit (the silence poll does)."""
+    monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments(cut_text))
+    agent, sent = _agent_with_capture()
+    agent.committed_text = committed_prefix
+    agent.telemetry = telemetry
+
+    joined = b"\x00" * 64000  # 2s of audio
+    await agent._silence_cut(joined, joined, committed_prefix)
+    await asyncio.sleep(0.2)  # let the dispatched re-pass task finish
+    composed = (committed_prefix + " " + cut_text).strip()
+    return agent, sent, composed
+
+
+# ---- the finalize-cut path ----
+
+async def test_cut_finalizes_composer_no_submit(monkeypatch):
+    agent, sent, composed = await _run_cut(
         monkeypatch, cut_text="add a login button",
-        should_submit=True, window_voiced=False,
+        committed_prefix="please", telemetry=True,
     )
-    assert _types(sent, "composer") and _types(sent, "composer")[0]["text"] == cleaned
-    submits = _types(sent, "submit")
-    assert submits and submits[0]["text"] == cleaned
+    composers = _types(sent, "composer")
+    # The instant raw preview lands first, the accurate composer last.
+    assert composers[0]["text"] == "please", "first composer must be the raw preview"
+    assert composers[-1]["text"] == composed == "please add a login button"
+    # A cut never submits on its own — that's the silence poll's job.
+    assert not _types(sent, "submit")
+    assert agent.convo.composer == composed
     # The window was reset by the cut.
     assert agent._cut_epoch == 1
     assert agent.committed_bytes == 64000
     assert agent.committed_text == ""
 
 
-async def test_complete_but_resumed_holds(monkeypatch):
-    agent, sent, cleaned = await _run_cut(
-        monkeypatch, cut_text="add a login button",
-        should_submit=True, window_voiced=True,  # user resumed during the window
+async def test_preview_raw_broadcast_before_composer(monkeypatch):
+    agent, sent, composed = await _run_cut(
+        monkeypatch, cut_text="add a login button", committed_prefix="please",
     )
-    assert _types(sent, "composer")  # refine still shown
-    assert not _types(sent, "submit")  # but held — folds into the next cut
-
-
-async def test_incomplete_no_arm(monkeypatch):
-    agent, sent, _ = await _run_cut(
-        monkeypatch, cut_text="the thing is",
-        should_submit=False, window_voiced=False,
-    )
-    assert _types(sent, "composer")
-    assert not _types(sent, "submit")
-    assert agent._pending_submit is None
+    composers = _types(sent, "composer")
+    assert len(composers) >= 2, "expected a raw preview then the re-passed composer"
+    assert composers[0]["text"] == "please"
+    assert composers[-1]["text"] == composed
 
 
 async def test_cut_builds_text_from_tail_with_empty_prefix(monkeypatch):
-    # Case 4 essence: a short utterance the cosmetic loop never transcribed — the
-    # cut's own whisper pass produces the text from the tail (empty prefix).
-    agent, sent, cleaned = await _run_cut(
-        monkeypatch, cut_text="hello", should_submit=True,
-        window_voiced=False, committed_prefix="",
+    # A short utterance the cosmetic loop never transcribed — the cut's own
+    # whisper pass produces the text from the tail (empty committed prefix).
+    agent, sent, composed = await _run_cut(
+        monkeypatch, cut_text="hello", committed_prefix="",
     )
-    assert _types(sent, "submit") and _types(sent, "submit")[0]["text"] == cleaned
-
-
-async def test_preview_raw_broadcast_before_cleaned(monkeypatch):
-    # The core responsiveness change: the cut broadcasts the RAW preview (text the
-    # cosmetic stream already produced, here the committed prefix) immediately,
-    # BEFORE the accurate re-pass + LLM cleanup land the cleaned composer. So the
-    # first composer frame is raw, a later one is cleaned — never gated behind the
-    # LLM round-trip.
-    agent, sent, cleaned = await _run_cut(
-        monkeypatch, cut_text="add a login button",
-        should_submit=False, window_voiced=False,
-        committed_prefix="please",  # non-empty → a preview is available
-    )
-    composers = _types(sent, "composer")
-    assert len(composers) >= 2, "expected a raw preview then a cleaned composer"
-    assert composers[0]["text"] == "please", "first composer must be the raw preview"
-    assert composers[-1]["text"] == cleaned, "last composer must be the cleaned text"
-    # The raw preview is emitted before any 'refining' status (it's the very first
-    # thing the cut does).
-    first_composer_idx = next(i for i, p in enumerate(sent) if p.get("type") == "composer")
-    first_refining_idx = next(
-        i for i, p in enumerate(sent)
-        if p.get("type") == "status" and p.get("stage") == "refining"
-    )
-    assert first_composer_idx < first_refining_idx
+    assert _types(sent, "composer")[-1]["text"] == "hello"
+    assert agent.convo.composer == "hello"
 
 
 async def test_metric_frames_on_cut(monkeypatch):
-    # Dev telemetry: with the session opted in, the cut path emits high-res
-    # `metric` frames for each stage, with the expected ordering and durations.
-    agent, sent, cleaned = await _run_cut(
+    # Dev telemetry: the cut path emits per-stage frames, and crucially NO
+    # llm_refine (the LLM is gone) — convo_cut is the finalize marker.
+    agent, sent, _ = await _run_cut(
         monkeypatch, cut_text="add a login button",
-        should_submit=True, window_voiced=False,
         committed_prefix="please", telemetry=True,
     )
-    metrics = _types(sent, "metric")
-    events = [m["event"] for m in metrics]
-    for ev in ("silence_cut", "refine_preview", "whisper_repass", "llm_refine"):
-        assert ev in events, f"missing {ev} metric; got {events}"
-    # The timed stages carry a numeric duration.
-    for ev in ("whisper_repass", "llm_refine"):
-        m = next(m for m in metrics if m["event"] == ev)
-        assert isinstance(m["dur_ms"], (int, float))
-    # Ordering: the cut and its instant preview precede the LLM refine.
-    assert events.index("silence_cut") < events.index("llm_refine")
-    assert events.index("refine_preview") < events.index("llm_refine")
-    # llm_refine carries the verdict fields.
-    refine = next(m for m in metrics if m["event"] == "llm_refine")
-    assert refine["should_submit"] is True
-    assert refine["fallback"] is False
-
-
-async def test_no_refine_submits_raw_without_llm(monkeypatch):
-    # Default convo path (refine off): the cut auto-submits the raw whisper text
-    # with no LLM call. The cut path emits `convo_cut` (not `llm_refine`) and the
-    # interim status is `transcribing`, never `refining`.
-    agent, sent, cleaned = await _run_cut(
-        monkeypatch, cut_text="add a login button",
-        should_submit=True, window_voiced=False,
-        committed_prefix="please", telemetry=True, refine=False,
-    )
-    # composer is the raw committed-prefix + tail (not capitalized/cleaned).
-    composers = _types(sent, "composer")
-    assert composers and composers[-1]["text"] == cleaned == "please add a login button"
-    # complete + silent → submits the raw text.
-    submits = _types(sent, "submit")
-    assert submits and submits[0]["text"] == cleaned
-    # metric framing reflects no-LLM.
     events = [m["event"] for m in _types(sent, "metric")]
-    assert "convo_cut" in events
+    for ev in ("silence_cut", "cut_preview", "whisper_repass", "convo_cut"):
+        assert ev in events, f"missing {ev} metric; got {events}"
     assert "llm_refine" not in events
-    # status never claims to be "refining".
-    stages = [p.get("stage") for p in _types(sent, "status")]
-    assert "refining" not in stages
+    assert "refine_preview" not in events
+    # Ordering: the cut and its instant preview precede the accumulate marker.
+    assert events.index("silence_cut") < events.index("convo_cut")
+    assert events.index("cut_preview") < events.index("convo_cut")
 
 
 async def test_no_metrics_when_off(monkeypatch):
-    # Default (telemetry off): a normal session emits no metric frames at all.
-    agent, sent, cleaned = await _run_cut(
-        monkeypatch, cut_text="add a login button",
-        should_submit=True, window_voiced=False,
-        committed_prefix="please",
+    agent, sent, _ = await _run_cut(
+        monkeypatch, cut_text="add a login button", committed_prefix="please",
     )
     assert _types(sent, "metric") == []
 
 
+# ---- the loop-owned auto-submit (the guarantee) ----
+
+def _fill_submit_window(agent):
+    """Give the agent a trailing window long enough to demonstrate the full
+    SUBMIT_SILENCE_SEC span, and return it joined."""
+    win_sec = reg.SUBMIT_SILENCE_SEC + reg.SUBMIT_VAD_PAD_SEC
+    agent.pcm_chunks = [b"\x00" * int((win_sec + 0.5) * SR * SB)]
+    return b"".join(agent.pcm_chunks)
+
+
+async def test_maybe_submit_fires_after_silence(monkeypatch):
+    agent, sent = _agent_with_capture()
+    agent.telemetry = True
+    await agent.convo.on_silence_cut("hello world")  # composer populated by a cut
+    joined = _fill_submit_window(agent)
+    # Last real speech ended early in the window → trailing silence is large.
+    monkeypatch.setattr(
+        vad, "last_speech_end_s",
+        lambda pcm, sample_rate=16000, **kw: 0.2,
+    )
+    await agent._maybe_submit(joined, asyncio.get_running_loop())
+    submits = _types(sent, "submit")
+    assert submits and submits[0]["text"] == "hello world"
+    assert agent._submitted is True
+    assert agent.convo.composer == ""  # flushed by take_submission
+    # A submit metric carries the measured trailing silence.
+    m = next(m for m in _types(sent, "metric") if m["event"] == "submit")
+    assert m["trailing_silence"] >= reg.SUBMIT_SILENCE_SEC
+
+
+async def test_maybe_submit_holds_when_speech_recent(monkeypatch):
+    agent, sent = _agent_with_capture()
+    await agent.convo.on_silence_cut("hello")
+    joined = _fill_submit_window(agent)
+    win_sec = reg.SUBMIT_SILENCE_SEC + reg.SUBMIT_VAD_PAD_SEC
+    # Speech runs to the very end of the window → trailing silence ~0 → hold.
+    monkeypatch.setattr(
+        vad, "last_speech_end_s",
+        lambda pcm, sample_rate=16000, **kw: win_sec,
+    )
+    await agent._maybe_submit(joined, asyncio.get_running_loop())
+    assert not _types(sent, "submit")
+    assert agent._submitted is False
+    assert agent.convo.composer == "hello"  # still building the message
+
+
+async def test_maybe_submit_skips_when_nothing_composed(monkeypatch):
+    # No composed message yet → never submits, even on a fully silent window.
+    agent, sent = _agent_with_capture()
+    joined = _fill_submit_window(agent)
+    monkeypatch.setattr(
+        vad, "last_speech_end_s",
+        lambda pcm, sample_rate=16000, **kw: None,
+    )
+    await agent._maybe_submit(joined, asyncio.get_running_loop())
+    assert not _types(sent, "submit")
+
+
+async def test_blip_does_not_reset_submit(monkeypatch):
+    # The user's requirement: a brief blip in the trailing-silence window must NOT
+    # restart the submit clock. The loop passes min_region_ms=VAD_BLIP_MS, so a
+    # sub-floor region is ignored and the trailing silence is measured against the
+    # last REAL speech — the message still submits.
+    agent, sent = _agent_with_capture()
+    await agent.convo.on_silence_cut("done talking")
+    joined = _fill_submit_window(agent)
+
+    def fake(pcm, sample_rate=16000, *, min_region_ms=0, threshold=None):
+        # A 400ms real word early, then a 100ms blip late in the window.
+        regions = [(0.10, 0.50), (2.40, 2.50)]
+        floor = min_region_ms / 1000.0
+        kept = [(s, e) for (s, e) in regions if (e - s) >= floor]
+        return kept[-1][1] if kept else None
+
+    # Document the contrast the loop relies on:
+    assert fake(b"", min_region_ms=0) == pytest.approx(2.50)        # blip counted
+    assert fake(b"", min_region_ms=reg.VAD_BLIP_MS) == pytest.approx(0.50)  # blip ignored
+
+    monkeypatch.setattr(vad, "last_speech_end_s", fake)
+    await agent._maybe_submit(joined, asyncio.get_running_loop())
+    assert _types(sent, "submit"), "a blip in the window must not stop the submit"
+    assert agent._submitted is True
+
+
+# ---- the fast silence poll's cut timing ----
+
 async def test_silence_loop_fires_on_voice_then_silence(monkeypatch):
     monkeypatch.setattr(reg, "VAD_POLL_SEC", 0.01)
     # tail_dur = 3.0s; voice ends at 0.5s → gap 2.5s ≥ SILENCE_HANG → cut.
-    monkeypatch.setattr(vad, "last_speech_end_s", lambda pcm, sample_rate=16000: 0.5)
+    monkeypatch.setattr(
+        vad, "last_speech_end_s",
+        lambda pcm, sample_rate=16000, **kw: 0.5,
+    )
 
-    convo = ConvoSession(StubCleanupAgent([]))
-    agent, _ = _agent_with_capture(convo)
+    agent, _ = _agent_with_capture()
     ws = object()
     agent.recording_client = ws
     agent.pcm_chunks = [b"\x00" * 96000]  # 3s
@@ -259,10 +261,12 @@ async def test_silence_loop_fires_on_voice_then_silence(monkeypatch):
 async def test_silence_loop_holds_when_gap_small(monkeypatch):
     monkeypatch.setattr(reg, "VAD_POLL_SEC", 0.01)
     # tail_dur = 3.0s; voice ends at 2.5s → gap 0.5s < SILENCE_HANG → no cut.
-    monkeypatch.setattr(vad, "last_speech_end_s", lambda pcm, sample_rate=16000: 2.5)
+    monkeypatch.setattr(
+        vad, "last_speech_end_s",
+        lambda pcm, sample_rate=16000, **kw: 2.5,
+    )
 
-    convo = ConvoSession(StubCleanupAgent([]))
-    agent, _ = _agent_with_capture(convo)
+    agent, _ = _agent_with_capture()
     ws = object()
     agent.recording_client = ws
     agent.pcm_chunks = [b"\x00" * 96000]  # 3s
