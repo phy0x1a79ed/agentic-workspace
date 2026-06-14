@@ -11,9 +11,9 @@ is unreachable the engine falls back to the raw piper PCM rather than failing.
 
 Voice models live under ``<AWM_DATA_DIR>/tts-models/piper/*.onnx`` (reachable
 from any scope via ``.awm/data/tts-models/piper/``), mirroring the sbv2 layout.
-The ``voice`` dropdown enum is filled at ``listEngines`` time by scanning that
-dir (see ``app._enrich_piper_enums``); the ``rvc_voice`` enum is the sidecar's
-RVC voice list with ``off`` prepended.
+The ``base_voice`` dropdown enum is filled at ``listEngines`` time by scanning
+that dir (see ``app._enrich_piper_enums``); the ``rvc_voice`` enum is the
+sidecar's RVC voice list with ``off`` prepended.
 """
 
 from __future__ import annotations
@@ -55,10 +55,15 @@ class PiperConfig(BaseModel):
     form only shows what affects how the voice sounds.
     """
 
-    voice: str | None = Field(
+    base_voice: str | None = Field(
         default=None,
+        title="base voice",
         description="Local piper voice (.onnx) under the piper models dir. "
         "Enum is filled at listEngines time by scanning that dir.",
+        # Seed an empty `enum` so this is structurally a chooser (dropdown)
+        # even before listEngines stamps the real list — an empty list renders
+        # as a disabled 'none' dropdown, never a free-text box.
+        json_schema_extra={"enum": []},
     )
     rvc_voice: str = Field(
         default="off",
@@ -78,10 +83,6 @@ class PiperConfig(BaseModel):
         default=1.0, ge=0.5, le=2.0,
         description="Speech rate. <1 faster, >1 slower (piper length_scale = 1/speed).",
     )
-    voice_path: str | None = Field(
-        default=None,
-        description="Absolute override for the voice .onnx path (bypasses the voice dropdown / PIPER_VOICE).",
-    )
 
 
 CONFIG_SCHEMA = PiperConfig
@@ -90,15 +91,13 @@ CONFIG_SCHEMA = PiperConfig
 def _resolve_model_path(cfg: PiperConfig) -> Path:
     """Resolve the .onnx model path from config / env / models dir.
 
-    Priority: explicit ``voice_path`` → ``voice`` filename under the models
-    dir → ``PIPER_VOICE`` env → first ``.onnx`` in the models dir.
+    Priority: ``base_voice`` filename under the models dir → ``PIPER_VOICE``
+    env (backend path override) → first ``.onnx`` in the models dir.
     """
-    if cfg.voice_path:
-        return Path(cfg.voice_path)
     models = piper_models_dir()
-    if cfg.voice:
+    if cfg.base_voice:
         # Accept either a bare filename or a stem.
-        name = cfg.voice if cfg.voice.endswith(".onnx") else f"{cfg.voice}.onnx"
+        name = cfg.base_voice if cfg.base_voice.endswith(".onnx") else f"{cfg.base_voice}.onnx"
         return models / name
     env = os.environ.get("PIPER_VOICE")
     if env:
@@ -107,7 +106,7 @@ def _resolve_model_path(cfg: PiperConfig) -> Path:
     if voices:
         return models / voices[0]
     raise FileNotFoundError(
-        f"no piper voice model found (set voice/voice_path/PIPER_VOICE or drop a "
+        f"no piper voice model found (set base_voice/PIPER_VOICE or drop a "
         f".onnx into {models})"
     )
 
