@@ -28,6 +28,9 @@
     // a flowing text panel of the accumulating message instead of chips.
     convo?: boolean;
     convoText?: string;
+    // Convo-mode CLEAR: transport-owned (wipes the composer + aborts backend
+    // work). PTT CLEAR stays local to VoiceTab (clears the chip list).
+    onConvoClear?: () => void;
   }
   let {
     onsend,
@@ -37,6 +40,7 @@
     voiceMeter,
     convo = false,
     convoText = '',
+    onConvoClear,
   }: Props = $props();
 
   let activeTab = $state<Tab>('voice');
@@ -97,6 +101,7 @@
       {initialChips}
       {convo}
       {convoText}
+      {onConvoClear}
       controls={voiceControls}
       meter={voiceMeter}
       onsend={onSendClick}

@@ -8,10 +8,12 @@ to this module and the V1 registry/router can be removed.
 Wire protocol:
 
   text frames up:
-    ``{"type":"start", "mode":"ptt"|"continuous"?, "context":"..."?}``
+    ``{"type":"start", "mode":"ptt"|"continuous"?, "context":"..."?, "telemetry":bool?}``
                             begin recording (latest wins, barge-in). In
                             continuous mode the convo inner loop runs; an
                             optional ``context`` seeds its 2k chat-history buffer.
+                            ``telemetry:true`` opts this session into the dev
+                            ``metric`` timing stream (see below); default off.
     ``{"type":"context", "text":"..."}``  update the convo context buffer
     ``{"type":"end"}``      finalize → whisper → broadcast stt_result
     ``{"type":"cancel"}``   drop the current buffer
@@ -27,6 +29,16 @@ Wire protocol:
     ``{"type":"composer","text":"..."}``       convo: LLM-cleaned message so far
     ``{"type":"submit","text":"..."}``         convo: message judged complete
     ``{"type":"error","message":"..."}``       on whisper failure
+    ``{"type":"metric","event":"...","t":ms, ...}``  DEV ONLY (telemetry opt-in):
+                                              high-res timing of each pipeline
+                                              stage — partial_pass, vad_poll,
+                                              silence_cut, refine_preview,
+                                              whisper_repass, llm_refine,
+                                              submit_confirm, ptt_whisper. Each
+                                              carries a ``perf_counter`` ms stamp
+                                              ``t`` and per-event fields (e.g.
+                                              ``dur_ms``). Ignored by clients that
+                                              don't render it.
 
 Partial streaming uses faster-whisper's per-segment timestamps to splice
 the buffer: each pass transcribes only the audio after the last committed
@@ -169,6 +181,15 @@ class SttAgent:
         # the audio captured since that offset and only fires if that window is
         # silent (the user stayed quiet). No text/seq proxy — ground-truth audio.
         self._pending_submit: Optional[asyncio.Task] = None
+        # In-flight silence-cut smoothing task (accurate whisper re-pass + LLM
+        # cleanup), dispatched off the cut's critical path. Tracked so a stop /
+        # cancel / barge-in can abort the backend work mid-flight instead of
+        # letting a stale refine land after the user cleared.
+        self._cut_task: Optional[asyncio.Task] = None
+        # Dev telemetry opt-in (set from the start frame's ``telemetry`` flag). When
+        # True, ``_metric`` emits high-res timing frames for each pipeline stage;
+        # default False so a normal session produces none. See :meth:`_metric`.
+        self.telemetry: bool = False
 
     # ---- client management ----
 
@@ -184,6 +205,7 @@ class SttAgent:
             self._cancel_partial_task()
             self._cancel_silence_task()
             self._cancel_pending_submit()
+            self._cancel_cut_task()
             self.pcm_chunks.clear()
             self.committed_text = ""
             self.committed_bytes = 0
@@ -191,6 +213,7 @@ class SttAgent:
             self.convo = None
             self._silent_passes = 0
             self._last_partial = ""
+            self.telemetry = False
         self.last_active = time.monotonic()
 
     def is_idle(self, now: float) -> bool:
@@ -219,9 +242,37 @@ class SttAgent:
     async def _status(self, stage: str, text: str = "") -> None:
         await self.broadcast_json({"type": "status", "stage": stage, "text": text})
 
+    async def _metric(self, event: str, **fields) -> None:
+        """Dev-only high-resolution timing frame.
+
+        No-op unless this session opted into telemetry (the start frame carried
+        ``telemetry: true``). Goes through the same ``broadcast_json`` chokepoint as
+        every other frame, so it must be emitted OUTSIDE ``_whisper_lock`` — never
+        inside the lock, or a metric send could serialize against a decode. ``t`` is
+        a ``perf_counter`` millisecond stamp on the backend's own clock (a different
+        epoch than the browser's ``performance.now()``); the client keys row order
+        off arrival time and uses the per-event ``dur_ms`` for the measured
+        duration. Pure observation — an emit never alters control flow."""
+        if not self.telemetry:
+            return
+        await self.broadcast_json(
+            {
+                "type": "metric",
+                "event": event,
+                "t": round(time.perf_counter() * 1000, 3),
+                **fields,
+            }
+        )
+
     def _cancel_pending_submit(self) -> None:
         task = self._pending_submit
         self._pending_submit = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _cancel_cut_task(self) -> None:
+        task = self._cut_task
+        self._cut_task = None
         if task is not None and not task.done():
             task.cancel()
 
@@ -236,6 +287,7 @@ class SttAgent:
         self._cancel_pending_submit()
 
         async def _confirm() -> None:
+            t0 = time.perf_counter()
             try:
                 await asyncio.sleep(SUBMIT_CONFIRM_SEC)
             except asyncio.CancelledError:
@@ -252,8 +304,18 @@ class SttAgent:
             if voiced:
                 # User resumed during the confirm window → not done; a later cut
                 # folds it into the same message and re-arms.
+                await self._metric(
+                    "submit_confirm",
+                    dur_ms=round((time.perf_counter() - t0) * 1000, 1),
+                    voiced=True, submitted=False,
+                )
                 return
             text = await convo.take_submission()
+            await self._metric(
+                "submit_confirm",
+                dur_ms=round((time.perf_counter() - t0) * 1000, 1),
+                voiced=False, submitted=bool(text),
+            )
             if text:
                 await self.broadcast_json({"type": "submit", "text": text})
             await self._status("recording", "listening…")
@@ -287,6 +349,7 @@ class SttAgent:
                 await self.broadcast_json(
                     {"type": "composer", "text": (convo.composer + " " + preview).strip()}
                 )
+            await self._metric("refine_preview", preview_len=len(preview))
             # Surface the LLM refine step (amber pulsing dot) while we smooth.
             await self._status("refining", "refining…")
             # 2. SECONDARY smoothing pass: re-transcribe the tail accurately, off
@@ -295,26 +358,37 @@ class SttAgent:
             #    ultra-short utterance). The lock serializes model use with the
             #    cosmetic loop (the model is not concurrency-safe).
             loop = asyncio.get_running_loop()
+            repass_ms = 0.0
             try:
                 async with self._whisper_lock:
+                    t0 = time.perf_counter()
                     segments = await loop.run_in_executor(
                         None, _transcribe_segments, tail, self.continuous,
                     )
+                    repass_ms = (time.perf_counter() - t0) * 1000
             except Exception:  # noqa: BLE001
                 log.exception("cut whisper pass failed for %s", self.user_id)
                 segments = []
+            await self._metric(
+                "whisper_repass", dur_ms=round(repass_ms, 1), segs=len(segments)
+            )
             tail_text = " ".join(s[0] for s in segments if s[0]).strip()
             cut_text = (committed_prefix + " " + tail_text).strip() or preview
             if not cut_text:
                 await self._status("recording", "listening…")
                 return
             # 3. LLM cleanup → replace the preview in place.
+            t0 = time.perf_counter()
             try:
                 res = await convo.on_silence_cut(cut_text)
             except Exception:  # noqa: BLE001 — on_silence_cut self-handles; belt-and-suspenders
                 log.exception("convo cleanup crashed for %s", self.user_id)
                 await self._status("recording", "listening…")
                 return
+            await self._metric(
+                "llm_refine", dur_ms=round((time.perf_counter() - t0) * 1000, 1),
+                should_submit=res.should_submit, fallback=res.fallback,
+            )
             await self.broadcast_json({"type": "composer", "text": res.cleaned_text})
             if res.should_submit and not res.fallback:
                 # Complete thought — but only send once the user actually stops.
@@ -327,7 +401,9 @@ class SttAgent:
             else:
                 await self._status("recording", "listening…")
 
-        asyncio.create_task(_run())
+        # A fresh cut supersedes any still-running refine.
+        self._cancel_cut_task()
+        self._cut_task = asyncio.create_task(_run())
 
     async def _silence_cut(self, joined: bytes, tail: bytes, committed_prefix: str) -> None:
         """Fire one silence-cut and reset the splice window so the next utterance
@@ -364,6 +440,10 @@ class SttAgent:
             "stt silence-cut for %s: cut_byte=%d epoch=%d preview=%r",
             self.user_id, cut_byte, self._cut_epoch, preview,
         )
+        await self._metric(
+            "silence_cut", cut_byte=cut_byte, epoch=self._cut_epoch,
+            preview_len=len(preview),
+        )
         if self.convo is not None:
             self._dispatch_convo_cut(preview, tail, committed_prefix, cut_byte)
         elif preview:
@@ -379,17 +459,20 @@ class SttAgent:
         ws: WebSocket,
         mode: Optional[str] = None,
         context: Optional[str] = None,
+        telemetry: bool = False,
     ) -> None:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
         self._cancel_silence_task()
         self._cancel_pending_submit()
+        self._cancel_cut_task()
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
         self.continuous = (mode == "continuous")
         self._silent_passes = 0
         self._last_partial = ""
+        self.telemetry = telemetry
         self.recording_client = ws
         self.last_active = time.monotonic()
         # Continuous mode runs the convo inner loop: a per-session cleanup
@@ -420,6 +503,7 @@ class SttAgent:
         self._cancel_partial_task()
         self._cancel_silence_task()
         self._cancel_pending_submit()
+        self._cancel_cut_task()
         self.pcm_chunks.clear()
         self.committed_text = ""
         self.committed_bytes = 0
@@ -427,6 +511,7 @@ class SttAgent:
         self.convo = None
         self._silent_passes = 0
         self._last_partial = ""
+        self.telemetry = False
         await self._status("idle", "")
 
     async def handle_end(self, ws: WebSocket) -> None:
@@ -436,6 +521,7 @@ class SttAgent:
         self._cancel_partial_task()
         self._cancel_silence_task()
         self._cancel_pending_submit()
+        self._cancel_cut_task()
         if self.continuous or self.convo is not None:
             # Convo mode emits a result per silence-cut; stopping just tears the
             # session down. No final full-PCM pass — in continuous mode
@@ -490,6 +576,7 @@ class SttAgent:
             return
         stt_ms = int((time.monotonic() - t0) * 1000)
         log.info("STT (%dms) for %s: %r", stt_ms, self.user_id, text)
+        await self._metric("ptt_whisper", dur_ms=stt_ms)
         await self.broadcast_json({"type": "stt_result", "text": text or ""})
         await self._status("idle", "")
         self.last_active = time.monotonic()
@@ -541,14 +628,22 @@ class SttAgent:
             # this pass must be dropped. The lock serializes model use with the
             # cut's own pass (the model is not concurrency-safe).
             epoch = self._cut_epoch
+            decode_ms = 0.0
             try:
                 async with self._whisper_lock:
+                    t0 = time.perf_counter()
                     segments = await loop.run_in_executor(
                         None, _transcribe_segments, tail, self.continuous,
                     )
+                    decode_ms = (time.perf_counter() - t0) * 1000
             except Exception:  # noqa: BLE001
                 log.exception("partial whisper pass failed for %s", self.user_id)
                 return True
+            # Emit after releasing the lock (never serialize a metric send against a
+            # decode). The decode happened regardless of whether we keep its result.
+            await self._metric(
+                "partial_pass", dur_ms=round(decode_ms, 1), segs=len(segments)
+            )
             if self.recording_client is not ws:
                 return False
             if epoch != self._cut_epoch:
@@ -625,6 +720,7 @@ class SttAgent:
                     continue
                 from awm.stt import vad
 
+                t0 = time.perf_counter()
                 try:
                     voice_end = await loop.run_in_executor(
                         None, vad.last_speech_end_s, tail,
@@ -632,12 +728,21 @@ class SttAgent:
                 except Exception:  # noqa: BLE001
                     log.exception("vad poll failed for %s", self.user_id)
                     continue
+                vad_ms = (time.perf_counter() - t0) * 1000
                 if self.recording_client is not ws:
                     return
                 tail_dur = len(tail) / SAMPLE_BYTES / SAMPLE_RATE
+                gap = (tail_dur - voice_end) if voice_end is not None else None
+                # Every poll that ran VAD emits a heartbeat row (silent no-ops too,
+                # where voice_end/gap are None).
+                await self._metric(
+                    "vad_poll",
+                    dur_ms=round(vad_ms, 1),
+                    gap=round(gap, 3) if gap is not None else None,
+                    voice_end=round(voice_end, 3) if voice_end is not None else None,
+                )
                 if voice_end is None:
                     continue  # no voice in the tail → nothing to cut
-                gap = tail_dur - voice_end
                 if gap >= SILENCE_HANG_SEC:
                     log.debug(
                         "stt vad cut for %s: tail_dur=%.2f voice_end=%.2f gap=%.2f",
@@ -759,6 +864,7 @@ async def run_stt_ws_session(websocket: WebSocket, user_as: str) -> None:
                     websocket,
                     mode=mode if isinstance(mode, str) else None,
                     context=ctx if isinstance(ctx, str) else None,
+                    telemetry=bool(payload.get("telemetry")),
                 )
             elif t == "context":
                 # Frontend pushing an updated recent-chat-history buffer for the

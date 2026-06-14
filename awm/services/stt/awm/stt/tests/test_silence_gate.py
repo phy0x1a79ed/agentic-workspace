@@ -10,6 +10,8 @@ rows of the plan's case table:
   4. the background pass transcribes the tail (works with empty committed prefix)
   5. the fast poll fires a cut on voice-then-silence, and holds otherwise
   6. the raw preview is broadcast BEFORE the cleaned composer (responsiveness)
+  7. with telemetry opted in, the cut path emits high-res `metric` frames (and
+     none at all when it's off)
 
 Run via the per-dist runner, or directly:
 
@@ -64,7 +66,7 @@ def _agent_with_capture(convo):
 
 
 async def _run_cut(monkeypatch, *, cut_text, should_submit, window_voiced,
-                   committed_prefix=""):
+                   committed_prefix="", telemetry=False):
     """Drive one silence-cut end-to-end and return the broadcast payloads."""
     monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments(cut_text))
     monkeypatch.setattr(reg, "SUBMIT_CONFIRM_SEC", 0.05)
@@ -78,6 +80,7 @@ async def _run_cut(monkeypatch, *, cut_text, should_submit, window_voiced,
     ))
     agent, sent = _agent_with_capture(convo)
     agent.committed_text = committed_prefix
+    agent.telemetry = telemetry
 
     joined = b"\x00" * 64000  # 2s of audio
     await agent._silence_cut(joined, joined, agent.committed_text)
@@ -156,6 +159,41 @@ async def test_preview_raw_broadcast_before_cleaned(monkeypatch):
         if p.get("type") == "status" and p.get("stage") == "refining"
     )
     assert first_composer_idx < first_refining_idx
+
+
+async def test_metric_frames_on_cut(monkeypatch):
+    # Dev telemetry: with the session opted in, the cut path emits high-res
+    # `metric` frames for each stage, with the expected ordering and durations.
+    agent, sent, cleaned = await _run_cut(
+        monkeypatch, cut_text="add a login button",
+        should_submit=True, window_voiced=False,
+        committed_prefix="please", telemetry=True,
+    )
+    metrics = _types(sent, "metric")
+    events = [m["event"] for m in metrics]
+    for ev in ("silence_cut", "refine_preview", "whisper_repass", "llm_refine"):
+        assert ev in events, f"missing {ev} metric; got {events}"
+    # The timed stages carry a numeric duration.
+    for ev in ("whisper_repass", "llm_refine"):
+        m = next(m for m in metrics if m["event"] == ev)
+        assert isinstance(m["dur_ms"], (int, float))
+    # Ordering: the cut and its instant preview precede the LLM refine.
+    assert events.index("silence_cut") < events.index("llm_refine")
+    assert events.index("refine_preview") < events.index("llm_refine")
+    # llm_refine carries the verdict fields.
+    refine = next(m for m in metrics if m["event"] == "llm_refine")
+    assert refine["should_submit"] is True
+    assert refine["fallback"] is False
+
+
+async def test_no_metrics_when_off(monkeypatch):
+    # Default (telemetry off): a normal session emits no metric frames at all.
+    agent, sent, cleaned = await _run_cut(
+        monkeypatch, cut_text="add a login button",
+        should_submit=True, window_voiced=False,
+        committed_prefix="please",
+    )
+    assert _types(sent, "metric") == []
 
 
 async def test_silence_loop_fires_on_voice_then_silence(monkeypatch):

@@ -6,12 +6,28 @@
   // so the component's chat-history view is visible standalone: each
   // finalized dictation utterance and each Send becomes a transcript row.
   import { SttComposer } from '@awm/stt-composer';
+  import { SttTelemetry, appendTelemetry, type TelemetryEvent } from '@awm/stt-telemetry';
   import { TtsHistory } from '@awm/tts-history';
   import type { Post } from '@awm/tts-history';
   import { svc } from '@awm/client';
+  import { untrack } from 'svelte';
 
   let posts = $state<Post[]>([]);
   let seq = 0;
+
+  // Dev telemetry: every STT pipeline event the composer surfaces, accumulated
+  // (coalescing audio-chunk bursts, capped) for the timeline panel below it.
+  //
+  // The mutation MUST run under `untrack`: some telemetry events are emitted from
+  // inside the composer's reactive `$effect`s (e.g. the context-push effect). The
+  // signal graph is global, so reading+writing `telemetry` there would subscribe
+  // that effect to `telemetry` and then re-trigger it on every event — a runaway
+  // loop that floods the log and the WS. untrack severs that dependency; the write
+  // still updates the panel's binding.
+  let telemetry = $state<TelemetryEvent[]>([]);
+  function onTelemetry(e: TelemetryEvent) {
+    untrack(() => { telemetry = appendTelemetry(telemetry, e); });
+  }
 
   // Recent chat history fed to the convo cleanup LLM as context. Capped on
   // the composer side; here we just surface the last handful of turns. Because
@@ -58,7 +74,12 @@
     </p>
   </header>
 
-  <SttComposer onsend={onUserMessage} onText={onUserMessage} {chatContext} />
+  <SttComposer onsend={onUserMessage} onText={onUserMessage} {chatContext} {onTelemetry} />
+
+  <section class="telemetry">
+    <h2>Telemetry</h2>
+    <SttTelemetry events={telemetry} onclear={() => (telemetry = [])} />
+  </section>
 
   <section class="history">
     <h2>Chat history</h2>
@@ -84,6 +105,11 @@
   h1 { font-size: 1.2rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 0 0 0.25rem; }
   h2 { font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 1.5rem 0 0.5rem; color: var(--text2, #bbb); flex: 0 0 auto; }
   .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0; }
+  .telemetry {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+  }
   .history {
     flex: 1 1 auto;
     display: flex;
