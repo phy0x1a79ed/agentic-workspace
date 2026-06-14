@@ -68,7 +68,7 @@
   }
 </script>
 
-<section class="shell">
+<section class="shell" data-awm-component="SttComposerShell">
   <div class="tabs" role="tablist">
     <button
       type="button"
@@ -124,6 +124,9 @@
     flex-direction: column;
     gap: var(--space-2, 8px);
     width: 100%;
+    /* Intrinsic floor for content-hugging containers (gallery card); inert
+       when the parent is wider (agent/stt pages). */
+    min-width: 300px;
   }
 
   .tabs {

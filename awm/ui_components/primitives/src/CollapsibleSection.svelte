@@ -27,6 +27,7 @@
   function toggle() { open = !open; }
 </script>
 
+<div style="display:contents" data-awm-component="CollapsibleSection">
 <Card {rail} {flash} {open}>
   <header class="head" class:compact>
     <button
@@ -53,6 +54,7 @@
     </div>
   {/if}
 </Card>
+</div>
 
 <style>
   .head {

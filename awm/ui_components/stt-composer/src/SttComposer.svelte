@@ -411,7 +411,7 @@
   });
 </script>
 
-<section class="panel">
+<section class="panel" data-awm-component="SttComposer">
   <SttComposerShell
     bind:this={composer}
     {onsend}
@@ -464,6 +464,10 @@
     flex-direction: column;
     gap: var(--space-3, 12px);
     width: 100%;
+    /* Intrinsic floor so a content-hugging container (gallery card) gives a
+       sensible width and a horizontal scrollbar engages predictably below it;
+       inert when the parent is wider (agent/stt pages). */
+    min-width: 300px;
   }
 
   /* Thin horizontal mic-level strip, rendered across the bottom of the
