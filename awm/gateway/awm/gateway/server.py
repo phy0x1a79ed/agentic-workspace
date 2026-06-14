@@ -37,6 +37,29 @@ __version__ = "0.1.0"
 _last_request_time: float = 0.0
 _shutdown_event: asyncio.Event | None = None
 
+# Grace window the drain waits for services to drop their leases (exit) after
+# the in-band stand-down frame, before force-killing a straggler. Module-level
+# so tests can shrink it.
+_GRACE_DEADLINE_S: float = 8.0
+
+
+def _pid_alive(pid: int | None) -> bool:
+    """True iff ``pid`` names a live process. ``os.kill(pid, 0)`` raises
+    ``ProcessLookupError`` for a dead PID and ``PermissionError`` for one we
+    can't signal (which still means it's alive)."""
+    if not pid or pid <= 0:
+        return False
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Background tasks
@@ -54,9 +77,95 @@ async def _idle_shutdown_loop():
         if elapsed > IDLE_SHUTDOWN_SECONDS:
             print(f"[idle] No requests for {int(elapsed)}s — shutting down")
             _shutdown_event.set()
+            # Stand our services down in-band first: their control WSs are
+            # still open at this point (it's the os._exit below that skips
+            # lifespan, not anything that closes connections), so the
+            # shutdown frame reaches them and they exit themselves; only a
+            # straggler is force-killed.
+            await _drain_services()
             # Force exit since uvicorn doesn't have a clean programmatic shutdown
             import os
             os._exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Graceful service drain (the in-band stand-down path)
+# ---------------------------------------------------------------------------
+
+async def _drain_services() -> None:
+    """Stand the gateway's services down over their own control connections,
+    then force-kill any that ignore the frame, then clear the journal.
+
+    This is the single graceful-stop coroutine, reused by three callers: the
+    signal override (the real path on Linux — runs *before* uvicorn closes the
+    control WSs, so the in-band frame is actually delivered), the idle self-stop
+    (T3), and the lifespan-shutdown backstop (for TestClient / non-main-thread
+    where the override can't install).
+
+    Idempotent: a second call finds no live leases and an empty journal, so it
+    is a no-op. Wrapped so teardown can never wedge process exit.
+    """
+    try:
+        from awm.gateway.hub import rpc, supervisor
+        from awm.gateway.hub.lease import get_lease_manager
+        from awm.gateway.hub.registry import get_registry
+
+        supervisor.set_shutting_down(True)
+        registry = get_registry()
+        lm = get_lease_manager()
+
+        # 1. Send each live, non-overlay service an in-band stand-down frame.
+        #    Overlays belong to a live `awm dev shadow` process — not ours to
+        #    kill. The control-WS writer task delivers the frame as long as the
+        #    socket is still open (it is, when called from the signal override).
+        live = [
+            rec for rec in await registry.list()
+            if rec.kind == "service" and not rec.is_overlay
+            and lm.is_held(rec.service_id)
+        ]
+        for rec in live:
+            ch = rpc.get_control(rec.service_id)
+            if ch is not None:
+                ch.enqueue({"kind": "shutdown"})
+        if live:
+            print(f"[awm] shutdown: signalled {len(live)} service(s); waiting")
+
+        # 2. Wait for them to drop their leases (exit), up to a grace window.
+        _grace_deadline = time.monotonic() + _GRACE_DEADLINE_S
+        while time.monotonic() < _grace_deadline:
+            if not any(lm.is_held(r.service_id) for r in live):
+                break
+            await asyncio.sleep(0.2)
+
+        # 3. Force-kill any straggler that did NOT stand down. A service that
+        #    obeyed the in-band frame has exited — its lease dropped and its
+        #    process is gone — so it is left untouched (the frame did the work).
+        #    A straggler is one still holding its lease (ignored the frame) OR
+        #    whose process is still alive while its lease is already gone. The
+        #    latter is the backstop path: when the signal override could not
+        #    install, uvicorn closes the control WSs (releasing leases) before
+        #    this runs, so lease-held alone would miss live orphans — the
+        #    pid-alive check catches them. Force-kill is the backstop here, not
+        #    the primary mechanism.
+        journal = supervisor.load_service_journal()
+        for name, entry in journal.items():
+            if not isinstance(entry, dict):
+                continue
+            sid = entry.get("service_id")
+            pid = entry.get("last_pid")
+            if not pid:
+                continue
+            held = bool(sid) and lm.is_held(sid)
+            if held or _pid_alive(pid):
+                print(f"[awm] shutdown: {name} did not stand down; "
+                      f"force-killing pid={pid}")
+                supervisor.kill_pid_group(pid)
+
+        # 4. Clear the journal so the next boot bootstraps a clean set instead
+        #    of waiting out reconcile's window against dead PIDs.
+        supervisor.write_service_journal({})
+    except Exception as exc:  # noqa: BLE001 — teardown must never wedge exit
+        print(f"[awm] graceful service shutdown skipped: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -76,33 +185,104 @@ async def lifespan(app: FastAPI):
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
 
-    # Mark teardown as early as possible. uvicorn installs its own SIGTERM /
-    # SIGINT handlers BEFORE lifespan startup, then on signal it closes active
-    # connections (the service control WSs) *before* running lifespan shutdown.
-    # If the crash-respawn watchdog saw those closes before the shutting-down
-    # flag was set, it would try to resurrect the very services we are stopping.
-    # Wrap uvicorn's handlers so the flag is set the instant the signal lands,
-    # ahead of any control-WS close.
+    # Own SIGTERM / SIGINT at the event-loop level so we can DRAIN our services
+    # in-band before uvicorn tears their control WSs down.
+    #
+    # The problem this solves: uvicorn installs its own SIGTERM/SIGINT handlers
+    # BEFORE lifespan startup (inside `with self.capture_signals():`, which wraps
+    # startup), and on signal it sets should_exit and closes every active
+    # connection — including the service control WSs — and only *then* runs
+    # lifespan shutdown. So enqueuing the in-band shutdown frame from lifespan
+    # shutdown reaches no one (the writer tasks are already gone).
+    #
+    # Fix: take ownership of the signal so uvicorn's handle_exit does NOT run on
+    # the first signal. We capture uvicorn's Server off its installed handler,
+    # then register ours via loop.add_signal_handler — which replaces uvicorn's
+    # registration and runs our callback in loop context (safe to spawn a task;
+    # works on uvloop too). On the first signal we set the shutting-down flag (so
+    # the crash watchdog can't race the teardown) and launch _drain_then_stop —
+    # which drains services WHILE the WSs are still open, then flips
+    # server.should_exit so uvicorn finishes the shutdown. A second signal
+    # force-exits immediately (operator escape hatch).
     import signal as _signal
     from awm.gateway.hub import supervisor as _sup
 
-    def _wrap_signal(sig: int) -> None:
-        prev = _signal.getsignal(sig)
+    loop = asyncio.get_running_loop()
 
-        def _handler(signum, frame):  # noqa: ANN001
-            _sup.set_shutting_down(True)
-            if callable(prev):
-                prev(signum, frame)
-
-        try:
-            _signal.signal(sig, _handler)
-        except (ValueError, OSError):
-            # Not on the main thread (e.g. under TestClient) — the flag is
-            # still set explicitly in the shutdown half below.
-            pass
-
+    # Capture uvicorn's Server off the handler it installed. This uvicorn version
+    # registers `signal.signal(sig, server.handle_exit)` (it explicitly uses
+    # signal.signal even when add_signal_handler is available), so during lifespan
+    # startup signal.getsignal(sig) returns the bound handle_exit and its
+    # __self__ is the Server. Guarded — "couldn't capture" triggers the fallback,
+    # never a crash. The should_exit attr check ensures we only treat a genuine
+    # uvicorn Server as captured (not SIG_DFL / an unrelated callable).
+    _server = None
     for _sig in (_signal.SIGTERM, _signal.SIGINT):
-        _wrap_signal(_sig)
+        try:
+            _prev = _signal.getsignal(_sig)
+            _candidate = getattr(_prev, "__self__", None)
+        except Exception:  # noqa: BLE001
+            _candidate = None
+        if _candidate is not None and hasattr(_candidate, "should_exit"):
+            _server = _candidate
+            break
+
+    if _server is not None:
+        _drain_scheduled = {"v": False}
+
+        async def _drain_then_stop() -> None:
+            # uvicorn's should_exit stays False until the drain finishes, so it
+            # has NOT started closing connections — the control-WS writer tasks
+            # are alive and the enqueued frames are delivered. Only then do we
+            # flip should_exit to let uvicorn finish (close any non-service
+            # connections, run the now-no-op lifespan backstop, exit).
+            try:
+                await _drain_services()
+            finally:
+                _server.should_exit = True
+
+        def _on_signal() -> None:
+            _sup.set_shutting_down(True)
+            if _drain_scheduled["v"]:
+                # Second signal — escape hatch: stop now, don't wait the drain.
+                _server.should_exit = True
+                _server.force_exit = True
+                return
+            _drain_scheduled["v"] = True
+            asyncio.create_task(_drain_then_stop())
+
+        _owned = False
+        for _sig in (_signal.SIGTERM, _signal.SIGINT):
+            try:
+                loop.add_signal_handler(_sig, _on_signal)
+                _owned = True
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+        if not _owned:
+            _server = None  # couldn't install — fall through to the fallback
+
+    if _server is None:
+        # Fallback (non-unix loop, TestClient, or asyncio internals changed):
+        # can't defer uvicorn, so degrade to the pre-existing flag-only wrapper.
+        # The flag still suppresses the crash watchdog; the actual drain then
+        # runs from the lifespan-shutdown backstop (force-kill path, as before).
+        def _wrap_signal(sig: int) -> None:
+            prev = _signal.getsignal(sig)
+
+            def _handler(signum, frame):  # noqa: ANN001
+                _sup.set_shutting_down(True)
+                if callable(prev):
+                    prev(signum, frame)
+
+            try:
+                _signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                # Not on the main thread (e.g. under TestClient) — the flag is
+                # still set explicitly in the shutdown half below.
+                pass
+
+        for _sig in (_signal.SIGTERM, _signal.SIGINT):
+            _wrap_signal(_sig)
 
     # Start background tasks
     idle_task = asyncio.create_task(_idle_shutdown_loop())
@@ -141,55 +321,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ----- Graceful shutdown (T4) -------------------------------------------
-    # Runs only on a clean SIGTERM (uvicorn lifespan shutdown). Under a hard
-    # SIGKILL or the idle os._exit this half is skipped entirely — which is
-    # exactly why the service-side reconnect deadline (T2) is the required
-    # backstop, not optional. Here we stop our services in-band and clear the
-    # journal so the next boot brings them up via the clean bootstrap path.
-    try:
-        from awm.gateway.hub import rpc, supervisor
-        from awm.gateway.hub.lease import get_lease_manager
-        from awm.gateway.hub.registry import get_registry
-
-        supervisor.set_shutting_down(True)
-        registry = get_registry()
-        lm = get_lease_manager()
-
-        # 1. Send each live, non-overlay service an in-band stand-down frame.
-        #    Overlays belong to a live `awm dev shadow` process — not ours to
-        #    kill. The control-WS writer task delivers the frame as long as the
-        #    socket is still open.
-        live = [
-            rec for rec in await registry.list()
-            if rec.kind == "service" and not rec.is_overlay
-            and lm.is_held(rec.service_id)
-        ]
-        for rec in live:
-            ch = rpc.get_control(rec.service_id)
-            if ch is not None:
-                ch.enqueue({"kind": "shutdown"})
-        if live:
-            print(f"[awm] shutdown: signalled {len(live)} service(s); waiting")
-
-        # 2. Wait for them to drop their leases (exit), up to a grace window.
-        _grace_deadline = time.monotonic() + 8.0
-        while time.monotonic() < _grace_deadline:
-            if not any(lm.is_held(r.service_id) for r in live):
-                break
-            await asyncio.sleep(0.2)
-
-        # 3. Force-kill any straggler still journaled.
-        for name, entry in supervisor.load_service_journal().items():
-            pid = entry.get("last_pid") if isinstance(entry, dict) else None
-            if pid:
-                supervisor.kill_pid_group(pid)
-
-        # 4. Clear the journal so the next boot bootstraps a clean set instead
-        #    of waiting out reconcile's window against dead PIDs.
-        supervisor.write_service_journal({})
-    except Exception as exc:  # noqa: BLE001 — teardown must never wedge exit
-        print(f"[awm] graceful service shutdown skipped: {exc}")
+    # ----- Graceful shutdown backstop ---------------------------------------
+    # On Linux the signal override above has already drained services in-band
+    # (before uvicorn closed their control WSs), so this call is the idempotent
+    # no-op tail. It remains the ONLY drain in the cases the override can't
+    # install — under TestClient / a non-main-thread loop — where it runs the
+    # force-kill path as before. Under a hard SIGKILL or the idle os._exit this
+    # half is skipped entirely, which is why the service-side reconnect deadline
+    # (T2 give-up) is the required backstop, not optional.
+    await _drain_services()
 
     # Cleanup
     idle_task.cancel()
