@@ -9,7 +9,7 @@ client that POSTs ``/hub/service/register``, opens ``WS
 then answers inbound ``call`` / ``notify`` / ``session.open`` envelopes.
 
 Before this module, every service hand-rolled that ~250-line loop (see the
-``tts`` / ``ptt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
+``tts`` / ``stt`` ``backend/hub_adapter.py``). ``ServiceAdapter`` factors the
 boilerplate out so a feature service's adapter is just: build a manifest +
 a ``{fn: callable}`` dispatch map, then ``await ServiceAdapter(...).run()``.
 
@@ -95,7 +95,7 @@ class SessionContext:
     """Everything a ``session.open`` handler needs to run a direct session.
 
     ``open_bridge()`` opens the upstream side of the hub bridge so the handler
-    can byte-relay frames (the PCM-audio case for tts/ptt). Most feature
+    can byte-relay frames (the PCM-audio case for tts/stt). Most feature
     services have no sessions and never use this.
     """
     hub_url: str
@@ -136,7 +136,7 @@ class ServiceAdapter:
         reply ``result`` (return ``None`` for fire-and-forget / no payload).
     session_handlers:
         Optional ``{session_kind: async callable(SessionContext)}`` for
-        services that expose direct sessions (tts/ptt PCM bridges).
+        services that expose direct sessions (tts/stt PCM bridges).
     on_start:
         Optional sync-or-async zero-arg callable run once before the first
         connect — the place to call ``init_service_db`` so the service's own
@@ -165,6 +165,30 @@ class ServiceAdapter:
         self.session_handlers = session_handlers or {}
         self.on_start = on_start
         self.start_cmd = start_cmd or ["bash", "run.sh"]
+        # The currently-connected control WS, or None between reconnects. Held
+        # so the service can originate `emit` frames (pub/sub) on it.
+        self._control_ws: Any | None = None
+
+    # -- service-originated emit -------------------------------------------
+
+    async def emit(self, topic: str, payload: Any) -> None:
+        """Publish one ``emit`` event on the live control WS (pub/sub).
+
+        Sends the contract envelope the hub routes
+        (``ControlChannel.handle_emit``):
+        ``{"kind": "emit", "topic": <str>, "payload": <json>}`` — fanned out to
+        every browser/service subscriber on ``/svc/<name>/emit/<topic>``. A safe
+        no-op when no control WS is currently connected (between reconnects);
+        emit is best-effort live signalling, never durable delivery.
+        """
+        ws = self._control_ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps(
+                {"kind": "emit", "topic": topic, "payload": payload}))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("%s: emit on %s dropped: %s", self.name, topic, exc)
 
     # -- dispatch ----------------------------------------------------------
 
@@ -204,8 +228,25 @@ class ServiceAdapter:
             ) as ws:
                 await ws.send(json.dumps({"kind": "ready", "api": self.manifest}))
                 log.info("%s: control WS open, ready sent", name)
+                # Expose the live socket so the service can originate `emit`s;
+                # cleared when this connection ends so emit no-ops between
+                # reconnects.
+                self._control_ws = ws
                 try:
                     async for raw in ws:
+                        # A frame actually arrived → the handshake is confirmed
+                        # up. Record it HERE (per inbound frame), NOT in the
+                        # blanket ``finally`` below: a gateway that accepts the
+                        # WS then immediately closes it (a replacement coming up
+                        # mid-handshake, or a flapping gateway) must NOT refresh
+                        # the deadline, or the loop's give-up clock would never
+                        # count down and the service would spin forever as an
+                        # orphan. The clean-close path (``async for`` ends
+                        # normally) is handled back in ``_run_target``. The
+                        # ``state`` box is per-loop so concurrent base + overlay
+                        # loops never stomp each other's deadline.
+                        if state is not None:
+                            state["last_up"] = monotonic()
                         try:
                             env = json.loads(raw) if isinstance(raw, str) else None
                         except json.JSONDecodeError:
@@ -230,14 +271,12 @@ class ServiceAdapter:
                             log.debug("%s: ignored inbound kind=%s",
                                       self.name, kind)
                 finally:
-                    # The control WS was actually established this round; record
-                    # when it ended so the loop's give-up deadline counts the
-                    # *retry* window from the disconnect, not from process start
-                    # (a brief blip after hours of uptime must still retry). The
-                    # ``state`` box is per-loop so concurrent base + overlay loops
-                    # never stomp each other's deadline (see ``run``).
-                    if state is not None:
-                        state["last_up"] = monotonic()
+                    # The control WS ended: clear the exposed socket so emit
+                    # no-ops between reconnects. The give-up deadline's
+                    # ``last_up`` is refreshed per-frame above, never here — a
+                    # bare connect the gateway closes at once must NOT reset it.
+                    if self._control_ws is ws:
+                        self._control_ws = None
         except ConnectionClosed as exc:
             # The hub closed the control WS with a terminal code: 4409 = the
             # lease is already held by a live incumbent, 4404 = the service_id
@@ -249,10 +288,19 @@ class ServiceAdapter:
                 raise GiveUp(f"control WS closed with code {code}") from exc
             raise
         except InvalidStatus as exc:
-            # The WS upgrade itself was rejected with 409 → a live incumbent
-            # holds the slot; give up.
-            if getattr(exc.response, "status_code", None) == 409:
-                raise GiveUp("control WS upgrade rejected (409)") from exc
+            # The WS upgrade itself was rejected. The gateway closes an unknown
+            # service_id with ``close(4404)`` *before* ``accept()`` (api/hub.py),
+            # which the websockets client surfaces as an HTTP **403** on the
+            # upgrade — NOT a 4404 close frame — while a live incumbent on the
+            # slot surfaces as **409**. Either way this instance's sid is no
+            # longer valid on this gateway, so stand down. A self-minted sid is
+            # cleared by run() so its next loop re-registers instead; a
+            # hub-assigned sid (respawn path) exits and the supervisor respawns
+            # it fresh.
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code in (403, 409):
+                raise GiveUp(
+                    f"control WS upgrade rejected ({status_code})") from exc
             raise
 
     async def _handle_call(self, ws: Any, env: dict[str, Any]) -> None:
@@ -348,10 +396,21 @@ class ServiceAdapter:
         ``GiveUp`` in one returns *this* loop only, never the siblings.
         """
         backoff = 1.0
+        # A target whose sid started EMPTY self-minted it via ``_register``; on
+        # every disconnect drop it (the finally below) so the next loop
+        # RE-REGISTERS and re-validates against the current gateway —
+        # deterministically hitting 409 → GiveUp when a live incumbent (e.g. a
+        # replacement gateway's real base) already holds the name, instead of
+        # reconnecting by a now-stale sid forever and orphaning. A target handed
+        # a hub-ASSIGNED sid (env ``AWM_SERVICE_ID``, the supervisor
+        # respawn-by-sid path) keeps it and reconnects by sid, never
+        # re-registering. The self-shadow overlay always self-mints (sid="").
+        self_minted = not sid
         # ``state["last_up"]`` tracks the last moment this target's control WS was
-        # confirmed up (set in ``_serve``'s finally, reached only once the WS
-        # actually connected). Initialised to now so a target that can never
-        # reach its hub still gives up after the deadline rather than spinning.
+        # confirmed up (set in ``_serve`` on each inbound frame, and below on a
+        # clean WS close). Initialised to now so a target that can never reach its
+        # hub still gives up after the deadline rather than spinning. The box is
+        # per-loop so concurrent base + overlay loops keep independent deadlines.
         state = {"last_up": monotonic()}
         while True:
             try:
@@ -386,6 +445,12 @@ class ServiceAdapter:
                             name, exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+            finally:
+                # Drop a self-minted sid on disconnect so the next iteration
+                # re-registers (see ``self_minted`` above). A hub-assigned sid
+                # is kept so respawn-by-sid reconnects without re-registering.
+                if self_minted:
+                    sid = ""
 
     async def run(self, *, shadow_hub_url: str | None = None) -> None:
         """Register and serve forever, reconnecting with exponential backoff.
@@ -403,6 +468,10 @@ class ServiceAdapter:
         and the base resumes on prod when this process exits (overlay WS drop).
         """
         hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
+        # A hub-ASSIGNED sid (the supervisor respawn-by-sid path) is reconnected
+        # by sid and never re-registered; a SELF-MINTED one (empty env) is minted
+        # on first connect and re-validated on every disconnect. ``_run_target``
+        # makes that distinction per-loop via ``self_minted = not sid``.
         sid = os.environ.get("AWM_SERVICE_ID", "")
         if not hub_url:
             raise RuntimeError("AWM_HUB_URL not set; cannot reach the gateway")

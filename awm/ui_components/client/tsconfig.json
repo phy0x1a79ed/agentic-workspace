@@ -2,9 +2,6 @@
   // Pure-TS type-check scope for @awm/client. `tsc -p` against this file
   // checks only the client's .ts sources (svelte-check covers the .svelte
   // packages). Inherits all compiler options from the workspace-root config.
-  //
-  // Hand-authored: NOT emitted by the package generator
-  // (awm/gateway/awm/gateway/packages/gen.py only writes package.json here).
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "rootDir": "src"

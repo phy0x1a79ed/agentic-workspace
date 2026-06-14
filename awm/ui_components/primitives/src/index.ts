@@ -9,8 +9,8 @@ export { default as Slider } from './Slider.svelte';
 export { default as Tag } from './Tag.svelte';
 export { default as Tooltip } from './Tooltip.svelte';
 
-// Gallery is a built-in demo surface; the packages/pages/primitives-gallery
-// page imports and mounts it. Not a normal "primitive" component, but
-// re-exporting here lets pages compose it via the workspace-symlink dep
-// just like any other primitive.
+// Gallery is a built-in demo surface; the awm/pages/components-gallery page
+// imports and mounts it (via the additive `flat` prop). Not a normal
+// "primitive" component, but re-exporting here lets pages compose it via the
+// workspace-symlink dep just like any other primitive.
 export { default as Gallery } from './Gallery.svelte';

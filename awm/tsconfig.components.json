@@ -1,6 +1,6 @@
 {
   // GATING type-check scope: the shared component libraries under
-  // ui_components/* (@awm/client, @awm/primitives, @awm/ptt-composer,
+  // ui_components/* (@awm/client, @awm/primitives, @awm/stt-composer,
   // @awm/tts-history, and any future @awm/<x> such as @awm/agent-chat).
   //
   // These are the contract-bearing surface every page imports, so this is the
@@ -14,7 +14,9 @@
   "exclude": [
     "**/node_modules",
     "**/dist",
-    // The shared Vite config base is build tooling, not app source.
-    "ui_components/_shared/vite.config.base.ts"
+    // Unit tests run under Node's test runner (TS type-stripping needs explicit
+    // `.ts` import extensions, which this bundler-resolution pass rejects) —
+    // they aren't part of the contract-bearing surface this pass grades.
+    "ui_components/**/*.test.ts"
   ]
 }

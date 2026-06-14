@@ -9,7 +9,7 @@ This service is **TTS-only**: it exposes exactly **two** user-facing TTS engines
 — plus loadable-but-unexposed `kokoro_rvc` / `f5tts` / `gptsovits`. It also owns
 named-preset + keyed-state storage and one direct `call` playback session that
 streams synthesized PCM back to the browser. The old duplicate STT / orchestrator
-conversation loop was pruned in the modular migration — `ptt` owns STT now.
+conversation loop was pruned in the modular migration — `stt` owns STT now.
 
 **RVC is not a peer engine.** Retrieval-based Voice Conversion is an audio
 *changer*, not a synthesizer, so it folds into `piper` as an optional post-stage:

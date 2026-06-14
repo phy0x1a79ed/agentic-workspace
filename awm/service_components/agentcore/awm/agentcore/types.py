@@ -9,7 +9,7 @@ normalized events." Everything a caller sees is one of:
 - :class:`AgentSession` — the open handle: ``await send(text)``,
   ``events() -> async-iter[AgentEvent]``, ``await close()``.
 - :class:`AgentEvent` — the single normalized event shape both backends map
-  onto. This is the contract downstream consumers (agents service, ptt
+  onto. This is the contract downstream consumers (agents service, stt
   cleanup, frontend) dedupe and render against.
 
 This module is a LEAF: it imports nothing from ``awm.config`` or any

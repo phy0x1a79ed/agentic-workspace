@@ -1,6 +1,6 @@
 # AWM Workspace
 
-*Structural orientation for any agent operating in a scope worktree of this AWM workspace. Documents the workspace's paths (`.awm/`, `data/`, `skills/`), MCP tool catalog, project layout, scope lifecycle, and the startup ritual that every scope agent inherits. Loaded into scope-agent context via the harness's native mechanism — Claude Code Reads this file at session start per its global instructions (`~/.claude/CLAUDE.md`); OpenCode auto-injects it via the per-scope `mcp-opencode.json` `instructions` array. **Do not merge into AGENTS.md** (awm-internal, narrower audience) **or README.md** (human setup, different audience) — keeping the three files audience-pure is what lets each one stay legible.*
+*Structural orientation for any agent operating in a scope worktree of this AWM workspace — the workspace's paths, MCP tool catalog, project layout, scope lifecycle, and the startup ritual every scope agent inherits. Loaded into scope-agent context via the harness's native mechanism: Claude Code Reads this file at session start per its global instructions (`~/.claude/CLAUDE.md`); OpenCode auto-injects it via the per-scope `mcp-opencode.json` `instructions` array.*
 
 Context is assembled general → specific: this file first, then the cwd-local `AGENTS.md` (the project's hand-maintained brief), then `.awm/context.md` (the scope's per-task ritual).
 
@@ -115,14 +115,14 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 | Prefix | Family | What it owns |
 |--------|--------|-------------|
-| `comp-*` | component | Cross-cutting work on a single shared frontend component (a deeper rework than a normal PR). The component itself lives in `packages/components/<name>/` regardless of which scope is editing it. |
+| `comp-*` | component | Cross-cutting work on a single shared frontend component (a deeper rework than a normal PR). The component itself lives in `awm/ui_components/<name>/` regardless of which scope is editing it. |
 | `svc-*`  | service   | Cross-cutting work on a single long-running backend service. The service itself lives in `awm/services/<name>/`. |
 | `feat-*` | feature   | Multi-package composition that wires components, services, and pages together (e.g. `feat-stt`, `feat-rooms`). |
 | `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners, the service hub itself. |
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
-For the day-to-day workflow of authoring/iterating on a package — what files you write, the shadow flow — see § *Developing a package* in the awm-internal AGENTS.md (auto-loaded inside any `projects/awm/*` scope).
+For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
 ## Git Model
 
@@ -169,3 +169,7 @@ mamba run -n <project-env> pip install <package>
 ```
 
 For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `awm/gateway/setup.sh`).
+
+## What goes in this file
+
+WORKSPACE.md is the structural orientation every scope agent inherits at session start, for any project in the workspace: the workspace layout and per-scope `.awm/` paths, the project map, the MCP tool catalog, the startup ritual, scope lifecycle and naming conventions, the git model, and the workspace-wide agent + Python-environment rules. awm-internal architecture goes in `AGENTS.md`; human install/usage goes in `README.md`.

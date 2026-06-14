@@ -10,7 +10,7 @@
 # Service installation is single-source: there is no hardcoded list of service
 # names here. Every dir under awm/services/ that ships its own install.sh is
 # discovered by glob and installed by running that script — each one owns its
-# own `.runtime-env` sidecar. Dirs without an install.sh (tts, ptt, network,
+# own `.runtime-env` sidecar. Dirs without an install.sh (tts, stt, network,
 # packages, hub) are correctly skipped.
 set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"

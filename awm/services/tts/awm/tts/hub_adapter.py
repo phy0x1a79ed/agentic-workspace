@@ -19,7 +19,7 @@ Sessions:
   - kind="call", transport="direct" — the playback session. The browser opens a
     direct WS that byte-relays through the hub bridge; ``speak`` frames in, raw
     PCM frames + a ``done`` marker back. This is the only session the service
-    exposes (the duplicate STT conversation loop was pruned; ``ptt`` owns STT).
+    exposes (the duplicate STT conversation loop was pruned; ``stt`` owns STT).
 """
 
 from __future__ import annotations

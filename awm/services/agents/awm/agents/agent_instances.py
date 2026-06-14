@@ -51,11 +51,10 @@ from awm.agentcore.session import AgentSession as _CoreSession
 _SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
 
-# Scope→stdin delivery: how often the per-session poller pulls new scope-channel
-# posts to route into the agent's stdin (cross-service; the scopes service
-# exposes no live emitter/session for posts, only the scope_fetch RPC).
-_SCOPE_POLL_INTERVAL_S = 1.0
-_SCOPE_POLL_BATCH = 50
+# Scope→stdin delivery rides a LIVE subscription to the scopes `posts` emitter
+# (not a poll). On each (re)connect a single cursored `scope_fetch` closes the
+# gap for anything posted while we were disconnected; this caps that read.
+_SCOPE_RESYNC_BATCH = 50
 
 # Module-level DAO instance (initialized after dao.init() is called).
 _dao: AgentsDAO | None = None
@@ -128,6 +127,12 @@ class AgentInstance:
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         self.compacting: bool = False
+        # Idempotent streaming: message_id → accumulated text. Partials stream
+        # live-only (bus, no persist); the finalized message is upserted as one
+        # durable row keyed by message_id. Both reset per turn (on `result`) so
+        # a long-lived session doesn't leak ids.
+        self._partial_accum: dict[str, str] = {}
+        self._msg_accum: dict[str, str] = {}
 
     @property
     def proc(self):
@@ -484,14 +489,16 @@ def enqueue_input(session: AgentInstance, post_author: str,
 
 
 # ---------------------------------------------------------------------------
-# Scope → stdin delivery (cross-service)
+# Scope → stdin delivery (cross-service, live subscription)
 # ---------------------------------------------------------------------------
-# A scope IS the channel. Human `message`-kind posts to the scope must reach
-# the agent's stdin. The scopes service exposes no live emitter/session for
-# posts (only the `scope_fetch` RPC), so the agents service polls the channel
-# cursored on ts and routes new human posts into `enqueue_input`. The agent's
-# OWN posts (author `agent:proj/scope`) are ignored — agent output lives in the
-# transcript, not re-delivered to itself.
+# A scope IS the channel. Human `message`-kind posts to the scope must reach the
+# agent's stdin. The scopes service emits a `posts` event on every new post, so
+# the agents service SUBSCRIBES to it (no poll). On each (re)connect a single
+# cursored `scope_fetch` closes the gap for anything posted while disconnected,
+# then the live stream takes over. The agent's OWN posts (author
+# `agent:proj/scope`) are ignored — agent output lives in the transcript, not
+# re-delivered to itself. The cursor (ISO ts of the last delivered post) dedupes
+# the resync/live overlap.
 
 def _is_own_author(session: AgentInstance, author: str) -> bool:
     """True if `author` is this agent's own scope ref (don't self-deliver)."""
@@ -503,13 +510,54 @@ def _is_own_author(session: AgentInstance, author: str) -> bool:
     return a == f"{session.project}/{session.scope}"
 
 
-async def _scope_delivery_loop(session: AgentInstance) -> None:
-    """Poll the scope channel and route new human posts into the agent stdin.
+def _maybe_deliver_post(session: AgentInstance, post: dict) -> None:
+    """Route one scope post into the agent stdin if it's a fresh human message.
 
-    Cursored on the ISO ts of the last delivered post. Only ``message``-kind
-    posts not authored by the agent itself are routed. Cross-service via the
-    ``scopes`` service's ``scope_fetch`` RPC (best-effort; transient RPC
-    failures are swallowed and retried on the next tick)."""
+    Cursored on the ISO ts of the last delivered post so the resync/live overlap
+    never double-delivers; only ``message``-kind posts not authored by the agent
+    itself are enqueued."""
+    if post.get('kind') != 'message':
+        return
+    ts = post.get('ts')
+    ts_ms = iso_to_ms(ts)
+    cursor_ms = iso_to_ms(session.scope_poll_after_ts)
+    if cursor_ms is not None and ts_ms is not None and ts_ms <= cursor_ms:
+        return
+    if ts:
+        session.scope_poll_after_ts = ts
+    author = post.get('author') or ''
+    if _is_own_author(session, author):
+        return
+    enqueue_input(session, author, post.get('body') or '')
+
+
+async def _resync_scope_posts(session: AgentInstance) -> None:
+    """One cursored `scope_fetch` to deliver anything posted during a gap.
+
+    Run on each (re)connect before going live so a dropped WS never loses a
+    human message. Best-effort: a transient RPC failure is swallowed (the live
+    subscription still covers everything from here on)."""
+    try:
+        res = await gatewayclient.call('scopes', 'scope_fetch', {
+            'project': session.project, 'scope': session.scope,
+            'kind': 'message', 'limit': _SCOPE_RESYNC_BATCH, 'order': 'desc',
+        })
+    except Exception:  # noqa: BLE001
+        return
+    posts = (res or {}).get('posts') or []
+    # Oldest→newest of the (newest-first) batch; the cursor filter dedupes.
+    for post in reversed(posts):
+        _maybe_deliver_post(session, post)
+
+
+async def _scope_delivery_loop(session: AgentInstance) -> None:
+    """Subscribe to the scopes `posts` emitter and route human posts to stdin.
+
+    A live subscription (``gatewayclient.subscribe('scopes', 'posts')``), not a
+    poll. Each (re)connect first runs a one-shot cursored resync to close the
+    disconnect gap, then consumes live events filtered to this session's
+    ``(project, scope)``. A clean WS close means "reconnect," not "done";
+    reconnects use the same exponential backoff shape as the adapter."""
     # Seed the cursor at the newest existing post so we don't replay history
     # into stdin on attach (the transcript/backfill carries history already).
     try:
@@ -523,42 +571,31 @@ async def _scope_delivery_loop(session: AgentInstance) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+    backoff = 1.0
     while True:
         try:
-            await asyncio.sleep(_SCOPE_POLL_INTERVAL_S)
+            # Close the gap for anything posted while we were disconnected,
+            # then go live. The cursor dedupes the resync/live overlap.
+            await _resync_scope_posts(session)
+            async for ev in gatewayclient.subscribe('scopes', 'posts'):
+                if not isinstance(ev, dict):
+                    continue
+                if (ev.get('project') != session.project
+                        or ev.get('scope') != session.scope):
+                    continue
+                post = ev.get('post')
+                if isinstance(post, dict):
+                    _maybe_deliver_post(session, post)
+            # Clean close → reconnect promptly.
+            backoff = 1.0
         except asyncio.CancelledError:
             return
-        try:
-            # Newest-first with a batch cap; we filter to posts after the
-            # cursor and process them oldest→newest. scope_fetch has no
-            # `after_ts` param, so the cursor filter is client-side.
-            res = await gatewayclient.call('scopes', 'scope_fetch', {
-                'project': session.project, 'scope': session.scope,
-                'kind': 'message',
-                'limit': _SCOPE_POLL_BATCH,
-                'order': 'desc',
-            })
         except Exception:  # noqa: BLE001
-            continue
-        posts = (res or {}).get('posts') or []
-        cursor_ms = iso_to_ms(session.scope_poll_after_ts)
-        # Oldest→newest of the (newest-first) batch.
-        fresh = []
-        for post in reversed(posts):
-            ts_ms = iso_to_ms(post.get('ts'))
-            if cursor_ms is not None and ts_ms is not None and ts_ms <= cursor_ms:
-                continue
-            fresh.append(post)
-        for post in fresh:
-            ts = post.get('ts')
-            author = post.get('author') or ''
-            if ts:
-                session.scope_poll_after_ts = ts
-            if _is_own_author(session, author):
-                continue
-            if post.get('kind') != 'message':
-                continue
-            enqueue_input(session, author, post.get('body') or '')
+            backoff = min(backoff * 2, 30.0)
+        try:
+            await asyncio.sleep(backoff)
+        except asyncio.CancelledError:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -652,25 +689,45 @@ def _update_usage_from_data(session: "AgentInstance", data: dict | None) -> None
         return
 
 
+def _message_id_for(event, data: dict) -> str:
+    """The stable per-turn bubble key for a message/partial event.
+
+    Prefer the harness ``message_id`` (claude stamps it; one bubble per
+    assistant message). A backend that can't supply one (opencode) degrades to
+    the event's own id — each act its own bubble: degraded, never wrong."""
+    mid = data.get("message_id") if isinstance(data, dict) else None
+    return mid if isinstance(mid, str) and mid else getattr(event, "id", "")
+
+
 async def _reader_loop(session: AgentInstance, event_stream) -> None:
     """Consume agentcore :class:`AgentEvent`s: persist + fan out live.
 
-    Each event is persisted to ``agent_transcript`` (carrying its uuid) and
-    published to the in-process bus so a live ``agent_subscribe`` WS streams it
-    after replaying the backfill. The agent's output is **not** posted back to
-    its scope channel (transcript only) — deliberate agent messages (debrief)
-    stay an explicit ``scope_post`` elsewhere.
+    **Idempotent streaming.** A streamed reply is one logical message keyed by
+    its harness ``message_id``:
 
-    The ``status`` (init) event carries the resolved harness session id (for
-    resume) + slash commands + model; ``result``/``status`` carry usage."""
+    - ``partial`` events stream **live-only** — text is accumulated and a
+      growing-bubble act is published over the bus, but nothing is persisted
+      (this kills the durable-row flood + write amplification).
+    - the finalized ``message`` event(s) **upsert** one durable row keyed by
+      ``message_id`` (accumulating across a turn's text blocks).
+    - ``result`` is still persisted (for its ``usage``/``session_id`` meta) but
+      hidden downstream, and marks the turn boundary that resets the
+      accumulators. ``status`` / ``tool_use`` / ``tool_result`` are unchanged.
+
+    The agent's output is **not** posted back to its scope channel (transcript
+    only) — deliberate agent messages (debrief) stay an explicit ``scope_post``
+    elsewhere. The ``status`` (init) event carries the resolved harness session
+    id (for resume) + slash commands + model; ``result``/``status`` carry usage.
+    """
     from awm.agents import agent_transcript
     from awm.agents import agent_bus
 
     async for event in event_stream:
         data = getattr(event, "data", None) or {}
+        kind = getattr(event, "kind", "status")
 
         # Lifecycle metadata off the status(init) event.
-        if event.kind == "status" and data.get("subtype") == "init":
+        if kind == "status" and data.get("subtype") == "init":
             sid = data.get("session_id")
             if isinstance(sid, str) and sid != session.cli_session_id:
                 session.cli_session_id = sid
@@ -685,10 +742,46 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
 
         _update_usage_from_data(session, data)
 
+        if kind == "partial":
+            # Live-only: accumulate + publish a growing bubble; never persist.
+            mid = _message_id_for(event, data)
+            piece = getattr(event, "text", None) or ""
+            acc = session._partial_accum.get(mid, "") + piece
+            session._partial_accum[mid] = acc
+            agent_bus.publish_act(session.project, session.scope, {
+                "id": getattr(event, "id", mid),
+                "kind": "partial",
+                "body": acc,
+                "meta": {"message_id": mid, "data": data},
+                "ts": now_ms(),
+            })
+            continue
+
+        if kind == "message":
+            # Finalize: upsert the one durable row keyed by message_id,
+            # accumulating across a turn's text blocks.
+            mid = _message_id_for(event, data)
+            text = getattr(event, "text", None) or ""
+            prior = session._msg_accum.get(mid)
+            acc = f"{prior}\n{text}" if prior else text
+            session._msg_accum[mid] = acc
+            session._partial_accum.pop(mid, None)
+            act = agent_transcript.upsert_message_act(
+                session, mid, acc, data, now_ms())
+            if act is not None:
+                agent_bus.publish_act(session.project, session.scope, act)
+            continue
+
         # Persist the act (with its uuid) and fan it out to live subscribers.
         act = agent_transcript.record_event(session, event)
         if act is not None:
             agent_bus.publish_act(session.project, session.scope, act)
+
+        # The terminal `result` closes the turn — reset the accumulators so a
+        # long-lived session doesn't accrete per-turn message ids.
+        if kind == "result":
+            session._partial_accum.clear()
+            session._msg_accum.clear()
 
 
 # ---------------------------------------------------------------------------

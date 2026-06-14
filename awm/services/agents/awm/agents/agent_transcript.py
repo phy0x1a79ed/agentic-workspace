@@ -175,6 +175,32 @@ def record_event(session, event) -> dict | None:
     return {"id": row_id, "kind": kind, "body": body, "meta": meta, "ts": ts}
 
 
+def upsert_message_act(session, message_id: str, body: str,
+                       data: dict | None, ts: int) -> dict | None:
+    """Upsert the one durable row for a streamed assistant message.
+
+    The agent's streamed reply is persisted as a SINGLE row keyed by its
+    harness ``message_id`` (not one row per partial): the partials stream
+    live-only over the bus, and the finalized text is upserted here. ``meta``
+    carries ``message_id`` at top level so the frontend's ``coalesceKey`` folds
+    the live partial bubble and this finalized row into one chat row. Returns
+    the wire act (``{id, kind, body, meta, ts}``) the bus publishes, or None on
+    a persistence failure.
+    """
+    meta = {"message_id": message_id, "data": data}
+    try:
+        _get_dao().upsert_transcript(
+            id=message_id, project=session.project, scope=session.scope,
+            kind="message", body=body, meta=meta, ts=ts,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if body:
+        _broadcast_assistant_turn(session.id, body)
+    return {"id": message_id, "kind": "message", "body": body,
+            "meta": meta, "ts": ts}
+
+
 def record_raw_out(session, line: str) -> None:
     """Persist a non-JSON stdout line as kind='system'."""
     try:

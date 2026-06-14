@@ -205,6 +205,28 @@ class AgentsDAO(BaseDAO):
         )
         return row_id
 
+    def upsert_transcript(self, *, id: str, project: str, scope: str,
+                          kind: str, body: str,
+                          meta: dict | None,
+                          ts: int) -> str:
+        """Insert-or-update one agent_transcript row keyed by ``id``.
+
+        The streamed assistant message is a single durable row whose stable id
+        is the harness ``message_id``: the first finalized text block inserts
+        it, later blocks (or a re-finalize) update body/meta/ts in place. One
+        message → one row, so the backfill/live dedupe key and the UI coalesce
+        key line up automatically. Returns the id (== the message id passed in).
+        """
+        meta_str = json.dumps(meta or {})
+        self.execute(
+            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "body=excluded.body, meta=excluded.meta, ts=excluded.ts",
+            (id, project, scope, kind, body, meta_str, ts),
+        )
+        return id
+
     def read_transcript(self, project: str, scope: str) -> list[dict]:
         """All transcript rows for (project, scope), ordered by ts."""
         return self.query_all(

@@ -1,6 +1,6 @@
 """Opencode backend — warm ``opencode serve`` + parts → :class:`AgentEvent`.
 
-Lifted from ``awm.services.ptt.backend.agent.opencode_agent.OpencodeAgent``
+Lifted from ``awm.services.stt.backend.agent.opencode_agent.OpencodeAgent``
 (warm ``opencode serve`` subprocess; ``POST /session`` / ``POST
 /session/{id}/message`` / ``DELETE /session/{id}``) and reshaped so opencode's
 message ``parts`` are mapped onto :class:`AgentEvent` **explicitly** — the old
@@ -48,7 +48,7 @@ _LISTEN_RE = re.compile(r"https?://(?P<host>[\w.\-]+):(?P<port>\d+)")
 def _extract_json_object(text: str) -> Optional[dict]:
     """Pull the first balanced JSON object out of a free-form reply.
 
-    Lifted verbatim (in spirit) from the ptt OpencodeAgent so schema'd one-shot
+    Lifted verbatim (in spirit) from the stt OpencodeAgent so schema'd one-shot
     output survives a thinking-model's plain-text-with-fences reply.
     """
     if not text:

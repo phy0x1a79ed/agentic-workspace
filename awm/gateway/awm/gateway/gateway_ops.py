@@ -35,8 +35,12 @@ generator, so they're re-shaped here).
 from __future__ import annotations
 
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 from awm.gateway.operations import JsonOutput, Operation, Param
 
@@ -219,6 +223,132 @@ async def _op_services_disable(name: str) -> dict[str, Any]:
     return {"name": name, "enabled": False, "stop": await _op_services_stop(name)}
 
 
+# --- reap: kill orphaned hub_adapter processes -----------------------------
+
+class ReapRequest(BaseModel):
+    """Body for ``services reap`` — ``dry_run`` lists without killing."""
+
+    dry_run: bool = False
+
+
+# Matches the ``awm.<svc>.hub_adapter`` module token in a process cmdline (the
+# only thing a feature service is ever launched as), e.g.
+# ``python -m awm.agents.hub_adapter``. The gateway itself is ``awm.gateway
+# serve`` and the MCP proxy is ``awm-mcp`` — neither matches.
+_HUB_ADAPTER_RE = re.compile(r"awm\.[\w.]*hub_adapter")
+
+
+def _origin_of(url: str | None) -> str:
+    """Reduce a hub URL to ``host:port`` for matching — ignoring scheme, path,
+    and trailing slash, the things that differ between an injected
+    ``AWM_HUB_URL`` and ``default_hub_url()``. Empty string if unparseable."""
+    if not url:
+        return ""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url if "//" in url else "//" + url, scheme="http")
+    host = parsed.hostname or ""
+    return f"{host}:{parsed.port}" if parsed.port else host
+
+
+def _read_proc_environ(pid: int) -> dict[str, str]:
+    """Parse ``/proc/<pid>/environ`` into a dict. Empty on any read error
+    (race with exit, permission, non-Linux)."""
+    out: dict[str, str] = {}
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except (OSError, ValueError):
+        return out
+    for kv in raw.split(b"\x00"):
+        if b"=" in kv:
+            k, _, v = kv.partition(b"=")
+            out[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
+    return out
+
+
+def _scan_hub_adapters() -> list[dict[str, Any]]:
+    """Scan ``/proc`` for ``hub_adapter`` processes. Returns ``[{pid, cmdline,
+    hub_url}]``. Linux-only (reads ``/proc``); empty list elsewhere."""
+    procfs = Path("/proc")
+    found: list[dict[str, Any]] = []
+    if not procfs.is_dir():
+        return found
+    for entry in procfs.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            parts = (entry / "cmdline").read_bytes().split(b"\x00")
+        except (OSError, ValueError):
+            continue
+        cmd = " ".join(p.decode("utf-8", "replace") for p in parts if p)
+        if not _HUB_ADAPTER_RE.search(cmd):
+            continue
+        found.append({
+            "pid": pid,
+            "cmdline": cmd,
+            "hub_url": _read_proc_environ(pid).get("AWM_HUB_URL", ""),
+        })
+    return found
+
+
+async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
+    """Find and (unless ``dry_run``) SIGTERM→SIGKILL orphaned ``hub_adapter``
+    processes that target THIS gateway's origin but hold no live registry lease.
+
+    The durable, single-command replacement for hand-crafted ``ps | awk | kill``
+    cleanup of dangling service instances (the orphan storm from repeated
+    respawn / ``awm dev shadow`` generations). Discrimination keys off each
+    process's ``AWM_HUB_URL`` reduced to ``host:port`` (the documented dev/prod
+    discriminator) — so reaping from prod (``:7819``) never touches the dev hub's
+    children (``:7821``) and vice-versa. A pid that currently holds a lease (a
+    healthy registered base) is never reaped, nor is the gateway's own pid. Kill
+    escalation reuses the supervisor's ``kill_pid_group`` (SIGTERM, grace,
+    SIGKILL), not a re-rolled signal dance.
+    """
+    import asyncio as _asyncio
+
+    from awm.gateway.hub import supervisor
+    from awm.gateway.hub.lease import get_lease_manager
+    from awm.gateway.hub.registry import get_registry
+
+    registry = get_registry()
+    lm = get_lease_manager()
+    my_origin = _origin_of(supervisor.default_hub_url())
+    me = os.getpid()
+
+    # PIDs that currently hold a live lease are healthy bases — never reap them.
+    live_pids = {
+        rec.backend_pid
+        for rec in await registry.list()
+        if rec.backend_pid and lm.is_held(rec.service_id)
+    }
+
+    candidates: list[dict[str, Any]] = []
+    for proc in _scan_hub_adapters():
+        if proc["pid"] == me or proc["pid"] in live_pids:
+            continue
+        if _origin_of(proc["hub_url"]) != my_origin:
+            continue
+        candidates.append(proc)
+
+    reaped: list[dict[str, Any]] = []
+    if not req.dry_run:
+        loop = _asyncio.get_event_loop()
+        for proc in candidates:
+            await loop.run_in_executor(
+                None, supervisor.kill_pid_group, proc["pid"])
+            reaped.append(proc)
+
+    return {
+        "origin": my_origin,
+        "dry_run": req.dry_run,
+        "count": len(candidates),
+        "found": candidates,
+        "reaped": reaped,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Operation registry — one entry per migratable control op.
 # ---------------------------------------------------------------------------
@@ -333,5 +463,21 @@ GATEWAY_OPERATIONS: list[Operation] = [
         http_method="POST", http_path="/hub/services/{name}/disable",
         cli_group="services", cli_command="disable",
         output=JsonOutput(), params=[_NAME_PARAM], surfaces=_CLI,
+    ),
+    Operation(
+        name="services_reap",
+        description="Reap orphaned hub_adapter processes targeting this gateway "
+                    "that hold no live lease (--dry-run lists only).",
+        service_func=_op_services_reap,
+        http_method="POST", http_path="/hub/services/reap",
+        cli_group="services", cli_command="reap",
+        output=JsonOutput(),
+        request_model=ReapRequest,
+        params=[Param(
+            name="dry_run", type="boolean", required=False, default=False,
+            cli_name="--dry-run",
+            description="List the orphaned hub_adapters without killing them.",
+        )],
+        surfaces=_CLI,
     ),
 ]
