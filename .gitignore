@@ -33,6 +33,9 @@ frontend/node_modules/
 # untracked copy can't block dev's next FF — see session #334.
 node_modules/
 packages/**/dist/
+# Post-collapse layout: pages build to awm/pages/<name>/dist/ (registered with
+# the hub via `awm packages sync`, not committed).
+awm/pages/*/dist/
 
 # Python
 __pycache__/
