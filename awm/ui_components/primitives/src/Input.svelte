@@ -31,6 +31,7 @@
   bind:this={el}
   bind:value
   class="input"
+  data-awm-component="Input"
   {type}
   {placeholder}
   {disabled}

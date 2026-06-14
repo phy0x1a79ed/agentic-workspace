@@ -29,7 +29,7 @@
   export function finalizeLiveChunk(_text: string) {}
 </script>
 
-<div class="text-tab">
+<div class="text-tab" data-awm-component="TextTab">
   <textarea
     bind:this={textarea}
     bind:value

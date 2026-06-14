@@ -118,7 +118,7 @@
   }
 </script>
 
-<div class="transcript" bind:this={scrollEl}>
+<div class="transcript" bind:this={scrollEl} data-awm-component="TtsHistory">
   {#if groups.length === 0}
     <div class="empty-state">
       <div class="empty-icon">◇</div>

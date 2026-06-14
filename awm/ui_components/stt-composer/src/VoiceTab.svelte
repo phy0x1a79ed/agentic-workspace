@@ -153,7 +153,7 @@
   }
 </script>
 
-<div class="voice-tab">
+<div class="voice-tab" data-awm-component="VoiceTab">
   <div class="main">
     {#if convo}
       <!-- Convo: one flowing, vertically-scrolling text panel showing the

@@ -8,7 +8,7 @@
   let { tone = 'dim', children }: Props = $props();
 </script>
 
-<span class="lbl t-{tone}">{@render children?.()}</span>
+<span class="lbl t-{tone}" data-awm-component="PanelLabel">{@render children?.()}</span>
 
 <style>
   .lbl {

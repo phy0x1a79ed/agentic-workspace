@@ -23,6 +23,7 @@
 
 <button
   class="pill t-{tone}"
+  data-awm-component="Pill"
   {type}
   {disabled}
   {onclick}

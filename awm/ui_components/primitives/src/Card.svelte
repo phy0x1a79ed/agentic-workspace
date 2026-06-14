@@ -17,6 +17,7 @@
 
 <article
   class="card r-{rail}"
+  data-awm-component="Card"
   class:flash
   class:open
 >{@render children?.()}</article>

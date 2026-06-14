@@ -42,8 +42,16 @@
     scope?: string;
     /** Auto-connect on mount when both project+scope resolve. Default true. */
     autoConnect?: boolean;
+    /** Fully offline (gallery/demo): never connect, and put the embedded
+     *  SttComposer in mock mode so it opens no /svc/stt session. Default false. */
+    offline?: boolean;
   }
-  let { project: initProject, scope: initScope, autoConnect = true }: Props = $props();
+  let {
+    project: initProject,
+    scope: initScope,
+    autoConnect = true,
+    offline = false,
+  }: Props = $props();
 
   // --- Connect-bar state (URL ?project=&scope= → localStorage fallback) ----
 
@@ -252,7 +260,7 @@
   // --- Lifecycle -----------------------------------------------------------
 
   $effect(() => {
-    if (autoConnect && project.trim() && scope.trim() && status === 'idle') {
+    if (!offline && autoConnect && project.trim() && scope.trim() && status === 'idle') {
       void connect();
     }
   });
@@ -260,7 +268,7 @@
   onDestroy(() => disconnect());
 </script>
 
-<main class="agent-chat">
+<main class="agent-chat" data-awm-component="AgentChat">
   <header class="hdr">
     <form
       class="connect-bar"
@@ -308,6 +316,7 @@
       onsend={onComposerText}
       onText={onComposerText}
       {chatContext}
+      mockInitialChips={offline ? [] : undefined}
     />
   </div>
 </main>

@@ -411,7 +411,7 @@
   });
 </script>
 
-<section class="panel">
+<section class="panel" data-awm-component="SttComposer">
   <SttComposerShell
     bind:this={composer}
     {onsend}

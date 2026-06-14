@@ -10,6 +10,7 @@
     VoiceChip,
   } from '@awm/stt-composer';
   import { TtsHistory, type Post } from '@awm/tts-history';
+  import { AgentChat } from '@awm/agent-chat';
 
   // ── Theme / token surface ──────────────────────────────────────────────
   //
@@ -63,6 +64,11 @@
   onMount(() => {
     shipped = readCascade();
     values = { ...shipped };
+    // Outline boxes are positioned from live getBoundingClientRect reads, so a
+    // viewport resize can invalidate them — recompute any active outline.
+    const onResize = () => recomputeOutlines();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   });
 
   function setToken(name: string, v: string) {
@@ -106,16 +112,231 @@
     // Surface the speak affordance without a TTS backend.
   }
 
-  const COMPOSITES = [
-    'SttComposer',
-    'SttComposerShell',
-    'SttButton',
-    'TextTab',
-    'VoiceTab',
-    'VoiceChip',
-    'TtsHistory',
+  // ── Components explorer: composition forest ─────────────────────────────
+  //
+  // There is no runtime import scan in the browser, so the dependency forest is
+  // hand-authored declared data. Subtrees are shared by object reference so a
+  // component's children are identical wherever it appears (the same SttComposer
+  // subtree hangs under AgentChat and as its own root). Node identity for the
+  // tree is the *path* (so duplicates highlight independently); component
+  // identity is the *name* (so the live-card set dedupes across duplicates).
+
+  interface CNode { name: string; children: CNode[]; }
+  const cnode = (name: string, children: CNode[] = []): CNode => ({ name, children });
+
+  const voiceChip = cnode('VoiceChip');
+  const voiceTab = cnode('VoiceTab', [voiceChip]);
+  const textTab = cnode('TextTab');
+  const sttShell = cnode('SttComposerShell', [textTab, voiceTab]);
+  const sttButton = cnode('SttButton');
+  const sttComposer = cnode('SttComposer', [sttShell, sttButton]);
+  const ttsHistory = cnode('TtsHistory');
+  const agentChat = cnode('AgentChat', [sttComposer, ttsHistory]);
+  const FOREST: CNode[] = [agentChat, sttComposer, ttsHistory];
+
+  // Primitives are standalone — nothing composite renders them — so they form a
+  // flat leaf group to satisfy "all components". Their live demos live in the
+  // Primitives section, so a click scrolls there rather than re-rendering.
+  const PRIMITIVES = [
+    'Button', 'Card', 'CollapsibleSection', 'Input', 'PanelLabel',
+    'Pill', 'Select', 'Slider', 'Tag', 'Tooltip',
   ];
+
+  // Shallowest tree-depth per component name (root = 1).
+  function computeMinDepths(forest: CNode[]): Map<string, number> {
+    const m = new Map<string, number>();
+    const walk = (node: CNode, d: number) => {
+      const prev = m.get(node.name);
+      if (prev === undefined || d < prev) m.set(node.name, d);
+      for (const c of node.children) walk(c, d + 1);
+    };
+    for (const r of forest) walk(r, 1);
+    return m;
+  }
+  const MIN_DEPTH = computeMinDepths(FOREST);
+  const MAX_DEPTH = Math.max(...MIN_DEPTH.values());
+
+  // The canonical (shallowest) node per name drives each live card's
+  // subcomponent tree. Children are identical across occurrences, so any wins.
+  function canonicalNodes(forest: CNode[]): Map<string, CNode> {
+    const best = new Map<string, { d: number; node: CNode }>();
+    const walk = (node: CNode, d: number) => {
+      const prev = best.get(node.name);
+      if (prev === undefined || d < prev.d) best.set(node.name, { d, node });
+      for (const c of node.children) walk(c, d + 1);
+    };
+    for (const r of forest) walk(r, 1);
+    const out = new Map<string, CNode>();
+    for (const [k, v] of best) out.set(k, v.node);
+    return out;
+  }
+  const NODE_BY_NAME = canonicalNodes(FOREST);
+
+  let depth = $state(1);
+  let refreshKey = $state(0);
+
+  // Distinct component names whose shallowest depth is within the selector,
+  // ordered shallowest-first. min-depth ≤ N is monotonic: raising N only adds
+  // cards, and N = MAX_DEPTH renders every component exactly once.
+  const visibleComponents = $derived(
+    [...MIN_DEPTH.entries()]
+      .filter(([, d]) => d <= depth)
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+      .map(([name, d]) => ({ name, depth: d })),
+  );
+
+  // ── Hover-highlight (path-based: a node's literal descendant subtree) ─────
+  let hoveredPath = $state<string | null>(null);
+  function isDescendant(path: string): boolean {
+    return hoveredPath !== null && path !== hoveredPath && path.startsWith(hoveredPath + ' ');
+  }
+
+  function scrollToComponent(name: string) {
+    if (PRIMITIVES.includes(name)) {
+      document.getElementById('primitives')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    // Reveal a deeper composite by raising depth, then scroll to its card.
+    const md = MIN_DEPTH.get(name);
+    if (md && md > depth) setDepth(md);
+    requestAnimationFrame(() =>
+      document.getElementById(`c-${name}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    );
+  }
+
+  // ── Debug outline (per live card) ─────────────────────────────────────────
+  //
+  // hosts[name] is the live card's relative container. Clicking a subcomponent
+  // name reads each [data-awm-component="<name>"] node's rect relative to the
+  // host and renders absolutely-positioned boxes in the overlay layer.
+  interface Rect { top: number; left: number; width: number; height: number; }
+  const hosts: Record<string, HTMLElement | undefined> = {};
+  let outlineTarget = $state<Record<string, string | null>>({});
+  let outlineRects = $state<Record<string, Rect[]>>({});
+
+  function computeRects(card: string, target: string): Rect[] {
+    const host = hosts[card];
+    if (!host) return [];
+    const base = host.getBoundingClientRect();
+    return [...host.querySelectorAll(`[data-awm-component="${target}"]`)].map((el) => {
+      const r = (el as HTMLElement).getBoundingClientRect();
+      return { top: r.top - base.top, left: r.left - base.left, width: r.width, height: r.height };
+    });
+  }
+
+  function toggleOutline(card: string, target: string) {
+    if (outlineTarget[card] === target) {
+      outlineTarget[card] = null;
+      outlineRects[card] = [];
+    } else {
+      outlineTarget[card] = target;
+      outlineRects[card] = computeRects(card, target);
+    }
+  }
+
+  function recomputeOutlines() {
+    for (const card of Object.keys(outlineTarget)) {
+      const t = outlineTarget[card];
+      if (t) outlineRects[card] = computeRects(card, t);
+    }
+  }
+
+  // A re-mount (Refresh / depth change) replaces the DOM the rects were read
+  // from, so any active outline is stale — drop it.
+  function clearOutlines() {
+    outlineTarget = {};
+    outlineRects = {};
+  }
+
+  function setDepth(v: number) {
+    depth = Math.max(1, Math.min(MAX_DEPTH, v));
+    clearOutlines();
+  }
+  function refresh() {
+    refreshKey++;
+    clearOutlines();
+  }
 </script>
+
+<!-- Recursive dependency-tree node (path = identity; depth-gated expansion). -->
+{#snippet treeNode(node: CNode, d: number, path: string)}
+  <li>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tnode mono"
+      class:descendant={isDescendant(path)}
+      class:hovered={hoveredPath === path}
+      role="treeitem"
+      tabindex="-1"
+      aria-selected={hoveredPath === path}
+      onmouseenter={() => (hoveredPath = path)}
+      onmouseleave={() => { if (hoveredPath === path) hoveredPath = null; }}
+    >
+      <button type="button" class="tname" onclick={() => scrollToComponent(node.name)}>{node.name}</button>
+      <span class="tdepth">d{d}</span>
+      {#if node.children.length && d >= depth}
+        <span class="tmore" title="raise depth to expand">…</span>
+      {/if}
+    </div>
+    {#if node.children.length && d < depth}
+      <ul class="tchildren">
+        {#each node.children as c, i (i)}
+          {@render treeNode(c, d + 1, path + ' ' + i)}
+        {/each}
+      </ul>
+    {/if}
+  </li>
+{/snippet}
+
+<!-- Per-card subcomponent tree (by name). Click outlines matching DOM nodes. -->
+{#snippet subTree(card: string, node: CNode)}
+  <ul class="tchildren">
+    {#each node.children as c, i (i)}
+      <li>
+        <button
+          type="button"
+          class="tname sub"
+          class:active={outlineTarget[card] === c.name}
+          onclick={() => toggleOutline(card, c.name)}
+        >{c.name}</button>
+        {#if c.children.length}
+          {@render subTree(card, c)}
+        {/if}
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
+<!-- Live demo per component, reusing the existing offline mock props. -->
+{#snippet liveDemo(name: string)}
+  {#if name === 'AgentChat'}
+    <div class="agent-frame"><AgentChat autoConnect={false} offline /></div>
+  {:else if name === 'SttComposer'}
+    <SttComposer mockInitialChips={composerChips} />
+  {:else if name === 'SttComposerShell'}
+    <SttComposerShell initialChips={shellChips}>
+      {#snippet voiceControls()}
+        <button type="button" class="demo-ctl mono">PTT</button>
+      {/snippet}
+      {#snippet voiceMeter()}
+        <div class="demo-meter"><div class="demo-meter-bar"></div></div>
+      {/snippet}
+    </SttComposerShell>
+  {:else if name === 'SttButton'}
+    <div class="stage narrow"><SttButton onpttdown={() => {}} onpttup={() => {}} /></div>
+  {:else if name === 'TextTab'}
+    <TextTab />
+  {:else if name === 'VoiceTab'}
+    <VoiceTab initialChips={voiceTabChips} />
+  {:else if name === 'VoiceChip'}
+    <div class="stage col chips">
+      <VoiceChip text="a settled voice chip" />
+      <VoiceChip text="a live, streaming chip" live />
+    </div>
+  {:else if name === 'TtsHistory'}
+    <div class="tts-frame"><TtsHistory posts={mockPosts} onspeak={noopSpeak} /></div>
+  {/if}
+{/snippet}
 
 <div class="layout">
   <nav class="toc mono">
@@ -127,10 +348,10 @@
       <li><a href="#theme">Theme</a></li>
       <li><a href="#primitives">Primitives</a></li>
       <li>
-        <a href="#composites">Composites</a>
+        <a href="#components">Components</a>
         <ul class="toc-sublist">
-          {#each COMPOSITES as c}
-            <li><a href="#c-{c}">{c}</a></li>
+          {#each visibleComponents as c (c.name)}
+            <li><a href="#c-{c.name}">{c.name}</a></li>
           {/each}
         </ul>
       </li>
@@ -250,84 +471,89 @@
       <Gallery flat />
     </section>
 
-    <!-- ── COMPOSITES ─────────────────────────────────────────────────── -->
-    <section id="composites" class="section">
+    <!-- ── COMPONENTS EXPLORER ────────────────────────────────────────── -->
+    <section id="components" class="section">
       <header class="section-head">
-        <h1 class="section-title mono">Composites</h1>
+        <h1 class="section-title mono">Components</h1>
+        <div class="depth-ctl mono">
+          <label for="depth-sel">depth</label>
+          <select
+            id="depth-sel"
+            class="depth-sel"
+            value={depth}
+            onchange={(e) => setDepth(Number(e.currentTarget.value))}
+          >
+            {#each Array.from({ length: MAX_DEPTH }) as _, i}
+              <option value={i + 1}>{i + 1}</option>
+            {/each}
+          </select>
+          <span class="depth-max">/ {MAX_DEPTH}</span>
+          <button type="button" class="reset mono" onclick={refresh}>Refresh</button>
+        </div>
       </header>
-      <section class="list">
-        <article class="card" id="c-SttComposer">
-          <h2 class="name mono">SttComposer</h2>
-          <p class="body mono">
-            full composer (transport + shell) on its offline mock path — no
-            /svc/stt session opened.
-          </p>
-          <div class="stage">
-            <SttComposer mockInitialChips={composerChips} />
-          </div>
-        </article>
+      <p class="note mono">
+        The dependency tree of every component. <strong>Depth</strong> expands the
+        tree and renders one live card per component whose shallowest tree-depth is
+        within it (deduped to that shallowest level — a reused component shows
+        once). Hover a tree node to highlight its descendant subtree; inside a live
+        card, click a subcomponent name to outline its real DOM nodes.
+      </p>
 
-        <article class="card" id="c-SttComposerShell">
-          <h2 class="name mono">SttComposerShell</h2>
-          <p class="body mono">bare shell with inline control + meter snippets.</p>
-          <div class="stage">
-            <SttComposerShell initialChips={shellChips}>
-              {#snippet voiceControls()}
-                <button type="button" class="demo-ctl mono">PTT</button>
-              {/snippet}
-              {#snippet voiceMeter()}
-                <div class="demo-meter"><div class="demo-meter-bar"></div></div>
-              {/snippet}
-            </SttComposerShell>
-          </div>
-        </article>
+      <div class="explorer">
+        <!-- dependency tree -->
+        <aside class="tree-pane">
+          <h2 class="name mono">dependency tree</h2>
+          <ul class="tree" role="tree">
+            {#each FOREST as root, i (i)}
+              {@render treeNode(root, 1, String(i))}
+            {/each}
+          </ul>
+          <h2 class="name mono prims-head">primitives</h2>
+          <ul class="tree" role="tree">
+            {#each PRIMITIVES as p (p)}
+              <li>
+                <div class="tnode mono">
+                  <button type="button" class="tname" onclick={() => scrollToComponent(p)}>{p}</button>
+                  <span class="tdepth">leaf</span>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        </aside>
 
-        <article class="card" id="c-SttButton">
-          <h2 class="name mono">SttButton</h2>
-          <p class="body mono">presentational push-to-talk affordance.</p>
-          <div class="stage narrow">
-            <SttButton onpttdown={() => {}} onpttup={() => {}} />
-          </div>
-        </article>
-
-        <article class="card" id="c-TextTab">
-          <h2 class="name mono">TextTab</h2>
-          <p class="body mono">plain type-and-send escape hatch.</p>
-          <div class="stage">
-            <TextTab />
-          </div>
-        </article>
-
-        <article class="card" id="c-VoiceTab">
-          <h2 class="name mono">VoiceTab</h2>
-          <p class="body mono">uneditable voice chip list (seeded mock chips).</p>
-          <div class="stage">
-            <VoiceTab initialChips={voiceTabChips} />
-          </div>
-        </article>
-
-        <article class="card" id="c-VoiceChip">
-          <h2 class="name mono">VoiceChip</h2>
-          <p class="body mono">atomic transcribed-utterance card; live + settled states.</p>
-          <div class="stage col chips">
-            <VoiceChip text="a settled voice chip" />
-            <VoiceChip text="a live, streaming chip" live />
-          </div>
-        </article>
-
-        <article class="card" id="c-TtsHistory">
-          <h2 class="name mono">TtsHistory</h2>
-          <p class="body mono">
-            chat transcript with grouped membership / tool clusters and a
-            per-message speak affordance (mock Post[]).
-          </p>
-          <div class="stage">
-            <div class="tts-frame">
-              <TtsHistory posts={mockPosts} onspeak={noopSpeak} />
-            </div>
-          </div>
-        </article>
-      </section>
+        <!-- live cards -->
+        <section class="list cards-pane">
+          {#each visibleComponents as comp (comp.name)}
+            <article class="card" id="c-{comp.name}">
+              <header class="card-head">
+                <h2 class="name mono">{comp.name}</h2>
+                <span class="card-depth mono">depth {comp.depth}</span>
+              </header>
+              <div class="stage">
+                <div class="live-host" bind:this={hosts[comp.name]}>
+                  {#key refreshKey + '/' + depth}
+                    {@render liveDemo(comp.name)}
+                  {/key}
+                  {#each (outlineRects[comp.name] ?? []) as r, ri (ri)}
+                    <div
+                      class="outline-box"
+                      style="top:{r.top}px; left:{r.left}px; width:{r.width}px; height:{r.height}px"
+                    ></div>
+                  {/each}
+                </div>
+              </div>
+              {#if NODE_BY_NAME.get(comp.name)?.children.length}
+                <div class="subtree">
+                  <span class="subtree-label mono">subcomponents — click to outline</span>
+                  {@render subTree(comp.name, NODE_BY_NAME.get(comp.name)!)}
+                </div>
+              {:else}
+                <span class="subtree-label mono leaf-note">leaf — no subcomponents</span>
+              {/if}
+            </article>
+          {/each}
+        </section>
+      </div>
     </section>
   </div>
 </div>
@@ -583,6 +809,187 @@
     border-radius: var(--radius-lg);
     overflow: hidden;
   }
+  .agent-frame {
+    height: 460px;
+    display: flex;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  /* ── components explorer ── */
+  .depth-ctl {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: 11px;
+    color: var(--text2);
+  }
+  .depth-ctl label {
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text3);
+  }
+  .depth-sel {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: var(--space-1) var(--space-2);
+    cursor: pointer;
+  }
+  .depth-sel:focus {
+    outline: none;
+    border-color: var(--atomizer);
+  }
+  .depth-max {
+    color: var(--text3);
+  }
+
+  .explorer {
+    display: grid;
+    grid-template-columns: minmax(220px, 280px) 1fr;
+    gap: var(--space-5);
+    align-items: start;
+  }
+  .tree-pane {
+    position: sticky;
+    top: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-4);
+    max-height: calc(100vh - var(--space-6) * 2);
+    overflow-y: auto;
+  }
+  .prims-head {
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
+  }
+  .tree,
+  .tchildren {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .tchildren {
+    margin-left: var(--space-3);
+    padding-left: var(--space-3);
+    border-left: 1px solid var(--border);
+  }
+  .tnode {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 1px var(--space-2);
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .tnode.descendant {
+    background: color-mix(in oklab, var(--atomizer) 18%, var(--surface));
+    border-color: color-mix(in oklab, var(--atomizer) 40%, var(--border));
+  }
+  .tnode.hovered {
+    background: color-mix(in oklab, var(--atomizer) 30%, var(--surface));
+    border-color: var(--atomizer);
+  }
+  .tname {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .tname:hover {
+    color: var(--atomizer);
+  }
+  .tname.sub {
+    font-size: 11px;
+    color: var(--text2);
+    padding: var(--space-0) var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+  .tname.sub:hover {
+    color: var(--atomizer);
+  }
+  .tname.sub.active {
+    background: color-mix(in oklab, var(--atomizer) 28%, var(--surface2));
+    border: 1px solid var(--atomizer);
+    color: var(--text);
+  }
+  .tdepth {
+    color: var(--text3);
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .tmore {
+    color: var(--atomizer);
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .cards-pane {
+    min-width: 0;
+  }
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .card-depth {
+    color: var(--text3);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .live-host {
+    position: relative;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+  .outline-box {
+    position: absolute;
+    pointer-events: none;
+    border: 2px solid var(--atomizer);
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklab, var(--atomizer) 12%, transparent);
+    box-shadow: 0 0 0 1px var(--bg);
+    z-index: 6;
+  }
+  .subtree {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-3);
+  }
+  .subtree-label {
+    color: var(--text3);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .leaf-note {
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-3);
+  }
 
   /* ── shared card styling — global so it also reaches Gallery's unscoped
        (style-less) markup rendered in flat mode, keeping primitives + composite
@@ -669,6 +1076,13 @@
       height: auto;
       border-right: 0;
       border-bottom: 1px solid var(--border);
+    }
+    .explorer {
+      grid-template-columns: 1fr;
+    }
+    .tree-pane {
+      position: static;
+      max-height: none;
     }
   }
 </style>
