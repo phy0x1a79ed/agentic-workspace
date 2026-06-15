@@ -14,7 +14,8 @@ import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-PUBLIC = {"orch_task_create", "orch_task_attach", "orch_status", "orch_frontier"}
+PUBLIC = {"orch_task_create", "orch_task_attach", "orch_status",
+          "orch_frontier", "orch_dag"}
 PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
               "approve_plan", "reject_plan", "set_attached"}
 

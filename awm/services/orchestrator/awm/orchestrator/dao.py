@@ -326,6 +326,20 @@ class OrchestratorDAO(BaseDAO):
             (producer_task,), conn=conn,
         )
 
+    def list_all_contracts(
+        self, project: str | None = None, *,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict]:
+        """Every contract (optionally per-project) — for the DAG snapshot read."""
+        if project:
+            return self.query_all(
+                "SELECT * FROM contracts WHERE project = ? ORDER BY created_at",
+                (project,), conn=conn,
+            )
+        return self.query_all(
+            "SELECT * FROM contracts ORDER BY created_at", conn=conn
+        )
+
     def mark_contract_delivered(
         self, contract_id: str, payload_ref: str, *,
         conn: sqlite3.Connection | None = None,
@@ -363,6 +377,31 @@ class OrchestratorDAO(BaseDAO):
                WHERE e.consumer_task = ?""",
             (consumer_task,), conn=conn,
         )
+
+    def list_all_edges_joined(
+        self, project: str | None = None, *,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[dict]:
+        """Every dependency edge (optionally per-project), joined to its
+        contract's name / producer / delivery state — denormalized so the DAG
+        snapshot read carries both endpoints + the edge label in one row.
+
+        ``project`` filters by the consumed contract's project. Note the global
+        root sentinel (project ``_root``) consumes real-project contracts, so a
+        project filter still surfaces the root→contract edge (its consumer task
+        lives in ``_root`` and the client tolerates an off-project endpoint)."""
+        sql = (
+            "SELECT e.id AS edge_id, e.consumer_task, e.contract_id, "
+            "       c.name AS contract_name, c.producer_task, "
+            "       (c.delivered_ts IS NOT NULL) AS delivered "
+            "FROM edges e JOIN contracts c ON c.id = e.contract_id"
+        )
+        if project:
+            return self.query_all(
+                sql + " WHERE c.project = ? ORDER BY e.created_at",
+                (project,), conn=conn,
+            )
+        return self.query_all(sql + " ORDER BY e.created_at", conn=conn)
 
     def list_consumers_of_contract(
         self, contract_id: str, *, conn: sqlite3.Connection | None = None

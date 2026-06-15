@@ -5,9 +5,9 @@ starts the dispatch drain loop (``on_start``), then runs the shared
 :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
 reconnect).
 
-**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the four
+**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the five
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
-manifest) projects exactly four ``orch_*`` MCP tools. The privileged
+manifest) projects exactly five ``orch_*`` MCP tools. The privileged
 plan-mutation ops (``claim`` / ``deliver`` / ``fail`` / ``decompose_commit`` /
 ``approve_plan`` / ``reject_plan`` / ``set_attached``) and the planner read ops
 (``search_tasks`` / ``search_contracts``) live in ``HANDLERS`` but are
@@ -81,22 +81,34 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "project", "type": "string", "required": False},
             ],
         },
+        {
+            "name": "orch_dag",
+            "tool": "orch_dag",
+            "description": "The whole plan in one shot — tasks, contracts, and "
+                           "denormalized dependency edges (optionally "
+                           "per-project) for a client to visualize the DAG.",
+            "params": [
+                {"name": "project", "type": "string", "required": False},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
 }
 
-# All handlers — the four public above plus the privileged ops that are
+# All handlers — the five public above plus the privileged ops that are
 # intentionally NOT in the manifest (claim / deliver / fail / decompose_commit /
-# approve_plan / reject_plan / set_attached). Their omission is what keeps them
-# off the MCP tool surface; the catch-all /svc/<name>/fn/<fn> dispatch still
-# resolves them here.
+# approve_plan / reject_plan / set_attached) and the planner read ops
+# (search_tasks / search_contracts). Their omission is what keeps them off the
+# MCP tool surface; the catch-all /svc/<name>/fn/<fn> dispatch still resolves
+# them here.
 HANDLERS = {
     # public (manifest-visible)
     "orch_task_create": operations.orch_task_create,
     "orch_task_attach": operations.orch_task_attach,
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
+    "orch_dag": operations.orch_dag,
     # privileged (manifest-OMITTED — agents harness only)
     "claim": operations.claim,
     "deliver": operations.deliver,

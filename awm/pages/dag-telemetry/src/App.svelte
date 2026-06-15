@@ -1,20 +1,24 @@
 <script lang="ts">
   /**
-   * DAG telemetry page — two panels:
-   *   left  : a simple task list (orch_status), live-polled, state-badged;
-   *   right : the selected task's live conversation (its placement transcript +
-   *           a composer that splices human messages into the agent).
+   * DAG telemetry page — the orchestrator's whole plan, in one view:
+   *   left  : @awm/dag-graph TaskList — every task grouped by state, runnable /
+   *           in-flight first, done collapsed. Row click selects a task.
+   *   right : two tabs for the selected task —
+   *             · Info — @awm/dag-graph FocusPanel: the task's upstream deps and
+   *               downstream dependents, each labelled by the connecting contract;
+   *               clicking a neighbour walks the DAG one hop at a time.
+   *             · Chat — its live placement transcript + a composer that splices
+   *               human messages into the agent.
    *
-   * Selecting a task on the left drives the right panel (onSelectTask). The list
-   * is intentionally swappable: svc-orchestrator's @awm/dag-graph flowchart drops
-   * in behind the same onSelect contract once it ships. Orchestrator EVENT
-   * telemetry (the @awm/telemetry live stream) is owned by svc-orchestrator's
-   * emission seam; until it lands we poll orch_status for live state.
+   * One `orch_dag` poll feeds everything: a single DagSnapshot → one buildIndex,
+   * shared by both dag-graph primitives, plus the header counts (derived, no 2nd
+   * op). The TaskList and FocusPanel share the controlled-selection contract, so
+   * a neighbour click in Info re-selects the list.
    */
   import { onDestroy, untrack } from 'svelte';
-  import TaskList from './lib/TaskList.svelte';
+  import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
+  import { fetchDag, type DagSnapshot, type DagTask } from '@awm/client';
   import TaskChat from './lib/TaskChat.svelte';
-  import { fetchStatus, type OrchStatus, type OrchTask } from './lib/orch';
 
   const POLL_MS = 3000;
 
@@ -24,41 +28,56 @@
     return p ?? localStorage.getItem('awm.dag.project') ?? '';
   }
 
+  // `project` is the committed filter that drives fetching; `projectInput` is the
+  // editable buffer, so typing doesn't refetch on every keystroke.
   let project = $state(untrack(initialProject));
-  let status = $state<OrchStatus | null>(null);
+  let projectInput = $state(untrack(initialProject));
+  let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
+  let activeTab = $state<'info' | 'chat'>('info');
 
-  const tasks = $derived(status?.tasks ?? []);
-  const selected = $derived(
+  // One index, shared by TaskList + FocusPanel; re-derives on each fresh snapshot.
+  const index = $derived(snapshot ? buildIndex(snapshot) : null);
+  const tasks = $derived<DagTask[]>(snapshot?.tasks ?? []);
+  const selected = $derived<DagTask | null>(
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
 
-  async function refresh() {
+  // Header summary — per-state counts + overall completion, off the snapshot.
+  const counts = $derived.by<[string, number][]>(() => {
+    const m = new Map<string, number>();
+    for (const t of tasks) m.set(t.state, (m.get(t.state) ?? 0) + 1);
+    return [...m.entries()];
+  });
+  const complete = $derived(
+    !!snapshot?.root_id &&
+      tasks.find((t) => t.task_id === snapshot!.root_id)?.state === 'completed',
+  );
+
+  async function refresh(p: string) {
     try {
-      status = await fetchStatus(project.trim() || undefined);
+      const next = await fetchDag(p || undefined);
+      snapshot = next;
       error = null;
     } catch (err) {
       error = (err as Error).message;
     }
   }
 
-  function onSelect(t: OrchTask) {
-    selectedId = t.task_id;
-  }
-
   function applyProject() {
+    project = projectInput.trim();
     if (typeof window !== 'undefined') {
-      localStorage.setItem('awm.dag.project', project.trim());
+      localStorage.setItem('awm.dag.project', project);
     }
-    void refresh();
   }
 
-  // Poll loop.
+  // Poll loop — re-armed whenever the committed `project` changes.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
-    void refresh();
-    timer = setInterval(() => void refresh(), POLL_MS);
+    const p = project;
+    void refresh(p);
+    timer = setInterval(() => void refresh(p), POLL_MS);
     return () => {
       if (timer) clearInterval(timer);
     };
@@ -78,15 +97,15 @@
         applyProject();
       }}
     >
-      <input class="field mono" name="project" placeholder="project (blank = all)" bind:value={project} aria-label="project" />
+      <input class="field mono" name="project" placeholder="project (blank = all)" bind:value={projectInput} aria-label="project" />
       <button class="btn mono" type="submit">load</button>
     </form>
-    {#if status}
+    {#if snapshot}
       <span class="counts mono">
-        {#each Object.entries(status.counts) as [state, n]}
+        {#each counts as [state, n]}
           <span class="count" data-state={state}>{state}:{n}</span>
         {/each}
-        {#if status.complete}<span class="count done">complete</span>{/if}
+        {#if complete}<span class="count done">complete</span>{/if}
       </span>
     {/if}
   </header>
@@ -95,22 +114,42 @@
 
   <div class="panels">
     <section class="left">
-      <TaskList {tasks} {selectedId} {onSelect} />
-    </section>
-    <section class="right">
-      {#if selected && selected.workspace_slug}
-        {#key `${project}/${selected.workspace_slug}`}
-          <TaskChat
-            project={status?.project ?? project.trim()}
-            workspaceSlug={selected.workspace_slug}
-            goal={selected.goal}
-          />
-        {/key}
-      {:else if selected}
-        <p class="hint mono">task <code>{selected.task_id}</code> ({selected.state}) has no workspace unit yet — nothing to attach to.</p>
+      {#if index}
+        <TaskList {index} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
       {:else}
-        <p class="hint mono">select a task to watch its live conversation.</p>
+        <p class="hint mono">loading the plan…</p>
       {/if}
+    </section>
+
+    <section class="right">
+      <nav class="tabs mono">
+        <button class="tab" class:active={activeTab === 'info'} type="button" onclick={() => (activeTab = 'info')}>info</button>
+        <button class="tab" class:active={activeTab === 'chat'} type="button" onclick={() => (activeTab = 'chat')}>chat</button>
+      </nav>
+
+      <div class="tabbody">
+        {#if activeTab === 'info'}
+          {#if index}
+            <div class="focuswrap">
+              <FocusPanel {index} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
+            </div>
+          {:else}
+            <p class="hint mono">loading the plan…</p>
+          {/if}
+        {:else if selected && selected.workspace_slug}
+          {#key `${snapshot?.project ?? project}/${selected.workspace_slug}`}
+            <TaskChat
+              project={snapshot?.project ?? project}
+              workspaceSlug={selected.workspace_slug}
+              goal={selected.goal}
+            />
+          {/key}
+        {:else if selected}
+          <p class="hint mono">task <code>{selected.task_id}</code> ({selected.state}) has no workspace unit yet — nothing to attach to.</p>
+        {:else}
+          <p class="hint mono">select a task to watch its live conversation.</p>
+        {/if}
+      </div>
     </section>
   </div>
 </main>
@@ -198,6 +237,46 @@
     flex-direction: column;
     min-height: 0;
     min-width: 0;
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 8px 0;
+    border-bottom: 1px solid var(--border, #333);
+    background: var(--surface, #1a1a1a);
+    flex: 0 0 auto;
+  }
+  .tab {
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    color: var(--text3, #888);
+    padding: 5px 14px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .tab:hover { color: var(--text2, #bbb); }
+  .tab.active {
+    color: var(--text, #ddd);
+    border-color: var(--border, #333);
+    background: var(--surface2, #222);
+    margin-bottom: -1px;
+  }
+  .tabbody {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+  .focuswrap {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 10px;
   }
   .hint {
     margin: auto;
