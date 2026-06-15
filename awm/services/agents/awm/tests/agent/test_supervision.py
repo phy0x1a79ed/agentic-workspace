@@ -203,14 +203,17 @@ class TestAcceptance:
         assert "approve_plan" in body
 
 
-class TestAttachFreeze:
-    async def test_attached_freezes_supervisor(self, agents_env, fake_orch):
+class TestAttachIsPassive:
+    async def test_attached_does_not_freeze_supervisor(self, agents_env, fake_orch):
+        # T2: attach is passive — the agent keeps working autonomously whether or
+        # not a human is attached. The budget still decrements and the supervisor
+        # still nudges; attach is only a latent orchestrator hint, not a gate.
         iid, _ = _seed(agents_env, attached=True)
         s = _FakeSup(iid=iid, token="plt-1", turn_budget=50)
         await placement.on_turn_boundary(s)
-        assert s.turn_budget == 50                  # not decremented
-        assert s.input_queue.empty()                # no continuation
-        assert not fake_orch.calls                  # no force-fail
+        assert s.turn_budget == 49                  # decremented as usual
+        author, body = s.input_queue.get_nowait()   # continuation injected
+        assert author == "supervisor" and "Continue task" in body
 
 
 class TestLiveness:

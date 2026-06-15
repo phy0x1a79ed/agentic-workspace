@@ -68,13 +68,14 @@ class TestLifecycle:
             self, agents_env, stub_core, fake_orch):
         UNIT = "leaf-1"
 
+        AS = f"p/{UNIT}"  # the placement identity the agent's proxy stamps
+
         # --- PLANNING: plan-worker stages the reserved "plan" deliverable ---
         res = await _place("plan", unit=UNIT)
-        tok = res["placement_token"]
         await placement.relay_edit_deliverable({
-            "placement_token": tok, "contract": "plan",
-            "content": "# Plan\n1. do the work\n2. produce out:1"})
-        await placement.relay_indicate_done({"placement_token": tok})
+            "contract": "plan",
+            "content": "# Plan\n1. do the work\n2. produce out:1"}, AS)
+        await placement.relay_indicate_done({}, AS)
         # Stop boundary: accept → orch.deliver("plan") → PLANNING done.
         await placement.on_turn_boundary(ai_mod.get_session_by_scope("p", UNIT))
         assert ("deliver", {"task_id": "T-1", "agent_ref": res["agent_ref"],
@@ -87,16 +88,15 @@ class TestLifecycle:
         await asyncio.sleep(0.05)
         kickoff = "\n".join(stub_core["session"].sent)
         assert "PLAN VERIFIER" in kickoff and "do the work" in kickoff  # plan embedded
-        await placement.relay_approve_plan({"placement_token": resv["placement_token"]})
+        await placement.relay_approve_plan({}, AS)
         assert any(op == "approve_plan" for op, _ in fake_orch.ops)
         await _await_deregister("p", UNIT)
 
         # --- ACTIVE: worker (same unit) stages out:1 and delivers ---
         resw = await _place("worker", unit=UNIT, contracts_out=["out:1"])
-        tokw = resw["placement_token"]
         await placement.relay_edit_deliverable({
-            "placement_token": tokw, "contract": "out:1", "content": "the result"})
-        await placement.relay_indicate_done({"placement_token": tokw})
+            "contract": "out:1", "content": "the result"}, AS)
+        await placement.relay_indicate_done({}, AS)
         await placement.on_turn_boundary(ai_mod.get_session_by_scope("p", UNIT))
 
         delivered = [kw for op, kw in fake_orch.ops

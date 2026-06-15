@@ -76,7 +76,9 @@ class TestPlaceOnTask:
         ctx = next(a for (svc, fn, a) in agents_env["calls"]
                    if fn == "workspace_create")["context_md"]
         assert "T-1" in ctx
-        assert res["placement_token"] in ctx
+        # The placement token never reaches the model's surface anymore — its
+        # tools resolve from its own identity (T1: kill the token footgun).
+        assert res["placement_token"] not in ctx
         assert "edit_deliverable" in ctx  # how-to-finish present
         assert "task_deliver" not in ctx  # old surface gone
 

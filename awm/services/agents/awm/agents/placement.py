@@ -24,9 +24,9 @@ harness-checked stop boundary transitions the task):
 
 This module owns ``place_on_task`` (contract A), the worker/verifier/planner
 tool relays (contract D → contract B), and the supervision driver
-``on_turn_boundary`` (per-mode acceptance + hard turn budget + attach-freeze).
-Everything reuses ``agent_instances`` (spawn / transcript / stdin) rather than
-forking it.
+``on_turn_boundary`` (per-mode acceptance + hard turn budget). Attach is passive
+— a human message splices in but never freezes the autonomous driver. Everything
+reuses ``agent_instances`` (spawn / transcript / stdin) rather than forking it.
 """
 
 from __future__ import annotations
@@ -101,44 +101,45 @@ def _fmt_list(label: str, items: list) -> str:
     return label + ":\n" + "\n".join(f"  - {i}" for i in items)
 
 
-def _finish_worker(token: str, contracts_out: list) -> str:
+def _finish_worker(contracts_out: list) -> str:
     return (
         "## How to finish\n\n"
         "Craft each required output by calling "
-        f"`edit_deliverable(placement_token, contract, content)` — call it as "
+        "`edit_deliverable(contract, content)` — call it as "
         "many times as you need (each call REPLACES the staged content for that "
         "contract). When every output is staged and correct, call "
-        f"`indicate_done(placement_token)`. Editing a deliverable after "
+        "`indicate_done()`. Editing a deliverable after "
         "indicating done clears the done flag — re-indicate.\n\n"
         "When you stop with done set and every output staged & valid, the task "
         "advances automatically. If you cannot complete it, call "
-        "`task_fail(placement_token, reason_type, reason_text, partial_ref?)`.\n\n"
+        "`task_fail(reason_type, reason_text, partial_ref?)`.\n\n"
         f"Outputs you must stage: {', '.join(contracts_out) or '(none)'}\n"
-        f"Your placement_token: `{token}`\n"
+        "_Your placement tools act on your own task automatically — you never "
+        "pass a token or id._\n"
     )
 
 
-def _finish_planner(token: str) -> str:
+def _finish_planner() -> str:
     return (
         "## How to finish\n\n"
         "This task is too large to do directly — decompose it into a sub-DAG. "
-        "Build the graph with `add_subtask(placement_token, id, objective, "
-        "contracts_out?)`, `add_dependency(placement_token, from_id, to_id, "
-        "contract?)`, and `define_contract(placement_token, name, ...)`. Give "
+        "Build the graph with `add_subtask(id, objective, "
+        "contracts_out?)`, `add_dependency(from_id, to_id, "
+        "contract?)`, and `define_contract(name, ...)`. Give "
         "each subtask a `contracts_out` (what it produces); a dependency edge "
         "means `to_id` consumes a contract that `from_id` produces (name it via "
         "`contract` when `from_id` produces more than one). Use "
         "`search_tasks` / `search_contracts` to reuse existing nodes. **Every "
         "subtask must funnel into this task** (the sub-DAG has a single sink and "
         "every node reaches it). When the graph is complete, call "
-        f"`indicate_done(placement_token)` to commit it. Your placement_token: "
-        f"`{token}`\n"
+        "`indicate_done()` to commit it. _Your placement tools act on your own "
+        "task automatically — you never pass a token or id._\n"
     )
 
 
 def render_brief(*, task_id: str, mode: str, brief: str,
                  contracts_in: list, contracts_out: list,
-                 prereadings: list, placement_token: str) -> str:
+                 prereadings: list) -> str:
     """Render a worker/plan/planner unit ``CONTEXT.md`` (the brief on disk).
 
     ``verify`` does not use this — it has no filesystem, so its objective+plan
@@ -165,26 +166,27 @@ def render_brief(*, task_id: str, mode: str, brief: str,
         f"{_fmt_list('Inputs (contracts_in)', contracts_in)}\n\n"
         f"{_fmt_list('Outputs (contracts_out)', contracts_out)}\n")
     if mode == "planner":
-        parts.append(_finish_planner(placement_token))
+        parts.append(_finish_planner())
     else:
-        parts.append(_finish_worker(placement_token, contracts_out))
+        parts.append(_finish_worker(contracts_out))
     parts.append(
         f"\n_You are unattended: idle turns count against a hard "
         f"{TASK_TURN_BUDGET}-turn budget._\n")
     return "\n".join(parts)
 
 
-def _kickoff_text(*, task_id: str, mode: str, placement_token: str) -> str:
+def _kickoff_text(*, task_id: str, mode: str) -> str:
     """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
         f"You have been placed on task `{task_id}` as a **{mode}**. Read "
         f"`./CONTEXT.md` for your objective, inputs, contracts, and how to "
-        f"finish. Your placement_token is `{placement_token}`. Begin now."
+        f"finish. Your placement tools act on this task automatically — you "
+        f"never pass a token or id. Begin now."
     )
 
 
 def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
-                    plan_text: str, placement_token: str) -> str:
+                    plan_text: str) -> str:
     """The verifier's entire context — it has NO filesystem, so the objective
     and the proposed plan ride stdin, not a file read."""
     return (
@@ -195,10 +197,10 @@ def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
         f"## Proposed plan\n\n{plan_text or '(no plan was staged)'}\n\n"
         "## Your job\n\nVerify the plan satisfies the objective and introduces "
         "no spurious deliverables beyond what the objective requires. This is a "
-        "sanity check, not a re-plan. Call exactly one: "
-        f"`approve_plan(placement_token=\"{placement_token}\")` if it satisfies "
-        f"the objective, or `reject_plan(placement_token=\"{placement_token}\", "
-        "reason=\"...\")` with a concise reason if it does not."
+        "sanity check, not a re-plan. Call exactly one: `approve_plan()` if it "
+        "satisfies the objective, or `reject_plan(reason=\"...\")` with a "
+        "concise reason if it does not. (These act on your own task "
+        "automatically — no token or id.)"
     )
 
 
@@ -313,7 +315,7 @@ async def place_on_task(args: dict) -> dict:
         context_md = render_brief(
             task_id=task_id, mode=mode, brief=brief,
             contracts_in=contracts_in, contracts_out=contracts_out,
-            prereadings=prereadings, placement_token=placement_token,
+            prereadings=prereadings,
         )
 
     # Provision the unit FIRST — the workdir must exist before the spawn, and
@@ -328,10 +330,9 @@ async def place_on_task(args: dict) -> dict:
         plan_text = _read_staged_plan(workspace_path)
         kickoff = _verify_kickoff(
             task_id=task_id, brief=brief, contracts_out=contracts_out,
-            plan_text=plan_text, placement_token=placement_token)
+            plan_text=plan_text)
     else:
-        kickoff = _kickoff_text(
-            task_id=task_id, mode=mode, placement_token=placement_token)
+        kickoff = _kickoff_text(task_id=task_id, mode=mode)
 
     # Spawn live via the EXISTING path so a human can attach via 'transcript'.
     # bypassPermissions removes approval prompts; the per-mode allowlist is what
@@ -383,14 +384,39 @@ class PlacementError(Exception):
 def _resolve_open_placement(token: str | None) -> dict:
     """Resolve a placement_token to its OPEN placement row, else raise.
 
-    Rejects a missing token, an unknown token, and an already-closed placement
-    (a terminal tool already fired or supervision force-failed it)."""
+    The INTERNAL resolver (the supervisor / liveness paths know a session's own
+    token). The model-facing B-op relays resolve from caller identity instead —
+    see :func:`_resolve_open_placement_for`. Rejects a missing token, an unknown
+    token, and an already-closed placement (a terminal tool already fired or
+    supervision force-failed it)."""
     if not token:
         raise PlacementError("missing placement_token")
     dao = ai._get_dao()
     row = dao.resolve_placement(token)
     if row is None:
         raise PlacementError("unknown placement_token")
+    if _row_data(row).get("placement_outcome"):
+        raise PlacementError("placement already closed")
+    return row
+
+
+def _resolve_open_placement_for(as_: str | None) -> dict:
+    """Resolve a B-op call to its OPEN placement from the CALLER IDENTITY.
+
+    ``as_`` is the placed agent's identity ``f"{project}/{unit_slug}"`` —
+    stamped onto every MCP call by its own ``awm-mcp`` proxy (the per-placement
+    ``AWM_AS`` env → ``X-Awm-As`` header → ``as_``), so the model never types a
+    token. The unit_slug IS the placement's scope, so this is a direct lookup of
+    the one live placement on that scope. Rejects a missing/malformed identity,
+    an identity with no open placement, and an already-closed placement."""
+    if not as_:
+        raise PlacementError("missing caller identity (no AWM_AS on the call)")
+    if "/" not in as_:
+        raise PlacementError(f"malformed caller identity {as_!r}")
+    project, unit_slug = as_.split("/", 1)
+    row = ai._get_dao().get_open_placement_by_identity(project, unit_slug)
+    if row is None:
+        raise PlacementError(f"no open placement for {as_}")
     if _row_data(row).get("placement_outcome"):
         raise PlacementError("placement already closed")
     return row
@@ -464,12 +490,12 @@ def _register_deliverable(row: dict, contract: str, workspace_path: str,
     return str(Path(workspace_path) / relpath)
 
 
-async def relay_edit_deliverable(args: dict) -> dict:
+async def relay_edit_deliverable(args: dict, as_: str | None = None) -> dict:
     """Worker/plan tool: stage (replace) the content for one output contract.
 
     Writes to the unit's ``deliverable/<contract>/payload`` and AUTO-CLEARS the
     done flag (editing after indicating done un-finishes the placement)."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     contract = args.get("contract") or "default"
     content = args.get("content")
     if content is None:
@@ -488,20 +514,20 @@ async def relay_edit_deliverable(args: dict) -> dict:
     return {"ok": True, "staged": sorted(staged), "done": False}
 
 
-async def relay_indicate_done(args: dict) -> dict:
+async def relay_indicate_done(args: dict, as_: str | None = None) -> dict:
     """Worker/plan/planner tool: mark the deliverable complete.
 
     A pure flag — the actual acceptance check runs at the next turn-stop
     boundary (so the harness validates a settled deliverable, not a mid-turn
     one)."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     ai._get_dao().merge_instance_data(row["id"], {"done": True})
     return {"ok": True, "done": True}
 
 
-async def relay_task_fail(args: dict) -> dict:
+async def relay_task_fail(args: dict, as_: str | None = None) -> dict:
     """Any mode: give up. Relay to ``orch.fail`` (resolved refs), then retain."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     ack = await orch_client.fail(
         task_id=row["task_ref"], agent_ref=row["agent_ref"],
         reason_type=args.get("reason_type"), reason_text=args.get("reason_text"),
@@ -515,18 +541,18 @@ async def relay_task_fail(args: dict) -> dict:
 # Verifier verdict tools (terminal on call)
 # ---------------------------------------------------------------------------
 
-async def relay_approve_plan(args: dict) -> dict:
+async def relay_approve_plan(args: dict, as_: str | None = None) -> dict:
     """Verifier tool: the plan satisfies the objective (VERIFYING_PLAN → ACTIVE)."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     ack = await orch_client.approve_plan(
         task_id=row["task_ref"], agent_ref=row["agent_ref"])
     await _close_and_retire(row, "approved")
     return {"ok": True, "outcome": "approved", "ack": ack}
 
 
-async def relay_reject_plan(args: dict) -> dict:
+async def relay_reject_plan(args: dict, as_: str | None = None) -> dict:
     """Verifier tool: the plan does not satisfy the objective (→ re-plan)."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     ack = await orch_client.reject_plan(
         task_id=row["task_ref"], agent_ref=row["agent_ref"],
         reason=args.get("reason"))
@@ -546,9 +572,9 @@ def _graph(row: dict) -> dict:
     return g
 
 
-async def relay_add_subtask(args: dict) -> dict:
+async def relay_add_subtask(args: dict, as_: str | None = None) -> dict:
     """Planner tool: buffer a subtask into the pending sub-DAG."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     g = _graph(row)
     sub_id = args.get("id") or f"sub-{len(g['subtasks']) + 1}"
     g["subtasks"].append({
@@ -559,14 +585,14 @@ async def relay_add_subtask(args: dict) -> dict:
     return {"ok": True, "id": sub_id, "subtasks": len(g["subtasks"])}
 
 
-async def relay_add_dependency(args: dict) -> dict:
+async def relay_add_dependency(args: dict, as_: str | None = None) -> dict:
     """Planner tool: buffer a dependency edge (``from_id`` → ``to_id``).
 
     ``from_id`` is the upstream producer, ``to_id`` the downstream consumer (the
     edge points toward the sink). When ``from_id`` produces more than one
     contract, name the one ``to_id`` consumes via the optional ``contract``;
     otherwise it is inferred from ``from_id``'s sole output at commit."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     g = _graph(row)
     frm = args.get("from_id") or args.get("from")
     to = args.get("to_id") or args.get("to")
@@ -581,28 +607,27 @@ async def relay_add_dependency(args: dict) -> dict:
     return {"ok": True, "dependencies": len(g["dependencies"])}
 
 
-async def relay_define_contract(args: dict) -> dict:
+async def relay_define_contract(args: dict, as_: str | None = None) -> dict:
     """Planner tool: buffer a contract definition for the sub-DAG."""
-    row = _resolve_open_placement(args.get("placement_token"))
+    row = _resolve_open_placement_for(as_)
     g = _graph(row)
     name = args.get("name")
     if not name:
         raise PlacementError("define_contract requires name")
-    g["contracts"].append({k: v for k, v in args.items()
-                           if k != "placement_token"})
+    g["contracts"].append(dict(args))
     ai._get_dao().merge_instance_data(row["id"], {"graph": g})
     return {"ok": True, "contracts": len(g["contracts"])}
 
 
-async def relay_search_tasks(args: dict) -> dict:
+async def relay_search_tasks(args: dict, as_: str | None = None) -> dict:
     """Planner read tool: existing tasks (proxy to the orchestrator)."""
-    _resolve_open_placement(args.get("placement_token"))
+    _resolve_open_placement_for(as_)
     return await orch_client.search_tasks(query=args.get("query"))
 
 
-async def relay_search_contracts(args: dict) -> dict:
+async def relay_search_contracts(args: dict, as_: str | None = None) -> dict:
     """Planner read tool: existing contracts (proxy to the orchestrator)."""
-    _resolve_open_placement(args.get("placement_token"))
+    _resolve_open_placement_for(as_)
     return await orch_client.search_contracts(query=args.get("query"))
 
 
@@ -789,34 +814,32 @@ async def _accept_decompose(row: dict, data: dict, session) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Supervision driver (per-mode accept + hard turn budget + attach-freeze)
+# Supervision driver (per-mode accept + hard turn budget; attach is passive)
 # ---------------------------------------------------------------------------
 
-def _continuation_prompt(mode: str, task_id: str, token: str,
-                         remaining: int) -> str:
+def _continuation_prompt(mode: str, task_id: str, remaining: int) -> str:
     """The per-turn nudge. Escalates to a save-progress warning near the cap."""
     if remaining <= TASK_WARN_REMAINING:
         return (
             f"[supervisor] {remaining} turn(s) left before task `{task_id}` is "
             f"force-failed. Checkpoint now: stage what you have via "
-            f"`edit_deliverable(...)` and `indicate_done(...)` if you are done, "
-            f"or `task_fail(placement_token=\"{token}\", "
-            f"reason_type=\"transient-error\", reason_text=\"...\", "
-            f"partial_ref?)` to preserve partial work. Do not start new work."
+            f"`edit_deliverable(...)` and `indicate_done()` if you are done, "
+            f"or `task_fail(reason_type=\"transient-error\", "
+            f"reason_text=\"...\", partial_ref?)` to preserve partial work. Do "
+            f"not start new work."
         )
     if mode == "verify":
-        hint = ("Reach a verdict: call `approve_plan(...)` or "
-                "`reject_plan(..., reason)`.")
+        hint = ("Reach a verdict: call `approve_plan()` or "
+                "`reject_plan(reason)`.")
     elif mode == "planner":
         hint = ("Build the sub-DAG (`add_subtask`/`add_dependency`/"
-                "`define_contract`), then `indicate_done(...)` to commit.")
+                "`define_contract`), then `indicate_done()` to commit.")
     else:
         hint = ("Stage your outputs with `edit_deliverable(...)`, then "
-                "`indicate_done(...)`.")
+                "`indicate_done()`.")
     return (
         f"[supervisor] Continue task `{task_id}` ({remaining} turns left). "
-        f"{hint} If stuck, `task_fail(...)` is a valid exit. Your "
-        f"placement_token is `{token}`."
+        f"{hint} If stuck, `task_fail(...)` is a valid exit."
     )
 
 
@@ -845,12 +868,16 @@ async def on_turn_boundary(session) -> None:
 
     1. closed/unknown placement → no-op (drive off the acceptance check, not the
        event).
-    2. attached → FREEZE: no budget decrement, no acceptance, no continuation —
-       a human is driving; the autonomous engine stands down.
-    3. per-mode acceptance: worker/plan deliver, planner commit. If accepted the
+    2. per-mode acceptance: worker/plan deliver, planner commit. If accepted the
        task already advanced — done.
-    4. otherwise decrement the hard budget and inject the next prompt; at 0,
-       force-fail while retaining work."""
+    3. otherwise decrement the hard budget and inject the next prompt; at 0,
+       force-fail while retaining work.
+
+    Attach is deliberately PASSIVE (T2): the agent keeps working autonomously
+    whether or not a human is attached. A human message splices in via
+    ``agent_post`` → ``enqueue_input`` and the agent replies on its normal turn;
+    the ``attached`` flag is only a latent orchestrator hint (don't reclaim a
+    task a human is on), not a supervisor gate."""
     token = getattr(session, "placement_token", None)
     if not token:
         return
@@ -862,9 +889,6 @@ async def on_turn_boundary(session) -> None:
     spec = data.get("placement") or {}
     mode = spec.get("mode") or getattr(session, "mode", "worker")
     task_id = row["task_ref"]
-
-    if data.get("attached"):
-        return  # frozen while a human drives this placement
 
     if mode in ("worker", "plan"):
         if await _accept_deliverable(row, data, spec):
@@ -880,7 +904,7 @@ async def on_turn_boundary(session) -> None:
         await _force_fail(session, task_id)
         return
     ai.enqueue_input(session, "supervisor",
-                     _continuation_prompt(mode, task_id, token, remaining))
+                     _continuation_prompt(mode, task_id, remaining))
 
 
 # ---------------------------------------------------------------------------
@@ -933,9 +957,12 @@ async def set_attached(project: str, scope: str, attached: bool) -> None:
     """Mark/unmark a live placement as user-attached + mirror to the kernel.
 
     Driven by transcript-subscription presence (a human opened/closed the live
-    'transcript' WS for this placement). While attached the supervisor freezes
-    (see ``on_turn_boundary``); ``orch.set_attached`` tells the orchestrator not
-    to reclaim a task a human is driving. Best-effort throughout."""
+    'transcript' WS for this placement). Attach is PASSIVE (T2): it does NOT gate
+    the supervisor — the agent keeps working autonomously and a human message
+    just splices in (see ``on_turn_boundary``). The flag is a latent orchestrator
+    hint: ``orch.set_attached`` tells the orchestrator not to reclaim a task a
+    human is driving (the auto-reclaim loop is a deferred follow-on).
+    Best-effort throughout."""
     session = ai.get_session_by_scope(project, scope)
     if session is None or getattr(session, "mode", "conversational") == "conversational":
         return

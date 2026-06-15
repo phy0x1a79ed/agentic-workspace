@@ -291,12 +291,46 @@ def _build_opencode_argv(
 # agentcore config builder
 # ---------------------------------------------------------------------------
 
+def _write_placement_mcp_config(awm_dir: Path, as_: str) -> Optional[str]:
+    """Write a per-placement ``spawn-mcp.json`` carrying the agent's identity.
+
+    A placed agent submits work through MCP B-op tools (``edit_deliverable`` …)
+    that must resolve to ITS placement without the model supplying a token. We
+    clone the canonical ``spawn-mcp.json`` into the placement's own unit
+    (``<unit>/.awm/spawn-mcp.json``) and inject ``mcpServers.awm.env.AWM_AS =
+    f"{project}/{unit_slug}"``. Each placed ``claude`` spawns its OWN ``awm-mcp``
+    stdio child from this file, so that proxy stamps ``X-Awm-As`` on every
+    ``/invoke`` — the agents service resolves the open placement from it. Returns
+    the per-placement config path, or None to fall back to the canonical file
+    (no identity → the relays reject the call, which is the safe failure)."""
+    canonical = config.AWM_DIR / "spawn-mcp.json"
+    if not canonical.exists():
+        return None
+    try:
+        cfg = json.loads(canonical.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    servers = cfg.setdefault("mcpServers", {})
+    awm = servers.get("awm")
+    if isinstance(awm, dict):
+        env = awm.setdefault("env", {})
+        if isinstance(env, dict):
+            env["AWM_AS"] = as_
+    dest = awm_dir / "spawn-mcp.json"
+    try:
+        dest.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return str(dest)
+
+
 def _build_core_config(
     *, agent_cli: str, permission_mode: str, model: Optional[str],
     effort: Optional[str], resume_session_id: Optional[str],
     workspace_dir: Path, awm_dir: Path,
     allowed_tools: Optional[list[str]] = None,
     disallowed_tools: Optional[list[str]] = None,
+    mcp_config_override: Optional[str] = None,
 ) -> AgentConfig:
     """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
 
@@ -316,9 +350,12 @@ def _build_core_config(
         params["effort"] = effort
     mcp_config: Optional[str] = None
     if agent_cli == "claude":
-        spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
-        if spawn_mcp.exists():
-            mcp_config = str(spawn_mcp)
+        if mcp_config_override:
+            mcp_config = mcp_config_override
+        else:
+            spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
+            if spawn_mcp.exists():
+                mcp_config = str(spawn_mcp)
     return AgentConfig(
         harness=agent_cli,
         mode="live",
@@ -442,11 +479,18 @@ async def create_session(*, project: str, scope: str,
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
+        # A placement gets a per-placement spawn-mcp config carrying its identity
+        # (AWM_AS) so its B-op tools resolve to its own task without a token.
+        mcp_config_override = None
+        if task_bound and agent_cli == "claude":
+            mcp_config_override = _write_placement_mcp_config(
+                awm_dir, _scope_key(project, scope))
         core_config = _build_core_config(
             agent_cli=agent_cli, permission_mode=permission_mode,
             model=model, effort=effort, resume_session_id=resume_session_id,
             workspace_dir=workspace_dir, awm_dir=awm_dir,
             allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
+            mcp_config_override=mcp_config_override,
         )
         agent_session = open_agent(core_config)
 

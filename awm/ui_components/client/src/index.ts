@@ -10,6 +10,7 @@ export { svc, toWsUrl, type SvcClient } from './svc';
 export {
   fetchScope,
   postToScope,
+  enqueueAgentPost,
   spawnAgent,
   isAgentPost,
   fetchAgentTranscript,

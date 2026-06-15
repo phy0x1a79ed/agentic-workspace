@@ -61,8 +61,18 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
+        # A placed agent's proxy carries its placement identity in AWM_AS (set
+        # in its per-placement spawn-mcp config). Stamp it as X-Awm-As so the
+        # core can resolve the call to that placement (the agents B-op tools
+        # need no model-supplied token). Read at call time, not import time, so a
+        # reused proxy always reflects its own env. Absent for normal sessions.
+        headers = None
+        as_ = os.environ.get("AWM_AS")
+        if as_:
+            headers = {"X-Awm-As": as_}
         data = await _request_with_retry(
-            "POST", "/invoke", json_body={"name": name, "args": arguments}
+            "POST", "/invoke", json_body={"name": name, "args": arguments},
+            headers=headers,
         )
         return [TextContent(type="text", text=data["result"])]
     except httpx.HTTPStatusError as e:
@@ -91,6 +101,7 @@ async def _request_with_retry(
     path: str,
     json_body: dict | None = None,
     max_wait: float = 10.0,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
@@ -105,7 +116,8 @@ async def _request_with_retry(
     async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
         while time.monotonic() < deadline:
             try:
-                r = await client.request(method, path, json=json_body)
+                r = await client.request(method, path, json=json_body,
+                                         headers=headers)
                 r.raise_for_status()
                 return r.json()
             except httpx.HTTPStatusError:

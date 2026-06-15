@@ -72,40 +72,45 @@ def _data(iid):
     return json.loads(AgentsDAO().get_instance(iid)["data"])
 
 
-class TestTokenResolution:
-    async def test_unknown_token_rejected(self, agents_env, fake_orch):
-        with pytest.raises(placement.PlacementError):
-            await placement.relay_indicate_done({"placement_token": "nope"})
+# The placement's identity is f"{project}/{scope}" — what the per-placement
+# AWM_AS carries and the relays resolve against (the second positional `as_`).
+_AS = "p/leaf-1"
 
-    async def test_missing_token_rejected(self, agents_env, fake_orch):
+
+class TestIdentityResolution:
+    async def test_unknown_identity_rejected(self, agents_env, fake_orch):
         with pytest.raises(placement.PlacementError):
-            await placement.relay_indicate_done({})
+            await placement.relay_indicate_done({}, "p/does-not-exist")
+
+    async def test_missing_identity_rejected(self, agents_env, fake_orch):
+        with pytest.raises(placement.PlacementError):
+            await placement.relay_indicate_done({}, None)
 
     async def test_closed_placement_rejected(self, agents_env, fake_orch):
         iid, _ = _seed(agents_env)
         AgentsDAO().close_placement(iid, outcome="delivered")
         with pytest.raises(placement.PlacementError):
-            await placement.relay_indicate_done({"placement_token": "plt-1"})
+            await placement.relay_indicate_done({}, _AS)
 
 
 class TestDeliverableStaging:
     async def test_edit_writes_payload_and_tracks_staged(self, agents_env, fake_orch):
         iid, wp = _seed(agents_env)
         await placement.relay_edit_deliverable({
-            "placement_token": "plt-1", "contract": "out:1", "content": "hello"})
+            "contract": "out:1", "content": "hello"}, _AS)
         assert (Path(wp) / "deliverable" / "out:1" / "payload").read_text() == "hello"
         assert _data(iid)["staged"] == {"out:1": "deliverable/out:1/payload"}
 
     async def test_indicate_done_sets_flag(self, agents_env, fake_orch):
         iid, _ = _seed(agents_env)
-        await placement.relay_indicate_done({"placement_token": "plt-1"})
+        await placement.relay_indicate_done({}, _AS)
         assert _data(iid)["done"] is True
 
     async def test_edit_after_done_clears_done(self, agents_env, fake_orch):
         iid, _ = _seed(agents_env)
-        await placement.relay_indicate_done({"placement_token": "plt-1"})
+        await placement.relay_indicate_done({}, _AS)
         await placement.relay_edit_deliverable({
-            "placement_token": "plt-1", "contract": "out:1", "content": "v2"})
+            "contract": "out:1", "content": "v2"}, _AS)
         assert _data(iid)["done"] is False
 
 
@@ -114,9 +119,9 @@ class TestTaskFail:
             self, agents_env, fake_orch):
         _seed(agents_env, token="plt-f", task="T-real", agent="agt-real")
         await placement.relay_task_fail({
-            "placement_token": "plt-f", "reason_type": "blocked",
+            "reason_type": "blocked",
             "reason_text": "x", "partial_ref": "art:p",
-            "task_id": "SPOOF", "agent_ref": "SPOOF"})
+            "task_id": "SPOOF", "agent_ref": "SPOOF"}, _AS)
         log = agents_env["calls"]
         _o, _n, kw = next(c for c in log if c[1] == "fail")
         assert kw["task_id"] == "T-real" and kw["agent_ref"] == "agt-real"
@@ -130,7 +135,7 @@ class TestTaskFail:
 class TestVerifierVerdicts:
     async def test_approve_relays_and_retains(self, agents_env, fake_orch):
         iid, _ = _seed(agents_env, token="plt-v", mode="verify")
-        res = await placement.relay_approve_plan({"placement_token": "plt-v"})
+        res = await placement.relay_approve_plan({}, _AS)
         assert res["outcome"] == "approved"
         names = [(c[0], c[1]) for c in agents_env["calls"]]
         assert ("orch", "approve_plan") in names
@@ -139,8 +144,7 @@ class TestVerifierVerdicts:
 
     async def test_reject_relays_reason(self, agents_env, fake_orch):
         _seed(agents_env, token="plt-r", mode="verify")
-        await placement.relay_reject_plan({
-            "placement_token": "plt-r", "reason": "missing tests"})
+        await placement.relay_reject_plan({"reason": "missing tests"}, _AS)
         _o, _n, kw = next(c for c in agents_env["calls"] if c[1] == "reject_plan")
         assert kw["reason"] == "missing tests"
 
@@ -148,12 +152,9 @@ class TestVerifierVerdicts:
 class TestPlannerBuffer:
     async def test_add_subtask_and_dependency_buffer(self, agents_env, fake_orch):
         iid, _ = _seed(agents_env, token="plt-pl", mode="planner")
-        await placement.relay_add_subtask({
-            "placement_token": "plt-pl", "id": "a", "objective": "first"})
-        await placement.relay_add_subtask({
-            "placement_token": "plt-pl", "id": "b", "objective": "second"})
-        await placement.relay_add_dependency({
-            "placement_token": "plt-pl", "from_id": "a", "to_id": "b"})
+        await placement.relay_add_subtask({"id": "a", "objective": "first"}, _AS)
+        await placement.relay_add_subtask({"id": "b", "objective": "second"}, _AS)
+        await placement.relay_add_dependency({"from_id": "a", "to_id": "b"}, _AS)
         g = _data(iid)["graph"]
         assert [s["id"] for s in g["subtasks"]] == ["a", "b"]
         assert g["dependencies"] == [{"from": "a", "to": "b"}]

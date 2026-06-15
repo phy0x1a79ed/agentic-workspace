@@ -144,9 +144,10 @@ API_MANIFEST: dict[str, Any] = {
         },
         # -- Placement tools (contract D). MCP-visible (`tool` set) so a placed
         # agent sees them in its spawn-mcp config; the per-mode allowlist scopes
-        # which it may actually call. The placement_token is the agent's
-        # capability — it can act only on its own task. Handlers resolve the
-        # token, then relay to the orchestrator as the RESOLVED refs.
+        # which it may actually call. A placed agent acts ONLY on its own task:
+        # the handlers resolve the placement from the CALLER IDENTITY (the
+        # per-placement AWM_AS → X-Awm-As → as_), so no token is ever passed —
+        # then relay to the orchestrator as the RESOLVED refs.
         #
         # worker / plan: stage outputs, then indicate done.
         {
@@ -158,7 +159,6 @@ API_MANIFEST: dict[str, Any] = {
                 "the staged content. Calling it clears any prior 'done'."
             ),
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "contract", "type": "string", "required": True},
                 {"name": "content", "type": "string", "required": True},
             ],
@@ -169,22 +169,19 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Mark your placed task's deliverable complete. The harness "
                 "validates it at your next stop and advances the task; editing a "
-                "deliverable afterwards clears this flag."
+                "deliverable afterwards clears this flag. Takes no arguments."
             ),
-            "params": [
-                {"name": "placement_token", "type": "string", "required": True},
-            ],
+            "params": [],
         },
         {
             "name": "task_fail",
             "tool": "task_fail",
             "description": (
-                "Give up on your placed task. Call with your placement_token, a "
-                "reason_type and reason_text, and optionally a partial_ref to "
-                "preserve partial work."
+                "Give up on your placed task. Call with a reason_type and "
+                "reason_text, and optionally a partial_ref to preserve partial "
+                "work."
             ),
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "reason_type", "type": "string", "required": False},
                 {"name": "reason_text", "type": "string", "required": False},
                 {"name": "partial_ref", "type": "string", "required": False},
@@ -196,11 +193,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "approve_plan",
             "description": (
                 "Verifier: the plan satisfies the objective. Advances the task "
-                "from VERIFYING_PLAN to ACTIVE."
+                "from VERIFYING_PLAN to ACTIVE. Takes no arguments."
             ),
-            "params": [
-                {"name": "placement_token", "type": "string", "required": True},
-            ],
+            "params": [],
         },
         {
             "name": "reject_plan",
@@ -210,7 +205,6 @@ API_MANIFEST: dict[str, Any] = {
                 "to re-plan with a concise reason."
             ),
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "reason", "type": "string", "required": False},
             ],
         },
@@ -223,7 +217,6 @@ API_MANIFEST: dict[str, Any] = {
                 "outputs it must produce)."
             ),
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "id", "type": "string", "required": False},
                 {"name": "objective", "type": "string", "required": False},
                 {"name": "contracts_out", "type": "array", "required": False},
@@ -240,7 +233,6 @@ API_MANIFEST: dict[str, Any] = {
                 "one to_id depends on via 'contract'."
             ),
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "from_id", "type": "string", "required": True},
                 {"name": "to_id", "type": "string", "required": True},
                 {"name": "contract", "type": "string", "required": False},
@@ -251,7 +243,6 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "define_contract",
             "description": "Planner: define a contract used by the pending sub-DAG.",
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "name", "type": "string", "required": True},
             ],
         },
@@ -260,7 +251,6 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_tasks",
             "description": "Planner read: search existing tasks (reuse nodes).",
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "query", "type": "string", "required": False},
             ],
         },
@@ -269,7 +259,6 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "search_contracts",
             "description": "Planner read: search existing contracts.",
             "params": [
-                {"name": "placement_token", "type": "string", "required": True},
                 {"name": "query", "type": "string", "required": False},
             ],
         },
@@ -408,9 +397,11 @@ async def _transcript_session(ctx: SessionContext) -> None:
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
     await agent_bus.attach_live(project, scope, queue)
     # A live transcript subscription IS the user-attached signal for a placement
-    # (orthogonal to the task's state): freeze the autonomous supervisor and tell
-    # the orchestrator not to reclaim a task a human is driving. No-op for a
-    # conversational scope. Best-effort — never block the stream on it.
+    # (orthogonal to the task's state). Attach is PASSIVE (T2): it does not freeze
+    # the autonomous supervisor — it only tells the orchestrator not to reclaim a
+    # task a human is driving. A human's message reaches the agent via agent_post
+    # → enqueue_input. No-op for a conversational scope. Best-effort — never block
+    # the stream on it.
     try:
         from awm.agents import placement
         await placement.set_attached(project, scope, True)
@@ -474,10 +465,14 @@ async def _h_place_on_task(args: dict) -> dict:
 
 
 def _relay(fn_name: str):
-    """Build an async handler that dispatches to ``placement.<fn_name>``."""
-    async def _handler(args: dict) -> dict:
+    """Build an async handler that dispatches to ``placement.<fn_name>``.
+
+    Declares the second positional ``as_`` so the adapter forwards the caller
+    identity (``X-Awm-As``): the placement B-op relays resolve their placement
+    from it, so a placed agent never supplies a token."""
+    async def _handler(args: dict, as_: str | None = None) -> dict:
         from awm.agents import placement
-        return await getattr(placement, fn_name)(args)
+        return await getattr(placement, fn_name)(args, as_)
     return _handler
 
 

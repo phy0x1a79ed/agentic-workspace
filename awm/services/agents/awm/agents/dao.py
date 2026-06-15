@@ -143,6 +143,26 @@ class AgentsDAO(BaseDAO):
         return self.query_one(
             "SELECT * FROM agent_instances WHERE placement_token=?", (token,))
 
+    def get_open_placement_by_identity(self, project: str,
+                                       scope: str) -> dict | None:
+        """Return the live placement row for ``(project, scope)``, or None.
+
+        A placement's ``scope`` IS its workspace-unit slug, so a placed agent's
+        identity ``f"{project}/{unit_slug}"`` resolves to its own placement row
+        WITHOUT the agent supplying a token. The live row is the one still
+        holding a ``placement_token`` (cleared on respawn / never set for a
+        conversational row) with ``ended_at IS NULL`` — at most one per scope
+        (the lifecycle reuses one unit and ``_await_scope_free`` guarantees the
+        prior stage vacated before the next opens). ``placement_outcome`` (a
+        logical close that precedes process teardown) is checked by the caller."""
+        return self.query_one(
+            "SELECT * FROM agent_instances "
+            "WHERE project=? AND scope=? AND placement_token IS NOT NULL "
+            "AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (project, scope),
+        )
+
     def clear_placement_token(self, instance_id: int) -> None:
         """Null a row's placement_token (used before a respawn reinserts it).
 
