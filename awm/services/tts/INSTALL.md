@@ -54,8 +54,8 @@ least one `.onnx` voice model. Models live under
     python -m piper.download_voices --download-dir \
       "$AWM_DATA_DIR/tts-models/piper" en_US-lessac-medium
 
-The `voice` dropdown enum is filled at `listEngines` time by scanning that dir;
-`PIPER_VOICE` (or the per-call `voice_path`) overrides the path. `piper-tts`,
+The `base_voice` dropdown enum is filled at `listEngines` time by scanning that
+dir; `PIPER_VOICE` (a backend env override) overrides the path. `piper-tts`,
 `torch`, `faster-whisper`, `onnxruntime`, `soundfile`, `numpy`, `httpx` are all
 already present in the `awm` env.
 

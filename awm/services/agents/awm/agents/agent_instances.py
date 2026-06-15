@@ -51,6 +51,14 @@ from awm.agentcore.session import AgentSession as _CoreSession
 _SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
 
+# Supervision (T4): a task-bound worker gets a hard turn budget — every turn
+# boundary decrements it, with NO extension and NO refill. The final stretch
+# escalates to a warning so the worker checkpoints + self-fails gracefully.
+# These live here (not placement.py) because AgentInstance.__init__ seeds the
+# per-session counter; placement.py reads them back for the driver.
+TASK_TURN_BUDGET = 100
+TASK_WARN_REMAINING = 15
+
 # Scope→stdin delivery rides a LIVE subscription to the scopes `posts` emitter
 # (not a poll). On each (re)connect a single cursored `scope_fetch` closes the
 # gap for anything posted while we were disconnected; this caps that read.
@@ -127,6 +135,18 @@ class AgentInstance:
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         self.compacting: bool = False
+        # Task-bounded placement (T2). For a conversational session these stay
+        # at their defaults and every task path short-circuits. For a worker the
+        # placement IS this instance row; placement_token names it, agent_ref is
+        # the stable lineage id, task_ref binds it to the orchestrator's task.
+        self.mode: str = "conversational"
+        self.task_ref: Optional[str] = None
+        self.agent_ref: Optional[str] = None
+        self.parent_agent_ref: Optional[str] = None
+        self.placement_token: Optional[str] = None
+        # Supervision: a hard turn budget that decrements every turn boundary,
+        # no extension, no refill (only meaningful when mode != conversational).
+        self.turn_budget: int = TASK_TURN_BUDGET
         # Idempotent streaming: message_id → accumulated text. Partials stream
         # live-only (bus, no persist); the finalized message is upserted as one
         # durable row keyed by message_id. Both reset per turn (on `result`) so
@@ -313,8 +333,19 @@ async def create_session(*, project: str, scope: str,
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
                          resume_session_id: Optional[str] = None,
-                         fresh: bool = False) -> AgentInstance:
-    """Spawn a CLI subprocess and register it."""
+                         fresh: bool = False,
+                         mode: str = "conversational",
+                         task_ref: Optional[str] = None,
+                         agent_ref: Optional[str] = None,
+                         parent_agent_ref: Optional[str] = None,
+                         placement_token: Optional[str] = None) -> AgentInstance:
+    """Spawn a CLI subprocess and register it.
+
+    The ``mode``/``task_ref``/``agent_ref``/``parent_agent_ref``/
+    ``placement_token`` params are the task-bounded placement extension (T2);
+    they default such that every existing conversational caller is unchanged.
+    When ``mode != 'conversational'`` the DAO insert records the placement row
+    and the supervision driver takes over the lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
@@ -360,12 +391,25 @@ async def create_session(*, project: str, scope: str,
         if resume_session_id is None and not fresh:
             resume_session_id = dao.get_latest_cli_session_id(project, scope)
 
-        instance_id = dao.open_instance(
-            project=project, scope=scope,
-            log_path=str(log_path),
-            cli_session_id=resume_session_id,
-            started_at=now_ms(),
-        )
+        if mode == "conversational":
+            instance_id = dao.open_instance(
+                project=project, scope=scope,
+                log_path=str(log_path),
+                cli_session_id=resume_session_id,
+                started_at=now_ms(),
+            )
+        else:
+            instance_id = dao.open_task_instance(
+                project=project, scope=scope,
+                log_path=str(log_path),
+                cli_session_id=resume_session_id,
+                started_at=now_ms(),
+                mode=mode,
+                task_ref=task_ref,
+                agent_ref=agent_ref,
+                parent_agent_ref=parent_agent_ref,
+                placement_token=placement_token,
+            )
 
         # A scope IS the channel — it exists once the scope does (ensured
         # above); no separate room to provision.
@@ -406,6 +450,11 @@ async def create_session(*, project: str, scope: str,
         session.model = model
         session.effort = effort
         session.cli_session_id = resume_session_id
+        session.mode = mode
+        session.task_ref = task_ref
+        session.agent_ref = agent_ref
+        session.parent_agent_ref = parent_agent_ref
+        session.placement_token = placement_token
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
@@ -782,6 +831,16 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
         if kind == "result":
             session._partial_accum.clear()
             session._msg_accum.clear()
+            # Outer-loop turn boundary: drive task-bound workers (decrement the
+            # hard turn budget, inject the next prompt / force-fail at 0).
+            # Conversational sessions short-circuit on this single check — no
+            # behavioural change, no injected turns.
+            if getattr(session, "mode", "conversational") != "conversational":
+                from awm.agents import placement
+                try:
+                    await placement.on_turn_boundary(session)
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +991,18 @@ async def respawn_session(
         resume_sid = None if clear_history else current.cli_session_id
         project, scope = current.project, current.scope
 
+        # Carry the placement forward across respawn so the orchestrator keeps
+        # seeing the same agent + task. The placement_token is stable, so the
+        # OLD row must release it before the new row reinserts it (the partial
+        # unique index forbids two rows holding the same token).
+        task_mode = current.mode
+        task_ref = current.task_ref
+        agent_ref = current.agent_ref
+        parent_agent_ref = current.parent_agent_ref
+        placement_token = current.placement_token
+        if task_mode != "conversational" and placement_token is not None:
+            _get_dao().clear_placement_token(current.id)
+
         if force:
             await kill_session(current.id)
         else:
@@ -953,6 +1024,11 @@ async def respawn_session(
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
         fresh=clear_history,
+        mode=task_mode,
+        task_ref=task_ref,
+        agent_ref=agent_ref,
+        parent_agent_ref=parent_agent_ref,
+        placement_token=placement_token,
     )
 
 

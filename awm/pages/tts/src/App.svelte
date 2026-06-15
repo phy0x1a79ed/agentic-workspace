@@ -1,8 +1,8 @@
 <script lang="ts">
+  import Composer from '$lib/components/Composer.svelte';
   import TtsConfig from '$lib/components/TtsConfig.svelte';
   import TtsHistory from '$lib/components/TtsHistory.svelte';
-  import TtsPresets from '$lib/components/TtsPresets.svelte';
-  import { TtsCall, type EngineRegistry } from '$lib/api/tts';
+  import { TtsCall } from '$lib/api/tts';
   import { persistedState } from '$lib/persistedState.svelte';
   import type { CallStatus } from '$lib/status';
   import { onDestroy } from 'svelte';
@@ -11,11 +11,11 @@
   let bubbles = $state<Bubble[]>([]);
   let nextId = 0;
 
-  // Composer state lifted here so TtsPresets and TtsConfig share the
-  // same source of truth; presets writes into it on "load".
+  // Composer state lifted here so the composer and the config cards share
+  // the same source of truth; a preset load writes into it. The engine
+  // registry now lives inside EngineConfigCard, not here.
   let selected = $state<string>('');
   let params = $state<Record<string, unknown>>({});
-  let engines = $state<EngineRegistry | null>(null);
 
   let call: TtsCall | null = null;
   let activeEngine: string | null = null;
@@ -160,18 +160,21 @@
   </section>
 
   <section class="composer">
-    <TtsConfig
+    <Composer
       {status}
       bind:selected
       bind:params
-      bind:engines
       volume={vol.value}
       onvolume={(v) => (vol.value = v)}
       onspeak={handleSpeak}
-      onengine={handleEngineChange}
       oncancel={handleCancel}
     />
-    <TtsPresets currentEngine={selected} currentParams={params} onload={handlePresetLoad} />
+    <TtsConfig
+      bind:selected
+      bind:params
+      onengine={handleEngineChange}
+      onpresetload={handlePresetLoad}
+    />
   </section>
 </main>
 
