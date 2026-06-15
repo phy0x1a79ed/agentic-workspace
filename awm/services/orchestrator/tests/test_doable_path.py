@@ -36,10 +36,13 @@ def test_task_is_dispatched_at_the_plan_leg(orch):
     assert task["placement_token"]
     # The task is wired upstream of root (root is its consumer).
     assert res["consumer"] == orch.DAO().get_root()["id"]
-    # The placement payload carried the outgoing contract.
+    # The plan leg stages the reserved "plan" deliverable: no real contracts_out
+    # on the wire (the agents side defaults ["plan"]); the real produced-contract
+    # names ride the brief so the plan agent knows its target.
     payload = orch.placements[(tid, "plan")]
     assert payload["mode"] == "plan"
-    assert any(c["name"] == "c1" for c in payload["contracts_out"])
+    assert payload["contracts_out"] == []
+    assert "c1" in json.loads(payload["brief"])["produces"]
 
 
 def test_plan_then_verify_then_active(orch):

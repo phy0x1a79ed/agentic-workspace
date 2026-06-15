@@ -44,10 +44,10 @@ def orch(tmp_path, monkeypatch):
     def stub_place(payload: dict) -> dict:
         placements[(payload["task_id"], payload["mode"])] = payload
         last[payload["task_id"]] = payload
-        slug = payload["workspace_slug"]
+        slug = payload["unit_slug"]
         return {
             "agent_ref": f"agent:{slug}",
-            "workspace": slug,
+            "unit_slug": slug,
             "placement_token": f"tok-{payload['task_id'][:6]}",
         }
 

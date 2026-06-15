@@ -9,8 +9,9 @@ reconnect).
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
 manifest) projects exactly four ``orch_*`` MCP tools. The privileged
 plan-mutation ops (``claim`` / ``deliver`` / ``fail`` / ``decompose_commit`` /
-``approve_plan`` / ``reject_plan`` / ``set_attached``) live in ``HANDLERS`` but
-are deliberately ABSENT from the manifest — so they are not MCP tools, yet remain
+``approve_plan`` / ``reject_plan`` / ``set_attached``) and the planner read ops
+(``search_tasks`` / ``search_contracts``) live in ``HANDLERS`` but are
+deliberately ABSENT from the manifest — so they are not MCP tools, yet remain
 reachable by the agents harness through the gateway's catch-all
 ``POST /svc/orchestrator/fn/<op>`` dispatch (``proxy_service_http`` resolves
 ``ch.call`` against each control channel's handler set, not the manifest). No
@@ -26,6 +27,7 @@ import asyncio
 import logging
 from typing import Any
 
+from awm import gatewayclient
 from awm.gatewayclient import ServiceAdapter
 from awm.orchestrator import dao, dispatch, kernel, operations
 from awm.orchestrator.dao import OrchestratorDAO
@@ -103,13 +105,27 @@ HANDLERS = {
     "approve_plan": operations.approve_plan,
     "reject_plan": operations.reject_plan,
     "set_attached": operations.set_attached,
+    # planner reads — manifest-omitted (reached via the catch-all), read-only.
+    "search_tasks": operations.search_tasks,
+    "search_contracts": operations.search_contracts,
 }
 
 
+def _reclaim_workspace(project: str, unit_slug: str) -> None:
+    """Free-but-retain a completed task's workspace unit (the reclaim seam).
+
+    A synchronous gateway call to the workspace service's ``workspace_retain``;
+    ``operations.deliver`` already wraps it best-effort, so a transient failure
+    can't wedge completion."""
+    gatewayclient.call_sync("workspace", "workspace_retain",
+                            {"project": project, "unit_slug": unit_slug})
+
+
 async def _on_start() -> None:
-    """Stand up the DB, start the dispatch drain loop, then re-dispatch the
-    resting frontier left by any prior run."""
+    """Stand up the DB, wire the reclaim seam, start the dispatch drain loop,
+    then re-dispatch the resting frontier left by any prior run."""
     dao.init()
+    operations.configure(reclaim_workspace_fn=_reclaim_workspace)
     dispatch.start_drain_loop()
     # Boot reconcile: re-dispatch ready + planner-less decomposing nodes; leave
     # placements out (active / decomposing-with-agent) alone.

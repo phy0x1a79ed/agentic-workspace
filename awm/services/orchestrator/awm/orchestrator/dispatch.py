@@ -112,34 +112,51 @@ def _mint_workspace_slug(task: dict) -> str:
 
 
 def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
-                   workspace_slug: str) -> dict:
+                   unit_slug: str) -> dict:
     """Assemble the Contract-A ``place_on_task`` payload for a task.
 
-    ``contracts_out`` are the contracts this task produces; ``contracts_in`` are
-    the dependency contracts it consumes, each with its spec and delivered
-    payload ref (so the workspace service can materialize pre-readings). The
-    brief is mode-specific:
+    The agents runtime (``place_on_task``) reads ``unit_slug`` for the workspace
+    unit and treats ``contracts_in`` / ``contracts_out`` as plain contract-NAME
+    strings (it keys ``staged`` and ``orch.deliver(contract=...)`` off them).
+    Delivered dependency payloads are materialized read-only via ``prereadings``
+    (``[{name, path}]``). The brief is mode-specific:
 
-    * ``plan`` / ``worker`` — the goal + its contracts.
+    * ``plan`` — the goal; ``contracts_out`` is empty (the agents side defaults
+      the reserved ``"plan"`` deliverable), and the real produced-contract names
+      ride ``brief["produces"]`` so the plan agent knows its target WITHOUT
+      delivering a real contract during ``planning`` (which would skip verify +
+      work).
+    * ``worker`` — the goal + the real ``contracts_out`` it must stage.
     * ``verify`` — the staged ``plan_ref`` and the objective (``contracts_out``)
       to check the plan against; the verifier needs no filesystem, so no
-      ``contracts_in`` are materialized for it.
+      ``contracts_in`` / ``prereadings`` are materialized for it.
     * ``planner`` — the latest failure reason (``review_reason``) so a re-planner
       knows why review was triggered, or ``reason="initial"`` when this is a
       fresh task's first specification (keyed off the ``created`` attempt memory).
     """
-    contracts_out = [
-        {"name": c["name"], "spec": c["spec"]}
-        for c in dao.list_contracts_by_producer(task["id"])
-    ]
-    contracts_in = [
-        {"name": e["name"], "spec": e["spec"], "payload_ref": e["payload_ref"]}
-        for e in dao.list_incoming_edges(task["id"])
+    produced = [c["name"] for c in dao.list_contracts_by_producer(task["id"])]
+    incoming = dao.list_incoming_edges(task["id"])
+    contracts_in = [e["name"] for e in incoming]
+    # Delivered dependency payloads become the worker's read-only pre-readings.
+    prereadings = [
+        {"name": e["name"], "path": e["payload_ref"]}
+        for e in incoming if e["payload_ref"]
     ]
     brief: dict[str, Any] = {"goal": task["goal"], "mode": mode}
+
+    if mode == "plan":
+        # The plan leg stages the reserved "plan" deliverable, NOT the real
+        # contracts. Send no contracts_out (agents defaults to ["plan"]) and
+        # carry the real produced names in the brief as the planning target.
+        contracts_out: list[str] = []
+        brief["produces"] = produced
+    else:
+        contracts_out = produced
+
     if mode == "verify":
         brief["plan_ref"] = task["plan_ref"]
         contracts_in = []  # the verifier is fs-less; objective rides contracts_out
+        prereadings = []
     elif mode == "planner":
         mems = dao.list_attempt_memories(task["id"])
         last = mems[-1] if mems else None
@@ -154,10 +171,11 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
     return {
         "task_id": task["id"],
         "project": task["project"],
-        "workspace_slug": workspace_slug,
+        "unit_slug": unit_slug,
         "brief": json.dumps(brief),
         "contracts_in": contracts_in,
         "contracts_out": contracts_out,
+        "prereadings": prereadings,
         "mode": mode,
     }
 
@@ -199,8 +217,9 @@ def _apply_placement(task_id: str, mode: str, result: dict) -> None:
         state=new_state,
         mode=mode,
         agent_ref=(result or {}).get("agent_ref"),
-        workspace_slug=(result or {}).get("workspace")
-        or (result or {}).get("scope")  # tolerate legacy seam key during repoint
+        workspace_slug=(result or {}).get("unit_slug")
+        or (result or {}).get("workspace")  # tolerate stub / legacy seam keys
+        or (result or {}).get("scope")
         or _mint_workspace_slug(
             dao.get_task(task_id) or {"id": task_id, "workspace_slug": None}),
         placement_token=(result or {}).get("placement_token"),

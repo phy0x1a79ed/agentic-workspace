@@ -562,8 +562,10 @@ def reject_plan(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False,
                 "error": f"reject_plan on a {task['state']!r} task "
                          "(expected 'verifying_plan')"}
+    # The verifier relay sends the reason under ``reason``; accept either key.
+    reason_text = args.get("reason_text") or args.get("reason") or ""
     dao.add_attempt_memory(task["id"], "failed", reason_type="plan-rejected",
-                           reason_text=str(args.get("reason_text", "")))
+                           reason_text=str(reason_text))
 
     budget = int(task["replan_budget"])
     if budget <= 0:
@@ -594,3 +596,47 @@ def set_attached(args: dict[str, Any]) -> dict[str, Any]:
     attached = 1 if args.get("attached") else 0
     dao.update_task(task["id"], attached=attached)
     return {"ok": True, "task_id": task["id"], "attached": bool(attached)}
+
+
+def search_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    """Planner read: existing tasks, for sub-DAG node reuse (manifest-omitted).
+
+    Substring match (case-insensitive) on the goal; optionally project-scoped.
+    Read-only — never mutates the plan. The root sentinel is omitted (it is not a
+    reusable work node).
+    """
+    init()
+    dao = OrchestratorDAO()
+    project = str(args.get("project") or "").strip()
+    query = str(args.get("query") or "").strip().lower()
+    rows = (dao.list_tasks(project) if project
+            else dao.query_all("SELECT * FROM tasks ORDER BY created_at"))
+    tasks = [
+        {"task_id": t["id"], "goal": t["goal"], "state": t["state"],
+         "project": t["project"]}
+        for t in rows
+        if not t["is_root"] and (not query or query in (t["goal"] or "").lower())
+    ]
+    return {"tasks": tasks}
+
+
+def search_contracts(args: dict[str, Any]) -> dict[str, Any]:
+    """Planner read: existing contracts, for sub-DAG reuse (manifest-omitted).
+
+    Substring match (case-insensitive) on the contract name; optionally
+    project-scoped. Read-only.
+    """
+    init()
+    dao = OrchestratorDAO()
+    project = str(args.get("project") or "").strip()
+    query = str(args.get("query") or "").strip().lower()
+    rows = dao.query_all("SELECT * FROM contracts ORDER BY created_at")
+    contracts = [
+        {"contract_id": c["id"], "name": c["name"], "spec": c["spec"],
+         "producer_task": c["producer_task"], "project": c["project"],
+         "delivered": c["delivered_ts"] is not None}
+        for c in rows
+        if (not project or c["project"] == project)
+        and (not query or query in (c["name"] or "").lower())
+    ]
+    return {"contracts": contracts}

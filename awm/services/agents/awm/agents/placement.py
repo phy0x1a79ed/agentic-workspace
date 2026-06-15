@@ -31,8 +31,10 @@ forking it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -121,8 +123,11 @@ def _finish_planner(token: str) -> str:
         "## How to finish\n\n"
         "This task is too large to do directly — decompose it into a sub-DAG. "
         "Build the graph with `add_subtask(placement_token, id, objective, "
-        "contracts_out?)`, `add_dependency(placement_token, from_id, to_id)`, "
-        "and `define_contract(placement_token, name, ...)`. Use "
+        "contracts_out?)`, `add_dependency(placement_token, from_id, to_id, "
+        "contract?)`, and `define_contract(placement_token, name, ...)`. Give "
+        "each subtask a `contracts_out` (what it produces); a dependency edge "
+        "means `to_id` consumes a contract that `from_id` produces (name it via "
+        "`contract` when `from_id` produces more than one). Use "
         "`search_tasks` / `search_contracts` to reuse existing nodes. **Every "
         "subtask must funnel into this task** (the sub-DAG has a single sink and "
         "every node reaches it). When the graph is complete, call "
@@ -225,6 +230,39 @@ async def _retain_unit(project: str, unit_slug: str) -> None:
                     exc_info=True)
 
 
+async def _await_scope_free(project: str, unit_slug: str,
+                            *, timeout: float = 20.0, grace: float = 2.0) -> None:
+    """Wait for any prior-stage placement subprocess on this unit to vacate.
+
+    The lifecycle reuses ONE unit across plan → verify → worker: each stage is a
+    fresh agent on the SAME (project, unit_slug) scope. The previous stage acks
+    its terminal B-op (``deliver``/``approve_plan``) BEFORE its subprocess is
+    retired (retire is async), so when the orchestrator dispatches the next leg
+    it can arrive while the old subprocess still registers the scope — and
+    ``create_session`` would reject it (``ScopeBusyError``). Poll until the scope
+    is free; if a (closed-placement) session overstays the grace period, stop it
+    and keep waiting. No-op when the scope is already free (the common case)."""
+    waited = 0.0
+    nudged = False
+    while True:
+        if ai.get_session_by_scope(project, unit_slug) is None:
+            return
+        if waited >= grace and not nudged:
+            sess = ai.get_session_by_scope(project, unit_slug)
+            if sess is not None:
+                try:
+                    await ai.stop_session(sess.id)  # push the lingering retire
+                except Exception:  # noqa: BLE001
+                    pass
+            nudged = True
+        if waited >= timeout:
+            raise PlacementError(
+                f"unit {project}/{unit_slug} still busy after {timeout}s "
+                "(prior placement did not vacate the scope)")
+        await asyncio.sleep(0.1)
+        waited += 0.1
+
+
 def _read_staged_plan(workspace_path: str) -> str:
     """Read the plan-stage deliverable (``deliverable/plan/payload``) off disk
     so it can be embedded in the verifier's kickoff (the verifier has no fs)."""
@@ -297,7 +335,14 @@ async def place_on_task(args: dict) -> dict:
 
     # Spawn live via the EXISTING path so a human can attach via 'transcript'.
     # bypassPermissions removes approval prompts; the per-mode allowlist is what
-    # actually scopes the tools (fs + worker MCP).
+    # actually scopes the tools (fs + worker MCP). The model is whatever the
+    # caller passes, else the AWM_PLACEMENT_MODEL default (lets ops pin a cheaper
+    # model for unattended placements / e2e runs without changing the kernel
+    # payload); None falls through to the agent CLI's own default.
+    model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
+    # The lifecycle reuses one unit across stages; the prior stage's subprocess
+    # may still be retiring on this scope. Wait for it to vacate before spawning.
+    await _await_scope_free(project, unit_slug)
     session = await ai.create_session(
         project=project, scope=unit_slug,
         agent_cli="claude", permission_mode="bypassPermissions",
@@ -305,6 +350,7 @@ async def place_on_task(args: dict) -> dict:
         placement_token=placement_token,
         workdir=workspace_path,
         allowed_tools=_allowed_tools_for(mode),
+        model=model,
     )
 
     # Record the placement spec on the row so the relays + supervisor can resolve
@@ -514,14 +560,23 @@ async def relay_add_subtask(args: dict) -> dict:
 
 
 async def relay_add_dependency(args: dict) -> dict:
-    """Planner tool: buffer a dependency edge (from_id → to_id)."""
+    """Planner tool: buffer a dependency edge (``from_id`` → ``to_id``).
+
+    ``from_id`` is the upstream producer, ``to_id`` the downstream consumer (the
+    edge points toward the sink). When ``from_id`` produces more than one
+    contract, name the one ``to_id`` consumes via the optional ``contract``;
+    otherwise it is inferred from ``from_id``'s sole output at commit."""
     row = _resolve_open_placement(args.get("placement_token"))
     g = _graph(row)
     frm = args.get("from_id") or args.get("from")
     to = args.get("to_id") or args.get("to")
     if not frm or not to:
         raise PlacementError("add_dependency requires from_id and to_id")
-    g["dependencies"].append({"from": frm, "to": to})
+    edge = {"from": frm, "to": to}
+    contract = args.get("contract")
+    if contract:
+        edge["contract"] = contract
+    g["dependencies"].append(edge)
     ai._get_dao().merge_instance_data(row["id"], {"graph": g})
     return {"ok": True, "dependencies": len(g["dependencies"])}
 
@@ -612,6 +667,62 @@ def funnels(subtasks: list, dependencies: list) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Translate the agents-buffered sub-DAG -> the orchestrator decompose_commit shape
+# ---------------------------------------------------------------------------
+
+def _translate_subdag(subtasks: list, deps: list,
+                      contract_defs: list) -> tuple[dict | None, str | None]:
+    """Map the agents-native buffered sub-DAG to the orchestrator's commit shape.
+
+    Agents-native (what the planner tools buffer):
+      * ``subtasks``  = ``[{id, objective, contracts_out}]``
+      * ``deps``      = ``[{from, to, contract?}]``  (``from`` produces, ``to``
+        consumes; the edge points toward the sink)
+      * ``contract_defs`` = buffered ``define_contract`` rows (supply specs)
+
+    Orchestrator-native (what ``decompose_commit`` expects):
+      * ``children``  = ``[{ref, goal}]``
+      * ``contracts`` = ``[{name, spec, producer:<ref>}]``
+      * ``edges``     = ``[{consumer:<ref>, contract:<name>}]``
+
+    The orchestrator stays authoritative for acyclicity / funnel / terminal
+    derivation; this only restructures. Returns ``(payload, None)`` on success or
+    ``(None, reason)`` when a dependency's contract can't be resolved (so the
+    caller corrects the planner instead of committing a broken graph)."""
+    spec_by_name = {c.get("name"): c.get("spec", "")
+                    for c in contract_defs if c.get("name")}
+    children = [{"ref": s["id"], "goal": s.get("objective") or ""}
+                for s in subtasks]
+    produced_by: dict[str, list[str]] = {}
+    contracts: list[dict] = []
+    for s in subtasks:
+        for name in (s.get("contracts_out") or []):
+            contracts.append({"name": name, "spec": spec_by_name.get(name, ""),
+                              "producer": s["id"]})
+            produced_by.setdefault(s["id"], []).append(name)
+    edges: list[dict] = []
+    for d in deps:
+        frm, to = d.get("from"), d.get("to")
+        name = d.get("contract")
+        if not name:
+            names = produced_by.get(frm) or []
+            if len(names) == 1:
+                name = names[0]
+            elif not names:
+                return None, (
+                    f"dependency {frm}->{to} has no contract: subtask {frm!r} "
+                    "produces nothing for the consumer to depend on — give it a "
+                    "contracts_out")
+            else:
+                return None, (
+                    f"dependency {frm}->{to} is ambiguous: subtask {frm!r} "
+                    f"produces {', '.join(names)}; name the contract on the "
+                    "dependency")
+        edges.append({"consumer": to, "contract": name})
+    return {"children": children, "contracts": contracts, "edges": edges}, None
+
+
+# ---------------------------------------------------------------------------
 # Per-mode acceptance (run at the turn-stop boundary by on_turn_boundary)
 # ---------------------------------------------------------------------------
 
@@ -648,19 +759,30 @@ async def _accept_decompose(row: dict, data: dict, session) -> bool:
     g = data.get("graph") or {}
     subtasks = g.get("subtasks") or []
     deps = g.get("dependencies") or []
+    contract_defs = g.get("contracts") or []
+
+    reason: str | None = None
+    payload: dict | None = None
     if not subtasks or not funnels(subtasks, deps):
-        # Done but the graph is empty or doesn't funnel — correct, don't commit.
+        reason = ("it must be non-empty, acyclic, and funnel into a single sink "
+                  "(every subtask reaching the task being decomposed)")
+    else:
+        payload, reason = _translate_subdag(subtasks, deps, contract_defs)
+
+    if reason is not None:
+        # Done but the graph is empty / doesn't funnel / can't be translated —
+        # correct the planner, don't commit.
         ai._get_dao().merge_instance_data(row["id"], {"done": False})
         ai.enqueue_input(
             session, "supervisor",
-            "[supervisor] Your sub-DAG is not ready to commit: it must be "
-            "non-empty, acyclic, and funnel into a single sink (every subtask "
-            "reaching the task being decomposed). Fix the graph, then call "
-            "indicate_done again.")
+            f"[supervisor] Your sub-DAG is not ready to commit: {reason}. "
+            "Fix the graph, then call indicate_done again.")
         return True
+
     ack = await orch_client.decompose_commit(
         task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        children=subtasks, edges=deps, contracts=g.get("contracts") or [])
+        children=payload["children"], edges=payload["edges"],
+        contracts=payload["contracts"])
     log.info("decompose_commit acked for %s: %s", row["task_ref"], ack)
     await _close_and_retire(row, "decomposed")
     return True

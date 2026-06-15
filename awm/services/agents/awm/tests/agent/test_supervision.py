@@ -155,14 +155,27 @@ class TestAcceptance:
         assert not s.input_queue.empty()
 
     async def test_planner_commits_funnel_graph(self, agents_env, fake_orch):
-        graph = {"subtasks": [{"id": "a"}, {"id": "b"}],
+        # a -> b: a produces cA (which b consumes), b produces cB (the terminal
+        # sink). The agents-native buffer is translated to the orchestrator's
+        # decompose_commit shape before the B-op fires.
+        graph = {"subtasks": [{"id": "a", "objective": "first",
+                               "contracts_out": ["cA"]},
+                              {"id": "b", "objective": "second",
+                               "contracts_out": ["cB"]}],
                  "dependencies": [{"from": "a", "to": "b"}],
-                 "contracts": []}
+                 "contracts": [{"name": "cA", "spec": "A out"},
+                               {"name": "cB", "spec": "B out"}]}
         iid, _ = _seed(agents_env, token="plt-pl", mode="planner",
                        done=True, graph=graph)
         s = _FakeSup(iid=iid, token="plt-pl", turn_budget=50, mode="planner")
         await placement.on_turn_boundary(s)
-        assert any(c[0] == "decompose_commit" for c in fake_orch.calls)
+        commit = next(c for c in fake_orch.calls if c[0] == "decompose_commit")
+        kw = commit[1]
+        # Translated to the orchestrator-native shape.
+        assert kw["children"] == [{"ref": "a", "goal": "first"},
+                                  {"ref": "b", "goal": "second"}]
+        assert {"name": "cA", "spec": "A out", "producer": "a"} in kw["contracts"]
+        assert kw["edges"] == [{"consumer": "b", "contract": "cA"}]
         assert _data(iid)["placement_outcome"] == "decomposed"
         assert s.turn_budget == 50
 

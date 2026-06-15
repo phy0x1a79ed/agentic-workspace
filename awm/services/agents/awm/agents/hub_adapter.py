@@ -234,12 +234,16 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "add_dependency",
             "description": (
                 "Planner: add a dependency edge (from_id → to_id) to the pending "
-                "sub-DAG. Every subtask must funnel into the task being decomposed."
+                "sub-DAG — from_id is the upstream producer, to_id the downstream "
+                "consumer. Every subtask must funnel into the task being "
+                "decomposed. If from_id produces more than one contract, name the "
+                "one to_id depends on via 'contract'."
             ),
             "params": [
                 {"name": "placement_token", "type": "string", "required": True},
                 {"name": "from_id", "type": "string", "required": True},
                 {"name": "to_id", "type": "string", "required": True},
+                {"name": "contract", "type": "string", "required": False},
             ],
         },
         {
