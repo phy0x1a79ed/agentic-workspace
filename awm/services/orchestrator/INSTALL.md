@@ -31,8 +31,8 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Four **public** tools are projected into the MCP catalog (`/tools`):
-`orch_plan_create`, `orch_task_attach`, `orch_status`, `orch_frontier`.
+Three **public** tools are projected into the MCP catalog (`/tools`):
+`orch_task_attach`, `orch_status`, `orch_frontier`.
 
 Four **privileged** plan-mutation ops — `claim`, `deliver`, `fail`,
 `decompose_commit` — are intentionally **omitted from the manifest**, so they are

@@ -46,7 +46,7 @@ def _seed_placement(*, token="plt-1", task="T-1", agent="agt-1",
     return dao.open_task_instance(
         project=project, scope=scope, log_path=None, cli_session_id=None,
         started_at=now_ms(), mode="worker", task_ref=task, agent_ref=agent,
-        parent_agent_ref=None, placement_token=token)
+        placement_token=token)
 
 
 class TestTokenResolution:

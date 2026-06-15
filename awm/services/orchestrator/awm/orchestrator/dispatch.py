@@ -9,11 +9,12 @@ Two load-bearing rules from the design:
   returns its reply without awaiting ``place_on_task``. The actual placement
   runs later on a single background drain task, so a slow agents service never
   stalls a handler and the dispatch order is serialized (no double-dispatch).
-* **Flip records the real placement.** A node only leaves its resting state
-  (``ready`` → ``active`` for a worker, ``failed`` → ``analyzing`` for a
-  planner) *after* ``place_on_task`` returns, writing back the ``agent_ref`` /
-  ``scope`` / ``placement_token`` it reported. So ``active``/``analyzing`` always
-  imply a real placement — crash-safe for boot ``reconcile``.
+* **Flip records the real placement.** A node only records its placement
+  (``ready`` → ``active`` for a worker, or the ``agent_ref`` stamped onto a
+  ``decomposing`` node for a planner) *after* ``place_on_task`` returns, writing
+  back the ``agent_ref`` / ``scope`` / ``placement_token`` it reported. So
+  ``active`` (and ``decomposing`` with an ``agent_ref``) always imply a real
+  placement — crash-safe for boot ``reconcile``.
 
 The placement preparation and the post-placement DB flip are synchronous shared
 helpers; only awaiting the seam differs between the live (async network) path
@@ -128,7 +129,6 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         for e in dao.list_incoming_edges(task["id"])
     ]
     brief: dict[str, Any] = {"goal": task["goal"], "mode": mode}
-    parent_agent_ref = None
     if mode == "planner":
         mems = dao.list_attempt_memories(task["id"])
         if mems:
@@ -138,9 +138,6 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
                 "reason_text": last["reason_text"],
                 "partial_ref": last["payload_ref"],
             }
-    if task["parent_id"]:
-        parent = dao.get_task(task["parent_id"])
-        parent_agent_ref = parent["agent_ref"] if parent else None
     return {
         "task_id": task["id"],
         "project": task["project"],
@@ -148,7 +145,6 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         "brief": json.dumps(brief),
         "contracts_in": contracts_in,
         "contracts_out": contracts_out,
-        "parent_agent_ref": parent_agent_ref,
         "mode": mode,
     }
 
@@ -162,13 +158,20 @@ def _prepare(task_id: str, mode: str) -> dict | None:
     """Re-read the task and, if it is still in the expected resting state for
     ``mode``, build its placement payload. Returns ``None`` when the node has
     already moved on (a stale enqueue) so the drain simply skips it.
+
+    A worker rests in ``ready``. A planner rests in ``decomposing`` with **no
+    placement recorded** (``agent_ref`` NULL) — once a planner is out the
+    ``agent_ref`` is set, so a re-enqueue of the same node is skipped.
     """
     dao = OrchestratorDAO()
     task = dao.get_task(task_id)
     if task is None:
         return None
-    resting = "ready" if mode == "worker" else "failed"
-    if task["state"] != resting:
+    if mode == "worker":
+        resting = task["state"] == "ready"
+    else:
+        resting = task["state"] == "decomposing" and task["agent_ref"] is None
+    if not resting:
         log.debug("orchestrator: skip stale dispatch %s (mode=%s, state=%s)",
                   task_id, mode, task["state"])
         return None
@@ -177,9 +180,10 @@ def _prepare(task_id: str, mode: str) -> dict | None:
 
 def _apply_placement(task_id: str, mode: str, result: dict) -> None:
     """Flip the resting node to its placement-out state, recording the agent
-    placement the seam reported. ``ready`` → ``active`` (worker) or ``failed`` →
-    ``analyzing`` (planner)."""
-    new_state = "active" if mode == "worker" else "analyzing"
+    placement the seam reported. A worker goes ``ready`` → ``active``; a planner
+    stays ``decomposing`` but now carries an ``agent_ref`` (which is what marks
+    the placement as live)."""
+    new_state = "active" if mode == "worker" else "decomposing"
     dao = OrchestratorDAO()
     dao.update_task(
         task_id,

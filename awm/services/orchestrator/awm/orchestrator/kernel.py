@@ -10,14 +10,23 @@ handlers) is responsible for enqueuing those onto the dispatch queue — so the
 kernel stays a pure, synchronously-testable state machine and the asyncio lives
 entirely in ``dispatch.py``.
 
-The node lifecycle (see ``dao.STATES``) is symmetric — a *resting* state means
-"this node needs a placement", the *active* state means "a placement is out":
+The node lifecycle (see ``dao.STATES``) — a *resting* state needs a placement,
+the matching *out* state means one is live:
 
-    a worker is needed:   ready  -> active    -> delivered    (done)
-    a planner is needed:  failed -> analyzing  -> discarded     (gave up)
+    a worker is needed:   ready  -> active  -> completed   (done)
+    a planner is needed:  decomposing(agent NULL) -> decomposing(agent set)
 
-``pending`` covers both "leaf waiting on its dependency contracts" and
-"composite parent waiting on its children to deliver".
+The worker pair is distinguished by state name (``ready`` vs ``active``); the
+planner pair shares the ``decomposing`` state and is distinguished by whether an
+``agent_ref`` is recorded (NULL = needs a planner; set = planner is out). That
+keeps the lifecycle to the seven named states.
+
+There is **one** graph — the dependency DAG. A task that is too big does not
+become a containment parent; it *decomposes* into an upstream sub-DAG and then
+depends on that sub-DAG's terminal contracts (it rests ``blocked`` and re-runs
+as a normal worker once they deliver). When a task gives up (``failed`` /
+``abandoned``) its downstream **consumers** re-enter ``decomposing`` to refine
+or replace it. Root has no consumer, so its give-up escalates to the human.
 """
 
 from __future__ import annotations
@@ -28,37 +37,45 @@ if TYPE_CHECKING:  # avoid a hard import cost on the hot path
     from awm.orchestrator.dao import OrchestratorDAO
 
 # A worker may fail transiently this many times (auto-retry to ``ready``)
-# before the node rests in ``failed`` to await review.
+# before the node rests in ``failed``.
 TRANSIENT_RETRY_CAP = 3
 
 DispatchIntent = tuple[str, str]  # (task_id, mode)
 
 
 # ---------------------------------------------------------------------------
-# Readiness — pending -> ready when every dependency contract is delivered
+# Readiness — blocked -> ready when every dependency contract is delivered
 # ---------------------------------------------------------------------------
 
 
 def recompute_readiness(dao: "OrchestratorDAO", task_id: str) -> bool:
-    """Flip a ``pending`` leaf to ``ready`` when all its incoming dependency
-    contracts are delivered. Returns True iff the node is now ``ready``.
+    """Advance a ``blocked`` node whose incoming dependency contracts are all
+    delivered. Returns True iff the node is now ``ready`` (i.e. wants a worker).
 
-    A node with no incoming dependency edges is ready immediately. Only
-    ``pending`` nodes are advanced — a node that already left the resting state
-    (``active``/``analyzing``/terminal) is never pulled back here.
+    A normal node with all dependencies delivered flips ``blocked -> ready``. The
+    **root** sentinel never gets a worker: when it has at least one prerequisite
+    and they are all delivered it flips ``blocked -> completed`` instead, and the
+    function returns False so root is never dispatched. A node already past
+    ``blocked`` is left untouched.
     """
     task = dao.get_task(task_id)
-    if task is None or task["state"] != "pending":
+    if task is None or task["state"] != "blocked":
         return task is not None and task["state"] == "ready"
     incoming = dao.list_incoming_edges(task_id)
-    if all(e["delivered_ts"] is not None for e in incoming):
-        dao.update_task(task_id, state="ready")
-        return True
-    return False
+    if not all(e["delivered_ts"] is not None for e in incoming):
+        return False
+    if task["is_root"]:
+        # Root is a sentinel — it completes when its prerequisites do, and is
+        # never placed. An empty root (no prerequisites yet) stays ``blocked``.
+        if incoming:
+            dao.update_task(task_id, state="completed")
+        return False
+    dao.update_task(task_id, state="ready")
+    return True
 
 
 def ready_frontier(dao: "OrchestratorDAO", project: str) -> list[dict]:
-    """The leaves currently in ``ready`` for a project — the worker frontier."""
+    """The nodes currently in ``ready`` for a project — the worker frontier."""
     return dao.list_tasks_by_state(project, "ready")
 
 
@@ -115,83 +132,96 @@ def screen(payload_ref: str | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _route_consumers(dao: "OrchestratorDAO", task_id: str) -> list[DispatchIntent]:
+    """Route every downstream consumer of ``task_id`` into ``decomposing``.
+
+    For each contract the failed/abandoned task produces, each consuming task
+    re-enters ``decomposing`` to refine or replace the broken prerequisite — and
+    is enqueued for a planner. A consumer that is **root** cannot re-plan, so it
+    is marked ``abandoned`` (surfaced as an escalation by ``orch_status``). A
+    consumer already in ``decomposing`` (or a terminal state) is left alone.
+    """
+    out: list[DispatchIntent] = []
+    cleared = dict(mode=None, agent_ref=None, placement_token=None)
+    for c in dao.list_contracts_by_producer(task_id):
+        for consumer in dao.list_consumers_of_contract(c["id"]):
+            ct = dao.get_task(consumer)
+            if ct is None or ct["state"] in ("decomposing", "abandoned"):
+                continue
+            if ct["is_root"]:
+                dao.update_task(consumer, state="abandoned", **cleared)
+                continue
+            dao.update_task(consumer, state="decomposing", **cleared)
+            out.append((consumer, "planner"))
+    return out
+
+
 def route_failure(
     dao: "OrchestratorDAO", task_id: str, reason_type: str
-) -> DispatchIntent | None:
+) -> list[DispatchIntent]:
     """Route a failed attempt to its next resting state; clear the placement.
 
-    Returns the dispatch intent the routing produced (``(task_id, mode)``), or
-    ``None`` when the node comes to rest with nothing to dispatch (terminal
-    ``discarded``).
+    Returns the dispatch intents the routing produced.
 
-    * A failure on an ``analyzing`` node is a *planner* give-up: spend one unit
-      of ``replan_budget``; ``→ failed`` (try review again) while budget remains,
-      else ``→ discarded`` (terminal).
-    * ``transient-error`` on a worker: auto-retry ``→ ready`` (bounded by
-      ``retry_count`` ≤ :data:`TRANSIENT_RETRY_CAP`), never resting in
-      ``failed``; once the cap is hit, rest in ``failed`` to await review.
-    * ``needs-decomposition`` / ``contract-unsatisfiable``: rest in ``failed``
-      to await a planner (review). ``fail`` is a *signal*, not a terminus.
+    * A failure on a ``decomposing`` node is a *planner* give-up: spend one unit
+      of ``replan_budget``. While budget remains the node stays ``decomposing``
+      with its placement cleared (re-dispatch a planner); once exhausted it rests
+      in ``abandoned`` and its downstream consumers re-enter ``decomposing``.
+    * ``transient-error`` on a worker: auto-retry ``-> ready`` (bounded by
+      ``retry_count`` ≤ :data:`TRANSIENT_RETRY_CAP`); once the cap is hit the node
+      rests in ``failed`` and routes its consumers.
+    * ``needs-decomposition``: the task is too big — it self-decomposes,
+      ``-> decomposing`` (a planner is placed on it).
+    * ``contract-unsatisfiable`` / impossible: the node rests in ``failed`` and
+      routes its downstream consumers to re-plan it.
     """
     task = dao.get_task(task_id)
     if task is None:
-        return None
+        return []
 
     # Clear the agent placement but KEEP ``scope_slug``: the scope (worktree)
-    # persists when an agent detaches, and a planner reuses the failed leaf's
+    # persists when an agent detaches, and a planner reuses the failed node's
     # slug so it can read the partial work left behind. The slug is only freed
-    # on terminal completion (``complete_task``) or give-up (``discarded``).
+    # on terminal completion (``complete_task``) or give-up (``abandoned``).
     cleared = dict(mode=None, agent_ref=None, placement_token=None)
 
-    # Planner give-up (the failing node is mid-review).
-    if task["state"] == "analyzing":
+    # Planner give-up (the failing node is mid-decomposition).
+    if task["state"] == "decomposing":
         budget = int(task["replan_budget"]) - 1
         if budget <= 0:
-            dao.update_task(task_id, state="discarded", replan_budget=budget,
+            dao.update_task(task_id, state="abandoned", replan_budget=budget,
                             scope_slug=None, **cleared)
-            return None
-        dao.update_task(task_id, state="failed", replan_budget=budget, **cleared)
-        return (task_id, "planner")
+            return _route_consumers(dao, task_id)
+        dao.update_task(task_id, state="decomposing", replan_budget=budget,
+                        **cleared)
+        return [(task_id, "planner")]
 
     # Worker transient error — auto-retry until the cap.
     if reason_type == "transient-error":
         n = int(task["retry_count"]) + 1
         if n <= TRANSIENT_RETRY_CAP:
             dao.update_task(task_id, state="ready", retry_count=n, **cleared)
-            return (task_id, "worker")
+            return [(task_id, "worker")]
         dao.update_task(task_id, state="failed", retry_count=n, **cleared)
-        return (task_id, "planner")
+        return _route_consumers(dao, task_id)
 
-    # Review-worthy reasons rest in ``failed`` awaiting a planner.
+    # Worker signals the task is too big — self-decompose (a planner is placed).
+    if reason_type == "needs-decomposition":
+        dao.update_task(task_id, state="decomposing", **cleared)
+        return [(task_id, "planner")]
+
+    # Contract-unsatisfiable / impossible — rest in ``failed``; consumers replan.
     dao.update_task(task_id, state="failed", **cleared)
-    return (task_id, "planner")
+    return _route_consumers(dao, task_id)
 
 
 # ---------------------------------------------------------------------------
-# Completion + upward aggregation
+# Completion
 # ---------------------------------------------------------------------------
 
 
-def _deliver_producer_contracts(
-    dao: "OrchestratorDAO", task_id: str, payload_ref: str
-) -> list[DispatchIntent]:
-    """Mark every not-yet-delivered contract this task produces as delivered,
-    then advance each newly-ready consumer. Returns the worker dispatch intents.
-    """
-    out: list[DispatchIntent] = []
-    for c in dao.list_contracts_by_producer(task_id):
-        if c["delivered_ts"] is None:
-            dao.mark_contract_delivered(c["id"], payload_ref)
-            for consumer in dao.list_consumers_of_contract(c["id"]):
-                if recompute_readiness(dao, consumer):
-                    out.append((consumer, "worker"))
-    return out
-
-
-def complete_task(
-    dao: "OrchestratorDAO", task_id: str
-) -> bool:
-    """Mark a task ``delivered`` and clear its placement, **iff** every contract
+def complete_task(dao: "OrchestratorDAO", task_id: str) -> bool:
+    """Mark a task ``completed`` and clear its placement, **iff** every contract
     it produces is delivered. Returns True when the task was completed.
 
     A task that produces no contracts is treated as complete on the caller's
@@ -200,45 +230,9 @@ def complete_task(
     contracts = dao.list_contracts_by_producer(task_id)
     if any(c["delivered_ts"] is None for c in contracts):
         return False
-    dao.update_task(task_id, state="delivered", mode=None, agent_ref=None,
+    dao.update_task(task_id, state="completed", mode=None, agent_ref=None,
                     scope_slug=None, placement_token=None)
     return True
-
-
-def aggregate(
-    dao: "OrchestratorDAO", parent_id: str | None
-) -> list[DispatchIntent]:
-    """Walk up the containment tree from ``parent_id``, completing composites.
-
-    When every child of a composite is ``delivered`` the composite becomes
-    ``delivered`` too (delivering its own outgoing contracts, which may unblock
-    downstream consumers), and aggregation recurses to *its* parent. When the
-    children settle but at least one is ``discarded`` (so the composite can
-    never complete), the composite is pushed to ``failed`` to escalate for
-    review. A composite with children still in progress halts the walk.
-    """
-    out: list[DispatchIntent] = []
-    pid = parent_id
-    while pid:
-        parent = dao.get_task(pid)
-        if parent is None:
-            break
-        children = dao.list_children(pid)
-        if not children:
-            break
-        states = {c["state"] for c in children}
-        if states <= {"delivered"}:
-            dao.update_task(pid, state="delivered", mode=None)
-            out += _deliver_producer_contracts(dao, pid, f"composite:{pid}")
-            pid = parent["parent_id"]
-            continue
-        if states <= {"delivered", "discarded"} and "discarded" in states:
-            # The composite can never complete — escalate for review.
-            dao.update_task(pid, state="failed", mode=None)
-            out.append((pid, "planner"))
-            break
-        break  # children still in progress
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -249,14 +243,18 @@ def aggregate(
 def reconcile(dao: "OrchestratorDAO") -> list[DispatchIntent]:
     """Recompute the dispatch frontier at boot.
 
-    Re-dispatches every ``ready`` leaf (worker) and every ``failed`` node
-    awaiting review (planner). Nodes with a placement out — ``active`` /
-    ``analyzing`` — are **left untouched**: their agent and scope persist across
-    an orchestrator restart, and the agents service owns their liveness.
+    Re-dispatches every ``ready`` node (worker) and every ``decomposing`` node
+    with no placement recorded (planner). Nodes with a placement out —
+    ``active`` / ``decomposing`` with an ``agent_ref`` — are **left untouched**:
+    their agent and scope persist across an orchestrator restart, and the agents
+    service owns their liveness.
     """
     out: list[DispatchIntent] = []
     for row in dao.query_all("SELECT id FROM tasks WHERE state = 'ready'"):
         out.append((row["id"], "worker"))
-    for row in dao.query_all("SELECT id FROM tasks WHERE state = 'failed'"):
+    for row in dao.query_all(
+        "SELECT id FROM tasks WHERE state = 'decomposing' "
+        "AND agent_ref IS NULL"
+    ):
         out.append((row["id"], "planner"))
     return out

@@ -14,7 +14,7 @@ import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-PUBLIC = {"orch_plan_create", "orch_task_attach", "orch_status", "orch_frontier"}
+PUBLIC = {"orch_task_attach", "orch_status", "orch_frontier"}
 PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit"}
 
 
@@ -39,12 +39,14 @@ async def test_privileged_op_is_dispatchable_though_unmanifested(orch):
     from awm.gatewayclient import ServiceAdapter
     from awm.orchestrator import hub_adapter
 
-    # Stand up a plan and fail the root so a privileged `deliver` has something
-    # to act on after re-dispatch puts the root back to active.
-    res = orch.operations.orch_plan_create({"project": "p", "goal": "ship it"})
-    root = res["task_id"]
-    task = orch.DAO().get_task(root)
-    assert task["state"] == "active"  # dispatched at creation
+    # Attach a doable task (born active) so a privileged `deliver` has something
+    # to act on.
+    res = orch.operations.orch_task_attach(
+        {"project": "p", "goal": "ship it",
+         "produces": [{"name": "c1", "spec": "the deliverable"}]})
+    tid = res["task_id"]
+    task = orch.DAO().get_task(tid)
+    assert task["state"] == "active"  # dispatched at attach
 
     adapter = ServiceAdapter(
         "orchestrator", hub_adapter.API_MANIFEST, hub_adapter.HANDLERS)
@@ -52,12 +54,12 @@ async def test_privileged_op_is_dispatchable_though_unmanifested(orch):
     # `deliver` is NOT in the manifest, but _dispatch resolves it from HANDLERS.
     reply = await adapter._dispatch(
         "deliver",
-        {"task_id": root, "agent_ref": task["agent_ref"],
-         "contract": res["contract"], "payload_ref": "artifact:final"},
+        {"task_id": tid, "agent_ref": task["agent_ref"],
+         "contract": "c1", "payload_ref": "artifact:final"},
         None,
     )
     assert reply["ok"] is True
-    assert orch.DAO().get_task(root)["state"] == "delivered"
+    assert orch.DAO().get_task(tid)["state"] == "completed"
 
 
 async def test_unknown_function_raises(orch):

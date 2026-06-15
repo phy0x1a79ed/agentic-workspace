@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.agent, pytest.mark.smoke]
 from awm.agents.dao import AgentsDAO
 from awm.agents._time import now_ms
 
-_V2_COLS = {"mode", "task_ref", "agent_ref", "parent_agent_ref", "placement_token"}
+_V2_COLS = {"mode", "task_ref", "agent_ref", "placement_token"}
 
 
 class TestFreshSchema:
@@ -32,13 +32,12 @@ class TestFreshSchema:
         dao.open_task_instance(
             project="p", scope="s1", log_path=None, cli_session_id=None,
             started_at=now_ms(), mode="worker", task_ref="T", agent_ref="agt-1",
-            parent_agent_ref=None, placement_token="plt-dup")
+            placement_token="plt-dup")
         with pytest.raises(sqlite3.IntegrityError):
             dao.open_task_instance(
                 project="p", scope="s2", log_path=None, cli_session_id=None,
                 started_at=now_ms(), mode="worker", task_ref="T2",
-                agent_ref="agt-2", parent_agent_ref=None,
-                placement_token="plt-dup")
+                agent_ref="agt-2", placement_token="plt-dup")
 
     def test_null_placement_tokens_coexist(self, agents_env):
         # The unique index is partial (WHERE placement_token IS NOT NULL), so

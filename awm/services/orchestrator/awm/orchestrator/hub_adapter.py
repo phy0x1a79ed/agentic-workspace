@@ -5,9 +5,9 @@ starts the dispatch drain loop (``on_start``), then runs the shared
 :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
 reconnect).
 
-**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the four
+**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the three
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
-manifest) projects exactly four ``orch_*`` MCP tools. The four privileged
+manifest) projects exactly three ``orch_*`` MCP tools. The four privileged
 plan-mutation ops live in ``HANDLERS`` but are deliberately ABSENT from the
 manifest — so they are not MCP tools, yet remain reachable by the agents harness
 through the gateway's catch-all ``POST /svc/orchestrator/fn/<op>`` dispatch
@@ -30,29 +30,19 @@ from awm.orchestrator.dao import OrchestratorDAO
 
 log = logging.getLogger("awm.orchestrator.hub_adapter")
 
-# Only the four PUBLIC ops appear here — this is what becomes MCP-visible.
+# Only the three PUBLIC ops appear here — this is what becomes MCP-visible.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
-            "name": "orch_plan_create",
-            "tool": "orch_plan_create",
-            "description": "Attach a root goal to an existing project as a plan "
-                           "and start working it. Never creates a project.",
-            "params": [
-                {"name": "project", "type": "string", "required": True},
-                {"name": "goal", "type": "string", "required": True},
-                {"name": "contract", "type": "string", "required": False},
-            ],
-        },
-        {
             "name": "orch_task_attach",
             "tool": "orch_task_attach",
-            "description": "Attach a task to a plan — optionally under a parent, "
-                           "producing and/or depending on named contracts.",
+            "description": "Attach a task to the global DAG as a prerequisite "
+                           "(upstream) of a consumer (root by default), producing "
+                           "and/or depending on named contracts.",
             "params": [
                 {"name": "project", "type": "string", "required": True},
                 {"name": "goal", "type": "string", "required": True},
-                {"name": "parent_id", "type": "string", "required": False},
+                {"name": "consumer", "type": "string", "required": False},
                 {"name": "produces", "type": "array", "required": False},
                 {"name": "depends_on", "type": "array", "required": False},
             ],
@@ -60,19 +50,19 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "orch_status",
             "tool": "orch_status",
-            "description": "Per-state task counts, all task rows, completion, and "
-                           "root escalations for a project's plan.",
+            "description": "Per-state task counts, task rows, completion, and "
+                           "escalations for the plan (optionally per-project).",
             "params": [
-                {"name": "project", "type": "string", "required": True},
+                {"name": "project", "type": "string", "required": False},
             ],
         },
         {
             "name": "orch_frontier",
             "tool": "orch_frontier",
-            "description": "The ready leaves of a project's plan — the current "
-                           "worker frontier.",
+            "description": "The ready nodes — the current worker frontier "
+                           "(optionally per-project).",
             "params": [
-                {"name": "project", "type": "string", "required": True},
+                {"name": "project", "type": "string", "required": False},
             ],
         },
     ],
@@ -80,13 +70,12 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-# All EIGHT handlers — the four public above plus the four privileged ops that
+# All SEVEN handlers — the three public above plus the four privileged ops that
 # are intentionally NOT in the manifest (claim/deliver/fail/decompose_commit).
 # Their omission is what keeps them off the MCP tool surface; the catch-all
 # /svc/<name>/fn/<fn> dispatch still resolves them here.
 HANDLERS = {
     # public (manifest-visible)
-    "orch_plan_create": operations.orch_plan_create,
     "orch_task_attach": operations.orch_task_attach,
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
@@ -103,7 +92,8 @@ async def _on_start() -> None:
     resting frontier left by any prior run."""
     dao.init()
     dispatch.start_drain_loop()
-    # Boot reconcile: re-dispatch ready/failed nodes; leave active/analyzing.
+    # Boot reconcile: re-dispatch ready + planner-less decomposing nodes; leave
+    # placements out (active / decomposing-with-agent) alone.
     dispatch.enqueue(kernel.reconcile(OrchestratorDAO()))
 
 

@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS agent_instances (
     mode             TEXT NOT NULL DEFAULT 'conversational',
     task_ref         TEXT,
     agent_ref        TEXT,
-    parent_agent_ref TEXT,
     placement_token  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
@@ -70,7 +69,6 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "mode TEXT NOT NULL DEFAULT 'conversational';\n"
         "ALTER TABLE agent_instances ADD COLUMN task_ref TEXT;\n"
         "ALTER TABLE agent_instances ADD COLUMN agent_ref TEXT;\n"
-        "ALTER TABLE agent_instances ADD COLUMN parent_agent_ref TEXT;\n"
         "ALTER TABLE agent_instances ADD COLUMN placement_token TEXT;\n"
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_placement_token "
         "ON agent_instances(placement_token) WHERE placement_token IS NOT NULL;\n"
@@ -119,23 +117,22 @@ class AgentsDAO(BaseDAO):
                            mode: str,
                            task_ref: str | None,
                            agent_ref: str | None,
-                           parent_agent_ref: str | None,
                            placement_token: str | None,
                            intent: str = "live") -> int:
         """Insert a task-bound agent_instances row (the placement record).
 
-        Same row as a conversational instance, plus the lineage/task-binding
-        columns. ``mode`` is the lifecycle discriminator (anything other than
+        Same row as a conversational instance, plus the task-binding columns.
+        ``mode`` is the lifecycle discriminator (anything other than
         ``'conversational'`` is owned by the placement/supervision driver, not
         the resume driver). Returns the row id."""
         data = json.dumps({"intent": intent}, sort_keys=True)
         return self.execute(
             "INSERT INTO agent_instances "
             "(project, scope, cli_session_id, log_path, started_at, ended_at, "
-            "data, mode, task_ref, agent_ref, parent_agent_ref, placement_token) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
+            "data, mode, task_ref, agent_ref, placement_token) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
             (project, scope, cli_session_id, log_path, started_at, data,
-             mode, task_ref, agent_ref, parent_agent_ref, placement_token),
+             mode, task_ref, agent_ref, placement_token),
         )
 
     def resolve_placement(self, token: str) -> dict | None:
@@ -145,19 +142,6 @@ class AgentsDAO(BaseDAO):
         this is a single-row lookup — the placement IS the row."""
         return self.query_one(
             "SELECT * FROM agent_instances WHERE placement_token=?", (token,))
-
-    def get_agent_ref_for_scope(self, project: str, scope: str) -> str | None:
-        """Most recent minted agent_ref for (project, scope), or None.
-
-        Used to carry agent lineage forward across a respawn so the orchestrator
-        sees the same agent from claim through deliver."""
-        row = self.query_one(
-            "SELECT agent_ref FROM agent_instances "
-            "WHERE project=? AND scope=? AND agent_ref IS NOT NULL "
-            "ORDER BY started_at DESC LIMIT 1",
-            (project, scope),
-        )
-        return row["agent_ref"] if row else None
 
     def clear_placement_token(self, instance_id: int) -> None:
         """Null a row's placement_token (used before a respawn reinserts it).
