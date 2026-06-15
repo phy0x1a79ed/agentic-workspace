@@ -365,10 +365,10 @@ def _h_reconcile(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Orchestrator-facing + worker-tool handlers (task-bounded placement, T2)
 # ---------------------------------------------------------------------------
-# place_on_task (contract A) and stop_tree (contract F) are orchestrator-called,
-# NOT worker tools, so they are omitted from API_MANIFEST and reached only via
-# the gateway catch-all dispatch (keyed off HANDLERS). The task_* relays ARE in
-# the manifest (MCP-visible to placed workers).
+# place_on_task (contract A) is orchestrator-called, NOT a worker tool, so it is
+# omitted from API_MANIFEST and reached only via the gateway catch-all dispatch
+# (keyed off HANDLERS). The task_* relays ARE in the manifest (MCP-visible to
+# placed workers).
 
 async def _h_place_on_task(args: dict) -> dict:
     from awm.agents import placement
@@ -390,11 +390,6 @@ async def _h_task_decompose(args: dict) -> dict:
     return await placement.relay_decompose(args)
 
 
-async def _h_stop_tree(args: dict) -> dict:
-    from awm.agents import placement
-    return await placement.stop_tree(args)
-
-
 HANDLERS = {
     "list_sessions": _h_list_sessions,
     "create_session": _h_create_session,
@@ -406,9 +401,8 @@ HANDLERS = {
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
-    # Task-bounded placement (manifest-omitted ops reached via catch-all).
+    # Task-bounded placement (manifest-omitted op reached via catch-all).
     "place_on_task": _h_place_on_task,
-    "stop_tree": _h_stop_tree,
     # Worker tools (also in the manifest, MCP-visible).
     "task_deliver": _h_task_deliver,
     "task_fail": _h_task_fail,

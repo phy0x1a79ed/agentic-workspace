@@ -21,7 +21,7 @@ def _open_task(scope, token):
     return AgentsDAO().open_task_instance(
         project="p", scope=scope, log_path=None, cli_session_id="cid",
         started_at=now_ms(), mode="worker", task_ref="T", agent_ref="agt-1",
-        parent_agent_ref=None, placement_token=token)
+        placement_token=token)
 
 
 class TestResumeSkipsTaskBound:

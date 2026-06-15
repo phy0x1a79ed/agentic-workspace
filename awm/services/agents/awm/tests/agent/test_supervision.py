@@ -60,7 +60,7 @@ def _seed(token="plt-1", **kw):
     return dao.open_task_instance(
         project="p", scope="leaf-1", log_path=None, cli_session_id=None,
         started_at=now_ms(), mode="worker", task_ref="T-1", agent_ref="agt-1",
-        parent_agent_ref=None, placement_token=token)
+        placement_token=token)
 
 
 class TestTurnBudget:

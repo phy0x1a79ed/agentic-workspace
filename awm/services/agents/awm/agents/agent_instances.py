@@ -135,14 +135,13 @@ class AgentInstance:
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         self.compacting: bool = False
-        # Task-bounded placement (T2). For a conversational session these stay
-        # at their defaults and every task path short-circuits. For a worker the
+        # Task-bounded placement. For a conversational session these stay at
+        # their defaults and every task path short-circuits. For a worker the
         # placement IS this instance row; placement_token names it, agent_ref is
-        # the stable lineage id, task_ref binds it to the orchestrator's task.
+        # the stable placement identity, task_ref binds it to the task.
         self.mode: str = "conversational"
         self.task_ref: Optional[str] = None
         self.agent_ref: Optional[str] = None
-        self.parent_agent_ref: Optional[str] = None
         self.placement_token: Optional[str] = None
         # Supervision: a hard turn budget that decrements every turn boundary,
         # no extension, no refill (only meaningful when mode != conversational).
@@ -337,15 +336,14 @@ async def create_session(*, project: str, scope: str,
                          mode: str = "conversational",
                          task_ref: Optional[str] = None,
                          agent_ref: Optional[str] = None,
-                         parent_agent_ref: Optional[str] = None,
                          placement_token: Optional[str] = None) -> AgentInstance:
     """Spawn a CLI subprocess and register it.
 
-    The ``mode``/``task_ref``/``agent_ref``/``parent_agent_ref``/
-    ``placement_token`` params are the task-bounded placement extension (T2);
-    they default such that every existing conversational caller is unchanged.
-    When ``mode != 'conversational'`` the DAO insert records the placement row
-    and the supervision driver takes over the lifecycle."""
+    The ``mode``/``task_ref``/``agent_ref``/``placement_token`` params are the
+    task-bounded placement extension; they default such that every existing
+    conversational caller is unchanged. When ``mode != 'conversational'`` the DAO
+    insert records the placement row and the supervision driver takes over the
+    lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
@@ -407,7 +405,6 @@ async def create_session(*, project: str, scope: str,
                 mode=mode,
                 task_ref=task_ref,
                 agent_ref=agent_ref,
-                parent_agent_ref=parent_agent_ref,
                 placement_token=placement_token,
             )
 
@@ -453,7 +450,6 @@ async def create_session(*, project: str, scope: str,
         session.mode = mode
         session.task_ref = task_ref
         session.agent_ref = agent_ref
-        session.parent_agent_ref = parent_agent_ref
         session.placement_token = placement_token
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
@@ -998,7 +994,6 @@ async def respawn_session(
         task_mode = current.mode
         task_ref = current.task_ref
         agent_ref = current.agent_ref
-        parent_agent_ref = current.parent_agent_ref
         placement_token = current.placement_token
         if task_mode != "conversational" and placement_token is not None:
             _get_dao().clear_placement_token(current.id)
@@ -1027,7 +1022,6 @@ async def respawn_session(
         mode=task_mode,
         task_ref=task_ref,
         agent_ref=agent_ref,
-        parent_agent_ref=parent_agent_ref,
         placement_token=placement_token,
     )
 

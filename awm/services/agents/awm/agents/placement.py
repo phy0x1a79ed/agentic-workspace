@@ -1,20 +1,20 @@
-"""Task-bounded placement — the runtime side of the v1 orchestrator (T2).
+"""Task-bounded placement — the runtime side of the orchestrator.
 
 A **placement** is the assignment of one worker agent onto one task in a fresh
 scope. The placement record IS the task-bound ``agent_instances`` row (``mode``
 != ``'conversational'``); the ``placement_token`` names it; ``agent_ref`` is the
-stable lineage id; ``task_ref`` binds it to the orchestrator's task. This module
-owns:
+stable placement identity; ``task_ref`` binds it to the orchestrator's task.
+This module owns:
 
 - ``place_on_task`` (contract A) — provision a scope, spawn a supervised worker
-  via the EXISTING conversational spawn path, record lineage, deliver the brief.
+  via the EXISTING conversational spawn path, record the placement, deliver the
+  brief.
 - the worker-tool relays (contract D → contract B) — ``relay_deliver`` /
   ``relay_fail`` / ``relay_decompose``: resolve the token, relay to the matching
   orchestrator op as the RESOLVED refs (never worker-supplied), reclaim the scope
   only after the orchestrator acks (deliver/fail; never decompose).
 - the supervision driver — ``on_turn_boundary``: a hard turn budget that keeps a
   human-less worker moving and force-fails gracefully (saving progress) at 0.
-- ``stop_tree`` (contract F) — a single-agent STUB; the cascade walk is T5.
 
 Everything here reuses ``agent_instances`` (spawn / transcript / scope-delivery /
 stdin injection) rather than forking it.
@@ -119,7 +119,6 @@ async def place_on_task(args: dict) -> dict:
     brief = args.get("brief", "")
     contracts_in = args.get("contracts_in") or []
     contracts_out = args.get("contracts_out") or []
-    parent_agent_ref = args.get("parent_agent_ref")
     mode = args.get("mode", "worker")
 
     agent_ref = _mint_agent_ref()
@@ -142,7 +141,7 @@ async def place_on_task(args: dict) -> dict:
         project=project, scope=scope_slug,
         agent_cli="claude", permission_mode="bypassPermissions",
         mode=mode, task_ref=task_id, agent_ref=agent_ref,
-        parent_agent_ref=parent_agent_ref, placement_token=placement_token,
+        placement_token=placement_token,
     )
 
     # Kickoff via stdin (NOT scope_post — the scope-delivery loop seeds its
@@ -326,23 +325,3 @@ async def on_turn_boundary(session) -> None:
         return
     ai.enqueue_input(session, "supervisor",
                      _continuation_prompt(task_id, token, remaining))
-
-
-# ---------------------------------------------------------------------------
-# stop_tree (contract F) — single-agent STUB; cascade is T5
-# ---------------------------------------------------------------------------
-
-async def stop_tree(args: dict) -> dict:
-    """Stop one placed agent by ``agent_ref``. STUB: no lineage cascade yet.
-
-    The ``parent_agent_ref`` column is present so T5 can walk descendants; for
-    now this stops only the single matching live instance."""
-    agent_ref = args.get("agent_ref")
-    if not agent_ref:
-        raise PlacementError("missing agent_ref")
-    stopped: list[int] = []
-    for inst_id, sess in list(ai._registry_by_id.items()):
-        if getattr(sess, "agent_ref", None) == agent_ref:
-            await _retire_worker(inst_id)
-            stopped.append(inst_id)
-    return {"ok": True, "stopped": stopped, "cascade": False}

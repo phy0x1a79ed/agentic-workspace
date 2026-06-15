@@ -1,4 +1,4 @@
-"""T2: place_on_task — provisioning order, minted ids, lineage, kickoff, respawn."""
+"""place_on_task — provisioning order, minted ids, placement row, kickoff, respawn."""
 
 from __future__ import annotations
 
@@ -42,15 +42,14 @@ class TestPlaceOnTask:
         assert res["placement_token"].startswith("plt-")
         assert res["scope"] == "leaf-1"
 
-    async def test_persists_lineage_row(self, agents_env, stub_core):
-        res = await _place(agents_env, parent_agent_ref="agt-parent")
+    async def test_persists_placement_row(self, agents_env, stub_core):
+        res = await _place(agents_env)
         dao = AgentsDAO()
         row = dao.resolve_placement(res["placement_token"])
         assert row is not None
         assert row["mode"] == "worker"
         assert row["task_ref"] == "T-1"
         assert row["agent_ref"] == res["agent_ref"]
-        assert row["parent_agent_ref"] == "agt-parent"
 
     async def test_kickoff_enqueued(self, agents_env, stub_core):
         await _place(agents_env)
@@ -76,7 +75,7 @@ class TestPlaceOnTask:
         new = await ai_mod.respawn_session("p/leaf-1")
 
         assert new.id != first.id
-        assert new.agent_ref == res["agent_ref"]      # lineage carried forward
+        assert new.agent_ref == res["agent_ref"]      # identity carried forward
         assert new.mode == "worker"
         assert new.placement_token == token            # token stable
         # The OLD row released the token (partial-unique invariant) and the new
