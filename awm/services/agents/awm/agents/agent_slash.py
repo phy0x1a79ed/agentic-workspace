@@ -1,15 +1,15 @@
 """Server-side slash-command catalog for agent control.
 
-Slash commands posted to a room with a ``to:`` scope are routed here. If
-the command matches a registered server command, the handler runs and a
-result message is posted back to the room. Unknown commands fall through
-to the scope's claude stdin (via ``agent_instances.send_slash``) so /clear,
-/compact, plugin commands, etc. still work.
+Slash commands posted to a scope channel with a ``to:`` scope are routed here.
+If the command matches a registered server command, the handler runs and a
+result message is posted back to the scope channel. Unknown commands fall
+through to the scope's claude stdin (via ``agent_instances.send_slash``) so
+/clear, /compact, plugin commands, etc. still work.
 
 The catalog is intentionally small and explicit — each entry has a name,
 arg signature for the help panel, a one-line description, and an async
 handler that takes ``(scope_key, args)`` and returns the result string
-that will be posted to the room as a ``system`` message.
+that will be posted to the scope channel as a ``system`` message.
 """
 
 from __future__ import annotations
@@ -202,7 +202,7 @@ async def dispatch(scope_key: str, line: str) -> tuple[bool, str]:
 
     Returns ``(handled, message)``:
       - ``handled=True``: a registered server command ran; message is its
-        result string (post as ``system`` to the room).
+        result string (post as ``system`` to the scope channel).
       - ``handled=False``: the command isn't registered server-side; the
         caller should forward the raw line to the scope's claude stdin
         via ``agent_instances.send_slash``. ``message`` is empty.

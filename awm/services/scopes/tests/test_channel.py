@@ -126,40 +126,33 @@ def _build_legacy_db(path) -> None:
     db.executescript("""
         CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, url TEXT, repo_path TEXT, created_at INTEGER);
         CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT);
-        CREATE TABLE agents (id TEXT PRIMARY KEY, project_id TEXT, scope TEXT, parent_id TEXT, status TEXT,
+        CREATE TABLE agents (id TEXT PRIMARY KEY, project_id TEXT, scope TEXT, status TEXT,
             agent_cli TEXT, branch TEXT, worktree TEXT, display_name TEXT, is_vagrant INT, created_at INT, retired_at INT);
         CREATE TABLE session_logs (id INTEGER PRIMARY KEY, agent_id TEXT, created_at INT, file_path TEXT, git_commit TEXT,
             summary TEXT, metadata TEXT, content TEXT, skill_path TEXT, outcome TEXT, deviations TEXT, suggestions TEXT,
             skill_version TEXT, resolved_at INT, resolution TEXT, title TEXT);
         CREATE TABLE messages (id INTEGER PRIMARY KEY, recipient_id TEXT, sender_id TEXT, msg_type TEXT, subject TEXT,
             body TEXT, metadata TEXT, status TEXT, created_at INT, read_at INT);
-        CREATE TABLE rooms (id TEXT PRIMARY KEY, owner_agent_id TEXT, topic TEXT, status TEXT, created_at INT, closed_at INT);
-        CREATE TABLE guest_list (room_id TEXT, guest_kind TEXT, guest_ref TEXT, display_name TEXT, subscriptions TEXT);
-        CREATE TABLE room_transcripts (id TEXT PRIMARY KEY, room_id TEXT, author TEXT, kind TEXT, body TEXT, meta TEXT, ts INT);
         CREATE TABLE embeddings (source_type TEXT, source_id TEXT, chunk_text TEXT, embedding BLOB, updated_at INT);
     """)
     db.execute("INSERT INTO projects VALUES ('p1','awm',NULL,'/repo',1000)")
     db.execute("INSERT INTO users VALUES ('u1','alice')")
-    db.execute("INSERT INTO agents VALUES ('a1','p1','dev',NULL,'active','claude','feat/dev','/wt/dev','dev',0,1000,NULL)")
-    db.execute("INSERT INTO agents VALUES ('a2','p1','helper',NULL,'active','claude','feat/helper','/wt/helper','helper',0,1000,NULL)")
+    db.execute("INSERT INTO agents VALUES ('a1','p1','dev','active','claude','feat/dev','/wt/dev','dev',0,1000,NULL)")
+    db.execute("INSERT INTO agents VALUES ('a2','p1','helper','active','claude','feat/helper','/wt/helper','helper',0,1000,NULL)")
     db.execute("INSERT INTO session_logs (id,agent_id,created_at,summary,metadata,skill_path,outcome,title) "
                "VALUES (1,'a1',2000,'did the thing','{\"decisions\":[\"d1\"]}','awm/debrief.md','success','Did the thing')")
     db.execute("INSERT INTO messages (id,recipient_id,sender_id,msg_type,subject,body,status,created_at) "
                "VALUES (1,'a1','u1','notification','hi','hello dev','unread',2500)")
     db.execute("INSERT INTO messages (id,recipient_id,sender_id,msg_type,subject,body,status,created_at) "
                "VALUES (2,'u1','a1','notification','re','reply to alice','unread',2600)")
-    # Two rooms owned by the SAME scope → must fold into one channel.
-    db.execute("INSERT INTO rooms VALUES ('room-one','a1','first','open',1500,NULL)")
-    db.execute("INSERT INTO rooms VALUES ('room-two','a1','second','closed',1600,1700)")
-    db.execute("INSERT INTO guest_list VALUES ('room-one','agent','a2','helper','{}')")
-    db.execute("INSERT INTO guest_list VALUES ('room-two','user','u1','alice','{}')")
-    db.execute("INSERT INTO room_transcripts VALUES ('t1','room-one','a1','message','from room one','{}',1550)")
-    db.execute("INSERT INTO room_transcripts VALUES ('t2','room-two','a2','message','from room two','{}',1650)")
     db.commit()
     db.close()
 
 
 class TestSeedFold:
+    """The legacy seed folds the non-rooms comms pair (session_logs + messages)
+    into the scope channel. Rooms folding was removed with the rooms subsystem."""
+
     def test_fold(self, scopes_workspace, tmp_path):
         from awm.scopes.seed import seed_from_legacy
         from awm.persistence.databases import get_connection
@@ -169,9 +162,8 @@ class TestSeedFold:
         counts = seed_from_legacy(legacy)
 
         assert counts["agents"] == 2
-        # 1 journal + 1 dev message + 1 alice message + 2 transcripts
-        assert counts["scope_posts"] == 5
-        assert counts["scope_subscribers"] == 2
+        # 1 journal + 1 dev message + 1 alice message
+        assert counts["scope_posts"] == 3
 
         conn = get_connection("scopes")
         conn.row_factory = sqlite3.Row
@@ -180,23 +172,14 @@ class TestSeedFold:
                 "SELECT kind, body, ts FROM scope_posts "
                 "WHERE owner_project='awm' AND owner_scope='dev' ORDER BY ts"
             ).fetchall()
-            # Both rooms' transcripts folded into awm/dev, ts-ordered.
-            transcripts = [r["body"] for r in dev if r["ts"] in (1550, 1650)]
-            assert transcripts == ["from room one", "from room two"]
-            # One journal entry.
+            # One journal entry + the message addressed to dev.
             assert sum(1 for r in dev if r["kind"] == "journal") == 1
+            assert "hello dev" in [r["body"] for r in dev]
             # Non-literal user channel.
             alice = conn.execute(
                 "SELECT body FROM scope_posts WHERE owner_project='' AND owner_scope='user:alice'"
             ).fetchall()
             assert [r["body"] for r in alice] == ["reply to alice"]
-            # Guests from both folded rooms landed on the awm/dev channel.
-            subs = {(r["guest_kind"], r["guest_ref"]) for r in conn.execute(
-                "SELECT guest_kind, guest_ref FROM scope_subscribers "
-                "WHERE owner_project='awm' AND owner_scope='dev'"
-            ).fetchall()}
-            assert ("agent", "awm/helper") in subs
-            assert ("user", "user:alice") in subs
         finally:
             conn.close()
 
@@ -212,4 +195,39 @@ class TestSeedFold:
             n = conn.execute("SELECT COUNT(*) FROM scope_posts").fetchone()[0]
         finally:
             conn.close()
-        assert n == 5
+        assert n == 3
+
+
+class TestSchemaMigrationV3:
+    """The v2→v3 migration drops the rooms-era ``agents.parent_id`` (and its
+    dependent index) while preserving every agent row."""
+
+    def test_drops_parent_id_and_preserves_rows(self, tmp_path):
+        from awm.scopes.dao import MIGRATIONS
+
+        db = sqlite3.connect(tmp_path / "v2.db")
+        db.executescript(
+            "CREATE TABLE agents (id TEXT PRIMARY KEY, project_id TEXT, "
+            "scope TEXT, parent_id TEXT REFERENCES agents(id), status TEXT, "
+            "agent_cli TEXT, branch TEXT, worktree TEXT, display_name TEXT, "
+            "is_vagrant INT, created_at INT, retired_at INT);\n"
+            "CREATE INDEX idx_agents_parent ON agents(parent_id);\n"
+            "INSERT INTO agents VALUES "
+            "('a1','p1','dev','par','active','claude','b','w','dev',0,1,NULL);\n"
+        )
+        db.commit()
+        # Apply the real migration SQL the way the migration loop does (FKs off).
+        db.executescript("PRAGMA foreign_keys=OFF;\n" + MIGRATIONS[(2, 3)])
+
+        cols = [r[1] for r in db.execute("PRAGMA table_info(agents)").fetchall()]
+        assert "parent_id" not in cols
+        # Row + its surviving data preserved.
+        assert db.execute(
+            "SELECT id, scope, status FROM agents"
+        ).fetchone() == ("a1", "dev", "active")
+        # The dependent index is gone too.
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_agents_parent'"
+        ).fetchone() is None
+        db.close()

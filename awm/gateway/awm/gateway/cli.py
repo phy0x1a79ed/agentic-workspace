@@ -657,6 +657,17 @@ def dev_shadow(
         None, "--name",
         help="Override the overlay/base name (single target only).",
     ),
+    placement_harness: Optional[str] = typer.Option(
+        None, "--placement-harness",
+        help="Override the agent harness for task placements spawned by a "
+             "shadowed agents service (sets AWM_PLACEMENT_HARNESS; default "
+             "opencode). e.g. 'claude'.",
+    ),
+    placement_model: Optional[str] = typer.Option(
+        None, "--placement-model",
+        help="Pin the model for task placements (sets AWM_PLACEMENT_MODEL); "
+             "None → the harness's own default (DSv4-free for opencode).",
+    ),
 ):
     """Bring our worktree's pages + services up on a running hub (default: dev :7821).
 
@@ -704,7 +715,11 @@ def dev_shadow(
             if lease:
                 leases.append(lease)
         else:
-            svc = _shadow_service_target(target, name, service_bases)
+            svc = _shadow_service_target(
+                target, name, service_bases,
+                placement_harness=placement_harness,
+                placement_model=placement_model,
+            )
             if svc:
                 spawned.append(svc)
 
@@ -804,8 +819,32 @@ def _shadow_page_target(
     return (f"pages/{name}", body["lease_ws_path"])
 
 
+def _shadow_isolated_workspace(service_dir: pathlib.Path) -> pathlib.Path:
+    """The ISOLATED local workspace root for shadowed services from this worktree.
+
+    A single ``<worktree>/.awm-shadow`` shared by every service brought up in one
+    ``awm dev shadow`` run. It exists so an overlay NEVER inherits the calling
+    shell's ``AWM_WORKSPACE`` (the footgun: that misroutes the overlay's per-service
+    DBs) and never shares the idle base's DBs (the agents boot-reconcile closes
+    every open instance row — corrupting the base). The CANONICAL workspace, where
+    agents actually do their work, is learned from the hub on register (T1); this
+    root only has to be private + writable. Derived from the worktree holding the
+    service code (its git toplevel), not from ``WORKSPACE_ROOT`` — which may itself
+    be the inherited (wrong) shell value."""
+    root = service_dir
+    for cand in [service_dir, *service_dir.parents]:
+        if (cand / ".git").exists():
+            root = cand
+            break
+    ws = root / ".awm-shadow"
+    (ws / ".awm" / "services").mkdir(parents=True, exist_ok=True)
+    return ws
+
+
 def _shadow_service_target(
     target: str, override_name: Optional[str], service_bases: set[str],
+    *, placement_harness: Optional[str] = None,
+    placement_model: Optional[str] = None,
 ) -> Optional[tuple[str, int]]:
     """Exec a service folder's ``run.sh`` against the hub with this worktree's code.
 
@@ -838,6 +877,17 @@ def _shadow_service_target(
     _port = urlsplit(BASE_URL).port
     if _port:
         env["AWM_PORT"] = str(_port)
+    # ISOLATE the local workspace: never inherit the calling shell's
+    # AWM_WORKSPACE (it would misroute this overlay's per-service DBs and could
+    # corrupt the idle base it shadows). The canonical workspace — where agents
+    # actually work — is sent back by the hub on register (T1), so the local
+    # root only needs to be private + writable. Repeat trials: rm -rf the dir.
+    env["AWM_WORKSPACE"] = str(_shadow_isolated_workspace(service_dir))
+    # Optional per-run placement overrides for a shadowed agents service.
+    if placement_harness:
+        env["AWM_PLACEMENT_HARNESS"] = placement_harness
+    if placement_model:
+        env["AWM_PLACEMENT_MODEL"] = placement_model
     env.setdefault("AWM_ENV", "awm")
     if is_overlay:
         env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"

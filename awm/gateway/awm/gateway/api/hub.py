@@ -223,6 +223,13 @@ class ServiceRegisterResponse(BaseModel):
     prefix: str
     control_ws_path: str
     bridge_ws_base: str
+    canonical_workspace: str = Field(
+        "",
+        description="The hub's canonical workspace root. A service learns where "
+                    "agents/data actually live FROM the hub on register, rather "
+                    "than assuming it from its own AWM_WORKSPACE env. A shadow "
+                    "overlay keeps its DBs on an isolated local root but points "
+                    "real work here; a native service's local root == this.")
 
 
 @router.post("/service/register", response_model=ServiceRegisterResponse)
@@ -294,12 +301,16 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
 
     log.info("registered service %s prefix=%s pid=%s id=%s",
              rec.name, rec.prefix, rec.backend_pid, rec.service_id)
+    # Report the hub's own canonical workspace so the service can resolve where
+    # agents/data live without assuming it from its (possibly isolated) env.
+    from awm import config as _config
     return ServiceRegisterResponse(
         service_id=rec.service_id,
         name=rec.name,
         prefix=rec.prefix,
         control_ws_path=f"/hub/service/control/{rec.service_id}",
         bridge_ws_base=f"/hub/service/bridge/{rec.service_id}",
+        canonical_workspace=str(_config.WORKSPACE_ROOT),
     )
 
 

@@ -21,6 +21,7 @@ import json
 import os
 from typing import AsyncIterator, Optional
 
+from ._mcp import write_claude_mcp_config
 from ._path import resolve_bin
 from .session import AgentSession
 from .types import AgentConfig, AgentEvent
@@ -34,7 +35,10 @@ def build_claude_argv(config: AgentConfig) -> list[str]:
 
     Full-open perms (``permissions='full'``) →
     ``--permission-mode=bypassPermissions``. ``params['effort']`` →
-    ``--effort``. ``mcp_config`` → ``--strict-mcp-config --mcp-config <path>``.
+    ``--effort``. The harness synthesizes its own ``awm`` MCP server config
+    (``write_claude_mcp_config`` — workspace + hub port + ``AWM_AS`` for
+    placements) when a hub port is set, falling back to an explicit
+    ``mcp_config`` path; the result → ``--strict-mcp-config --mcp-config <path>``.
     ``allowed_tools`` / ``disallowed_tools`` → ``--allowedTools`` /
     ``--disallowedTools`` (comma-joined): scope which built-in AND MCP tools the
     subprocess may call. Note these gate *tool availability*, which is
@@ -67,8 +71,12 @@ def build_claude_argv(config: AgentConfig) -> list[str]:
         argv.extend(["--disallowedTools", ",".join(config.disallowed_tools)])
     if config.resume_id:
         argv.extend(["--resume", config.resume_id])
-    if config.mcp_config and os.path.exists(config.mcp_config):
-        argv.extend(["--strict-mcp-config", "--mcp-config", config.mcp_config])
+    # The harness owns its agent's MCP setup: synthesize the awm server config
+    # (carrying this agent's identity for placements), else honor an explicit
+    # pre-built path.
+    mcp_path = write_claude_mcp_config(config) or config.mcp_config
+    if mcp_path and os.path.exists(mcp_path):
+        argv.extend(["--strict-mcp-config", "--mcp-config", mcp_path])
     return argv
 
 

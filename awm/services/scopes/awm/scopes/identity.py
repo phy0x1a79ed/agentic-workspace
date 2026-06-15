@@ -177,9 +177,9 @@ def ensure_agent(project: str, scope: str, *,
     aid = str(_uuid.uuid4())
     dao.execute(
         "INSERT INTO agents "
-        "(id, project_id, scope, parent_id, status, agent_cli, branch, "
+        "(id, project_id, scope, status, agent_cli, branch, "
         " worktree, display_name, is_vagrant, created_at, retired_at) "
-        "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
         (aid, pid, scope, status, agent_cli,
          branch or f"feat/{scope}", worktree,
          display_name or scope, 1 if is_vagrant else 0, now_ms()),

@@ -5,7 +5,7 @@ service. Import paths updated; monolith-coupling removed.
 
 Key changes from the original:
   - No awm.db.get_connection / awm.services.identity imports
-  - No rooms_svc dependency
+  - No legacy comms (rooms/messages) dependency
   - _seed_agent now inserts directly via AgentsDAO (no projects/agents tables)
   - _open_instance now inserts via AgentsDAO
   - FakeSession no longer needs agent_id

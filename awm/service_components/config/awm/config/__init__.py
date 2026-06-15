@@ -32,6 +32,42 @@ def find_workspace_root() -> Path:
 WORKSPACE_ROOT = find_workspace_root()
 
 # ---------------------------------------------------------------------------
+# Canonical workspace (hub-provided on register)
+# ---------------------------------------------------------------------------
+# WORKSPACE_ROOT (above) is THIS process's *local* root — where its own ``.awm``
+# DBs live. For a normal (native) service the local root IS the canonical
+# workspace, so the two coincide and nothing changes. A shadow overlay is the
+# exception: it runs with an ISOLATED local root (so its per-service DBs never
+# collide with the idle base it shadows — the agents boot-reconcile closes every
+# open instance row), yet its placed agents must still operate in the REAL
+# workspace. The hub therefore reports its canonical workspace to every service
+# on register (``ServiceRegisterResponse.canonical_workspace``); the gatewayclient
+# adapter calls :func:`set_canonical_workspace` with it. A service that resolves
+# where agents work (the agents service's spawned MCP env, etc.) reads
+# :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
+# Until a register handshake binds it, canonical defaults to the local root, so
+# tests and never-registered processes are unaffected.
+_CANONICAL_WORKSPACE: Path = WORKSPACE_ROOT
+
+
+def set_canonical_workspace(path: "str | Path | None") -> None:
+    """Late-bind the canonical workspace the hub reported on register.
+
+    Idempotent and tolerant of an empty value (leaves the current canonical in
+    place). Distinct from ``WORKSPACE_ROOT`` on purpose — mutating that would
+    repoint this process's own DBs and reintroduce the overlay↔base collision.
+    """
+    global _CANONICAL_WORKSPACE
+    if path:
+        _CANONICAL_WORKSPACE = Path(path).resolve()
+
+
+def canonical_workspace() -> Path:
+    """The canonical workspace (hub-provided on register), else the local root."""
+    return _CANONICAL_WORKSPACE
+
+
+# ---------------------------------------------------------------------------
 # Derived paths
 # ---------------------------------------------------------------------------
 
