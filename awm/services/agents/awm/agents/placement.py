@@ -1,31 +1,40 @@
-"""Task-bounded placement — the runtime side of the orchestrator.
+"""Task-bounded placement — the runtime side of the one-DAG orchestrator.
 
-A **placement** is the assignment of one worker agent onto one task in a fresh
-scope. The placement record IS the task-bound ``agent_instances`` row (``mode``
-!= ``'conversational'``); the ``placement_token`` names it; ``agent_ref`` is the
-stable placement identity; ``task_ref`` binds it to the orchestrator's task.
-This module owns:
+A **placement** drops one agent onto one orchestrator task in a dedicated
+**workspace unit** (the DAG execution sandbox: a workdir with the brief, the
+read-only input pre-readings, and the deliverable staging — provisioned by the
+``workspace`` service, NOT a git scope). The placement record IS the task-bound
+``agent_instances`` row (``mode`` != ``'conversational'``); ``placement_token``
+names it, ``agent_ref`` is the stable placement identity, ``task_ref`` binds it
+to the task. The unit is **one-per-task, reused across the lifecycle**: the same
+slug carries a task through PLANNING → VERIFYING_PLAN → ACTIVE, each stage a
+fresh agent in a different MODE with a different tool profile.
 
-- ``place_on_task`` (contract A) — provision a scope, spawn a supervised worker
-  via the EXISTING conversational spawn path, record the placement, deliver the
-  brief.
-- the worker-tool relays (contract D → contract B) — ``relay_deliver`` /
-  ``relay_fail`` / ``relay_decompose``: resolve the token, relay to the matching
-  orchestrator op as the RESOLVED refs (never worker-supplied), reclaim the scope
-  only after the orchestrator acks (deliver/fail; never decompose).
-- the supervision driver — ``on_turn_boundary``: a hard turn budget that keeps a
-  human-less worker moving and force-fails gracefully (saving progress) at 0.
+Four placement modes, one uniform pattern (craft a deliverable, then a
+harness-checked stop boundary transitions the task):
 
-Everything here reuses ``agent_instances`` (spawn / transcript / scope-delivery /
-stdin injection) rather than forking it.
+- ``plan``   (PLANNING)        — read-only; stages the reserved ``"plan"``
+                                  deliverable (objective → a plan).
+- ``verify`` (VERIFYING_PLAN)   — NO filesystem; judges the staged plan against
+                                  the objective; terminal via approve/reject.
+- ``worker`` (ACTIVE)           — full fs; stages each ``contracts_out``
+                                  deliverable, then ``indicate_done``.
+- ``planner`` (DECOMPOSING)     — read-only; buffers a sub-DAG via graph tools,
+                                  committed at accept (funnel-checked).
+
+This module owns ``place_on_task`` (contract A), the worker/verifier/planner
+tool relays (contract D → contract B), and the supervision driver
+``on_turn_boundary`` (per-mode acceptance + hard turn budget + attach-freeze).
+Everything reuses ``agent_instances`` (spawn / transcript / stdin) rather than
+forking it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
+from pathlib import Path
 
 import awm.gatewayclient as gatewayclient
 from awm.agents import agent_instances as ai
@@ -48,109 +57,273 @@ def _mint_placement_token() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Per-mode tool profiles (contract D, via the claude --allowedTools lever)
+# ---------------------------------------------------------------------------
+# One allowlist scopes BOTH filesystem access (built-in tools) AND which worker
+# tools (MCP, named mcp__awm__<tool>) a placed agent may call. A verify
+# placement gets NO filesystem tools; plan/planner get read-only built-ins.
+
+_BUILTIN_READONLY = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite"]
+_BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
+
+_AWM = "mcp__awm__"
+_WORKER_TOOLS = [_AWM + "edit_deliverable", _AWM + "indicate_done", _AWM + "task_fail"]
+_PLANNER_TOOLS = [
+    _AWM + "add_subtask", _AWM + "add_dependency", _AWM + "define_contract",
+    _AWM + "search_tasks", _AWM + "search_contracts",
+    _AWM + "indicate_done", _AWM + "task_fail",
+]
+_VERIFY_TOOLS = [_AWM + "approve_plan", _AWM + "reject_plan", _AWM + "task_fail"]
+
+TOOL_PROFILES: dict[str, list[str]] = {
+    "worker": _BUILTIN_FULL + _WORKER_TOOLS,
+    "plan": _BUILTIN_READONLY + _WORKER_TOOLS,
+    "planner": _BUILTIN_READONLY + _PLANNER_TOOLS,
+    "verify": list(_VERIFY_TOOLS),  # no filesystem at all
+}
+
+_VALID_MODES = set(TOOL_PROFILES)
+
+
+def _allowed_tools_for(mode: str) -> list[str]:
+    return list(TOOL_PROFILES.get(mode, TOOL_PROFILES["worker"]))
+
+
+# ---------------------------------------------------------------------------
 # Brief / kickoff rendering
 # ---------------------------------------------------------------------------
 
-def _fmt_contracts(label: str, contracts: list) -> str:
-    if not contracts:
+def _fmt_list(label: str, items: list) -> str:
+    if not items:
         return f"{label}: (none)"
-    lines = [f"{label}:"]
-    for c in contracts:
-        lines.append(f"  - {c}")
-    return "\n".join(lines)
+    return label + ":\n" + "\n".join(f"  - {i}" for i in items)
+
+
+def _finish_worker(token: str, contracts_out: list) -> str:
+    return (
+        "## How to finish\n\n"
+        "Craft each required output by calling "
+        f"`edit_deliverable(placement_token, contract, content)` — call it as "
+        "many times as you need (each call REPLACES the staged content for that "
+        "contract). When every output is staged and correct, call "
+        f"`indicate_done(placement_token)`. Editing a deliverable after "
+        "indicating done clears the done flag — re-indicate.\n\n"
+        "When you stop with done set and every output staged & valid, the task "
+        "advances automatically. If you cannot complete it, call "
+        "`task_fail(placement_token, reason_type, reason_text, partial_ref?)`.\n\n"
+        f"Outputs you must stage: {', '.join(contracts_out) or '(none)'}\n"
+        f"Your placement_token: `{token}`\n"
+    )
+
+
+def _finish_planner(token: str) -> str:
+    return (
+        "## How to finish\n\n"
+        "This task is too large to do directly — decompose it into a sub-DAG. "
+        "Build the graph with `add_subtask(placement_token, id, objective, "
+        "contracts_out?)`, `add_dependency(placement_token, from_id, to_id)`, "
+        "and `define_contract(placement_token, name, ...)`. Use "
+        "`search_tasks` / `search_contracts` to reuse existing nodes. **Every "
+        "subtask must funnel into this task** (the sub-DAG has a single sink and "
+        "every node reaches it). When the graph is complete, call "
+        f"`indicate_done(placement_token)` to commit it. Your placement_token: "
+        f"`{token}`\n"
+    )
 
 
 def render_brief(*, task_id: str, mode: str, brief: str,
                  contracts_in: list, contracts_out: list,
-                 placement_token: str) -> str:
-    """Render the worktree ``.awm/context.md`` for a placed worker.
+                 prereadings: list, placement_token: str) -> str:
+    """Render a worker/plan/planner unit ``CONTEXT.md`` (the brief on disk).
 
-    Written by ``scope_create`` (the ``context`` arg) so the worker reads its
-    task, its contracts, and HOW to terminate the moment it boots. The
-    placement_token is the worker's capability: it can act only on its own task."""
+    ``verify`` does not use this — it has no filesystem, so its objective+plan
+    ride the kickoff stdin instead (see ``_verify_kickoff``)."""
+    preread_names = [p.get("name") for p in (prereadings or []) if p.get("name")]
+    role = {
+        "plan": "plan-worker (read-only): produce a PLAN to accomplish the "
+                "objective; you may inspect the repo but must not modify it",
+        "planner": "planner: decompose this task into a sub-DAG",
+        "worker": "worker: do the task and produce its outputs",
+    }.get(mode, "worker")
+
+    parts = [
+        f"# Task placement: {task_id}\n",
+        f"You are a **{mode}** on orchestrator task `{task_id}`.\n_{role}._\n",
+        f"## Objective\n\n{brief or '(no brief provided)'}\n",
+    ]
+    if preread_names:
+        parts.append(
+            "## Inputs (pre-readings)\n\nMaterialized read-only under "
+            f"`./inputs/`: {', '.join(preread_names)}\n")
+    parts.append(
+        "## Contracts\n\n"
+        f"{_fmt_list('Inputs (contracts_in)', contracts_in)}\n\n"
+        f"{_fmt_list('Outputs (contracts_out)', contracts_out)}\n")
+    if mode == "planner":
+        parts.append(_finish_planner(placement_token))
+    else:
+        parts.append(_finish_worker(placement_token, contracts_out))
+    parts.append(
+        f"\n_You are unattended: idle turns count against a hard "
+        f"{TASK_TURN_BUDGET}-turn budget._\n")
+    return "\n".join(parts)
+
+
+def _kickoff_text(*, task_id: str, mode: str, placement_token: str) -> str:
+    """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
-        f"# Task placement: {task_id}\n\n"
-        f"You are a **{mode}** placed on orchestrator task `{task_id}`.\n\n"
-        f"## Brief\n\n{brief or '(no brief provided)'}\n\n"
-        f"## Contracts\n\n"
-        f"{_fmt_contracts('Inputs (contracts_in)', contracts_in)}\n\n"
-        f"{_fmt_contracts('Outputs you must produce (contracts_out)', contracts_out)}\n\n"
-        f"## How to finish\n\n"
-        f"You are running unattended. End your task by calling exactly one of "
-        f"these tools with your placement_token `{placement_token}`:\n\n"
-        f"- `task_deliver(placement_token, contract, payload_ref)` — you produced "
-        f"the required output; payload_ref is an artifact reference.\n"
-        f"- `task_fail(placement_token, reason_type, reason_text, partial_ref?)` — "
-        f"you cannot complete it; pass partial_ref to preserve partial work.\n"
-        f"- `task_decompose(placement_token, children, edges, contracts)` — the "
-        f"task is too big; hand back a sub-DAG (planner mode).\n\n"
-        f"Do NOT wait idle: every turn you don't act counts against a hard "
-        f"{TASK_TURN_BUDGET}-turn budget. When the budget runs low you will be "
-        f"warned to checkpoint and `task_fail(partial_ref=…)`.\n"
+        f"You have been placed on task `{task_id}` as a **{mode}**. Read "
+        f"`./CONTEXT.md` for your objective, inputs, contracts, and how to "
+        f"finish. Your placement_token is `{placement_token}`. Begin now."
     )
 
 
-def _kickoff_text(*, task_id: str, placement_token: str) -> str:
-    """First stdin message — wakes the worker into its turn loop."""
+def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
+                    plan_text: str, placement_token: str) -> str:
+    """The verifier's entire context — it has NO filesystem, so the objective
+    and the proposed plan ride stdin, not a file read."""
     return (
-        f"You have been placed on task `{task_id}`. Read `.awm/context.md` for "
-        f"your brief, contracts, and how to finish. Your placement_token is "
-        f"`{placement_token}`. Begin now."
+        f"You are a PLAN VERIFIER for task `{task_id}`. You have NO filesystem "
+        "access — judge only from the text below.\n\n"
+        f"## Objective\n\n{brief or '(no objective provided)'}\n\n"
+        f"## Required outputs\n\n{', '.join(contracts_out) or '(none)'}\n\n"
+        f"## Proposed plan\n\n{plan_text or '(no plan was staged)'}\n\n"
+        "## Your job\n\nVerify the plan satisfies the objective and introduces "
+        "no spurious deliverables beyond what the objective requires. This is a "
+        "sanity check, not a re-plan. Call exactly one: "
+        f"`approve_plan(placement_token=\"{placement_token}\")` if it satisfies "
+        f"the objective, or `reject_plan(placement_token=\"{placement_token}\", "
+        "reason=\"...\")` with a concise reason if it does not."
     )
 
 
 # ---------------------------------------------------------------------------
-# place_on_task (contract A) + scope provisioning (contract C)
+# Workspace unit provisioning (contract C — the workspace service)
+# ---------------------------------------------------------------------------
+
+async def _workspace_create(project: str, unit_slug: str, context_md: str,
+                            prereadings: list) -> str:
+    """Provision (or re-activate) the unit; return its on-disk path."""
+    res = await gatewayclient.call("workspace", "workspace_create", {
+        "project": project, "unit_slug": unit_slug,
+        "context_md": context_md, "prereadings": prereadings or [],
+    })
+    return (res or {}).get("path") or ""
+
+
+async def _retain_unit(project: str, unit_slug: str) -> None:
+    """Free the unit but KEEP its contents (the lifecycle-reuse / audit state).
+
+    The ``scope_complete(cleanup=False)`` analog. Best-effort: a transient RPC
+    failure is logged, not raised (the orchestrator already has the ack)."""
+    try:
+        await gatewayclient.call("workspace", "workspace_retain", {
+            "project": project, "unit_slug": unit_slug,
+        })
+    except Exception:  # noqa: BLE001
+        log.warning("workspace_retain failed for %s/%s", project, unit_slug,
+                    exc_info=True)
+
+
+def _read_staged_plan(workspace_path: str) -> str:
+    """Read the plan-stage deliverable (``deliverable/plan/payload``) off disk
+    so it can be embedded in the verifier's kickoff (the verifier has no fs)."""
+    if not workspace_path:
+        return ""
+    p = Path(workspace_path) / "deliverable" / "plan" / "payload"
+    try:
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# place_on_task (contract A)
 # ---------------------------------------------------------------------------
 
 async def place_on_task(args: dict) -> dict:
-    """Drop a supervised worker onto a task in a fresh scope.
+    """Drop a supervised agent onto a task in its workspace unit.
 
-    Sequence: mint identity → ``scope_create`` (worktree + ``.awm/context.md``
-    brief) BEFORE spawn → spawn live via the existing ``create_session`` path
-    (``bypassPermissions`` so a human can attach) → record lineage on the row →
-    kickoff via stdin. Returns ``{agent_ref, scope, placement_token}``.
-
-    ``scope_create`` raises ``FileExistsError`` if a session is already active on
-    the scope — that's one-agent-per-scope for free (planner-reuse is later)."""
+    Sequence: resolve mode + slug → ``workspace_create`` (unit dir + brief +
+    pre-readings) BEFORE spawn → spawn live via the existing ``create_session``
+    path (with the per-mode tool profile + the unit as workdir) → record the
+    placement spec on the row → kickoff via stdin. Returns
+    ``{agent_ref, unit_slug, scope, placement_token}``."""
     task_id = args["task_id"]
     project = args["project"]
-    scope_slug = args["scope_slug"]
+    # ``unit_slug`` is the workspace-unit slug AND the (project, scope) label;
+    # accept the legacy ``scope_slug`` name too.
+    unit_slug = args.get("unit_slug") or args["scope_slug"]
     brief = args.get("brief", "")
     contracts_in = args.get("contracts_in") or []
     contracts_out = args.get("contracts_out") or []
+    prereadings = args.get("prereadings") or []
     mode = args.get("mode", "worker")
+    if mode not in _VALID_MODES:
+        raise ValueError(f"unknown placement mode {mode!r}; "
+                         f"choices: {sorted(_VALID_MODES)}")
+    if mode == "plan" and not contracts_out:
+        contracts_out = ["plan"]  # the reserved PLANNING deliverable
 
     agent_ref = _mint_agent_ref()
     placement_token = _mint_placement_token()
-    context_md = render_brief(
-        task_id=task_id, mode=mode, brief=brief,
-        contracts_in=contracts_in, contracts_out=contracts_out,
-        placement_token=placement_token,
-    )
 
-    # Contract C: provision the scope FIRST — the worktree must exist before the
-    # spawn (create_session requires the workspace dir), and this is where the
-    # brief+token land in .awm/context.md.
-    await gatewayclient.call("scopes", "scope_create", {
-        "project": project, "scope": scope_slug, "context": context_md,
-    })
+    context_md = ""
+    if mode != "verify":
+        context_md = render_brief(
+            task_id=task_id, mode=mode, brief=brief,
+            contracts_in=contracts_in, contracts_out=contracts_out,
+            prereadings=prereadings, placement_token=placement_token,
+        )
 
-    # Spawn live via the EXISTING path so the human can attach via 'transcript'.
+    # Provision the unit FIRST — the workdir must exist before the spawn, and
+    # this is where CONTEXT.md + the pre-readings land. Idempotent on the slug,
+    # so a verify/worker stage re-activates the same unit (keeping the plan
+    # stage's deliverables).
+    workspace_path = await _workspace_create(
+        project, unit_slug, context_md, prereadings)
+
+    # Build the kickoff. verify reads the staged plan off disk (it can't itself).
+    if mode == "verify":
+        plan_text = _read_staged_plan(workspace_path)
+        kickoff = _verify_kickoff(
+            task_id=task_id, brief=brief, contracts_out=contracts_out,
+            plan_text=plan_text, placement_token=placement_token)
+    else:
+        kickoff = _kickoff_text(
+            task_id=task_id, mode=mode, placement_token=placement_token)
+
+    # Spawn live via the EXISTING path so a human can attach via 'transcript'.
+    # bypassPermissions removes approval prompts; the per-mode allowlist is what
+    # actually scopes the tools (fs + worker MCP).
     session = await ai.create_session(
-        project=project, scope=scope_slug,
+        project=project, scope=unit_slug,
         agent_cli="claude", permission_mode="bypassPermissions",
         mode=mode, task_ref=task_id, agent_ref=agent_ref,
         placement_token=placement_token,
+        workdir=workspace_path,
+        allowed_tools=_allowed_tools_for(mode),
     )
 
-    # Kickoff via stdin (NOT scope_post — the scope-delivery loop seeds its
-    # cursor at the newest post on connect, so a kickoff post could be swallowed).
-    ai.enqueue_input(session, "orchestrator",
-                     _kickoff_text(task_id=task_id, placement_token=placement_token))
+    # Record the placement spec on the row so the relays + supervisor can resolve
+    # the workdir, contracts, and progress purely from the DAO.
+    ai._get_dao().merge_instance_data(session.id, {
+        "placement": {
+            "mode": mode, "workspace_path": workspace_path,
+            "contracts_in": contracts_in, "contracts_out": contracts_out,
+            "brief": brief,
+        },
+        "staged": {}, "done": False,
+        "graph": {"subtasks": [], "dependencies": [], "contracts": []},
+        "attached": False,
+    })
 
-    return {"agent_ref": agent_ref, "scope": scope_slug,
-            "placement_token": placement_token}
+    ai.enqueue_input(session, "orchestrator", kickoff)
+
+    return {"agent_ref": agent_ref, "unit_slug": unit_slug,
+            "scope": unit_slug, "placement_token": placement_token}
 
 
 # ---------------------------------------------------------------------------
@@ -158,13 +331,12 @@ async def place_on_task(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 class PlacementError(Exception):
-    """Raised when a worker-supplied placement_token is unknown or closed."""
+    """Raised when a placement_token is unknown or its placement is closed."""
 
 
 def _resolve_open_placement(token: str | None) -> dict:
     """Resolve a placement_token to its OPEN placement row, else raise.
 
-    Worker identity is the token only — never a worker-supplied task/agent ref.
     Rejects a missing token, an unknown token, and an already-closed placement
     (a terminal tool already fired or supervision force-failed it)."""
     if not token:
@@ -173,36 +345,28 @@ def _resolve_open_placement(token: str | None) -> dict:
     row = dao.resolve_placement(token)
     if row is None:
         raise PlacementError("unknown placement_token")
-    try:
-        data = json.loads(row["data"] or "{}")
-    except (TypeError, ValueError):
-        data = {}
-    if data.get("placement_outcome"):
+    if _row_data(row).get("placement_outcome"):
         raise PlacementError("placement already closed")
     return row
 
 
-# ---------------------------------------------------------------------------
-# Scope reclaim + session teardown
-# ---------------------------------------------------------------------------
-
-async def _reclaim_scope(project: str, scope: str) -> None:
-    """Retire the scope, RETAINING the worktree (audit + planner-reuse).
-
-    ``scope_complete`` (not ``scope_delete``) so partial work + the transcript
-    survive — progress is never destroyed by reclaim. Best-effort: a transient
-    RPC failure is logged, not raised (the orchestrator already has the ack)."""
+def _row_data(row: dict) -> dict:
     try:
-        await gatewayclient.call("scopes", "scope_complete", {
-            "project": project, "scope": scope, "cleanup": False,
-        })
-    except Exception:  # noqa: BLE001
-        log.warning("scope_complete failed for %s/%s", project, scope,
-                    exc_info=True)
+        return json.loads(row["data"] or "{}")
+    except (TypeError, ValueError):
+        return {}
 
+
+def _spec(row: dict) -> dict:
+    return _row_data(row).get("placement") or {}
+
+
+# ---------------------------------------------------------------------------
+# Teardown
+# ---------------------------------------------------------------------------
 
 async def _retire_worker(instance_id: int) -> None:
-    """Stop the worker subprocess (its task is done). Best-effort."""
+    """Stop the agent subprocess (its stage is done). Best-effort."""
     try:
         await ai.stop_session(instance_id)
     except Exception:  # noqa: BLE001
@@ -210,105 +374,361 @@ async def _retire_worker(instance_id: int) -> None:
                     exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Worker-tool relays (contract D → contract B)
-# ---------------------------------------------------------------------------
-
-async def relay_deliver(args: dict) -> dict:
-    """Worker `task_deliver` → orchestrator `deliver` (then reclaim).
-
-    No screening (orchestrator-only). Reclaim happens ONLY after the deliver ack
-    returns — tearing the scope down first would lose the payload."""
-    row = _resolve_open_placement(args.get("placement_token"))
-    ack = await orch_client.deliver(
-        task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        contract=args.get("contract"), payload_ref=args.get("payload_ref"),
-    )
-    ai._get_dao().close_placement(row["id"], outcome="delivered")
-    await _reclaim_scope(row["project"], row["scope"])
+async def _close_and_retire(row: dict, outcome: str) -> None:
+    """Close the placement, retain the unit (keep work), retire the subprocess."""
+    ai._get_dao().close_placement(row["id"], outcome=outcome)
+    await _retain_unit(row["project"], row["scope"])
     await _retire_worker(row["id"])
-    return {"ok": True, "outcome": "delivered", "ack": ack}
 
 
-async def relay_fail(args: dict) -> dict:
-    """Worker `task_fail` → orchestrator `fail` (then reclaim, retaining work)."""
+# ---------------------------------------------------------------------------
+# Deliverable staging (contract D) + the cheap structural screen
+# ---------------------------------------------------------------------------
+
+def _deliverable_relpath(contract: str) -> str:
+    return f"deliverable/{contract}/payload"
+
+
+def _screen(workspace_path: str, relpath: str) -> bool:
+    """Cheap structural screen: the staged deliverable exists and is non-empty.
+
+    The payload schema is deliberately loose for now — this is "non-empty /
+    present", not a semantic check."""
+    if not workspace_path or not relpath:
+        return False
+    p = Path(workspace_path) / relpath
+    try:
+        if p.is_file():
+            return p.stat().st_size > 0
+        if p.is_dir():
+            return any(p.iterdir())
+    except OSError:
+        return False
+    return False
+
+
+def _register_deliverable(row: dict, contract: str, workspace_path: str,
+                          relpath: str) -> str:
+    """Resolve a staged deliverable to a ``payload_ref`` for ``orch.deliver``.
+
+    SEAM: today the ref is the absolute on-disk path of the staged payload. When
+    the payload/artifact schema firms up this is where artifact registration
+    (``artifacts.register`` → an artifact id) will slot in — the orchestrator
+    contract (``orch.deliver(contract, payload_ref)``) does not change."""
+    return str(Path(workspace_path) / relpath)
+
+
+async def relay_edit_deliverable(args: dict) -> dict:
+    """Worker/plan tool: stage (replace) the content for one output contract.
+
+    Writes to the unit's ``deliverable/<contract>/payload`` and AUTO-CLEARS the
+    done flag (editing after indicating done un-finishes the placement)."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    contract = args.get("contract") or "default"
+    content = args.get("content")
+    if content is None:
+        raise PlacementError("edit_deliverable requires content")
+    spec = _spec(row)
+    wp = spec.get("workspace_path") or ""
+    relpath = _deliverable_relpath(contract)
+    dest = Path(wp) / relpath
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(str(content), encoding="utf-8")
+
+    data = _row_data(row)
+    staged = dict(data.get("staged") or {})
+    staged[contract] = relpath
+    ai._get_dao().merge_instance_data(row["id"], {"staged": staged, "done": False})
+    return {"ok": True, "staged": sorted(staged), "done": False}
+
+
+async def relay_indicate_done(args: dict) -> dict:
+    """Worker/plan/planner tool: mark the deliverable complete.
+
+    A pure flag — the actual acceptance check runs at the next turn-stop
+    boundary (so the harness validates a settled deliverable, not a mid-turn
+    one)."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    ai._get_dao().merge_instance_data(row["id"], {"done": True})
+    return {"ok": True, "done": True}
+
+
+async def relay_task_fail(args: dict) -> dict:
+    """Any mode: give up. Relay to ``orch.fail`` (resolved refs), then retain."""
     row = _resolve_open_placement(args.get("placement_token"))
     ack = await orch_client.fail(
         task_id=row["task_ref"], agent_ref=row["agent_ref"],
         reason_type=args.get("reason_type"), reason_text=args.get("reason_text"),
         partial_ref=args.get("partial_ref"),
     )
-    ai._get_dao().close_placement(row["id"], outcome="failed")
-    await _reclaim_scope(row["project"], row["scope"])
-    await _retire_worker(row["id"])
+    await _close_and_retire(row, "failed")
     return {"ok": True, "outcome": "failed", "ack": ack}
 
 
-async def relay_decompose(args: dict) -> dict:
-    """Worker `task_decompose` → orchestrator `decompose_commit`.
+# ---------------------------------------------------------------------------
+# Verifier verdict tools (terminal on call)
+# ---------------------------------------------------------------------------
 
-    Relay only — does NOT reclaim the scope: a downstream planner reuses the
-    freed leaf worktree to see the partial work. The worker is retired (its
-    planning turn is done)."""
+async def relay_approve_plan(args: dict) -> dict:
+    """Verifier tool: the plan satisfies the objective (VERIFYING_PLAN → ACTIVE)."""
     row = _resolve_open_placement(args.get("placement_token"))
+    ack = await orch_client.approve_plan(
+        task_id=row["task_ref"], agent_ref=row["agent_ref"])
+    await _close_and_retire(row, "approved")
+    return {"ok": True, "outcome": "approved", "ack": ack}
+
+
+async def relay_reject_plan(args: dict) -> dict:
+    """Verifier tool: the plan does not satisfy the objective (→ re-plan)."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    ack = await orch_client.reject_plan(
+        task_id=row["task_ref"], agent_ref=row["agent_ref"],
+        reason=args.get("reason"))
+    await _close_and_retire(row, "rejected")
+    return {"ok": True, "outcome": "rejected", "ack": ack}
+
+
+# ---------------------------------------------------------------------------
+# Planner graph buffer tools (committed at accept)
+# ---------------------------------------------------------------------------
+
+def _graph(row: dict) -> dict:
+    g = _row_data(row).get("graph") or {}
+    g.setdefault("subtasks", [])
+    g.setdefault("dependencies", [])
+    g.setdefault("contracts", [])
+    return g
+
+
+async def relay_add_subtask(args: dict) -> dict:
+    """Planner tool: buffer a subtask into the pending sub-DAG."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    g = _graph(row)
+    sub_id = args.get("id") or f"sub-{len(g['subtasks']) + 1}"
+    g["subtasks"].append({
+        "id": sub_id, "objective": args.get("objective") or args.get("brief") or "",
+        "contracts_out": args.get("contracts_out") or [],
+    })
+    ai._get_dao().merge_instance_data(row["id"], {"graph": g})
+    return {"ok": True, "id": sub_id, "subtasks": len(g["subtasks"])}
+
+
+async def relay_add_dependency(args: dict) -> dict:
+    """Planner tool: buffer a dependency edge (from_id → to_id)."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    g = _graph(row)
+    frm = args.get("from_id") or args.get("from")
+    to = args.get("to_id") or args.get("to")
+    if not frm or not to:
+        raise PlacementError("add_dependency requires from_id and to_id")
+    g["dependencies"].append({"from": frm, "to": to})
+    ai._get_dao().merge_instance_data(row["id"], {"graph": g})
+    return {"ok": True, "dependencies": len(g["dependencies"])}
+
+
+async def relay_define_contract(args: dict) -> dict:
+    """Planner tool: buffer a contract definition for the sub-DAG."""
+    row = _resolve_open_placement(args.get("placement_token"))
+    g = _graph(row)
+    name = args.get("name")
+    if not name:
+        raise PlacementError("define_contract requires name")
+    g["contracts"].append({k: v for k, v in args.items()
+                           if k != "placement_token"})
+    ai._get_dao().merge_instance_data(row["id"], {"graph": g})
+    return {"ok": True, "contracts": len(g["contracts"])}
+
+
+async def relay_search_tasks(args: dict) -> dict:
+    """Planner read tool: existing tasks (proxy to the orchestrator)."""
+    _resolve_open_placement(args.get("placement_token"))
+    return await orch_client.search_tasks(query=args.get("query"))
+
+
+async def relay_search_contracts(args: dict) -> dict:
+    """Planner read tool: existing contracts (proxy to the orchestrator)."""
+    _resolve_open_placement(args.get("placement_token"))
+    return await orch_client.search_contracts(query=args.get("query"))
+
+
+# ---------------------------------------------------------------------------
+# Funnel / acyclicity check for a buffered sub-DAG
+# ---------------------------------------------------------------------------
+
+def funnels(subtasks: list, dependencies: list) -> bool:
+    """True if the sub-DAG is acyclic and funnels into a single sink.
+
+    Funnel invariant (the user's requirement): every submitted node must reach
+    the task being decomposed. We model that as: the child graph is acyclic and
+    has exactly one sink (a node with no outgoing edge among the children), and
+    every node can reach it. The lone sink is the node that hands back to the
+    decomposing task."""
+    ids = [s.get("id") for s in subtasks if s.get("id")]
+    if not ids:
+        return False
+    idset = set(ids)
+    adj: dict[str, list[str]] = {i: [] for i in ids}
+    indeg = {i: 0 for i in ids}
+    for e in dependencies:
+        frm, to = e.get("from"), e.get("to")
+        if frm in idset and to in idset:
+            adj[frm].append(to)
+            indeg[to] += 1
+
+    # Acyclicity via Kahn's algorithm.
+    queue = [i for i in ids if indeg[i] == 0]
+    seen = 0
+    indeg_w = dict(indeg)
+    q = list(queue)
+    while q:
+        n = q.pop()
+        seen += 1
+        for m in adj[n]:
+            indeg_w[m] -= 1
+            if indeg_w[m] == 0:
+                q.append(m)
+    if seen != len(ids):
+        return False  # a cycle
+
+    # Exactly one sink (out-degree 0), and every node reaches it.
+    sinks = [i for i in ids if not adj[i]]
+    if len(sinks) != 1:
+        return False
+    sink = sinks[0]
+    # Reverse-reachability from the sink must cover every node.
+    radj: dict[str, list[str]] = {i: [] for i in ids}
+    for frm, tos in adj.items():
+        for to in tos:
+            radj[to].append(frm)
+    stack = [sink]
+    reached = set()
+    while stack:
+        n = stack.pop()
+        if n in reached:
+            continue
+        reached.add(n)
+        stack.extend(radj[n])
+    return reached == idset
+
+
+# ---------------------------------------------------------------------------
+# Per-mode acceptance (run at the turn-stop boundary by on_turn_boundary)
+# ---------------------------------------------------------------------------
+
+async def _accept_deliverable(row: dict, data: dict, spec: dict) -> bool:
+    """worker/plan: if done ∧ every contract staged & screened → deliver each.
+
+    Returns True iff the placement was accepted+closed this boundary (so the
+    supervisor does NOT decrement the budget or inject a continuation)."""
+    if not data.get("done"):
+        return False
+    wp = spec.get("workspace_path") or ""
+    contracts_out = spec.get("contracts_out") or []
+    staged = data.get("staged") or {}
+    for c in contracts_out:
+        rel = staged.get(c)
+        if not rel or not _screen(wp, rel):
+            return False  # indicated done but an output is missing/empty
+    for c in contracts_out:
+        payload_ref = _register_deliverable(row, c, wp, staged[c])
+        await orch_client.deliver(
+            task_id=row["task_ref"], agent_ref=row["agent_ref"],
+            contract=c, payload_ref=payload_ref)
+    await _close_and_retire(row, "delivered")
+    return True
+
+
+async def _accept_decompose(row: dict, data: dict, session) -> bool:
+    """planner: if done → commit the buffered sub-DAG (funnel-checked).
+
+    Returns True iff the boundary was handled (committed, OR corrected the
+    planner and cleared done) — either way the supervisor skips its budget step."""
+    if not data.get("done"):
+        return False
+    g = data.get("graph") or {}
+    subtasks = g.get("subtasks") or []
+    deps = g.get("dependencies") or []
+    if not subtasks or not funnels(subtasks, deps):
+        # Done but the graph is empty or doesn't funnel — correct, don't commit.
+        ai._get_dao().merge_instance_data(row["id"], {"done": False})
+        ai.enqueue_input(
+            session, "supervisor",
+            "[supervisor] Your sub-DAG is not ready to commit: it must be "
+            "non-empty, acyclic, and funnel into a single sink (every subtask "
+            "reaching the task being decomposed). Fix the graph, then call "
+            "indicate_done again.")
+        return True
     ack = await orch_client.decompose_commit(
         task_id=row["task_ref"], agent_ref=row["agent_ref"],
-        children=args.get("children") or [], edges=args.get("edges") or [],
-        contracts=args.get("contracts") or [],
-    )
-    ai._get_dao().close_placement(row["id"], outcome="decomposed")
-    await _retire_worker(row["id"])
-    return {"ok": True, "outcome": "decomposed", "ack": ack}
+        children=subtasks, edges=deps, contracts=g.get("contracts") or [])
+    log.info("decompose_commit acked for %s: %s", row["task_ref"], ack)
+    await _close_and_retire(row, "decomposed")
+    return True
 
 
 # ---------------------------------------------------------------------------
-# Supervision driver (hard turn budget, save-progress)
+# Supervision driver (per-mode accept + hard turn budget + attach-freeze)
 # ---------------------------------------------------------------------------
 
-def _continuation_prompt(task_id: str, placement_token: str,
+def _continuation_prompt(mode: str, task_id: str, token: str,
                          remaining: int) -> str:
     """The per-turn nudge. Escalates to a save-progress warning near the cap."""
     if remaining <= TASK_WARN_REMAINING:
         return (
             f"[supervisor] {remaining} turn(s) left before task `{task_id}` is "
-            f"force-failed. COMMIT partial work to the worktree now, register a "
-            f"partial artifact, then call `task_deliver(...)` if you are done, or "
-            f"`task_fail(placement_token=\"{placement_token}\", "
+            f"force-failed. Checkpoint now: stage what you have via "
+            f"`edit_deliverable(...)` and `indicate_done(...)` if you are done, "
+            f"or `task_fail(placement_token=\"{token}\", "
             f"reason_type=\"transient-error\", reason_text=\"...\", "
-            f"partial_ref=\"<artifact>\")` to preserve it. Do not start new work."
+            f"partial_ref?)` to preserve partial work. Do not start new work."
         )
+    if mode == "verify":
+        hint = ("Reach a verdict: call `approve_plan(...)` or "
+                "`reject_plan(..., reason)`.")
+    elif mode == "planner":
+        hint = ("Build the sub-DAG (`add_subtask`/`add_dependency`/"
+                "`define_contract`), then `indicate_done(...)` to commit.")
+    else:
+        hint = ("Stage your outputs with `edit_deliverable(...)`, then "
+                "`indicate_done(...)`.")
     return (
-        f"[supervisor] Continue task `{task_id}` ({remaining} turns left). When "
-        f"done call `task_deliver(...)`; if you are stuck, `task_fail(...)` and "
-        f"`task_decompose(...)` are valid exits. Your placement_token is "
-        f"`{placement_token}`."
+        f"[supervisor] Continue task `{task_id}` ({remaining} turns left). "
+        f"{hint} If stuck, `task_fail(...)` is a valid exit. Your "
+        f"placement_token is `{token}`."
     )
 
 
-async def _force_fail(session) -> None:
-    """Turn budget exhausted: fail to the orchestrator, retire (keep worktree)."""
+async def _force_fail(session, task_id: str) -> None:
+    """Turn budget exhausted: fail to the orchestrator, retain unit, retire."""
+    row = ai._get_dao().resolve_placement(session.placement_token)
     await orch_client.fail(
-        task_id=session.task_ref, agent_ref=session.agent_ref,
+        task_id=task_id, agent_ref=session.agent_ref,
         reason_type="transient-error",
         reason_text=f"turn budget ({TASK_TURN_BUDGET}) exhausted",
         partial_ref=None,
     )
-    ai._get_dao().close_placement(session.id, outcome="failed")
-    await _reclaim_scope(session.project, session.scope)
-    await _retire_worker(session.id)
+    if row is not None:
+        await _close_and_retire(row, "failed")
+    else:  # fallback: close by id + retain by (project, scope)
+        ai._get_dao().close_placement(session.id, outcome="failed")
+        await _retain_unit(session.project, session.scope)
+        await _retire_worker(session.id)
 
 
 async def on_turn_boundary(session) -> None:
-    """Drive one task-bound worker at an outer-loop turn boundary.
+    """Drive one placed agent at an outer-loop turn boundary.
 
     Called from ``_reader_loop`` on the ``result`` event (one per turn, because
-    claude ``--print`` stream-json runs one turn per stdin message then stops).
-    The inner loop (many tool calls within a turn) is only OBSERVED; we act here.
+    claude ``--print`` runs one turn per stdin message then stops). Order:
 
-    If the placement already closed (a terminal tool fired), do nothing — drive
-    completion off the tool call, not the event. Otherwise decrement the hard
-    budget (no extension, no refill) and inject the next prompt; at 0, force-fail
-    while preserving progress."""
+    1. closed/unknown placement → no-op (drive off the acceptance check, not the
+       event).
+    2. attached → FREEZE: no budget decrement, no acceptance, no continuation —
+       a human is driving; the autonomous engine stands down.
+    3. per-mode acceptance: worker/plan deliver, planner commit. If accepted the
+       task already advanced — done.
+    4. otherwise decrement the hard budget and inject the next prompt; at 0,
+       force-fail while retaining work."""
     token = getattr(session, "placement_token", None)
     if not token:
         return
@@ -316,12 +736,98 @@ async def on_turn_boundary(session) -> None:
         row = _resolve_open_placement(token)
     except PlacementError:
         return  # closed/unknown — nothing to drive
+    data = _row_data(row)
+    spec = data.get("placement") or {}
+    mode = spec.get("mode") or getattr(session, "mode", "worker")
     task_id = row["task_ref"]
+
+    if data.get("attached"):
+        return  # frozen while a human drives this placement
+
+    if mode in ("worker", "plan"):
+        if await _accept_deliverable(row, data, spec):
+            return
+    elif mode == "planner":
+        if await _accept_decompose(row, data, session):
+            return
+    # verify has no auto-accept — its verdict is a terminal tool call.
 
     session.turn_budget -= 1
     remaining = session.turn_budget
     if remaining <= 0:
-        await _force_fail(session)
+        await _force_fail(session, task_id)
         return
     ai.enqueue_input(session, "supervisor",
-                     _continuation_prompt(task_id, token, remaining))
+                     _continuation_prompt(mode, task_id, token, remaining))
+
+
+# ---------------------------------------------------------------------------
+# Liveness: a crashed subprocess must not strand its task in ACTIVE
+# ---------------------------------------------------------------------------
+
+_INTENTIONAL_EXITS = {"stopped", "killed", "compacted"}
+
+
+async def reclaim_if_dead(session) -> None:
+    """If a placement's subprocess exited without a terminal, fail the task.
+
+    Called from ``_waiter_loop`` when a task-bound subprocess ends. A clean
+    terminal (deliver/approve/fail/decompose) already closed the placement, so
+    this no-ops. An intentional stop/kill/compact (e.g. respawn) is skipped via
+    the row's ``intent``. Only a genuine crash — open placement + a ``live``
+    intent — is force-failed (``orch.fail(transient-error)`` + retain), so the
+    orchestrator can re-place rather than hang in ACTIVE."""
+    token = getattr(session, "placement_token", None)
+    if not token:
+        return
+    dao = ai._get_dao()
+    row = dao.get_instance(session.id)
+    if row is None:
+        return
+    data = _row_data(row)
+    if data.get("placement_outcome"):
+        return  # a terminal already fired
+    if (data.get("intent") or "live") in _INTENTIONAL_EXITS:
+        return  # respawn / deliberate stop — not a crash
+    try:
+        await orch_client.fail(
+            task_id=row["task_ref"], agent_ref=row["agent_ref"],
+            reason_type="transient-error",
+            reason_text="placement subprocess exited without an outcome",
+            partial_ref=None,
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("orch.fail (liveness) failed for %s", row["task_ref"],
+                    exc_info=True)
+    dao.close_placement(session.id, outcome="failed")
+    await _retain_unit(row["project"], row["scope"])
+
+
+# ---------------------------------------------------------------------------
+# Attach flag (orthogonal to the state machine)
+# ---------------------------------------------------------------------------
+
+async def set_attached(project: str, scope: str, attached: bool) -> None:
+    """Mark/unmark a live placement as user-attached + mirror to the kernel.
+
+    Driven by transcript-subscription presence (a human opened/closed the live
+    'transcript' WS for this placement). While attached the supervisor freezes
+    (see ``on_turn_boundary``); ``orch.set_attached`` tells the orchestrator not
+    to reclaim a task a human is driving. Best-effort throughout."""
+    session = ai.get_session_by_scope(project, scope)
+    if session is None or getattr(session, "mode", "conversational") == "conversational":
+        return
+    token = getattr(session, "placement_token", None)
+    if not token:
+        return
+    try:
+        row = ai._get_dao().resolve_placement(token)
+        if row is None:
+            return
+        ai._get_dao().merge_instance_data(row["id"], {"attached": bool(attached)})
+        await orch_client.set_attached(
+            task_id=row["task_ref"], agent_ref=row["agent_ref"],
+            attached=bool(attached))
+    except Exception:  # noqa: BLE001
+        log.warning("set_attached failed for %s/%s", project, scope,
+                    exc_info=True)

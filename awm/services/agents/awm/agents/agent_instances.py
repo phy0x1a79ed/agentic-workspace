@@ -143,6 +143,10 @@ class AgentInstance:
         self.task_ref: Optional[str] = None
         self.agent_ref: Optional[str] = None
         self.placement_token: Optional[str] = None
+        # Placement workdir (the workspace unit path) + the per-mode tool
+        # profile; both carried across respawn. Default-empty for conversational.
+        self.workdir: Optional[str] = None
+        self.allowed_tools: Optional[list[str]] = None
         # Supervision: a hard turn budget that decrements every turn boundary,
         # no extension, no refill (only meaningful when mode != conversational).
         self.turn_budget: int = TASK_TURN_BUDGET
@@ -291,6 +295,8 @@ def _build_core_config(
     *, agent_cli: str, permission_mode: str, model: Optional[str],
     effort: Optional[str], resume_session_id: Optional[str],
     workspace_dir: Path, awm_dir: Path,
+    allowed_tools: Optional[list[str]] = None,
+    disallowed_tools: Optional[list[str]] = None,
 ) -> AgentConfig:
     """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
 
@@ -299,7 +305,10 @@ def _build_core_config(
     default). ``effort`` rides ``params`` (claude). ``mcp_config`` is the
     workspace ``spawn-mcp.json`` for claude; opencode is configured via the
     ``OPENCODE_CONFIG`` env it inherits from this process, so it is not threaded
-    through the config here.
+    through the config here. ``allowed_tools`` / ``disallowed_tools`` are the
+    per-placement tool profile (a task-bound worker is full-open on permissions
+    but its tools — fs built-ins + which worker MCP tools — are scoped by the
+    allowlist; a conversational session passes neither and is unrestricted).
     """
     permissions = "full" if permission_mode == "bypassPermissions" else "default"
     params: dict = {}
@@ -319,6 +328,8 @@ def _build_core_config(
         workdir=str(workspace_dir),
         resume_id=resume_session_id,
         mcp_config=mcp_config,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
     )
 
 
@@ -336,14 +347,22 @@ async def create_session(*, project: str, scope: str,
                          mode: str = "conversational",
                          task_ref: Optional[str] = None,
                          agent_ref: Optional[str] = None,
-                         placement_token: Optional[str] = None) -> AgentInstance:
+                         placement_token: Optional[str] = None,
+                         workdir: Optional[str] = None,
+                         allowed_tools: Optional[list[str]] = None,
+                         disallowed_tools: Optional[list[str]] = None,
+                         ) -> AgentInstance:
     """Spawn a CLI subprocess and register it.
 
     The ``mode``/``task_ref``/``agent_ref``/``placement_token`` params are the
     task-bounded placement extension; they default such that every existing
-    conversational caller is unchanged. When ``mode != 'conversational'`` the DAO
-    insert records the placement row and the supervision driver takes over the
-    lifecycle."""
+    conversational caller is unchanged. When ``mode != 'conversational'`` the
+    session is a **placement**: its workdir is the workspace UNIT (``workdir``,
+    required), NOT a git scope, so it does NOT touch the scopes service (no
+    ensure-scope, no scope-channel delivery — a human attaches via the
+    transcript WS and pushes text via ``agent_post``). ``allowed_tools`` /
+    ``disallowed_tools`` carry the per-mode tool profile. The DAO insert records
+    the placement row and the supervision driver takes over the lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
@@ -359,9 +378,17 @@ async def create_session(*, project: str, scope: str,
         )
 
     key = _scope_key(project, scope)
-    workspace_dir = PROJECTS_DIR / project / scope
+    task_bound = mode != "conversational"
+    if task_bound:
+        # Placement: the workdir is the workspace UNIT (provisioned by the
+        # workspace service), not a git scope under PROJECTS_DIR.
+        if not workdir:
+            raise ValueError("task-bound placement requires a workdir (unit path)")
+        workspace_dir = Path(workdir)
+    else:
+        workspace_dir = PROJECTS_DIR / project / scope
     if not workspace_dir.exists():
-        raise FileNotFoundError(f"Scope workspace not found at {workspace_dir}")
+        raise FileNotFoundError(f"Workspace dir not found at {workspace_dir}")
     awm_dir = workspace_dir / ".awm"
     awm_dir.mkdir(parents=True, exist_ok=True)
     log_path = awm_dir / "session.log"
@@ -373,16 +400,18 @@ async def create_session(*, project: str, scope: str,
                 f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
             )
 
-        # Ensure project + scope exist in the scopes service.
-        try:
-            await _ensure_scope_exists(
-                project=project, scope=scope,
-                agent_cli=agent_cli, worktree=workspace_dir,
-            )
-        except gatewayclient.GatewayCallError as exc:
-            raise RuntimeError(
-                f"Failed to ensure scope {project}/{scope} via scopes RPC: {exc}"
-            ) from exc
+        # Conversational sessions live in a git scope (ensure it exists). A
+        # placement runs in a workspace unit and never touches the scopes svc.
+        if not task_bound:
+            try:
+                await _ensure_scope_exists(
+                    project=project, scope=scope,
+                    agent_cli=agent_cli, worktree=workspace_dir,
+                )
+            except gatewayclient.GatewayCallError as exc:
+                raise RuntimeError(
+                    f"Failed to ensure scope {project}/{scope} via scopes RPC: {exc}"
+                ) from exc
 
         dao = _get_dao()
         # Resume id recovery.
@@ -417,6 +446,7 @@ async def create_session(*, project: str, scope: str,
             agent_cli=agent_cli, permission_mode=permission_mode,
             model=model, effort=effort, resume_session_id=resume_session_id,
             workspace_dir=workspace_dir, awm_dir=awm_dir,
+            allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
         )
         agent_session = open_agent(core_config)
 
@@ -451,14 +481,19 @@ async def create_session(*, project: str, scope: str,
         session.task_ref = task_ref
         session.agent_ref = agent_ref
         session.placement_token = placement_token
+        session.workdir = str(workspace_dir)
+        session.allowed_tools = allowed_tools
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
     session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
-    # Subscribe to the scope's channel so human posts reach the agent's stdin.
-    session.scope_poll_task = asyncio.create_task(_scope_delivery_loop(session))
+    # Conversational sessions subscribe to the scope channel so human posts reach
+    # stdin. A placement has no scope channel — a human attaches via the
+    # transcript WS and pushes text via agent_post (direct enqueue), so skip it.
+    if not task_bound:
+        session.scope_poll_task = asyncio.create_task(_scope_delivery_loop(session))
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
@@ -855,6 +890,16 @@ async def _waiter_loop(session: AgentInstance) -> None:
 
     _get_dao().close_instance(session.id, ended_at=now_ms(), exit_code=exit_code)
 
+    # Liveness: a task-bound subprocess that died without a terminal outcome
+    # must not strand its task in ACTIVE — force-fail it so the orchestrator can
+    # re-place. A clean terminal or an intentional stop/respawn no-ops inside.
+    if getattr(session, "mode", "conversational") != "conversational":
+        from awm.agents import placement
+        try:
+            await placement.reclaim_if_dead(session)
+        except Exception:  # noqa: BLE001
+            pass
+
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
     if session.scope_poll_task is not None:
@@ -995,6 +1040,8 @@ async def respawn_session(
         task_ref = current.task_ref
         agent_ref = current.agent_ref
         placement_token = current.placement_token
+        task_workdir = current.workdir
+        task_allowed_tools = current.allowed_tools
         if task_mode != "conversational" and placement_token is not None:
             _get_dao().clear_placement_token(current.id)
 
@@ -1023,6 +1070,8 @@ async def respawn_session(
         task_ref=task_ref,
         agent_ref=agent_ref,
         placement_token=placement_token,
+        workdir=task_workdir,
+        allowed_tools=task_allowed_tools,
     )
 
 

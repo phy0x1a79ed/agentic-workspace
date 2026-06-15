@@ -142,22 +142,37 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_reconcile",
             "description": "Run startup reconciliation (close stale instance rows, seed resume).",
         },
-        # -- Worker tools (contract D). MCP-visible (`tool` set) so a placed
-        # worker sees them in its spawn-mcp config. The worker holds only its
-        # own placement_token ⇒ can act only on its own task. Handlers relay to
-        # the orchestrator as the RESOLVED refs (never worker-supplied).
+        # -- Placement tools (contract D). MCP-visible (`tool` set) so a placed
+        # agent sees them in its spawn-mcp config; the per-mode allowlist scopes
+        # which it may actually call. The placement_token is the agent's
+        # capability — it can act only on its own task. Handlers resolve the
+        # token, then relay to the orchestrator as the RESOLVED refs.
+        #
+        # worker / plan: stage outputs, then indicate done.
         {
-            "name": "task_deliver",
-            "tool": "task_deliver",
+            "name": "edit_deliverable",
+            "tool": "edit_deliverable",
             "description": (
-                "Finish your placed task: deliver the required output. Call with "
-                "your placement_token, the contract you are satisfying, and a "
-                "payload_ref (artifact reference)."
+                "Stage (replace) the content for one output contract of your "
+                "placed task. Call as many times as needed; each call replaces "
+                "the staged content. Calling it clears any prior 'done'."
             ),
             "params": [
                 {"name": "placement_token", "type": "string", "required": True},
-                {"name": "contract", "type": "string", "required": False},
-                {"name": "payload_ref", "type": "string", "required": False},
+                {"name": "contract", "type": "string", "required": True},
+                {"name": "content", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "indicate_done",
+            "tool": "indicate_done",
+            "description": (
+                "Mark your placed task's deliverable complete. The harness "
+                "validates it at your next stop and advances the task; editing a "
+                "deliverable afterwards clears this flag."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
             ],
         },
         {
@@ -175,18 +190,83 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "partial_ref", "type": "string", "required": False},
             ],
         },
+        # verify: a verdict on the staged plan (terminal on call).
         {
-            "name": "task_decompose",
-            "tool": "task_decompose",
+            "name": "approve_plan",
+            "tool": "approve_plan",
             "description": (
-                "Hand your placed task back as a sub-DAG (planner). Call with your "
-                "placement_token, the children tasks, their edges, and contracts."
+                "Verifier: the plan satisfies the objective. Advances the task "
+                "from VERIFYING_PLAN to ACTIVE."
             ),
             "params": [
                 {"name": "placement_token", "type": "string", "required": True},
-                {"name": "children", "type": "array", "required": False},
-                {"name": "edges", "type": "array", "required": False},
-                {"name": "contracts", "type": "array", "required": False},
+            ],
+        },
+        {
+            "name": "reject_plan",
+            "tool": "reject_plan",
+            "description": (
+                "Verifier: the plan does not satisfy the objective. Send it back "
+                "to re-plan with a concise reason."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "reason", "type": "string", "required": False},
+            ],
+        },
+        # planner: buffer a sub-DAG, committed when you indicate done.
+        {
+            "name": "add_subtask",
+            "tool": "add_subtask",
+            "description": (
+                "Planner: add a subtask to the pending sub-DAG (objective + the "
+                "outputs it must produce)."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "id", "type": "string", "required": False},
+                {"name": "objective", "type": "string", "required": False},
+                {"name": "contracts_out", "type": "array", "required": False},
+            ],
+        },
+        {
+            "name": "add_dependency",
+            "tool": "add_dependency",
+            "description": (
+                "Planner: add a dependency edge (from_id → to_id) to the pending "
+                "sub-DAG. Every subtask must funnel into the task being decomposed."
+            ),
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "from_id", "type": "string", "required": True},
+                {"name": "to_id", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "define_contract",
+            "tool": "define_contract",
+            "description": "Planner: define a contract used by the pending sub-DAG.",
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "name", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "search_tasks",
+            "tool": "search_tasks",
+            "description": "Planner read: search existing tasks (reuse nodes).",
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "query", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "search_contracts",
+            "tool": "search_contracts",
+            "description": "Planner read: search existing contracts.",
+            "params": [
+                {"name": "placement_token", "type": "string", "required": True},
+                {"name": "query", "type": "string", "required": False},
             ],
         },
     ],
@@ -323,6 +403,15 @@ async def _transcript_session(ctx: SessionContext) -> None:
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
     await agent_bus.attach_live(project, scope, queue)
+    # A live transcript subscription IS the user-attached signal for a placement
+    # (orthogonal to the task's state): freeze the autonomous supervisor and tell
+    # the orchestrator not to reclaim a task a human is driving. No-op for a
+    # conversational scope. Best-effort — never block the stream on it.
+    try:
+        from awm.agents import placement
+        await placement.set_attached(project, scope, True)
+    except Exception:  # noqa: BLE001
+        pass
     bridge = await ctx.open_bridge()
     try:
         # 1) Backfill from the cursor. Track the last act so the live stream
@@ -346,6 +435,11 @@ async def _transcript_session(ctx: SessionContext) -> None:
                 break
     finally:
         await agent_bus.detach_live(project, scope, queue)
+        try:
+            from awm.agents import placement
+            await placement.set_attached(project, scope, False)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await bridge.close()
         except Exception:  # noqa: BLE001
@@ -375,19 +469,12 @@ async def _h_place_on_task(args: dict) -> dict:
     return await placement.place_on_task(args)
 
 
-async def _h_task_deliver(args: dict) -> dict:
-    from awm.agents import placement
-    return await placement.relay_deliver(args)
-
-
-async def _h_task_fail(args: dict) -> dict:
-    from awm.agents import placement
-    return await placement.relay_fail(args)
-
-
-async def _h_task_decompose(args: dict) -> dict:
-    from awm.agents import placement
-    return await placement.relay_decompose(args)
+def _relay(fn_name: str):
+    """Build an async handler that dispatches to ``placement.<fn_name>``."""
+    async def _handler(args: dict) -> dict:
+        from awm.agents import placement
+        return await getattr(placement, fn_name)(args)
+    return _handler
 
 
 HANDLERS = {
@@ -403,10 +490,17 @@ HANDLERS = {
     "reconcile": _h_reconcile,
     # Task-bounded placement (manifest-omitted op reached via catch-all).
     "place_on_task": _h_place_on_task,
-    # Worker tools (also in the manifest, MCP-visible).
-    "task_deliver": _h_task_deliver,
-    "task_fail": _h_task_fail,
-    "task_decompose": _h_task_decompose,
+    # Placement tools (also in the manifest, MCP-visible to placed agents).
+    "edit_deliverable": _relay("relay_edit_deliverable"),
+    "indicate_done": _relay("relay_indicate_done"),
+    "task_fail": _relay("relay_task_fail"),
+    "approve_plan": _relay("relay_approve_plan"),
+    "reject_plan": _relay("relay_reject_plan"),
+    "add_subtask": _relay("relay_add_subtask"),
+    "add_dependency": _relay("relay_add_dependency"),
+    "define_contract": _relay("relay_define_contract"),
+    "search_tasks": _relay("relay_search_tasks"),
+    "search_contracts": _relay("relay_search_contracts"),
 }
 
 

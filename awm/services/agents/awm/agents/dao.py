@@ -153,6 +153,27 @@ class AgentsDAO(BaseDAO):
             (instance_id,),
         )
 
+    def merge_instance_data(self, instance_id: int, patch: dict) -> dict:
+        """Read-modify-write merge ``patch`` into a row's ``data`` JSON.
+
+        The single mutation primitive for placement progress (the placement
+        spec, deliverable staging map, the done flag, the planner graph buffer,
+        the attached flag). Returns the merged data dict. Shallow merge —
+        callers pass whole sub-objects (e.g. the full ``staged`` map) when they
+        need to replace rather than deep-merge."""
+        row = self.query_one(
+            "SELECT data FROM agent_instances WHERE id=?", (instance_id,))
+        try:
+            data = json.loads(row["data"] if row and row["data"] else "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data.update(patch)
+        self.execute(
+            "UPDATE agent_instances SET data=? WHERE id=?",
+            (json.dumps(data, sort_keys=True), instance_id),
+        )
+        return data
+
     def close_placement(self, instance_id: int, *, outcome: str) -> None:
         """Mark a placement logically terminated (``data['placement_outcome']``).
 
