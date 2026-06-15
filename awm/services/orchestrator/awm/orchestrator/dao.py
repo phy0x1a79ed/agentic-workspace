@@ -36,20 +36,59 @@ from awm.persistence.databases import init_service_db, new_uuid
 SERVICE = "orchestrator"
 SCHEMA_VERSION = 1
 
-# The 7-value node lifecycle. A *resting* state needs a placement; the matching
-# *out* state means a placement is live on the node:
-#   a worker is needed:  ready       -> active      -> completed  (terminal-ok)
-#   a planner is needed:  decomposing(agent NULL) -> decomposing(agent set)
-# ``blocked`` is a leaf waiting on its dependency contracts. A worker give-up
-# rests in ``failed``; a planner give-up (budget out) rests in ``abandoned`` —
-# both route their downstream consumers back to ``decomposing`` to re-plan.
+# The explicit node lifecycle — a TRUE state machine: every distinct position is
+# its own named state. A *rest* state means a placement is needed (no agent
+# live); the matching *out* state means one is live. ``agent_ref`` is pure data
+# (which agent is placed) — it is set only on the four out-states and is never
+# read to infer a lifecycle position.
+#
+#   rest                out            dispatch mode    meaning
+#   ----                ---            -------------    -------
+#   ready            -> planning       plan             deps met; plan the work
+#   plan_delivered   -> verifying_plan verify           plan staged; check it
+#   plan_approved    -> active         worker           plan ok; do the work
+#   decompose_pending-> decomposing    planner          expand into a sub-DAG
+#
+# ``blocked`` is a leaf waiting on its dependency contracts (not dispatchable
+# until they deliver). A worker give-up rests in ``failed``; a planner give-up
+# (budget out) rests in ``abandoned`` — both route their downstream consumers
+# into ``decompose_pending`` to re-plan. ``completed`` is terminal-ok.
 STATES = (
-    "blocked", "ready", "active", "decomposing", "completed", "failed", "abandoned",
+    "blocked",
+    "ready", "planning",
+    "plan_delivered", "verifying_plan",
+    "plan_approved", "active",
+    "decompose_pending", "decomposing",
+    "completed", "failed", "abandoned",
 )
+
+# The state machine as two flat tables — the single source of truth for
+# dispatch (_prepare / _apply_placement) and kernel.reconcile. REST_MODE maps
+# each *resting* state to the placement mode it needs; OUT_STATE maps that mode
+# to the *out* state the node flips to once the placement is live. ``agent_ref``
+# is never consulted to decide a position — these tables are.
+REST_MODE = {
+    "ready": "plan",
+    "plan_delivered": "verify",
+    "plan_approved": "worker",
+    "decompose_pending": "planner",
+}
+OUT_STATE = {
+    "plan": "planning",
+    "verify": "verifying_plan",
+    "worker": "active",
+    "planner": "decomposing",
+}
 
 # The reserved project + goal of the single global root sentinel.
 ROOT_PROJECT = "_root"
 ROOT_GOAL = "global root — all user work is a prerequisite of this node"
+
+# The reserved pseudo-contract a ``plan`` agent delivers to hand its staged plan
+# back to the kernel (``planning`` → ``plan_delivered``). It is NOT a row in the
+# contracts table — its ref lands in ``tasks.plan_ref`` — and may not be used as
+# a real produced-contract name.
+PLAN_CONTRACT = "plan"
 
 SCHEMA_SQL = """\
 -- tasks — the plan nodes of the single global dependency DAG. ``is_root``
@@ -61,11 +100,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     state           TEXT NOT NULL DEFAULT 'blocked',
     is_root         INTEGER NOT NULL DEFAULT 0,
     -- placement bookkeeping: which placement (if any) is currently out.
-    mode            TEXT,            -- 'worker' | 'planner' | NULL (no placement out)
-    scope_slug      TEXT,            -- flat slug minted at dispatch; cleared on reclaim
+    mode            TEXT,            -- 'plan'|'verify'|'worker'|'planner' | NULL (no placement out)
+    workspace_slug  TEXT,            -- workspace-service unit slug minted at dispatch; cleared on reclaim
     agent_ref       TEXT,            -- the placed agent (from place_on_task) ; NULL when none
     placement_token TEXT,            -- opaque token returned by place_on_task
-    replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-plan attempts left before abandoned
+    plan_ref        TEXT,            -- the staged plan artifact (delivered by a plan agent); NULL until planned
+    attached        INTEGER NOT NULL DEFAULT 0,   -- orthogonal human-attached flag (freezes auto-progress)
+    replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-attempts left (re-plans + decomposes) before abandoned
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -223,12 +264,12 @@ class OrchestratorDAO(BaseDAO):
     ) -> None:
         """Patch named columns on a task; always bumps ``updated_at``.
 
-        Allowed columns: state, mode, scope_slug, agent_ref, placement_token,
-        replan_budget, retry_count, goal.
+        Allowed columns: state, mode, workspace_slug, agent_ref,
+        placement_token, plan_ref, attached, replan_budget, retry_count, goal.
         """
         allowed = {
-            "state", "mode", "scope_slug", "agent_ref", "placement_token",
-            "replan_budget", "retry_count", "goal",
+            "state", "mode", "workspace_slug", "agent_ref", "placement_token",
+            "plan_ref", "attached", "replan_budget", "retry_count", "goal",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:
@@ -316,7 +357,8 @@ class OrchestratorDAO(BaseDAO):
         contract's delivery state and producer."""
         return self.query_all(
             """SELECT e.id AS edge_id, e.contract_id,
-                      c.name, c.producer_task, c.delivered_ts, c.payload_ref
+                      c.name, c.spec, c.producer_task, c.delivered_ts,
+                      c.payload_ref
                FROM edges e JOIN contracts c ON c.id = e.contract_id
                WHERE e.consumer_task = ?""",
             (consumer_task,), conn=conn,

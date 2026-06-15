@@ -1,11 +1,16 @@
-"""The doable path: a no-dependency task is attached upstream of root,
-dispatched, delivered, completed — and root completes with it.
+"""The doable path on the explicit state machine: a no-dependency task is
+attached upstream of root, travels the worker legs (plan → verify → work),
+delivers, completes — and root completes with it.
 
-attach (task born blocked, no deps -> ready -> dispatched -> active)
--> deliver -> completed -> root (its sole prerequisite) completes too.
+attach (born blocked, no deps -> ready -> planning)
+  -> deliver("plan") -> plan_delivered -> verifying_plan
+  -> approve_plan -> plan_approved -> active
+  -> deliver(real contract) -> completed -> root completes too.
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -20,27 +25,72 @@ def _attach(orch, *, goal="do it", produces=(("c1", "the deliverable"),)):
     })
 
 
-def test_task_is_dispatched_at_attach(orch):
+def test_task_is_dispatched_at_the_plan_leg(orch):
     res = _attach(orch)
     tid = res["task_id"]
     task = orch.DAO().get_task(tid)
-    # blocked (no deps) -> ready -> active flip at dispatch, recording the stub.
-    assert task["state"] == "active"
-    assert task["mode"] == "worker"
-    assert task["agent_ref"] == f"agent:{task['scope_slug']}"
+    # blocked (no deps) -> ready -> planning: the first leg is a PLAN placement.
+    assert task["state"] == "planning"
+    assert task["mode"] == "plan"
+    assert task["agent_ref"] == f"agent:{task['workspace_slug']}"
     assert task["placement_token"]
     # The task is wired upstream of root (root is its consumer).
     assert res["consumer"] == orch.DAO().get_root()["id"]
     # The placement payload carried the outgoing contract.
-    payload = orch.placements[tid]
-    assert payload["mode"] == "worker"
+    payload = orch.placements[(tid, "plan")]
+    assert payload["mode"] == "plan"
     assert any(c["name"] == "c1" for c in payload["contracts_out"])
+
+
+def test_plan_then_verify_then_active(orch):
+    """Each leg is a distinct placement; the verifier gets the plan + objective
+    and no filesystem inputs."""
+    res = _attach(orch)
+    tid = res["task_id"]
+    dao = orch.DAO()
+
+    # Reserved plan handoff: planning -> plan_delivered, verifier dispatched.
+    orch.operations.deliver({"task_id": tid, "contract": "plan",
+                             "payload_ref": "artifact:plan"})
+    t = dao.get_task(tid)
+    assert t["state"] == "verifying_plan"
+    assert t["plan_ref"] == "artifact:plan"
+    vpayload = orch.placements[(tid, "verify")]
+    brief = json.loads(vpayload["brief"])
+    assert brief["mode"] == "verify"
+    assert brief["plan_ref"] == "artifact:plan"
+    assert vpayload["contracts_in"] == []  # fs-less verifier
+
+    # Approve -> plan_approved -> worker placement (active).
+    orch.operations.approve_plan({"task_id": tid})
+    t = dao.get_task(tid)
+    assert t["state"] == "active"
+    assert t["mode"] == "worker"
+    assert (tid, "worker") in orch.placements
+
+
+def test_reject_plan_replans_and_spends_budget(orch):
+    res = _attach(orch)
+    tid = res["task_id"]
+    dao = orch.DAO()
+    budget0 = dao.get_task(tid)["replan_budget"]
+
+    orch.operations.deliver({"task_id": tid, "contract": "plan",
+                             "payload_ref": "artifact:plan1"})
+    orch.operations.reject_plan({"task_id": tid,
+                                 "reason_text": "spurious deliverable"})
+    t = dao.get_task(tid)
+    # Back at the plan leg (re-dispatched), one budget unit spent, plan discarded.
+    assert t["state"] == "planning"
+    assert t["replan_budget"] == budget0 - 1
+    assert t["plan_ref"] is None
 
 
 def test_deliver_completes_task_and_root(orch):
     res = _attach(orch)
     tid = res["task_id"]
     dao = orch.DAO()
+    orch.advance_to_active(tid)
     task = dao.get_task(tid)
 
     reply = orch.operations.deliver({
@@ -65,15 +115,17 @@ def test_deliver_completes_task_and_root(orch):
     assert status["counts"] == {"completed": 2}  # task + root
     assert status["escalations"] == []
 
-    # The delivery + its artifact ref are recorded in append-only memory.
+    # The plan handoff + the real delivery are both recorded in append-only
+    # memory; the real artifact ref is the last entry.
     mems = dao.list_attempt_memories(tid)
-    assert [m["outcome"] for m in mems] == ["delivered"]
-    assert mems[0]["payload_ref"] == "artifact:result"
+    assert [m["outcome"] for m in mems] == ["delivered", "delivered"]
+    assert mems[-1]["payload_ref"] == "artifact:result"
 
 
 def test_empty_payload_fails_screen(orch):
     res = _attach(orch)
     tid = res["task_id"]
+    orch.advance_to_active(tid)
     task = orch.DAO().get_task(tid)
     reply = orch.operations.deliver({
         "task_id": tid, "agent_ref": task["agent_ref"],
@@ -86,6 +138,7 @@ def test_empty_payload_fails_screen(orch):
 def test_wrong_agent_ref_is_rejected(orch):
     res = _attach(orch)
     tid = res["task_id"]
+    orch.advance_to_active(tid)
     with pytest.raises(ValueError):
         orch.operations.deliver({
             "task_id": tid, "agent_ref": "agent:imposter",
@@ -93,16 +146,18 @@ def test_wrong_agent_ref_is_rejected(orch):
         })
 
 
-def test_transient_failure_auto_retries_to_ready_then_redispatched(orch):
+def test_transient_failure_auto_retries_same_leg(orch):
     res = _attach(orch)
     tid = res["task_id"]
     dao = orch.DAO()
+    orch.advance_to_active(tid)
     task = dao.get_task(tid)
     orch.operations.fail({
         "task_id": tid, "agent_ref": task["agent_ref"],
         "reason_type": "transient-error", "reason_text": "agent died",
     })
-    # transient -> ready (retry_count bumped) -> re-dispatched -> active again.
+    # active transient -> plan_approved (retry the worker) -> re-dispatched ->
+    # active again, retry_count bumped.
     fresh = dao.get_task(tid)
     assert fresh["state"] == "active"
     assert fresh["retry_count"] == 1

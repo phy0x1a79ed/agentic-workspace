@@ -16,8 +16,8 @@ worker-honesty mechanism — no gateway change required.
 Two cross-service touch points are kept as **injectable seams**, defaulting to
 read-only/no-op so the kernel never reaches a live gateway (and never prod
 ``:7819``): ``_project_exists`` (validate the project exists — never create it)
-and ``_reclaim_scope`` (free a completed task's scope; wired to
-``scopes.complete_scope`` at integration).
+and ``_reclaim_workspace`` (free-but-retain a completed task's workspace unit;
+wired to the workspace service's ``workspace_retain`` at integration).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from awm import gatewayclient
 from awm.orchestrator import dispatch, kernel
-from awm.orchestrator.dao import OrchestratorDAO, init
+from awm.orchestrator.dao import PLAN_CONTRACT, OrchestratorDAO, init
 
 log = logging.getLogger("awm.orchestrator.operations")
 
@@ -57,20 +57,23 @@ def _default_project_exists(project: str) -> bool:
 
 
 _project_exists_fn: Callable[[str], bool] = _default_project_exists
-_reclaim_scope_fn: Callable[[str, str], None] | None = None
+# Free-but-retain a completed task's workspace unit (wired to the workspace
+# service's ``workspace_retain`` at integration; no-op by default so the kernel
+# stays offline).
+_reclaim_workspace_fn: Callable[[str, str], None] | None = None
 
 
 def configure(
     *,
     project_exists_fn: Callable[[str], bool] | None = None,
-    reclaim_scope_fn: Callable[[str, str], None] | None = None,
+    reclaim_workspace_fn: Callable[[str, str], None] | None = None,
 ) -> None:
-    """Override the cross-service seams (tests / T3 integration)."""
-    global _project_exists_fn, _reclaim_scope_fn
+    """Override the cross-service seams (tests / integration)."""
+    global _project_exists_fn, _reclaim_workspace_fn
     if project_exists_fn is not None:
         _project_exists_fn = project_exists_fn
-    if reclaim_scope_fn is not None:
-        _reclaim_scope_fn = reclaim_scope_fn
+    if reclaim_workspace_fn is not None:
+        _reclaim_workspace_fn = reclaim_workspace_fn
 
 
 def _verify_agent(task: dict, agent_ref: str | None) -> None:
@@ -120,6 +123,8 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
     produces = args.get("produces") or []
     depends_on = args.get("depends_on") or []
     consumer_id = args.get("consumer")
+    if any(c.get("name") == PLAN_CONTRACT for c in produces):
+        raise ValueError(f"{PLAN_CONTRACT!r} is a reserved contract name")
 
     dao = OrchestratorDAO()
     with dao.transaction() as conn:
@@ -156,11 +161,64 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("attaching upstream of the consumer would "
                                  "create a cycle")
             dao.create_edge(consumer, cid, conn=conn)
-    # Readiness + dispatch run after the structural commit.
+    # Readiness + dispatch run after the structural commit. A newly-ready task
+    # starts its worker journey at the PLAN leg (ready → planning).
     intents: list[tuple[str, str]] = []
     if kernel.recompute_readiness(dao, task_id):
-        intents.append((task_id, "worker"))
+        intents.append((task_id, "plan"))
     dispatch.enqueue(intents)
+    task = dao.get_task(task_id)
+    return {"task_id": task_id, "state": task["state"], "consumer": consumer}
+
+
+def orch_task_create(args: dict[str, Any]) -> dict[str, Any]:
+    """Create a fresh, still-vague task and place it into an attended initial
+    specification.
+
+    Unlike :func:`orch_task_attach` (which attaches work whose contracts are
+    already known and sends it down the worker legs), this births the task into
+    ``decompose_pending`` with the human ``attached`` and dispatches a planner to
+    conversationally specify it — reusing the planner machinery, distinguished
+    only by the orthogonal ``attached`` flag and an ``initial`` brief. The
+    initial specification does **not** spend ``replan_budget`` (the budget is for
+    genuine re-attempts). On commit the planner's sub-DAG (or empty re-spec) flows
+    the task through the normal ``ready`` → … legs. The task hangs in the DAG via
+    a synthetic ``deliverable`` upstream of the consumer (root by default).
+    """
+    init()
+    project = str(args.get("project", "")).strip()
+    goal = str(args.get("goal", "")).strip()
+    if not project:
+        raise ValueError("project is required")
+    if not _project_exists_fn(project):
+        raise ValueError(f"project {project!r} does not exist "
+                         "(orchestrator never creates projects)")
+    consumer_id = args.get("consumer")
+
+    dao = OrchestratorDAO()
+    with dao.transaction() as conn:
+        root = dao.ensure_root(conn=conn)
+        consumer = consumer_id or root["id"]
+        if dao.get_task(consumer, conn=conn) is None:
+            raise ValueError(f"consumer task {consumer!r} does not exist")
+        task_id = dao.create_task(project, goal, state="decompose_pending",
+                                  conn=conn)
+        # A synthetic deliverable so the consumer has something to wait on; the
+        # specifier defines the real contracts via decompose_commit.
+        cid = dao.create_contract(
+            project, f"{project}:{task_id[:8]}:deliverable", goal, task_id,
+            conn=conn)
+        if not kernel.check_acyclic(dao, consumer, task_id, conn=conn):
+            raise ValueError("attaching upstream of the consumer would "
+                             "create a cycle")
+        dao.create_edge(consumer, cid, conn=conn)
+        # Born attended; an 'initial' memory marks the SPECIFYING brief. No
+        # budget is charged for the first specification.
+        dao.update_task(task_id, attached=1, conn=conn)
+        dao.add_attempt_memory(task_id, "created", reason_type="initial",
+                               conn=conn)
+
+    dispatch.enqueue([(task_id, "planner")])
     task = dao.get_task(task_id)
     return {"task_id": task_id, "state": task["state"], "consumer": consumer}
 
@@ -194,8 +252,9 @@ def orch_status(args: dict[str, Any]) -> dict[str, Any]:
         "escalations": escalations,
         "tasks": [
             {"task_id": t["id"], "goal": t["goal"], "state": t["state"],
-             "is_root": bool(t["is_root"]), "scope_slug": t["scope_slug"],
-             "agent_ref": t["agent_ref"], "mode": t["mode"]}
+             "is_root": bool(t["is_root"]), "workspace_slug": t["workspace_slug"],
+             "agent_ref": t["agent_ref"], "mode": t["mode"],
+             "attached": bool(t["attached"])}
             for t in tasks
         ],
     }
@@ -214,7 +273,8 @@ def orch_frontier(args: dict[str, Any]) -> dict[str, Any]:
     return {
         "project": project or None,
         "frontier": [
-            {"task_id": t["id"], "goal": t["goal"], "scope_slug": t["scope_slug"]}
+            {"task_id": t["id"], "goal": t["goal"],
+             "workspace_slug": t["workspace_slug"]}
             for t in frontier
         ],
     }
@@ -245,12 +305,18 @@ def claim(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def deliver(args: dict[str, Any]) -> dict[str, Any]:
-    """A worker delivers a contract's payload (an artifact ref).
+    """A placed agent delivers a payload (an artifact ref).
 
-    Screens the payload, marks the contract delivered, records an
-    ``attempt_memory``, advances any newly-ready consumers, and — once every
-    contract the task produces is delivered — completes the task and frees its
-    scope. All resulting dispatch intents are enqueued.
+    Two cases, keyed by the contract name:
+
+    * The reserved ``"plan"`` handoff — a ``plan`` agent delivers its staged plan
+      while the task is ``planning``: record it in ``plan_ref``, flip the task to
+      ``plan_delivered``, and dispatch a verifier. It is NOT a contracts-table
+      delivery and never completes the task.
+    * A normal contract delivery — a worker delivers one of its
+      ``contracts_out``: screen it, mark it delivered, advance any newly-ready
+      consumers (each starts at its PLAN leg), and once every produced contract
+      is delivered, complete the task and free its workspace.
     """
     init()
     dao = OrchestratorDAO()
@@ -264,6 +330,22 @@ def deliver(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "delivery failed screen (empty payload_ref)"}
 
     contract_name = args.get("contract")
+
+    # Reserved plan handoff: planning -> plan_delivered, then place a verifier.
+    if contract_name == PLAN_CONTRACT:
+        if task["state"] != "planning":
+            return {"ok": False,
+                    "error": f"plan delivered but task is {task['state']!r}, "
+                             "not 'planning'"}
+        dao.add_attempt_memory(task["id"], "delivered", reason_type="plan",
+                               payload_ref=payload_ref)
+        dao.update_task(task["id"], state="plan_delivered", plan_ref=payload_ref,
+                        mode=None, agent_ref=None, placement_token=None)
+        dispatch.enqueue([(task["id"], "verify")])
+        fresh = dao.get_task(task["id"])
+        return {"ok": True, "task_id": task["id"], "state": fresh["state"],
+                "delivered": PLAN_CONTRACT}
+
     contract = dao.get_contract_by_name(task["project"], contract_name)
     if contract is None or contract["producer_task"] != task["id"]:
         return {"ok": False,
@@ -274,15 +356,15 @@ def deliver(args: dict[str, Any]) -> dict[str, Any]:
     dao.add_attempt_memory(task["id"], "delivered", payload_ref=payload_ref)
     for consumer in dao.list_consumers_of_contract(contract["id"]):
         if kernel.recompute_readiness(dao, consumer):
-            intents.append((consumer, "worker"))
+            intents.append((consumer, "plan"))
 
-    scope_slug = task["scope_slug"]
+    workspace_slug = task["workspace_slug"]
     if kernel.complete_task(dao, task["id"]):
-        if _reclaim_scope_fn is not None and scope_slug:
+        if _reclaim_workspace_fn is not None and workspace_slug:
             try:
-                _reclaim_scope_fn(task["project"], scope_slug)
+                _reclaim_workspace_fn(task["project"], workspace_slug)
             except Exception as exc:  # noqa: BLE001 — reclaim is best-effort
-                log.warning("orchestrator: scope reclaim failed: %s", exc)
+                log.warning("orchestrator: workspace reclaim failed: %s", exc)
 
     dispatch.enqueue(intents)
     fresh = dao.get_task(task["id"])
@@ -325,9 +407,15 @@ def decompose_commit(args: dict[str, Any]) -> dict[str, Any]:
     Atomically creates the upstream child tasks, the contracts they produce, and
     the dependency edges among them; then the **decomposing task itself gains a
     dependency edge onto each terminal contract of that sub-DAG** and rests
-    ``blocked``, spending one unit of ``replan_budget``. It re-runs as a normal
-    worker once the sub-DAG delivers (there is no auto-complete). Newly-ready
-    children (leaves with no unmet dependency) are dispatched.
+    ``blocked``. It re-runs through the normal legs once the sub-DAG delivers
+    (there is no auto-complete). Newly-ready children (leaves with no unmet
+    dependency) are dispatched.
+
+    The kernel is authoritative on coherence: the sub-DAG must be acyclic and
+    must **funnel** — every child must reach the decomposing task (its unique
+    global sink) along dependency edges. An incoherent sub-DAG is rejected; the
+    whole commit rolls back and (because budget is charged on *entry* to
+    ``decompose_pending``, not here) costs no ``replan_budget``.
 
     Terminal contracts are those produced inside the sub-DAG and consumed by no
     child; ``depends_on`` may name them explicitly, else they are derived.
@@ -351,7 +439,6 @@ def decompose_commit(args: dict[str, Any]) -> dict[str, Any]:
     edges = args.get("edges") or []
     depends_on = args.get("depends_on") or []
     project = task["project"]
-    budget = int(task["replan_budget"]) - 1
 
     local_to_id: dict[str, str] = {}
     created: list[tuple[str, str]] = []  # (name, contract_id) for sub-DAG contracts
@@ -404,20 +491,106 @@ def decompose_commit(args: dict[str, Any]) -> dict[str, Any]:
                                  "would create a cycle")
             dao.create_edge(task["id"], cid, conn=conn)
 
-        # The decomposing task rests blocked, awaiting its own sub-DAG.
+        # Funnel rule (kernel-authoritative): every child must reach the
+        # decomposing task along the dependency edges just inserted.
+        if not kernel.check_funnel(
+            dao, task["id"], local_to_id.values(), conn=conn
+        ):
+            raise ValueError(
+                "incoherent sub-DAG: every child must funnel into the "
+                "decomposing task (its unique sink)")
+
+        # The decomposing task rests blocked, awaiting its own sub-DAG. Its
+        # workspace is freed (children get fresh units; it gets a new one when it
+        # re-runs). Budget was already charged on entry to decompose_pending.
         dao.update_task(task["id"], state="blocked", mode=None,
-                        agent_ref=None, placement_token=None, scope_slug=None,
-                        replan_budget=budget, conn=conn)
+                        agent_ref=None, placement_token=None,
+                        workspace_slug=None, conn=conn)
 
     intents: list[tuple[str, str]] = []
     for cid in local_to_id.values():
         if kernel.recompute_readiness(dao, cid):
-            intents.append((cid, "worker"))
+            intents.append((cid, "plan"))
     # If the planner committed an empty (or terminal-less) sub-DAG the task has
-    # no new dependency and is immediately ready again.
+    # no new dependency and is immediately ready again — restart at the PLAN leg.
     if kernel.recompute_readiness(dao, task["id"]):
-        intents.append((task["id"], "worker"))
+        intents.append((task["id"], "plan"))
     dispatch.enqueue(intents)
     fresh = dao.get_task(task["id"])
     return {"ok": True, "task_id": task["id"], "state": fresh["state"],
             "children": list(local_to_id.values())}
+
+
+def approve_plan(args: dict[str, Any]) -> dict[str, Any]:
+    """A verifier approves a ``verifying_plan`` task's staged plan.
+
+    Flips the task to ``plan_approved`` (the verifier's placement ends) and
+    dispatches the worker that does the real work (``plan_approved`` → active).
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if task["state"] != "verifying_plan":
+        return {"ok": False,
+                "error": f"approve_plan on a {task['state']!r} task "
+                         "(expected 'verifying_plan')"}
+    dao.update_task(task["id"], state="plan_approved", mode=None,
+                    agent_ref=None, placement_token=None)
+    dispatch.enqueue([(task["id"], "worker")])
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def reject_plan(args: dict[str, Any]) -> dict[str, Any]:
+    """A verifier rejects a ``verifying_plan`` task's staged plan.
+
+    Records the rejection, discards the plan, and re-plans: spend one
+    ``replan_budget`` unit and return to ``ready`` (a fresh plan agent is
+    dispatched). With no budget left the task gives up — ``abandoned``, routing
+    its consumers (``kernel.abandon``).
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if task["state"] != "verifying_plan":
+        return {"ok": False,
+                "error": f"reject_plan on a {task['state']!r} task "
+                         "(expected 'verifying_plan')"}
+    dao.add_attempt_memory(task["id"], "failed", reason_type="plan-rejected",
+                           reason_text=str(args.get("reason_text", "")))
+
+    budget = int(task["replan_budget"])
+    if budget <= 0:
+        intents = kernel.abandon(dao, task["id"])
+    else:
+        dao.update_task(task["id"], state="ready", replan_budget=budget - 1,
+                        mode=None, agent_ref=None, placement_token=None,
+                        plan_ref=None)
+        intents = [(task["id"], "plan")]
+    dispatch.enqueue(intents)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def set_attached(args: dict[str, Any]) -> dict[str, Any]:
+    """Set a task's orthogonal human-attached flag (agents service authoritative).
+
+    Attachment is independent of the lifecycle state — any live placement may be
+    attached. While attached a task is exempt from auto-reclaim / force-progress
+    (the agents side freezes its turn budget); the state machine is untouched.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    attached = 1 if args.get("attached") else 0
+    dao.update_task(task["id"], attached=attached)
+    return {"ok": True, "task_id": task["id"], "attached": bool(attached)}

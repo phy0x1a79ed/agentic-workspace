@@ -31,14 +31,23 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Three **public** tools are projected into the MCP catalog (`/tools`):
+Four **public** tools are projected into the MCP catalog (`/tools`):
+`orch_task_create` (create a vague task into an attended specification),
 `orch_task_attach`, `orch_status`, `orch_frontier`.
 
-Four **privileged** plan-mutation ops — `claim`, `deliver`, `fail`,
-`decompose_commit` — are intentionally **omitted from the manifest**, so they are
-NOT MCP tools. They remain reachable by the agents harness via the catch-all
+The **privileged** plan-mutation ops — `claim`, `deliver`, `fail`,
+`decompose_commit`, `approve_plan`, `reject_plan`, `set_attached` — are
+intentionally **omitted from the manifest**, so they are NOT MCP tools. They
+remain reachable by the agents harness via the catch-all
 `POST /svc/orchestrator/fn/<op>` dispatch (which resolves against the `HANDLERS`
 dict, not the manifest). This manifest-omission is the worker-honesty mechanism.
+
+The node lifecycle is an explicit state machine — `blocked → ready → planning →
+plan_delivered → verifying_plan → plan_approved → active → completed`, with
+`decompose_pending → decomposing` for consumer-owned decomposition and
+`failed` / `abandoned` for give-ups. Placement modes: `plan`, `verify`, `worker`,
+`planner`. Provisioning rides the `workspace` service (`workspace_slug`); the
+reserved `plan` contract carries a plan agent's staged plan back to the kernel.
 
 To iterate against a running sandbox without installing, use
 `awm dev shadow awm/services/orchestrator`; it execs this same `run.sh` as an overlay.

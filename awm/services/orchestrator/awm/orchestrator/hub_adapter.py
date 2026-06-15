@@ -5,14 +5,16 @@ starts the dispatch drain loop (``on_start``), then runs the shared
 :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
 reconnect).
 
-**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the three
+**The honesty mechanism.** ``API_MANIFEST["functions"]`` lists ONLY the four
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
-manifest) projects exactly three ``orch_*`` MCP tools. The four privileged
-plan-mutation ops live in ``HANDLERS`` but are deliberately ABSENT from the
-manifest — so they are not MCP tools, yet remain reachable by the agents harness
-through the gateway's catch-all ``POST /svc/orchestrator/fn/<op>`` dispatch
-(``proxy_service_http`` resolves ``ch.call`` against each control channel's
-handler set, not the manifest). No gateway change is required.
+manifest) projects exactly four ``orch_*`` MCP tools. The privileged
+plan-mutation ops (``claim`` / ``deliver`` / ``fail`` / ``decompose_commit`` /
+``approve_plan`` / ``reject_plan`` / ``set_attached``) live in ``HANDLERS`` but
+are deliberately ABSENT from the manifest — so they are not MCP tools, yet remain
+reachable by the agents harness through the gateway's catch-all
+``POST /svc/orchestrator/fn/<op>`` dispatch (``proxy_service_http`` resolves
+``ch.call`` against each control channel's handler set, not the manifest). No
+gateway change is required.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.orchestrator.hub_adapter
@@ -30,9 +32,21 @@ from awm.orchestrator.dao import OrchestratorDAO
 
 log = logging.getLogger("awm.orchestrator.hub_adapter")
 
-# Only the three PUBLIC ops appear here — this is what becomes MCP-visible.
+# Only the PUBLIC ops appear here — this is what becomes MCP-visible.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
+        {
+            "name": "orch_task_create",
+            "tool": "orch_task_create",
+            "description": "Create a fresh, still-vague task and place it into an "
+                           "attended initial specification (a planner specifies "
+                           "it conversationally) before it becomes work.",
+            "params": [
+                {"name": "project", "type": "string", "required": True},
+                {"name": "goal", "type": "string", "required": True},
+                {"name": "consumer", "type": "string", "required": False},
+            ],
+        },
         {
             "name": "orch_task_attach",
             "tool": "orch_task_attach",
@@ -70,12 +84,14 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-# All SEVEN handlers — the three public above plus the four privileged ops that
-# are intentionally NOT in the manifest (claim/deliver/fail/decompose_commit).
-# Their omission is what keeps them off the MCP tool surface; the catch-all
-# /svc/<name>/fn/<fn> dispatch still resolves them here.
+# All handlers — the four public above plus the privileged ops that are
+# intentionally NOT in the manifest (claim / deliver / fail / decompose_commit /
+# approve_plan / reject_plan / set_attached). Their omission is what keeps them
+# off the MCP tool surface; the catch-all /svc/<name>/fn/<fn> dispatch still
+# resolves them here.
 HANDLERS = {
     # public (manifest-visible)
+    "orch_task_create": operations.orch_task_create,
     "orch_task_attach": operations.orch_task_attach,
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
@@ -84,6 +100,9 @@ HANDLERS = {
     "deliver": operations.deliver,
     "fail": operations.fail,
     "decompose_commit": operations.decompose_commit,
+    "approve_plan": operations.approve_plan,
+    "reject_plan": operations.reject_plan,
+    "set_attached": operations.set_attached,
 }
 
 

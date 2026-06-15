@@ -14,8 +14,9 @@ import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-PUBLIC = {"orch_task_attach", "orch_status", "orch_frontier"}
-PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit"}
+PUBLIC = {"orch_task_create", "orch_task_attach", "orch_status", "orch_frontier"}
+PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
+              "approve_plan", "reject_plan", "set_attached"}
 
 
 def test_manifest_lists_only_public_ops(orch):
@@ -39,14 +40,15 @@ async def test_privileged_op_is_dispatchable_though_unmanifested(orch):
     from awm.gatewayclient import ServiceAdapter
     from awm.orchestrator import hub_adapter
 
-    # Attach a doable task (born active) so a privileged `deliver` has something
-    # to act on.
+    # Attach a doable task and drive it to its worker leg so a privileged
+    # `deliver` has something to act on.
     res = orch.operations.orch_task_attach(
         {"project": "p", "goal": "ship it",
          "produces": [{"name": "c1", "spec": "the deliverable"}]})
     tid = res["task_id"]
+    orch.advance_to_active(tid)
     task = orch.DAO().get_task(tid)
-    assert task["state"] == "active"  # dispatched at attach
+    assert task["state"] == "active"  # plan -> verify -> approve -> worker
 
     adapter = ServiceAdapter(
         "orchestrator", hub_adapter.API_MANIFEST, hub_adapter.HANDLERS)

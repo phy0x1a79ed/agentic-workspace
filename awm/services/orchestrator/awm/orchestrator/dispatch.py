@@ -31,11 +31,11 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
-from awm.orchestrator.dao import OrchestratorDAO
+from awm.orchestrator.dao import OUT_STATE, REST_MODE, OrchestratorDAO
 
 log = logging.getLogger("awm.orchestrator.dispatch")
 
-DispatchIntent = tuple[str, str]  # (task_id, mode)
+DispatchIntent = tuple[str, str]  # (task_id, mode); mode in REST_MODE.values()
 
 # Module state. Configured once at boot via ``configure``/``start_drain_loop``.
 _place_fn: Callable[[dict], Any] = None  # type: ignore[assignment]
@@ -101,38 +101,51 @@ def reset() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mint_scope_slug(task: dict) -> str:
-    """The flat scope slug for a task's placement.
+def _mint_workspace_slug(task: dict) -> str:
+    """The workspace-service unit slug for a task's placement.
 
-    Reuses an existing slug when present — so a planner placed on a ``failed``
-    leaf reuses the worker's freed slug and can read its partial work — and
-    otherwise mints ``orch-<task-short-id>``.
+    Reuses an existing slug when present — so a planner placed on a task that
+    just failed reuses the worker's retained unit and can read its partial work
+    — and otherwise mints ``orch-<task-short-id>``.
     """
-    return task["scope_slug"] or f"orch-{task['id'][:8]}"
+    return task["workspace_slug"] or f"orch-{task['id'][:8]}"
 
 
 def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
-                   scope_slug: str) -> dict:
+                   workspace_slug: str) -> dict:
     """Assemble the Contract-A ``place_on_task`` payload for a task.
 
     ``contracts_out`` are the contracts this task produces; ``contracts_in`` are
-    the dependency contracts it consumes (with their delivered payload refs). A
-    planner brief also carries the latest failure reason so the re-planner knows
-    why review was triggered.
+    the dependency contracts it consumes, each with its spec and delivered
+    payload ref (so the workspace service can materialize pre-readings). The
+    brief is mode-specific:
+
+    * ``plan`` / ``worker`` — the goal + its contracts.
+    * ``verify`` — the staged ``plan_ref`` and the objective (``contracts_out``)
+      to check the plan against; the verifier needs no filesystem, so no
+      ``contracts_in`` are materialized for it.
+    * ``planner`` — the latest failure reason (``review_reason``) so a re-planner
+      knows why review was triggered, or ``reason="initial"`` when this is a
+      fresh task's first specification (keyed off the ``created`` attempt memory).
     """
     contracts_out = [
         {"name": c["name"], "spec": c["spec"]}
         for c in dao.list_contracts_by_producer(task["id"])
     ]
     contracts_in = [
-        {"name": e["name"], "payload_ref": e["payload_ref"]}
+        {"name": e["name"], "spec": e["spec"], "payload_ref": e["payload_ref"]}
         for e in dao.list_incoming_edges(task["id"])
     ]
     brief: dict[str, Any] = {"goal": task["goal"], "mode": mode}
-    if mode == "planner":
+    if mode == "verify":
+        brief["plan_ref"] = task["plan_ref"]
+        contracts_in = []  # the verifier is fs-less; objective rides contracts_out
+    elif mode == "planner":
         mems = dao.list_attempt_memories(task["id"])
-        if mems:
-            last = mems[-1]
+        last = mems[-1] if mems else None
+        if last is not None and last["reason_type"] == "initial":
+            brief["reason"] = "initial"
+        elif last is not None:
             brief["review_reason"] = {
                 "reason_type": last["reason_type"],
                 "reason_text": last["reason_text"],
@@ -141,7 +154,7 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
     return {
         "task_id": task["id"],
         "project": task["project"],
-        "scope_slug": scope_slug,
+        "workspace_slug": workspace_slug,
         "brief": json.dumps(brief),
         "contracts_in": contracts_in,
         "contracts_out": contracts_out,
@@ -155,43 +168,41 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
 
 
 def _prepare(task_id: str, mode: str) -> dict | None:
-    """Re-read the task and, if it is still in the expected resting state for
+    """Re-read the task and, if it is still in the resting state that wants
     ``mode``, build its placement payload. Returns ``None`` when the node has
     already moved on (a stale enqueue) so the drain simply skips it.
 
-    A worker rests in ``ready``. A planner rests in ``decomposing`` with **no
-    placement recorded** (``agent_ref`` NULL) — once a planner is out the
-    ``agent_ref`` is set, so a re-enqueue of the same node is skipped.
+    Resting is read straight off the state via :data:`REST_MODE` — each resting
+    state wants exactly one mode (``ready``→plan, ``plan_delivered``→verify,
+    ``plan_approved``→worker, ``decompose_pending``→planner). Once a placement is
+    live the node is in an out-state, so a stale re-enqueue is skipped.
     """
     dao = OrchestratorDAO()
     task = dao.get_task(task_id)
     if task is None:
         return None
-    if mode == "worker":
-        resting = task["state"] == "ready"
-    else:
-        resting = task["state"] == "decomposing" and task["agent_ref"] is None
-    if not resting:
+    if REST_MODE.get(task["state"]) != mode:
         log.debug("orchestrator: skip stale dispatch %s (mode=%s, state=%s)",
                   task_id, mode, task["state"])
         return None
-    return _build_payload(dao, task, mode, _mint_scope_slug(task))
+    return _build_payload(dao, task, mode, _mint_workspace_slug(task))
 
 
 def _apply_placement(task_id: str, mode: str, result: dict) -> None:
-    """Flip the resting node to its placement-out state, recording the agent
-    placement the seam reported. A worker goes ``ready`` → ``active``; a planner
-    stays ``decomposing`` but now carries an ``agent_ref`` (which is what marks
-    the placement as live)."""
-    new_state = "active" if mode == "worker" else "decomposing"
+    """Flip the resting node to its placement-out state (per :data:`OUT_STATE`),
+    recording the agent placement the seam reported. ``agent_ref`` is pure data
+    — it is set here, on the out-state, and read nowhere to infer position."""
+    new_state = OUT_STATE[mode]
     dao = OrchestratorDAO()
     dao.update_task(
         task_id,
         state=new_state,
         mode=mode,
         agent_ref=(result or {}).get("agent_ref"),
-        scope_slug=(result or {}).get("scope") or _mint_scope_slug(
-            dao.get_task(task_id) or {"id": task_id, "scope_slug": None}),
+        workspace_slug=(result or {}).get("workspace")
+        or (result or {}).get("scope")  # tolerate legacy seam key during repoint
+        or _mint_workspace_slug(
+            dao.get_task(task_id) or {"id": task_id, "workspace_slug": None}),
         placement_token=(result or {}).get("placement_token"),
     )
 
