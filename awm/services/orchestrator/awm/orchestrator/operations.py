@@ -220,6 +220,50 @@ def orch_frontier(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def orch_dag(args: dict[str, Any]) -> dict[str, Any]:
+    """The whole plan in one shot — tasks, contracts, and the dependency edges.
+
+    Global by default; pass ``project`` to filter. A pure read projection of the
+    three tables for a UI to build adjacency client-side. Edges are denormalized
+    to carry both endpoints (``consumer_task`` + the contract's
+    ``producer_task``) plus the contract ``name`` and a ``delivered`` flag, so a
+    client never re-joins. The single global ``root_id`` is returned alongside so
+    the consumer can special-case the sentinel.
+    """
+    init()
+    project = str(args.get("project", "")).strip()
+    dao = OrchestratorDAO()
+    tasks = dao.list_tasks(project) if project else dao.query_all(
+        "SELECT * FROM tasks ORDER BY created_at")
+    contracts = dao.list_all_contracts(project or None)
+    edges = dao.list_all_edges_joined(project or None)
+    root = dao.get_root()
+    return {
+        "project": project or None,
+        "root_id": root["id"] if root else None,
+        "tasks": [
+            {"task_id": t["id"], "goal": t["goal"], "state": t["state"],
+             "is_root": bool(t["is_root"]), "mode": t["mode"],
+             "scope_slug": t["scope_slug"], "agent_ref": t["agent_ref"],
+             "created_at": t["created_at"], "updated_at": t["updated_at"]}
+            for t in tasks
+        ],
+        "contracts": [
+            {"contract_id": c["id"], "name": c["name"], "spec": c["spec"],
+             "producer_task": c["producer_task"],
+             "delivered": c["delivered_ts"] is not None,
+             "payload_ref": c["payload_ref"], "delivered_ts": c["delivered_ts"]}
+            for c in contracts
+        ],
+        "edges": [
+            {"edge_id": e["edge_id"], "consumer_task": e["consumer_task"],
+             "contract_id": e["contract_id"], "contract_name": e["contract_name"],
+             "producer_task": e["producer_task"], "delivered": bool(e["delivered"])}
+            for e in edges
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Privileged ops (manifest-OMITTED — never MCP tools; agents harness only)
 # ---------------------------------------------------------------------------

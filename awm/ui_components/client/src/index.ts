@@ -24,3 +24,11 @@ export {
   type AgentStreamEvent,
   type AgentSubscription,
 } from './channel';
+export {
+  fetchDag,
+  type TaskState,
+  type DagTask,
+  type DagContract,
+  type DagEdge,
+  type DagSnapshot,
+} from './dag';

@@ -65,6 +65,16 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "project", "type": "string", "required": False},
             ],
         },
+        {
+            "name": "orch_dag",
+            "tool": "orch_dag",
+            "description": "The whole plan in one shot — tasks, contracts, and "
+                           "denormalized dependency edges (optionally "
+                           "per-project) for a client to visualize the DAG.",
+            "params": [
+                {"name": "project", "type": "string", "required": False},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -79,6 +89,7 @@ HANDLERS = {
     "orch_task_attach": operations.orch_task_attach,
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
+    "orch_dag": operations.orch_dag,
     # privileged (manifest-OMITTED — agents harness only)
     "claim": operations.claim,
     "deliver": operations.deliver,
