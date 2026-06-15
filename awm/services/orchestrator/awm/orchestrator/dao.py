@@ -3,23 +3,26 @@ service's OWN SQLite DB (``AWM_DIR/services/orchestrator/orchestrator.db``).
 
 Per the modular invariant there is no shared ``state.db``: this service owns
 its tables and stands them up via :func:`init_service_db` at startup. The plan
-is modelled in **four tables**, and the two graphs that make up the plan live
-in **two different structures** so they can never be confused:
+is **one** graph — a single global dependency DAG:
 
-* **containment** is a tree — the ``tasks.parent_id`` self-FK (a task has ≤1
-  parent, so containment cannot cycle and needs no edge table).
-* **dependency** is its own ``edges`` table — "consumer task needs this
-  contract"; the producer is read off the contract. Acyclicity is enforced
-  **only** here, on dependency insert.
+* **dependency** is the ``edges`` table — "consumer task needs this contract";
+  the producer is read off the contract. Upstream = prerequisite, downstream =
+  what comes next. Acyclicity is enforced here, on dependency insert. There is
+  no containment tree: "the task that spawned a task" is exactly the consumer on
+  a dependency edge, so a self-FK parent would carry no extra information.
+
+A single special **root** task (``is_root = 1``) sits at the bottom of the DAG;
+all user work is attached as a prerequisite (upstream) of root. Root is a
+sentinel — it never gets a worker; it COMPLETES when every prerequisite is
+delivered, and its abandonment escalates to the human.
 
 ``contracts`` is the unit of hand-off between tasks (atomic name + spec +
 delivery state); ``attempt_memories`` is the append-only record of every
 attempt outcome — **never deleted**, so the plan stays reconstructable and a
 re-planner can read why prior attempts failed.
 
-No ``blocked`` / ``cancelled`` states and no competing-producer / coalescing /
-OR tables — those are deferred to T5 (the data-locks lesson: don't add
-machinery before it is used).
+No competing-producer / coalescing / OR tables — those are deferred (the
+data-locks lesson: don't add machinery before it is used).
 """
 
 from __future__ import annotations
@@ -33,35 +36,42 @@ from awm.persistence.databases import init_service_db, new_uuid
 SERVICE = "orchestrator"
 SCHEMA_VERSION = 1
 
-# The 7-value node lifecycle. Work and review are symmetric:
-#   a worker is needed:  ready  -> active   -> delivered   (terminal-ok)
-#   a planner is needed: failed -> analyzing -> discarded   (terminal-give-up)
-# ``pending`` covers both "leaf waiting on dependency contracts" and "composite
-# parent waiting on its children to deliver".
+# The 7-value node lifecycle. A *resting* state needs a placement; the matching
+# *out* state means a placement is live on the node:
+#   a worker is needed:  ready       -> active      -> completed  (terminal-ok)
+#   a planner is needed:  decomposing(agent NULL) -> decomposing(agent set)
+# ``blocked`` is a leaf waiting on its dependency contracts. A worker give-up
+# rests in ``failed``; a planner give-up (budget out) rests in ``abandoned`` —
+# both route their downstream consumers back to ``decomposing`` to re-plan.
 STATES = (
-    "pending", "ready", "active", "delivered", "failed", "analyzing", "discarded",
+    "blocked", "ready", "active", "decomposing", "completed", "failed", "abandoned",
 )
 
+# The reserved project + goal of the single global root sentinel.
+ROOT_PROJECT = "_root"
+ROOT_GOAL = "global root — all user work is a prerequisite of this node"
+
 SCHEMA_SQL = """\
--- tasks — the plan nodes. Containment is the parent_id self-FK (a tree).
+-- tasks — the plan nodes of the single global dependency DAG. ``is_root``
+-- flags the one root sentinel (a worker is never placed on it).
 CREATE TABLE IF NOT EXISTS tasks (
     id              TEXT PRIMARY KEY,
     project         TEXT NOT NULL,
     goal            TEXT NOT NULL DEFAULT '',
-    state           TEXT NOT NULL DEFAULT 'pending',
-    parent_id       TEXT REFERENCES tasks(id),
+    state           TEXT NOT NULL DEFAULT 'blocked',
+    is_root         INTEGER NOT NULL DEFAULT 0,
     -- placement bookkeeping: which placement (if any) is currently out.
     mode            TEXT,            -- 'worker' | 'planner' | NULL (no placement out)
     scope_slug      TEXT,            -- flat slug minted at dispatch; cleared on reclaim
     agent_ref       TEXT,            -- the placed agent (from place_on_task) ; NULL when none
     placement_token TEXT,            -- opaque token returned by place_on_task
-    replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-plan attempts left before discarded
+    replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-plan attempts left before abandoned
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project_state ON tasks(project, state);
-CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(is_root) WHERE is_root = 1;
 
 -- contracts — the unit of hand-off. Produced by exactly one task; delivered
 -- once (payload_ref + delivered_ts set). ``name`` is the atomic contract name.
@@ -137,8 +147,7 @@ class OrchestratorDAO(BaseDAO):
         project: str,
         goal: str,
         *,
-        state: str = "pending",
-        parent_id: str | None = None,
+        state: str = "blocked",
         replan_budget: int = 2,
         conn: sqlite3.Connection | None = None,
     ) -> str:
@@ -147,13 +156,42 @@ class OrchestratorDAO(BaseDAO):
         now = _now()
         self.execute(
             """INSERT INTO tasks
-               (id, project, goal, state, parent_id, replan_budget,
+               (id, project, goal, state, replan_budget,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (tid, project, goal, state, parent_id, replan_budget, now, now),
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (tid, project, goal, state, replan_budget, now, now),
             conn=conn,
         )
         return tid
+
+    def ensure_root(
+        self, *, conn: sqlite3.Connection | None = None
+    ) -> dict:
+        """Return the single global root sentinel, creating it on first call.
+
+        Root is born ``blocked`` (it depends on all user work) and never gets a
+        worker; it is the escalation point and completes when its prerequisites
+        do. ``replan_budget = 0`` — root never re-plans, it escalates."""
+        row = self.get_root(conn=conn)
+        if row is not None:
+            return row
+        tid = new_uuid()
+        now = _now()
+        self.execute(
+            """INSERT INTO tasks
+               (id, project, goal, state, is_root, replan_budget,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'blocked', 1, 0, ?, ?)""",
+            (tid, ROOT_PROJECT, ROOT_GOAL, now, now), conn=conn,
+        )
+        return self.get_task(tid, conn=conn)
+
+    def get_root(
+        self, *, conn: sqlite3.Connection | None = None
+    ) -> dict | None:
+        return self.query_one(
+            "SELECT * FROM tasks WHERE is_root = 1 LIMIT 1", conn=conn
+        )
 
     def get_task(
         self, task_id: str, *, conn: sqlite3.Connection | None = None
@@ -180,25 +218,17 @@ class OrchestratorDAO(BaseDAO):
             (project, state), conn=conn,
         )
 
-    def list_children(
-        self, parent_id: str, *, conn: sqlite3.Connection | None = None
-    ) -> list[dict]:
-        return self.query_all(
-            "SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at",
-            (parent_id,), conn=conn,
-        )
-
     def update_task(
         self, task_id: str, *, conn: sqlite3.Connection | None = None, **fields
     ) -> None:
         """Patch named columns on a task; always bumps ``updated_at``.
 
         Allowed columns: state, mode, scope_slug, agent_ref, placement_token,
-        replan_budget, retry_count, parent_id, goal.
+        replan_budget, retry_count, goal.
         """
         allowed = {
             "state", "mode", "scope_slug", "agent_ref", "placement_token",
-            "replan_budget", "retry_count", "parent_id", "goal",
+            "replan_budget", "retry_count", "goal",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:
