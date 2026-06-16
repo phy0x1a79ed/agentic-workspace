@@ -44,6 +44,13 @@ async def run_bot(cfg: discord_config.DiscordConfig) -> None:
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
 
+    # virtual-auth: /approve-all + Approve/Deny button relay to the mira daemon.
+    try:
+        from awm.services.discord import virtual_auth_relay
+        virtual_auth_relay.register(client, tree)
+    except Exception as exc:  # noqa: BLE001 — never let the relay break /login
+        log.warning("virtual-auth relay not registered: %s", exc)
+
     @tree.command(name="login", description="Get a one-shot awm sign-in link.")
     async def login_cmd(interaction: discord.Interaction):
         discord_uid = str(interaction.user.id)
