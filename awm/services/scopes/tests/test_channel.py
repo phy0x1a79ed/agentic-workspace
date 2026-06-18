@@ -231,3 +231,69 @@ class TestSchemaMigrationV3:
             "AND name='idx_agents_parent'"
         ).fetchone() is None
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# scope_post input-shape: body must be the terminal parameter so a mangled
+# tool-call serialization can't swallow trailing kind/meta params, and the
+# history.md title fallback must neutralise a malformed/untitled body.
+# ---------------------------------------------------------------------------
+
+class TestScopePostInputShape:
+    def test_body_is_last_param_in_manifest(self):
+        from awm.scopes.operations.scope_channel import (
+            SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
+        )
+        fn = next(f for f in SCOPE_CHANNEL_MANIFEST_FUNCTIONS
+                  if f["name"] == "scope_post")
+        names = [p["name"] for p in fn["params"]]
+        assert names[-1] == "body", (
+            f"body must be the terminal param to survive a serialization "
+            f"bleed; got order {names}"
+        )
+        # structured params precede the free-text body
+        for p in ("kind", "meta", "to_scope"):
+            assert names.index(p) < names.index("body")
+
+    def test_projected_tool_schema_lists_body_last(self):
+        """The MCP inputSchema property order mirrors the manifest (catalog.py
+        and operations.py both preserve declared order, no sorting)."""
+        from awm.scopes.operations.scope_channel import (
+            SCOPE_CHANNEL_MANIFEST_FUNCTIONS,
+        )
+        fn = next(f for f in SCOPE_CHANNEL_MANIFEST_FUNCTIONS
+                  if f["name"] == "scope_post")
+        props = {}
+        for p in fn["params"]:
+            props[p["name"]] = {"type": p.get("type", "string")}
+        assert list(props.keys())[-1] == "body"
+
+
+class TestHistoryTitleNeutralise:
+    def test_neutralise_strips_tags_and_newlines(self):
+        from awm.scopes.scopes import _neutralise_title
+        raw = "BUG REPORT\nfoo bar\n</invoke>\n<meta>{...}</meta>"
+        title = _neutralise_title(raw)
+        assert "\n" not in title
+        assert "</invoke>" not in title and "<meta>" not in title
+        assert title.startswith("BUG REPORT foo bar")
+
+    def test_neutralise_truncates_long_text(self):
+        from awm.scopes.scopes import _neutralise_title
+        title = _neutralise_title("x" * 200)
+        assert title.endswith("…") and len(title) == 81
+
+    def test_untitled_journal_renders_clean_title(self, scopes_workspace):
+        """A kind=journal post with no meta.title must not render its raw
+        multi-line / tag-bearing body as the history.md title."""
+        from awm.scopes import channel
+        from awm.scopes.scopes import _generate_history_md
+        channel.post(
+            "awm", "dev", author="agent:awm/dev", kind="journal",
+            meta={},  # no title — the swallowed-meta failure shape
+            body="Did the thing\nacross lines\n</invoke>",
+        )
+        md = _generate_history_md("awm", "dev")
+        assert "</invoke>" not in md
+        # the body-derived title is single-lined into the journal heading
+        assert "Did the thing across lines" in md

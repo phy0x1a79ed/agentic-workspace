@@ -18,6 +18,7 @@ separate rooms/messages/session_logs machinery.
 from __future__ import annotations
 
 import os
+import re as _re
 import shutil
 import subprocess
 import tempfile
@@ -108,6 +109,23 @@ def _row_to_info(row) -> ScopeInfo:
     )
 
 
+_TAG_RUN_RE = _re.compile(r"<[^>\n]*>")
+
+
+def _neutralise_title(text: str) -> str:
+    """Make an arbitrary string safe to render as a one-line markdown title.
+
+    A journal post with no ``meta.title`` falls back to its raw body, which can
+    contain newlines and — when a tool call was mangled in transport — literal
+    tool-call tag fragments (``</invoke>``, ``<meta>…</meta>``). Strip tag-like
+    runs and collapse whitespace so neither can smuggle markup or break the line
+    in the generated ``history.md``. Presentation-only; the stored row is intact.
+    """
+    text = _TAG_RUN_RE.sub("", text or "")
+    text = _re.sub(r"\s+", " ", text).strip()
+    return (text[:80] + "…") if len(text) > 80 else text
+
+
 def _generate_history_md(project: str, scope: str) -> str:
     from awm.scopes.channel import _coerce_meta
 
@@ -138,7 +156,7 @@ def _generate_history_md(project: str, scope: str) -> str:
     def _parse(row):
         meta = _coerce_meta(row["meta"])
         body = row["body"] or ""
-        title = meta.get("title") or (body[:80] + "…" if len(body) > 80 else body)
+        title = _neutralise_title(meta.get("title") or body)
         return meta, title
 
     sections = []
