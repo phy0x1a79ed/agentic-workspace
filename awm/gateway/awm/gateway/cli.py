@@ -93,6 +93,45 @@ def _local_api(method: str, path: str, **kwargs) -> httpx.Response:
     return r
 
 
+_CLI_CATALOG_CACHE = AWM_DIR / "state" / "cli_catalog.json"
+
+
+def _load_tool_catalog() -> list[dict]:
+    """Return the live MCP tool catalog (``GET /tools``) for CLI generation.
+
+    Mirrors how the ``awm-mcp`` proxy reads the catalog, with one constraint the
+    MCP surface doesn't have: Typer needs its commands defined at import time,
+    before argv is parsed. So:
+
+    - Gateway already up → fetch live and refresh the on-disk cache. The CLI is
+      then live-accurate on every invocation (the common case during real work).
+    - Gateway down → fall back to the last cached snapshot, so ``--help`` still
+      lists the service commands offline; empty list if there's no cache.
+
+    This must never raise or block: a connect error / timeout silently falls
+    back to the cache, and it never force-starts the gateway (calling
+    ``_ensure_server`` here would deadlock ``awm gateway serve``, which imports
+    this module before it binds the port)."""
+    try:
+        r = httpx.get(f"{BASE_URL}/tools", timeout=2)
+        if r.status_code == 200:
+            tools = r.json().get("tools", [])
+            try:
+                _CLI_CATALOG_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                _CLI_CATALOG_CACHE.write_text(json.dumps(tools))
+            except OSError:
+                pass  # best-effort cache write
+            return tools
+    except (httpx.HTTPError, OSError):
+        pass  # gateway down / unreachable — fall back to cache below
+
+    try:
+        cached = json.loads(_CLI_CATALOG_CACHE.read_text())
+        return cached if isinstance(cached, list) else []
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Generated control-plane commands
 # ---------------------------------------------------------------------------
@@ -103,11 +142,25 @@ def _local_api(method: str, path: str, **kwargs) -> httpx.Response:
 # below attach to them. Generated commands round-trip through `_api`, which
 # auto-starts the gateway — so they inherit auto-start like the rest.
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS  # noqa: E402
-from awm.gateway.operations import register_cli_commands  # noqa: E402
+from awm.gateway.operations import (  # noqa: E402
+    register_cli_commands,
+    register_service_cli_commands,
+)
 
 _generated_groups = register_cli_commands(app, GATEWAY_OPERATIONS, api_func=_api)
 gateway_app = _generated_groups["gateway"]
 services_app = _generated_groups["services"]
+
+# Feature-service tools mirror the live MCP/catalog surface onto the CLI: fetch
+# the same `GET /tools` list the MCP proxy reads and emit `awm <domain> <verb>`
+# commands for every registered service. Excludes the control-plane ops already
+# wired from GATEWAY_OPERATIONS above (so `services`/`gateway` don't collide).
+register_service_cli_commands(
+    app,
+    _load_tool_catalog(),
+    api_func=_api,
+    exclude_names={op.name for op in GATEWAY_OPERATIONS},
+)
 
 
 # ---------------------------------------------------------------------------

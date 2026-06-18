@@ -444,3 +444,151 @@ def _render_output(op: Operation, response) -> None:
         typer.echo("---")
         if op.output.body_field:
             typer.echo(str(data.get(op.output.body_field, "")))
+
+
+# ---------------------------------------------------------------------------
+# Service-tool CLI generation (live catalog → CLI, the MCP surface's twin)
+# ---------------------------------------------------------------------------
+# The gateway control plane above generates its CLI from the static
+# GATEWAY_OPERATIONS registry. Feature-service tools, by contrast, have no
+# per-function HTTP route — they are dispatched by name through ``POST /invoke``
+# exactly like the MCP surface. This generator mirrors that surface onto the
+# CLI: it consumes a live ``GET /tools`` snapshot (the same list MCP reads) and
+# emits one ``awm <domain> <verb>`` command per tool, so the CLI tracks
+# registered services with no static list to keep in sync.
+
+
+def _json_schema_py_type(prop: dict):
+    """Map a JSON-Schema ``type`` string (from an MCP ``inputSchema``) to a
+    Python type for Typer introspection. Unknown / missing → ``str``."""
+    t = prop.get("type")
+    if t == "integer":
+        return int
+    if t == "number":
+        return float
+    if t == "boolean":
+        return bool
+    if t == "array":
+        return list[str]
+    return str
+
+
+def _schema_param_to_signature(
+    name: str, prop: dict, required: bool
+) -> inspect.Parameter:
+    """Build one ``inspect.Parameter`` from a JSON-Schema property entry.
+
+    The CLI-surface analogue of ``_make_cli_handler``'s per-``Param`` loop, but
+    sourced from an MCP ``inputSchema`` instead of an ``Operation.params`` list.
+    Every field is an ``--flag`` option; arrays accept repeated values; a
+    non-required field is ``Optional`` with the schema default (or ``None``)."""
+    base = _json_schema_py_type(prop)
+    flag = f"--{name.replace('_', '-')}"
+    help_text = prop.get("description", "")
+
+    if prop.get("type") == "array":
+        ann = Annotated[Optional[list[str]], typer.Option(flag, help=help_text)]
+        default = prop.get("default")
+    elif required:
+        ann = Annotated[base, typer.Option(flag, help=help_text)]
+        default = inspect.Parameter.empty
+    else:
+        ann = Annotated[Optional[base], typer.Option(flag, help=help_text)]
+        default = prop.get("default")
+
+    return inspect.Parameter(
+        name,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        default=default,
+        annotation=ann,
+    )
+
+
+def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
+    """Create a Typer handler for one service tool that dispatches via
+    ``POST /invoke`` and renders the result."""
+    tool_name = tool["name"]
+    schema = tool.get("inputSchema") or {}
+    props: dict = schema.get("properties", {}) or {}
+    required = set(schema.get("required", []) or [])
+
+    def handler(**kwargs):
+        _invoke_dispatch(tool_name, api_func, kwargs)
+
+    handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        [_schema_param_to_signature(n, p, n in required) for n, p in props.items()]
+    )
+    handler.__doc__ = tool.get("description", "")
+    return handler
+
+
+def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
+    """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
+    same path the MCP proxy uses — dropping unset (``None``) options."""
+    args = {k: v for k, v in kwargs.items() if v is not None}
+    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args})
+    _render_invoke_output(r)
+
+
+def _render_invoke_output(response) -> None:
+    """Render an ``/invoke`` response. Errors (status ≥ 400, incl. the
+    structured ``{error_class, error}`` detail) go to stderr + exit 1; a success
+    payload's ``result`` is pretty-printed (JSON if it parses, else raw)."""
+    if response.status_code >= 400:
+        typer.echo(f"Error ({response.status_code}): {response.text}", err=True)
+        raise typer.Exit(1)
+
+    data = response.json()
+    result = data.get("result", data) if isinstance(data, dict) else data
+    if isinstance(result, str):
+        try:
+            typer.echo(json.dumps(json.loads(result), indent=2))
+        except (json.JSONDecodeError, ValueError):
+            typer.echo(result)
+    else:
+        typer.echo(json.dumps(result, indent=2))
+
+
+def register_service_cli_commands(
+    parent_app,
+    tools: list[dict],
+    api_func: Callable,
+    *,
+    exclude_names: set[str],
+) -> dict[str, typer.Typer]:
+    """Generate ``awm <domain> <verb>`` CLI groups from a live ``GET /tools``
+    snapshot, mirroring the MCP surface. Returns ``{group_name: Typer}``.
+
+    ``tools`` is the MCP Tool list (each a dict with ``name``, ``description``,
+    ``inputSchema``). A tool is grouped by its ``<domain>_<verb>`` name (split
+    on the FIRST underscore: ``scope_create`` → group ``scope`` / command
+    ``create``; remaining underscores in the verb become hyphens). Tools whose
+    name is in ``exclude_names`` (the gateway control-plane ops, already wired
+    from GATEWAY_OPERATIONS) are skipped, as are names with no underscore and
+    any domain colliding with a group already attached to ``parent_app``."""
+    reserved = {g.name for g in getattr(parent_app, "registered_groups", [])}
+
+    groups: dict[str, list[dict]] = {}
+    for tool in tools:
+        name = tool.get("name", "")
+        if not name or name in exclude_names or "_" not in name:
+            continue
+        domain = name.split("_", 1)[0]
+        if domain in reserved:
+            continue
+        groups.setdefault(domain, []).append(tool)
+
+    result: dict[str, typer.Typer] = {}
+    for group_name, group_tools in sorted(groups.items()):
+        group = typer.Typer(
+            help=f"{group_name.title()} operations (mirrors the live MCP/catalog surface)",
+            no_args_is_help=True,
+        )
+        for tool in group_tools:
+            command = tool["name"].split("_", 1)[1].replace("_", "-")
+            handler = _make_service_cli_handler(tool, api_func)
+            group.command(name=command, help=tool.get("description", ""))(handler)
+        parent_app.add_typer(group, name=group_name)
+        result[group_name] = group
+
+    return result

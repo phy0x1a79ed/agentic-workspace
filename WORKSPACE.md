@@ -136,6 +136,8 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 
 `awm <command> --help` for full options on any of these. The MCP tools above are usually more ergonomic from inside an agent — the CLI is for shell-level work.
 
+**The CLI mirrors the full MCP surface.** Beyond the gateway-control commands in the table below, the CLI generates one `awm <domain> <verb>` command per registered feature-service tool — `awm scope create`, `awm artifact register`, `awm skill search`, `awm agent list`, etc. — from the **same live catalog** the MCP surface reads (`GET /tools`), so the two never drift and a newly-registered service's verbs appear with no extra wiring. `awm <domain> --help` lists a domain's verbs; `awm <domain> <verb> --help` shows that tool's exact parameters straight from its `inputSchema` (all `--flag` options). When the gateway is down the CLI lists from a cached snapshot; when it's up it's live-accurate every invocation.
+
 | Command | Purpose |
 |---|---|
 | `awm gateway init` / `awm gateway status` / `awm gateway serve` / `awm gateway stop` / `awm gateway restart` | Core lifecycle |
