@@ -7,6 +7,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@awm/chat": "*",
     "@awm/client": "*",
     "@awm/primitives": "*"
   }

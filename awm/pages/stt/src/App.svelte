@@ -1,22 +1,20 @@
 <script lang="ts">
-  // PTT demo page. The page itself does almost nothing — all the real
-  // work (session against /svc/stt, mic worklet, transcript chips,
-  // PTT/Convo modes) lives in @awm/stt-composer. Below the composer we
-  // render this session's output through @awm/tts-history's <TtsHistory>
-  // so the component's chat-history view is visible standalone: each
-  // finalized dictation utterance and each Send becomes a transcript row.
-  import { SttComposer } from '@awm/stt-composer';
-  import { TtsHistory } from '@awm/tts-history';
-  import type { Post } from '@awm/tts-history';
+  // STT dev page. It owns nothing but a mock conversation: the standardized
+  // <Chat> composite (from @awm/chat) provides the voice/text input AND the
+  // transcript, so this page only supplies a data source — a `posts` buffer and
+  // an `onSend` that forwards the user's turn to a mock agent over /svc/stt and
+  // displays the reply. The stt scope iterates the voice-input sub-component;
+  // this page is just where it's exercised against a live STT session.
+  import { Chat, type Post } from '@awm/chat';
   import { svc } from '@awm/client';
 
   let posts = $state<Post[]>([]);
   let seq = 0;
 
-  // Recent chat history fed to the convo cleanup LLM as context. Capped on
-  // the composer side; here we just surface the last handful of turns. Because
-  // the mock agent's replies land in `posts`, they flow into this context too —
-  // the cleanup model cleans your speech against the live conversation.
+  // Recent chat history fed to the convo cleanup LLM as context. Capped on the
+  // composer side; here we just surface the last handful of turns. The mock
+  // agent's replies land in `posts`, so they flow into this context too — the
+  // cleanup model cleans your speech against the live conversation.
   const chatContext = $derived(
     posts.slice(-20).map((p) => `${p.author}: ${p.body}`).join('\n'),
   );
@@ -30,9 +28,8 @@
     posts = posts.map((p) => (p.id === id ? { ...p, body, ts: new Date().toISOString() } : p));
   }
 
-  // Chat-history listener. The composer notifies this on every finalized send
-  // (Convo silence-cut auto-submit via onText, or the SEND button via onsend).
-  // We display the user's message, forward it to the mock test agent, and
+  // <Chat> calls this exactly once per user turn (the send-once gate lives in
+  // Chat). We display the user's message, forward it to the mock test agent, and
   // display the agent's reply. Only user-authored messages are forwarded — the
   // agent's own replies are never fed back, so there is no loop.
   async function onUserMessage(text: string) {
@@ -58,14 +55,9 @@
     </p>
   </header>
 
-  <SttComposer onsend={onUserMessage} onText={onUserMessage} {chatContext} />
-
-  <section class="history">
-    <h2>Chat history</h2>
-    <div class="history-wrap">
-      <TtsHistory {posts} />
-    </div>
-  </section>
+  <div class="chat-host">
+    <Chat {posts} onSend={onUserMessage} {chatContext} />
+  </div>
 </main>
 
 <style>
@@ -82,24 +74,16 @@
   }
   header { margin-bottom: 1rem; flex: 0 0 auto; }
   h1 { font-size: 1.2rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 0 0 0.25rem; }
-  h2 { font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase; margin: 1.5rem 0 0.5rem; color: var(--text2, #bbb); flex: 0 0 auto; }
   .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0; }
-  .history {
+  .chat-host {
     flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .history-wrap {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
     min-height: 12rem;
+    display: flex;
+    flex-direction: column;
     border: 1px solid var(--border, #333);
     border-radius: 4px;
     overflow: hidden;
   }
-  :global(.history-wrap > .transcript) { flex: 1; }
   kbd {
     background: var(--surface2, #222);
     padding: 1px 4px;

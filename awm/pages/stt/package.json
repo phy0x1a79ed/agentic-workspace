@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@awm/client": "*",
-    "@awm/stt-composer": "*",
-    "@awm/tts-history": "*"
+    "@awm/chat": "*"
   }
 }
