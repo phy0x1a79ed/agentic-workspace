@@ -51,6 +51,7 @@ class AgentSessionInfo(BaseModel):
     exited_at: str | None = None
     exit_code: int | None = None
     attached: bool = False
+    tmux_session: str | None = None  # claude-tmux harness: human-attachable name
 
 
 class AgentSessionListResponse(BaseModel):

@@ -20,10 +20,14 @@ def _have(bin_name: str) -> bool:
 
 HAVE_CLAUDE = _have("claude")
 HAVE_OPENCODE = _have("opencode")
+HAVE_TMUX = _have("tmux")
 
 requires_claude = pytest.mark.skipif(
     not HAVE_CLAUDE, reason="claude CLI not installed"
 )
 requires_opencode = pytest.mark.skipif(
     not HAVE_OPENCODE, reason="opencode CLI not installed"
+)
+requires_tmux = pytest.mark.skipif(
+    not HAVE_TMUX, reason="tmux not installed"
 )

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 from pathlib import Path
 from typing import Optional
@@ -48,7 +49,7 @@ from awm.agentcore import AgentConfig, open_agent
 from awm.agentcore.session import AgentSession as _CoreSession
 
 
-_SUPPORTED_CLIS = {"claude", "opencode"}
+_SUPPORTED_CLIS = {"claude", "claude-tmux", "opencode"}
 _INPUT_QUEUE_SIZE = 128
 
 # Supervision (T4): a task-bound worker gets a hard turn budget — every turn
@@ -147,6 +148,9 @@ class AgentInstance:
         # profile; both carried across respawn. Default-empty for conversational.
         self.workdir: Optional[str] = None
         self.allowed_tools: Optional[list[str]] = None
+        # tmux session name for the claude-tmux harness (human-attachable);
+        # None for headless claude / opencode.
+        self.tmux_session: Optional[str] = None
         # Supervision: a hard turn budget that decrements every turn boundary,
         # no extension, no refill (only meaningful when mode != conversational).
         self.turn_budget: int = TASK_TURN_BUDGET
@@ -291,12 +295,22 @@ def _build_opencode_argv(
 # agentcore config builder
 # ---------------------------------------------------------------------------
 
+def _tmux_session_name(instance_id: int, scope: str) -> str:
+    """Deterministic, tmux-safe session name for a ``claude-tmux`` placement.
+
+    ``awm-<instance_id>-<scope>`` with anything outside ``[A-Za-z0-9_-]``
+    collapsed to ``-`` (tmux treats ``.`` / ``:`` specially in target names).
+    Predictable from ``agent_list`` so a human knows what to ``tmux attach``."""
+    safe_scope = re.sub(r"[^A-Za-z0-9_-]", "-", scope)
+    return f"awm-{instance_id}-{safe_scope}"
+
 def _build_core_config(
     *, agent_cli: str, permission_mode: str, model: Optional[str],
     effort: Optional[str], resume_session_id: Optional[str],
     workspace_dir: Path, awm_dir: Path,
     allowed_tools: Optional[list[str]] = None,
     disallowed_tools: Optional[list[str]] = None,
+    tmux_session_name: Optional[str] = None,
 ) -> AgentConfig:
     """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
 
@@ -315,7 +329,7 @@ def _build_core_config(
     if effort:
         params["effort"] = effort
     mcp_config: Optional[str] = None
-    if agent_cli == "claude":
+    if agent_cli in ("claude", "claude-tmux"):
         spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
         if spawn_mcp.exists():
             mcp_config = str(spawn_mcp)
@@ -330,6 +344,7 @@ def _build_core_config(
         mcp_config=mcp_config,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
+        tmux_session_name=tmux_session_name,
     )
 
 
@@ -442,11 +457,17 @@ async def create_session(*, project: str, scope: str,
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
+        # The tmux harness gets a deterministic session name (human-attachable).
+        tmux_name = (
+            _tmux_session_name(instance_id, scope)
+            if agent_cli == "claude-tmux" else None
+        )
         core_config = _build_core_config(
             agent_cli=agent_cli, permission_mode=permission_mode,
             model=model, effort=effort, resume_session_id=resume_session_id,
             workspace_dir=workspace_dir, awm_dir=awm_dir,
             allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
+            tmux_session_name=tmux_name,
         )
         agent_session = open_agent(core_config)
 
@@ -483,6 +504,13 @@ async def create_session(*, project: str, scope: str,
         session.placement_token = placement_token
         session.workdir = str(workspace_dir)
         session.allowed_tools = allowed_tools
+        session.tmux_session = tmux_name
+        # Persist agent_cli (not a column) so lists/hydration report the harness
+        # correctly, plus the tmux session name for human attach.
+        data_patch: dict = {"agent_cli": agent_cli}
+        if tmux_name:
+            data_patch["tmux_session"] = tmux_name
+        dao.merge_instance_data(instance_id, data_patch)
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
@@ -497,12 +525,12 @@ async def create_session(*, project: str, scope: str,
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
-        proc = session.proc
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        # Tear down through the seam so a proc-less harness (tmux) is cleaned
+        # up too rather than leaking a detached session.
+        try:
+            await session.agent_session.close()
+        except Exception:  # noqa: BLE001
+            pass
         async with _registry_lock:
             _by_scope.pop(key, None)
             _registry_by_id.pop(instance_id, None)
@@ -879,16 +907,19 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
 # ---------------------------------------------------------------------------
 
 async def _waiter_loop(session: AgentInstance) -> None:
-    proc = session.proc
-    if proc is None:
+    # Harness-agnostic liveness: subprocess backends await their child; the
+    # tmux backend polls its detached session. Both surface through wait().
+    try:
+        exit_code = await session.agent_session.wait()
+    except NotImplementedError:
         return
-    exit_code = await proc.wait()
-    session.exit_code = exit_code
+    session.exit_code = exit_code if exit_code is not None else 0
     session.exited_at_ms = now_ms()
     final = "killed" if session.status == "killed" else "exited"
     session.status = final
 
-    _get_dao().close_instance(session.id, ended_at=now_ms(), exit_code=exit_code)
+    _get_dao().close_instance(session.id, ended_at=now_ms(),
+                              exit_code=session.exit_code)
 
     # Liveness: a task-bound subprocess that died without a terminal outcome
     # must not strand its task in ACTIVE — force-fail it so the orchestrator can
@@ -930,6 +961,7 @@ def _info_for_instance_row(row: dict) -> AgentSessionInfo:
         exited_at=ms_to_iso(row.get("ended_at")),
         exit_code=row.get("exit_code"),
         attached=False,
+        tmux_session=row.get("tmux_session"),
     )
 
 
@@ -950,7 +982,8 @@ def _render_status(row: dict) -> str:
 
 def _hydrate_instance_row(row: dict) -> dict:
     instance_handle = _registry_by_id.get(row["id"])
-    pid = instance_handle.proc.pid if instance_handle else 0
+    pid = (instance_handle.proc.pid
+           if instance_handle and instance_handle.proc else 0)
     try:
         data = json.loads(row.get("data") or "{}")
     except (TypeError, ValueError):
@@ -961,6 +994,7 @@ def _hydrate_instance_row(row: dict) -> dict:
     out["render_status"] = _render_status(out)
     # agent_cli: not in agents.db; default to "claude" (or recover from data)
     out.setdefault("agent_cli", data.get("agent_cli") or "claude")
+    out["tmux_session"] = data.get("tmux_session")
     return out
 
 
@@ -982,9 +1016,11 @@ async def stop_session(session_id: int) -> AgentSessionInfo:
     if session is None:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "stopping"
+    # Tear down through the harness seam (subprocess terminate / tmux
+    # kill-session) so the waiter loop observes the exit and deregisters.
     try:
-        session.proc.terminate()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 
@@ -1001,8 +1037,8 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "killed"
     try:
-        session.proc.kill()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 

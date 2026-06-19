@@ -29,11 +29,15 @@ def open_agent(config: AgentConfig) -> AgentSession:
     if config.harness == "claude":
         from .claude_backend import ClaudeSession
         return ClaudeSession(config)
+    if config.harness == "claude-tmux":
+        from .claude_tmux_backend import ClaudeTmuxSession
+        return ClaudeTmuxSession(config)
     if config.harness == "opencode":
         from .opencode_backend import OpencodeSession
         return OpencodeSession(config)
     raise ValueError(
-        f"Unknown harness {config.harness!r}; expected 'claude' | 'opencode'"
+        f"Unknown harness {config.harness!r}; "
+        "expected 'claude' | 'claude-tmux' | 'opencode'"
     )
 
 

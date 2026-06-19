@@ -216,6 +216,31 @@ class AgentSession(ABC):
         """Async-generator of normalized events for the whole session."""
         ...
 
+    # ---- liveness (harness-agnostic seam) ----
+
+    async def wait(self) -> Optional[int]:
+        """Block until the harness exits; return its exit code (or None).
+
+        Default for subprocess-backed harnesses (claude headless / opencode):
+        await the child process. Harnesses with no child handle (the tmux
+        backend's detached session) override this. The supervisor's waiter loop
+        calls this instead of touching ``_proc`` directly, so a backend whose
+        liveness isn't a child process plugs in cleanly.
+        """
+        proc = getattr(self, "_proc", None)
+        if proc is None:
+            raise NotImplementedError(
+                "wait() needs a subprocess (`_proc`) or a subclass override"
+            )
+        return await proc.wait()
+
+    def alive(self) -> bool:
+        """Whether the harness is still running (cheap, non-blocking)."""
+        proc = getattr(self, "_proc", None)
+        if proc is None:
+            return self._started and not self._closed
+        return proc.returncode is None
+
     # ---- shared teardown helper ----
 
     async def _stop_pump(self) -> None:
