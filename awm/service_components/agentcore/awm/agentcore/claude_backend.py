@@ -35,6 +35,11 @@ def build_claude_argv(config: AgentConfig) -> list[str]:
     Full-open perms (``permissions='full'``) →
     ``--permission-mode=bypassPermissions``. ``params['effort']`` →
     ``--effort``. ``mcp_config`` → ``--strict-mcp-config --mcp-config <path>``.
+    ``allowed_tools`` / ``disallowed_tools`` → ``--allowedTools`` /
+    ``--disallowedTools`` (comma-joined): scope which built-in AND MCP tools the
+    subprocess may call. Note these gate *tool availability*, which is
+    orthogonal to ``--permission-mode`` (the latter gates approval prompts);
+    a full-open worker still only sees the tools its allowlist names.
     """
     perm_mode = (
         "bypassPermissions" if config.permissions == "full" else "default"
@@ -56,6 +61,10 @@ def build_claude_argv(config: AgentConfig) -> list[str]:
         argv.extend(["--effort", effort])
     if config.system_prompt:
         argv.extend(["--append-system-prompt", config.system_prompt])
+    if config.allowed_tools:
+        argv.extend(["--allowedTools", ",".join(config.allowed_tools)])
+    if config.disallowed_tools:
+        argv.extend(["--disallowedTools", ",".join(config.disallowed_tools)])
     if config.resume_id:
         argv.extend(["--resume", config.resume_id])
     if config.mcp_config and os.path.exists(config.mcp_config):

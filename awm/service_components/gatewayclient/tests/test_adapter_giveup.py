@@ -151,6 +151,18 @@ def test_serve_terminal_close_raises_giveup(monkeypatch, code):
         asyncio.run(_adapter()._serve("http://hub", "sid"))
 
 
+def test_serve_4410_giveup_carries_reason(monkeypatch):
+    # 4410 = evicted by a newer shadow; the close reason carries who/why and
+    # must surface in the GiveUp message (logged by _run_target).
+    reason = "evicted by stt-shadow @ web-stt: a newer shadow connected"
+    ws = FakeWS(raise_on_end=ConnectionClosed(Close(4410, reason), None))
+    monkeypatch.setattr(adapter_mod.websockets, "connect",
+                        lambda *a, **k: FakeConnect(ws=ws))
+    with pytest.raises(GiveUp) as ei:
+        asyncio.run(_adapter()._serve("http://hub", "sid"))
+    assert reason in str(ei.value)
+
+
 def test_serve_transient_close_reraises(monkeypatch):
     # 1006 abnormal closure is transient — _serve must NOT swallow it as GiveUp.
     ws = FakeWS(raise_on_end=ConnectionClosed(Close(1006, ""), None))
@@ -167,6 +179,61 @@ def test_serve_upgrade_409_raises_giveup(monkeypatch):
         lambda *a, **k: FakeConnect(raise_on_enter=InvalidStatus(resp)))
     with pytest.raises(GiveUp):
         asyncio.run(_adapter()._serve("http://hub", "sid"))
+
+
+def test_serve_upgrade_403_raises_giveup(monkeypatch):
+    # The gateway closes an unknown service_id pre-accept (close 4404), which
+    # the websockets client surfaces as an HTTP 403 on the upgrade. A base
+    # reconnecting by a stale sid must treat that as a stand-down, not a blip.
+    resp = httpx.Response(403)
+    monkeypatch.setattr(
+        adapter_mod.websockets, "connect",
+        lambda *a, **k: FakeConnect(raise_on_enter=InvalidStatus(resp)))
+    with pytest.raises(GiveUp):
+        asyncio.run(_adapter()._serve("http://hub", "sid"))
+
+
+def test_serve_upgrade_other_status_reraises(monkeypatch):
+    # A non-terminal upgrade status (e.g. 503 service-unavailable while the
+    # gateway is still booting) is transient — must NOT be swallowed as GiveUp.
+    resp = httpx.Response(503)
+    monkeypatch.setattr(
+        adapter_mod.websockets, "connect",
+        lambda *a, **k: FakeConnect(raise_on_enter=InvalidStatus(resp)))
+    with pytest.raises(InvalidStatus):
+        asyncio.run(_adapter()._serve("http://hub", "sid"))
+
+
+# ---------------------------------------------------------------------------
+# _serve: _last_up is refreshed only by a confirmed inbound frame
+# ---------------------------------------------------------------------------
+
+
+def test_serve_bare_connect_does_not_refresh_last_up(monkeypatch):
+    # Gateway accepted then immediately closed with no frames (flap / replaced
+    # mid-handshake). The per-loop state["last_up"] must NOT be refreshed, so the
+    # give-up deadline keeps counting down rather than resetting on every flap.
+    ws = FakeWS(raise_on_end=ConnectionClosed(Close(1006, ""), None))
+    monkeypatch.setattr(adapter_mod.websockets, "connect",
+                        lambda *a, **k: FakeConnect(ws=ws))
+    monkeypatch.setattr(adapter_mod, "monotonic", lambda: 1000.0)
+    state = {"last_up": -999.0}
+    with pytest.raises(ConnectionClosed):
+        asyncio.run(_adapter()._serve("http://hub", "sid", state=state))
+    assert state["last_up"] == -999.0  # untouched by a frameless connect
+
+
+def test_serve_inbound_frame_refreshes_last_up(monkeypatch):
+    # A real inbound frame confirms the handshake → state["last_up"] advances.
+    ws = FakeWS(frames=['{"kind": "noop"}'],
+                raise_on_end=ConnectionClosed(Close(1006, ""), None))
+    monkeypatch.setattr(adapter_mod.websockets, "connect",
+                        lambda *a, **k: FakeConnect(ws=ws))
+    monkeypatch.setattr(adapter_mod, "monotonic", lambda: 1000.0)
+    state = {"last_up": -999.0}
+    with pytest.raises(ConnectionClosed):
+        asyncio.run(_adapter()._serve("http://hub", "sid", state=state))
+    assert state["last_up"] == 1000.0  # advanced by the confirmed frame
 
 
 def test_serve_shutdown_frame_raises_giveup(monkeypatch):
@@ -222,3 +289,71 @@ def test_run_returns_after_deadline_of_transient_failures(monkeypatch):
     asyncio.run(asyncio.wait_for(a.run(), timeout=2))
     # Retried at least once before the deadline tripped.
     assert calls["n"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# run(): self-minted sid is re-validated on disconnect; hub-assigned sid is not
+# ---------------------------------------------------------------------------
+
+
+def test_run_self_minted_sid_reregisters_on_disconnect(monkeypatch):
+    # No AWM_SERVICE_ID in env → the sid is self-minted via _register. On a
+    # transient disconnect the next loop must RE-REGISTER (re-validating against
+    # the current gateway), not silently reconnect by the stale sid forever.
+    monkeypatch.setenv("AWM_HUB_URL", "http://hub")
+    monkeypatch.delenv("AWM_SERVICE_ID", raising=False)
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr(adapter_mod.asyncio, "sleep", _no_sleep)
+
+    a = _adapter()
+    registers = {"n": 0}
+    seen_sids: list[str] = []
+
+    async def _fake_register(hub_url, **kw):
+        registers["n"] += 1
+        return f"sid-{registers['n']}"
+
+    async def _fake_serve(hub_url, sid, **kw):
+        seen_sids.append(sid)
+        if registers["n"] >= 2:
+            raise GiveUp("replacement incumbent holds the name")
+        raise RuntimeError("blip")  # transient disconnect → retry
+
+    monkeypatch.setattr(a, "_register", _fake_register)
+    monkeypatch.setattr(a, "_serve", _fake_serve)
+    asyncio.run(asyncio.wait_for(a.run(), timeout=2))
+    # Registered twice (sid cleared after the first disconnect) → fresh sids.
+    assert registers["n"] == 2
+    assert seen_sids == ["sid-1", "sid-2"]
+
+
+def test_run_hub_assigned_sid_kept_on_disconnect(monkeypatch):
+    # AWM_SERVICE_ID set (supervisor respawn-by-sid) → the sid must be reused on
+    # reconnect and _register must never be called.
+    monkeypatch.setenv("AWM_HUB_URL", "http://hub")
+    monkeypatch.setenv("AWM_SERVICE_ID", "sid-env")
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr(adapter_mod.asyncio, "sleep", _no_sleep)
+
+    a = _adapter()
+    seen_sids: list[str] = []
+
+    async def _must_not_register(hub_url, **kw):
+        raise AssertionError("hub-assigned sid must not re-register")
+
+    async def _fake_serve(hub_url, sid, **kw):
+        seen_sids.append(sid)
+        if len(seen_sids) >= 2:
+            raise GiveUp("done")
+        raise RuntimeError("blip")  # transient disconnect → retry by same sid
+
+    monkeypatch.setattr(a, "_register", _must_not_register)
+    monkeypatch.setattr(a, "_serve", _fake_serve)
+    asyncio.run(asyncio.wait_for(a.run(), timeout=2))
+    assert seen_sids == ["sid-env", "sid-env"]

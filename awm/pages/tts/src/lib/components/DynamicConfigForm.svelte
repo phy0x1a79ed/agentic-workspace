@@ -149,10 +149,13 @@
       </span>
       <div class="v">
         {#if e}
+          <!-- A list/enum-typed field is always a dropdown. An empty option
+               list means "no choices available" -> disabled, showing 'none'. -->
           <Select
-            value={strValue(value[key] ?? field.default)}
+            value={e.length === 0 ? '' : strValue(value[key] ?? field.default)}
             options={e.map(String)}
-            {disabled}
+            disabled={disabled || e.length === 0}
+            placeholder={e.length === 0 ? 'none' : ''}
             onchange={(v) => setText(key, v, 'string')}
           />
         {:else if range}

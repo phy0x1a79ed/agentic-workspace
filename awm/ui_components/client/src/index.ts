@@ -10,6 +10,7 @@ export { svc, toWsUrl, type SvcClient } from './svc';
 export {
   fetchScope,
   postToScope,
+  enqueueAgentPost,
   spawnAgent,
   isAgentPost,
   fetchAgentTranscript,
@@ -24,3 +25,11 @@ export {
   type AgentStreamEvent,
   type AgentSubscription,
 } from './channel';
+export {
+  fetchDag,
+  type TaskState,
+  type DagTask,
+  type DagContract,
+  type DagEdge,
+  type DagSnapshot,
+} from './dag';

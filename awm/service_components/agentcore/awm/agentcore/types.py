@@ -58,6 +58,15 @@ class AgentConfig:
                         (claude --mcp-config). None = no MCP config.
         system_prompt:  appended-system-prompt text (claude
                         --append-system-prompt). None = none.
+        allowed_tools:  explicit tool allowlist (claude --allowedTools). Names
+                        may be built-ins (``Read``, ``Write``, ``Edit``,
+                        ``Bash``, …) OR MCP tool names
+                        (``mcp__awm__edit_deliverable``), so one lever scopes
+                        both filesystem access AND which worker tools a placed
+                        agent may call. None = no restriction (harness default).
+        disallowed_tools: explicit tool denylist (claude --disallowedTools),
+                        same name space as ``allowed_tools``. Applied on top of
+                        the allowlist. None = no denylist.
     """
 
     harness: Harness
@@ -69,6 +78,8 @@ class AgentConfig:
     resume_id: Optional[str] = None
     mcp_config: Optional[str] = None
     system_prompt: Optional[str] = None
+    allowed_tools: Optional[list[str]] = None
+    disallowed_tools: Optional[list[str]] = None
 
 
 # ---------------------------------------------------------------------------

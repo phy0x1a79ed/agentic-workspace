@@ -96,39 +96,61 @@ def _overlay(name: str, prefix: str, url: str = "http://localhost:9") -> Service
     return ServiceRecord(name=name, prefix=prefix, kind="url", url=url)
 
 
-def test_push_shadow_requires_base(reg):
+def test_replace_overlays_requires_base(reg):
     with pytest.raises(NoBaseToShadow):
-        _run(reg.push_shadow(_overlay("ghost", "/x")))
+        _run(reg.replace_overlays(_overlay("ghost", "/x")))
 
 
-def test_push_shadow_returns_active_record(reg):
+def test_replace_overlays_returns_active_record(reg):
     base = _run(reg.register("base", "/x", "http://localhost:1"))
-    overlay = _run(reg.push_shadow(_overlay("ov", "/x", "http://localhost:2")))
-    # longest_match returns the topmost — overlay shadows base.
+    overlay, evicted = _run(reg.replace_overlays(_overlay("ov", "/x", "http://localhost:2")))
+    # longest_match returns the topmost — overlay shadows base; nothing evicted.
+    assert evicted == []
     assert reg.longest_match("/x") is overlay
     assert reg.longest_match("/x/sub") is overlay
     assert overlay.is_overlay is True
     assert base.is_overlay is False
 
 
-def test_overlay_lifo_eviction_reveals_older_overlay_then_base(reg):
+def test_replace_overlays_evicts_existing_overlays_keeps_base(reg):
+    # Last connect wins: a second overlay evicts the first; base survives.
     base = _run(reg.register("base", "/x", "http://localhost:1"))
-    ov1 = _run(reg.push_shadow(_overlay("ov1", "/x", "http://localhost:2")))
-    ov2 = _run(reg.push_shadow(_overlay("ov2", "/x", "http://localhost:3")))
-    # Topmost wins.
-    assert reg.longest_match("/x") is ov2
-    # Pop the top — older overlay surfaces.
-    _run(reg.evict_by_id(ov2.service_id))
+    ov1, ev1 = _run(reg.replace_overlays(_overlay("ov1", "/x", "http://localhost:2")))
+    assert ev1 == []
     assert reg.longest_match("/x") is ov1
-    # Pop the older overlay — base surfaces; stack survives.
-    _run(reg.evict_by_id(ov1.service_id))
+    ov2, ev2 = _run(reg.replace_overlays(_overlay("ov2", "/x", "http://localhost:3")))
+    # ov1 was evicted and returned; ov2 is now the sole overlay.
+    assert [r.service_id for r in ev2] == [ov1.service_id]
+    assert reg.longest_match("/x") is ov2
+    assert reg.get_by_name("url", "ov1") is None
+    # Base survives; popping ov2's lease falls straight back to it.
+    _run(reg.evict_by_id(ov2.service_id))
     assert reg.longest_match("/x") is base
     assert not reg.is_empty()
 
 
+def test_replace_overlays_same_name_evicts_incumbent(reg):
+    # Two worktrees both auto-name `ov` — the newcomer evicts the incumbent
+    # instead of being rejected (the old PrefixConflict behavior is gone).
+    _run(reg.register("base", "/x", "http://localhost:1"))
+    ov_a, _ = _run(reg.replace_overlays(_overlay("ov", "/x", "http://localhost:2")))
+    ov_b, evicted = _run(reg.replace_overlays(_overlay("ov", "/x", "http://localhost:3")))
+    assert [r.service_id for r in evicted] == [ov_a.service_id]
+    assert reg.longest_match("/x") is ov_b
+    assert reg.get_by_id(ov_a.service_id) is None
+
+
+def test_replace_overlays_rejects_base_name(reg):
+    # The overlay may reuse another overlay's name, but NOT the base's —
+    # `_by_name` is (kind, name)-keyed and the base owns that slot.
+    _run(reg.register("base", "/x", "http://localhost:1"))
+    with pytest.raises(PrefixConflict):
+        _run(reg.replace_overlays(_overlay("base", "/x", "http://localhost:2")))
+
+
 def test_evict_overlay_never_collapses_base(reg):
     base = _run(reg.register("base", "/x", "http://localhost:1"))
-    overlay = _run(reg.push_shadow(_overlay("ov", "/x", "http://localhost:2")))
+    _run(reg.replace_overlays(_overlay("ov", "/x", "http://localhost:2")))
     _run(reg.evict_by_name("ov"))
     # Base is still resolvable, both via longest_match and by_name.
     assert reg.longest_match("/x") is base
@@ -137,20 +159,13 @@ def test_evict_overlay_never_collapses_base(reg):
     assert reg.get_by_name("url", "ov") is None
 
 
-def test_overlay_name_collision_rejected(reg):
-    _run(reg.register("base", "/x", "http://localhost:1"))
-    _run(reg.push_shadow(_overlay("ov", "/x")))
-    with pytest.raises(PrefixConflict):
-        _run(reg.push_shadow(_overlay("ov", "/x")))
-
-
 def test_evict_base_with_overlay_present_leaves_overlay(reg):
     """_pop_by_id_locked pops one record at a time. Evicting the base while
     an overlay is still attached leaves the overlay as the sole stack entry
     (the `if not stack: del` branch only fires when the stack empties).
     The base's name is gone; the overlay continues to serve."""
     base = _run(reg.register("base", "/x", "http://localhost:1"))
-    overlay = _run(reg.push_shadow(_overlay("ov", "/x")))
+    overlay, _ = _run(reg.replace_overlays(_overlay("ov", "/x")))
     _run(reg.evict_by_id(base.service_id))
     assert reg.get_by_name("url", "base") is None
     assert reg.longest_match("/x") is overlay
