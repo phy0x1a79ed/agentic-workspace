@@ -30,9 +30,7 @@
     type AgentSubscription,
     type AgentStreamEvent,
   } from '@awm/client';
-  import { TtsHistory, playOnce } from '@awm/tts-history';
-  import type { Post } from '@awm/tts-history';
-  import { SttComposer } from '@awm/stt-composer';
+  import { Chat, playOnce, type Post } from '@awm/chat';
   import { TranscriptFold, agentAuthor } from './agent-acts';
 
   interface Props {
@@ -244,12 +242,6 @@
     }
   }
 
-  // SttComposer convo mode emits onText on each silence-segmented utterance;
-  // onsend fires on the SEND button. Both post a human turn.
-  function onComposerText(text: string) {
-    void send(text);
-  }
-
   // Recent transcript fed to the convo cleanup LLM as context (capped on the
   // composer side). Surfacing the last handful of turns keeps the STT cleanup
   // grounded in the live conversation.
@@ -268,61 +260,52 @@
   onDestroy(() => disconnect());
 </script>
 
-<main class="agent-chat" data-awm-component="AgentChat">
-  <header class="hdr">
-    <form
-      class="connect-bar"
-      onsubmit={(e) => {
-        e.preventDefault();
-        void connect();
-      }}
-    >
-      <input
-        class="field mono"
-        type="text"
-        placeholder="project"
-        bind:value={project}
-        aria-label="project"
-      />
-      <span class="sep">/</span>
-      <input
-        class="field mono"
-        type="text"
-        placeholder="scope"
-        bind:value={scope}
-        aria-label="scope"
-      />
-      <button class="connect-btn mono" type="submit">
-        {connected ? 'reconnect' : 'connect'}
-      </button>
-      <span class="state mono" data-status={status}>{status}</span>
-    </form>
-    <label class="speak-toggle mono">
-      <input type="checkbox" bind:checked={autoSpeak} /> auto-speak
-    </label>
-  </header>
+<div class="agent-chat-root" data-awm-component="AgentChat">
+  <Chat {posts} onSend={send} {chatContext} onReplay={speak} {offline}>
+    {#snippet header()}
+      <header class="hdr">
+        <form
+          class="connect-bar"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void connect();
+          }}
+        >
+          <input
+            class="field mono"
+            type="text"
+            placeholder="project"
+            bind:value={project}
+            aria-label="project"
+          />
+          <span class="sep">/</span>
+          <input
+            class="field mono"
+            type="text"
+            placeholder="scope"
+            bind:value={scope}
+            aria-label="scope"
+          />
+          <button class="connect-btn mono" type="submit">
+            {connected ? 'reconnect' : 'connect'}
+          </button>
+          <span class="state mono" data-status={status}>{status}</span>
+        </form>
+        <label class="speak-toggle mono">
+          <input type="checkbox" bind:checked={autoSpeak} /> auto-speak
+        </label>
+      </header>
 
-  {#if error}<p class="error mono">{error}</p>{/if}
-  {#if !connected && !error}
-    <p class="hint mono">enter a project + scope and connect to a live agent.</p>
-  {/if}
-
-  <div class="history-wrap">
-    <TtsHistory {posts} onspeak={speak} />
-  </div>
-
-  <div class="composer-wrap">
-    <SttComposer
-      onsend={onComposerText}
-      onText={onComposerText}
-      {chatContext}
-      mockInitialChips={offline ? [] : undefined}
-    />
-  </div>
-</main>
+      {#if error}<p class="error mono">{error}</p>{/if}
+      {#if !connected && !error}
+        <p class="hint mono">enter a project + scope and connect to a live agent.</p>
+      {/if}
+    {/snippet}
+  </Chat>
+</div>
 
 <style>
-  .agent-chat {
+  .agent-chat-root {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -417,21 +400,6 @@
     padding: 6px 14px;
     color: var(--text3, #888);
     font-size: 11px;
-    flex: 0 0 auto;
-  }
-  .history-wrap {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  :global(.history-wrap > .transcript) { flex: 1; }
-  .composer-wrap {
-    padding: 12px 14px;
-    border-top: 1px solid var(--border, #333);
-    background: var(--surface, #1a1a1a);
-    display: flex;
-    justify-content: center;
     flex: 0 0 auto;
   }
   .mono { font-family: var(--mono, monospace); }

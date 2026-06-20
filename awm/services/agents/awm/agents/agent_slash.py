@@ -69,7 +69,7 @@ async def _h_restart(scope_key: str, args: list[str]) -> str:
         scope_key, permission_mode=mode,
     )
     return (
-        f"restarted {scope_key} (pid={sess.proc.pid}, "
+        f"restarted {scope_key} (pid={sess.proc.pid if sess.proc else 0}, "
         f"mode={sess.permission_mode}, model={sess.model or 'default'}, "
         f"effort={sess.effort or 'default'})"
     )
@@ -80,7 +80,7 @@ async def _h_kill(scope_key: str, args: list[str]) -> str:
     if sess is None:
         return f"no active session for {scope_key}"
     await agent_instances.kill_session(sess.id)
-    return f"killed {scope_key} (pid={sess.proc.pid})"
+    return f"killed {scope_key} (pid={sess.proc.pid if sess.proc else 0})"
 
 
 async def _h_mode(scope_key: str, args: list[str]) -> str:
@@ -149,7 +149,7 @@ async def _h_clear(scope_key: str, args: list[str]) -> str:
     agent_instances.scrub_resume_queue_for_scope(sess.project, sess.scope)
     new = await agent_instances.respawn_session(scope_key, clear_history=True)
     return (
-        f"cleared {scope_key} (pid={new.proc.pid}, "
+        f"cleared {scope_key} (pid={new.proc.pid if new.proc else 0}, "
         f"mode={new.permission_mode}, model={new.model or 'default'}); "
         f"conversation context wiped"
     )

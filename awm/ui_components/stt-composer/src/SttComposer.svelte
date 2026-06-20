@@ -27,9 +27,10 @@
   interface Props {
     /** Called with the final assembled text when the user hits Send. */
     onsend?: (text: string) => void;
-    /** Optional: also called on every silence-segmented final transcript,
-     *  even when the user hasn't hit Send. Useful for "auto-post each
-     *  finalized utterance" wiring (the agent page hooks this). */
+    /** Optional auto-post signal: fired per finalized utterance WITHOUT a Send
+     *  press — but only in **convo** mode (continuous, silence-segmented). PTT
+     *  no longer fires this; it buffers chips that post once on Send (`onsend`).
+     *  So onsend/onText are mutually exclusive per mode and one turn posts once. */
     onText?: (text: string) => void;
     /** Override the service prefix. Defaults to /svc/stt. */
     svcPrefix?: string;
@@ -177,8 +178,13 @@
     if (msg.type === 'stt_result' && typeof msg.text === 'string') {
       // PTT path: one finalized chip per press. (Convo mode no longer emits
       // stt_result — it sends composer/submit instead.)
+      //
+      // Per-mode send contract: PTT only *buffers* the utterance as a chip; it
+      // does NOT auto-post. The accumulated chips post once when the user hits
+      // SEND (→ `onsend`). Only convo mode's `submit` (below) auto-posts each
+      // utterance via `onText`. This keeps `onsend` and `onText` mutually
+      // exclusive per mode, so a single turn never posts twice.
       composer?.finalizeLiveChunk(msg.text);
-      if (msg.text.trim()) onText?.(msg.text);
       if (!convoListening) {
         status = 'idle';
         statusText = '';

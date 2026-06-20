@@ -168,9 +168,9 @@ class TestOpencodeArgv:
 
     def test_supported_clis_set(self):
         # The set is consulted in create_session to reject unknown harnesses.
-        # If anyone narrows it back to {"claude"}, opencode spawning silently
-        # raises ValueError for every invite — this guard catches that.
-        assert _SUPPORTED_CLIS == {"claude", "opencode"}
+        # If anyone narrows it, opencode/claude-tmux spawning silently raises
+        # ValueError for every invite — this guard catches that.
+        assert _SUPPORTED_CLIS == {"claude", "claude-tmux", "opencode"}
 
     def test_basic_shape(self, monkeypatch):
         monkeypatch.setattr(ai_mod, "resolve_bin",
@@ -256,6 +256,15 @@ class _FakeCoreSession:
 
     async def send(self, text):
         self.sent.append(text)
+
+    async def wait(self):
+        # Delegates to the proc (blocks forever) so the rewired _waiter_loop
+        # doesn't tear the session down mid-test — matches the prior behavior
+        # when the loop awaited session.proc.wait() directly.
+        return await self._proc.wait()
+
+    def alive(self):
+        return self._proc.returncode is None
 
     async def close(self):
         self.closed = True
@@ -366,6 +375,61 @@ class TestCreateSessionDispatch:
                              effort="high")
 
         assert stub_agentcore["config"].params.get("effort") == "high"
+
+
+class TestClaudeTmuxHarness:
+    """The agents service accepts the ``claude-tmux`` harness and records the
+    deterministic, human-attachable tmux session name."""
+
+    @pytest.mark.asyncio
+    async def test_accepted_and_harness_threaded(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+
+        session = await create_session(
+            project="p", scope="s", agent_cli="claude-tmux")
+
+        cfg = stub_agentcore["config"]
+        assert cfg.harness == "claude-tmux"
+        # deterministic name: awm-<instance_id>-<scope>
+        assert cfg.tmux_session_name == f"awm-{session.id}-s"
+        assert session.tmux_session == f"awm-{session.id}-s"
+
+    @pytest.mark.asyncio
+    async def test_records_tmux_session_and_cli_in_data(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+
+        session = await create_session(
+            project="p", scope="s", agent_cli="claude-tmux")
+
+        import json
+        row = ai_mod._get_dao().get_instance(session.id)
+        data = json.loads(row["data"])
+        assert data["agent_cli"] == "claude-tmux"
+        assert data["tmux_session"] == f"awm-{session.id}-s"
+        # and it surfaces through the listing info
+        info = ai_mod._info_for_instance_row(ai_mod._row_for_instance(session.id))
+        assert info.tmux_session == f"awm-{session.id}-s"
+        assert info.agent_cli == "claude-tmux"
+
+    @pytest.mark.asyncio
+    async def test_threads_spawn_mcp_config(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+        spawn_mcp = awm_workspace["awm_dir"] / "spawn-mcp.json"
+        spawn_mcp.write_text('{"mcpServers": {}}')
+
+        await create_session(project="p", scope="s", agent_cli="claude-tmux")
+
+        # claude-tmux gets the same spawn-mcp.json claude does.
+        assert stub_agentcore["config"].mcp_config == str(spawn_mcp)
 
 
 class TestBuildCoreConfig:

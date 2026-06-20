@@ -307,7 +307,7 @@ async def _h_create_session(args: dict) -> dict:
         "session_id": session.id,
         "project": session.project,
         "scope": session.scope,
-        "pid": session.proc.pid,
+        "pid": session.proc.pid if session.proc else 0,
         "status": session.status,
     }
 
