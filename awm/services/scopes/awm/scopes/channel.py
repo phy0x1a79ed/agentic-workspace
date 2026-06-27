@@ -129,11 +129,39 @@ def _channel_key(project: str, scope: str) -> str:
     return f"{project}/{scope}"
 
 
-def _row_to_post(row) -> ScopePost:
+def _coerce_meta(raw) -> dict:
+    """Decode/normalize a ``meta`` value into a dict, defensively.
+
+    ``meta`` is stored as ``json.dumps(meta)``, so the read path gets a JSON
+    string back. A well-behaved post stores a dict; but a harness that hands
+    ``meta`` in as a JSON *string* gets it double-encoded, so ``json.loads``
+    yields a ``str``. Recover that exact case with one more parse; anything that
+    still isn't a dict becomes ``{}`` so a single malformed row can't crash a
+    project-wide render or fail pydantic validation on ``ScopePost.meta``.
+
+    Also used on the write path, where ``raw`` may already be a dict (the
+    normal case, returned as-is) or a JSON string from a misbehaving harness.
+    """
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
     try:
-        meta = json.loads(row["meta"]) if row["meta"] else {}
+        value = json.loads(raw)
     except (TypeError, ValueError):
-        meta = {}
+        return {}
+    if isinstance(value, str):  # double-encoded: a JSON string holding JSON
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _row_to_post(row) -> ScopePost:
+    meta = _coerce_meta(row["meta"])
     return ScopePost(
         id=row["id"], project=row["owner_project"], scope=row["owner_scope"],
         author=_author_to_display(row["author"]), kind=row["kind"],
@@ -252,7 +280,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     and (if registered) the agent-delivery sink."""
     now = now_ms()
     pid = str(_uuid.uuid4())
-    meta = meta or {}
+    meta = _coerce_meta(meta)
     dao = ScopesDAO()
     with dao.transaction() as conn:
         author_ref = _author_to_stored(author, conn=conn)
