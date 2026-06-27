@@ -183,7 +183,7 @@ async def test_drain_skips_overlay(monkeypatch):
         name="tts-shadow", prefix="/svc/tts", kind="service",
         start_cmd=["bash", "run.sh"], cwd="/srv", backend_pid=999,
     )
-    await registry.push_shadow(overlay)
+    await registry.replace_overlays(overlay)
 
     ch = rpc_mod.ensure_control(overlay.service_id)
     ch.set_api({})

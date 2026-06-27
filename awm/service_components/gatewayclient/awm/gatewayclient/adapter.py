@@ -280,10 +280,14 @@ class ServiceAdapter:
         except ConnectionClosed as exc:
             # The hub closed the control WS with a terminal code: 4409 = the
             # lease is already held by a live incumbent, 4404 = the service_id
-            # is unknown. Either way this instance must give up; any other code
-            # (e.g. 1006 abnormal, 1012 going-away) is transient → re-raise so
-            # run() retries within the deadline.
+            # is unknown, 4410 = a newer shadow took over this prefix (the close
+            # reason carries "evicted by <who>: <why>"). Either way this instance
+            # must give up; any other code (e.g. 1006 abnormal, 1012 going-away)
+            # is transient → re-raise so run() retries within the deadline.
             code = exc.rcvd.code if exc.rcvd is not None else None
+            reason = exc.rcvd.reason if exc.rcvd is not None else None
+            if code == 4410:
+                raise GiveUp(reason or "evicted by a newer shadow") from exc
             if code in (4409, 4404):
                 raise GiveUp(f"control WS closed with code {code}") from exc
             raise
@@ -374,6 +378,9 @@ class ServiceAdapter:
             "start": self.start_cmd,
             "cwd": os.getcwd(),
             "overlay": overlay,
+            # Human "who" label for an overlay, surfaced to any incumbent this
+            # one evicts (last connect wins). `awm dev shadow` sets it.
+            "origin": os.environ.get("AWM_SERVICE_ORIGIN"),
         }
         async with httpx.AsyncClient(verify=False, timeout=15) as cli:
             r = await cli.post(f"{hub_url}/hub/service/register", json=payload)

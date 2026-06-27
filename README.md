@@ -168,6 +168,10 @@ Each target auto-selects base-vs-overlay against what the hub already serves:
 
 `--name <override>` renames a single target (single-target invocations only).
 
+Shadows of `ui_components/` are an error — components are build-time deps. Edit
+the component locally, rebuild (`npm run build`, from `awm/`), and shadow the
+*page* that imports it instead.
+
 ### Installing
 
 `bash awm/gateway/install.sh` is the single composition root — it installs the
@@ -250,39 +254,6 @@ Pages and components never hand-roll `fetch` against `/svc/<name>/…`. Use
 - `svc('tts').fn('listEngines')` / `svc('tts').session('call', {…})` /
   `svc('tts').ws(sessionId)` — wraps the `/svc/<name>/{fn,session}/…`
   surface every service exposes.
-
-### Iterating on a page in a scope
-
-**Use the running `dev` sandbox. Do NOT start your own.** Only the `dev`
-scope runs the dev sandbox (`awm dev start`) — every other scope (`comp-*`,
-`svc-*`, `web-*`, etc.) shadows against the already-running hub at
-`http://127.0.0.1:7821/`. Spinning up a second sandbox in your own worktree
-gives you a hub at a different port with none of `dev`'s seeded state and is
-almost never what you want. If nothing is running on that port, ask the
-`dev`-scope agent to start it — don't start one yourself.
-
-To live-test local changes against the running dev sandbox without evicting the
-dev copies, bring your page(s) and service(s) up as one stack (services by
-explicit path, pages by `pages/<name>`):
-
-```bash
-cd /home/tony/agentic_workspace/projects/awm/<scope>   # NOT projects/awm/dev
-awm dev shadow --port 7821 pages/agent \
-  awm/services/agents awm/services/tts awm/services/stt
-# One process, all of it. Each target auto-picks overlay (a base exists) or a
-# fresh base (none does). Ctrl-C tears the whole stack down; dev's bases resume.
-# Visit http://127.0.0.1:7821/ui/agent — same origin as the dev sandbox.
-```
-
-`--port 7821` targets the dev sandbox (the CLI otherwise hits prod `7819`).
-Services with no base on the dev hub — e.g. `tts`/`stt`, whose `run.sh` the dev
-tree doesn't carry — come up as fresh (un-journaled) bases automatically; no
-manual base-wrangling. The bare `/ui/agent` URL works (the hub redirects it to
-`/ui/agent/`).
-
-Shadows of `ui_components/` are an error — components are build-time deps.
-Edit the component locally, rebuild (`npm run build`, from `awm/`), and shadow
-the *page* that imports it instead.
 
 ### Hub-service control plane
 

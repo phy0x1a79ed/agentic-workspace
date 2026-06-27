@@ -151,6 +151,18 @@ def test_serve_terminal_close_raises_giveup(monkeypatch, code):
         asyncio.run(_adapter()._serve("http://hub", "sid"))
 
 
+def test_serve_4410_giveup_carries_reason(monkeypatch):
+    # 4410 = evicted by a newer shadow; the close reason carries who/why and
+    # must surface in the GiveUp message (logged by _run_target).
+    reason = "evicted by stt-shadow @ web-stt: a newer shadow connected"
+    ws = FakeWS(raise_on_end=ConnectionClosed(Close(4410, reason), None))
+    monkeypatch.setattr(adapter_mod.websockets, "connect",
+                        lambda *a, **k: FakeConnect(ws=ws))
+    with pytest.raises(GiveUp) as ei:
+        asyncio.run(_adapter()._serve("http://hub", "sid"))
+    assert reason in str(ei.value)
+
+
 def test_serve_transient_close_reraises(monkeypatch):
     # 1006 abnormal closure is transient — _serve must NOT swallow it as GiveUp.
     ws = FakeWS(raise_on_end=ConnectionClosed(Close(1006, ""), None))

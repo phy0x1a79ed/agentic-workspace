@@ -53,6 +53,27 @@ log = logging.getLogger("awm.api.hub")
 
 router = APIRouter(prefix="/hub", tags=["hub"])
 
+# WS close code for "a newer shadow took over this prefix" — a peer of the
+# existing 4409 (lease already held) / 4404 (unknown service). The evicted
+# client (service adapter or `awm dev shadow` page lease) maps this code to a
+# clean stand-down carrying the who/why reason, not a reconnect bounce.
+_EVICTED_BY_SHADOW = 4410
+
+
+def _close_reason(text: str) -> str:
+    """Clamp to the 123-byte WS close-frame reason limit (by encoded bytes,
+    not characters — a char slice can still overflow and `websockets` raises)."""
+    return text.encode("utf-8")[:123].decode("utf-8", errors="ignore")
+
+
+def _notify_evicted(evicted: list[ServiceRecord], evictor: str) -> None:
+    """Stage a who/why notice on each evicted overlay's lease so its WS handler
+    closes with code 4410 + ``evicted by {evictor}: a newer shadow connected``.
+    The records are already out of the registry; this just wakes their handlers."""
+    lm = get_lease_manager()
+    for ev in evicted:
+        lm.signal_evicted(ev.service_id, "a newer shadow connected", evictor)
+
 
 # ============================================================================
 # Non-package registrations: kind="url" / kind="static" / kind="page"
@@ -186,7 +207,14 @@ class ServiceRegisterRequest(BaseModel):
                                       "(via AWM_SERVICE_OVERLAY=1). Requires a "
                                       "base to already exist; the overlay's own "
                                       "control WS is its lease — closing it pops "
-                                      "the overlay and the base resumes.")
+                                      "the overlay and the base resumes. A new "
+                                      "overlay evicts any incumbent overlay on "
+                                      "the prefix (last connect wins).")
+    origin: str | None = Field(None,
+                               description="Human 'who' label for an overlay "
+                                           "(e.g. 'stt-shadow @ web-stt'), used "
+                                           "as the evictor identity in the notice "
+                                           "sent to an overlay this one evicts.")
 
 
 class ServiceRegisterResponse(BaseModel):
@@ -207,6 +235,8 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
             # own control WS as the lease; there is no separate overlay
             # registration to keep in sync (the split-brain `awm dev shadow`
             # used to create). Requires a base for the prefix to already exist.
+            # Last connect wins: this overlay evicts any incumbent overlay(s)
+            # on the prefix, then notifies each with a who/why close.
             rec = ServiceRecord(
                 name=req.name,
                 prefix=prefix,
@@ -215,8 +245,10 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
                 cwd=req.cwd or "",
                 backend_pid=req.pid,
                 backend_status="starting",
+                origin=req.origin or req.name,
             )
-            rec = await registry.push_shadow(rec)
+            rec, evicted = await registry.replace_overlays(rec)
+            _notify_evicted(evicted, rec.origin or rec.name)
         else:
             # Duplicate-instance guard (T3): if a record for this name already
             # exists AND its control-WS lease is currently held, a live
@@ -349,6 +381,17 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
         except LeaseAlreadyHeld:
             await websocket.close(code=4409, reason="lease already held")
             return
+        # hold returned: either the client closed, or a newer shadow evicted us.
+        notice = lm.take_eviction(service_id)
+        if notice is not None:
+            reason, evictor = notice
+            try:
+                await websocket.close(
+                    code=_EVICTED_BY_SHADOW,
+                    reason=_close_reason(f"evicted by {evictor}: {reason}"),
+                )
+            except Exception:
+                pass
     finally:
         rec.backend_status = "down"
         if not rec.is_overlay:
@@ -458,11 +501,17 @@ async def service_bridge(websocket: WebSocket, service_id: str,
 
 class ShadowRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1,
-                      description="Unique shadow name (must NOT collide with "
-                                  "the base or any other overlay).")
+                      description="Shadow name (must NOT collide with the base; "
+                                  "may reuse an incumbent overlay's name — the "
+                                  "incumbent is evicted, last connect wins).")
     prefix: str = Field(..., min_length=1,
                         description="Prefix to shadow; a base must already "
                                     "exist for this prefix.")
+    origin: str | None = Field(None,
+                               description="Human 'who' label for this overlay "
+                                           "(e.g. 'shadow:stt:web-stt'), used as "
+                                           "the evictor identity in the notice "
+                                           "sent to an overlay this one evicts.")
     page: dict = Field(...,
                        description="Page shadow: {dir: <absolute path>}. Service "
                                    "overlays no longer use this endpoint — a "
@@ -497,9 +546,11 @@ async def shadow_register(req: ShadowRegisterRequest) -> ShadowRegisterResponse:
         rec = ServiceRecord(
             name=req.name, prefix=req.prefix, kind="page",
             static_dir=str(page_dir),
+            origin=req.origin or req.name,
         )
         rec.backend_status = "ready"
-        rec = await registry.push_shadow(rec)
+        rec, evicted = await registry.replace_overlays(rec)
+        _notify_evicted(evicted, rec.origin or rec.name)
         return ShadowRegisterResponse(
             service_id=rec.service_id, name=rec.name, prefix=rec.prefix,
             kind=rec.kind, lease_ws_path=f"/hub/lease/{rec.service_id}",
@@ -562,6 +613,17 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
         except LeaseAlreadyHeld:
             await websocket.close(code=4409, reason="lease already held")
             return
+        # hold returned: either the client closed, or a newer shadow evicted us.
+        notice = lm.take_eviction(service_id)
+        if notice is not None:
+            reason, evictor = notice
+            try:
+                await websocket.close(
+                    code=_EVICTED_BY_SHADOW,
+                    reason=_close_reason(f"evicted by {evictor}: {reason}"),
+                )
+            except Exception:
+                pass
     finally:
         reader_task.cancel()
         try:

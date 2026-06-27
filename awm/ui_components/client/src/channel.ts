@@ -111,6 +111,30 @@ export async function postToScope(
   return post;
 }
 
+/**
+ * Splice a human message into a RUNNING agent's stdin (the agents service
+ * `enqueue_post` op → `enqueue_input`). Unlike `postToScope`, this does not go
+ * through the scopes channel — it reaches the agent directly, which is the only
+ * path that works for a task-bound PLACEMENT (a placement runs in a workspace
+ * unit, not a scopes channel). The message rides the agent's next turn; the
+ * reply streams back through its transcript. Returns whether it was enqueued
+ * (false when no live session holds the (project, scope)).
+ */
+export async function enqueueAgentPost(
+  project: string,
+  scope: string,
+  body: string,
+  author?: string,
+): Promise<boolean> {
+  const { enqueued } = await svc('agents').fn<{ enqueued: boolean }>('enqueue_post', {
+    project,
+    scope,
+    author: author ?? awmAs(),
+    body,
+  });
+  return !!enqueued;
+}
+
 export interface SpawnOpts {
   agent_cli?: string;
   permission_mode?: string;

@@ -16,23 +16,35 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "agents"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS agent_instances (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    project         TEXT NOT NULL,
-    scope           TEXT NOT NULL,
-    cli_session_id  TEXT,
-    log_path        TEXT,
-    started_at      INTEGER NOT NULL,
-    ended_at        INTEGER,
-    data            TEXT NOT NULL DEFAULT '{}'
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project          TEXT NOT NULL,
+    scope            TEXT NOT NULL,
+    cli_session_id   TEXT,
+    log_path         TEXT,
+    started_at       INTEGER NOT NULL,
+    ended_at         INTEGER,
+    data             TEXT NOT NULL DEFAULT '{}',
+    mode             TEXT NOT NULL DEFAULT 'conversational',
+    task_ref         TEXT,
+    agent_ref        TEXT,
+    placement_token  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
     ON agent_instances(project, scope, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_open
     ON agent_instances(project, scope) WHERE ended_at IS NULL;
+-- A placement_token names exactly one live placement (the task-bound row that
+-- currently holds it). NULLs are allowed (every conversational row), so the
+-- uniqueness is partial. On respawn the old row's token is cleared before the
+-- new row reinserts it, keeping the token stable while the constraint holds.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_placement_token
+    ON agent_instances(placement_token) WHERE placement_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_instances_agent_ref
+    ON agent_instances(agent_ref) WHERE agent_ref IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agent_transcript (
     id          TEXT PRIMARY KEY,
@@ -47,13 +59,32 @@ CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
     ON agent_transcript(project, scope, ts);
 """
 
+# v1→v2: additive task-bounded placement columns + their indexes. Existing
+# rows default to mode='conversational' (the new NOT NULL DEFAULT), so the
+# conversational machinery is untouched. The migration is idempotent: _migrate
+# swallows "duplicate column name" if a prior partial run already added one.
+MIGRATIONS: dict[tuple[int, int], str] = {
+    (1, 2): (
+        "ALTER TABLE agent_instances ADD COLUMN "
+        "mode TEXT NOT NULL DEFAULT 'conversational';\n"
+        "ALTER TABLE agent_instances ADD COLUMN task_ref TEXT;\n"
+        "ALTER TABLE agent_instances ADD COLUMN agent_ref TEXT;\n"
+        "ALTER TABLE agent_instances ADD COLUMN placement_token TEXT;\n"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_placement_token "
+        "ON agent_instances(placement_token) WHERE placement_token IS NOT NULL;\n"
+        "CREATE INDEX IF NOT EXISTS idx_agent_instances_agent_ref "
+        "ON agent_instances(agent_ref) WHERE agent_ref IS NOT NULL;\n"
+    ),
+}
+
 _initialized = False
 
 
 def init() -> None:
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                        migrations=MIGRATIONS)
         _initialized = True
 
 
@@ -77,6 +108,109 @@ class AgentsDAO(BaseDAO):
             "(project, scope, cli_session_id, log_path, started_at, ended_at, data) "
             "VALUES (?, ?, ?, ?, ?, NULL, ?)",
             (project, scope, cli_session_id, log_path, started_at, data),
+        )
+
+    def open_task_instance(self, *, project: str, scope: str,
+                           log_path: str | None,
+                           cli_session_id: str | None,
+                           started_at: int,
+                           mode: str,
+                           task_ref: str | None,
+                           agent_ref: str | None,
+                           placement_token: str | None,
+                           intent: str = "live") -> int:
+        """Insert a task-bound agent_instances row (the placement record).
+
+        Same row as a conversational instance, plus the task-binding columns.
+        ``mode`` is the lifecycle discriminator (anything other than
+        ``'conversational'`` is owned by the placement/supervision driver, not
+        the resume driver). Returns the row id."""
+        data = json.dumps({"intent": intent}, sort_keys=True)
+        return self.execute(
+            "INSERT INTO agent_instances "
+            "(project, scope, cli_session_id, log_path, started_at, ended_at, "
+            "data, mode, task_ref, agent_ref, placement_token) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+            (project, scope, cli_session_id, log_path, started_at, data,
+             mode, task_ref, agent_ref, placement_token),
+        )
+
+    def resolve_placement(self, token: str) -> dict | None:
+        """Return the agent_instances row currently holding ``token``, or None.
+
+        The token is unique among live placements (partial unique index), so
+        this is a single-row lookup — the placement IS the row."""
+        return self.query_one(
+            "SELECT * FROM agent_instances WHERE placement_token=?", (token,))
+
+    def get_open_placement_by_identity(self, project: str,
+                                       scope: str) -> dict | None:
+        """Return the live placement row for ``(project, scope)``, or None.
+
+        A placement's ``scope`` IS its workspace-unit slug, so a placed agent's
+        identity ``f"{project}/{unit_slug}"`` resolves to its own placement row
+        WITHOUT the agent supplying a token. The live row is the one still
+        holding a ``placement_token`` (cleared on respawn / never set for a
+        conversational row) with ``ended_at IS NULL`` — at most one per scope
+        (the lifecycle reuses one unit and ``_await_scope_free`` guarantees the
+        prior stage vacated before the next opens). ``placement_outcome`` (a
+        logical close that precedes process teardown) is checked by the caller."""
+        return self.query_one(
+            "SELECT * FROM agent_instances "
+            "WHERE project=? AND scope=? AND placement_token IS NOT NULL "
+            "AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (project, scope),
+        )
+
+    def clear_placement_token(self, instance_id: int) -> None:
+        """Null a row's placement_token (used before a respawn reinserts it).
+
+        Keeps the partial-unique invariant intact: the logical placement_token
+        is stable across respawn, but only the live row ever holds it."""
+        self.execute(
+            "UPDATE agent_instances SET placement_token=NULL WHERE id=?",
+            (instance_id,),
+        )
+
+    def merge_instance_data(self, instance_id: int, patch: dict) -> dict:
+        """Read-modify-write merge ``patch`` into a row's ``data`` JSON.
+
+        The single mutation primitive for placement progress (the placement
+        spec, deliverable staging map, the done flag, the planner graph buffer,
+        the attached flag). Returns the merged data dict. Shallow merge —
+        callers pass whole sub-objects (e.g. the full ``staged`` map) when they
+        need to replace rather than deep-merge."""
+        row = self.query_one(
+            "SELECT data FROM agent_instances WHERE id=?", (instance_id,))
+        try:
+            data = json.loads(row["data"] if row and row["data"] else "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data.update(patch)
+        self.execute(
+            "UPDATE agent_instances SET data=? WHERE id=?",
+            (json.dumps(data, sort_keys=True), instance_id),
+        )
+        return data
+
+    def close_placement(self, instance_id: int, *, outcome: str) -> None:
+        """Mark a placement logically terminated (``data['placement_outcome']``).
+
+        Distinct from :meth:`close_instance` (process ended): a placement closes
+        when a terminal worker tool fires or supervision force-fails it, which
+        may precede the subprocess teardown. Once set, the token no longer
+        resolves to an *open* placement."""
+        row = self.query_one(
+            "SELECT data FROM agent_instances WHERE id=?", (instance_id,))
+        try:
+            data = json.loads(row["data"] if row and row["data"] else "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data["placement_outcome"] = outcome
+        self.execute(
+            "UPDATE agent_instances SET data=? WHERE id=?",
+            (json.dumps(data, sort_keys=True), instance_id),
         )
 
     def close_instance(self, instance_id: int, *, ended_at: int,
@@ -173,10 +307,13 @@ class AgentsDAO(BaseDAO):
         # NOTE: in v1 agents.db there's no agents table — active/retired state
         # is determined externally via scopes RPC. This returns open-ended
         # instances that need reconciliation (ended_at IS NULL after restart).
+        # mode='conversational' ONLY: task-bound workers are owned by the
+        # orchestrator + supervision driver, never resurrected by the resume
+        # driver. A dead worker is left for the orchestrator's reconcile.
         return self.query_all(
             "SELECT DISTINCT project, scope, cli_session_id "
             "FROM agent_instances "
-            "WHERE ended_at IS NULL "
+            "WHERE ended_at IS NULL AND mode='conversational' "
             "ORDER BY started_at DESC"
         )
 

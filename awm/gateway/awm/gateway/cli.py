@@ -441,11 +441,57 @@ def services_start(
 # lease-holding helpers below are shared with the dev shadow flow.
 # ---------------------------------------------------------------------------
 
+# Hub WS close code for "a newer shadow took over this prefix" (mirrors
+# awm.gateway.api.hub._EVICTED_BY_SHADOW). Last connect wins: when another
+# shadow overlays a prefix we hold, the hub closes our lease with this code and
+# a "evicted by <who>: <why>" reason.
+_EVICTED_BY_SHADOW = 4410
+
+
+class _ShadowEvicted(Exception):
+    """A held shadow lease was evicted by a newer shadow. Carries the hub's
+    "evicted by <who>: <why>" reason; aborts the whole `dev shadow` stack."""
+
+
+class _ServiceExited(Exception):
+    """A spawned `dev shadow` service subprocess exited — evicted (4410 → adapter
+    GiveUp), crashed, or otherwise stopped. Carries the service label; tears the
+    whole `dev shadow` stack down (peer of `_ShadowEvicted`). For a service the
+    4410 close + who/why reason is delivered to the SUBPROCESS's adapter, which
+    logs `giving up: evicted by <who>: <why>` itself — this CLI only detects the
+    exit and prints which service it was."""
+
+
+async def _watch_pid(label: str, pid: int) -> None:
+    """Poll-reap a spawned service subprocess; raise `_ServiceExited(label)` when
+    it exits. Used by `awm dev shadow` so a service-only stack (whose lease is
+    held by the subprocess's adapter, not this CLI) still returns when the
+    service is evicted or stops.
+
+    Polls `os.waitpid(pid, WNOHANG)` on a short sleep loop rather than blocking a
+    thread in `os.waitpid`, so the task stays cleanly cancellable when a sibling
+    lease/PID ends first. `waitpid` reaps the child, so it never lingers as a
+    zombie — a non-reaping `os.kill(pid, 0)` probe can't tell a zombie from a live
+    process, so reaping is required to detect the exit."""
+    import asyncio as _asyncio
+
+    while True:
+        try:
+            reaped, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            # Already reaped (or never our child) — treat as exited.
+            raise _ServiceExited(label)
+        if reaped == pid:
+            raise _ServiceExited(label)
+        await _asyncio.sleep(0.5)
+
 
 async def _hold_one_lease(name: str, lease_path: str) -> None:
     """Open the lease WS and idle until close. Used by `awm dev shadow`
-    (one lease per page overlay/base it brings up)."""
+    (one lease per page overlay/base it brings up). A 4410 close means a newer
+    shadow evicted us → raise `_ShadowEvicted` to tear the whole stack down."""
     import websockets as _ws
+    from websockets.exceptions import ConnectionClosed
 
     ws_url = f"{BASE_URL.replace('http://', 'ws://')}{lease_path}"
     async with _ws.connect(ws_url, max_size=None, open_timeout=10) as wsconn:
@@ -460,6 +506,16 @@ async def _hold_one_lease(name: str, lease_path: str) -> None:
         try:
             async for _ in wsconn:
                 pass
+        except ConnectionClosed as exc:
+            # Catch ConnectionClosed before the generic WebSocketException so we
+            # can read the close code/reason. 4410 = evicted by a newer shadow.
+            code = exc.rcvd.code if exc.rcvd is not None else None
+            reason = exc.rcvd.reason if exc.rcvd is not None else None
+            if code == _EVICTED_BY_SHADOW:
+                raise _ShadowEvicted(
+                    reason or f"shadow {name} evicted by a newer shadow"
+                ) from exc
+            return
         except _ws.WebSocketException:
             return
 
@@ -693,7 +749,7 @@ def dev_shadow(
                      if s.get("kind") == "page" and not s.get("is_overlay")}
 
     leases: list[tuple[str, str]] = []   # page leases this CLI holds
-    spawned_pids: list[int] = []         # service subprocesses we own
+    spawned: list[tuple[str, int]] = []  # (label, pid) service subprocesses we own
 
     for target in targets:
         if target.startswith("pages/"):
@@ -701,31 +757,55 @@ def dev_shadow(
             if lease:
                 leases.append(lease)
         else:
-            pid = _shadow_service_target(target, name, service_bases)
-            if pid:
-                spawned_pids.append(pid)
+            svc = _shadow_service_target(target, name, service_bases)
+            if svc:
+                spawned.append(svc)
 
-    if not leases and not spawned_pids:
+    if not leases and not spawned:
         typer.echo("nothing brought up", err=True)
         raise typer.Exit(1)
 
     async def _hold_all():
-        await _asyncio.gather(*(_hold_one_lease(n, p) for n, p in leases))
+        """Watch page leases AND spawned service subprocesses together; return on
+        the first to end. A page overlay closing (4410 → `_ShadowEvicted`, or a
+        clean close = the overlay is gone) and a service subprocess exiting
+        (evicted/stopped → `_ServiceExited`) both tear the whole stack down."""
+        tasks = [_asyncio.create_task(_hold_one_lease(n, p)) for n, p in leases]
+        tasks += [_asyncio.create_task(_watch_pid(lbl, pid)) for lbl, pid in spawned]
+        if not tasks:
+            return
+        done, pending = await _asyncio.wait(
+            tasks, return_when=_asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if pending:
+            await _asyncio.gather(*pending, return_exceptions=True)
+        # Re-raise the first completion's exception so the stack tears down with
+        # the right reason (_ShadowEvicted / _ServiceExited).
+        for t in done:
+            exc = t.exception()
+            if exc is not None:
+                raise exc
+
     try:
-        if leases:
-            typer.echo(f"holding {len(leases)} page lease(s) + {len(spawned_pids)} "
-                       f"service(s) on :{port}; Ctrl-C to tear down…")
-            _asyncio.run(_hold_all())
-        else:
-            typer.echo(f"{len(spawned_pids)} service(s) running on :{port} "
-                       f"(pids={spawned_pids}); Ctrl-C to tear down…")
-            signal.pause()
+        typer.echo(f"holding {len(leases)} page lease(s) + {len(spawned)} "
+                   f"service(s) on :{port}; Ctrl-C to tear down…")
+        _asyncio.run(_hold_all())
     except KeyboardInterrupt:
         typer.echo("tearing down…")
+    except _ShadowEvicted as exc:
+        typer.echo(f"evicted: {exc} — tearing down this shadow stack")
+    except _ServiceExited as exc:
+        typer.echo(f"service {exc} exited (evicted or stopped) — "
+                   f"tearing down this shadow stack")
     finally:
-        for pid in spawned_pids:
+        for label, pid in spawned:
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                # pid == pgid: the subprocess is spawned start_new_session=True
+                # (see _shadow_service_target), so it leads its own session/group.
+                # Using pid directly as the pgid is robust even after _watch_pid
+                # has reaped the leader, where os.getpgid(pid) would raise.
+                os.killpg(pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
     typer.echo("torn down — base traffic resumes")
@@ -753,7 +833,8 @@ def _shadow_page_target(
     if prefix in page_prefixes:
         worktree = pkg_dir.parents[2].name   # <root>/awm/pages/<name> → <root>
         shadow_name = override_name or f"shadow:{name}:{worktree}"
-        payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)}}
+        payload = {"name": shadow_name, "prefix": prefix, "page": {"dir": str(dist)},
+                   "origin": f"{shadow_name} @ {worktree}"}
         try:
             r = httpx.post(f"{BASE_URL}/hub/shadow/register", json=payload, timeout=15)
         except httpx.HTTPError as exc:
@@ -778,12 +859,13 @@ def _shadow_page_target(
 
 def _shadow_service_target(
     target: str, override_name: Optional[str], service_bases: set[str],
-) -> Optional[int]:
+) -> Optional[tuple[str, int]]:
     """Exec a service folder's ``run.sh`` against the hub with this worktree's code.
 
     Overlay if ``/svc/<name>`` already has a base, else self-register as the base
-    (the adapter's ``AWM_SERVICE_ID``-unset path). Returns the spawned pid, or
-    ``None`` on skip. ``DEV_PYTHONPATH`` makes the process load this worktree's tree.
+    (the adapter's ``AWM_SERVICE_ID``-unset path). Returns ``(label, pid)`` for the
+    caller to watch + group-kill, or ``None`` on skip. ``DEV_PYTHONPATH`` makes the
+    process load this worktree's tree.
     """
     p = pathlib.Path(target).expanduser().resolve()
     if p.is_dir():
@@ -814,6 +896,10 @@ def _shadow_service_target(
         env["AWM_SERVICE_NAME"] = f"{base_name}-shadow"
         env["AWM_SERVICE_PREFIX"] = f"/svc/{base_name}"
         env["AWM_SERVICE_OVERLAY"] = "1"
+        # "who" label surfaced to an incumbent overlay this one evicts.
+        worktree = (service_dir.parents[2].name
+                    if len(service_dir.parents) >= 3 else service_dir.name)
+        env["AWM_SERVICE_ORIGIN"] = f"{base_name}-shadow @ {worktree}"
     else:
         # Self-register as a fresh base: a unique name, no overlay flag, no
         # pre-assigned id (the adapter POSTs /hub/service/register itself).
@@ -831,6 +917,9 @@ def _shadow_service_target(
                    f"  (not journaled — won't respawn on hub restart)")
     proc = subprocess.Popen(
         ["bash", str(run_sh)], cwd=str(service_dir), env=env,
+        # start_new_session=True: the child leads its own session/process group,
+        # so pid == pgid — `os.killpg(pid, …)` group-kills the whole tree on
+        # teardown (see _hold_all's finally). Don't drop this.
         start_new_session=True,
     )
-    return proc.pid
+    return (base_name, proc.pid)
