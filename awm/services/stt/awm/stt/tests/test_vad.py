@@ -13,6 +13,7 @@ regions — not exact thresholds (those are tuning, not contract).
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from awm.stt import vad
 
@@ -40,3 +41,30 @@ def test_noise_is_not_speech():
     rng = np.random.default_rng(0)
     pcm = (rng.normal(0, 8000, vad.SAMPLE_RATE)).astype(np.int16).tobytes()
     assert vad.has_speech(pcm) is False
+
+
+def test_min_region_ms_drops_short_blips(monkeypatch):
+    # The blip floor (used by the silence/submit clock) drops speech regions
+    # shorter than min_region_ms, so a momentary noise isn't read as "the last
+    # speech." Drive synthetic Silero timestamps so this is model-free.
+    sr = vad.SAMPLE_RATE
+    fake_ts = [
+        {"start": int(0.10 * sr), "end": int(0.50 * sr)},  # 400ms real word
+        {"start": int(2.40 * sr), "end": int(2.50 * sr)},  # 100ms blip
+    ]
+    monkeypatch.setattr(
+        "faster_whisper.vad.get_speech_timestamps", lambda *a, **k: fake_ts
+    )
+    pcm = _silence(3.0)  # non-empty buffer; content ignored (timestamps stubbed)
+
+    # No floor: both regions kept → last end is the blip's (~2.5s).
+    assert vad.last_speech_end_s(pcm, min_region_ms=0) == pytest.approx(2.5, abs=0.01)
+    assert len(vad.speech_regions(pcm, min_region_ms=0)) == 2
+
+    # Floor 250ms: the 100ms blip is dropped → last *real* end is ~0.5s.
+    assert vad.last_speech_end_s(pcm, min_region_ms=250) == pytest.approx(0.5, abs=0.01)
+    assert len(vad.speech_regions(pcm, min_region_ms=250)) == 1
+
+    # Floor above every region → nothing survives.
+    assert vad.last_speech_end_s(pcm, min_region_ms=600) is None
+    assert vad.has_speech(pcm, min_region_ms=600) is False

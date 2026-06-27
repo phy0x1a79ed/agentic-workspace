@@ -38,8 +38,11 @@
     // `convoText` is the current in-progress message (composer + live tail).
     convo?: boolean;
     convoText?: string;
+    // Convo-mode CLEAR handler (transport-owned: wipes the composer + aborts
+    // backend work). In PTT mode CLEAR stays local (clears the chip list).
+    onConvoClear?: () => void;
   }
-  let { initialChips, controls, meter, onsend, convo = false, convoText = '' }: Props = $props();
+  let { initialChips, controls, meter, onsend, convo = false, convoText = '', onConvoClear }: Props = $props();
 
   let chips = $state<ChipRow[]>(untrack(() => (
     initialChips
@@ -192,10 +195,10 @@
       <button
         type="button"
         class="col-btn clear"
-        onclick={clear}
-        disabled={chips.length === 0}
-        title="clear and try again"
-        aria-label="clear all utterances"
+        onclick={() => (convo ? onConvoClear?.() : clear())}
+        disabled={convo ? false : chips.length === 0}
+        title={convo ? 'clear and stop — cancels in-flight work' : 'clear and try again'}
+        aria-label={convo ? 'clear conversation and stop' : 'clear all utterances'}
       >CLEAR</button>
 
       {#if controls}{@render controls()}{/if}

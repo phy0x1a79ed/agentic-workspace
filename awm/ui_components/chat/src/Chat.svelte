@@ -25,6 +25,7 @@
   import { TtsHistory } from '@awm/tts-history';
   import type { Post } from '@awm/tts-history';
   import { SttComposer } from '@awm/stt-composer';
+  import type { TelemetryEvent } from '@awm/stt-telemetry';
   import { makeSubmitGate } from './submit-gate';
 
   interface Props {
@@ -43,8 +44,12 @@
     /** Fully offline (gallery/demo): put the embedded SttComposer in mock mode
      *  so it opens no /svc/stt session. Default false. */
     offline?: boolean;
+    /** Dev telemetry tap: forwarded to the embedded SttComposer. No-op when
+     *  absent (the composer's telemetry helpers stay dark). Lets a host render
+     *  an <SttTelemetry> timeline against this composite's STT pipeline. */
+    onTelemetry?: (e: TelemetryEvent) => void;
   }
-  let { posts, onSend, chatContext = '', onReplay, header, aside, offline = false }: Props = $props();
+  let { posts, onSend, chatContext = '', onReplay, header, aside, offline = false, onTelemetry }: Props = $props();
 
   // The single send seam. Both SttComposer signals call it; the gate drops a
   // same-turn duplicate and empty sends. Consumers can no longer double-bind.
@@ -73,6 +78,7 @@
       onsend={submit}
       onText={submit}
       {chatContext}
+      {onTelemetry}
       mockInitialChips={offline ? [] : undefined}
     />
   </div>

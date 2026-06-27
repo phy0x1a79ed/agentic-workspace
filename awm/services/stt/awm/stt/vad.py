@@ -32,41 +32,80 @@ _MIN_SPEECH_MS = int(os.environ.get("PTT_VAD_MIN_SPEECH_MS", "120"))
 _MIN_SILENCE_MS = int(os.environ.get("PTT_VAD_MIN_SILENCE_MS", "100"))
 
 
-def _vad_options():
+def _vad_options(threshold: Optional[float] = None):
     from faster_whisper.vad import VadOptions
 
     return VadOptions(
-        threshold=_THRESHOLD,
+        threshold=_THRESHOLD if threshold is None else threshold,
         min_speech_duration_ms=_MIN_SPEECH_MS,
         min_silence_duration_ms=_MIN_SILENCE_MS,
         speech_pad_ms=0,
     )
 
 
-def speech_regions(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> list[tuple[float, float]]:
+def speech_regions(
+    pcm_bytes: bytes,
+    sample_rate: int = SAMPLE_RATE,
+    *,
+    min_region_ms: int = 0,
+    threshold: Optional[float] = None,
+) -> list[tuple[float, float]]:
     """Return ``[(start_s, end_s), ...]`` speech regions, in order.
 
     Empty list when the buffer is all non-speech. Drives faster-whisper's bundled
     Silero model (``get_speech_timestamps`` auto-loads + caches it).
+
+    ``min_region_ms`` drops regions shorter than that floor *after* detection — a
+    "softer" silence measure for the submit clock that ignores brief blips
+    (clicks/coughs/breaths) so they don't read as "the last speech." It stacks on
+    top of Silero's own ``min_speech_duration_ms`` floor. ``threshold`` overrides
+    the module default for this call (higher = only confident speech counts).
     """
     if not pcm_bytes:
         return []
     from faster_whisper.vad import get_speech_timestamps
 
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    ts = get_speech_timestamps(audio, _vad_options(), sampling_rate=sample_rate)
-    return [(t["start"] / sample_rate, t["end"] / sample_rate) for t in ts]
+    ts = get_speech_timestamps(audio, _vad_options(threshold), sampling_rate=sample_rate)
+    regions = [(t["start"] / sample_rate, t["end"] / sample_rate) for t in ts]
+    if min_region_ms > 0:
+        floor = min_region_ms / 1000.0
+        regions = [(s, e) for (s, e) in regions if (e - s) >= floor]
+    return regions
 
 
-def last_speech_end_s(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> Optional[float]:
+def last_speech_end_s(
+    pcm_bytes: bytes,
+    sample_rate: int = SAMPLE_RATE,
+    *,
+    min_region_ms: int = 0,
+    threshold: Optional[float] = None,
+) -> Optional[float]:
     """End time (seconds, relative to the buffer start) of the last detected
-    speech region, or ``None`` if the buffer contains no speech."""
-    regions = speech_regions(pcm_bytes, sample_rate)
+    speech region, or ``None`` if the buffer contains no speech.
+
+    With ``min_region_ms`` set, short blips are ignored, so the returned end time
+    is that of the last *substantial* speech region — used by the silence/submit
+    clock so a momentary blip doesn't shrink the measured trailing gap."""
+    regions = speech_regions(
+        pcm_bytes, sample_rate, min_region_ms=min_region_ms, threshold=threshold
+    )
     if not regions:
         return None
     return regions[-1][1]
 
 
-def has_speech(pcm_bytes: bytes, sample_rate: int = SAMPLE_RATE) -> bool:
-    """True iff the PCM contains at least one detected speech region."""
-    return bool(speech_regions(pcm_bytes, sample_rate))
+def has_speech(
+    pcm_bytes: bytes,
+    sample_rate: int = SAMPLE_RATE,
+    *,
+    min_region_ms: int = 0,
+    threshold: Optional[float] = None,
+) -> bool:
+    """True iff the PCM contains at least one detected speech region (after the
+    optional ``min_region_ms`` blip floor)."""
+    return bool(
+        speech_regions(
+            pcm_bytes, sample_rate, min_region_ms=min_region_ms, threshold=threshold
+        )
+    )
