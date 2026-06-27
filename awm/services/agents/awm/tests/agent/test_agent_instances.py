@@ -352,17 +352,23 @@ class TestCreateSessionDispatch:
         assert stub_agentcore["config"].permissions == "default"
 
     @pytest.mark.asyncio
-    async def test_claude_threads_spawn_mcp_config(
+    async def test_threads_hub_workspace_and_port_for_harness_mcp(
         self, awm_workspace, stub_agentcore,
     ):
+        # MCP setup is harness-owned now: create_session does NOT write or thread
+        # a config FILE; it passes the hub's canonical workspace + port so the
+        # harness synthesizes the awm server itself. A conversational session
+        # carries no AWM_AS identity.
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        spawn_mcp = awm_workspace["awm_dir"] / "spawn-mcp.json"
-        spawn_mcp.write_text('{"mcpServers": {}}')
 
         await create_session(project="p", scope="s", agent_cli="claude")
 
-        assert stub_agentcore["config"].mcp_config == str(spawn_mcp)
+        cfg = stub_agentcore["config"]
+        assert cfg.mcp_config is None
+        assert cfg.awm_port == str(ai_mod.config.PORT)
+        assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
+        assert cfg.placement_as is None
 
     @pytest.mark.asyncio
     async def test_effort_rides_params(
@@ -418,18 +424,22 @@ class TestClaudeTmuxHarness:
         assert info.agent_cli == "claude-tmux"
 
     @pytest.mark.asyncio
-    async def test_threads_spawn_mcp_config(
+    async def test_threads_hub_workspace_and_port_for_harness_mcp(
         self, awm_workspace, stub_agentcore,
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        spawn_mcp = awm_workspace["awm_dir"] / "spawn-mcp.json"
-        spawn_mcp.write_text('{"mcpServers": {}}')
 
         await create_session(project="p", scope="s", agent_cli="claude-tmux")
 
-        # claude-tmux gets the same spawn-mcp.json claude does.
-        assert stub_agentcore["config"].mcp_config == str(spawn_mcp)
+        # MCP is harness-owned: claude-tmux threads the hub workspace + port
+        # (the harness synthesizes its own awm server from these) exactly as
+        # the headless claude harness does — no pre-built mcp_config here.
+        cfg = stub_agentcore["config"]
+        assert cfg.mcp_config is None
+        assert cfg.awm_port == str(ai_mod.config.PORT)
+        assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
+        assert cfg.placement_as is None
 
 
 class TestBuildCoreConfig:
@@ -440,23 +450,31 @@ class TestBuildCoreConfig:
         cfg = ai_mod._build_core_config(
             agent_cli="claude", permission_mode="bypassPermissions",
             model="opus", effort=None, resume_session_id="sid-1",
-            workspace_dir=ws, awm_dir=ws / ".awm",
+            workspace_dir=ws,
         )
         assert cfg.harness == "claude"
         assert cfg.permissions == "full"
         assert cfg.model == "opus"
         assert cfg.resume_id == "sid-1"
         assert cfg.workdir == str(ws)
-
-    def test_opencode_no_claude_mcp(self, awm_workspace):
-        ws = awm_workspace["projects_dir"] / "p" / "s"
-        # Even with a spawn-mcp.json present, opencode doesn't thread it
-        # (claude-only flag).
-        (awm_workspace["awm_dir"] / "spawn-mcp.json").write_text("{}")
-        cfg = ai_mod._build_core_config(
-            agent_cli="opencode", permission_mode="default",
-            model=None, effort=None, resume_session_id=None,
-            workspace_dir=ws, awm_dir=ws / ".awm",
-        )
+        # MCP setup is harness-owned: the hub workspace + port are threaded so
+        # the harness can synthesize the awm server. No config FILE is written
+        # here, and a conversational session carries no AWM_AS identity.
+        assert cfg.awm_port == str(ai_mod.config.PORT)
+        assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
+        assert cfg.placement_as is None
         assert cfg.mcp_config is None
-        assert cfg.permissions == "default"
+
+    def test_placement_identity_threaded(self, awm_workspace):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        # A placement passes its identity so the harness synthesizes an awm
+        # server carrying AWM_AS — symmetric across claude and opencode.
+        for harness in ("claude", "opencode"):
+            cfg = ai_mod._build_core_config(
+                agent_cli=harness, permission_mode="default",
+                model=None, effort=None, resume_session_id=None,
+                workspace_dir=ws, placement_as="p/s",
+            )
+            assert cfg.placement_as == "p/s"
+            assert cfg.awm_port == str(ai_mod.config.PORT)
+            assert cfg.mcp_config is None

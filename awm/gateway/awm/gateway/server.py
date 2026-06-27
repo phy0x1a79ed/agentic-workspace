@@ -4,7 +4,7 @@ This is the gateway's HTTP surface. It exposes only what the gateway owns
 itself — the daemon lifecycle (`/status`, `/restart`), the generic tool
 dispatch the MCP proxy rides (`/tools`, `/invoke`, both backed by the live
 `catalog`), and the hub control plane + routing middleware. Feature surfaces
-(scopes, rooms, artifacts, …) are NOT baked in here — they arrive as services
+(scopes, artifacts, …) are NOT baked in here — they arrive as services
 register into the catalog/hub. See `catalog.py` for the registration contract.
 """
 

@@ -295,39 +295,6 @@ def _build_opencode_argv(
 # agentcore config builder
 # ---------------------------------------------------------------------------
 
-def _write_placement_mcp_config(awm_dir: Path, as_: str) -> Optional[str]:
-    """Write a per-placement ``spawn-mcp.json`` carrying the agent's identity.
-
-    A placed agent submits work through MCP B-op tools (``edit_deliverable`` …)
-    that must resolve to ITS placement without the model supplying a token. We
-    clone the canonical ``spawn-mcp.json`` into the placement's own unit
-    (``<unit>/.awm/spawn-mcp.json``) and inject ``mcpServers.awm.env.AWM_AS =
-    f"{project}/{unit_slug}"``. Each placed ``claude`` spawns its OWN ``awm-mcp``
-    stdio child from this file, so that proxy stamps ``X-Awm-As`` on every
-    ``/invoke`` — the agents service resolves the open placement from it. Returns
-    the per-placement config path, or None to fall back to the canonical file
-    (no identity → the relays reject the call, which is the safe failure)."""
-    canonical = config.AWM_DIR / "spawn-mcp.json"
-    if not canonical.exists():
-        return None
-    try:
-        cfg = json.loads(canonical.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    servers = cfg.setdefault("mcpServers", {})
-    awm = servers.get("awm")
-    if isinstance(awm, dict):
-        env = awm.setdefault("env", {})
-        if isinstance(env, dict):
-            env["AWM_AS"] = as_
-    dest = awm_dir / "spawn-mcp.json"
-    try:
-        dest.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        return None
-    return str(dest)
-
-
 def _tmux_session_name(instance_id: int, scope: str) -> str:
     """Deterministic, tmux-safe session name for a ``claude-tmux`` placement.
 
@@ -337,39 +304,37 @@ def _tmux_session_name(instance_id: int, scope: str) -> str:
     safe_scope = re.sub(r"[^A-Za-z0-9_-]", "-", scope)
     return f"awm-{instance_id}-{safe_scope}"
 
+
 def _build_core_config(
     *, agent_cli: str, permission_mode: str, model: Optional[str],
     effort: Optional[str], resume_session_id: Optional[str],
-    workspace_dir: Path, awm_dir: Path,
+    workspace_dir: Path,
     allowed_tools: Optional[list[str]] = None,
     disallowed_tools: Optional[list[str]] = None,
-    mcp_config_override: Optional[str] = None,
+    placement_as: Optional[str] = None,
     tmux_session_name: Optional[str] = None,
 ) -> AgentConfig:
     """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
 
     ``permission_mode == 'bypassPermissions'`` → full-open (``permissions='full'``);
     everything else maps to ``permissions='default'`` (the harness's own
-    default). ``effort`` rides ``params`` (claude). ``mcp_config`` is the
-    workspace ``spawn-mcp.json`` for claude; opencode is configured via the
-    ``OPENCODE_CONFIG`` env it inherits from this process, so it is not threaded
-    through the config here. ``allowed_tools`` / ``disallowed_tools`` are the
-    per-placement tool profile (a task-bound worker is full-open on permissions
-    but its tools — fs built-ins + which worker MCP tools — are scoped by the
-    allowlist; a conversational session passes neither and is unrestricted).
-    """
+    default). ``effort`` rides ``params`` (claude). ``allowed_tools`` /
+    ``disallowed_tools`` are the per-placement tool profile (a task-bound worker
+    is full-open on permissions but its tools — fs built-ins + which worker MCP
+    tools — are scoped by the allowlist; a conversational session passes neither
+    and is unrestricted).
+
+    MCP setup is **harness-owned**: we don't write any config file here. We
+    thread the hub's canonical workspace + port (so the harness can synthesize
+    the ``awm`` MCP server pointing back at THIS hub) and, for a placement,
+    ``placement_as`` (the agent's identity ``f"{project}/{unit_slug}"`` → the
+    synthesized server's ``AWM_AS`` → ``X-Awm-As`` → the B-op tools resolve to
+    its own task without a model-supplied token). ``placement_as=None`` is a
+    conversational session (awm tools, no identity)."""
     permissions = "full" if permission_mode == "bypassPermissions" else "default"
     params: dict = {}
     if effort:
         params["effort"] = effort
-    mcp_config: Optional[str] = None
-    if agent_cli in ("claude", "claude-tmux"):
-        if mcp_config_override:
-            mcp_config = mcp_config_override
-        else:
-            spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
-            if spawn_mcp.exists():
-                mcp_config = str(spawn_mcp)
     return AgentConfig(
         harness=agent_cli,
         mode="live",
@@ -378,7 +343,9 @@ def _build_core_config(
         permissions=permissions,
         workdir=str(workspace_dir),
         resume_id=resume_session_id,
-        mcp_config=mcp_config,
+        awm_workspace=str(config.canonical_workspace()),
+        awm_port=str(config.PORT),
+        placement_as=placement_as,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         tmux_session_name=tmux_session_name,
@@ -494,12 +461,11 @@ async def create_session(*, project: str, scope: str,
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
-        # A placement gets a per-placement spawn-mcp config carrying its identity
-        # (AWM_AS) so its B-op tools resolve to its own task without a token.
-        mcp_config_override = None
-        if task_bound and agent_cli in ("claude", "claude-tmux"):
-            mcp_config_override = _write_placement_mcp_config(
-                awm_dir, _scope_key(project, scope))
+        # MCP setup is harness-owned: a placement passes its identity
+        # (project/unit_slug) so the harness synthesizes an awm server with
+        # AWM_AS, and its B-op tools resolve to its own task without a token. A
+        # conversational session passes no identity (awm tools, no AWM_AS).
+        placement_as = _scope_key(project, scope) if task_bound else None
         # The tmux harness gets a deterministic session name (human-attachable).
         tmux_name = (
             _tmux_session_name(instance_id, scope)
@@ -508,9 +474,9 @@ async def create_session(*, project: str, scope: str,
         core_config = _build_core_config(
             agent_cli=agent_cli, permission_mode=permission_mode,
             model=model, effort=effort, resume_session_id=resume_session_id,
-            workspace_dir=workspace_dir, awm_dir=awm_dir,
+            workspace_dir=workspace_dir,
             allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
-            mcp_config_override=mcp_config_override,
+            placement_as=placement_as,
             tmux_session_name=tmux_name,
         )
         agent_session = open_agent(core_config)
@@ -1252,7 +1218,6 @@ async def compact_session(scope_key: str) -> str:
                 f"summary still available via transcript"
             )
 
-        # Audit notice — room broadcast stubbed.
         return (
             f"compacted {scope_key}: prior instance {prior_instance_id} "
             f"summarized → new instance {new_session.id} primed"
@@ -1446,25 +1411,3 @@ def start_resume_driver() -> asyncio.Task:
     return _resume_driver_task
 
 
-# ---------------------------------------------------------------------------
-# Rooms-service dispatcher wiring — NO-OP in modular mode
-# ---------------------------------------------------------------------------
-
-def _dispatch_local_post(scope_key: str, post_author: str,
-                         post_body: str) -> None:
-    """Forward a scope-channel post to the in-memory session's input queue."""
-    session = _by_scope.get(scope_key)
-    if session is None:
-        return
-    enqueue_input(session, post_author, post_body)
-
-
-def install_room_dispatchers() -> None:
-    """No-op in modular mode.
-
-    In the monolith, this wired rooms_svc callbacks. In the modular world,
-    room posts arrive via gatewayclient RPC (the scopes service routes them
-    here via the agent's registered RPC handler). The hub_adapter wires
-    those handlers on startup.
-    """
-    pass

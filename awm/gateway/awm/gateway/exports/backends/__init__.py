@@ -6,4 +6,3 @@ Add a new backend by creating a module in this directory that calls
 """
 
 from . import opencode  # noqa: F401
-from . import claude_spawn  # noqa: F401

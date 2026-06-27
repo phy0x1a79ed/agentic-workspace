@@ -43,6 +43,7 @@ import tempfile
 import uuid
 from typing import AsyncIterator, List, Optional
 
+from ._mcp import write_claude_mcp_config
 from ._path import resolve_bin
 from .claude_backend import _classify, _VALID_EFFORTS
 from .session import AgentSession
@@ -89,8 +90,11 @@ def build_claude_tmux_argv(
         argv.extend(["--allowedTools", ",".join(config.allowed_tools)])
     if config.disallowed_tools:
         argv.extend(["--disallowedTools", ",".join(config.disallowed_tools)])
-    if config.mcp_config and os.path.exists(config.mcp_config):
-        argv.extend(["--strict-mcp-config", "--mcp-config", config.mcp_config])
+    # MCP is harness-owned: synthesize the awm server (workspace + hub port +
+    # AWM_AS) into a spawn-mcp.json, falling back to any pre-built mcp_config.
+    mcp_path = write_claude_mcp_config(config) or config.mcp_config
+    if mcp_path and os.path.exists(mcp_path):
+        argv.extend(["--strict-mcp-config", "--mcp-config", mcp_path])
     argv.extend(["--settings", settings_path])
     if config.resume_id:
         argv.extend(["--resume", config.resume_id])

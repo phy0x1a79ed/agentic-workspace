@@ -336,17 +336,27 @@ async def place_on_task(args: dict) -> dict:
 
     # Spawn live via the EXISTING path so a human can attach via 'transcript'.
     # bypassPermissions removes approval prompts; the per-mode allowlist is what
-    # actually scopes the tools (fs + worker MCP). The model is whatever the
-    # caller passes, else the AWM_PLACEMENT_MODEL default (lets ops pin a cheaper
-    # model for unattended placements / e2e runs without changing the kernel
-    # payload); None falls through to the agent CLI's own default.
+    # scopes the tools (fs + worker MCP) on claude.
+    #
+    # Placements default to **opencode on the free Zen DeepSeek-v4** model
+    # (``deepseek-v4-flash-free`` — the opencode backend's own default when model
+    # is None), since unattended task work shouldn't burn a paid model. Override
+    # the harness via ``args['harness']`` / ``AWM_PLACEMENT_HARNESS`` and the
+    # model via ``args['model']`` / ``AWM_PLACEMENT_MODEL`` (None → the harness's
+    # own default: DSv4-free for opencode, the CLI default for claude). NOTE: the
+    # per-mode ``allowed_tools`` profile is enforced only on claude
+    # (``--allowedTools``); under opencode it's threaded but not yet honored, so
+    # the read-only/no-fs guarantee for plan/verify/planner is a claude-only
+    # property today (worker is full-tool regardless). Tracked as a follow-up.
+    harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
+               or "opencode")
     model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
     # The lifecycle reuses one unit across stages; the prior stage's subprocess
     # may still be retiring on this scope. Wait for it to vacate before spawning.
     await _await_scope_free(project, unit_slug)
     session = await ai.create_session(
         project=project, scope=unit_slug,
-        agent_cli="claude", permission_mode="bypassPermissions",
+        agent_cli=harness, permission_mode="bypassPermissions",
         mode=mode, task_ref=task_id, agent_ref=agent_ref,
         placement_token=placement_token,
         workdir=workspace_path,

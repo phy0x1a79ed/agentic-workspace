@@ -31,6 +31,7 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
+from ._mcp import write_opencode_mcp_config
 from ._path import resolve_bin
 from .session import AgentSession
 from .types import AgentConfig, AgentEvent
@@ -177,11 +178,21 @@ class OpencodeSession(AgentSession):
         binary = resolve_bin(self.config.params.get("bin", "opencode")
                              if self.config.params else "opencode")
         argv = [binary, "serve", "--hostname", "127.0.0.1", "--port", "0"]
+        # The harness owns its agent's MCP setup. Synthesize the awm server
+        # config (with this agent's AWM_AS identity for placements) and point
+        # opencode at it via OPENCODE_CONFIG — opencode reads MCP config from
+        # that env, not a CLI flag, so we must pass an explicit env (default
+        # inherit doesn't carry a per-placement override).
+        env = os.environ.copy()
+        mcp_path = write_opencode_mcp_config(self.config)
+        if mcp_path:
+            env["OPENCODE_CONFIG"] = mcp_path
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=self.directory,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=env,
         )
         self._base_url = await self._read_listen_url()
         self._client = httpx.AsyncClient(

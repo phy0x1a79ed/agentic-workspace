@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import pytest
 
+import json
+
 from awm.agentcore import AgentConfig, AgentEvent
+from awm.agentcore import _mcp as mcp_mod
 from awm.agentcore.claude_backend import build_claude_argv, _classify
 from awm.agentcore.opencode_backend import _classify_parts, _extract_json_object
 
@@ -55,6 +58,60 @@ def test_claude_argv_model_effort_resume():
 def test_claude_argv_bad_effort_raises():
     with pytest.raises(ValueError):
         build_claude_argv(AgentConfig(harness="claude", params={"effort": "x"}))
+
+
+# ---- harness-owned MCP synthesis ----
+
+def test_no_awm_server_without_hub_port(tmp_path):
+    # Without awm_port the harness attaches no awm server (and writes no file).
+    cfg = AgentConfig(harness="claude", workdir=str(tmp_path))
+    assert mcp_mod.write_claude_mcp_config(cfg) is None
+    assert not (tmp_path / ".awm" / "spawn-mcp.json").exists()
+
+
+def test_claude_synthesizes_awm_server_with_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    cfg = AgentConfig(
+        harness="claude", workdir=str(tmp_path),
+        awm_workspace="/the/ws", awm_port="7821", placement_as="p/leaf-1",
+    )
+    path = mcp_mod.write_claude_mcp_config(cfg)
+    assert path == str(tmp_path / ".awm" / "spawn-mcp.json")
+    out = json.loads(open(path).read())
+    awm = out["mcpServers"]["awm"]
+    assert awm["command"] == "/fake/awm-mcp"
+    assert awm["env"] == {
+        "AWM_WORKSPACE": "/the/ws", "AWM_PORT": "7821", "AWM_AS": "p/leaf-1",
+    }
+    # The argv then wires --mcp-config at that path.
+    argv = build_claude_argv(cfg)
+    assert "--strict-mcp-config" in argv
+    assert path in argv
+
+
+def test_conversational_has_no_awm_as(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    cfg = AgentConfig(
+        harness="claude", workdir=str(tmp_path),
+        awm_workspace="/the/ws", awm_port="7821",  # no placement_as
+    )
+    out = json.loads(open(mcp_mod.write_claude_mcp_config(cfg)).read())
+    assert "AWM_AS" not in out["mcpServers"]["awm"]["env"]
+
+
+def test_opencode_synthesizes_awm_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    cfg = AgentConfig(
+        harness="opencode", workdir=str(tmp_path),
+        awm_workspace="/the/ws", awm_port="7821", placement_as="p/leaf-1",
+    )
+    path = mcp_mod.write_opencode_mcp_config(cfg)
+    assert path == str(tmp_path / ".awm" / "mcp-opencode.json")
+    out = json.loads(open(path).read())
+    awm = out["mcp"]["awm"]
+    assert awm["type"] == "local"
+    assert awm["command"] == ["/fake/awm-mcp"]
+    assert awm["environment"]["AWM_AS"] == "p/leaf-1"
 
 
 # ---- claude classify ----

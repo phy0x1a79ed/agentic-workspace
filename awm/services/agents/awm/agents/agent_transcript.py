@@ -1,8 +1,9 @@
 """Per-agent structured transcript — writes to agents.db agent_transcript table.
 
 Modular change from the monolith: transcript writes go to the agents service's
-own DB (agent_transcript table) rather than being forwarded to rooms_svc.post_transcript.
-The compact subscriber and assistant-turn notifier remain in-memory only.
+own DB (agent_transcript table) rather than being forwarded to a separate
+transcript store. The compact subscriber and assistant-turn notifier remain
+in-memory only.
 """
 from __future__ import annotations
 

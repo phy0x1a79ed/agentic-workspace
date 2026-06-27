@@ -1,9 +1,9 @@
 """Pydantic request/response models owned by the scopes service.
 
-Covers projects, scopes, rooms (membership/posts), messaging, and session
-logs — everything the scopes service exposes over its API surface. Live
+Covers projects, scopes, and the scope channel (posts/subscribers) —
+everything the scopes service exposes over its API surface. Live
 agent-runtime state (pid/status/model/context) lives with the agents
-service, even when surfaced through a room view.
+service, even when surfaced through a scope-channel view.
 """
 
 from __future__ import annotations
