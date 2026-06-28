@@ -1,0 +1,25 @@
+[Unit]
+Description=AWM Opera (Teams web + Slack-web fallback, headless, CDP) on mira
+Documentation=awm/services/social/mira/README.md
+After=awm-display.service awm-wm.service
+Requires=awm-display.service
+Wants=awm-wm.service
+
+[Service]
+Environment=DISPLAY=:20
+# Force X11/Xvfb: the user manager inherits WAYLAND_DISPLAY from tony's idle
+# GNOME session, which would otherwise pull the browser onto the wrong display.
+UnsetEnvironment=WAYLAND_DISPLAY
+# A DEDICATED browser (Opera) so the automation profile never collides with the
+# user's own google-chrome on mira. Opens Teams (the future connector's target)
+# plus app.slack.com as a Slack-web fallback the extractor can read instead of the
+# desktop app. --remote-debugging-port binds 127.0.0.1 only.
+# --ozone-platform=x11: pin X11 so Opera renders to our Xvfb, not the real GNOME
+# wayland compositor it would otherwise auto-detect (see awm-slack.service).
+ExecStartPre=/bin/sleep 2
+ExecStart=/snap/bin/opera --remote-debugging-port=9224 --no-first-run --disable-gpu --ozone-platform=x11 --disable-features=CalculateNativeWinOcclusion https://teams.microsoft.com https://app.slack.com
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

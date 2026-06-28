@@ -1,0 +1,13 @@
+[Unit]
+Description=AWM headless X display (Xvfb :20) for social clients on mira
+Documentation=awm/services/social/mira/README.md
+
+[Service]
+# A virtual framebuffer so Electron/Chromium clients have a display without a
+# graphical login. Everything else (Slack, Opera) renders here.
+ExecStart=/usr/bin/Xvfb :20 -screen 0 1600x1000x24 -nolisten tcp
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

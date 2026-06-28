@@ -3,20 +3,21 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "awm-discord"
+name = "awm-social"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM discord service: discord operator bridge and config."
+description = "AWM social service: multi-platform messaging connectors (Discord, Slack, …)."
 dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
     "discord.py>=2.3",
+    "slack_sdk>=3.27",
 ]
 
-# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/discord/.
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/social/.
 [tool.setuptools.packages.find]
-include = ["awm.discord*"]
+include = ["awm.social*"]
 namespaces = true
 
 [tool.pytest.ini_options]

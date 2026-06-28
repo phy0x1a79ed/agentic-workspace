@@ -1,8 +1,8 @@
-"""Shared fixtures for the awm-discord service tests.
+"""Shared fixtures for the awm-social service tests.
 
 Self-contained: redirects ``awm.persistence.databases.SERVICES_DIR`` into a
-tmp workspace so the discord service DB lands under ``tmp_path``, and resets
-the DAO ``_initialized`` flag between tests so each starts fresh.
+tmp workspace so the social service DB lands under ``tmp_path``, and resets the
+DAO ``_initialized`` flag between tests so each starts fresh.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import pytest
 
 @pytest.fixture()
 def awm_workspace(tmp_path, monkeypatch):
-    """Set up a temporary workspace with discord DB paths redirected."""
+    """Set up a temporary workspace with social DB paths redirected."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     awm_dir = workspace / ".awm"
@@ -26,7 +26,7 @@ def awm_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("awm.persistence.databases.SERVICES_DIR", services_dir)
 
     # Reset the DAO init flag so init_service_db re-runs against tmp paths.
-    import awm.discord.dao as dao_mod
+    import awm.social.dao as dao_mod
     monkeypatch.setattr(dao_mod, "_initialized", False)
 
     return {
