@@ -515,9 +515,18 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     def handler(**kwargs):
         _invoke_dispatch(tool_name, api_func, kwargs)
 
-    handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
-        [_schema_param_to_signature(n, p, n in required) for n, p in props.items()]
-    )
+    # A tool's inputSchema lists params in manifest/display order, which is free
+    # to put a required field last (scope_post deliberately puts `body` last so a
+    # serialization bleed has no trailing param to corrupt). But an
+    # inspect.Signature forbids a no-default parameter after a defaulted one, so
+    # build params then stable-sort required-before-optional. Every field is a
+    # --flag Option and dispatch is by **kwargs, so reordering is invisible to
+    # the CLI surface.
+    sig_params = [
+        _schema_param_to_signature(n, p, n in required) for n, p in props.items()
+    ]
+    sig_params.sort(key=lambda pm: pm.default is not inspect.Parameter.empty)
+    handler.__signature__ = inspect.Signature(sig_params)  # type: ignore[attr-defined]
     handler.__doc__ = tool.get("description", "")
     return handler
 

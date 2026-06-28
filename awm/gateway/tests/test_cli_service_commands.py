@@ -122,6 +122,50 @@ def test_option_required_optional_and_array_fidelity():
     assert params["guests"].default is not inspect.Parameter.empty
 
 
+def test_required_param_after_optional_builds_valid_signature():
+    # A tool may declare a required field LAST, after optional ones — scope_post
+    # puts the required `body` after optional kind/meta/to_scope so a serialization
+    # bleed has no trailing param to corrupt. inspect.Signature forbids a no-default
+    # param after a defaulted one, so the generator must sort required-first rather
+    # than crash register_service_cli_commands at import. Regression: a body-last
+    # manifest once took down the entire CLI.
+    tools = [
+        {
+            "name": "scope_post",
+            "description": "Post to a scope",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "meta": {"type": "object"},
+                    "to_scope": {"type": "string"},
+                    "body": {"type": "string"},  # required, declared LAST
+                },
+                "required": ["project", "scope", "body"],
+            },
+        }
+    ]
+    app = typer.Typer()
+    # Must not raise ValueError("non-default argument follows default argument").
+    groups = register_service_cli_commands(
+        app, tools, api_func=lambda *a, **k: None, exclude_names=set()
+    )
+    post = next(c for c in groups["scope"].registered_commands if c.name == "post")
+    params = list(inspect.signature(post.callback).parameters.values())
+    # Every no-default (required) param precedes every defaulted (optional) one.
+    seen_default = False
+    for p in params:
+        has_default = p.default is not inspect.Parameter.empty
+        if has_default:
+            seen_default = True
+        else:
+            assert not seen_default, f"required {p.name!r} follows an optional param"
+    # `body` is still present and required.
+    assert {"project", "scope", "body"} <= set(inspect.signature(post.callback).parameters)
+
+
 class _StubResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
