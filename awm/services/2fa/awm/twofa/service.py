@@ -81,6 +81,7 @@ class TwoFAService:
             for name, creds in self.cfg.devices.items()
         }
         self._devices_lock = threading.Lock()
+        self._social_task: asyncio.Task | None = None
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -98,7 +99,6 @@ class TwoFAService:
         enrolled = [rt for rt in self._devices.values() if rt.enrolled]
         if not enrolled:
             log.info("2fa: no device creds yet — run 2fa_activate or copy creds")
-            return
         for rt in enrolled:
             try:
                 self._load_engine(rt)
@@ -106,6 +106,16 @@ class TwoFAService:
             except Exception as exc:  # noqa: BLE001
                 log.warning("2fa: device %r creds present but failed to load: %s",
                             rt.name, exc)
+        # Subscribe to the social service's slash commands (Discord /approve →
+        # arm a Duo burst). Best-effort + self-reconnecting, so it's harmless
+        # when no social service is on the gateway. Spawned like social's own
+        # connectors: a task on the already-running loop.
+        if self.cfg.social_subscribe:
+            try:
+                loop = asyncio.get_event_loop()
+                self._social_task = loop.create_task(self._social_listener())
+            except RuntimeError as exc:  # no running loop (shouldn't happen at on_start)
+                log.warning("2fa: social subscription not started: %s", exc)
 
     def _load_engine(self, rt: DeviceRuntime) -> ApprovalEngine:
         """Build (and cache) one device's client + engine from on-disk creds.
@@ -137,6 +147,69 @@ class TwoFAService:
             rt.engine = engine
             rt.load_error = None
             return engine
+
+    # ---- social slash-command subscription --------------------------------
+
+    async def _social_listener(self) -> None:
+        """Listen to the social service's ``command`` emit and arm bursts.
+
+        Owns its own reconnect/backoff (``subscribe`` yields one socket's worth
+        of events then returns when it closes — it does NOT reconnect itself).
+        Best-effort: when no ``social`` service is on the gateway the connect
+        just fails and we retry with backoff, so this is inert until social
+        shows up. Cancelled cleanly on shutdown.
+        """
+        from awm import gatewayclient
+
+        log.info("2fa: subscribing to social/command for slash-armed bursts")
+        backoff = 2.0
+        while True:
+            try:
+                async for ev in gatewayclient.subscribe("social", "command"):
+                    backoff = 2.0  # connected and receiving
+                    await self._handle_social_command(ev)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — never let the task die
+                log.debug("2fa: social subscription dropped (retrying): %s", exc)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 30.0)
+
+    async def _handle_social_command(self, ev: Any) -> None:
+        """React to one social ``command`` event. Only ``approve`` arms a burst."""
+        if not isinstance(ev, dict) or ev.get("command") != "approve":
+            return
+        device = str(ev.get("device") or self.cfg.social_default_device).strip()
+        rt = self._devices.get(device)
+        if rt is None or not rt.enrolled:
+            log.warning("2fa: social /approve for device %r — not enrolled; ignoring",
+                        device)
+            await self._social_reply(ev, f"⚠️ 2fa device `{device}` is not enrolled")
+            return
+        mins = int(self.cfg.social_window_seconds // 60) or 1
+        log.info("2fa: social /approve → arming burst on %r (%.0fs window, %.0fs poll)",
+                 rt.name, self.cfg.social_window_seconds, self.cfg.social_interval_seconds)
+        await self.start_burst(
+            rt.name,
+            window=self.cfg.social_window_seconds,
+            interval=self.cfg.social_interval_seconds,
+            count=self.cfg.social_burst_count,
+        )
+        await self._social_reply(ev, f"✅ Duo approvals armed: `{rt.name}` — {mins} min")
+
+    async def _social_reply(self, ev: Any, text: str) -> None:
+        """Best-effort confirmation back to the originating DM channel."""
+        account = (ev or {}).get("account")
+        channel = (ev or {}).get("channel_id")
+        if not account or not channel:
+            return
+        try:
+            from awm import gatewayclient
+            await gatewayclient.call(
+                "social", "send",
+                {"account": account, "channel": str(channel), "text": text})
+        except Exception as exc:  # noqa: BLE001 — confirmation is non-critical
+            log.debug("2fa: social reply failed: %s", exc)
 
     # ---- device resolution ------------------------------------------------
 

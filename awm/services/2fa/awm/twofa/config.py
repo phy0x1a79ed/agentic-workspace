@@ -25,6 +25,11 @@ Env overrides (all optional):
   AWM_2FA_HOLD_TTL_SECONDS     drop a held tx after          (default 120.0)
   AWM_2FA_BURST_WINDOW         burst poll window seconds     (default 60.0)
   AWM_2FA_BURST_INTERVAL       burst poll interval seconds   (default 1.0)
+  AWM_2FA_SOCIAL_SUBSCRIBE     listen to the social service's slash commands (default 1/on)
+  AWM_2FA_SOCIAL_WINDOW        social-armed burst window sec (default 300.0 = 5 min)
+  AWM_2FA_SOCIAL_INTERVAL      social-armed burst poll sec   (default 2.0)
+  AWM_2FA_SOCIAL_COUNT         social-armed expected count   (default 1000 = stay armed)
+  AWM_2FA_SOCIAL_DEVICE        device when the command omits one (default cwl)
   AWM_2FA_DIR                  override the device-creds directory wholesale
   AWM_2FA_CREDS_PATH           force a single device's creds.json path
   AWM_2FA_KEY_PATH             force a single device's device_key.pem path
@@ -81,6 +86,20 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_str(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip()
 
 
 @dataclass(frozen=True)
@@ -161,6 +180,21 @@ class Config:
         default_factory=lambda: _env_float("AWM_2FA_BURST_WINDOW", 60.0))
     burst_interval_seconds: float = field(
         default_factory=lambda: _env_float("AWM_2FA_BURST_INTERVAL", 1.0))
+
+    # Social slash-command subscription (Discord /approve → arm a burst).
+    social_subscribe: bool = field(
+        default_factory=lambda: _env_bool("AWM_2FA_SOCIAL_SUBSCRIBE", True))
+    social_window_seconds: float = field(
+        default_factory=lambda: _env_float("AWM_2FA_SOCIAL_WINDOW", 300.0))
+    social_interval_seconds: float = field(
+        default_factory=lambda: _env_float("AWM_2FA_SOCIAL_INTERVAL", 2.0))
+    # Large default so the window stays armed for its full length (the burst
+    # loop exits early once expected hits 0 — a big count keeps approving every
+    # push until the deadline rather than stopping after the first).
+    social_burst_count: int = field(
+        default_factory=lambda: _env_int("AWM_2FA_SOCIAL_COUNT", 1000))
+    social_default_device: str = field(
+        default_factory=lambda: _env_str("AWM_2FA_SOCIAL_DEVICE", "cwl"))
 
     @property
     def enrolled_devices(self) -> dict[str, DeviceCreds]:
