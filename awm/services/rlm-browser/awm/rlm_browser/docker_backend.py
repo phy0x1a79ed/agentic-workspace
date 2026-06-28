@@ -4,8 +4,8 @@ container (T3). Selected by ``RLM_BROWSER_BACKEND=docker``.
 The contract is identical to the host backend: launch a Chrome, hand back a CDP
 base URL on ``127.0.0.1:<port>``, stop it on release. The session driver and the
 ``cdp``/``commands`` relay never know the difference — they only ever speak CDP
-to loopback. The single image branches simple vs rendered on ``RLM_MODE`` (the
-``graphics`` flag), so this backend just maps mode → env + port publishing.
+to loopback. The single image branches headless vs rendered on ``RLM_MODE``, so
+this backend just maps mode → env + port publishing.
 
 Port discipline: the container's internal CDP port is pinned to the SAME number
 as the published host port (``-p 127.0.0.1:<port>:<port>``), so the

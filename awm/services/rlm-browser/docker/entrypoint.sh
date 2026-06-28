@@ -4,7 +4,7 @@
 # Builds the active supervisord config from the common base + the mode-specific
 # program blocks, then execs supervisord as PID 1. Two modes:
 #
-#   simple   : headless Chrome only.
+#   headless : headless Chrome only.
 #   rendered : Xvfb -> headful Chrome -> x11vnc -> noVNC (watchable in a browser
 #              at http://127.0.0.1:$RLM_NOVNC_PORT/vnc.html).
 #
@@ -13,7 +13,7 @@
 # dialable as-is.
 set -euo pipefail
 
-MODE="${RLM_MODE:-simple}"
+MODE="${RLM_MODE:-headless}"
 CDP_PORT="${RLM_CDP_PORT:-9222}"
 NOVNC_PORT="${RLM_NOVNC_PORT:-7900}"
 # Chrome's DevTools HTTP server ALWAYS binds loopback inside the container —
