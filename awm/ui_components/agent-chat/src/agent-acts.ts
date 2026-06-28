@@ -23,9 +23,9 @@
 import type { AgentAct } from '@awm/client';
 import type { Post } from '@awm/chat';
 
-/** Author label for every agent-origin row, given the connected scope. */
-export function agentAuthor(project: string, scope: string): string {
-  return `agent:${project}/${scope}`;
+/** Author label for every agent-origin row, given the connected scope (the slug). */
+export function agentAuthor(scope: string): string {
+  return `agent:${scope}`;
 }
 
 /**

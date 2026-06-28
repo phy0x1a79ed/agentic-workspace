@@ -61,6 +61,12 @@ class _GatewayOrch:
     async def search_contracts(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "search_contracts", kw)
 
+    async def call_op(self, op: str, **kw: Any) -> Any:
+        """Generic relay to any (manifest-omitted) orchestrator op by name — the
+        attach-gated admin ops (relocate_task / node_add_dependency / link_repo /
+        orch_task_attach) dispatch through here."""
+        return await gatewayclient.call(ORCH_SERVICE, op, kw)
+
 
 _DEFAULT = _GatewayOrch()
 _IMPL: Any = _DEFAULT
@@ -108,3 +114,7 @@ async def search_tasks(**kw: Any) -> Any:
 
 async def search_contracts(**kw: Any) -> Any:
     return await _IMPL.search_contracts(**kw)
+
+
+async def call_op(op: str, **kw: Any) -> Any:
+    return await _IMPL.call_op(op, **kw)

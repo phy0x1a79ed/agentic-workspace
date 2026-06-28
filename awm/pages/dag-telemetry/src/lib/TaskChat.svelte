@@ -4,7 +4,7 @@
    *
    * Reuses the same chat substrate as @awm/agent-chat, pointed at a PLACEMENT
    * rather than a scopes channel:
-   *   - subscribeAgent(project, workspace_slug) — the task's transcript (the
+   *   - subscribeAgent(workspace_slug) — the task's transcript (the
    *     workspace_slug from orch_status IS the transcript key; one unit
    *     accumulates every leg's acts). Opening this WS is the latent "attached"
    *     signal (the agents service mirrors it to orch.set_attached); closing it
@@ -28,13 +28,12 @@
   import { TextTab } from '@awm/stt-composer';
 
   interface Props {
-    project: string;
-    /** The task's workspace unit slug — the agents transcript key. */
+    /** The task's workspace unit slug — the agents transcript key (and identity). */
     workspaceSlug: string;
     /** Goal text for the header. */
     goal?: string;
   }
-  let { project, workspaceSlug, goal }: Props = $props();
+  let { workspaceSlug, goal }: Props = $props();
 
   let posts = $state<Post[]>([]);
   let humanPosts = $state<Post[]>([]);
@@ -70,27 +69,26 @@
   function openStream() {
     sub?.close();
     const cursor = fold ? { after_ts: fold.lastTs, after_id: fold.lastId } : {};
-    sub = subscribeAgent(project, workspaceSlug, cursor, onAgentEvent);
+    sub = subscribeAgent(workspaceSlug, cursor, onAgentEvent);
   }
 
   function reopen() {
-    if (project && workspaceSlug) openStream();
+    if (workspaceSlug) openStream();
   }
 
   /** (Re)attach whenever the selected task changes. */
   $effect(() => {
     // Track the identity; reattach on change.
-    const p = project;
     const w = workspaceSlug;
     untrack(() => {
       sub?.close();
       sub = null;
-      fold = new TranscriptFold(agentAuthor(p, w));
+      fold = new TranscriptFold(agentAuthor(w));
       humanPosts = [];
       posts = [];
       error = null;
     });
-    if (p && w) openStream();
+    if (w) openStream();
     return () => {
       sub?.close();
       sub = null;
@@ -100,10 +98,10 @@
   async function send() {
     const text = tab?.consumeText?.() ?? '';
     const t = text.trim();
-    if (!t || sending || !project || !workspaceSlug) return;
+    if (!t || sending || !workspaceSlug) return;
     sending = true;
     try {
-      await enqueueAgentPost(project, workspaceSlug, t, 'you');
+      await enqueueAgentPost(workspaceSlug, t, 'you');
       // Optimistic echo — the page doesn't subscribe to the agent's stdin, so
       // our own message won't stream back; append it to the human bucket.
       humanPosts = [
@@ -123,7 +121,7 @@
 <div class="task-chat">
   <header class="hdr">
     <span class="goal mono">{goal || workspaceSlug}</span>
-    <span class="key mono">{project}/{workspaceSlug}</span>
+    <span class="key mono">{workspaceSlug}</span>
   </header>
 
   {#if error}<p class="error mono">{error}</p>{/if}

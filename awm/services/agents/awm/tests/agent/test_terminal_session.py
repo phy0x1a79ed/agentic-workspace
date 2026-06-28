@@ -3,8 +3,8 @@
 The full PTY relay (`terminal_session`) is integration-level — it spawns a real
 `tmux attach` against a live agent session and is exercised by the live-hub
 harness. Here we cover the pure resolution logic that decides whether a relay
-can even start: which agent the init identity names, and whether it runs under
-the claude-tmux harness (so it has a pane to attach)."""
+can even start: which agent the init identity names, and whether it is a claude
+agent (so it has a tmux pane to attach)."""
 from __future__ import annotations
 
 import asyncio
@@ -37,25 +37,26 @@ def test_invalid_session_id():
 
 
 def test_no_live_session(monkeypatch):
-    monkeypatch.setattr(ai, "get_session_by_scope", lambda p, s: None)
-    sess, err = ts._resolve_tmux_session({"project": "p", "scope": "s"})
+    monkeypatch.setattr(ai, "get_session_by_scope", lambda s: None)
+    sess, err = ts._resolve_tmux_session({"scope": "s"})
     assert sess is None
     assert "no live agent session" in err
 
 
 def test_non_tmux_agent_has_no_terminal(monkeypatch):
-    # A headless claude agent: no tmux_session → nothing to attach.
+    # An opencode agent (the only non-tmux harness now): no tmux_session →
+    # nothing to attach.
     monkeypatch.setattr(ai, "get_session_by_scope",
-                        lambda p, s: _FakeInstance(tmux_session=None))
-    sess, err = ts._resolve_tmux_session({"project": "p", "scope": "s"})
+                        lambda s: _FakeInstance(tmux_session=None))
+    sess, err = ts._resolve_tmux_session({"scope": "s"})
     assert sess is None
-    assert "claude-tmux harness" in err
+    assert "no tmux session" in err
 
 
 def test_resolves_tmux_session_by_scope(monkeypatch):
     monkeypatch.setattr(ai, "get_session_by_scope",
-                        lambda p, s: _FakeInstance(tmux_session="awm-7-s"))
-    sess, err = ts._resolve_tmux_session({"project": "p", "scope": "s"})
+                        lambda s: _FakeInstance(tmux_session="awm-7-s"))
+    sess, err = ts._resolve_tmux_session({"scope": "s"})
     assert err is None
     assert sess == "awm-7-s"
 
@@ -131,9 +132,9 @@ async def test_pty_relay_roundtrip_against_real_tmux(monkeypatch):
     subprocess.run(["tmux", "new-session", "-d", "-s", sname, "cat"], check=True)
     try:
         monkeypatch.setattr(ai, "get_session_by_scope",
-                            lambda p, s: _FakeTmuxInstance(sname))
+                            lambda s: _FakeTmuxInstance(sname))
         bridge = _FakeBridge()
-        ctx = _FakeCtx({"project": "p", "scope": "s", "cols": 80, "rows": 24},
+        ctx = _FakeCtx({"scope": "s", "cols": 80, "rows": 24},
                        bridge)
         task = asyncio.create_task(ts.terminal_session(ctx))
 

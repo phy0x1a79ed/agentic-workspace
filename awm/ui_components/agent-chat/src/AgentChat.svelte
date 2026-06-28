@@ -8,8 +8,8 @@
    *   - <TtsHistory> from @awm/tts-history — the transcript + per-row TTS replay.
    *
    * All business logic lives HERE, not in the page that mounts it. On connect
-   * it spawns (busy-tolerant) the scope's agent, seeds the human backlog from
-   * the scope channel, and live-subscribes to the agents service transcript
+   * it seeds the human backlog from the scope channel, and live-subscribes to
+   * the agents service transcript (keyed on the scope/slug alone)
    * (backfill + push, deduped by act id, partials coalesced into one growing
    * bubble per turn). Human input is POSTed to the scope channel; agent acts
    * stream from the agents service. Both are merged into one transcript and
@@ -24,7 +24,6 @@
   import {
     fetchScope,
     postToScope,
-    spawnAgent,
     subscribeAgent,
     type ScopePost,
     type AgentSubscription,
@@ -153,15 +152,15 @@
     }
   }
 
-  function openAgentStream(p: string, s: string) {
+  function openAgentStream(s: string) {
     sub?.close();
     const cursor = fold ? { after_ts: fold.lastTs, after_id: fold.lastId } : {};
-    sub = subscribeAgent(p, s, cursor, onAgentEvent);
+    sub = subscribeAgent(s, cursor, onAgentEvent);
   }
 
   function reconnectAgent() {
     if (!connected) return;
-    openAgentStream(liveProject, liveScope);
+    openAgentStream(liveScope);
   }
 
   // --- Connect / disconnect ------------------------------------------------
@@ -183,19 +182,10 @@
       localStorage.setItem(KEY_SCOPE, s);
     }
 
-    fold = new TranscriptFold(agentAuthor(p, s));
+    fold = new TranscriptFold(agentAuthor(s));
     spokenIds = new Set();
     humanPosts = [];
     posts = [];
-
-    // Busy-tolerant spawn: a scope that already has a live agent is "attached",
-    // not an error — so connecting always self-heals an agent that died.
-    try {
-      await spawnAgent(p, s);
-    } catch (err) {
-      error = `spawn failed: ${(err as Error).message}`;
-      // Keep going — we can still show the backlog + transcript read-only.
-    }
 
     // Seed the human backlog (messages only) from the scope channel.
     try {
@@ -207,7 +197,7 @@
 
     // Live agent stream (backfill + push). The opening backfill frame replays
     // the transcript from the (empty) cursor; no separate fetch needed.
-    openAgentStream(p, s);
+    openAgentStream(s);
     status = 'live';
     rebuild();
   }

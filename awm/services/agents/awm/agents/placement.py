@@ -39,6 +39,7 @@ import uuid
 from pathlib import Path
 
 import awm.gatewayclient as gatewayclient
+from awm.agents import admin_ops
 from awm.agents import agent_instances as ai
 from awm.agents import orch_client
 from awm.agents.agent_instances import TASK_TURN_BUDGET, TASK_WARN_REMAINING
@@ -70,6 +71,10 @@ _BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
 
 _AWM = "mcp__awm__"
 _WORKER_TOOLS = [_AWM + "edit_deliverable", _AWM + "indicate_done", _AWM + "task_fail"]
+# Attach-gated DAG-restructuring tools (configurable registry). LISTED for every
+# worker, but each one's gate rejects it unless a human is attached — so an
+# unattended worker has them in its profile yet can never restructure the DAG.
+_ADMIN_TOOLS = [_AWM + n for n in admin_ops.ADMIN_TOOL_NAMES]
 _PLANNER_TOOLS = [
     _AWM + "add_subtask", _AWM + "add_dependency", _AWM + "define_contract",
     _AWM + "search_tasks", _AWM + "search_contracts",
@@ -78,7 +83,7 @@ _PLANNER_TOOLS = [
 _VERIFY_TOOLS = [_AWM + "approve_plan", _AWM + "reject_plan", _AWM + "task_fail"]
 
 TOOL_PROFILES: dict[str, list[str]] = {
-    "worker": _BUILTIN_FULL + _WORKER_TOOLS,
+    "worker": _BUILTIN_FULL + _WORKER_TOOLS + _ADMIN_TOOLS,
     "plan": _BUILTIN_READONLY + _WORKER_TOOLS,
     "planner": _BUILTIN_READONLY + _PLANNER_TOOLS,
     "verify": list(_VERIFY_TOOLS),  # no filesystem at all
@@ -140,7 +145,8 @@ def _finish_planner() -> str:
 def render_brief(*, task_id: str, mode: str, brief: str,
                  contracts_in: list, contracts_out: list,
                  prereadings: list) -> str:
-    """Render a worker/plan/planner unit ``CONTEXT.md`` (the brief on disk).
+    """Render a worker/plan/planner unit ``CLAUDE.md`` (the brief on disk —
+    auto-loaded by the claude harness).
 
     ``verify`` does not use this — it has no filesystem, so its objective+plan
     ride the kickoff stdin instead (see ``_verify_kickoff``)."""
@@ -179,7 +185,7 @@ def _kickoff_text(*, task_id: str, mode: str) -> str:
     """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
         f"You have been placed on task `{task_id}` as a **{mode}**. Read "
-        f"`./CONTEXT.md` for your objective, inputs, contracts, and how to "
+        f"`./CLAUDE.md` for your objective, inputs, contracts, and how to "
         f"finish. Your placement tools act on this task automatically — you "
         f"never pass a token or id. Begin now."
     )
@@ -208,36 +214,41 @@ def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
 # Workspace unit provisioning (contract C — the workspace service)
 # ---------------------------------------------------------------------------
 
-async def _workspace_create(project: str, unit_slug: str, context_md: str,
-                            prereadings: list) -> str:
-    """Provision (or re-activate) the unit; return its on-disk path."""
+async def _workspace_create(unit_slug: str, context_md: str,
+                            prereadings: list, repos: list | None = None) -> str:
+    """Provision (or re-activate) the unit; return its on-disk path.
+
+    ``repos`` (``[{name, project, scope}]`` — each item a scope's own
+    scopes-service coordinates) links existing scopes into the unit under
+    ``repos/<name>`` — threaded straight through to the workspace service, which
+    builds the symlinks (this service makes no scopes call of its own)."""
     res = await gatewayclient.call("workspace", "workspace_create", {
-        "project": project, "unit_slug": unit_slug,
+        "unit_slug": unit_slug,
         "context_md": context_md, "prereadings": prereadings or [],
+        "repos": repos or [],
     })
     return (res or {}).get("path") or ""
 
 
-async def _retain_unit(project: str, unit_slug: str) -> None:
+async def _retain_unit(scope: str) -> None:
     """Free the unit but KEEP its contents (the lifecycle-reuse / audit state).
 
     The ``scope_complete(cleanup=False)`` analog. Best-effort: a transient RPC
     failure is logged, not raised (the orchestrator already has the ack)."""
     try:
         await gatewayclient.call("workspace", "workspace_retain", {
-            "project": project, "unit_slug": unit_slug,
+            "unit_slug": scope,
         })
     except Exception:  # noqa: BLE001
-        log.warning("workspace_retain failed for %s/%s", project, unit_slug,
-                    exc_info=True)
+        log.warning("workspace_retain failed for %s", scope, exc_info=True)
 
 
-async def _await_scope_free(project: str, unit_slug: str,
+async def _await_scope_free(scope: str,
                             *, timeout: float = 20.0, grace: float = 2.0) -> None:
     """Wait for any prior-stage placement subprocess on this unit to vacate.
 
     The lifecycle reuses ONE unit across plan → verify → worker: each stage is a
-    fresh agent on the SAME (project, unit_slug) scope. The previous stage acks
+    fresh agent on the SAME ``scope`` (the unit slug). The previous stage acks
     its terminal B-op (``deliver``/``approve_plan``) BEFORE its subprocess is
     retired (retire is async), so when the orchestrator dispatches the next leg
     it can arrive while the old subprocess still registers the scope — and
@@ -247,10 +258,10 @@ async def _await_scope_free(project: str, unit_slug: str,
     waited = 0.0
     nudged = False
     while True:
-        if ai.get_session_by_scope(project, unit_slug) is None:
+        if ai.get_session_by_scope(scope) is None:
             return
         if waited >= grace and not nudged:
-            sess = ai.get_session_by_scope(project, unit_slug)
+            sess = ai.get_session_by_scope(scope)
             if sess is not None:
                 try:
                     await ai.stop_session(sess.id)  # push the lingering retire
@@ -259,7 +270,7 @@ async def _await_scope_free(project: str, unit_slug: str,
             nudged = True
         if waited >= timeout:
             raise PlacementError(
-                f"unit {project}/{unit_slug} still busy after {timeout}s "
+                f"unit {scope} still busy after {timeout}s "
                 "(prior placement did not vacate the scope)")
         await asyncio.sleep(0.1)
         waited += 0.1
@@ -292,14 +303,17 @@ async def place_on_task(args: dict) -> dict:
     placement spec on the row → kickoff via stdin. Returns
     ``{agent_ref, unit_slug, scope, placement_token}``."""
     task_id = args["task_id"]
-    project = args["project"]
-    # ``unit_slug`` is the workspace-unit slug AND the (project, scope) label;
-    # accept the legacy ``scope_slug`` name too.
-    unit_slug = args.get("unit_slug") or args["scope_slug"]
+    # ``unit_slug`` is the workspace-unit slug AND the agent scope/identity.
+    unit_slug = args["unit_slug"]
     brief = args.get("brief", "")
     contracts_in = args.get("contracts_in") or []
     contracts_out = args.get("contracts_out") or []
     prereadings = args.get("prereadings") or []
+    repos = args.get("repos") or []
+    # Born-attended intent (a human-driven drop-in via ``orch_node_open``):
+    # seeds the row's ``attached`` flag so the supervisor freezes from turn one
+    # (P2). Transcript WS open/close still flips it live via ``set_attached``.
+    attached = bool(args.get("attached"))
     mode = args.get("mode", "worker")
     if mode not in _VALID_MODES:
         raise ValueError(f"unknown placement mode {mode!r}; "
@@ -323,7 +337,7 @@ async def place_on_task(args: dict) -> dict:
     # so a verify/worker stage re-activates the same unit (keeping the plan
     # stage's deliverables).
     workspace_path = await _workspace_create(
-        project, unit_slug, context_md, prereadings)
+        unit_slug, context_md, prereadings, repos)
 
     # Build the kickoff. verify reads the staged plan off disk (it can't itself).
     if mode == "verify":
@@ -353,9 +367,9 @@ async def place_on_task(args: dict) -> dict:
     model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
     # The lifecycle reuses one unit across stages; the prior stage's subprocess
     # may still be retiring on this scope. Wait for it to vacate before spawning.
-    await _await_scope_free(project, unit_slug)
+    await _await_scope_free(unit_slug)
     session = await ai.create_session(
-        project=project, scope=unit_slug,
+        scope=unit_slug,
         agent_cli=harness, permission_mode="bypassPermissions",
         mode=mode, task_ref=task_id, agent_ref=agent_ref,
         placement_token=placement_token,
@@ -374,7 +388,7 @@ async def place_on_task(args: dict) -> dict:
         },
         "staged": {}, "done": False,
         "graph": {"subtasks": [], "dependencies": [], "contracts": []},
-        "attached": False,
+        "attached": attached,
     })
 
     ai.enqueue_input(session, "orchestrator", kickoff)
@@ -413,18 +427,15 @@ def _resolve_open_placement(token: str | None) -> dict:
 def _resolve_open_placement_for(as_: str | None) -> dict:
     """Resolve a B-op call to its OPEN placement from the CALLER IDENTITY.
 
-    ``as_`` is the placed agent's identity ``f"{project}/{unit_slug}"`` —
+    ``as_`` IS the placed agent's identity — the unit slug (globally unique),
     stamped onto every MCP call by its own ``awm-mcp`` proxy (the per-placement
     ``AWM_AS`` env → ``X-Awm-As`` header → ``as_``), so the model never types a
-    token. The unit_slug IS the placement's scope, so this is a direct lookup of
-    the one live placement on that scope. Rejects a missing/malformed identity,
-    an identity with no open placement, and an already-closed placement."""
+    token. The slug IS the placement's scope, so this is a direct lookup of the
+    one live placement on that scope. Rejects a missing identity, an identity
+    with no open placement, and an already-closed placement."""
     if not as_:
         raise PlacementError("missing caller identity (no AWM_AS on the call)")
-    if "/" not in as_:
-        raise PlacementError(f"malformed caller identity {as_!r}")
-    project, unit_slug = as_.split("/", 1)
-    row = ai._get_dao().get_open_placement_by_identity(project, unit_slug)
+    row = ai._get_dao().get_open_placement_by_identity(as_)
     if row is None:
         raise PlacementError(f"no open placement for {as_}")
     if _row_data(row).get("placement_outcome"):
@@ -459,7 +470,7 @@ async def _retire_worker(instance_id: int) -> None:
 async def _close_and_retire(row: dict, outcome: str) -> None:
     """Close the placement, retain the unit (keep work), retire the subprocess."""
     ai._get_dao().close_placement(row["id"], outcome=outcome)
-    await _retain_unit(row["project"], row["scope"])
+    await _retain_unit(row["scope"])
     await _retire_worker(row["id"])
 
 
@@ -568,6 +579,36 @@ async def relay_reject_plan(args: dict, as_: str | None = None) -> dict:
         reason=args.get("reason"))
     await _close_and_retire(row, "rejected")
     return {"ok": True, "outcome": "rejected", "ack": ack}
+
+
+# ---------------------------------------------------------------------------
+# Attach-gated admin tools (DAG restructuring; configurable registry)
+# ---------------------------------------------------------------------------
+
+
+async def relay_admin(op_name: str, args: dict, as_: str | None = None) -> dict:
+    """The ONE uniform attach-gate over the admin registry (contract D → B).
+
+    Resolves the caller's placement from its identity, enforces the registry's
+    ``requires_attached`` (rejecting when no human is attached — re-checked HERE
+    every call, since a human can detach mid-turn), then forwards to the named
+    orchestrator op as the resolved ``{task_id, agent_ref}``. Adding/removing/
+    renaming an admin command is a single edit in :mod:`admin_ops` — this relay
+    never changes."""
+    op = admin_ops.BY_NAME.get(op_name)
+    if op is None:
+        raise PlacementError(f"unknown admin op {op_name!r}")
+    row = _resolve_open_placement_for(as_)
+    if op.get("requires_attached") and not _row_data(row).get("attached"):
+        raise PlacementError(
+            f"{op_name} is an attached-only command — no human is attached to "
+            "this node")
+    payload: dict = {"task_id": row["task_ref"], "agent_ref": row["agent_ref"]}
+    for k in op.get("forward", []):
+        if args.get(k) is not None:
+            payload[k] = args[k]
+    ack = await orch_client.call_op(op["orch_op"], **payload)
+    return {"ok": True, "op": op_name, "ack": ack}
 
 
 # ---------------------------------------------------------------------------
@@ -824,7 +865,7 @@ async def _accept_decompose(row: dict, data: dict, session) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Supervision driver (per-mode accept + hard turn budget; attach is passive)
+# Supervision driver (per-mode accept + hard turn budget; freeze while attached)
 # ---------------------------------------------------------------------------
 
 def _continuation_prompt(mode: str, task_id: str, remaining: int) -> str:
@@ -864,9 +905,9 @@ async def _force_fail(session, task_id: str) -> None:
     )
     if row is not None:
         await _close_and_retire(row, "failed")
-    else:  # fallback: close by id + retain by (project, scope)
+    else:  # fallback: close by id + retain by scope
         ai._get_dao().close_placement(session.id, outcome="failed")
-        await _retain_unit(session.project, session.scope)
+        await _retain_unit(session.scope)
         await _retire_worker(session.id)
 
 
@@ -880,14 +921,18 @@ async def on_turn_boundary(session) -> None:
        event).
     2. per-mode acceptance: worker/plan deliver, planner commit. If accepted the
        task already advanced — done.
-    3. otherwise decrement the hard budget and inject the next prompt; at 0,
-       force-fail while retaining work.
+    3. while ATTACHED → freeze: no budget burn, no nag, no force-fail. A
+       human-driven node idles politely; their messages still splice in via
+       ``agent_post`` → ``enqueue_input`` and the agent replies on its normal
+       turn. A real terminal (the acceptance check above, or ``task_fail``) still
+       completes the node, so an attended worker that genuinely delivers advances.
+    4. otherwise (autonomous) decrement the hard budget and inject the next
+       prompt; at 0, force-fail while retaining work.
 
-    Attach is deliberately PASSIVE (T2): the agent keeps working autonomously
-    whether or not a human is attached. A human message splices in via
-    ``agent_post`` → ``enqueue_input`` and the agent replies on its normal turn;
-    the ``attached`` flag is only a latent orchestrator hint (don't reclaim a
-    task a human is on), not a supervisor gate."""
+    Attach GATES the supervisor (P2): on detach (``set_attached(False)``)
+    autonomous supervision resumes from the current ``turn_budget`` — freezing
+    skips the decrement rather than resetting it, so nothing is lost across an
+    attach/detach cycle."""
     token = getattr(session, "placement_token", None)
     if not token:
         return
@@ -907,6 +952,12 @@ async def on_turn_boundary(session) -> None:
         if await _accept_decompose(row, data, session):
             return
     # verify has no auto-accept — its verdict is a terminal tool call.
+
+    # Freeze while a human is driving: skip the budget decrement / re-prompt /
+    # force-fail entirely. The acceptance check above already ran, so a real
+    # deliver still advances the task; we only suppress the autonomous nag.
+    if data.get("attached"):
+        return
 
     session.turn_budget -= 1
     remaining = session.turn_budget
@@ -956,24 +1007,25 @@ async def reclaim_if_dead(session) -> None:
         log.warning("orch.fail (liveness) failed for %s", row["task_ref"],
                     exc_info=True)
     dao.close_placement(session.id, outcome="failed")
-    await _retain_unit(row["project"], row["scope"])
+    await _retain_unit(row["scope"])
 
 
 # ---------------------------------------------------------------------------
 # Attach flag (orthogonal to the state machine)
 # ---------------------------------------------------------------------------
 
-async def set_attached(project: str, scope: str, attached: bool) -> None:
+async def set_attached(scope: str, attached: bool) -> None:
     """Mark/unmark a live placement as user-attached + mirror to the kernel.
 
     Driven by transcript-subscription presence (a human opened/closed the live
-    'transcript' WS for this placement). Attach is PASSIVE (T2): it does NOT gate
-    the supervisor — the agent keeps working autonomously and a human message
-    just splices in (see ``on_turn_boundary``). The flag is a latent orchestrator
-    hint: ``orch.set_attached`` tells the orchestrator not to reclaim a task a
-    human is driving (the auto-reclaim loop is a deferred follow-on).
-    Best-effort throughout."""
-    session = ai.get_session_by_scope(project, scope)
+    'transcript' WS for this placement). Attach GATES the supervisor (P2): while
+    attached, ``on_turn_boundary`` freezes (no budget burn / nag / force-fail) so
+    a human-driven node idles politely; on detach autonomous supervision resumes
+    from the current budget. The flag is ALSO a latent orchestrator hint:
+    ``orch.set_attached`` tells the orchestrator not to reclaim a task a human is
+    driving (the auto-reclaim loop is a deferred follow-on). Best-effort
+    throughout."""
+    session = ai.get_session_by_scope(scope)
     if session is None or getattr(session, "mode", "conversational") == "conversational":
         return
     token = getattr(session, "placement_token", None)
@@ -988,5 +1040,4 @@ async def set_attached(project: str, scope: str, attached: bool) -> None:
             task_id=row["task_ref"], agent_ref=row["agent_ref"],
             attached=bool(attached))
     except Exception:  # noqa: BLE001
-        log.warning("set_attached failed for %s/%s", project, scope,
-                    exc_info=True)
+        log.warning("set_attached failed for %s", scope, exc_info=True)

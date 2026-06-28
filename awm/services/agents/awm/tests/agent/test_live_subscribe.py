@@ -47,16 +47,14 @@ class _Ev:
 
 
 class _Sess:
-    def __init__(self, project="p", scope="s", instance_id=1):
-        self.project = project
+    def __init__(self, scope="s", instance_id=1):
         self.scope = scope
         self.id = instance_id
 
 
 class _ReaderSess:
     """Fuller session stand-in for driving ``_reader_loop`` directly."""
-    def __init__(self, project="p", scope="s", instance_id=1):
-        self.project = project
+    def __init__(self, scope="s", instance_id=1):
         self.scope = scope
         self.id = instance_id
         self._partial_accum: dict = {}
@@ -86,7 +84,7 @@ class TestRecordEvent:
         assert act["body"] == "hello"
         assert "id" in act and act["id"]
         # The wire act id is the agent_transcript row id (the dedupe key).
-        rows = transcript_mod.read_session("p", "s")
+        rows = transcript_mod.read_session("s")
         assert len(rows) == 1
         assert rows[0]["id"] == act["id"]
         assert rows[0]["kind"] == "message"
@@ -94,7 +92,7 @@ class TestRecordEvent:
     def test_preserves_event_kinds_verbatim(self):
         for kind in ("partial", "tool_use", "tool_result", "status"):
             transcript_mod.record_event(_Sess(), _Ev(kind, text="t"))
-        kinds = [r["kind"] for r in transcript_mod.read_session("p", "s")]
+        kinds = [r["kind"] for r in transcript_mod.read_session("s")]
         assert kinds == ["partial", "tool_use", "tool_result", "status"]
 
     def test_message_event_wakes_assistant_turn_subscriber(self):
@@ -116,22 +114,22 @@ class TestCursorReplay:
         dao = AgentsDAO()
         import json as _j
         dao.execute(
-            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (rid, "p", "s", kind, body, _j.dumps({}), ts),
+            "INSERT INTO agent_transcript (id, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (rid, "s", kind, body, _j.dumps({}), ts),
         )
 
     def test_no_cursor_returns_all_ordered(self):
         self._insert("message", "a", 100, "id-a")
         self._insert("message", "b", 200, "id-b")
-        acts = transcript_mod.read_acts_after("p", "s")
+        acts = transcript_mod.read_acts_after("s")
         assert [a["body"] for a in acts] == ["a", "b"]
 
     def test_cursor_excludes_seen_and_keeps_newer(self):
         self._insert("message", "a", 100, "id-a")
         self._insert("message", "b", 200, "id-b")
         self._insert("message", "c", 300, "id-c")
-        acts = transcript_mod.read_acts_after("p", "s", after_ts=200, after_id="id-b")
+        acts = transcript_mod.read_acts_after("s", after_ts=200, after_id="id-b")
         assert [a["body"] for a in acts] == ["c"]
 
     def test_same_ts_id_tiebreak(self):
@@ -139,7 +137,7 @@ class TestCursorReplay:
         # and the cursor at (ts, id-a) excludes id-a but keeps id-b.
         self._insert("message", "a", 500, "id-a")
         self._insert("message", "b", 500, "id-b")
-        acts = transcript_mod.read_acts_after("p", "s", after_ts=500, after_id="id-a")
+        acts = transcript_mod.read_acts_after("s", after_ts=500, after_id="id-a")
         assert [a["body"] for a in acts] == ["b"]
 
 
@@ -151,14 +149,14 @@ class TestAgentBus:
     @pytest.mark.asyncio
     async def test_publish_reaches_live_subscriber(self):
         q: asyncio.Queue = asyncio.Queue(maxsize=8)
-        await bus_mod.attach_live("p", "s", q)
+        await bus_mod.attach_live("s", q)
         try:
-            bus_mod.publish_act("p", "s", {"id": "1", "kind": "message"})
+            bus_mod.publish_act("s", {"id": "1", "kind": "message"})
             ev = q.get_nowait()
             assert ev["type"] == "act"
             assert ev["act"]["id"] == "1"
         finally:
-            await bus_mod.detach_live("p", "s", q)
+            await bus_mod.detach_live("s", q)
 
     @pytest.mark.asyncio
     async def test_full_queue_drops_without_raising(self):
@@ -168,26 +166,26 @@ class TestAgentBus:
         # the live session writer (which sees the `lagged` sentinel under real
         # load) closes 1011 and the client reconnects with its cursor.
         q: asyncio.Queue = asyncio.Queue(maxsize=2)
-        await bus_mod.attach_live("p", "s", q)
+        await bus_mod.attach_live("s", q)
         try:
-            bus_mod.publish_act("p", "s", {"id": "1", "kind": "partial"})
-            bus_mod.publish_act("p", "s", {"id": "2", "kind": "partial"})
+            bus_mod.publish_act("s", {"id": "1", "kind": "partial"})
+            bus_mod.publish_act("s", {"id": "2", "kind": "partial"})
             # Full now — these must not raise (the reader loop must never be
             # stalled or crashed by a slow subscriber).
-            bus_mod.publish_act("p", "s", {"id": "3", "kind": "partial"})
-            bus_mod.publish_act("p", "s", {"id": "4", "kind": "message"})
+            bus_mod.publish_act("s", {"id": "3", "kind": "partial"})
+            bus_mod.publish_act("s", {"id": "4", "kind": "message"})
             assert q.get_nowait()["act"]["id"] == "1"
             assert q.get_nowait()["act"]["id"] == "2"
             assert q.empty()
         finally:
-            await bus_mod.detach_live("p", "s", q)
+            await bus_mod.detach_live("s", q)
 
     @pytest.mark.asyncio
     async def test_detach_stops_delivery(self):
         q: asyncio.Queue = asyncio.Queue(maxsize=8)
-        await bus_mod.attach_live("p", "s", q)
-        await bus_mod.detach_live("p", "s", q)
-        bus_mod.publish_act("p", "s", {"id": "1", "kind": "message"})
+        await bus_mod.attach_live("s", q)
+        await bus_mod.detach_live("s", q)
+        bus_mod.publish_act("s", {"id": "1", "kind": "message"})
         assert q.empty()
 
 
@@ -197,17 +195,17 @@ class TestAgentBus:
 
 class TestOwnAuthorFilter:
     def _sess(self):
-        s = _Sess(project="awm", scope="dev")
+        s = _Sess(scope="dev")
         return s
 
     def test_own_agent_ref_is_self(self):
-        assert ai_mod._is_own_author(self._sess(), "agent:awm/dev") is True
-        assert ai_mod._is_own_author(self._sess(), "scope:awm/dev") is True
-        assert ai_mod._is_own_author(self._sess(), "awm/dev") is True
+        assert ai_mod._is_own_author(self._sess(), "agent:dev") is True
+        assert ai_mod._is_own_author(self._sess(), "scope:dev") is True
+        assert ai_mod._is_own_author(self._sess(), "dev") is True
 
     def test_other_authors_are_not_self(self):
         assert ai_mod._is_own_author(self._sess(), "user:alice") is False
-        assert ai_mod._is_own_author(self._sess(), "agent:awm/other") is False
+        assert ai_mod._is_own_author(self._sess(), "agent:other") is False
         assert ai_mod._is_own_author(self._sess(), "") is False
 
 
@@ -227,13 +225,13 @@ class TestStreamingDedupe:
                 data={"usage": {}, "session_id": "s"}, id="r1"),
         ]
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
-        await bus_mod.attach_live(sess.project, sess.scope, q)
+        await bus_mod.attach_live(sess.scope, q)
         try:
             await ai_mod._reader_loop(sess, _aiter(events))
         finally:
-            await bus_mod.detach_live(sess.project, sess.scope, q)
+            await bus_mod.detach_live(sess.scope, q)
 
-        rows = transcript_mod.read_session(sess.project, sess.scope)
+        rows = transcript_mod.read_session(sess.scope)
         kinds = [r["kind"] for r in rows]
         # No partial flood persisted; exactly one durable message row (upsert).
         assert kinds.count("partial") == 0
@@ -274,112 +272,9 @@ class TestStreamingDedupe:
             _Ev("message", text="second block", data={"message_id": "m2"}, id="a2"),
         ]
         await ai_mod._reader_loop(sess, _aiter(events))
-        rows = transcript_mod.read_session(sess.project, sess.scope)
+        rows = transcript_mod.read_session(sess.scope)
         msgs = [r for r in rows if r["kind"] == "message"]
         assert len(msgs) == 1
         assert msgs[0]["id"] == "m2"
         assert msgs[0]["body"] == "first block\nsecond block"
 
-
-# ---------------------------------------------------------------------------
-# Scope → stdin: live subscription delivery (not a poll)
-# ---------------------------------------------------------------------------
-
-from awm.agents._time import ms_to_iso  # noqa: E402
-
-
-class _DeliverSess:
-    def __init__(self, project="awm", scope="dev"):
-        self.project = project
-        self.scope = scope
-        self.scope_poll_after_ts = None
-        self.input_queue: asyncio.Queue = asyncio.Queue(maxsize=128)
-
-
-class TestScopeDelivery:
-    def test_maybe_deliver_filters_and_cursors(self):
-        s = _DeliverSess()
-        # non-message ignored, cursor untouched
-        ai_mod._maybe_deliver_post(s, {
-            "kind": "journal", "ts": ms_to_iso(100),
-            "author": "user:bob", "body": "x"})
-        assert s.input_queue.empty()
-        # own-author message skipped (but the cursor advances past it)
-        ai_mod._maybe_deliver_post(s, {
-            "kind": "message", "ts": ms_to_iso(100),
-            "author": "agent:awm/dev", "body": "self"})
-        assert s.input_queue.empty()
-        # a fresh human message is delivered
-        ai_mod._maybe_deliver_post(s, {
-            "kind": "message", "ts": ms_to_iso(200),
-            "author": "user:bob", "body": "hi"})
-        assert s.input_queue.get_nowait() == ("user:bob", "hi")
-        # a stale (≤ cursor) message never regresses / re-delivers
-        ai_mod._maybe_deliver_post(s, {
-            "kind": "message", "ts": ms_to_iso(150),
-            "author": "user:bob", "body": "old"})
-        assert s.input_queue.empty()
-
-    @pytest.mark.asyncio
-    async def test_resync_delivers_gap_oldest_first(self, monkeypatch):
-        s = _DeliverSess()
-        # scope_fetch(order='desc') returns newest-first.
-        posts = [
-            {"kind": "message", "ts": ms_to_iso(300), "author": "user:bob", "body": "c"},
-            {"kind": "message", "ts": ms_to_iso(200), "author": "user:bob", "body": "b"},
-            {"kind": "message", "ts": ms_to_iso(100), "author": "user:bob", "body": "a"},
-        ]
-
-        async def fake_call(service, fn, args, **kw):
-            assert service == "scopes" and fn == "scope_fetch"
-            return {"posts": posts}
-
-        monkeypatch.setattr(ai_mod.gatewayclient, "call", fake_call)
-        await ai_mod._resync_scope_posts(s)
-        drained = []
-        while not s.input_queue.empty():
-            drained.append(s.input_queue.get_nowait())
-        assert drained == [("user:bob", "a"), ("user:bob", "b"), ("user:bob", "c")]
-
-    @pytest.mark.asyncio
-    async def test_delivery_loop_subscribes_and_filters_scope(self, monkeypatch):
-        s = _DeliverSess()
-
-        async def fake_call(service, fn, args, **kw):
-            return {"posts": []}  # empty seed + resync
-
-        events = [
-            {"project": "awm", "scope": "dev",
-             "post": {"kind": "message", "ts": ms_to_iso(500),
-                      "author": "user:bob", "body": "live!"}},
-            {"project": "other", "scope": "x",
-             "post": {"kind": "message", "ts": ms_to_iso(600),
-                      "author": "user:bob", "body": "nope"}},
-        ]
-
-        async def fake_subscribe(service, topic, **kw):
-            assert service == "scopes" and topic == "posts"
-            for e in events:
-                yield e
-            await asyncio.sleep(3600)  # stay "live" so the loop doesn't respin
-
-        monkeypatch.setattr(ai_mod.gatewayclient, "call", fake_call)
-        monkeypatch.setattr(ai_mod.gatewayclient, "subscribe", fake_subscribe)
-
-        task = asyncio.create_task(ai_mod._scope_delivery_loop(s))
-        for _ in range(100):
-            if not s.input_queue.empty():
-                break
-            await asyncio.sleep(0.01)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        drained = []
-        while not s.input_queue.empty():
-            drained.append(s.input_queue.get_nowait())
-        # Only this session's (project, scope) is routed; the other-scope event
-        # is filtered out.
-        assert drained == [("user:bob", "live!")]

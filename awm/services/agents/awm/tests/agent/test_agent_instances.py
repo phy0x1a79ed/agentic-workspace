@@ -9,7 +9,7 @@ Removed from the original:
   - TestMigrationFromV23        — tested awm.db migration path (v23→v24)
 
 Kept:
-  - TestOpencodeArgv         — pure function, no DB, import-updated
+  - TestSupportedClis         — the harness allowlist guard
   - TestCreateSessionDispatch — subprocess dispatch, import-updated
 """
 
@@ -19,14 +19,12 @@ import pytest
 pytestmark = [pytest.mark.agent, pytest.mark.slow, pytest.mark.subprocess]
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
 import awm.agents.agent_instances as ai_mod
 from awm.agents.agent_instances import (
     _SUPPORTED_CLIS,
-    _build_opencode_argv,
     _extract_renderable,
     create_session,
 )
@@ -52,7 +50,6 @@ def awm_workspace(tmp_path, monkeypatch):
 
     monkeypatch.setattr("awm.config.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr(ai_mod, "PROJECTS_DIR", projects_dir)
     # ai_mod.config is the imported module; patch its AWM_DIR attr in place.
     import awm.config as _cfg
     monkeypatch.setattr(_cfg, "AWM_DIR", awm_dir)
@@ -142,14 +139,14 @@ class TestListSessionsLimit:
         """list_sessions returns newest-first (DAO ORDER BY id DESC); limit
         caps to the most recent N — the 'last N sessions' path."""
         dao = ai_mod._get_dao()
-        ids = [dao.open_instance(project="awm", scope="dev", log_path=None,
+        ids = [dao.open_instance(scope="dev", log_path=None,
                                  cli_session_id=None, started_at=1000 + i)
                for i in range(4)]
 
-        all_sessions = ai_mod.list_sessions(project="awm", scope="dev")
+        all_sessions = ai_mod.list_sessions(scope="dev")
         assert len(all_sessions) == 4
 
-        recent = ai_mod.list_sessions(project="awm", scope="dev", limit=2)
+        recent = ai_mod.list_sessions(scope="dev", limit=2)
         assert len(recent) == 2
         # newest-first: the two highest row ids (last inserted)
         assert [s.id for s in recent] == [ids[-1], ids[-2]]
@@ -160,67 +157,14 @@ class TestListSessionsLimit:
 # ---------------------------------------------------------------------------
 
 
-class TestOpencodeArgv:
-    """``_build_opencode_argv`` is a pure function — no fixtures needed.
-    It produces the argv that ``create_session`` hands to
-    ``asyncio.create_subprocess_exec`` when ``agent_cli='opencode'``.
-    """
+class TestSupportedClis:
+    """The harness allowlist consulted by ``create_session``."""
 
     def test_supported_clis_set(self):
         # The set is consulted in create_session to reject unknown harnesses.
-        # If anyone narrows it, opencode/claude-tmux spawning silently raises
-        # ValueError for every invite — this guard catches that.
-        assert _SUPPORTED_CLIS == {"claude", "claude-tmux", "opencode"}
-
-    def test_basic_shape(self, monkeypatch):
-        monkeypatch.setattr(ai_mod, "resolve_bin",
-                            lambda name: f"/fake/{name}")
-        argv = _build_opencode_argv(
-            workspace_dir=Path("/w"), permission_mode="default", model=None,
-        )
-        assert argv == [
-            "/fake/opencode", "run", "--format", "json", "--dir", "/w",
-        ]
-
-    def test_bypass_adds_dangerous_flag(self, monkeypatch):
-        monkeypatch.setattr(ai_mod, "resolve_bin",
-                            lambda name: f"/fake/{name}")
-        argv = _build_opencode_argv(
-            workspace_dir=Path("/w"),
-            permission_mode="bypassPermissions", model=None,
-        )
-        assert "--dangerously-skip-permissions" in argv
-        # Flag appears after --dir <wd>, not as a positional.
-        assert argv.index("--dangerously-skip-permissions") > argv.index("--dir")
-
-    def test_default_mode_omits_dangerous_flag(self, monkeypatch):
-        monkeypatch.setattr(ai_mod, "resolve_bin",
-                            lambda name: f"/fake/{name}")
-        argv = _build_opencode_argv(
-            workspace_dir=Path("/w"), permission_mode="default", model=None,
-        )
-        assert "--dangerously-skip-permissions" not in argv
-
-    def test_model_passed_through(self, monkeypatch):
-        monkeypatch.setattr(ai_mod, "resolve_bin",
-                            lambda name: f"/fake/{name}")
-        argv = _build_opencode_argv(
-            workspace_dir=Path("/w"), permission_mode="default", model="sonnet",
-        )
-        assert argv[-2:] == ["--model", "sonnet"]
-
-    def test_resolves_bin_via_resolve_bin(self, monkeypatch):
-        captured = []
-        def fake_resolve(name):
-            captured.append(name)
-            return f"/usr/local/bin/{name}"
-        monkeypatch.setattr(ai_mod, "resolve_bin", fake_resolve)
-
-        argv = _build_opencode_argv(
-            workspace_dir=Path("/w"), permission_mode="default", model=None,
-        )
-        assert captured == ["opencode"]
-        assert argv[0] == "/usr/local/bin/opencode"
+        # claude (the tmux TUI) + opencode; the legacy "claude-tmux" name folds
+        # onto "claude" at hydration, not here.
+        assert _SUPPORTED_CLIS == {"claude", "opencode"}
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +260,7 @@ class TestCreateSessionDispatch:
     @pytest.mark.asyncio
     async def test_rejects_unknown_agent_cli(self, awm_workspace):
         with pytest.raises(ValueError, match="Unknown agent CLI"):
-            await create_session(project="p", scope="s", agent_cli="codex")
+            await create_session(scope="s", agent_cli="codex")
 
     @pytest.mark.asyncio
     async def test_opencode_config_harness_and_workdir(
@@ -325,7 +269,8 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="opencode")
+        await create_session(scope="s", agent_cli="opencode",
+                             workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "opencode"
@@ -339,8 +284,9 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
-                             permission_mode="bypassPermissions")
+        await create_session(scope="s", agent_cli="claude",
+                             permission_mode="bypassPermissions",
+                             workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "full"
 
@@ -351,8 +297,8 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
-                             permission_mode="default")
+        await create_session(scope="s", agent_cli="claude",
+                             permission_mode="default", workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "default"
 
@@ -362,18 +308,19 @@ class TestCreateSessionDispatch:
     ):
         # MCP setup is harness-owned now: create_session does NOT write or thread
         # a config FILE; it passes the hub's canonical workspace + port so the
-        # harness synthesizes the awm server itself. A conversational session
-        # carries no AWM_AS identity.
+        # harness synthesizes the awm server itself. Every session is a placement,
+        # so it carries its AWM_AS identity (the unit slug).
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude")
+        await create_session(scope="s", agent_cli="claude",
+                             workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.mcp_config is None
         assert cfg.awm_port == str(ai_mod.config.PORT)
         assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
-        assert cfg.placement_as is None
+        assert cfg.placement_as == "s"
 
     @pytest.mark.asyncio
     async def test_effort_rides_params(
@@ -382,15 +329,15 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
-                             effort="high")
+        await create_session(scope="s", agent_cli="claude",
+                             effort="high", workdir=str(ws))
 
         assert stub_agentcore["config"].params.get("effort") == "high"
 
 
-class TestClaudeTmuxHarness:
-    """The agents service accepts the ``claude-tmux`` harness and records the
-    deterministic, human-attachable tmux session name."""
+class TestClaudeHarness:
+    """A claude agent runs in tmux: the service records the deterministic,
+    human-attachable tmux session name."""
 
     @pytest.mark.asyncio
     async def test_accepted_and_harness_threaded(
@@ -400,10 +347,10 @@ class TestClaudeTmuxHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude-tmux")
+            scope="s", agent_cli="claude", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
-        assert cfg.harness == "claude-tmux"
+        assert cfg.harness == "claude"
         # deterministic name: awm-<instance_id>-<scope>
         assert cfg.tmux_session_name == f"awm-{session.id}-s"
         assert session.tmux_session == f"awm-{session.id}-s"
@@ -416,49 +363,37 @@ class TestClaudeTmuxHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude-tmux")
+            scope="s", agent_cli="claude", workdir=str(ws))
 
         import json
         row = ai_mod._get_dao().get_instance(session.id)
         data = json.loads(row["data"])
-        assert data["agent_cli"] == "claude-tmux"
+        assert data["agent_cli"] == "claude"
         assert data["tmux_session"] == f"awm-{session.id}-s"
         # and it surfaces through the listing info
         info = ai_mod._info_for_instance_row(ai_mod._row_for_instance(session.id))
         assert info.tmux_session == f"awm-{session.id}-s"
-        assert info.agent_cli == "claude-tmux"
+        assert info.agent_cli == "claude"
 
     @pytest.mark.asyncio
-    async def test_claude_tmux_is_the_default_harness(
+    async def test_claude_is_the_default_harness(
         self, awm_workspace, stub_agentcore,
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        # No agent_cli passed → defaults to claude-tmux so every live agent has
-        # a terminal to attach to.
-        session = await create_session(project="p", scope="s")
+        # No agent_cli passed → defaults to claude (tmux) so every live agent
+        # has a terminal to attach to.
+        session = await create_session(scope="s", workdir=str(ws))
 
-        assert stub_agentcore["config"].harness == "claude-tmux"
+        assert stub_agentcore["config"].harness == "claude"
         assert session.tmux_session == f"awm-{session.id}-s"
 
-    @pytest.mark.asyncio
-    async def test_threads_hub_workspace_and_port_for_harness_mcp(
-        self, awm_workspace, stub_agentcore,
-    ):
-        ws = awm_workspace["projects_dir"] / "p" / "s"
-        ws.mkdir(parents=True)
-
-        await create_session(project="p", scope="s", agent_cli="claude-tmux")
-
-        # MCP is harness-owned: claude-tmux threads the hub workspace + port
-        # (the harness synthesizes its own awm server from these) exactly as
-        # the headless claude harness does — no pre-built mcp_config here.
-        cfg = stub_agentcore["config"]
-        assert cfg.mcp_config is None
-        assert cfg.awm_port == str(ai_mod.config.PORT)
-        assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
-        assert cfg.placement_as is None
+    def test_legacy_claude_tmux_alias_folds_to_claude(self):
+        # A persisted/explicit legacy "claude-tmux" name reads back as "claude".
+        assert ai_mod._normalize_cli("claude-tmux") == "claude"
+        assert ai_mod._normalize_cli("claude") == "claude"
+        assert ai_mod._normalize_cli(None) == "claude"
 
 
 class TestBuildCoreConfig:
@@ -492,9 +427,9 @@ class TestBuildCoreConfig:
             cfg = ai_mod._build_core_config(
                 agent_cli=harness, permission_mode="default",
                 model=None, effort=None, resume_session_id=None,
-                workspace_dir=ws, placement_as="p/s",
+                workspace_dir=ws, placement_as="s",
             )
-            assert cfg.placement_as == "p/s"
+            assert cfg.placement_as == "s"
             assert cfg.awm_port == str(ai_mod.config.PORT)
             assert cfg.mcp_config is None
 
@@ -510,7 +445,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s")
+        session = await create_session(scope="s", workdir=str(ws))
 
         ok = await ai_mod.notify_agent(session, "operator", "stop and read this")
 
@@ -526,11 +461,11 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s")
+        session = await create_session(scope="s", workdir=str(ws))
 
         # The agent's own scope ref must never self-notify (mirrors the passive
         # path's _is_own_author guard).
-        ok = await ai_mod.notify_agent(session, "agent:p/s", "echo")
+        ok = await ai_mod.notify_agent(session, "agent:s", "echo")
 
         assert ok is False
         assert stub_agentcore["session"].interrupted == []

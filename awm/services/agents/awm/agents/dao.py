@@ -16,12 +16,11 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "agents"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS agent_instances (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    project          TEXT NOT NULL,
     scope            TEXT NOT NULL,
     cli_session_id   TEXT,
     log_path         TEXT,
@@ -34,13 +33,13 @@ CREATE TABLE IF NOT EXISTS agent_instances (
     placement_token  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started
-    ON agent_instances(project, scope, started_at DESC);
+    ON agent_instances(scope, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_open
-    ON agent_instances(project, scope) WHERE ended_at IS NULL;
+    ON agent_instances(scope) WHERE ended_at IS NULL;
 -- A placement_token names exactly one live placement (the task-bound row that
--- currently holds it). NULLs are allowed (every conversational row), so the
--- uniqueness is partial. On respawn the old row's token is cleared before the
--- new row reinserts it, keeping the token stable while the constraint holds.
+-- currently holds it). NULLs are allowed, so the uniqueness is partial. On
+-- respawn the old row's token is cleared before the new row reinserts it,
+-- keeping the token stable while the constraint holds.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_instances_placement_token
     ON agent_instances(placement_token) WHERE placement_token IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_instances_agent_ref
@@ -48,7 +47,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_instances_agent_ref
 
 CREATE TABLE IF NOT EXISTS agent_transcript (
     id          TEXT PRIMARY KEY,
-    project     TEXT NOT NULL,
     scope       TEXT NOT NULL,
     kind        TEXT NOT NULL,
     body        TEXT NOT NULL DEFAULT '',
@@ -56,13 +54,15 @@ CREATE TABLE IF NOT EXISTS agent_transcript (
     ts          INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
-    ON agent_transcript(project, scope, ts);
+    ON agent_transcript(scope, ts);
 """
 
-# v1→v2: additive task-bounded placement columns + their indexes. Existing
-# rows default to mode='conversational' (the new NOT NULL DEFAULT), so the
-# conversational machinery is untouched. The migration is idempotent: _migrate
-# swallows "duplicate column name" if a prior partial run already added one.
+# v1→v2: additive task-bounded placement columns + their indexes.
+# v2→v3: DROP the ``project`` column from both tables — placements, transcript,
+# and the live bus are keyed on ``scope`` (the globally-unique unit slug) ALONE.
+# The scope-keyed indexes that referenced ``project`` are dropped first (SQLite
+# forbids DROP COLUMN on an indexed column), then re-created on ``scope`` after
+# the column is gone. SQLite 3.53 supports ``ALTER TABLE ... DROP COLUMN``.
 MIGRATIONS: dict[tuple[int, int], str] = {
     (1, 2): (
         "ALTER TABLE agent_instances ADD COLUMN "
@@ -74,6 +74,19 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "ON agent_instances(placement_token) WHERE placement_token IS NOT NULL;\n"
         "CREATE INDEX IF NOT EXISTS idx_agent_instances_agent_ref "
         "ON agent_instances(agent_ref) WHERE agent_ref IS NOT NULL;\n"
+    ),
+    (2, 3): (
+        "DROP INDEX IF EXISTS idx_agent_instances_scope_started;\n"
+        "DROP INDEX IF EXISTS idx_agent_instances_open;\n"
+        "ALTER TABLE agent_instances DROP COLUMN project;\n"
+        "CREATE INDEX IF NOT EXISTS idx_agent_instances_scope_started "
+        "ON agent_instances(scope, started_at DESC);\n"
+        "CREATE INDEX IF NOT EXISTS idx_agent_instances_open "
+        "ON agent_instances(scope) WHERE ended_at IS NULL;\n"
+        "DROP INDEX IF EXISTS idx_agent_transcript_scope_ts;\n"
+        "ALTER TABLE agent_transcript DROP COLUMN project;\n"
+        "CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts "
+        "ON agent_transcript(scope, ts);\n"
     ),
 }
 
@@ -96,7 +109,7 @@ class AgentsDAO(BaseDAO):
 
     # -- agent_instances -------------------------------------------------------
 
-    def open_instance(self, *, project: str, scope: str,
+    def open_instance(self, *, scope: str,
                       log_path: str | None,
                       cli_session_id: str | None,
                       started_at: int,
@@ -105,12 +118,12 @@ class AgentsDAO(BaseDAO):
         data = json.dumps({"intent": intent}, sort_keys=True)
         return self.execute(
             "INSERT INTO agent_instances "
-            "(project, scope, cli_session_id, log_path, started_at, ended_at, data) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?)",
-            (project, scope, cli_session_id, log_path, started_at, data),
+            "(scope, cli_session_id, log_path, started_at, ended_at, data) "
+            "VALUES (?, ?, ?, ?, NULL, ?)",
+            (scope, cli_session_id, log_path, started_at, data),
         )
 
-    def open_task_instance(self, *, project: str, scope: str,
+    def open_task_instance(self, *, scope: str,
                            log_path: str | None,
                            cli_session_id: str | None,
                            started_at: int,
@@ -128,10 +141,10 @@ class AgentsDAO(BaseDAO):
         data = json.dumps({"intent": intent}, sort_keys=True)
         return self.execute(
             "INSERT INTO agent_instances "
-            "(project, scope, cli_session_id, log_path, started_at, ended_at, "
+            "(scope, cli_session_id, log_path, started_at, ended_at, "
             "data, mode, task_ref, agent_ref, placement_token) "
-            "VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
-            (project, scope, cli_session_id, log_path, started_at, data,
+            "VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+            (scope, cli_session_id, log_path, started_at, data,
              mode, task_ref, agent_ref, placement_token),
         )
 
@@ -143,24 +156,23 @@ class AgentsDAO(BaseDAO):
         return self.query_one(
             "SELECT * FROM agent_instances WHERE placement_token=?", (token,))
 
-    def get_open_placement_by_identity(self, project: str,
-                                       scope: str) -> dict | None:
-        """Return the live placement row for ``(project, scope)``, or None.
+    def get_open_placement_by_identity(self, scope: str) -> dict | None:
+        """Return the live placement row for ``scope``, or None.
 
-        A placement's ``scope`` IS its workspace-unit slug, so a placed agent's
-        identity ``f"{project}/{unit_slug}"`` resolves to its own placement row
+        A placement's ``scope`` IS its workspace-unit slug (globally unique), so
+        a placed agent's identity (the slug) resolves to its own placement row
         WITHOUT the agent supplying a token. The live row is the one still
-        holding a ``placement_token`` (cleared on respawn / never set for a
-        conversational row) with ``ended_at IS NULL`` — at most one per scope
-        (the lifecycle reuses one unit and ``_await_scope_free`` guarantees the
-        prior stage vacated before the next opens). ``placement_outcome`` (a
-        logical close that precedes process teardown) is checked by the caller."""
+        holding a ``placement_token`` (cleared on respawn) with
+        ``ended_at IS NULL`` — at most one per scope (the lifecycle reuses one
+        unit and ``_await_scope_free`` guarantees the prior stage vacated before
+        the next opens). ``placement_outcome`` (a logical close that precedes
+        process teardown) is checked by the caller."""
         return self.query_one(
             "SELECT * FROM agent_instances "
-            "WHERE project=? AND scope=? AND placement_token IS NOT NULL "
+            "WHERE scope=? AND placement_token IS NOT NULL "
             "AND ended_at IS NULL "
             "ORDER BY started_at DESC LIMIT 1",
-            (project, scope),
+            (scope,),
         )
 
     def clear_placement_token(self, instance_id: int) -> None:
@@ -257,24 +269,20 @@ class AgentsDAO(BaseDAO):
         return self.query_one(
             "SELECT * FROM agent_instances WHERE id=?", (instance_id,))
 
-    def get_latest_cli_session_id(self, project: str, scope: str) -> str | None:
-        """Return the most recent cli_session_id for (project, scope), or None."""
+    def get_latest_cli_session_id(self, scope: str) -> str | None:
+        """Return the most recent cli_session_id for ``scope``, or None."""
         row = self.query_one(
             "SELECT cli_session_id FROM agent_instances "
-            "WHERE project=? AND scope=? AND cli_session_id IS NOT NULL "
+            "WHERE scope=? AND cli_session_id IS NOT NULL "
             "ORDER BY started_at DESC LIMIT 1",
-            (project, scope),
+            (scope,),
         )
         return row["cli_session_id"] if row else None
 
-    def list_instances(self, project: str | None = None,
-                       scope: str | None = None) -> list[dict]:
-        """Return all agent_instances rows, with project/scope/agent_cli inline."""
+    def list_instances(self, scope: str | None = None) -> list[dict]:
+        """Return all agent_instances rows, with scope/agent_cli inline."""
         where = []
         params: list = []
-        if project:
-            where.append("project = ?")
-            params.append(project)
         if scope:
             where.append("scope = ?")
             params.append(scope)
@@ -301,34 +309,18 @@ class AgentsDAO(BaseDAO):
             )
         return rows
 
-    def get_active_scopes(self) -> list[dict]:
-        """Return (project, scope) pairs that have no open instance row and
-        the most recent cli_session_id for each, for the resume driver."""
-        # NOTE: in v1 agents.db there's no agents table — active/retired state
-        # is determined externally via scopes RPC. This returns open-ended
-        # instances that need reconciliation (ended_at IS NULL after restart).
-        # mode='conversational' ONLY: task-bound workers are owned by the
-        # orchestrator + supervision driver, never resurrected by the resume
-        # driver. A dead worker is left for the orchestrator's reconcile.
-        return self.query_all(
-            "SELECT DISTINCT project, scope, cli_session_id "
-            "FROM agent_instances "
-            "WHERE ended_at IS NULL AND mode='conversational' "
-            "ORDER BY started_at DESC"
-        )
-
-    def get_latest_instance_for_scope(self, project: str, scope: str) -> dict | None:
-        """Return the most recent agent_instances row for (project, scope)."""
+    def get_latest_instance_for_scope(self, scope: str) -> dict | None:
+        """Return the most recent agent_instances row for ``scope``."""
         return self.query_one(
             "SELECT * FROM agent_instances "
-            "WHERE project=? AND scope=? "
+            "WHERE scope=? "
             "ORDER BY started_at DESC LIMIT 1",
-            (project, scope),
+            (scope,),
         )
 
     # -- agent_transcript ------------------------------------------------------
 
-    def insert_transcript(self, *, project: str, scope: str,
+    def insert_transcript(self, *, scope: str,
                           kind: str, body: str,
                           meta: dict | None,
                           ts: int) -> str:
@@ -336,13 +328,13 @@ class AgentsDAO(BaseDAO):
         row_id = uuid.uuid4().hex
         meta_str = json.dumps(meta or {})
         self.execute(
-            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (row_id, project, scope, kind, body, meta_str, ts),
+            "INSERT INTO agent_transcript (id, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (row_id, scope, kind, body, meta_str, ts),
         )
         return row_id
 
-    def upsert_transcript(self, *, id: str, project: str, scope: str,
+    def upsert_transcript(self, *, id: str, scope: str,
                           kind: str, body: str,
                           meta: dict | None,
                           ts: int) -> str:
@@ -356,23 +348,23 @@ class AgentsDAO(BaseDAO):
         """
         meta_str = json.dumps(meta or {})
         self.execute(
-            "INSERT INTO agent_transcript (id, project, scope, kind, body, meta, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO agent_transcript (id, scope, kind, body, meta, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "body=excluded.body, meta=excluded.meta, ts=excluded.ts",
-            (id, project, scope, kind, body, meta_str, ts),
+            (id, scope, kind, body, meta_str, ts),
         )
         return id
 
-    def read_transcript(self, project: str, scope: str) -> list[dict]:
-        """All transcript rows for (project, scope), ordered by ts."""
+    def read_transcript(self, scope: str) -> list[dict]:
+        """All transcript rows for ``scope``, ordered by ts."""
         return self.query_all(
             "SELECT * FROM agent_transcript "
-            "WHERE project=? AND scope=? ORDER BY ts, id",
-            (project, scope),
+            "WHERE scope=? ORDER BY ts, id",
+            (scope,),
         )
 
-    def read_transcript_after(self, project: str, scope: str, *,
+    def read_transcript_after(self, scope: str, *,
                               after_ts: int | None = None,
                               after_id: str | None = None,
                               limit: int | None = None) -> list[dict]:
@@ -383,8 +375,8 @@ class AgentsDAO(BaseDAO):
         monotonic key the live bus publishes in. ``after_ts=None`` returns the
         whole transcript (the connect-time backfill from the start).
         """
-        sql = "SELECT * FROM agent_transcript WHERE project=? AND scope=?"
-        params: list = [project, scope]
+        sql = "SELECT * FROM agent_transcript WHERE scope=?"
+        params: list = [scope]
         if after_ts is not None:
             # Strictly-after on (ts, id): a later ts, or the same ts with a
             # greater id. id is a uuid hex (lexicographically comparable).
@@ -396,13 +388,13 @@ class AgentsDAO(BaseDAO):
             params.append(int(limit))
         return self.query_all(sql, params)
 
-    def get_last_transcript_row(self, project: str, scope: str,
+    def get_last_transcript_row(self, scope: str,
                                 kinds: list[str]) -> dict | None:
-        """Most recent transcript row for (project, scope) with kind in kinds."""
+        """Most recent transcript row for ``scope`` with kind in kinds."""
         placeholders = ",".join("?" * len(kinds))
         return self.query_one(
             f"SELECT * FROM agent_transcript "
-            f"WHERE project=? AND scope=? AND kind IN ({placeholders}) "
+            f"WHERE scope=? AND kind IN ({placeholders}) "
             f"ORDER BY ts DESC, id DESC LIMIT 1",
-            [project, scope, *kinds],
+            [scope, *kinds],
         )

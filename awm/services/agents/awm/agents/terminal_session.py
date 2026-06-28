@@ -1,6 +1,6 @@
 """Interactive terminal direct-session: relay a ``tmux attach`` PTY to a browser.
 
-A ``claude-tmux`` agent runs the real ``claude`` TUI inside a *detached* tmux
+A ``claude`` agent runs the real ``claude`` TUI inside a *detached* tmux
 session (``awm-<instance_id>-<scope>``, recorded as the instance's
 ``tmux_session``). This session handler attaches a PTY-backed ``tmux attach``
 client to that session and byte-relays it over the hub bridge, so a browser
@@ -23,8 +23,8 @@ Wire protocol over the raw ``direct`` bridge (``SessionContext.open_bridge()``):
                      (a non-control / unparseable text frame is treated as
                      keystrokes, so a plain-text client still works)
 
-Init (``ctx.init``): ``{project, scope}`` or ``{session_id}`` to resolve the
-live agent, plus optional ``{cols, rows}`` for the initial PTY size.
+Init (``ctx.init``): ``{scope}`` or ``{session_id}`` to resolve the live agent,
+plus optional ``{cols, rows}`` for the initial PTY size.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
 
     Returns ``(tmux_session, None)`` on success or ``(None, error_message)``
     when the identity is missing, no live session exists, or the agent is not
-    running under the ``claude-tmux`` harness (so it has no pane to attach)."""
+    a claude agent (so it has no tmux pane to attach — e.g. opencode)."""
     sid = init.get("session_id")
     if sid is not None:
         try:
@@ -63,16 +63,16 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
         except (TypeError, ValueError):
             return None, f"invalid session_id {sid!r}"
     else:
-        project, scope = init.get("project"), init.get("scope")
-        if not project or not scope:
-            return None, "init requires {project, scope} or {session_id}"
-        inst = ai.get_session_by_scope(project, scope)
+        scope = init.get("scope")
+        if not scope:
+            return None, "init requires {scope} or {session_id}"
+        inst = ai.get_session_by_scope(scope)
     if inst is None:
         return None, "no live agent session for that identity"
     tmux = getattr(inst, "tmux_session", None)
     if not tmux:
-        return None, ("agent is not running under the claude-tmux harness "
-                      "(no terminal to attach)")
+        return None, ("agent has no tmux session to attach "
+                      "(not a claude agent)")
     return tmux, None
 
 

@@ -15,23 +15,14 @@
    * op). The TaskList and FocusPanel share the controlled-selection contract, so
    * a neighbour click in Info re-selects the list.
    */
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
   import { fetchDag, type DagSnapshot, type DagTask } from '@awm/client';
   import TaskChat from './lib/TaskChat.svelte';
 
   const POLL_MS = 3000;
 
-  function initialProject(): string {
-    if (typeof window === 'undefined') return '';
-    const p = new URLSearchParams(window.location.search).get('project');
-    return p ?? localStorage.getItem('awm.dag.project') ?? '';
-  }
-
-  // `project` is the committed filter that drives fetching; `projectInput` is the
-  // editable buffer, so typing doesn't refetch on every keystroke.
-  let project = $state(untrack(initialProject));
-  let projectInput = $state(untrack(initialProject));
+  // The orchestrator owns a single global DAG — there is nothing to filter.
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
@@ -55,9 +46,9 @@
       tasks.find((t) => t.task_id === snapshot!.root_id)?.state === 'completed',
   );
 
-  async function refresh(p: string) {
+  async function refresh() {
     try {
-      const next = await fetchDag(p || undefined);
+      const next = await fetchDag();
       snapshot = next;
       error = null;
     } catch (err) {
@@ -65,19 +56,11 @@
     }
   }
 
-  function applyProject() {
-    project = projectInput.trim();
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('awm.dag.project', project);
-    }
-  }
-
-  // Poll loop — re-armed whenever the committed `project` changes.
+  // Poll loop — the single global DAG, refreshed on an interval.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
-    const p = project;
-    void refresh(p);
-    timer = setInterval(() => void refresh(p), POLL_MS);
+    void refresh();
+    timer = setInterval(() => void refresh(), POLL_MS);
     return () => {
       if (timer) clearInterval(timer);
     };
@@ -90,16 +73,6 @@
 <main class="dag">
   <header class="top">
     <h1 class="mono">DAG telemetry</h1>
-    <form
-      class="proj"
-      onsubmit={(e) => {
-        e.preventDefault();
-        applyProject();
-      }}
-    >
-      <input class="field mono" name="project" placeholder="project (blank = all)" bind:value={projectInput} aria-label="project" />
-      <button class="btn mono" type="submit">load</button>
-    </form>
     {#if snapshot}
       <span class="counts mono">
         {#each counts as [state, n]}
@@ -137,9 +110,8 @@
             <p class="hint mono">loading the plan…</p>
           {/if}
         {:else if selected && selected.workspace_slug}
-          {#key `${snapshot?.project ?? project}/${selected.workspace_slug}`}
+          {#key selected.workspace_slug}
             <TaskChat
-              project={snapshot?.project ?? project}
               workspaceSlug={selected.workspace_slug}
               goal={selected.goal}
             />
@@ -179,27 +151,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .proj { display: flex; gap: 6px; align-items: center; }
-  .field {
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    border-radius: 3px;
-    color: var(--text, #ddd);
-    padding: 4px 8px;
-    font-size: 11px;
-  }
-  .field:focus { outline: none; border-color: var(--atomizer, #ffb74d); }
-  .btn {
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    border-radius: 3px;
-    color: var(--text2, #bbb);
-    padding: 4px 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .btn:hover { border-color: var(--atomizer, #ffb74d); color: var(--text, #ddd); }
   .counts {
     display: flex;
     gap: 8px;
