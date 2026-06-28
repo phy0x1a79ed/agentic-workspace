@@ -68,8 +68,33 @@ _CHROME_CANDIDATES = (
     "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
 )
 
-# Backend selector — env so T3's docker backend is a one-line switch, no code.
+# Backend selector — env so the docker backend is a one-line switch, no code.
+# This selects the *launch* backend (host/docker) for the headless/rendered
+# modes; the `attached` mode bypasses it for AttachBackend.
 _BACKEND = os.environ.get("RLM_BROWSER_BACKEND", "host").strip().lower()
+
+# Canonical modes, fixed for a session's life:
+#   headless  — launched, no display (was 'simple'); fast, for bots at scale.
+#   rendered  — launched headful + VNC; watchable live.
+#   attached  — NOT launched; drives an EXISTING real Chrome over CDP (e.g. the
+#               Windows desktop browser). Borrowed: release never closes it.
+_DEFAULT_MODE = "headless"
+_VALID_MODES = ("headless", "rendered", "attached")
+
+# Default CDP endpoint for `attached` mode — the same already-running desktop
+# Chrome the chrome-devtools MCP targets. Overridable via env or acquire opts.
+_ATTACH_CDP_URL = os.environ.get(
+    "RLM_ATTACH_CDP_URL", "http://172.25.176.1:19222").strip()
+
+
+def _norm_mode(mode: str | None) -> str:
+    """Canonicalize a mode string. Legacy ``simple`` maps to ``headless`` so old
+    DB rows and callers still resolve; anything unknown falls back to the
+    default."""
+    m = (mode or "").strip().lower()
+    if m == "simple":
+        return "headless"
+    return m if m in _VALID_MODES else _DEFAULT_MODE
 
 
 class CDPError(RuntimeError):
@@ -132,8 +157,9 @@ class LaunchHandle:
 class LaunchBackend(Protocol):
     """Launch a Chrome, return a :class:`LaunchHandle` on ``127.0.0.1:<port>``.
 
-    ``mode`` is ``"simple"`` (headless) or ``"rendered"`` (headful, watchable).
-    ``port`` may be 0 to let the backend pick; it is echoed on the handle.
+    ``mode`` is ``"headless"`` (no display) or ``"rendered"`` (headful,
+    watchable). ``port`` may be 0 to let the backend pick; it is echoed on the
+    handle. (The ``attached`` mode does not launch — see :class:`AttachBackend`.)
     """
 
     name: str
@@ -162,7 +188,7 @@ class _HostHandle(LaunchHandle):
 class HostSubprocessBackend:
     """Launch Chrome as a plain host subprocess (T2; Docker-free).
 
-    Simple mode is ``--headless=new``; rendered mode drops it (headful) and
+    Headless mode is ``--headless=new``; rendered mode drops it (headful) and
     relies on a real ``DISPLAY`` / Xvfb being present — on a bare WSL host with
     no X server rendered mode is really the docker backend's job (T3), but the
     same flags work under an Xvfb the operator started.
@@ -203,7 +229,51 @@ class HostSubprocessBackend:
         return handle
 
 
+class _AttachHandle(LaunchHandle):
+    """Handle for an *attached* (not launched) Chrome.
+
+    ``cdp_base`` is the external endpoint verbatim (NOT forced to loopback), and
+    ``stop()`` is a deliberate no-op: we borrow the user's browser, so releasing
+    a session must never close it.
+    """
+
+    def __init__(self, *, cdp_base: str, **kw: Any) -> None:
+        super().__init__(**kw)
+        self._cdp_base = cdp_base
+
+    @property
+    def cdp_base(self) -> str:
+        return self._cdp_base
+
+    async def stop(self) -> None:
+        return  # borrowed browser — never close it
+
+
+class AttachBackend:
+    """Attach to an EXISTING Chrome over CDP instead of launching one.
+
+    Drives a real, already-running browser (e.g. the Windows desktop Chrome at
+    ``RLM_ATTACH_CDP_URL``) — residential fingerprint + real logins, so it
+    sidesteps the bot-detection a freshly-launched headless Chrome trips. It
+    launches nothing; the returned handle's ``stop()`` is a no-op.
+    """
+
+    name = "attached"
+
+    async def launch(self, *, mode: str, profile_dir: str, port: int = 0,
+                     attach_url: str | None = None) -> LaunchHandle:
+        url = (attach_url or _ATTACH_CDP_URL).strip().rstrip("/")
+        # Verify the external Chrome is actually reachable before claiming it.
+        await _await_cdp_ready(url, timeout=8.0)
+        parsed = urlparse(url)
+        log.info("attaching to existing chrome at %s", url)
+        return _AttachHandle(
+            cdp_base=url, port=parsed.port or 0, profile_dir="",
+            mode="attached")
+
+
 def _make_backend() -> LaunchBackend:
+    """The *launch* backend (host/docker) for headless/rendered modes."""
     if _BACKEND == "docker":  # pragma: no cover - T3
         from awm.rlm_browser.docker_backend import DockerBackend
         return DockerBackend()
@@ -306,11 +376,13 @@ class _Session:
     row (cdp_port/mode) when the manager cache is cold after a restart."""
 
     def __init__(self, session_id: str, *, cdp_base: str, mode: str,
-                 handle: LaunchHandle | None) -> None:
+                 handle: LaunchHandle | None, borrowed: bool = False) -> None:
         self.session_id = session_id
         self.cdp_base = cdp_base
         self.mode = mode
         self.handle = handle  # None when lazily re-attached after a restart
+        # Borrowed = an attached (not launched) Chrome we must never close.
+        self.borrowed = borrowed
         self._browser_conn: CDPConnection | None = None
         self._tab_conns: dict[str, CDPConnection] = {}
 
@@ -328,9 +400,15 @@ class BrowserManager:
 
     def __init__(self, emit: Callable[[str, Any], Awaitable[None]]) -> None:
         self._emit = emit
-        self._backend = _make_backend()
+        # The launch backend (host/docker) realizes headless/rendered; the
+        # attach backend realizes `attached` regardless of RLM_BROWSER_BACKEND.
+        self._launch_backend = _make_backend()
+        self._attach_backend = AttachBackend()
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
+
+    def _backend_for(self, mode: str) -> LaunchBackend:
+        return self._attach_backend if mode == "attached" else self._launch_backend
 
     # -- session resolution ------------------------------------------------
 
@@ -343,17 +421,24 @@ class BrowserManager:
         row = await asyncio.to_thread(dao.BrowserDAO().get_session, session_id)
         if row is None:
             raise ValueError(f"unknown session_id: {session_id!r}")
-        port = int(row.get("cdp_port") or 0)
-        if not port:
-            raise ValueError(
-                f"session {session_id!r} has no CDP port; re-acquire it")
-        cdp_base = f"http://127.0.0.1:{port}"
+        borrowed = (row.get("backend") == "attached")
+        if borrowed:
+            # Attached sessions live on an EXTERNAL host (not loopback) and the
+            # row doesn't persist it — re-attach to the configured endpoint.
+            cdp_base = _ATTACH_CDP_URL.rstrip("/")
+        else:
+            port = int(row.get("cdp_port") or 0)
+            if not port:
+                raise ValueError(
+                    f"session {session_id!r} has no CDP port; re-acquire it")
+            cdp_base = f"http://127.0.0.1:{port}"
         # Verify the Chrome is still alive before claiming the session.
         await _await_cdp_ready(cdp_base, timeout=5.0)
         sess = _Session(session_id, cdp_base=cdp_base,
-                        mode=row.get("mode") or "simple", handle=None)
+                        mode=_norm_mode(row.get("mode")), handle=None,
+                        borrowed=borrowed)
         self._sessions[session_id] = sess
-        log.info("re-attached session %s on :%d", session_id, port)
+        log.info("re-attached session %s at %s", session_id, cdp_base)
         return sess
 
     async def _browser_conn(self, sess: _Session) -> CDPConnection:
@@ -366,9 +451,13 @@ class BrowserManager:
             # session's reachable host:port — Chrome advertises the port it bound
             # internally (e.g. behind the container's socat bridge), which isn't
             # the published host port. Path is the only part that's authoritative.
-            port = sess.cdp_base.rsplit(":", 1)[1]
+            # Derive host:port from cdp_base (loopback for launched sessions, the
+            # real external host for an attached one) — never hardcode loopback.
+            pr = urlparse(sess.cdp_base)
+            host = pr.hostname or "127.0.0.1"
+            port = pr.port
             path = urlparse(adv).path
-            ws_url = f"ws://127.0.0.1:{port}{path}"
+            ws_url = f"ws://{host}:{port}{path}"
             sess._browser_conn = await CDPConnection.connect(ws_url)
         return sess._browser_conn
 
@@ -402,25 +491,42 @@ class BrowserManager:
 
     # -- lifecycle ---------------------------------------------------------
 
-    async def acquire(self, game: str, graphics: bool = False,
+    async def acquire(self, game: str, mode: str | None = None,
                       opts: dict | None = None) -> dict:
         opts = opts or {}
-        mode = "rendered" if graphics else "simple"
+        mode = _norm_mode(mode)
         egress = opts.get("egress")  # inert seam (T4)
+        backend = self._backend_for(mode)
         profile = str(_PROFILES_DIR / (game.strip() or "default"))
         async with self._lock:
-            handle = await self._backend.launch(mode=mode, profile_dir=profile)
+            if mode == "attached":
+                # Singleton: one attached session at a time (one real window).
+                actives = await asyncio.to_thread(
+                    lambda: [s for s in dao.BrowserDAO().list_sessions()
+                             if s.get("backend") == "attached"
+                             and s.get("status") == "active"])
+                if actives:
+                    raise ValueError(
+                        f"an attached session is already active "
+                        f"({actives[0]['session_id']}); release it first — "
+                        f"attached mode is single-window")
+                handle = await backend.launch(
+                    mode=mode, profile_dir=profile,
+                    attach_url=opts.get("attach_url"))
+            else:
+                handle = await backend.launch(mode=mode, profile_dir=profile)
             row = await asyncio.to_thread(
                 lambda: dao.BrowserDAO().create_session(
-                    game, mode=mode, backend=self._backend.name,
+                    game, mode=mode, backend=backend.name,
                     cdp_port=handle.port, user_data_dir=handle.profile_dir,
                     container_name=handle.container_name,
                     vnc_port=handle.vnc_port, egress=egress))
             sess = _Session(row["session_id"], cdp_base=handle.cdp_base,
-                            mode=mode, handle=handle)
+                            mode=mode, handle=handle,
+                            borrowed=(mode == "attached"))
             self._sessions[row["session_id"]] = sess
         return {"session_id": row["session_id"], "mode": mode,
-                "backend": self._backend.name}
+                "backend": backend.name}
 
     async def release(self, session_id: str) -> dict:
         # Resolve first (lazily re-attaching a cold session post-restart) so we
@@ -441,9 +547,12 @@ class BrowserManager:
     async def _teardown(self, sess: _Session) -> None:
         # Ask Chrome to exit via CDP — backend-agnostic and works even when the
         # launch handle is gone (re-attached session after a service restart).
-        with contextlib.suppress(Exception):
-            browser = await self._browser_conn(sess)
-            await browser.call("Browser.close", timeout=5.0)
+        # NEVER for a borrowed (attached) browser: that's the user's real Chrome,
+        # so we only disconnect our own sockets and leave it running.
+        if not sess.borrowed:
+            with contextlib.suppress(Exception):
+                browser = await self._browser_conn(sess)
+                await browser.call("Browser.close", timeout=5.0)
         for conn in list(sess._tab_conns.values()):
             await conn.close()
         sess._tab_conns.clear()
@@ -461,12 +570,16 @@ class BrowserManager:
         fresh blank tab — a cheap 'clear state' that survives the session."""
         sess = await self._resolve(session_id)
         browser = await self._browser_conn(sess)
-        targets = (await browser.call("Target.getTargets")).get("targetInfos", [])
-        for t in targets:
-            if t.get("type") == "page":
-                with contextlib.suppress(CDPError):
-                    await browser.call("Target.closeTarget",
-                                       {"targetId": t["targetId"]})
+        # Borrowed (attached) Chrome: don't close the user's existing tabs — just
+        # drop our own connections and open a fresh blank tab.
+        if not sess.borrowed:
+            targets = (await browser.call("Target.getTargets")).get(
+                "targetInfos", [])
+            for t in targets:
+                if t.get("type") == "page":
+                    with contextlib.suppress(CDPError):
+                        await browser.call("Target.closeTarget",
+                                           {"targetId": t["targetId"]})
         for conn in list(sess._tab_conns.values()):
             await conn.close()
         sess._tab_conns.clear()
@@ -612,9 +725,10 @@ class BrowserManager:
                 r.raise_for_status()
                 return {"protocol": r.json()}
         # No session: spin a short-lived probe Chrome just to read its protocol.
-        backend = self._backend
-        handle = await backend.launch(
-            mode="simple", profile_dir=str(_PROFILES_DIR / "__probe__"))
+        # Always the launch backend (never attach — we don't touch the user's
+        # browser for a throwaway probe).
+        handle = await self._launch_backend.launch(
+            mode="headless", profile_dir=str(_PROFILES_DIR / "__probe__"))
         try:
             async with httpx.AsyncClient(timeout=10.0) as cli:
                 r = await cli.get(f"{handle.cdp_base}/json/protocol")

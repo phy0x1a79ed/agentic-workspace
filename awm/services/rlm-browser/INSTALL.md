@@ -39,10 +39,15 @@ the last `ready` frame) — there is no hot reload.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `RLM_BROWSER_BACKEND` | `host` | `host` (subprocess Chrome) or `docker` (the image below) |
+| `RLM_BROWSER_BACKEND` | `host` | launch backend for `headless`/`rendered`: `host` (subprocess Chrome) or `docker` (the image below). Ignored by `attached` mode. |
 | `RLM_CHROME_BIN` | autodetect | host backend: explicit Chrome/Chromium binary |
+| `RLM_ATTACH_CDP_URL` | `http://172.25.176.1:19222` | `attached` mode: CDP endpoint of the existing Chrome to drive. Per-acquire override via `opts.attach_url`. |
 | `RLM_BROWSER_IMAGE` | `rlm-browser:latest` | docker backend: image to run |
 | `RLM_BROWSER_SHM` | `2g` | docker backend: container `--shm-size` (64 MB default crashes tabs) |
+
+> `attached` mode's default endpoint is the same Chrome the `chrome-devtools`
+> MCP server targets (`<workspace>/.mcp.json` → `--browserUrl`). If that
+> Windows-side debugging port moves, update both.
 
 Profiles live on the Linux fs at `AWM_DIR/services/rlm-browser/profiles/<game>/`
 — keep them on ext4, **never** `/mnt/c` (SingletonLock corruption + perf).
@@ -54,10 +59,22 @@ The browser command set is deliberately **not** hand-authored: the act surface i
 a single CDP relay, and the command catalog is discovered live from the running
 Chrome.
 
-- **lifecycle** — `acquire(game, graphics?, opts?) -> {session_id, mode, backend}` ·
-  `release(session_id)` · `reset(session_id)` · `status(session_id?)`.
-  `graphics=false` → headless ("simple"); `graphics=true` → rendered
-  (watchable); fixed for the session's life.
+- **lifecycle** — `acquire(game, mode?, opts?) -> {session_id, mode, backend}` ·
+  `release(session_id)` · `reset(session_id)` · `status(session_id?)`. `mode`
+  (default `headless`) is fixed for the session's life and is one of:
+  - **`headless`** — launch Chrome with no display (fast; for bots at scale).
+  - **`rendered`** — launch headful + VNC; watchable live (the Docker image).
+  - **`attached`** — do **not** launch: drive an *existing* real Chrome over CDP
+    (`RLM_ATTACH_CDP_URL`, e.g. the desktop browser — residential fingerprint +
+    real logins, so it sidesteps the bot-detection a fresh headless Chrome
+    trips). It is **borrowed**: `release` only disconnects (never closes the
+    browser), `reset` leaves existing tabs alone, there is **no** per-game
+    profile isolation (it's a shared window), and **only one** attached session
+    may be active at a time (single-window). A second `acquire(mode=attached)`
+    while one is active is rejected.
+
+  (Legacy: a boolean `graphics` is still accepted — `true`→`rendered`,
+  `false`→`headless`.)
 - **tabs** — `tab_open(session_id, url?) -> {tab_id}` · `tab_close` · `tab_list` ·
   `tab_activate`. A tab is a live CDP page target, not a durable row.
 - **perceive** (conveniences over CDP) — `observe(session_id, tab_id?) ->
@@ -83,7 +100,7 @@ CDP — no fresh `acquire`.
 
 One image, two modes branched on `RLM_MODE`:
 
-- `simple` — headless Chrome only (lightweight).
+- `headless` — headless Chrome only (lightweight).
 - `rendered` — Xvfb → headful Chrome → x11vnc → noVNC, watchable at
   `http://127.0.0.1:<vnc_port>/vnc.html` (the port is in `status`).
 

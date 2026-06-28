@@ -8,9 +8,10 @@ projected into the gateway catalog as ``rlm_browser_<verb>`` tools.
 Contract shape — *relay + live introspection*, deliberately NOT a hand-authored
 browser command set:
 
-  - A small fixed core stays ours: the realm lifecycle (acquire with
-    ``graphics``, release, reset, status), tab management, and the two perceive
-    conveniences (``observe`` = rendered HTML, ``screenshot`` = image).
+  - A small fixed core stays ours: the realm lifecycle (acquire with a 3-valued
+    ``mode`` — headless/rendered/attached — release, reset, status), tab
+    management, and the two perceive conveniences (``observe`` = rendered HTML,
+    ``screenshot`` = image).
   - The full act surface is a SINGLE verb, ``cdp``, which relays any DevTools
     method straight to the engine. We do not enumerate navigate/click/type —
     they are reached through ``cdp`` (e.g. ``Page.navigate``,
@@ -39,6 +40,16 @@ from awm.rlm_browser.browser import BrowserManager
 
 log = logging.getLogger("awm.rlm_browser.hub_adapter")
 
+
+def _mode_from_args(a: dict) -> str | None:
+    """Resolve the requested acquire mode, honoring the deprecated boolean
+    ``graphics`` alias (true→rendered, false→headless). Returns ``None`` when
+    neither is given, so the manager applies its own default."""
+    mode = a.get("mode")
+    if mode is None and "graphics" in a:
+        return "rendered" if a.get("graphics") else "headless"
+    return mode
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         # ---- lifecycle ----
@@ -46,14 +57,19 @@ API_MANIFEST: dict[str, Any] = {
             "name": "acquire",
             "tool": "rlm_browser_acquire",
             "description": (
-                "Acquire a browser realm session for a game. Launches a real "
-                "Chrome and returns {session_id, mode, backend}. graphics=false "
-                "→ headless ('simple'); graphics=true → rendered (watchable). "
-                "graphics is fixed for the session's life."
+                "Acquire a browser realm session for a game; returns "
+                "{session_id, mode, backend}. mode (default 'headless') is one "
+                "of: 'headless' (launch Chrome, no display — fast, for bots at "
+                "scale); 'rendered' (launch headful + VNC — watchable live); "
+                "'attached' (do NOT launch — drive an EXISTING real Chrome over "
+                "CDP, e.g. the desktop browser; borrowed, so release never "
+                "closes it, and only one attached session may be active at a "
+                "time). mode is fixed for the session's life. (Legacy: a boolean "
+                "'graphics' is still accepted — true→rendered, false→headless.)"
             ),
             "params": [
                 {"name": "game", "type": "string", "required": True},
-                {"name": "graphics", "type": "boolean", "required": False},
+                {"name": "mode", "type": "string", "required": False},
                 {"name": "opts", "type": "object", "required": False},
             ],
         },
@@ -221,8 +237,7 @@ def _build() -> tuple[ServiceAdapter, BrowserManager]:
     # worker thread just to build the coroutine.
     async def acquire(a):
         return await mgr.acquire(
-            a["game"], graphics=bool(a.get("graphics", False)),
-            opts=a.get("opts"))
+            a["game"], mode=_mode_from_args(a), opts=a.get("opts"))
 
     async def release(a):
         return await mgr.release(a["session_id"])

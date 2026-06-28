@@ -8,8 +8,8 @@ bound to a single game.
 
 What the row persists is the bare minimum needed to *reconnect* to a session's
 Chrome after a service restart wipes the in-process manager cache: the CDP port,
-the on-disk profile dir, the launch ``mode`` (simple/rendered), and the backend
-that owns the process. Tabs are NOT persisted — they are live CDP *targets*,
+the on-disk profile dir, the launch ``mode`` (headless/rendered/attached), and
+the backend that owns the process. Tabs are NOT persisted — they are live CDP *targets*,
 enumerated by reading the running Chrome's ``/json`` on demand. ``egress`` is the
 inert VPN seam (T4): accepted at acquire, echoed in status, never acted on here.
 """
@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS rlm_sessions (
     game            TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'active',
     -- launch shape, fixed for the session's life
-    mode            TEXT NOT NULL DEFAULT 'simple',   -- simple | rendered
-    backend         TEXT NOT NULL DEFAULT 'host',     -- host | docker
+    mode            TEXT NOT NULL DEFAULT 'headless', -- headless | rendered | attached
+    backend         TEXT NOT NULL DEFAULT 'host',     -- host | docker | attached
     -- how to reconnect to this session's Chrome over CDP
     cdp_port        INTEGER NOT NULL DEFAULT 0,
     user_data_dir   TEXT NOT NULL DEFAULT '',
@@ -113,7 +113,7 @@ class BrowserDAO(BaseDAO):
         self,
         game: str,
         *,
-        mode: str = "simple",
+        mode: str = "headless",
         backend: str = "host",
         cdp_port: int = 0,
         user_data_dir: str = "",
