@@ -11,9 +11,9 @@
    *               human messages into the agent.
    *
    * One `orch_dag` poll feeds everything: a single DagSnapshot → one buildIndex,
-   * shared by both dag-graph primitives, plus the header counts (derived, no 2nd
-   * op). The TaskList and FocusPanel share the controlled-selection contract, so
-   * a neighbour click in Info re-selects the list.
+   * shared by both dag-graph primitives. The TaskList and FocusPanel share the
+   * controlled-selection contract, so a neighbour click in Info re-selects the
+   * list.
    */
   import { onDestroy } from 'svelte';
   import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
@@ -22,7 +22,6 @@
 
   const POLL_MS = 3000;
 
-  // The orchestrator owns a single global DAG — there is nothing to filter.
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
@@ -35,28 +34,18 @@
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
 
-  // Header summary — per-state counts + overall completion, off the snapshot.
-  const counts = $derived.by<[string, number][]>(() => {
-    const m = new Map<string, number>();
-    for (const t of tasks) m.set(t.state, (m.get(t.state) ?? 0) + 1);
-    return [...m.entries()];
-  });
-  const complete = $derived(
-    !!snapshot?.root_id &&
-      tasks.find((t) => t.task_id === snapshot!.root_id)?.state === 'completed',
-  );
-
+  // The orchestrator plan is a single GLOBAL DAG — always fetch the whole graph;
+  // there is no per-project view filter.
   async function refresh() {
     try {
-      const next = await fetchDag();
-      snapshot = next;
+      snapshot = await fetchDag();
       error = null;
     } catch (err) {
       error = (err as Error).message;
     }
   }
 
-  // Poll loop — the single global DAG, refreshed on an interval.
+  // Poll loop.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
     void refresh();
@@ -73,14 +62,6 @@
 <main class="dag">
   <header class="top">
     <h1 class="mono">DAG telemetry</h1>
-    {#if snapshot}
-      <span class="counts mono">
-        {#each counts as [state, n]}
-          <span class="count" data-state={state}>{state}:{n}</span>
-        {/each}
-        {#if complete}<span class="count done">complete</span>{/if}
-      </span>
-    {/if}
   </header>
 
   {#if error}<p class="error mono">{error}</p>{/if}
@@ -151,18 +132,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .counts {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: 10px;
-    color: var(--text3, #888);
-  }
-  .count[data-state='active'] { color: #7fd17f; }
-  .count[data-state='completed'] { color: #5aa7ff; }
-  .count[data-state='failed'],
-  .count[data-state='abandoned'] { color: var(--warn, #f55); }
-  .count.done { color: #5aa7ff; }
   .error {
     margin: 0;
     padding: 6px 14px;
