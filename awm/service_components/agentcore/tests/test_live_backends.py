@@ -33,42 +33,14 @@ async def _drain_first_message(session, timeout=120.0) -> str:
 
 
 # ---------------------------------------------------------------------------
-# claude
-# ---------------------------------------------------------------------------
-
-@requires_claude
-async def test_claude_oneshot():
-    cfg = AgentConfig(harness="claude", mode="oneshot")
-    out = await run_once(cfg, "Reply with exactly the word PONG and nothing else.")
-    assert isinstance(out, str)
-    assert "PONG" in out.upper()
-
-
-@requires_claude
-async def test_claude_live_multiturn():
-    cfg = AgentConfig(harness="claude", mode="live")
-    session = open_agent(cfg)
-    try:
-        await session.start()
-        await session.send("Remember the number 42. Reply OK.")
-        first = await _drain_first_message(session)
-        assert first  # got some reply
-        await session.send("What number did I ask you to remember? Reply with just the number.")
-        second = await _drain_first_message(session)
-        assert "42" in second
-    finally:
-        await session.close()
-
-
-# ---------------------------------------------------------------------------
-# claude-tmux (interactive TUI in a detached tmux session)
+# claude (interactive TUI in a detached tmux session — the only claude backend)
 # ---------------------------------------------------------------------------
 
 @requires_claude
 @requires_tmux
-async def test_claude_tmux_live_multiturn(tmp_path):
+async def test_claude_live_multiturn(tmp_path):
     import asyncio
-    cfg = AgentConfig(harness="claude-tmux", mode="live", model="haiku",
+    cfg = AgentConfig(harness="claude", mode="live", model="haiku",
                       workdir=str(tmp_path), permissions="full",
                       tmux_session_name="awm-pytest-tmux")
     session = open_agent(cfg)
