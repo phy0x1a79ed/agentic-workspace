@@ -58,8 +58,9 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_spawn",
             "description": (
                 "Spawn a new agent subprocess for (project, scope). Defaults to "
-                "the claude-tmux harness (interactive TUI in a tmux session) so "
-                "the agent exposes a live 'terminal' session to attach to."
+                "the claude harness (interactive TUI in a tmux session) so the "
+                "agent exposes a live 'terminal' session to attach to. Pass "
+                "agent_cli='opencode' for a headless opencode agent."
             ),
             "params": [
                 {"name": "project", "type": "string", "required": True},
@@ -305,7 +306,7 @@ API_MANIFEST: dict[str, Any] = {
             "kind": "terminal",
             "transport": "direct",
             "description": (
-                "Interactive tmux terminal for a claude-tmux agent. Open with "
+                "Interactive tmux terminal for a claude agent. Open with "
                 "init {project, scope} (or {session_id}), optional {cols, rows}: "
                 "the server attaches a PTY-backed `tmux attach` to the agent's "
                 "session and byte-relays it. Binary frames are raw terminal "
@@ -336,7 +337,7 @@ async def _h_create_session(args: dict) -> dict:
     session = await ai.create_session(
         project=args["project"],
         scope=args["scope"],
-        agent_cli=args.get("agent_cli", "claude-tmux"),
+        agent_cli=args.get("agent_cli", "claude"),
         permission_mode=args.get("permission_mode", "default"),
         model=args.get("model"),
         effort=args.get("effort"),

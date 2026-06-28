@@ -515,9 +515,16 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     def handler(**kwargs):
         _invoke_dispatch(tool_name, api_func, kwargs)
 
-    handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
-        [_schema_param_to_signature(n, p, n in required) for n, p in props.items()]
-    )
+    params = [_schema_param_to_signature(n, p, n in required)
+              for n, p in props.items()]
+    # inspect.Signature forbids a no-default (required) param after a defaulted
+    # (optional) one. A manifest whose properties list an optional key before a
+    # required one would crash the ENTIRE CLI at import. CLI options are all
+    # order-independent `--flags`, so sort required-first to tolerate any
+    # property ordering (incl. a stale cached catalog snapshot). Stable sort
+    # keeps the within-group order. See memory awm_cli_signature_param_order.
+    params.sort(key=lambda p: p.default is not inspect.Parameter.empty)
+    handler.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
     handler.__doc__ = tool.get("description", "")
     return handler
 
