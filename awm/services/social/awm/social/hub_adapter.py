@@ -145,6 +145,61 @@ def _h_messages(args: dict) -> dict:
     )}
 
 
+async def _h_history(args: dict) -> dict:
+    """Fetch existing messages from a channel via its connector + persist them.
+
+    Pulls messages that already exist on the platform (including ones sent before
+    the service came up), persists each through the same dedupe path as live
+    inbound (so a re-fetch adds nothing new), and returns the stored rows. The
+    persisted messages are then visible to ``social_messages`` and
+    ``social_search``.
+    """
+    account = args["account"]
+    conn = _connectors.get(account)
+    if conn is None:
+        raise RuntimeError(
+            f"account {account!r} is not configured or not connected")
+    msgs = await conn.history(
+        args["channel"],
+        limit=int(args.get("limit", 50)),
+        before=args.get("before") or None,
+    )
+    stored, new = [], 0
+    for m in msgs:
+        awm_user = _dao.lookup(m.platform, m.sender_id) or ""
+        row = _dao.record_message(
+            account=m.account,
+            platform=m.platform,
+            direction="in",
+            channel_id=m.channel_id,
+            channel_name=m.channel_name,
+            thread_id=m.thread_id,
+            sender_id=m.sender_id,
+            sender_name=m.sender_name,
+            awm_user=awm_user,
+            text=m.text,
+            ts=m.ts,
+            message_id=m.message_id,
+        )
+        if row is not None:
+            new += 1
+            stored.append(row)
+        else:
+            stored.append({"deduped": True, "message_id": m.message_id,
+                           "text": m.text, "ts": m.ts})
+    return {"messages": stored, "fetched": len(msgs), "new": new}
+
+
+def _h_search(args: dict) -> dict:
+    return {"messages": _dao.search_messages(
+        query=args["query"],
+        account=args.get("account"),
+        platform=args.get("platform"),
+        channel=args.get("channel"),
+        limit=args.get("limit", 50),
+    )}
+
+
 def _h_list_operators(args: dict) -> dict:
     return {"operators": _dao.list_operators(args.get("platform"))}
 
@@ -186,6 +241,31 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "platform", "type": "string", "required": False},
                 {"name": "channel", "type": "string", "required": False},
                 {"name": "since", "type": "string", "required": False},
+                {"name": "limit", "type": "number", "required": False},
+            ],
+        },
+        {
+            "name": "history",
+            "tool": "social_history",
+            "description": "Fetch a channel's existing messages via its connector "
+                           "(incl. ones from before the service started), persist "
+                           "them, and return them. `before` pages backwards.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "channel", "type": "string", "required": True},
+                {"name": "limit", "type": "number", "required": False},
+                {"name": "before", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "search",
+            "tool": "social_search",
+            "description": "Full-text (substring) search over stored messages.",
+            "params": [
+                {"name": "query", "type": "string", "required": True},
+                {"name": "account", "type": "string", "required": False},
+                {"name": "platform", "type": "string", "required": False},
+                {"name": "channel", "type": "string", "required": False},
                 {"name": "limit", "type": "number", "required": False},
             ],
         },
@@ -248,6 +328,8 @@ HANDLERS = {
     "channels": _h_channels,
     "accounts": _h_accounts,
     "messages": _h_messages,
+    "history": _h_history,
+    "search": _h_search,
     "list_operators": _h_list_operators,
     "add_operator": _h_add_operator,
     "remove_operator": _h_remove_operator,

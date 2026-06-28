@@ -179,7 +179,7 @@ awm/gateway/scripts/run-tests.sh scopes gateway
 PYTEST_ARGS="-x -q" awm/gateway/scripts/run-tests.sh
 ```
 
-The script reports pass/fail per dist and exits non-zero if any failed. Known dists: `gateway scopes agents artifacts skills discord`. Cross-dist imports inside a test must be **lazy** (inside a fixture/function), never at module top level — a top-level cross-dist import re-triggers the namespace-shadowing problem the per-dist runner exists to avoid.
+The script reports pass/fail per dist and exits non-zero if any failed. Known dists: `gateway scopes agents artifacts skills social`. Cross-dist imports inside a test must be **lazy** (inside a fixture/function), never at module top level — a top-level cross-dist import re-triggers the namespace-shadowing problem the per-dist runner exists to avoid.
 
 ## Agent rules
 

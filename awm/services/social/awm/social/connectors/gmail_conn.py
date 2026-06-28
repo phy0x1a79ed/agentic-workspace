@@ -144,6 +144,83 @@ class GmailConnector(Connector):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _history_sync(
+        self, channel: str, limit: int, before: int | None
+    ) -> list[dict]:
+        """Blocking IMAP fetch of existing mail (for on-demand history).
+
+        Returns the last ``limit`` messages (oldest→newest). ``before`` is an
+        optional exclusive UID upper bound (page backwards). If ``channel`` looks
+        like an address, restricts to mail ``FROM`` that sender; otherwise the
+        whole INBOX. Reads with BODY.PEEK so it never marks mail read.
+        """
+        m = self._imap_login()
+        try:
+            m.select("INBOX", readonly=True)
+            if channel and "@" in channel:
+                typ, data = m.uid("search", None, "FROM", channel)
+            else:
+                typ, data = m.uid("search", None, "ALL")
+            if typ != "OK":
+                return []
+            uids = sorted(
+                int(x) for x in (data[0].split() if data and data[0] else []))
+            if before:
+                uids = [u for u in uids if u < before]
+            uids = uids[-max(1, limit):]  # last N, already oldest→newest
+            out: list[dict] = []
+            for uid in uids:
+                typ, fetched = m.uid("fetch", str(uid), "(BODY.PEEK[])")
+                if typ != "OK" or not fetched or not fetched[0]:
+                    continue
+                raw = fetched[0][1]
+                msg = email.message_from_bytes(raw)
+                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
+                out.append({
+                    "channel_id": from_addr,
+                    "channel_name": "INBOX",
+                    "sender_id": from_addr,
+                    "sender_name": str(msg.get("From", "")),
+                    "message_id": msg.get("Message-ID", "") or str(uid),
+                    "ts": msg.get("Date", ""),
+                    "text": _body_text(msg),
+                    "subject": str(msg.get("Subject", "")),
+                })
+            return out
+        finally:
+            try:
+                m.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def history(
+        self, channel: str = "", *, limit: int = 50, before: str | None = None
+    ) -> list[InboundMessage]:
+        if not self._addr:
+            raise RuntimeError(
+                f"gmail[{self.account.name}] no address configured")
+        before_uid: int | None = None
+        if before:
+            try:
+                before_uid = int(before)
+            except (TypeError, ValueError):
+                before_uid = None  # non-UID cursor: ignore, return most recent
+        rows = await asyncio.to_thread(
+            self._history_sync, channel, limit, before_uid)
+        return [InboundMessage(
+            account=self.account.name,
+            platform=self.platform,
+            channel_id=d["channel_id"],
+            channel_name=d["channel_name"],
+            thread_id="",
+            sender_id=d["sender_id"],
+            sender_name=d["sender_name"],
+            message_id=d["message_id"],
+            ts=d["ts"],
+            text=d["text"],
+            raw={"subject": d["subject"]},
+        ) for d in rows]
+
     async def start(self) -> None:
         if not self._addr:
             log.error("gmail[%s] no address configured; account down",

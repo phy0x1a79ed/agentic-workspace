@@ -67,3 +67,44 @@ class TestListMessages:
             dao.record_message(account="a", platform="slack", direction="in",
                                channel_id="C1", text=str(i), message_id=str(i))
         assert len(dao.list_messages(limit=3)) == 3
+
+
+class TestSearchMessages:
+    def _seed(self, dao):
+        dao.record_message(account="a", platform="slack", direction="in",
+                           channel_id="C1", text="hello world", message_id="1")
+        dao.record_message(account="a", platform="slack", direction="out",
+                           channel_id="C1", text="goodbye world", message_id="2")
+        dao.record_message(account="b", platform="discord", direction="in",
+                           channel_id="C9", text="hello there", message_id="3")
+
+    def test_substring_match_oldest_first(self, dao):
+        self._seed(dao)
+        hits = dao.search_messages(query="hello")
+        assert [m["text"] for m in hits] == ["hello world", "hello there"]
+
+    def test_filters_apply(self, dao):
+        self._seed(dao)
+        hits = dao.search_messages(query="world", platform="slack")
+        assert [m["text"] for m in hits] == ["hello world", "goodbye world"]
+        hits = dao.search_messages(query="hello", channel="C9")
+        assert [m["text"] for m in hits] == ["hello there"]
+
+    def test_limit_caps_results(self, dao):
+        for i in range(5):
+            dao.record_message(account="a", platform="slack", direction="in",
+                               channel_id="C1", text=f"match {i}", message_id=str(i))
+        assert len(dao.search_messages(query="match", limit=2)) == 2
+
+    def test_wildcards_in_query_are_literal(self, dao):
+        # A literal '%' must be treated as text, NOT as a SQL wildcard that would
+        # match every row.
+        dao.record_message(account="a", platform="slack", direction="in",
+                           channel_id="C1", text="100% sure", message_id="1")
+        dao.record_message(account="a", platform="slack", direction="in",
+                           channel_id="C1", text="nothing here", message_id="2")
+        # Searching for "%" matches only the row that literally contains '%',
+        # not both rows (which is what an unescaped wildcard would do).
+        hits = dao.search_messages(query="%")
+        assert [m["text"] for m in hits] == ["100% sure"]
+
