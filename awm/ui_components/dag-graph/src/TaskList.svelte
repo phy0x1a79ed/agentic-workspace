@@ -19,11 +19,6 @@
 
   interface Group { state: TaskState; tasks: DagTask[] }
 
-  const root = $derived.by<DagTask | null>(() => {
-    for (const t of index.taskById.values()) if (t.is_root) return t;
-    return null;
-  });
-
   const groups = $derived.by<Group[]>(() => {
     const byState = new Map<TaskState, DagTask[]>();
     for (const t of index.taskById.values()) {
@@ -86,12 +81,6 @@
       {/if}
     </section>
   {/each}
-
-  {#if root}
-    <div class="root" title="the global root sentinel — all work is a prerequisite of it">
-      ◇ root · <span class="rstate">{STATE_META[root.state].label}</span>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -146,11 +135,4 @@
     flex: 0 0 auto; font-family: var(--mono); font-size: 9px; color: var(--text3);
     max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-
-  .root {
-    margin-top: var(--space-2); padding: var(--space-1) var(--space-2);
-    font-family: var(--mono); font-size: 10px; color: var(--text3);
-    border-top: 1px dashed var(--border);
-  }
-  .rstate { color: var(--text2); }
 </style>

@@ -15,23 +15,13 @@
    * op). The TaskList and FocusPanel share the controlled-selection contract, so
    * a neighbour click in Info re-selects the list.
    */
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
   import { fetchDag, type DagSnapshot, type DagTask } from '@awm/client';
   import TaskChat from './lib/TaskChat.svelte';
 
   const POLL_MS = 3000;
 
-  function initialProject(): string {
-    if (typeof window === 'undefined') return '';
-    const p = new URLSearchParams(window.location.search).get('project');
-    return p ?? localStorage.getItem('awm.dag.project') ?? '';
-  }
-
-  // `project` is the committed filter that drives fetching; `projectInput` is the
-  // editable buffer, so typing doesn't refetch on every keystroke.
-  let project = $state(untrack(initialProject));
-  let projectInput = $state(untrack(initialProject));
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
@@ -44,40 +34,22 @@
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
 
-  // Header summary — per-state counts + overall completion, off the snapshot.
-  const counts = $derived.by<[string, number][]>(() => {
-    const m = new Map<string, number>();
-    for (const t of tasks) m.set(t.state, (m.get(t.state) ?? 0) + 1);
-    return [...m.entries()];
-  });
-  const complete = $derived(
-    !!snapshot?.root_id &&
-      tasks.find((t) => t.task_id === snapshot!.root_id)?.state === 'completed',
-  );
-
-  async function refresh(p: string) {
+  // The orchestrator plan is a single GLOBAL DAG — always fetch the whole graph;
+  // there is no per-project view filter.
+  async function refresh() {
     try {
-      const next = await fetchDag(p || undefined);
-      snapshot = next;
+      snapshot = await fetchDag();
       error = null;
     } catch (err) {
       error = (err as Error).message;
     }
   }
 
-  function applyProject() {
-    project = projectInput.trim();
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('awm.dag.project', project);
-    }
-  }
-
-  // Poll loop — re-armed whenever the committed `project` changes.
+  // Poll loop.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
-    const p = project;
-    void refresh(p);
-    timer = setInterval(() => void refresh(p), POLL_MS);
+    void refresh();
+    timer = setInterval(() => void refresh(), POLL_MS);
     return () => {
       if (timer) clearInterval(timer);
     };
@@ -90,24 +62,6 @@
 <main class="dag">
   <header class="top">
     <h1 class="mono">DAG telemetry</h1>
-    <form
-      class="proj"
-      onsubmit={(e) => {
-        e.preventDefault();
-        applyProject();
-      }}
-    >
-      <input class="field mono" name="project" placeholder="project (blank = all)" bind:value={projectInput} aria-label="project" />
-      <button class="btn mono" type="submit">load</button>
-    </form>
-    {#if snapshot}
-      <span class="counts mono">
-        {#each counts as [state, n]}
-          <span class="count" data-state={state}>{state}:{n}</span>
-        {/each}
-        {#if complete}<span class="count done">complete</span>{/if}
-      </span>
-    {/if}
   </header>
 
   {#if error}<p class="error mono">{error}</p>{/if}
@@ -137,9 +91,9 @@
             <p class="hint mono">loading the plan…</p>
           {/if}
         {:else if selected && selected.workspace_slug}
-          {#key `${snapshot?.project ?? project}/${selected.workspace_slug}`}
+          {#key `${snapshot?.project ?? ''}/${selected.workspace_slug}`}
             <TaskChat
-              project={snapshot?.project ?? project}
+              project={snapshot?.project ?? ''}
               workspaceSlug={selected.workspace_slug}
               goal={selected.goal}
             />
@@ -179,39 +133,6 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
-  .proj { display: flex; gap: 6px; align-items: center; }
-  .field {
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    border-radius: 3px;
-    color: var(--text, #ddd);
-    padding: 4px 8px;
-    font-size: 11px;
-  }
-  .field:focus { outline: none; border-color: var(--atomizer, #ffb74d); }
-  .btn {
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    border-radius: 3px;
-    color: var(--text2, #bbb);
-    padding: 4px 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .btn:hover { border-color: var(--atomizer, #ffb74d); color: var(--text, #ddd); }
-  .counts {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: 10px;
-    color: var(--text3, #888);
-  }
-  .count[data-state='active'] { color: #7fd17f; }
-  .count[data-state='completed'] { color: #5aa7ff; }
-  .count[data-state='failed'],
-  .count[data-state='abandoned'] { color: var(--warn, #f55); }
-  .count.done { color: #5aa7ff; }
   .error {
     margin: 0;
     padding: 6px 14px;

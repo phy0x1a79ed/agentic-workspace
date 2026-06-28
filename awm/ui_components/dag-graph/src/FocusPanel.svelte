@@ -6,6 +6,8 @@
   neighbour re-selects it, so the user walks the DAG one hop at a time.
 -->
 <script lang="ts">
+  import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import { Tag, PanelLabel } from '@awm/primitives';
   import { STATE_META } from './types';
   import type { DagTask } from './types';
@@ -19,19 +21,33 @@
   }
   let { index, selectedTaskId = null, onSelectTask }: Props = $props();
 
-  const selected = $derived(
-    selectedTaskId ? index.taskById.get(selectedTaskId) ?? null : null,
-  );
-  const deps = $derived<NeighborRef[]>(
-    selectedTaskId ? upstream(index, selectedTaskId) : [],
-  );
-  const dependents = $derived<NeighborRef[]>(
-    selectedTaskId ? downstream(index, selectedTaskId) : [],
-  );
-
   function taskOf(id: string): DagTask | undefined {
     return index.taskById.get(id);
   }
+
+  const selected = $derived(
+    selectedTaskId ? index.taskById.get(selectedTaskId) ?? null : null,
+  );
+  // Hide the global root sentinel from the neighbourhood — it's bookkeeping, not
+  // real work, so it never reads as a meaningful dependency/dependent.
+  const deps = $derived<NeighborRef[]>(
+    (selectedTaskId ? upstream(index, selectedTaskId) : []).filter(
+      (r) => !taskOf(r.taskId)?.is_root,
+    ),
+  );
+  const dependents = $derived<NeighborRef[]>(
+    (selectedTaskId ? downstream(index, selectedTaskId) : []).filter(
+      (r) => !taskOf(r.taskId)?.is_root,
+    ),
+  );
+
+  // The task's goal IS the starting prompt — render it as sanitized markdown in
+  // a clearly-marked, wrapping block (goals are authored in markdown).
+  const promptHtml = $derived.by<string>(() => {
+    const src = selected?.goal?.trim();
+    if (!src) return '<em>(no goal)</em>';
+    return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
+  });
 </script>
 
 {#if !selected}
@@ -41,14 +57,13 @@
 {:else}
   <div class="focus">
     <header class="sel">
-      <Tag tone={STATE_META[selected.state].tone}>{STATE_META[selected.state].label}</Tag>
-      <h3 title={selected.goal}>{selected.goal || '(no goal)'}</h3>
-      {#if selected.is_root}
-        <p class="note">The global root sentinel — every top-level deliverable is a prerequisite of it.</p>
-      {/if}
-      {#if selected.agent_ref}
-        <p class="meta">{selected.agent_ref}</p>
-      {/if}
+      <div class="selhead">
+        <Tag tone={STATE_META[selected.state].tone}>{STATE_META[selected.state].label}</Tag>
+        {#if selected.agent_ref}<span class="meta">{selected.agent_ref}</span>{/if}
+      </div>
+      <PanelLabel>Prompt</PanelLabel>
+      <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
+      <div class="prompt">{@html promptHtml}</div>
     </header>
 
     {#snippet side(title: string, hint: string, refs: NeighborRef[])}
@@ -91,13 +106,29 @@
   .focus { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
   .focus.empty p { color: var(--text3); font-size: 12px; }
 
-  .sel { display: flex; flex-direction: column; gap: var(--space-1); }
-  .sel h3 {
-    margin: 0; font-size: 14px; font-weight: 600; color: var(--text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  .sel { display: flex; flex-direction: column; gap: var(--space-2); }
+  .selhead { display: flex; align-items: center; gap: var(--space-2); }
+  .meta { font-family: var(--mono); font-size: 9px; color: var(--text3); }
+
+  .prompt {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-md); padding: var(--space-2) var(--space-3);
+    font-size: 13px; line-height: 1.5; color: var(--text);
+    white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+    max-height: 340px; overflow-y: auto;
   }
-  .sel .note { margin: 0; font-size: 11px; color: var(--text3); }
-  .sel .meta { margin: 0; font-family: var(--mono); font-size: 9px; color: var(--text3); }
+  .prompt :global(> :first-child) { margin-top: 0; }
+  .prompt :global(> :last-child) { margin-bottom: 0; }
+  .prompt :global(p) { margin: 0 0 var(--space-2); }
+  .prompt :global(ul), .prompt :global(ol) { margin: 0 0 var(--space-2); padding-left: 1.4em; }
+  .prompt :global(pre) {
+    white-space: pre-wrap; overflow-x: auto; background: var(--surface3);
+    padding: var(--space-2); border-radius: var(--radius-sm);
+  }
+  .prompt :global(code) { font-family: var(--mono); font-size: 12px; }
+  .prompt :global(h1), .prompt :global(h2), .prompt :global(h3) {
+    margin: var(--space-2) 0 var(--space-1); font-size: 13px; font-weight: 600;
+  }
 
   .cols { display: flex; gap: var(--space-4); align-items: flex-start; }
   .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
