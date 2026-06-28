@@ -23,6 +23,19 @@ token(s). Shape::
     platform = "slack"             # a logged-in client on the mira host (durable;
     creds_cmd = "ssh mira /home/tony/.local/bin/awm-slack-creds"  # never on disk).
 
+    [mira]                         # The mira API daemon endpoint (REST + WS over
+    url = "https://172.16.0.24:7822"   # the awm-network); drives the logged-in
+    token_file = "~/.awm/auth.token"   # Slack/Teams web sessions on the mira host.
+    verify_tls = false                 # self-signed cert by default
+
+    [account.slack-via-mira]       # Full Slack ops routed through the mira daemon.
+    platform = "slack"
+    source = "mira"
+
+    [account.teams]                # Teams is ONLY reachable via the mira daemon.
+    platform = "teams"
+    source = "mira"
+
 A web-session account may instead pin the pair inline (``token = "xoxc-..."`` +
 ``cookie = "xoxd-..."``, or ``cookie_file``) — both are required together. The
 ``creds_cmd`` form fetches the ``xoxc-`` token and ``d`` cookie at runtime, so
@@ -44,8 +57,13 @@ CONFIG_FILE = config.AWM_DIR / "social.toml"
 
 # Platforms this build knows how to connect. The config loader validates
 # against it so a typo'd platform fails loudly instead of silently never
-# connecting. Keep in sync with ``connectors.REGISTRY``.
-KNOWN_PLATFORMS = ("discord", "slack", "gmail")
+# connecting. Keep in sync with ``connectors.REGISTRY`` (``teams`` has no native
+# connector — it is only reachable via ``source = "mira"``).
+KNOWN_PLATFORMS = ("discord", "slack", "gmail", "teams")
+
+# Platforms that can ONLY be driven through the mira API daemon (no native
+# connector exists), so an account on one of these must set ``source = "mira"``.
+MIRA_ONLY_PLATFORMS = ("teams",)
 
 
 @dataclass(frozen=True)
@@ -61,17 +79,26 @@ class AccountConfig:
     display_name: str | None = None
     address: str | None = None  # mailbox/login address (required for gmail)
     enabled: bool = True
+    # mira-routed accounts: the connector is a thin client of the mira API
+    # daemon. These are stamped from the service-level [mira] block at load time.
+    source: str | None = None       # "mira" routes via MiraConnector
+    mira_url: str | None = None
+    mira_token: str | None = None
+    mira_verify_tls: bool = False
 
     @property
     def kind(self) -> str:
         """Best-effort "bot" vs "user" label, derived from platform + token.
 
-        Gmail (an App-Password mailbox), Slack user OAuth tokens (``xoxp-``), and
-        Slack web-session tokens (``xoxc-``, including the ``creds_cmd`` pull mode
-        where the token is fetched at runtime) are "user" identities; everything
-        else (Slack bot ``xoxb-``, Discord bot tokens) is a "bot". This is a
-        display hint only — never an authz decision.
+        mira-routed accounts act as the logged-in *user* on mira; Gmail (an
+        App-Password mailbox), Slack user OAuth tokens (``xoxp-``), and Slack
+        web-session tokens (``xoxc-``, including the ``creds_cmd`` pull mode where
+        the token is fetched at runtime) are "user" identities; everything else
+        (Slack bot ``xoxb-``, Discord bot tokens) is a "bot". This is a display
+        hint only — never an authz decision.
         """
+        if self.source == "mira":
+            return "user"
         if self.platform == "gmail" or self.token.startswith(("xoxp-", "xoxc-")):
             return "user"
         if self.platform == "slack" and self.creds_cmd:
@@ -122,6 +149,39 @@ def _resolve_secret(
     return None
 
 
+def _load_mira(data: dict, path: Path) -> dict | None:
+    """Parse the service-level ``[mira]`` block (the mira API daemon endpoint).
+
+    Shape::
+
+        [mira]
+        url = "https://172.16.0.24:7822"
+        token_file = "~/.awm/auth.token"   # or inline token = "..."
+        verify_tls = false                 # self-signed cert by default
+
+    Returns ``{url, token, verify_tls}`` or ``None`` when absent. The token is
+    required (mira authenticates every request); ``~`` in ``token_file`` is
+    expanded so the shared awm bearer file can be referenced directly.
+    """
+    section = data.get("mira")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise SocialConfigError(f"{path}: [mira] must be a table")
+    url = section.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise SocialConfigError(f"{path}: [mira].url is required")
+    token_file = section.get("token_file")
+    if isinstance(token_file, str) and token_file.strip().startswith("~"):
+        section = {**section, "token_file": str(Path(token_file.strip()).expanduser())}
+    token = _resolve_secret(
+        section.get("token"), section.get("token_file"), path, "[mira].token")
+    verify = section.get("verify_tls", False)
+    if not isinstance(verify, bool):
+        raise SocialConfigError(f"{path}: [mira].verify_tls must be a boolean")
+    return {"url": url.strip(), "token": token, "verify_tls": verify}
+
+
 def load(path: Path | None = None) -> list[AccountConfig]:
     """Load and validate ``$AWM_DIR/social.toml`` into a list of accounts.
 
@@ -137,6 +197,8 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SocialConfigError(f"could not parse {path}: {exc}") from exc
+
+    mira = _load_mira(data, path)
 
     accounts_tbl = data.get("account")
     if accounts_tbl is None:
@@ -158,6 +220,21 @@ def load(path: Path | None = None) -> list[AccountConfig]:
                 f"{path}: [account.{name}].platform must be one of "
                 f"{', '.join(KNOWN_PLATFORMS)}"
             )
+        source = section.get("source")
+        if source is not None and source != "mira":
+            raise SocialConfigError(
+                f"{path}: [account.{name}].source must be \"mira\" when set"
+            )
+        if platform in MIRA_ONLY_PLATFORMS and source != "mira":
+            raise SocialConfigError(
+                f"{path}: [account.{name}] platform {platform!r} is only reachable "
+                f"via source = \"mira\""
+            )
+        if source == "mira" and mira is None:
+            raise SocialConfigError(
+                f"{path}: [account.{name}] uses source = \"mira\" but no [mira] "
+                f"block is configured"
+            )
         creds_cmd = section.get("creds_cmd")
         if creds_cmd is not None and (
             not isinstance(creds_cmd, str) or not creds_cmd.strip()
@@ -166,12 +243,13 @@ def load(path: Path | None = None) -> list[AccountConfig]:
                 f"{path}: [account.{name}].creds_cmd must be a non-empty string"
             )
         creds_cmd = creds_cmd.strip() if creds_cmd else None
-        # With creds_cmd the token (and cookie) are fetched live at runtime, so a
-        # static token in the file is optional.
+        # With creds_cmd the token (and cookie) are fetched live at runtime, and a
+        # mira-routed account holds no platform token at all (the daemon owns the
+        # live session), so a static token in the file is optional in both cases.
         token = _resolve_secret(
             section.get("token"), section.get("token_file"),
             path, f"[account.{name}].token",
-            required=creds_cmd is None) or ""
+            required=creds_cmd is None and source != "mira") or ""
         app_token = _resolve_secret(
             section.get("app_token"), section.get("app_token_file"),
             path, f"[account.{name}].app_token", required=False)
@@ -219,5 +297,10 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             display_name=display_name.strip() if display_name else None,
             address=address.strip() if address else None,
             enabled=enabled,
+            source=source,
+            mira_url=(mira or {}).get("url") if source == "mira" else None,
+            mira_token=(mira or {}).get("token") if source == "mira" else None,
+            mira_verify_tls=bool((mira or {}).get("verify_tls"))
+            if source == "mira" else False,
         ))
     return accounts

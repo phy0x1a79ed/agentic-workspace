@@ -33,6 +33,12 @@ class Account:
     creds_cmd: str | None = None  # command printing {token,cookie} JSON (mira pull)
     display_name: str | None = None
     address: str | None = None  # mailbox/login address (gmail uses this)
+    # mira-routed accounts (source="mira"): the connector is a thin client of the
+    # mira API daemon — all platform logic runs there, next to the live session.
+    source: str | None = None       # "mira" routes via MiraConnector
+    mira_url: str | None = None     # e.g. https://172.16.0.24:7822
+    mira_token: str | None = None   # bearer for the mira daemon
+    mira_verify_tls: bool = False   # mira uses a self-signed cert by default
 
 
 @dataclass(frozen=True)

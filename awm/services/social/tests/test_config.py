@@ -180,3 +180,87 @@ creds_cmd = "   "
 """)
         with pytest.raises(cfg.SocialConfigError):
             cfg.load(p)
+
+
+class TestMira:
+    """Accounts routed through the mira API daemon (source = "mira")."""
+
+    def test_loads_mira_slack_and_teams(self, tmp_path):
+        from awm.social import config as cfg
+        tok = tmp_path / "auth.token"
+        tok.write_text("bearer-secret\n")
+        p = _write(tmp_path / "social.toml", f"""
+[mira]
+url = "https://172.16.0.24:7822"
+token_file = "{tok}"
+verify_tls = false
+
+[account.slack-via-mira]
+platform = "slack"
+source = "mira"
+
+[account.teams]
+platform = "teams"
+source = "mira"
+""")
+        accts = {a.name: a for a in cfg.load(p)}
+        assert set(accts) == {"slack-via-mira", "teams"}
+        for a in accts.values():
+            assert a.source == "mira"
+            assert a.mira_url == "https://172.16.0.24:7822"
+            assert a.mira_token == "bearer-secret"
+            assert a.mira_verify_tls is False
+            assert a.kind == "user"          # mira acts as the logged-in user
+            assert a.token == ""             # no platform token on disk
+
+    def test_teams_requires_mira_source(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[mira]
+url = "https://h:7822"
+token = "t"
+
+[account.teams]
+platform = "teams"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
+
+    def test_mira_source_requires_mira_block(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.slack-via-mira]
+platform = "slack"
+source = "mira"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
+
+    def test_bad_source_value_rejected(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.x]
+platform = "slack"
+source = "carrier-pigeon"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
+
+    def test_mira_block_requires_url_and_token(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[mira]
+url = "https://h:7822"
+
+[account.teams]
+platform = "teams"
+source = "mira"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)  # [mira].token (or token_file) is required
+
+    def test_teams_in_known_platforms_but_not_registry(self):
+        from awm.social import config as cfg
+        from awm.social import connectors
+        assert "teams" in cfg.KNOWN_PLATFORMS
+        assert "teams" not in connectors.REGISTRY  # only reachable via mira

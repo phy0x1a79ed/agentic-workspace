@@ -12,6 +12,7 @@ from awm.social.connectors.base import (
 )
 from awm.social.connectors.discord_conn import DiscordConnector
 from awm.social.connectors.gmail_conn import GmailConnector
+from awm.social.connectors.mira_conn import MiraConnector
 from awm.social.connectors.slack_conn import SlackConnector
 
 REGISTRY: dict[str, type[Connector]] = {
@@ -24,12 +25,11 @@ REGISTRY: dict[str, type[Connector]] = {
 def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
     """Construct the connector for one configured account.
 
-    Raises ``KeyError`` (via a clear ``ValueError``) for an unknown platform —
-    config validation already rejects those, so this is a belt-and-braces guard.
+    Routing: ``source = "mira"`` accounts (Slack/Teams driven on the mira host)
+    use :class:`MiraConnector` regardless of platform; everything else uses the
+    native per-platform connector from ``REGISTRY``. Config validation already
+    rejects unknown platforms, so the ``ValueError`` is belt-and-braces.
     """
-    cls = REGISTRY.get(cfg.platform)
-    if cls is None:
-        raise ValueError(f"no connector for platform {cfg.platform!r}")
     account = Account(
         name=cfg.name,
         platform=cfg.platform,
@@ -39,7 +39,16 @@ def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
         creds_cmd=cfg.creds_cmd,
         display_name=cfg.display_name,
         address=cfg.address,
+        source=cfg.source,
+        mira_url=cfg.mira_url,
+        mira_token=cfg.mira_token,
+        mira_verify_tls=cfg.mira_verify_tls,
     )
+    if cfg.source == "mira":
+        return MiraConnector(account, on_message)
+    cls = REGISTRY.get(cfg.platform)
+    if cls is None:
+        raise ValueError(f"no connector for platform {cfg.platform!r}")
     return cls(account, on_message)
 
 

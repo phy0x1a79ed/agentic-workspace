@@ -14,6 +14,7 @@ no UI here.
 | `awm-wm` | `openbox` — maps/focuses windows on `:20` | — |
 | `awm-slack` | Slack desktop (snap), CDP enabled | 9223 |
 | `awm-opera-teams` | Opera (snap): Teams web + Slack-web | 9224 |
+| `awm-mira-api` | the API daemon — REST + WS, drives both Opera tabs over CDP | **172.16.0.24:7822** |
 | `awm-vnc` | `x11vnc` for the one-time login (**on-demand**, not enabled) | 5920 |
 
 All GUI units force the X11 Ozone backend (`--ozone-platform=x11`) and unset
@@ -23,6 +24,73 @@ socket and render to the real GNOME session instead of `:20`.
 `awm-slack-creds` (in `~/.local/bin`) attaches to a CDP port and prints
 `{"token","cookie","team","url"}` — the live `xoxc-` session token + `d` cookie.
 The awm host calls it over ssh as the connector's `creds_cmd`; no secret hits disk.
+(This is the legacy Slack-only path; the API daemon below supersedes it and adds
+Teams.)
+
+## API daemon (`awm-mira-api`)
+
+The formal service. An aiohttp daemon (`mira_api/`, deployed to
+`~/.local/share/awm-social-mira/mira_api`) that drives **both** logged-in Opera
+tabs over CDP and exposes one clean API over the awm-network. The awm `social`
+service's Slack/Teams connectors are thin clients of it (`source = "mira"`).
+
+It binds **`172.16.0.24:7822` only** (the awm-network interface — not
+`0.0.0.0`/docker/wan), serves **TLS** from `~/.awm/tls/`, and requires
+`Authorization: Bearer <~/.awm/auth.token>` on every request.
+
+    GET  /v1/health                       per-platform CDP target liveness
+    GET  /v1/{platform}/identity          who the session is logged in as
+    GET  /v1/{platform}/channels          channels/conversations visible
+    GET  /v1/{platform}/messages?channel=&limit=   recent history
+    POST /v1/{platform}/send  {channel,text,thread?}
+    GET  /v1/events                       WS; pushes inbound {type:"message", …}
+
+`{platform}` is `slack` or `teams`. The daemon polls each platform on mira (the
+**inbound watcher**) and pushes new messages to all WS clients, so awm-side
+clients never poll. A conversation whose history endpoint 404s (e.g. a Teams
+*team channel*, served by a different backend than the 1:1/group chat service)
+is marked unreadable and skipped — it never stalls the poll.
+
+### How the drivers work (in-page fetch, live session creds)
+
+Every op runs JavaScript in the platform's Opera page, so requests ride the live
+session's own cookies/tokens — the daemon reconstructs nothing on the wire.
+
+* **Slack** — reads the `xoxc-` token from `localStorage['localConfig_v2']` and
+  does a same-origin `fetch('/api/<method>')` on the `app.slack.com` tab (the `d`
+  cookie rides automatically). `chat.postMessage`, `conversations.{list,history}`,
+  `users.conversations`, `auth.test`.
+* **Teams** — bootstraps `POST /api/authsvc/v1.0/authz` with the cached
+  `api.spaces.skype.com` MSAL token → `{skypeToken, regionGtms.chatService}`
+  (e.g. `https://ca.ng.msg.teams.microsoft.com`). All ops then hit
+  `{chatService}/v1/users/ME/conversations…` with header
+  `Authentication: skypetoken=<tok>` (re-bootstraps on 401/403). Graph is
+  send-only here (`/me` works but chats need scopes the page's token lacks), so
+  the ng.msg chat service is the substrate for list/read/send.
+
+### Wire it into `social.toml`
+
+    [mira]
+    url = "https://172.16.0.24:7822"
+    token_file = "~/.awm/auth.token"
+    verify_tls = false                 # self-signed cert; pin it later to enable
+
+    [account.slack-via-mira]
+    platform = "slack"
+    source = "mira"
+
+    [account.teams]
+    platform = "teams"
+    source = "mira"
+
+### Verify
+
+    # health (from the awm host, over the awm-network)
+    curl -sk -H "Authorization: Bearer $(ssh mira cat ~/.awm/auth.token)" \
+      https://172.16.0.24:7822/v1/health
+
+    # daemon unit tests (host tooling — standalone, not an awm dist)
+    cd awm/services/social/mira && PYTHONPATH=. python -m pytest
 
 ## Install / update
 
@@ -72,5 +140,9 @@ Should print one JSON line (`{"token","cookie","team","url"}`). Plug into
 - Do **not** disturb `~/.config/virtual-auth/` or `app-virtual-auth.slice` — that's
   the live 2FA device, unrelated to this.
 - The user's own `google-chrome` profile is untouched; Teams uses a separate Opera.
-- Driving Slack with a web-session token is against Slack's automation ToS; this is
-  the user's own account/session at their explicit request (see service INSTALL.md).
+- Driving Slack/Teams with a web session is against those platforms' automation
+  ToS; this is the user's own account/session at their explicit request (see
+  service INSTALL.md).
+- The API daemon binds the awm-network interface only and is TLS + bearer-token
+  gated, but it can send/read as the user's Slack+Teams — treat the bearer token
+  in `~/.awm/auth.token` as the key to those accounts.
