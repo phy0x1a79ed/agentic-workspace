@@ -301,22 +301,6 @@ class AgentsDAO(BaseDAO):
             )
         return rows
 
-    def get_active_scopes(self) -> list[dict]:
-        """Return (project, scope) pairs that have no open instance row and
-        the most recent cli_session_id for each, for the resume driver."""
-        # NOTE: in v1 agents.db there's no agents table — active/retired state
-        # is determined externally via scopes RPC. This returns open-ended
-        # instances that need reconciliation (ended_at IS NULL after restart).
-        # mode='conversational' ONLY: task-bound workers are owned by the
-        # orchestrator + supervision driver, never resurrected by the resume
-        # driver. A dead worker is left for the orchestrator's reconcile.
-        return self.query_all(
-            "SELECT DISTINCT project, scope, cli_session_id "
-            "FROM agent_instances "
-            "WHERE ended_at IS NULL AND mode='conversational' "
-            "ORDER BY started_at DESC"
-        )
-
     def get_latest_instance_for_scope(self, project: str, scope: str) -> dict | None:
         """Return the most recent agent_instances row for (project, scope)."""
         return self.query_one(

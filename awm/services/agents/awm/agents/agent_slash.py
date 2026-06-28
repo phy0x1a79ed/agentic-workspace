@@ -144,10 +144,6 @@ async def _h_clear(scope_key: str, args: list[str]) -> str:
     sess = agent_instances._by_scope.get(scope_key)
     if sess is None:
         return f"no active session for {scope_key}"
-    # Operator-initiated wipe must outrace any pending auto-resume:
-    # remove queue rows for this scope before respawn fresh, otherwise
-    # the driver might race to bring back the prior --resume id.
-    agent_instances.scrub_resume_queue_for_scope(sess.project, sess.scope)
     new = await agent_instances.respawn_session(scope_key, clear_history=True)
     return (
         f"cleared {scope_key} (pid={new.proc.pid if new.proc else 0}, "

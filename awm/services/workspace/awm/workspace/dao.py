@@ -2,7 +2,7 @@
 service's OWN SQLite DB (``AWM_DIR/services/workspace/workspace.db``).
 
 A *unit* is the DAG execution sandbox: one directory holding a placed agent's
-brief (``CONTEXT.md``), its read-only input pre-readings (``inputs/<name>``),
+brief (``CLAUDE.md``), its read-only input pre-readings (``inputs/<name>``),
 and its deliverable staging (``deliverable/<contract>/``). The row is pure
 bookkeeping — the canonical truth is the directory on disk; this table just
 tracks which units exist, where, and whether one is currently in use

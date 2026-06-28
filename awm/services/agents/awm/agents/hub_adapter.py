@@ -16,6 +16,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 from awm.gatewayclient.adapter import SessionContext
+from awm.agents import admin_ops
 from awm.agents import dao
 from awm.agents import agent_instances as ai
 from awm.agents import agent_transcript
@@ -51,24 +52,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "status", "type": "string", "required": False},
                 {"name": "limit", "type": "integer", "required": False,
                  "description": "Return only the most recent N sessions (newest first)."},
-            ],
-        },
-        {
-            "name": "create_session",
-            "tool": "agent_spawn",
-            "description": (
-                "Spawn a new agent subprocess for (project, scope). Defaults to "
-                "the claude harness (interactive TUI in a tmux session) so the "
-                "agent exposes a live 'terminal' session to attach to. Pass "
-                "agent_cli='opencode' for a headless opencode agent."
-            ),
-            "params": [
-                {"name": "project", "type": "string", "required": True},
-                {"name": "scope", "type": "string", "required": True},
-                {"name": "agent_cli", "type": "string", "required": False},
-                {"name": "permission_mode", "type": "string", "required": False},
-                {"name": "model", "type": "string", "required": False},
-                {"name": "effort", "type": "string", "required": False},
             ],
         },
         {
@@ -319,6 +302,21 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 
+# Attach-gated admin tools (DAG restructuring) are generated from the single
+# admin_ops registry — MCP-visible (so an attended worker sees them), but each
+# one's gate (placement.relay_admin) rejects it unless a human is attached.
+# Editing admin_ops.ADMIN_OPS adds/removes/renames a command here automatically.
+API_MANIFEST["functions"].extend(
+    {
+        "name": op["name"],
+        "tool": op["name"],
+        "description": op["description"],
+        "params": op["params"],
+    }
+    for op in admin_ops.ADMIN_OPS
+)
+
+
 async def _h_list_sessions(args: dict) -> dict:
     _limit = args.get("limit")
     sessions = ai.list_sessions(
@@ -330,24 +328,6 @@ async def _h_list_sessions(args: dict) -> dict:
     return {
         "sessions": [_serialize_session(s) for s in sessions],
         "total": len(sessions),
-    }
-
-
-async def _h_create_session(args: dict) -> dict:
-    session = await ai.create_session(
-        project=args["project"],
-        scope=args["scope"],
-        agent_cli=args.get("agent_cli", "claude"),
-        permission_mode=args.get("permission_mode", "default"),
-        model=args.get("model"),
-        effort=args.get("effort"),
-    )
-    return {
-        "session_id": session.id,
-        "project": session.project,
-        "scope": session.scope,
-        "pid": session.proc.pid if session.proc else 0,
-        "status": session.status,
     }
 
 
@@ -527,7 +507,6 @@ def _relay(fn_name: str):
 
 HANDLERS = {
     "list_sessions": _h_list_sessions,
-    "create_session": _h_create_session,
     "stop_session": _h_stop_session,
     "kill_session": _h_kill_session,
     "tail_log": _h_tail_log,
@@ -553,10 +532,26 @@ HANDLERS = {
 }
 
 
+def _admin_relay(op_name: str):
+    """Build the gated relay handler for one admin op (forwards the caller
+    identity ``as_`` so ``placement.relay_admin`` resolves + attach-gates it)."""
+    async def _handler(args: dict, as_: str | None = None) -> dict:
+        from awm.agents import placement
+        return await placement.relay_admin(op_name, args, as_)
+    return _handler
+
+
+# One gated handler per admin op, generated from the registry (single source).
+for _op in admin_ops.ADMIN_OPS:
+    HANDLERS[_op["name"]] = _admin_relay(_op["name"])
+
+
 def _on_start() -> None:
     dao.init()
+    # Boot cleanup only — close stale instance rows. There is no agents-side
+    # resume driver: the orchestrator owns re-dispatch of resting nodes, and a
+    # dead placement is reported back via orch.fail (liveness).
     ai.reconcile_on_startup()
-    ai.start_resume_driver()
 
 
 async def main() -> None:

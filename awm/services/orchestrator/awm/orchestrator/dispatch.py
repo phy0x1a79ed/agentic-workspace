@@ -168,7 +168,7 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
                 "reason_text": last["reason_text"],
                 "partial_ref": last["payload_ref"],
             }
-    return {
+    payload = {
         "task_id": task["id"],
         "project": task["project"],
         "unit_slug": unit_slug,
@@ -178,6 +178,24 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         "prereadings": prereadings,
         "mode": mode,
     }
+    # An attended node defaults to the claude harness (interactive, attachable
+    # terminal + a capable model); unattended placements stay on the agents
+    # service's own default (opencode / DSv4-free). Pure data — place_on_task
+    # reads ``harness`` when present, else picks its default.
+    if task["attached"]:
+        payload["harness"] = "claude"
+    # Existing scopes the node's unit links under repos/<name> (persisted on the
+    # task so every (re)dispatch re-links them; the workspace symlink is
+    # idempotent). Stored as a JSON list; tolerate a NULL / malformed value.
+    repos_raw = task["repos"] if "repos" in task.keys() else None
+    if repos_raw:
+        try:
+            repos = json.loads(repos_raw)
+        except (TypeError, ValueError):
+            repos = []
+        if repos:
+            payload["repos"] = repos
+    return payload
 
 
 # ---------------------------------------------------------------------------

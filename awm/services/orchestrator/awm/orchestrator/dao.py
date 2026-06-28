@@ -34,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "orchestrator"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # The explicit node lifecycle — a TRUE state machine: every distinct position is
 # its own named state. A *rest* state means a placement is needed (no agent
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     placement_token TEXT,            -- opaque token returned by place_on_task
     plan_ref        TEXT,            -- the staged plan artifact (delivered by a plan agent); NULL until planned
     attached        INTEGER NOT NULL DEFAULT 0,   -- orthogonal human-attached flag (freezes auto-progress)
+    repos           TEXT,            -- JSON [{name, project, scope}] existing scopes the node's unit links under repos/<name>; NULL = none
     replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-attempts left (re-plans + decomposes) before abandoned
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
@@ -153,6 +154,13 @@ CREATE TABLE IF NOT EXISTS attempt_memories (
 CREATE INDEX IF NOT EXISTS idx_attempt_memories_task ON attempt_memories(task_id, ts);
 """
 
+# v1→v2: additive ``repos`` column on tasks (JSON list of existing scopes a
+# node's workspace unit links under ``repos/<name>``). Existing rows default to
+# NULL (no repos). Idempotent: ``_migrate`` swallows "duplicate column name".
+MIGRATIONS: dict[tuple[int, int], str] = {
+    (1, 2): "ALTER TABLE tasks ADD COLUMN repos TEXT;\n",
+}
+
 _initialized = False
 
 
@@ -160,7 +168,8 @@ def init() -> None:
     """Idempotently create the orchestrator service DB + all four tables."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                        migrations=MIGRATIONS)
         _initialized = True
 
 
@@ -269,7 +278,8 @@ class OrchestratorDAO(BaseDAO):
         """
         allowed = {
             "state", "mode", "workspace_slug", "agent_ref", "placement_token",
-            "plan_ref", "attached", "replan_budget", "retry_count", "goal",
+            "plan_ref", "attached", "repos", "replan_budget", "retry_count",
+            "goal",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:
@@ -402,6 +412,15 @@ class OrchestratorDAO(BaseDAO):
                 (project,), conn=conn,
             )
         return self.query_all(sql + " ORDER BY e.created_at", conn=conn)
+
+    def delete_edges_for_contract(
+        self, contract_id: str, *, conn: sqlite3.Connection | None = None
+    ) -> int:
+        """Drop every dependency edge that consumes a contract; returns the
+        count removed. Used by ``relocate_task`` to re-point a node's funnel."""
+        return self.execute(
+            "DELETE FROM edges WHERE contract_id = ?", (contract_id,), conn=conn,
+        )
 
     def list_consumers_of_contract(
         self, contract_id: str, *, conn: sqlite3.Connection | None = None

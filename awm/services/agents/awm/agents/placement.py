@@ -39,6 +39,7 @@ import uuid
 from pathlib import Path
 
 import awm.gatewayclient as gatewayclient
+from awm.agents import admin_ops
 from awm.agents import agent_instances as ai
 from awm.agents import orch_client
 from awm.agents.agent_instances import TASK_TURN_BUDGET, TASK_WARN_REMAINING
@@ -70,6 +71,10 @@ _BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
 
 _AWM = "mcp__awm__"
 _WORKER_TOOLS = [_AWM + "edit_deliverable", _AWM + "indicate_done", _AWM + "task_fail"]
+# Attach-gated DAG-restructuring tools (configurable registry). LISTED for every
+# worker, but each one's gate rejects it unless a human is attached — so an
+# unattended worker has them in its profile yet can never restructure the DAG.
+_ADMIN_TOOLS = [_AWM + n for n in admin_ops.ADMIN_TOOL_NAMES]
 _PLANNER_TOOLS = [
     _AWM + "add_subtask", _AWM + "add_dependency", _AWM + "define_contract",
     _AWM + "search_tasks", _AWM + "search_contracts",
@@ -78,7 +83,7 @@ _PLANNER_TOOLS = [
 _VERIFY_TOOLS = [_AWM + "approve_plan", _AWM + "reject_plan", _AWM + "task_fail"]
 
 TOOL_PROFILES: dict[str, list[str]] = {
-    "worker": _BUILTIN_FULL + _WORKER_TOOLS,
+    "worker": _BUILTIN_FULL + _WORKER_TOOLS + _ADMIN_TOOLS,
     "plan": _BUILTIN_READONLY + _WORKER_TOOLS,
     "planner": _BUILTIN_READONLY + _PLANNER_TOOLS,
     "verify": list(_VERIFY_TOOLS),  # no filesystem at all
@@ -140,7 +145,8 @@ def _finish_planner() -> str:
 def render_brief(*, task_id: str, mode: str, brief: str,
                  contracts_in: list, contracts_out: list,
                  prereadings: list) -> str:
-    """Render a worker/plan/planner unit ``CONTEXT.md`` (the brief on disk).
+    """Render a worker/plan/planner unit ``CLAUDE.md`` (the brief on disk —
+    auto-loaded by the claude harness).
 
     ``verify`` does not use this — it has no filesystem, so its objective+plan
     ride the kickoff stdin instead (see ``_verify_kickoff``)."""
@@ -179,7 +185,7 @@ def _kickoff_text(*, task_id: str, mode: str) -> str:
     """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
         f"You have been placed on task `{task_id}` as a **{mode}**. Read "
-        f"`./CONTEXT.md` for your objective, inputs, contracts, and how to "
+        f"`./CLAUDE.md` for your objective, inputs, contracts, and how to "
         f"finish. Your placement tools act on this task automatically — you "
         f"never pass a token or id. Begin now."
     )
@@ -209,11 +215,16 @@ def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
 # ---------------------------------------------------------------------------
 
 async def _workspace_create(project: str, unit_slug: str, context_md: str,
-                            prereadings: list) -> str:
-    """Provision (or re-activate) the unit; return its on-disk path."""
+                            prereadings: list, repos: list | None = None) -> str:
+    """Provision (or re-activate) the unit; return its on-disk path.
+
+    ``repos`` (``[{name, project, scope}]``) links existing scopes into the unit
+    under ``repos/<name>`` — threaded straight through to the workspace service,
+    which builds the symlinks (this service makes no scopes call of its own)."""
     res = await gatewayclient.call("workspace", "workspace_create", {
         "project": project, "unit_slug": unit_slug,
         "context_md": context_md, "prereadings": prereadings or [],
+        "repos": repos or [],
     })
     return (res or {}).get("path") or ""
 
@@ -300,6 +311,7 @@ async def place_on_task(args: dict) -> dict:
     contracts_in = args.get("contracts_in") or []
     contracts_out = args.get("contracts_out") or []
     prereadings = args.get("prereadings") or []
+    repos = args.get("repos") or []
     mode = args.get("mode", "worker")
     if mode not in _VALID_MODES:
         raise ValueError(f"unknown placement mode {mode!r}; "
@@ -323,7 +335,7 @@ async def place_on_task(args: dict) -> dict:
     # so a verify/worker stage re-activates the same unit (keeping the plan
     # stage's deliverables).
     workspace_path = await _workspace_create(
-        project, unit_slug, context_md, prereadings)
+        project, unit_slug, context_md, prereadings, repos)
 
     # Build the kickoff. verify reads the staged plan off disk (it can't itself).
     if mode == "verify":
@@ -568,6 +580,38 @@ async def relay_reject_plan(args: dict, as_: str | None = None) -> dict:
         reason=args.get("reason"))
     await _close_and_retire(row, "rejected")
     return {"ok": True, "outcome": "rejected", "ack": ack}
+
+
+# ---------------------------------------------------------------------------
+# Attach-gated admin tools (DAG restructuring; configurable registry)
+# ---------------------------------------------------------------------------
+
+
+async def relay_admin(op_name: str, args: dict, as_: str | None = None) -> dict:
+    """The ONE uniform attach-gate over the admin registry (contract D → B).
+
+    Resolves the caller's placement from its identity, enforces the registry's
+    ``requires_attached`` (rejecting when no human is attached — re-checked HERE
+    every call, since a human can detach mid-turn), then forwards to the named
+    orchestrator op as the resolved ``{task_id, agent_ref}`` (+ the caller's
+    ``project`` when the op mints in it). Adding/removing/renaming an admin
+    command is a single edit in :mod:`admin_ops` — this relay never changes."""
+    op = admin_ops.BY_NAME.get(op_name)
+    if op is None:
+        raise PlacementError(f"unknown admin op {op_name!r}")
+    row = _resolve_open_placement_for(as_)
+    if op.get("requires_attached") and not _row_data(row).get("attached"):
+        raise PlacementError(
+            f"{op_name} is an attached-only command — no human is attached to "
+            "this node")
+    payload: dict = {"task_id": row["task_ref"], "agent_ref": row["agent_ref"]}
+    if op.get("inject_project"):
+        payload["project"] = row["project"]
+    for k in op.get("forward", []):
+        if args.get(k) is not None:
+            payload[k] = args[k]
+    ack = await orch_client.call_op(op["orch_op"], **payload)
+    return {"ok": True, "op": op_name, "ack": ack}
 
 
 # ---------------------------------------------------------------------------

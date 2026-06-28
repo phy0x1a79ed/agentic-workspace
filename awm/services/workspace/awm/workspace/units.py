@@ -1,12 +1,17 @@
 """Workspace unit lifecycle — create / retain / destroy / resolve.
 
-A unit is the DAG execution sandbox an agents-service placement runs in. Its
-layout under ``SERVICES_DIR/workspace/units/<project>/<unit_slug>/``:
+A unit is the DAG execution sandbox an agents-service placement runs in. It is a
+node's **one canonical filesystem home**, laid out under the top-level
+``TASKS_DIR`` (``<workspace_root>/tasks/<unit_slug>/``, gitignored — the node-side
+analog of ``projects/``):
 
-    CONTEXT.md              the rendered brief (what scopes put in .awm/context.md)
+    CLAUDE.md               the rendered brief (auto-loaded by the claude harness)
+    .awm/                   metadata dir
+      data -> ../../../data/<project>/        symlink to shared project data
     inputs/<name>           read-only materialized pre-readings (set 0444)
     deliverable/<contract>/ deliverable staging (one dir per output contract)
     scratch/                free scratch space for the agent
+    repos/<name> -> ../../../projects/<project>/<scope>   symlinks to scopes
 
 The unit is **one-per-task, reused across the lifecycle**: the same slug carries
 a task through PLANNING → VERIFYING_PLAN → ACTIVE, each stage spawning a fresh
@@ -15,7 +20,10 @@ between-stages / audit state (free the unit but keep its contents); ``destroy``
 only happens at a terminal outcome.
 
 This service deliberately has NO git, NO branch, NO channel, and NO cross-service
-calls — that is exactly the weight we shed from the CLI-only ``scopes`` service.
+calls. A repo a node works on is an **existing scope** (owned by the ``scopes``
+service); the unit only *links* to it under ``repos/<name>`` — the caller passes
+``{name, project, scope}`` and we build the symlink to the deterministic
+``projects/<project>/<scope>`` worktree path (a path construction, not an RPC).
 Pre-readings arrive already resolved (inline ``content`` or a source ``path`` to
 copy); ref→content resolution is the caller's job upstream.
 """
@@ -26,7 +34,7 @@ import shutil
 import stat
 from pathlib import Path
 
-from awm.persistence import databases
+from awm import config
 
 from awm.workspace.dao import WorkspaceDAO, init
 
@@ -36,13 +44,14 @@ _dao = WorkspaceDAO()
 _DELIVERABLE = "deliverable"
 _INPUTS = "inputs"
 _SCRATCH = "scratch"
-_CONTEXT = "CONTEXT.md"
+_REPOS = "repos"
+_BRIEF = "CLAUDE.md"
 
 
 def _units_root() -> Path:
-    # Read SERVICES_DIR off the module at call time so a test harness that
-    # monkeypatches awm.persistence.databases.SERVICES_DIR redirects units too.
-    return databases.SERVICES_DIR / "workspace" / "units"
+    # Read TASKS_DIR off the config module at call time so a test harness that
+    # monkeypatches awm.config.TASKS_DIR (or WORKSPACE_ROOT) redirects units too.
+    return config.TASKS_DIR
 
 
 def unit_path(project: str, unit_slug: str) -> Path:
@@ -56,6 +65,57 @@ def _read_only(path: Path) -> None:
         path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
     except OSError:
         pass
+
+
+def _link(link: Path, target: str) -> None:
+    """Best-effort relative symlink: replace any prior link, never raise.
+
+    The link may be dangling (the target scope/data dir is created elsewhere and
+    may not exist yet) — that is fine; a symlink is just a pointer."""
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+    except OSError:
+        pass
+    try:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+    except OSError:
+        pass
+
+
+def _scaffold_awm(path: Path, project: str) -> None:
+    """Create the unit's ``.awm/`` metadata dir + the shared-data symlink.
+
+    Adopts the scope convention (``.awm/data -> ../../../data/<project>/``) so a
+    node reaches shared project data the same way a scope does. No skills symlink
+    — the skills service is retired; reference files are read directly from disk."""
+    awm_dir = path / ".awm"
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    # From tasks/<slug>/.awm/ up to the workspace root is ../../.. then data/<project>.
+    _link(awm_dir / "data", f"../../../data/{project}")
+
+
+def _link_repos(path: Path, repos: list) -> list[str]:
+    """Symlink each requested repo to its existing scope worktree under ``repos/``.
+
+    Each item is ``{"name", "project", "scope"}``; the link points at the
+    deterministic ``projects/<project>/<scope>`` worktree (relative, so the unit
+    tree is relocatable). Unknown shapes are skipped. Returns the linked names."""
+    names: list[str] = []
+    for item in repos or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        rproject = item.get("project")
+        rscope = item.get("scope")
+        if not name or not rproject or not rscope:
+            continue
+        # From tasks/<slug>/repos/<name> up to the workspace root is ../../..
+        # then projects/<rproject>/<rscope>.
+        _link(path / _REPOS / name, f"../../../projects/{rproject}/{rscope}")
+        names.append(name)
+    return names
 
 
 def _materialize_prereadings(inputs_dir: Path, prereadings: list) -> list[str]:
@@ -94,13 +154,15 @@ def _materialize_prereadings(inputs_dir: Path, prereadings: list) -> list[str]:
 
 
 def create(*, project: str, unit_slug: str, context_md: str = "",
-           prereadings: list | None = None) -> dict:
+           prereadings: list | None = None, repos: list | None = None) -> dict:
     """Provision (or re-activate) a unit directory + DB row.
 
-    Idempotent: re-creating an existing slug rewrites CONTEXT.md and re-layers
-    the pre-readings without wiping deliverables/scratch (so a re-place after a
-    crash keeps prior work). Returns ``{project, unit_slug, path, state,
-    inputs}``."""
+    Idempotent: re-creating an existing slug rewrites ``CLAUDE.md``, re-scaffolds
+    the ``.awm/`` + repo symlinks, and re-layers the pre-readings without wiping
+    deliverables/scratch (so a re-place after a crash keeps prior work). ``repos``
+    is an optional ``[{name, project, scope}]`` list of existing scopes to link
+    under ``repos/<name>``. Returns ``{project, unit_slug, path, state, inputs,
+    repos}``."""
     init()
     path = unit_path(project, unit_slug)
     inputs_dir = path / _INPUTS
@@ -108,15 +170,29 @@ def create(*, project: str, unit_slug: str, context_md: str = "",
     inputs_dir.mkdir(parents=True, exist_ok=True)
     (path / _SCRATCH).mkdir(parents=True, exist_ok=True)
 
-    (path / _CONTEXT).write_text(context_md or "", encoding="utf-8")
+    (path / _BRIEF).write_text(context_md or "", encoding="utf-8")
+    _scaffold_awm(path, project)
+    repo_names = _link_repos(path, repos or [])
     names = _materialize_prereadings(inputs_dir, prereadings or [])
 
     row = _dao.upsert_unit(
         project=project, unit_slug=unit_slug, path=str(path), state="active")
     return {
         "project": project, "unit_slug": unit_slug, "path": str(path),
-        "state": row["state"], "inputs": names,
+        "state": row["state"], "inputs": names, "repos": repo_names,
     }
+
+
+def link_repos(*, project: str, unit_slug: str, repos: list | None = None) -> dict:
+    """Link (or refresh) existing scopes under the unit's ``repos/`` — no brief
+    rewrite. The admin ``link_repo`` primitive: an attended agent gets a newly
+    linked repo in its cwd without re-provisioning the unit. Idempotent; replaces
+    each named symlink. Returns the linked names."""
+    init()
+    path = unit_path(project, unit_slug)
+    names = _link_repos(path, repos or []) if path.exists() else []
+    return {"project": project, "unit_slug": unit_slug, "repos": names,
+            "exists": path.exists()}
 
 
 def retain(*, project: str, unit_slug: str) -> dict:
