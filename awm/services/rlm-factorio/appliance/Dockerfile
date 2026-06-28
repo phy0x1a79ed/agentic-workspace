@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 
 # Pin to a specific stable release so the server matches the Steam client that
 # joins it. Bump in lockstep with the desktop client.
-ARG FACTORIO_VERSION=2.0.77
+ARG FACTORIO_VERSION=2.1.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl xz-utils ca-certificates python3 \
