@@ -32,8 +32,11 @@ lean: Debian + Factorio headless + python3.
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -49,6 +52,14 @@ MODS_DIR = os.environ.get("MODS_DIR", "/opt/factorio/mods")
 
 GAME_PORT = int(os.environ.get("FACTORIO_PORT", "12140"))
 CONTROL_PORT = int(os.environ.get("CONTROL_PORT", "12142"))
+
+# RCON: the Lua transport for live perception + body control. Container-internal
+# ONLY -- the supervisor reaches it on container-local loopback and the port is
+# deliberately NOT published by docker-compose (security by non-exposure). The
+# password is generated ONCE per supervisor process (not per engine re-exec, or
+# reconnect after new/load would break) and reused across every engine launch.
+RCON_PORT = int(os.environ.get("RCON_PORT", "12199"))
+RCON_PASSWORD = os.environ.get("RCON_PASSWORD") or secrets.token_hex(16)
 
 SERVER_SETTINGS = os.path.join(CONFIG_DIR, "server-settings.json")
 MAP_GEN_SETTINGS = os.path.join(CONFIG_DIR, "map-gen-settings.json")
@@ -99,6 +110,114 @@ def newest_named_save():
     return max(saves)[1] if saves else None
 
 
+# --- RCON client ----------------------------------------------------------
+
+class RconError(RuntimeError):
+    """An RCON auth/connect/command failure."""
+
+
+class Rcon:
+    """Minimal Source-RCON client (stdlib socket only).
+
+    Factorio speaks the Source RCON wire protocol: each packet is a
+    little-endian int32 length followed by ``id`` (int32), ``type`` (int32), a
+    null-terminated ascii body, and a trailing null byte. We authenticate once
+    on connect, then run commands synchronously. A trailing empty packet acts as
+    a sentinel so multi-packet (>4 KB) responses are fully drained before we
+    return. All socket I/O is serialized by a lock because the HTTP control
+    surface is a ``ThreadingHTTPServer`` -- concurrent control requests must not
+    interleave on the one socket.
+    """
+
+    AUTH = 3
+    AUTH_RESPONSE = 2
+    EXECCOMMAND = 2
+    RESPONSE_VALUE = 0
+
+    def __init__(self, host: str, port: int, password: str, timeout: float = 10.0):
+        self.host = host
+        self.port = port
+        self.password = password
+        self.timeout = timeout
+        self.sock = None
+        self.lock = threading.Lock()
+        self._id = 0
+
+    def _next_id(self) -> int:
+        self._id = (self._id + 1) & 0x7FFFFFFF
+        return self._id
+
+    def _send(self, req_id: int, typ: int, body: str) -> None:
+        payload = struct.pack("<ii", req_id, typ) + body.encode("utf-8") + b"\x00\x00"
+        self.sock.sendall(struct.pack("<i", len(payload)) + payload)
+
+    def _recv_exact(self, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise RconError("rcon socket closed mid-read")
+            buf += chunk
+        return buf
+
+    def _recv_packet(self):
+        length = struct.unpack("<i", self._recv_exact(4))[0]
+        payload = self._recv_exact(length)
+        req_id, typ = struct.unpack("<ii", payload[:8])
+        body = payload[8:-2]  # drop the body terminator + packet terminator nulls
+        return req_id, typ, body.decode("utf-8", "replace")
+
+    def connect(self) -> None:
+        s = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        s.settimeout(self.timeout)
+        self.sock = s
+        auth_id = self._next_id()
+        self._send(auth_id, self.AUTH, self.password)
+        # The server may emit an empty RESPONSE_VALUE before the auth reply;
+        # loop until the AUTH_RESPONSE. id == -1 means the password was rejected.
+        while True:
+            req_id, typ, _ = self._recv_packet()
+            if typ == self.AUTH_RESPONSE:
+                if req_id == -1:
+                    raise RconError("rcon auth failed (bad password)")
+                return
+
+    def command(self, cmd: str) -> str:
+        with self.lock:
+            if self.sock is None:
+                raise RconError("rcon not connected")
+            req_id = self._next_id()
+            self._send(req_id, self.EXECCOMMAND, cmd)
+            # Factorio replies to each EXECCOMMAND with exactly ONE packet bearing
+            # the same id (probed: no empty-sentinel echo, unlike Source servers).
+            # A >4 KB reply is split into multiple same-id packets that arrive
+            # back-to-back, so read the first match at the full timeout, then
+            # briefly drain any continuation fragments.
+            chunks = []
+            self.sock.settimeout(self.timeout)
+            while True:
+                try:
+                    rid, _typ, body = self._recv_packet()
+                except socket.timeout:
+                    break
+                if rid == req_id:
+                    chunks.append(body)
+                    self.sock.settimeout(0.3)   # short drain for fragments
+            self.sock.settimeout(self.timeout)
+            if not chunks:
+                raise RconError("no rcon response")
+            return "".join(chunks)
+
+    def close(self) -> None:
+        with self.lock:
+            if self.sock is not None:
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
+
+
 # --- engine management ----------------------------------------------------
 
 class Engine:
@@ -111,6 +230,10 @@ class Engine:
         self._ready = threading.Event()
         self._save_done = threading.Event()
         self._save_ok = True
+        # RCON client to the live engine, (re)connected after every (re-)exec.
+        # Gameplay/perceive ops use this; they must NOT take self.lock (which
+        # serializes world re-execs) -- the Rcon's own I/O lock guards them.
+        self.rcon = None
 
     # -- lifecycle --
 
@@ -129,6 +252,8 @@ class Engine:
             "--start-server", save_path(ACTIVE),
             "--server-settings", SERVER_SETTINGS,
             "--port", str(GAME_PORT),
+            "--rcon-port", str(RCON_PORT),
+            "--rcon-password", RCON_PASSWORD,
         ] + self._common_args()
         log(f"launching engine: active<-{label!r} port={GAME_PORT}")
         self.proc = subprocess.Popen(
@@ -164,6 +289,9 @@ class Engine:
         self.proc.stdin.flush()
 
     def _stop(self, save_first=True):
+        if self.rcon is not None:
+            self.rcon.close()
+            self.rcon = None
         if not self.is_running():
             return
         log("stopping engine")
@@ -190,6 +318,65 @@ class Engine:
 
     def wait_ready(self, timeout=READY_TIMEOUT):
         return self._ready.wait(timeout=timeout)
+
+    # -- rcon --
+
+    def _connect_rcon(self, timeout=30.0):
+        """(Re)connect the RCON client to the freshly-(re-)exec'd engine.
+
+        The RCON listener opens a beat after the (InGame) marker, so retry for a
+        short window. Always called right after a successful ``wait_ready``; a
+        failure is logged but non-fatal (world ops keep working; gameplay verbs
+        report 'engine/RCON not ready' until a reconnect lands)."""
+        if self.rcon is not None:
+            self.rcon.close()
+            self.rcon = None
+        deadline = time.monotonic() + timeout
+        last = None
+        while time.monotonic() < deadline:
+            if not self.is_running():
+                return
+            client = Rcon("127.0.0.1", RCON_PORT, RCON_PASSWORD)
+            try:
+                client.connect()
+                # Warm up the Lua command channel: RCON accepts auth a beat
+                # before the first command reliably executes (the very first
+                # command right after (InGame) can come back empty). Poll until a
+                # string round-trips, so callers only see a fully-usable channel.
+                for _ in range(40):
+                    if client.command('/silent-command rcon.print("ready")').strip() == "ready":
+                        self.rcon = client
+                        log(f"rcon connected on :{RCON_PORT}")
+                        return
+                    time.sleep(0.25)
+                client.close()
+                last = RuntimeError("rcon warmup did not confirm")
+            except Exception as e:
+                client.close()
+                last = e
+                time.sleep(1.0)
+        log(f"WARNING: rcon did not connect within {timeout:.0f}s ({last!r})")
+
+    def _rcon_cmd(self, command):
+        if self.rcon is None:
+            raise RuntimeError("engine/RCON not ready")
+        return self.rcon.command(command)
+
+    def _lua_json_call(self, iface_fn, args_lua):
+        """Run ``remote.call('game_bot', <fn>, <args>)`` and JSON-decode its
+        returned table. The table_to_json flavor is resolved inline (2.0 moved it
+        from ``game`` to ``helpers``) so the mod stays a pure library."""
+        lua = (
+            "local r=remote.call('game_bot','%s',%s); "
+            "rcon.print((helpers and helpers.table_to_json or game.table_to_json)(r))"
+            % (iface_fn, args_lua)
+        )
+        out = self._rcon_cmd("/silent-command " + lua).strip()
+        try:
+            return json.loads(out)
+        except Exception:
+            # A lua error comes back as a plain (non-JSON) string on the channel.
+            raise RuntimeError(out or "empty rcon response")
 
     # -- map creation --
 
@@ -272,6 +459,7 @@ class Engine:
             self._create_map(ACTIVE, seed=seed)
             self._spawn(label=None)
             ready = self.wait_ready()
+            self._connect_rcon()
             return {"world": None, "seed": seed, "ready": ready}
 
     def op_load(self, name):
@@ -284,7 +472,52 @@ class Engine:
             shutil.copy(save_path(name), save_path(ACTIVE))   # name -> _active
             self._spawn(label=name)
             ready = self.wait_ready()
+            self._connect_rcon()
             return {"world": name, "ready": ready}
+
+    # -- gameplay / perceive ops (RCON-backed; NOT under self.lock) --
+    #
+    # These reach the live engine over RCON and deliberately do NOT take
+    # self.lock -- that lock serializes world re-execs, and sharing it would make
+    # a gameplay call block on an in-flight new/load. The Rcon I/O lock already
+    # serializes the socket.
+
+    def op_observe(self, radius=None):
+        """Full world/body snapshot via the companion mod's observe interface."""
+        args_lua = "{radius=%d}" % int(radius) if radius is not None else "{}"
+        return self._lua_json_call("observe", args_lua)
+
+    def op_exec_lua(self, code):
+        """Run arbitrary Lua via /silent-command; return whatever it printed.
+
+        To get a value back the caller's code must ``rcon.print(...)`` -- the
+        engine returns the console output verbatim (empty string if nothing was
+        printed)."""
+        if not code:
+            raise ValueError("exec_lua requires 'code'")
+        return {"output": self._rcon_cmd("/silent-command " + code)}
+
+    def op_pause(self, paused):
+        """Toggle game.tick_paused and report the resulting state."""
+        val = "true" if paused else "false"
+        out = self._rcon_cmd(
+            "/silent-command game.tick_paused=%s rcon.print(game.tick_paused)" % val
+        ).strip()
+        return {"paused": out == "true"}
+
+    def op_body_spawn(self, surface=None, x=0, y=0):
+        surf = surface or "nauvis"
+        args_lua = "{surface=%s,x=%s,y=%s}" % (
+            json.dumps(str(surf)), float(x), float(y),
+        )
+        return self._lua_json_call("spawn", args_lua)
+
+    def op_body_move(self, x, y):
+        args_lua = "{x=%s,y=%s}" % (float(x), float(y))
+        return self._lua_json_call("set_target", args_lua)
+
+    def op_body_stop(self):
+        return self._lua_json_call("stop", "{}")
 
     # -- boot --
 
@@ -311,6 +544,7 @@ class Engine:
         self._spawn(label=label)
         if self.wait_ready():
             log("engine ready")
+            self._connect_rcon()
         else:
             log("WARNING: engine did not reach ready state within timeout")
 
@@ -360,6 +594,22 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if not name:
                     return self._send(400, {"ok": False, "error": "missing 'name'"})
                 return self._send(200, {"ok": True, "result": ENGINE.op_load(name)})
+            # ---- gameplay / perceive (RCON-backed) ----
+            if route == "/observe":
+                return self._send(200, {"ok": True, "result": ENGINE.op_observe(body.get("radius"))})
+            if route == "/exec-lua":
+                return self._send(200, {"ok": True, "result": ENGINE.op_exec_lua(body.get("code"))})
+            if route == "/pause":
+                return self._send(200, {"ok": True, "result": ENGINE.op_pause(bool(body.get("paused")))})
+            if route == "/body/spawn":
+                result = ENGINE.op_body_spawn(body.get("surface"), body.get("x", 0), body.get("y", 0))
+                return self._send(200, {"ok": True, "result": result})
+            if route == "/body/move":
+                if body.get("x") is None or body.get("y") is None:
+                    return self._send(400, {"ok": False, "error": "move requires x and y"})
+                return self._send(200, {"ok": True, "result": ENGINE.op_body_move(body["x"], body["y"])})
+            if route == "/body/stop":
+                return self._send(200, {"ok": True, "result": ENGINE.op_body_stop()})
             return self._send(404, {"ok": False, "error": "not found"})
         except FileNotFoundError as e:
             return self._send(404, {"ok": False, "error": str(e)})
