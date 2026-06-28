@@ -10,7 +10,34 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 class TestRegistry:
     def test_known_platforms_registered(self):
         from awm.social import connectors
-        assert set(connectors.REGISTRY) == {"discord", "slack"}
+        assert set(connectors.REGISTRY) == {"discord", "slack", "gmail"}
+
+    def test_build_gmail_connector(self):
+        from awm.social import connectors
+        from awm.social.config import AccountConfig
+
+        async def _noop(_m):
+            return None
+
+        g = connectors.build(
+            AccountConfig(name="gmail-me", platform="gmail", token="app-pw",
+                          address="me@gmail.com"), _noop)
+        assert g.platform == "gmail"
+        assert g.account.address == "me@gmail.com"
+
+
+class TestGmailSubject:
+    def test_explicit_subject_header_split(self):
+        from awm.social.connectors.gmail_conn import _split_subject
+        subj, body = _split_subject("Subject: Hi there\n\nthe body line")
+        assert subj == "Hi there"
+        assert body == "the body line"
+
+    def test_no_header_uses_first_line(self):
+        from awm.social.connectors.gmail_conn import _split_subject
+        subj, body = _split_subject("just a plain message")
+        assert subj == "just a plain message"
+        assert body == "just a plain message"
 
     def test_build_returns_right_connector(self):
         from awm.social import connectors

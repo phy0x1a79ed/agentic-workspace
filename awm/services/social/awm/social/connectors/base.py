@@ -30,6 +30,7 @@ class Account:
     token: str
     app_token: str | None = None
     display_name: str | None = None
+    address: str | None = None  # mailbox/login address (gmail uses this)
 
 
 @dataclass(frozen=True)

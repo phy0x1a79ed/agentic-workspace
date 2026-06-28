@@ -38,7 +38,7 @@ CONFIG_FILE = config.AWM_DIR / "social.toml"
 # Platforms this build knows how to connect. The config loader validates
 # against it so a typo'd platform fails loudly instead of silently never
 # connecting. Keep in sync with ``connectors.REGISTRY``.
-KNOWN_PLATFORMS = ("discord", "slack")
+KNOWN_PLATFORMS = ("discord", "slack", "gmail")
 
 
 @dataclass(frozen=True)
@@ -50,23 +50,63 @@ class AccountConfig:
     token: str
     app_token: str | None = None
     display_name: str | None = None
+    address: str | None = None  # mailbox/login address (required for gmail)
     enabled: bool = True
 
     @property
     def kind(self) -> str:
-        """Best-effort "bot" vs "user" label, derived from the token shape.
+        """Best-effort "bot" vs "user" label, derived from platform + token.
 
-        Slack user OAuth tokens start ``xoxp-``; everything else (Slack bot
-        ``xoxb-``, Discord bot tokens) is treated as a bot identity. This is a
-        display hint only — never an authz decision.
+        Gmail (an App-Password mailbox) and Slack user OAuth tokens (``xoxp-``)
+        are "user" identities; everything else (Slack bot ``xoxb-``, Discord bot
+        tokens) is a "bot". This is a display hint only — never an authz decision.
         """
-        if self.token.startswith("xoxp-"):
+        if self.platform == "gmail" or self.token.startswith("xoxp-"):
             return "user"
         return "bot"
 
 
 class SocialConfigError(Exception):
     pass
+
+
+def _resolve_secret(
+    inline: object, file_ref: object, cfg_path: Path, label: str,
+    *, required: bool = True,
+) -> str | None:
+    """Resolve a secret from an inline value or a ``*_file`` path reference.
+
+    ``token``/``app_token`` may be given inline, OR via ``token_file`` /
+    ``app_token_file`` naming a file whose contents are the secret — so the
+    secret can live in one gitignored file instead of being inlined into
+    ``social.toml``. A relative ``*_file`` is resolved against the config file's
+    directory. File contents have ALL whitespace stripped (tokens never contain
+    any), so a Google App Password pasted with its display spaces still works.
+    Returns ``None`` when neither is given and ``required`` is False.
+    """
+    if inline is not None:
+        if not isinstance(inline, str) or not inline.strip():
+            raise SocialConfigError(f"{cfg_path}: {label} must be a non-empty string")
+        return inline.strip()
+    if file_ref is not None:
+        if not isinstance(file_ref, str) or not file_ref.strip():
+            raise SocialConfigError(f"{cfg_path}: {label}_file must be a path string")
+        p = Path(file_ref.strip())
+        if not p.is_absolute():
+            p = cfg_path.parent / p
+        try:
+            raw = p.read_text()
+        except OSError as exc:
+            raise SocialConfigError(
+                f"{cfg_path}: {label}_file {p} could not be read: {exc}") from exc
+        secret = "".join(raw.split())
+        if not secret:
+            raise SocialConfigError(f"{cfg_path}: {label}_file {p} is empty")
+        return secret
+    if required:
+        raise SocialConfigError(
+            f"{cfg_path}: {label} (or {label}_file) is required")
+    return None
 
 
 def load(path: Path | None = None) -> list[AccountConfig]:
@@ -105,20 +145,26 @@ def load(path: Path | None = None) -> list[AccountConfig]:
                 f"{path}: [account.{name}].platform must be one of "
                 f"{', '.join(KNOWN_PLATFORMS)}"
             )
-        token = section.get("token")
-        if not isinstance(token, str) or not token.strip():
-            raise SocialConfigError(
-                f"{path}: [account.{name}].token must be a non-empty string"
-            )
-        app_token = section.get("app_token")
-        if app_token is not None and not isinstance(app_token, str):
-            raise SocialConfigError(
-                f"{path}: [account.{name}].app_token must be a string when present"
-            )
+        token = _resolve_secret(
+            section.get("token"), section.get("token_file"),
+            path, f"[account.{name}].token")
+        app_token = _resolve_secret(
+            section.get("app_token"), section.get("app_token_file"),
+            path, f"[account.{name}].app_token", required=False)
         display_name = section.get("display_name")
         if display_name is not None and not isinstance(display_name, str):
             raise SocialConfigError(
                 f"{path}: [account.{name}].display_name must be a string when present"
+            )
+        address = section.get("address")
+        if address is not None and not isinstance(address, str):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].address must be a string when present"
+            )
+        if platform == "gmail" and (not address or not address.strip()):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].address (the mailbox email) is "
+                f"required for gmail accounts"
             )
         enabled = section.get("enabled", True)
         if not isinstance(enabled, bool):
@@ -128,9 +174,10 @@ def load(path: Path | None = None) -> list[AccountConfig]:
         accounts.append(AccountConfig(
             name=str(name).strip(),
             platform=platform,
-            token=token.strip(),
-            app_token=app_token.strip() if app_token else None,
+            token=token,            # already resolved + cleaned
+            app_token=app_token,    # resolved (or None)
             display_name=display_name.strip() if display_name else None,
+            address=address.strip() if address else None,
             enabled=enabled,
         ))
     return accounts

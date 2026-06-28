@@ -38,10 +38,24 @@ app_token = "xapp-..."         # App-level token; REQUIRED for Socket Mode recei
 platform = "slack"
 token = "xoxp-..."
 app_token = "xapp-..."
+
+[account.gmail-me]             # Gmail via a Google App Password (SMTP + IMAP).
+platform = "gmail"
+address = "you@gmail.com"      # the mailbox; also the SMTP/IMAP login user.
+token = "abcd efgh ijkl mnop"  # 16-char App Password (NOT your normal password).
 ```
 
 You create the Discord bot / Slack app yourself and paste the tokens here; no
-OAuth-callback server is built. Gmail / UBC-webmail later get their own auth path.
+OAuth-callback server is built.
+
+**Gmail** uses a Google **App Password** (no OAuth client / callback server):
+enable 2-Step Verification on the Google account, then create an App Password at
+<https://myaccount.google.com/apppasswords> and paste the 16-char value as
+`token` with the mailbox as `address`. The connector sends over `smtp.gmail.com`
+and receives by polling `imap.gmail.com` (reading with `BODY.PEEK`, so it never
+marks your mail read). For `social_send`, `channel` is the recipient address and
+`thread` (optional) is an RFC822 `Message-ID` to reply into; a `Subject:` first
+line in the text sets the subject. UBC-webmail / WeChat later get their own path.
 
 ## Run
 

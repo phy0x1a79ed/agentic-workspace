@@ -11,11 +11,13 @@ from awm.social.connectors.base import (
     Account, Channel, Connector, Identity, InboundMessage, OnMessage,
 )
 from awm.social.connectors.discord_conn import DiscordConnector
+from awm.social.connectors.gmail_conn import GmailConnector
 from awm.social.connectors.slack_conn import SlackConnector
 
 REGISTRY: dict[str, type[Connector]] = {
     "discord": DiscordConnector,
     "slack": SlackConnector,
+    "gmail": GmailConnector,
 }
 
 
@@ -34,6 +36,7 @@ def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
         token=cfg.token,
         app_token=cfg.app_token,
         display_name=cfg.display_name,
+        address=cfg.address,
     )
     return cls(account, on_message)
 

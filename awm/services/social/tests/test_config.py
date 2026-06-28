@@ -64,3 +64,59 @@ platform = "slack"
 """)
         with pytest.raises(cfg.SocialConfigError):
             cfg.load(p)
+
+    def test_loads_gmail_account(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.gmail-me]
+platform = "gmail"
+token = "abcd efgh ijkl mnop"
+address = "me@gmail.com"
+""")
+        a = cfg.load(p)[0]
+        assert a.platform == "gmail"
+        assert a.address == "me@gmail.com"
+        assert a.kind == "user"
+
+    def test_token_file_read_and_whitespace_stripped(self, tmp_path):
+        from awm.social import config as cfg
+        secret = tmp_path / "gmail.secret"
+        secret.write_text("abcd efgh ijkl mnop\n")  # display spaces + newline
+        p = _write(tmp_path / "social.toml", f"""
+[account.gmail-me]
+platform = "gmail"
+address = "me@gmail.com"
+token_file = "{secret}"
+""")
+        a = cfg.load(p)[0]
+        assert a.token == "abcdefghijklmnop"  # all whitespace collapsed
+
+    def test_token_file_relative_to_config(self, tmp_path):
+        from awm.social import config as cfg
+        (tmp_path / "s").mkdir()
+        (tmp_path / "s" / "tok").write_text("xoxb-secret")
+        p = _write(tmp_path / "social.toml", """
+[account.slack-bot]
+platform = "slack"
+token_file = "s/tok"
+""")
+        assert cfg.load(p)[0].token == "xoxb-secret"
+
+    def test_missing_token_and_token_file_rejected(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.x]
+platform = "discord"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
+
+    def test_gmail_requires_address(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.gmail-me]
+platform = "gmail"
+token = "abcd efgh ijkl mnop"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
