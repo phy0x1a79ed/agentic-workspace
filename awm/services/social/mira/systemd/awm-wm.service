@@ -1,0 +1,17 @@
+[Unit]
+Description=AWM window manager (openbox on :20) for social clients on mira
+Documentation=https://example.invalid/awm-social-mira
+After=awm-display.service
+Requires=awm-display.service
+
+[Service]
+Environment=DISPLAY=:20
+UnsetEnvironment=WAYLAND_DISPLAY
+# Bare Xvfb maps no windows, so Slack/Opera render to a black root and can't be
+# focused over VNC. A minimal WM maps, places, and focuses their windows.
+ExecStart=/usr/bin/openbox
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
