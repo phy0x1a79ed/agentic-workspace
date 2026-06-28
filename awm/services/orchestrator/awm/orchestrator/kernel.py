@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from awm.orchestrator.dao import REST_MODE
+from awm.orchestrator.dao import REST_MODE, STATES
 
 if TYPE_CHECKING:  # avoid a hard import cost on the hot path
     from awm.orchestrator.dao import OrchestratorDAO
@@ -42,6 +42,12 @@ if TYPE_CHECKING:  # avoid a hard import cost on the hot path
 # A worker may fail transiently this many times (auto-retry to ``ready``)
 # before the node rests in ``failed``.
 TRANSIENT_RETRY_CAP = 3
+
+# The states that count as "occupying" an attached scope: everything except the
+# terminal ones. A scope held by a terminal task (completed / failed /
+# abandoned) is free to re-attach elsewhere. Drives ``check_scope_free``.
+_TERMINAL = {"completed", "failed", "abandoned"}
+NON_TERMINAL = frozenset(s for s in STATES if s not in _TERMINAL)
 
 DispatchIntent = tuple[str, str]  # (task_id, mode)
 
@@ -77,9 +83,9 @@ def recompute_readiness(dao: "OrchestratorDAO", task_id: str) -> bool:
     return True
 
 
-def ready_frontier(dao: "OrchestratorDAO", project: str) -> list[dict]:
-    """The nodes currently in ``ready`` for a project — the worker frontier."""
-    return dao.list_tasks_by_state(project, "ready")
+def ready_frontier(dao: "OrchestratorDAO") -> list[dict]:
+    """The nodes currently in ``ready`` — the global worker frontier."""
+    return dao.list_tasks_by_state("ready")
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +144,27 @@ def check_funnel(
         seen.add(node)
         stack.extend(dao.depends_on(node, conn=conn))
     return targets <= seen
+
+
+# ---------------------------------------------------------------------------
+# Scope exclusivity — a scope is attached to ≤1 non-terminal task at a time
+# ---------------------------------------------------------------------------
+
+
+def check_scope_free(
+    dao: "OrchestratorDAO", scope_ref: str, task_id: str, *, conn=None
+) -> bool:
+    """True iff ``scope_ref`` may be attached to ``task_id``.
+
+    The hard rule: a git scope is attached to at most one **non-terminal** task
+    at a time. So an attach is allowed iff no OTHER task that currently holds
+    ``scope_ref`` is in a :data:`NON_TERMINAL` state (a scope held only by
+    completed / failed / abandoned tasks is free to re-attach). Re-attaching to
+    a task that already holds it is always fine (idempotent relink)."""
+    for holder in dao.tasks_holding_scope(scope_ref, conn=conn):
+        if holder["id"] != task_id and holder["state"] in NON_TERMINAL:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------

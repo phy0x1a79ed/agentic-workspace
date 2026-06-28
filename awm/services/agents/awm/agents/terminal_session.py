@@ -23,8 +23,8 @@ Wire protocol over the raw ``direct`` bridge (``SessionContext.open_bridge()``):
                      (a non-control / unparseable text frame is treated as
                      keystrokes, so a plain-text client still works)
 
-Init (``ctx.init``): ``{project, scope}`` or ``{session_id}`` to resolve the
-live agent, plus optional ``{cols, rows}`` for the initial PTY size.
+Init (``ctx.init``): ``{scope}`` or ``{session_id}`` to resolve the live agent,
+plus optional ``{cols, rows}`` for the initial PTY size.
 """
 from __future__ import annotations
 
@@ -63,10 +63,10 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
         except (TypeError, ValueError):
             return None, f"invalid session_id {sid!r}"
     else:
-        project, scope = init.get("project"), init.get("scope")
-        if not project or not scope:
-            return None, "init requires {project, scope} or {session_id}"
-        inst = ai.get_session_by_scope(project, scope)
+        scope = init.get("scope")
+        if not scope:
+            return None, "init requires {scope} or {session_id}"
+        inst = ai.get_session_by_scope(scope)
     if inst is None:
         return None, "no live agent session for that identity"
     tmux = getattr(inst, "tmux_session", None)

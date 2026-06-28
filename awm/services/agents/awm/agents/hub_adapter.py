@@ -16,6 +16,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 from awm.gatewayclient.adapter import SessionContext
+from awm.agents import admin_ops
 from awm.agents import dao
 from awm.agents import agent_instances as ai
 from awm.agents import agent_transcript
@@ -42,33 +43,14 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_list",
             "description": (
                 "List agent sessions newest-first (optionally filtered by "
-                "project/scope/status). Pass limit for the most recent / last N "
+                "scope/status). Pass limit for the most recent / last N "
                 "sessions."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": False},
                 {"name": "scope", "type": "string", "required": False},
                 {"name": "status", "type": "string", "required": False},
                 {"name": "limit", "type": "integer", "required": False,
                  "description": "Return only the most recent N sessions (newest first)."},
-            ],
-        },
-        {
-            "name": "create_session",
-            "tool": "agent_spawn",
-            "description": (
-                "Spawn a new agent subprocess for (project, scope). Defaults to "
-                "the claude harness (interactive TUI in a tmux session) so the "
-                "agent exposes a live 'terminal' session to attach to. Pass "
-                "agent_cli='opencode' for a headless opencode agent."
-            ),
-            "params": [
-                {"name": "project", "type": "string", "required": True},
-                {"name": "scope", "type": "string", "required": True},
-                {"name": "agent_cli", "type": "string", "required": False},
-                {"name": "permission_mode", "type": "string", "required": False},
-                {"name": "model", "type": "string", "required": False},
-                {"name": "effort", "type": "string", "required": False},
             ],
         },
         {
@@ -116,7 +98,6 @@ API_MANIFEST: dict[str, Any] = {
                 "PASSIVE channel: the agent reads it at the next turn boundary."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
                 {"name": "author", "type": "string", "required": True},
                 {"name": "body", "type": "string", "required": True},
@@ -133,7 +114,6 @@ API_MANIFEST: dict[str, Any] = {
                 "to finish. Contrast agent_post, which is passive/turn-aligned."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
                 {"name": "author", "type": "string", "required": True},
                 {"name": "body", "type": "string", "required": True},
@@ -144,14 +124,12 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_subscribe",
             "description": (
                 "Snapshot an agent's act stream (the normalized transcript from "
-                "agents.db) for (project, scope). Subscribe to an AGENT for its "
-                "acts; message a SCOPE for conversation. Returns acts after an "
-                "optional cursor (after_ts ISO + after_id). For a LIVE stream "
-                "(backfill + push, de-duped by act id) open the 'transcript' WS "
-                "session instead."
+                "agents.db) for a scope. Subscribe to an AGENT for its acts. "
+                "Returns acts after an optional cursor (after_ts ISO + after_id). "
+                "For a LIVE stream (backfill + push, de-duped by act id) open the "
+                "'transcript' WS session instead."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
                 {"name": "after_ts", "type": "string", "required": False},
                 {"name": "after_id", "type": "string", "required": False},
@@ -295,8 +273,8 @@ API_MANIFEST: dict[str, Any] = {
             "kind": "transcript",
             "transport": "direct",
             "description": (
-                "Live agent act stream for (project, scope). Open with init "
-                "{project, scope, after_ts?, after_id?}: the server replays the "
+                "Live agent act stream for a scope. Open with init "
+                "{scope, after_ts?, after_id?}: the server replays the "
                 "transcript from the cursor as 'backfill' acts, then streams new "
                 "acts live as 'act' frames. Each act carries its agent_transcript "
                 "id (uuid) so the client de-dupes the backfill/live overlap."
@@ -307,7 +285,7 @@ API_MANIFEST: dict[str, Any] = {
             "transport": "direct",
             "description": (
                 "Interactive tmux terminal for a claude agent. Open with "
-                "init {project, scope} (or {session_id}), optional {cols, rows}: "
+                "init {scope} (or {session_id}), optional {cols, rows}: "
                 "the server attaches a PTY-backed `tmux attach` to the agent's "
                 "session and byte-relays it. Binary frames are raw terminal "
                 "bytes (output downstream, keystrokes upstream); text frames are "
@@ -319,10 +297,24 @@ API_MANIFEST: dict[str, Any] = {
 }
 
 
+# Attach-gated admin tools (DAG restructuring) are generated from the single
+# admin_ops registry — MCP-visible (so an attended worker sees them), but each
+# one's gate (placement.relay_admin) rejects it unless a human is attached.
+# Editing admin_ops.ADMIN_OPS adds/removes/renames a command here automatically.
+API_MANIFEST["functions"].extend(
+    {
+        "name": op["name"],
+        "tool": op["name"],
+        "description": op["description"],
+        "params": op["params"],
+    }
+    for op in admin_ops.ADMIN_OPS
+)
+
+
 async def _h_list_sessions(args: dict) -> dict:
     _limit = args.get("limit")
     sessions = ai.list_sessions(
-        project=args.get("project"),
         scope=args.get("scope"),
         status=args.get("status"),
         limit=int(_limit) if _limit is not None else None,
@@ -330,24 +322,6 @@ async def _h_list_sessions(args: dict) -> dict:
     return {
         "sessions": [_serialize_session(s) for s in sessions],
         "total": len(sessions),
-    }
-
-
-async def _h_create_session(args: dict) -> dict:
-    session = await ai.create_session(
-        project=args["project"],
-        scope=args["scope"],
-        agent_cli=args.get("agent_cli", "claude"),
-        permission_mode=args.get("permission_mode", "default"),
-        model=args.get("model"),
-        effort=args.get("effort"),
-    )
-    return {
-        "session_id": session.id,
-        "project": session.project,
-        "scope": session.scope,
-        "pid": session.proc.pid if session.proc else 0,
-        "status": session.status,
     }
 
 
@@ -374,9 +348,7 @@ async def _h_slash_command(args: dict) -> dict:
 
 
 def _h_enqueue_post(args: dict) -> dict:
-    project = args["project"]
-    scope = args["scope"]
-    session = ai.get_session_by_scope(project, scope)
+    session = ai.get_session_by_scope(args["scope"])
     if session is None:
         return {"enqueued": False, "reason": "no active session"}
     ok = ai.enqueue_input(session, args["author"], args["body"])
@@ -384,9 +356,7 @@ def _h_enqueue_post(args: dict) -> dict:
 
 
 async def _h_notify_agent(args: dict) -> dict:
-    project = args["project"]
-    scope = args["scope"]
-    session = ai.get_session_by_scope(project, scope)
+    session = ai.get_session_by_scope(args["scope"])
     if session is None:
         return {"notified": False, "reason": "no active session"}
     ok = await ai.notify_agent(session, args["author"], args["body"])
@@ -403,7 +373,7 @@ def _h_agent_subscribe(args: dict) -> dict:
     after_ts = iso_to_ms(args.get("after_ts"))
     limit = args.get("limit")
     acts = agent_transcript.read_acts_after(
-        args["project"], args["scope"],
+        args["scope"],
         after_ts=after_ts,
         after_id=args.get("after_id"),
         limit=int(limit) if limit is not None else None,
@@ -427,14 +397,13 @@ async def _transcript_session(ctx: SessionContext) -> None:
     reconnects with its last cursor and replays the gap.
     """
     init = ctx.init or {}
-    project = init.get("project")
     scope = init.get("scope")
-    if not project or not scope:
+    if not scope:
         # Best-effort error frame, then return (the bridge closes).
         try:
             bridge = await ctx.open_bridge()
             await bridge.send(json.dumps(
-                {"type": "error", "message": "init requires project + scope"}))
+                {"type": "error", "message": "init requires scope"}))
             await bridge.close()
         except Exception:  # noqa: BLE001
             pass
@@ -444,7 +413,7 @@ async def _transcript_session(ctx: SessionContext) -> None:
     after_id = init.get("after_id")
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
-    await agent_bus.attach_live(project, scope, queue)
+    await agent_bus.attach_live(scope, queue)
     # A live transcript subscription IS the user-attached signal for a placement
     # (orthogonal to the task's state). Attach is PASSIVE (T2): it does not freeze
     # the autonomous supervisor — it only tells the orchestrator not to reclaim a
@@ -453,7 +422,7 @@ async def _transcript_session(ctx: SessionContext) -> None:
     # the stream on it.
     try:
         from awm.agents import placement
-        await placement.set_attached(project, scope, True)
+        await placement.set_attached(scope, True)
     except Exception:  # noqa: BLE001
         pass
     bridge = await ctx.open_bridge()
@@ -461,7 +430,7 @@ async def _transcript_session(ctx: SessionContext) -> None:
         # 1) Backfill from the cursor. Track the last act so the live stream
         #    can be deduped by id on the client (overlap is fine).
         backfill = agent_transcript.read_acts_after(
-            project, scope, after_ts=after_ts, after_id=after_id)
+            scope, after_ts=after_ts, after_id=after_id)
         await bridge.send(json.dumps({"type": "backfill", "acts": backfill}))
 
         # 2) Stream live acts published by the reader loop.
@@ -478,10 +447,10 @@ async def _transcript_session(ctx: SessionContext) -> None:
             except Exception:  # noqa: BLE001
                 break
     finally:
-        await agent_bus.detach_live(project, scope, queue)
+        await agent_bus.detach_live(scope, queue)
         try:
             from awm.agents import placement
-            await placement.set_attached(project, scope, False)
+            await placement.set_attached(scope, False)
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -527,7 +496,6 @@ def _relay(fn_name: str):
 
 HANDLERS = {
     "list_sessions": _h_list_sessions,
-    "create_session": _h_create_session,
     "stop_session": _h_stop_session,
     "kill_session": _h_kill_session,
     "tail_log": _h_tail_log,
@@ -553,10 +521,26 @@ HANDLERS = {
 }
 
 
+def _admin_relay(op_name: str):
+    """Build the gated relay handler for one admin op (forwards the caller
+    identity ``as_`` so ``placement.relay_admin`` resolves + attach-gates it)."""
+    async def _handler(args: dict, as_: str | None = None) -> dict:
+        from awm.agents import placement
+        return await placement.relay_admin(op_name, args, as_)
+    return _handler
+
+
+# One gated handler per admin op, generated from the registry (single source).
+for _op in admin_ops.ADMIN_OPS:
+    HANDLERS[_op["name"]] = _admin_relay(_op["name"])
+
+
 def _on_start() -> None:
     dao.init()
+    # Boot cleanup only — close stale instance rows. There is no agents-side
+    # resume driver: the orchestrator owns re-dispatch of resting nodes, and a
+    # dead placement is reported back via orch.fail (liveness).
     ai.reconcile_on_startup()
-    ai.start_resume_driver()
 
 
 async def main() -> None:

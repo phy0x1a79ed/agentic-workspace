@@ -118,7 +118,7 @@ def record_out(session, parsed: dict) -> None:
     meta = {"event": parsed, "_event_repr": body_json}
     try:
         _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind=kind, body=text_body, meta=meta, ts=now_ms(),
         )
     except Exception:  # noqa: BLE001
@@ -166,7 +166,7 @@ def record_event(session, event) -> dict | None:
     kind = getattr(event, "kind", "status")
     try:
         row_id = _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind=kind, body=body, meta=meta, ts=ts,
         )
     except Exception:  # noqa: BLE001
@@ -191,7 +191,7 @@ def upsert_message_act(session, message_id: str, body: str,
     meta = {"message_id": message_id, "data": data}
     try:
         _get_dao().upsert_transcript(
-            id=message_id, project=session.project, scope=session.scope,
+            id=message_id, scope=session.scope,
             kind="message", body=body, meta=meta, ts=ts,
         )
     except Exception:  # noqa: BLE001
@@ -206,7 +206,7 @@ def record_raw_out(session, line: str) -> None:
     """Persist a non-JSON stdout line as kind='system'."""
     try:
         _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind="system", body=line, meta={"raw": True}, ts=now_ms(),
         )
     except Exception:  # noqa: BLE001
@@ -218,7 +218,7 @@ def record_in(session, body: str, *, injection: bool = False) -> None:
     kind = "slash" if injection else "message"
     try:
         _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind=kind, body=body,
             meta={"direction": "in", "injection": injection},
             ts=now_ms(),
@@ -242,12 +242,12 @@ def _decode_event(row: dict) -> dict:
     return {}
 
 
-def read_session(project: str, scope: str) -> list[dict]:
-    """All transcript rows for (project, scope), ordered by ts."""
-    return _get_dao().read_transcript(project, scope)
+def read_session(scope: str) -> list[dict]:
+    """All transcript rows for ``scope``, ordered by ts."""
+    return _get_dao().read_transcript(scope)
 
 
-def read_acts_after(project: str, scope: str, *,
+def read_acts_after(scope: str, *,
                     after_ts: int | None = None,
                     after_id: str | None = None,
                     limit: int | None = None) -> list[dict]:
@@ -256,14 +256,14 @@ def read_acts_after(project: str, scope: str, *,
     Each act is ``{id, kind, body, meta, ts}`` ordered by (ts, id). ``after_ts``
     None replays the whole transcript (connect with no cursor)."""
     rows = _get_dao().read_transcript_after(
-        project, scope, after_ts=after_ts, after_id=after_id, limit=limit)
+        scope, after_ts=after_ts, after_id=after_id, limit=limit)
     return [_act_from_row(r) for r in rows]
 
 
-def has_unmatched_tool_use(project: str, scope: str) -> bool:
+def has_unmatched_tool_use(scope: str) -> bool:
     """True if the most recent assistant message contains an unmatched tool_use."""
     row = _get_dao().get_last_transcript_row(
-        project, scope, kinds=["message", "tool_result"])
+        scope, kinds=["message", "tool_result"])
     if row is None:
         return False
     event = _decode_event(row)
@@ -277,9 +277,9 @@ def has_unmatched_tool_use(project: str, scope: str) -> bool:
     )
 
 
-def read_recent_assistant_text(project: str, scope: str) -> str:
+def read_recent_assistant_text(scope: str) -> str:
     """Concatenate the text portion of the most recent end-of-turn assistant event."""
-    row = _get_dao().get_last_transcript_row(project, scope, kinds=["message"])
+    row = _get_dao().get_last_transcript_row(scope, kinds=["message"])
     if row is None:
         return ""
     event = _decode_event(row)

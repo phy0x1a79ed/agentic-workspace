@@ -39,7 +39,6 @@ declare -A DISTS=(
   [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
-  [skills]="$WS/awm/services/skills::$WS/awm/services/skills/tests"
   [discord]="$WS/awm/services/discord::$WS/awm/services/discord/tests"
   [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
@@ -47,7 +46,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts skills discord orchestrator stt tts)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts discord orchestrator stt tts)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

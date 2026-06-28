@@ -10,9 +10,13 @@
  *
  *   postToScope(project, scope, body)         → append a human message to the scope
  *   fetchScope(project, scope)                → backlog of human posts (one-shot)
- *   spawnAgent(project, scope)                → wake/attach the scope's agent (busy-tolerant)
- *   fetchAgentTranscript(project, scope, c?)  → connect-time act backfill (one-shot)
- *   subscribeAgent(project, scope, c?, cb)    → live act stream (backfill + push, deduped by id)
+ *   fetchAgentTranscript(scope, c?)           → connect-time act backfill (one-shot)
+ *   subscribeAgent(scope, c?, cb)             → live act stream (backfill + push, deduped by id)
+ *
+ * Agent identity keys on the unit `scope` (the slug) ALONE — there is no
+ * `project` in the agents-service wire surface; the scope-channel ops
+ * (postToScope/fetchScope) keep their (project, scope) coordinate because a
+ * scope IS a scopes-service repo, unchanged by the DAG decoupling.
  *
  * All of it rides `svc()` / `apiFetch`, so it speaks the same `/svc/<name>`
  * surface every other service call uses.
@@ -20,14 +24,12 @@
  * Backend ops (over /svc/scopes/fn/* and /svc/agents/fn/*):
  *   scope_fetch(project, scope, kind?, limit?, order?, before_ts?)
  *   scope_post(project, scope, author, body, kind?, meta?, to_scope?)
- *   create_session(project, scope, agent_cli?, permission_mode?, model?, effort?)
- *   agent_subscribe(project, scope, after_ts?, after_id?, limit?)  → {acts, total}
+ *   agent_subscribe(scope, after_ts?, after_id?, limit?)  → {acts, total}
  * NB: the /svc/<name>/fn/<fn> path dispatches on the *internal* op name, not
- * the MCP tool name — agent_spawn's internal op is `create_session`, and
- * agent_subscribe's internal op is also `agent_subscribe`.
+ * the MCP tool name — agent_subscribe's internal op is also `agent_subscribe`.
  *
  * The live agent stream is the agents service's `transcript` direct WS session
- * (POST /svc/agents/session/transcript {project, scope, after_id?, after_ts?}
+ * (POST /svc/agents/session/transcript {scope, after_id?, after_ts?}
  * → {ws_path}); the server replays the transcript from the cursor as a
  * `backfill` frame, then streams new acts live as `act` frames. Acts carry
  * their `agent_transcript` id (uuid) so the client de-dupes the backfill/live
@@ -36,7 +38,6 @@
 
 import { svc, toWsUrl } from './svc';
 import { awmAs } from './auth';
-import { HttpError } from './auth';
 
 /**
  * One post on a scope channel. Field names match the backend (`author`,
@@ -47,7 +48,7 @@ export interface ScopePost {
   id?: string;
   project?: string;
   scope?: string;
-  /** 'agent:project/scope' | 'user:name' | 'system' (display form). */
+  /** 'agent:<scope>' | 'user:name' | 'system' (display form). */
   author: string;
   /** 'message' | 'journal' | 'system' | 'tool_use' | 'tool_result' | … */
   kind?: string;
@@ -118,75 +119,19 @@ export async function postToScope(
  * path that works for a task-bound PLACEMENT (a placement runs in a workspace
  * unit, not a scopes channel). The message rides the agent's next turn; the
  * reply streams back through its transcript. Returns whether it was enqueued
- * (false when no live session holds the (project, scope)).
+ * (false when no live session holds the `scope`).
  */
 export async function enqueueAgentPost(
-  project: string,
   scope: string,
   body: string,
   author?: string,
 ): Promise<boolean> {
   const { enqueued } = await svc('agents').fn<{ enqueued: boolean }>('enqueue_post', {
-    project,
     scope,
     author: author ?? awmAs(),
     body,
   });
   return !!enqueued;
-}
-
-export interface SpawnOpts {
-  agent_cli?: string;
-  permission_mode?: string;
-  model?: string;
-  effort?: string;
-}
-
-export interface AgentSession {
-  id?: number | string;
-  project?: string;
-  scope?: string;
-  status?: string;
-  [k: string]: unknown;
-}
-
-/**
- * True when an error from `create_session` means "this scope already has an
- * active agent" (1 agent / scope) rather than a real failure. The agents
- * service raises `ScopeBusyError` ("scope <key> already has an active
- * session"); the gateway surfaces a handler exception as a 502 whose body
- * carries the message text, so we match on that.
- */
-function isScopeBusy(err: unknown): boolean {
-  if (err instanceof HttpError) {
-    return /already has an active session/i.test(err.body);
-  }
-  return /already has an active session/i.test((err as Error)?.message ?? '');
-}
-
-/**
- * Spawn (or re-attach) the agent for a scope. Busy-tolerant: the agents
- * service allows one agent per scope and raises `ScopeBusyError` when one is
- * already live. We swallow that — a busy scope means the agent is already
- * attached — and return a best-effort session descriptor (mirrors the backend
- * `orchestration._ensure_local_session`). So a chat surface can call this on
- * every connect to self-heal an agent that died after a hub restart, without
- * the busy case looking like an error.
- */
-export async function spawnAgent(
-  project: string,
-  scope: string,
-  opts: SpawnOpts = {},
-): Promise<AgentSession> {
-  try {
-    return await svc('agents').fn<AgentSession>('create_session', { project, scope, ...opts });
-  } catch (err) {
-    if (isScopeBusy(err)) {
-      // Already attached — treat as the existing session.
-      return { project, scope, status: 'running' };
-    }
-    throw err;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +173,6 @@ export interface AgentCursor {
  * so a surface that subscribes immediately does not need this.
  */
 export async function fetchAgentTranscript(
-  project: string,
   scope: string,
   cursor: AgentCursor = {},
   limit?: number,
@@ -236,7 +180,6 @@ export async function fetchAgentTranscript(
   const { acts } = await svc('agents').fn<{ acts: AgentAct[]; total: number }>(
     'agent_subscribe',
     {
-      project,
       scope,
       ...(cursor.after_ts ? { after_ts: cursor.after_ts } : {}),
       ...(cursor.after_id ? { after_id: cursor.after_id } : {}),
@@ -275,7 +218,6 @@ export interface AgentSubscription {
  * `close()` is safe to call before the socket finishes opening.
  */
 export function subscribeAgent(
-  project: string,
   scope: string,
   cursor: AgentCursor,
   onEvent: (ev: AgentStreamEvent) => void,
@@ -286,7 +228,6 @@ export function subscribeAgent(
   void (async () => {
     try {
       const { ws_path } = await svc('agents').session<{ ws_path: string }>('transcript', {
-        project,
         scope,
         ...(cursor.after_ts ? { after_ts: cursor.after_ts } : {}),
         ...(cursor.after_id ? { after_id: cursor.after_id } : {}),
@@ -350,7 +291,7 @@ export interface TerminalHandlers {
 
 /**
  * Open the agents service's `terminal` direct session for a claude-tmux agent:
- * POST /svc/agents/session/terminal {project, scope, cols?, rows?}, then connect
+ * POST /svc/agents/session/terminal {scope, cols?, rows?}, then connect
  * the returned WS as a bidirectional byte relay of `tmux attach`.
  *
  * Wire protocol (mirrors the backend `terminal_session`): binary frames are raw
@@ -360,7 +301,6 @@ export interface TerminalHandlers {
  * before it finishes opening — it detaches, never killing the agent.
  */
 export function openTerminal(
-  project: string,
   scope: string,
   opts: { cols?: number; rows?: number },
   handlers: TerminalHandlers,
@@ -372,7 +312,6 @@ export function openTerminal(
   void (async () => {
     try {
       const { ws_path } = await svc('agents').session<{ ws_path: string }>('terminal', {
-        project,
         scope,
         ...(opts.cols ? { cols: opts.cols } : {}),
         ...(opts.rows ? { rows: opts.rows } : {}),

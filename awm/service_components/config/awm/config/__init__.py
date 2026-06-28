@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-from importlib.util import find_spec
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -78,32 +77,20 @@ LOG_FILE = AWM_DIR / "awm.log"
 ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
+# Per-task workspace units (the DAG-node execution sandbox the workspace service
+# provisions) live at this top-level dir — the node-side analog of PROJECTS_DIR.
+# Gitignored; one subdir per unit slug.
+TASKS_DIR = WORKSPACE_ROOT / "tasks"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
 
 
-def _resolve_skills_dir() -> Path:
-    """Locate the skills catalog the `awm.skills` package owns.
-
-    The catalog is package-data of `awm.skills` (`awm.skills.skills.SKILLS_DIR`).
-    Config only *consumes* the path (for the scopes service's `.awm/skills`
-    symlink + inert template lookup), so it defers to the installed package
-    rather than hardcoding a layout — robust to the env's split editable
-    installs. Falls back to a workspace-local dir when `awm.skills` isn't
-    installed (stripped env), so importing config never crashes.
-    """
-    try:
-        spec = find_spec("awm.skills")
-        if spec and spec.origin:
-            catalog = Path(spec.origin).resolve().parent / "catalog"
-            if catalog.exists():
-                return catalog
-    except (ImportError, ValueError):
-        pass
-    return WORKSPACE_ROOT / "skills"
-
-
-SKILLS_DIR = _resolve_skills_dir()
+# The skills catalog is a plain top-level dir of reference ``.md`` files
+# (``<workspace_root>/skills/``) — the scopes service symlinks ``.awm/skills`` to
+# it and reads its ``*.template`` files. The skills *service* (the
+# ``skill_search`` / ``skill_get`` MCP tools + embeddings search) is retired; the
+# files are read-only reference now, owned by no service.
+SKILLS_DIR = WORKSPACE_ROOT / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 

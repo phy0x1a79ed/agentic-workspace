@@ -44,7 +44,7 @@
     fit = null;
   }
 
-  function start(el: HTMLDivElement, p: string, s: string): void {
+  function start(el: HTMLDivElement, s: string): void {
     status = 'connecting';
     errMsg = '';
     const t = new Terminal({
@@ -61,7 +61,7 @@
     term = t;
     fit = f;
 
-    sess = openTerminal(p, s, { cols: t.cols, rows: t.rows }, {
+    sess = openTerminal(s, { cols: t.cols, rows: t.rows }, {
       onData: (bytes) => term?.write(bytes),
       onError: (m) => { status = 'error'; errMsg = m; },
       onClose: () => { if (status !== 'error') status = 'closed'; },
@@ -93,7 +93,7 @@
     teardown();
     if (el && p && s) {
       queueMicrotask(() => {
-        if (host === el && project === p && scope === s) start(el, p, s);
+        if (host === el && project === p && scope === s) start(el, s);
       });
     }
     return teardown;
