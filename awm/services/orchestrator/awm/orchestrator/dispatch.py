@@ -170,7 +170,6 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
             }
     payload = {
         "task_id": task["id"],
-        "project": task["project"],
         "unit_slug": unit_slug,
         "brief": json.dumps(brief),
         "contracts_in": contracts_in,
@@ -189,17 +188,13 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
     if task["attached"]:
         payload["harness"] = "claude"
         payload["attached"] = True
-    # Existing scopes the node's unit links under repos/<name> (persisted on the
-    # task so every (re)dispatch re-links them; the workspace symlink is
-    # idempotent). Stored as a JSON list; tolerate a NULL / malformed value.
-    repos_raw = task["repos"] if "repos" in task.keys() else None
-    if repos_raw:
-        try:
-            repos = json.loads(repos_raw)
-        except (TypeError, ValueError):
-            repos = []
-        if repos:
-            payload["repos"] = repos
+    # The task's attached git scopes — linked into the unit under repos/<name>
+    # on every (re)dispatch (the workspace symlink is idempotent). Read from the
+    # first-class task_scopes relation as the workspace ``repos`` shape.
+    repos = [{"name": r["name"], "project": r["project"], "scope": r["scope"]}
+             for r in dao.list_task_scopes(task["id"])]
+    if repos:
+        payload["repos"] = repos
     return payload
 
 

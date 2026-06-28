@@ -1,27 +1,22 @@
 """Agent instance management — tracked, addressable (modular v1).
 
 An AgentInstance owns one ``claude`` or ``opencode`` subprocess attached to a
-single ``(project, scope)``. Its job is the *agent runtime*: serialize inputs
-into stdin, parse stdout, and post rendered text/tool events to the agent's
-**scope channel**.
+single ``scope`` (the globally-unique workspace-unit slug). Its job is the
+*agent runtime*: serialize inputs into stdin, parse stdout, and record rendered
+text/tool events to the agent's transcript.
 
-Subscribe to agents, message scopes
------------------------------------
+Subscribe to agents
+-------------------
 Raw agent acts (the full structured stdout event stream) belong to the *agent*
 and stay local in ``agents.db`` (``agent_transcript``) — you subscribe to an
-*agent* for those. The agent's rendered, human-facing output is also posted to
-its *scope channel* (``scope_post`` on the scopes service) — a scope IS the
-channel, addressed by ``(project, scope)``; there are no rooms.
+*agent* for those, keyed on its ``scope`` (the unit slug).
 
 Modular changes from the monolith
 ----------------------------------
-- **Identity** is resolved via gatewayclient calls to the ``scopes`` service.
-  No uuid ``agent_id``; ``(project, scope)`` is the natural key throughout.
+- **Identity** is the ``scope`` (unit slug) ALONE — globally unique, no uuid
+  ``agent_id`` and no project namespace.
 - **Persistence** goes through ``AgentsDAO`` → ``agents.db``; no shared
   ``state.db``.
-- **Channel output** is cross-service: ``scope_post`` on the ``scopes``
-  service. The scope's channel exists with the scope (``ensureScope``), so
-  there is nothing to create or auto-close.
 - **Raw act writes** go to the ``agent_transcript`` table in ``agents.db``
   via ``agent_transcript.record_*`` (which uses AgentsDAO).
 """
@@ -77,10 +72,6 @@ def _get_dao() -> AgentsDAO:
     return _dao
 
 
-def _scope_key(project: str, scope: str) -> str:
-    return f"{project}/{scope}"
-
-
 # ---------------------------------------------------------------------------
 # AgentInstance
 # ---------------------------------------------------------------------------
@@ -88,12 +79,13 @@ def _scope_key(project: str, scope: str) -> str:
 class AgentInstance:
     """In-memory handle for a running CLI subprocess.
 
-    ``id`` is the ``agent_instances.id`` (per-spawn integer). ``project`` and
-    ``scope`` are the natural key — no ``agent_id`` uuid is stored.
+    ``id`` is the ``agent_instances.id`` (per-spawn integer). ``scope`` (the
+    globally-unique unit slug) is the natural key — no ``agent_id`` uuid is
+    stored.
 
     The subprocess + stream parsing are owned by an agentcore
     :class:`AgentSession` (``agent_session``); this class keeps the supervisor
-    concerns (registry, transcript, scope-attach, resume, slash/compact). The
+    concerns (registry, transcript, attach, resume, slash/compact). The
     ``proc`` property surfaces the agentcore session's underlying process so the
     existing stop/kill/slash/pid paths keep working unchanged.
     """
@@ -102,16 +94,13 @@ class AgentInstance:
         self,
         *,
         id: int,
-        project: str,
         scope: str,
         agent_cli: str,
         log_path: Path,
         agent_session: _CoreSession,
     ):
         self.id = id
-        self.project = project
         self.scope = scope
-        self.scope_key = _scope_key(project, scope)
         self.agent_cli = agent_cli
         self.log_path = log_path
         self.agent_session = agent_session
@@ -174,7 +163,7 @@ class AgentInstance:
         self.cli_session_id = value
 
 
-# In-memory registries keyed on scope_key (project/scope) and instance id.
+# In-memory registries keyed on scope (the unit slug) and instance id.
 _registry_by_id: dict[int, AgentInstance] = {}
 _by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
@@ -234,10 +223,9 @@ def _build_core_config(
     MCP setup is **harness-owned**: we don't write any config file here. We
     thread the hub's canonical workspace + port (so the harness can synthesize
     the ``awm`` MCP server pointing back at THIS hub) and, for a placement,
-    ``placement_as`` (the agent's identity ``f"{project}/{unit_slug}"`` → the
-    synthesized server's ``AWM_AS`` → ``X-Awm-As`` → the B-op tools resolve to
-    its own task without a model-supplied token). ``placement_as=None`` is a
-    conversational session (awm tools, no identity)."""
+    ``placement_as`` (the agent's identity — the unit slug → the synthesized
+    server's ``AWM_AS`` → ``X-Awm-As`` → the B-op tools resolve to its own task
+    without a model-supplied token). ``placement_as=None`` carries no identity."""
     permissions = "full" if permission_mode == "bypassPermissions" else "default"
     params: dict = {}
     if effort:
@@ -263,7 +251,7 @@ def _build_core_config(
 # Public API: create / lookup
 # ---------------------------------------------------------------------------
 
-async def create_session(*, project: str, scope: str,
+async def create_session(*, scope: str,
                          agent_cli: str = "claude",
                          permission_mode: str = "default",
                          model: Optional[str] = None,
@@ -282,11 +270,11 @@ async def create_session(*, project: str, scope: str,
 
     Every session is a task-bounded **placement**: it runs in a workspace UNIT
     (``workdir``, required — provisioned by the workspace service), NEVER a git
-    scope, and never touches the scopes service. ``(project, scope)`` is the
-    natural key (``scope`` == the unit slug). There is no conversational mode:
-    a human attaches via the transcript WS and pushes text via ``agent_post``
-    (direct enqueue). ``mode`` is the placement mode (worker/plan/planner/verify)
-    and ``allowed_tools`` / ``disallowed_tools`` carry its tool profile. The DAO
+    scope, and never touches the scopes service. ``scope`` (the globally-unique
+    unit slug) is the natural key. There is no conversational mode: a human
+    attaches via the transcript WS and pushes text via ``agent_post`` (direct
+    enqueue). ``mode`` is the placement mode (worker/plan/planner/verify) and
+    ``allowed_tools`` / ``disallowed_tools`` carry its tool profile. The DAO
     insert records the placement row and the supervision driver owns the
     lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
@@ -306,7 +294,7 @@ async def create_session(*, project: str, scope: str,
         raise ValueError(
             "a placement requires a workdir (the workspace unit path)")
 
-    key = _scope_key(project, scope)
+    key = scope
     # The workdir is the workspace UNIT (provisioned by the workspace service),
     # not a git scope under PROJECTS_DIR.
     workspace_dir = Path(workdir)
@@ -326,10 +314,10 @@ async def create_session(*, project: str, scope: str,
         dao = _get_dao()
         # Resume id recovery.
         if resume_session_id is None and not fresh:
-            resume_session_id = dao.get_latest_cli_session_id(project, scope)
+            resume_session_id = dao.get_latest_cli_session_id(scope)
 
         instance_id = dao.open_task_instance(
-            project=project, scope=scope,
+            scope=scope,
             log_path=str(log_path),
             cli_session_id=resume_session_id,
             started_at=now_ms(),
@@ -341,10 +329,10 @@ async def create_session(*, project: str, scope: str,
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
-        # MCP setup is harness-owned: the placement passes its identity
-        # (project/unit_slug) so the harness synthesizes an awm server with
-        # AWM_AS, and its B-op tools resolve to its own task without a token.
-        placement_as = _scope_key(project, scope)
+        # MCP setup is harness-owned: the placement passes its identity (the
+        # unit slug) so the harness synthesizes an awm server with AWM_AS, and
+        # its B-op tools resolve to its own task without a token.
+        placement_as = scope
         # A claude agent runs in tmux and gets a deterministic session name
         # (human-attachable); opencode has no tmux session.
         tmux_name = (
@@ -378,7 +366,6 @@ async def create_session(*, project: str, scope: str,
 
         session = AgentInstance(
             id=instance_id,
-            project=project,
             scope=scope,
             agent_cli=agent_cli,
             log_path=log_path,
@@ -429,8 +416,8 @@ async def create_session(*, project: str, scope: str,
     return session
 
 
-def get_session_by_scope(project: str, scope: str) -> AgentInstance | None:
-    return _by_scope.get(_scope_key(project, scope))
+def get_session_by_scope(scope: str) -> AgentInstance | None:
+    return _by_scope.get(scope)
 
 
 def get_session(session_id: int) -> AgentInstance | None:
@@ -526,7 +513,7 @@ def _is_own_author(session: AgentInstance, author: str) -> bool:
     a = author
     if a.startswith(("agent:", "scope:")):
         a = a.split(":", 1)[1]
-    return a == f"{session.project}/{session.scope}"
+    return a == session.scope
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +666,7 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
             piece = getattr(event, "text", None) or ""
             acc = session._partial_accum.get(mid, "") + piece
             session._partial_accum[mid] = acc
-            agent_bus.publish_act(session.project, session.scope, {
+            agent_bus.publish_act(session.scope, {
                 "id": getattr(event, "id", mid),
                 "kind": "partial",
                 "body": acc,
@@ -700,13 +687,13 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
             act = agent_transcript.upsert_message_act(
                 session, mid, acc, data, now_ms())
             if act is not None:
-                agent_bus.publish_act(session.project, session.scope, act)
+                agent_bus.publish_act(session.scope, act)
             continue
 
         # Persist the act (with its uuid) and fan it out to live subscribers.
         act = agent_transcript.record_event(session, event)
         if act is not None:
-            agent_bus.publish_act(session.project, session.scope, act)
+            agent_bus.publish_act(session.scope, act)
 
         # The terminal `result` closes the turn — reset the accumulators so a
         # long-lived session doesn't accrete per-turn message ids.
@@ -754,12 +741,12 @@ async def _waiter_loop(session: AgentInstance) -> None:
         session.input_pump_task.cancel()
 
     async with _registry_lock:
-        if _by_scope.get(session.scope_key) is session:
-            _by_scope.pop(session.scope_key, None)
+        if _by_scope.get(session.scope) is session:
+            _by_scope.pop(session.scope, None)
         _registry_by_id.pop(session.id, None)
 
-    # A scope IS the channel and outlives any single session — there are no
-    # rooms to auto-close. The scope's channel + transcript persist.
+    # The scope outlives any single session — there is nothing to auto-close.
+    # The scope's transcript persists.
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +756,6 @@ async def _waiter_loop(session: AgentInstance) -> None:
 def _info_for_instance_row(row: dict) -> AgentSessionInfo:
     return AgentSessionInfo(
         id=row["id"],
-        project=row["project"],
         scope=row["scope"],
         pid=row.get("pid") or 0,
         status=row.get("render_status") or "exited",
@@ -866,7 +852,7 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
 # ---------------------------------------------------------------------------
 
 async def respawn_session(
-    scope_key: str, *,
+    scope: str, *,
     force: bool = False,
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
@@ -874,9 +860,9 @@ async def respawn_session(
     agent_cli: Optional[str] = None,
     clear_history: bool = False,
 ) -> AgentInstance:
-    current = _by_scope.get(scope_key)
+    current = _by_scope.get(scope)
     if current is None:
-        raise NoSessionError(f"no active session for {scope_key}")
+        raise NoSessionError(f"no active session for {scope}")
 
     async with current.respawn_lock:
         new_mode = permission_mode if permission_mode is not None else current.permission_mode
@@ -884,7 +870,7 @@ async def respawn_session(
         new_effort = effort if effort is not None else current.effort
         new_cli = agent_cli if agent_cli is not None else current.agent_cli
         resume_sid = None if clear_history else current.cli_session_id
-        project, scope = current.project, current.scope
+        scope = current.scope
 
         # Carry the placement forward across respawn so the orchestrator keeps
         # seeing the same agent + task. The placement_token is stable, so the
@@ -904,18 +890,18 @@ async def respawn_session(
         else:
             await stop_session(current.id)
         for _ in range(60):
-            if _by_scope.get(scope_key) is None:
+            if _by_scope.get(scope) is None:
                 break
             await asyncio.sleep(0.05)
         else:
             await kill_session(current.id)
             for _ in range(40):
-                if _by_scope.get(scope_key) is None:
+                if _by_scope.get(scope) is None:
                     break
                 await asyncio.sleep(0.05)
 
     return await create_session(
-        project=project, scope=scope,
+        scope=scope,
         agent_cli=new_cli,
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
@@ -958,13 +944,13 @@ async def send_slash(scope_key: str, body: str) -> None:
 # Query helpers
 # ---------------------------------------------------------------------------
 
-def list_sessions(project: str | None = None, scope: str | None = None,
+def list_sessions(scope: str | None = None,
                   status: str | None = None,
                   limit: int | None = None) -> list[AgentSessionInfo]:
     # DAO returns rows newest-first (ORDER BY id DESC). The optional `limit`
     # caps to the most recent N — applied AFTER the Python-side status filter,
     # so a status filter never undercounts the cap.
-    rows = _get_dao().list_instances(project=project, scope=scope)
+    rows = _get_dao().list_instances(scope=scope)
     out: list[AgentSessionInfo] = []
     for r in rows:
         hydrated = _hydrate_instance_row(r)

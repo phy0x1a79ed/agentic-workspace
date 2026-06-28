@@ -11,15 +11,13 @@ as the workspace ``repos`` link.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
 def test_open_places_attended_worker_directly(orch):
-    res = orch.operations.orch_node_open({"project": "p", "goal": "chat + build"})
+    res = orch.operations.orch_node_open({"goal": "chat + build"})
     tid = res["task_id"]
     dao = orch.DAO()
     task = dao.get_task(tid)
@@ -42,31 +40,35 @@ def test_open_places_attended_worker_directly(orch):
     root = dao.get_root()
     assert res["consumer"] == root["id"]
     deliverable = dao.list_contracts_by_producer(tid)[0]["name"]
-    assert deliverable.startswith("p:")
+    assert deliverable.startswith("deliverable:")
 
 
 def test_open_threads_repo_into_placement(orch):
     res = orch.operations.orch_node_open({
-        "project": "p", "goal": "work on the agents svc",
+        "goal": "work on the agents svc",
         "repo": {"name": "core", "project": "awm", "scope": "svc-agents"},
     })
     tid = res["task_id"]
-    # Persisted on the task...
-    repos = json.loads(orch.DAO().get_task(tid)["repos"])
-    assert repos == [{"name": "core", "project": "awm", "scope": "svc-agents"}]
+    expected = [{"name": "core", "project": "awm", "scope": "svc-agents"}]
+    # Attached as a first-class task_scopes row (the scope's own coordinates)...
+    repos = [{"name": r["name"], "project": r["project"], "scope": r["scope"]}
+             for r in orch.DAO().list_task_scopes(tid)]
+    assert repos == expected
     # ...and threaded into the worker placement payload for the workspace link.
-    assert orch.placements[(tid, "worker")]["repos"] == repos
+    assert orch.placements[(tid, "worker")]["repos"] == expected
 
 
-def test_open_accepts_bare_scope_string_repo(orch):
-    res = orch.operations.orch_node_open({
-        "project": "p", "goal": "x", "repo": "my-scope"})
-    repos = json.loads(orch.DAO().get_task(res["task_id"])["repos"])
-    assert repos == [{"name": "my-scope", "project": "p", "scope": "my-scope"}]
+def test_open_accepts_scope_ref_string_repo(orch):
+    # A "project/scope" string names the scope's own coordinate (a task has no
+    # project of its own to default a bare scope to).
+    res = orch.operations.orch_node_open({"goal": "x", "repo": "awm/my-scope"})
+    repos = [{"name": r["name"], "project": r["project"], "scope": r["scope"]}
+             for r in orch.DAO().list_task_scopes(res["task_id"])]
+    assert repos == [{"name": "my-scope", "project": "awm", "scope": "my-scope"}]
 
 
 def test_open_runs_to_completion(orch):
-    res = orch.operations.orch_node_open({"project": "p", "goal": "ship it"})
+    res = orch.operations.orch_node_open({"goal": "ship it"})
     tid = res["task_id"]
     dao = orch.DAO()
     task = dao.get_task(tid)

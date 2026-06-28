@@ -49,7 +49,6 @@ class _FakeSup:
         self.placement_token = token
         self.task_ref = "T-1"
         self.agent_ref = "agt-1"
-        self.project = "p"
         self.scope = "leaf-1"
         self.mode = mode
         self.turn_budget = turn_budget
@@ -60,10 +59,10 @@ def _seed(agents_env, *, token="plt-1", mode="worker", contracts_out=("out:1",),
           done=False, staged=None, graph=None, attached=False, intent="live"):
     dao = AgentsDAO()
     iid = dao.open_task_instance(
-        project="p", scope="leaf-1", log_path=None, cli_session_id=None,
+        scope="leaf-1", log_path=None, cli_session_id=None,
         started_at=now_ms(), mode=mode, task_ref="T-1", agent_ref="agt-1",
         placement_token=token)
-    wp = agents_env["awm_dir"] / "services" / "workspace" / "units" / "p" / "leaf-1"
+    wp = agents_env["awm_dir"] / "services" / "workspace" / "units" / "leaf-1"
     (wp / "deliverable").mkdir(parents=True, exist_ok=True)
     patch = {
         "placement": {"mode": mode, "workspace_path": str(wp),

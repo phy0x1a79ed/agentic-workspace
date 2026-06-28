@@ -20,7 +20,7 @@ from awm.agents import agent_instances as ai_mod
 
 
 async def _place_worker(agents_env, **over):
-    args = {"task_id": "T-1", "project": "p", "unit_slug": "leaf-1",
+    args = {"task_id": "T-1", "unit_slug": "leaf-1",
             "brief": "do it", "contracts_out": ["out:1"], "mode": "worker"}
     args.update(over)
     return await placement.place_on_task(args)
@@ -55,16 +55,16 @@ class TestAttachGate:
         await _place_worker(agents_env)
         # No human attached → the gate rejects, and nothing reaches the kernel.
         with pytest.raises(placement.PlacementError):
-            await placement.relay_admin("relocate_self", {}, as_="p/leaf-1")
+            await placement.relay_admin("relocate_self", {}, as_="leaf-1")
         assert _orch_calls(agents_env, "relocate_task") == []
 
     async def test_attached_admin_op_forwards_resolved_refs(
             self, agents_env, stub_core):
         res = await _place_worker(agents_env)
-        await placement.set_attached("p", "leaf-1", True)
+        await placement.set_attached("leaf-1", True)
 
         out = await placement.relay_admin(
-            "relocate_self", {"new_consumer_task": "T-9"}, as_="p/leaf-1")
+            "relocate_self", {"new_consumer_task": "T-9"}, as_="leaf-1")
         assert out["ok"] is True and out["op"] == "relocate_self"
 
         calls = _orch_calls(agents_env, "relocate_task")
@@ -75,35 +75,36 @@ class TestAttachGate:
         assert payload["new_consumer_task"] == "T-9"  # forwarded arg
         assert "placement_token" not in payload       # never leaks the token
 
-    async def test_create_node_injects_caller_project(
+    async def test_create_node_forwards_goal_no_project(
             self, agents_env, stub_core):
         await _place_worker(agents_env)
-        await placement.set_attached("p", "leaf-1", True)
+        await placement.set_attached("leaf-1", True)
         await placement.relay_admin(
-            "create_node", {"goal": "a sub-thing"}, as_="p/leaf-1")
+            "create_node", {"goal": "a sub-thing"}, as_="leaf-1")
         calls = _orch_calls(agents_env, "orch_task_attach")
         assert len(calls) == 1
-        assert calls[0]["project"] == "p"   # inject_project
         assert calls[0]["goal"] == "a sub-thing"
+        # No project is injected anymore — a task has no project namespace.
+        assert "project" not in calls[0]
 
     async def test_link_repo_forwards_repo(self, agents_env, stub_core):
         await _place_worker(agents_env)
-        await placement.set_attached("p", "leaf-1", True)
+        await placement.set_attached("leaf-1", True)
         await placement.relay_admin(
-            "link_repo", {"repo": "my-scope"}, as_="p/leaf-1")
+            "link_repo", {"repo": "my-scope"}, as_="leaf-1")
         calls = _orch_calls(agents_env, "link_repo")
         assert calls and calls[0]["repo"] == "my-scope"
 
     async def test_detach_re_locks_admin(self, agents_env, stub_core):
         await _place_worker(agents_env)
-        await placement.set_attached("p", "leaf-1", True)
-        await placement.relay_admin("relocate_self", {}, as_="p/leaf-1")
+        await placement.set_attached("leaf-1", True)
+        await placement.relay_admin("relocate_self", {}, as_="leaf-1")
         # A human detaches mid-session → the gate re-locks on the next call.
-        await placement.set_attached("p", "leaf-1", False)
+        await placement.set_attached("leaf-1", False)
         with pytest.raises(placement.PlacementError):
-            await placement.relay_admin("relocate_self", {}, as_="p/leaf-1")
+            await placement.relay_admin("relocate_self", {}, as_="leaf-1")
 
     async def test_unknown_admin_op_rejected(self, agents_env, stub_core):
         await _place_worker(agents_env)
         with pytest.raises(placement.PlacementError):
-            await placement.relay_admin("nope", {}, as_="p/leaf-1")
+            await placement.relay_admin("nope", {}, as_="leaf-1")

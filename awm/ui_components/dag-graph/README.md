@@ -34,7 +34,7 @@ neighbour click in `FocusPanel` re-selects in `TaskList` and vice versa:
   let snapshot = $state<DagSnapshot | null>(null);
   let selected = $state<string | null>(null);
 
-  $effect(() => { fetchDag(/* project? */).then((s) => (snapshot = s)); });
+  $effect(() => { fetchDag().then((s) => (snapshot = s)); });
   // Re-derive the index whenever the snapshot reference changes.
   const index = $derived(snapshot ? buildIndex(snapshot) : null);
 </script>
@@ -94,7 +94,7 @@ shared-dependency case):
 import type { DagSnapshot } from '@awm/client';
 
 export const demoSnapshot: DagSnapshot = {
-  project: 'demo', root_id: 'root',
+  root_id: 'root',
   tasks: [
     { task_id: 'root', goal: 'ship the feature', state: 'blocked', is_root: true,
       mode: null, workspace_slug: null, agent_ref: null, created_at: 0, updated_at: 0 },

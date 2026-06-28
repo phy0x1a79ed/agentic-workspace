@@ -15,6 +15,7 @@ import pytest
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 PUBLIC = {"orch_task_create", "orch_node_open", "orch_task_attach",
+          "orch_attach_scope", "orch_detach_scope",
           "orch_status", "orch_frontier", "orch_dag"}
 PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
               "approve_plan", "reject_plan", "set_attached"}
@@ -44,7 +45,7 @@ async def test_privileged_op_is_dispatchable_though_unmanifested(orch):
     # Attach a doable task and drive it to its worker leg so a privileged
     # `deliver` has something to act on.
     res = orch.operations.orch_task_attach(
-        {"project": "p", "goal": "ship it",
+        {"goal": "ship it",
          "produces": [{"name": "c1", "spec": "the deliverable"}]})
     tid = res["task_id"]
     orch.advance_to_active(tid)

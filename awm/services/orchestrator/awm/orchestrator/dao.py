@@ -34,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "orchestrator"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # The explicit node lifecycle — a TRUE state machine: every distinct position is
 # its own named state. A *rest* state means a placement is needed (no agent
@@ -80,8 +80,8 @@ OUT_STATE = {
     "planner": "decomposing",
 }
 
-# The reserved project + goal of the single global root sentinel.
-ROOT_PROJECT = "_root"
+# The goal of the single global root sentinel (flagged by ``is_root = 1``; a
+# task has no project, so the sentinel is identified by the flag alone).
 ROOT_GOAL = "global root — all user work is a prerequisite of this node"
 
 # The reserved pseudo-contract a ``plan`` agent delivers to hand its staged plan
@@ -91,11 +91,12 @@ ROOT_GOAL = "global root — all user work is a prerequisite of this node"
 PLAN_CONTRACT = "plan"
 
 SCHEMA_SQL = """\
--- tasks — the plan nodes of the single global dependency DAG. ``is_root``
--- flags the one root sentinel (a worker is never placed on it).
+-- tasks — the plan nodes of the single global dependency DAG. A task has NO
+-- project: its canonical key is its UUID ``id``. ``is_root`` flags the one root
+-- sentinel (a worker is never placed on it). A task's attached git scopes live
+-- in ``task_scopes`` (a task has 0+ scopes; a scope ≤1 non-terminal task).
 CREATE TABLE IF NOT EXISTS tasks (
     id              TEXT PRIMARY KEY,
-    project         TEXT NOT NULL,
     goal            TEXT NOT NULL DEFAULT '',
     state           TEXT NOT NULL DEFAULT 'blocked',
     is_root         INTEGER NOT NULL DEFAULT 0,
@@ -106,20 +107,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     placement_token TEXT,            -- opaque token returned by place_on_task
     plan_ref        TEXT,            -- the staged plan artifact (delivered by a plan agent); NULL until planned
     attached        INTEGER NOT NULL DEFAULT 0,   -- orthogonal human-attached flag (freezes auto-progress)
-    repos           TEXT,            -- JSON [{name, project, scope}] existing scopes the node's unit links under repos/<name>; NULL = none
     replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-attempts left (re-plans + decomposes) before abandoned
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_project_state ON tasks(project, state);
+CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(is_root) WHERE is_root = 1;
 
 -- contracts — the unit of hand-off. Produced by exactly one task; delivered
--- once (payload_ref + delivered_ts set). ``name`` is the atomic contract name.
+-- once (payload_ref + delivered_ts set). ``name`` is the atomic contract name,
+-- a single GLOBAL namespace (one DAG → one contract namespace).
 CREATE TABLE IF NOT EXISTS contracts (
     id            TEXT PRIMARY KEY,
-    project       TEXT NOT NULL,
     name          TEXT NOT NULL,
     spec          TEXT NOT NULL DEFAULT '',
     producer_task TEXT NOT NULL REFERENCES tasks(id),
@@ -128,7 +128,27 @@ CREATE TABLE IF NOT EXISTS contracts (
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_contracts_producer ON contracts(producer_task);
-CREATE INDEX IF NOT EXISTS idx_contracts_project_name ON contracts(project, name);
+CREATE INDEX IF NOT EXISTS idx_contracts_name ON contracts(name);
+
+-- task_scopes — a task's attached git scopes (it has 0+). Each row names one
+-- scope by its scopes-service coordinate (project, scope) with the canonical
+-- ``scope_ref`` = "project/scope"; ``name`` is the repos/<name> symlink the
+-- unit links it under. Exclusivity (a scope_ref attached to ≤1 non-terminal
+-- task) is a KERNEL invariant (kernel.check_scope_free), not a SQL constraint
+-- (the holding task's state lives on ``tasks``).
+CREATE TABLE IF NOT EXISTS task_scopes (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL REFERENCES tasks(id),
+    name        TEXT NOT NULL,
+    project     TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    scope_ref   TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_scopes_task ON task_scopes(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_scopes_ref ON task_scopes(scope_ref);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_scopes_task_name
+    ON task_scopes(task_id, name);
 
 -- edges — the dependency DAG, ONLY. "consumer_task needs contract_id"; the
 -- producer is read off the contract. Acyclicity is checked on insert.
@@ -155,10 +175,36 @@ CREATE INDEX IF NOT EXISTS idx_attempt_memories_task ON attempt_memories(task_id
 """
 
 # v1→v2: additive ``repos`` column on tasks (JSON list of existing scopes a
-# node's workspace unit links under ``repos/<name>``). Existing rows default to
-# NULL (no repos). Idempotent: ``_migrate`` swallows "duplicate column name".
+# node's workspace unit links under ``repos/<name>``). Idempotent.
+# v2→v3 (P3 — decouple from the scopes project namespace): drop ``project`` from
+# tasks + contracts (a task has no project; contracts are one global namespace),
+# drop the per-task ``repos`` JSON (replaced by the first-class ``task_scopes``
+# table), and swap the project-keyed indexes. SQLite 3.35+ supports ALTER TABLE
+# DROP COLUMN, so the column drops + index swaps are direct.
 MIGRATIONS: dict[tuple[int, int], str] = {
     (1, 2): "ALTER TABLE tasks ADD COLUMN repos TEXT;\n",
+    (2, 3): (
+        "DROP INDEX IF EXISTS idx_tasks_project_state;\n"
+        "DROP INDEX IF EXISTS idx_contracts_project_name;\n"
+        "ALTER TABLE tasks DROP COLUMN project;\n"
+        "ALTER TABLE tasks DROP COLUMN repos;\n"
+        "ALTER TABLE contracts DROP COLUMN project;\n"
+        "CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);\n"
+        "CREATE INDEX IF NOT EXISTS idx_contracts_name ON contracts(name);\n"
+        "CREATE TABLE IF NOT EXISTS task_scopes (\n"
+        "    id          TEXT PRIMARY KEY,\n"
+        "    task_id     TEXT NOT NULL REFERENCES tasks(id),\n"
+        "    name        TEXT NOT NULL,\n"
+        "    project     TEXT NOT NULL,\n"
+        "    scope       TEXT NOT NULL,\n"
+        "    scope_ref   TEXT NOT NULL,\n"
+        "    created_at  INTEGER NOT NULL\n"
+        ");\n"
+        "CREATE INDEX IF NOT EXISTS idx_task_scopes_task ON task_scopes(task_id);\n"
+        "CREATE INDEX IF NOT EXISTS idx_task_scopes_ref ON task_scopes(scope_ref);\n"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_scopes_task_name "
+        "ON task_scopes(task_id, name);\n"
+    ),
 }
 
 _initialized = False
@@ -194,22 +240,20 @@ class OrchestratorDAO(BaseDAO):
 
     def create_task(
         self,
-        project: str,
         goal: str,
         *,
         state: str = "blocked",
         replan_budget: int = 2,
         conn: sqlite3.Connection | None = None,
     ) -> str:
-        """Insert a task; return its new id."""
+        """Insert a task; return its new id (its canonical UUID key)."""
         tid = new_uuid()
         now = _now()
         self.execute(
             """INSERT INTO tasks
-               (id, project, goal, state, replan_budget,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (tid, project, goal, state, replan_budget, now, now),
+               (id, goal, state, replan_budget, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (tid, goal, state, replan_budget, now, now),
             conn=conn,
         )
         return tid
@@ -229,10 +273,10 @@ class OrchestratorDAO(BaseDAO):
         now = _now()
         self.execute(
             """INSERT INTO tasks
-               (id, project, goal, state, is_root, replan_budget,
+               (id, goal, state, is_root, replan_budget,
                 created_at, updated_at)
-               VALUES (?, ?, ?, 'blocked', 1, 0, ?, ?)""",
-            (tid, ROOT_PROJECT, ROOT_GOAL, now, now), conn=conn,
+               VALUES (?, ?, 'blocked', 1, 0, ?, ?)""",
+            (tid, ROOT_GOAL, now, now), conn=conn,
         )
         return self.get_task(tid, conn=conn)
 
@@ -251,21 +295,19 @@ class OrchestratorDAO(BaseDAO):
         )
 
     def list_tasks(
-        self, project: str, *, conn: sqlite3.Connection | None = None
+        self, *, conn: sqlite3.Connection | None = None
     ) -> list[dict]:
+        """Every task in the single global DAG, oldest-first."""
         return self.query_all(
-            "SELECT * FROM tasks WHERE project = ? ORDER BY created_at",
-            (project,), conn=conn,
+            "SELECT * FROM tasks ORDER BY created_at", conn=conn,
         )
 
     def list_tasks_by_state(
-        self, project: str, state: str, *,
-        conn: sqlite3.Connection | None = None,
+        self, state: str, *, conn: sqlite3.Connection | None = None,
     ) -> list[dict]:
         return self.query_all(
-            "SELECT * FROM tasks WHERE project = ? AND state = ? "
-            "ORDER BY created_at",
-            (project, state), conn=conn,
+            "SELECT * FROM tasks WHERE state = ? ORDER BY created_at",
+            (state,), conn=conn,
         )
 
     def update_task(
@@ -278,8 +320,7 @@ class OrchestratorDAO(BaseDAO):
         """
         allowed = {
             "state", "mode", "workspace_slug", "agent_ref", "placement_token",
-            "plan_ref", "attached", "repos", "replan_budget", "retry_count",
-            "goal",
+            "plan_ref", "attached", "replan_budget", "retry_count", "goal",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:
@@ -294,7 +335,6 @@ class OrchestratorDAO(BaseDAO):
 
     def create_contract(
         self,
-        project: str,
         name: str,
         spec: str,
         producer_task: str,
@@ -304,9 +344,9 @@ class OrchestratorDAO(BaseDAO):
         cid = new_uuid()
         self.execute(
             """INSERT INTO contracts
-               (id, project, name, spec, producer_task, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (cid, project, name, spec, producer_task, _now()),
+               (id, name, spec, producer_task, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (cid, name, spec, producer_task, _now()),
             conn=conn,
         )
         return cid
@@ -319,13 +359,13 @@ class OrchestratorDAO(BaseDAO):
         )
 
     def get_contract_by_name(
-        self, project: str, name: str, *,
-        conn: sqlite3.Connection | None = None,
+        self, name: str, *, conn: sqlite3.Connection | None = None,
     ) -> dict | None:
+        """Resolve a contract by its name in the single global namespace."""
         return self.query_one(
-            "SELECT * FROM contracts WHERE project = ? AND name = ? "
+            "SELECT * FROM contracts WHERE name = ? "
             "ORDER BY created_at LIMIT 1",
-            (project, name), conn=conn,
+            (name,), conn=conn,
         )
 
     def list_contracts_by_producer(
@@ -337,15 +377,9 @@ class OrchestratorDAO(BaseDAO):
         )
 
     def list_all_contracts(
-        self, project: str | None = None, *,
-        conn: sqlite3.Connection | None = None,
+        self, *, conn: sqlite3.Connection | None = None,
     ) -> list[dict]:
-        """Every contract (optionally per-project) — for the DAG snapshot read."""
-        if project:
-            return self.query_all(
-                "SELECT * FROM contracts WHERE project = ? ORDER BY created_at",
-                (project,), conn=conn,
-            )
+        """Every contract in the global DAG — for the DAG snapshot read."""
         return self.query_all(
             "SELECT * FROM contracts ORDER BY created_at", conn=conn
         )
@@ -389,29 +423,19 @@ class OrchestratorDAO(BaseDAO):
         )
 
     def list_all_edges_joined(
-        self, project: str | None = None, *,
-        conn: sqlite3.Connection | None = None,
+        self, *, conn: sqlite3.Connection | None = None,
     ) -> list[dict]:
-        """Every dependency edge (optionally per-project), joined to its
-        contract's name / producer / delivery state — denormalized so the DAG
-        snapshot read carries both endpoints + the edge label in one row.
-
-        ``project`` filters by the consumed contract's project. Note the global
-        root sentinel (project ``_root``) consumes real-project contracts, so a
-        project filter still surfaces the root→contract edge (its consumer task
-        lives in ``_root`` and the client tolerates an off-project endpoint)."""
-        sql = (
+        """Every dependency edge in the global DAG, joined to its contract's
+        name / producer / delivery state — denormalized so the DAG snapshot read
+        carries both endpoints + the edge label in one row."""
+        return self.query_all(
             "SELECT e.id AS edge_id, e.consumer_task, e.contract_id, "
             "       c.name AS contract_name, c.producer_task, "
             "       (c.delivered_ts IS NOT NULL) AS delivered "
-            "FROM edges e JOIN contracts c ON c.id = e.contract_id"
+            "FROM edges e JOIN contracts c ON c.id = e.contract_id "
+            "ORDER BY e.created_at",
+            conn=conn,
         )
-        if project:
-            return self.query_all(
-                sql + " WHERE c.project = ? ORDER BY e.created_at",
-                (project,), conn=conn,
-            )
-        return self.query_all(sql + " ORDER BY e.created_at", conn=conn)
 
     def delete_edges_for_contract(
         self, contract_id: str, *, conn: sqlite3.Connection | None = None
@@ -474,4 +498,63 @@ class OrchestratorDAO(BaseDAO):
         return self.query_all(
             "SELECT * FROM attempt_memories WHERE task_id = ? ORDER BY ts",
             (task_id,), conn=conn,
+        )
+
+    # -- task_scopes (a task's attached git scopes) -------------------------
+
+    def add_task_scope(
+        self, task_id: str, name: str, project: str, scope: str,
+        scope_ref: str, *, conn: sqlite3.Connection | None = None,
+    ) -> str:
+        """Attach a git scope to a task; return the attachment id.
+
+        ``name`` is the repos/<name> link the unit mounts it under (unique per
+        task); ``scope_ref`` = "project/scope" is the exclusivity key. Re-adding
+        the same ``name`` replaces its coordinates (idempotent relink)."""
+        rid = new_uuid()
+        self.execute(
+            """INSERT INTO task_scopes
+               (id, task_id, name, project, scope, scope_ref, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(task_id, name) DO UPDATE SET
+                   project = excluded.project,
+                   scope = excluded.scope,
+                   scope_ref = excluded.scope_ref""",
+            (rid, task_id, name, project, scope, scope_ref, _now()),
+            conn=conn,
+        )
+        return rid
+
+    def list_task_scopes(
+        self, task_id: str, *, conn: sqlite3.Connection | None = None
+    ) -> list[dict]:
+        """The scopes attached to a task, in the workspace ``repos`` shape
+        (``[{name, project, scope, scope_ref}]``), oldest-first."""
+        return self.query_all(
+            "SELECT name, project, scope, scope_ref FROM task_scopes "
+            "WHERE task_id = ? ORDER BY created_at",
+            (task_id,), conn=conn,
+        )
+
+    def remove_task_scope(
+        self, task_id: str, scope_ref: str, *,
+        conn: sqlite3.Connection | None = None,
+    ) -> int:
+        """Detach a scope from a task by its ``scope_ref``; returns the count
+        removed."""
+        return self.execute(
+            "DELETE FROM task_scopes WHERE task_id = ? AND scope_ref = ?",
+            (task_id, scope_ref), conn=conn,
+        )
+
+    def tasks_holding_scope(
+        self, scope_ref: str, *, conn: sqlite3.Connection | None = None
+    ) -> list[dict]:
+        """Every task that has ``scope_ref`` attached, with its current state —
+        the kernel's exclusivity check reads this to find non-terminal holders."""
+        return self.query_all(
+            "SELECT DISTINCT ts.task_id AS id, t.state AS state "
+            "FROM task_scopes ts JOIN tasks t ON t.id = ts.task_id "
+            "WHERE ts.scope_ref = ?",
+            (scope_ref,), conn=conn,
         )

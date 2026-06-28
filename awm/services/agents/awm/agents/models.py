@@ -15,14 +15,12 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 class AgentSpawnRequest(BaseModel):
-    project: str
     scope: str
     prompt: str | None = None
     agent_cli: str | None = None
 
 
 class AgentSpawnResponse(BaseModel):
-    project: str
     scope: str
     pid: int
     agent_cli: str
@@ -34,7 +32,6 @@ class AgentSpawnResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AgentSessionCreateRequest(BaseModel):
-    project: str
     scope: str
     prompt: str | None = None
     agent_cli: str | None = None  # defaults to "claude"
@@ -42,7 +39,6 @@ class AgentSessionCreateRequest(BaseModel):
 
 class AgentSessionInfo(BaseModel):
     id: int
-    project: str
     scope: str
     pid: int
     status: str  # starting|running|stopping|exited|killed|orphaned

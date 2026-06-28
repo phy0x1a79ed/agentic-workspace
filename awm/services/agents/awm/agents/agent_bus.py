@@ -21,40 +21,35 @@ from __future__ import annotations
 import asyncio
 
 
-def _channel_key(project: str, scope: str) -> str:
-    return f"{project}/{scope}"
-
-
-# channel_key -> set of subscriber queues
+# scope (the unit slug) -> set of subscriber queues
 _subscribers: dict[str, set[asyncio.Queue]] = {}
 _subscribers_lock = asyncio.Lock()
 
 
-async def attach_live(project: str, scope: str, queue: asyncio.Queue) -> None:
+async def attach_live(scope: str, queue: asyncio.Queue) -> None:
     async with _subscribers_lock:
-        _subscribers.setdefault(_channel_key(project, scope), set()).add(queue)
+        _subscribers.setdefault(scope, set()).add(queue)
 
 
-async def detach_live(project: str, scope: str, queue: asyncio.Queue) -> None:
+async def detach_live(scope: str, queue: asyncio.Queue) -> None:
     async with _subscribers_lock:
-        key = _channel_key(project, scope)
-        bucket = _subscribers.get(key)
+        bucket = _subscribers.get(scope)
         if bucket is None:
             return
         bucket.discard(queue)
         if not bucket:
-            _subscribers.pop(key, None)
+            _subscribers.pop(scope, None)
 
 
-def publish_act(project: str, scope: str, act: dict) -> None:
-    """Fan one persisted act out to every live subscriber of (project, scope).
+def publish_act(scope: str, act: dict) -> None:
+    """Fan one persisted act out to every live subscriber of ``scope``.
 
     ``act`` is the wire shape (``{id, kind, body, meta, ts}``). On a full
     subscriber queue we enqueue a ``lagged`` sentinel (drop newest non-fitting
     rather than block the reader loop) — the writer closes the WS and the
     browser reconnects with its cursor.
     """
-    bucket = _subscribers.get(_channel_key(project, scope))
+    bucket = _subscribers.get(scope)
     if not bucket:
         return
     event = {"type": "act", "act": act}

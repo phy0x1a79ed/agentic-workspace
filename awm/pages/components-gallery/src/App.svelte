@@ -120,7 +120,6 @@
   // TaskList + FocusPanel off one shared buildIndex (as the dag-telemetry page
   // does), so the demo below mirrors that idiomatic usage.
   const dagSnapshot: DagSnapshot = {
-    project: 'awm',
     root_id: 't-root',
     tasks: [
       { task_id: 't-root', goal: 'Ship the release', state: 'blocked', is_root: true, mode: null, workspace_slug: null, agent_ref: null, created_at: 1000, updated_at: 1000 },
