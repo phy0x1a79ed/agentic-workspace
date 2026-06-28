@@ -1,0 +1,32 @@
+#!/bin/sh
+# awm-duo-askpass — an SSH_ASKPASS helper for autonomous Duo logins (sockeye, fir).
+#
+# OpenSSH calls this with the keyboard-interactive prompt as $1. For a Duo option
+# menu we select the numbered option whose label names one of OUR awm `2fa`
+# auto-approver devices, so the push goes to the device the armed 2fa burst is
+# watching (NOT the user's personal phone). The burst then auto-approves it (~1s).
+#
+# Device markers (Duo display names of our enrolled devices) are configurable via
+# AWM_DUO_DEVICES (an egrep alternation); default covers cwl="awm" + alliance="Mira".
+# Any non-Duo prompt defers to the controlling terminal, so this stays harmless if
+# ever used outside the Duo path.
+prompt="$1"
+markers="${AWM_DUO_DEVICES:-awm|Mira}"
+case "$prompt" in
+  *[Pp]asscode\ or\ option*|*[Dd]uo\ two-factor*|*[Dd]uo\ Push*)
+    n=$(printf '%s\n' "$prompt" \
+        | grep -iE "^[[:space:]]*[0-9]+\..*($markers)" \
+        | head -1 \
+        | sed -E 's/^[[:space:]]*([0-9]+)\..*/\1/')
+    if [ -n "$n" ]; then
+      printf '%s\n' "$n"
+    else
+      # No option matched our devices — fall back to option 1 so we at least try.
+      printf '1\n'
+    fi
+    ;;
+  *)
+    # Not a Duo menu: let a human answer on the tty if there is one.
+    [ -r /dev/tty ] && head -1 /dev/tty
+    ;;
+esac

@@ -1,0 +1,4 @@
+{
+  "_comment": "Sparse map-gen settings: omitted fields fall back to engine defaults. The supervisor injects 'seed' for `world new --seed`. null seed => engine picks a random seed.",
+  "seed": null
+}

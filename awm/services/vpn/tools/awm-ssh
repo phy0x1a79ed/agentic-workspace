@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# awm-ssh — ssh wrapper for autonomous Duo logins (sockeye, fir).
+#
+# Identical to `ssh` except it installs the awm-duo-askpass helper and forces
+# OpenSSH to consult it, so the Duo keyboard-interactive menu is answered
+# automatically (our 2fa auto-approver device is selected; the burst approves the
+# push). The Duo *burst* itself is armed transparently by the `Match host … exec`
+# hooks in ~/.ssh/config — so a bare `ssh <host>` still works, you just pick the
+# Duo option yourself. Use this wrapper to skip that manual tap.
+#
+#   awm-ssh sockeye 'hostname'
+#   awm-ssh fir
+#
+# SSH_ASKPASS_REQUIRE=force is scoped to this process only (not your shell), so
+# your normal interactive `ssh` is unaffected.
+set -euo pipefail
+
+export SSH_ASKPASS="${AWM_DUO_ASKPASS:-$HOME/.ssh/awm-duo-askpass}"
+export SSH_ASKPASS_REQUIRE=force
+export AWM_DUO_DEVICES="${AWM_DUO_DEVICES:-awm|Mira}"
+
+exec ssh "$@"
