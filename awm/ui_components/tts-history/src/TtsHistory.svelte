@@ -21,18 +21,17 @@
      */
     onspeak?: (post: Post) => void;
     /**
-     * Agent identity. When BOTH are provided, a Transcript | Terminal tablist
-     * appears and the Terminal tab attaches to that agent's live tmux pane
-     * (claude-tmux harness). Omit (the default) for a plain transcript — the
-     * stt/tts/gallery hosts that have no agent render exactly as before.
+     * Agent identity (the unit slug). When provided, a Transcript | Terminal
+     * tablist appears and the Terminal tab attaches to that agent's live tmux
+     * pane (claude-tmux harness). Omit (the default) for a plain transcript —
+     * the stt/tts/gallery hosts that have no agent render exactly as before.
      */
-    project?: string;
-    scope?: string;
+    slug?: string;
   }
-  let { posts, onspeak, project, scope }: Props = $props();
+  let { posts, onspeak, slug }: Props = $props();
 
   // The Terminal tab exists only when we know which agent to attach to.
-  const hasAgent = $derived(!!(project && scope));
+  const hasAgent = $derived(!!slug);
   let activeTab = $state<'transcript' | 'terminal'>('transcript');
   // Effective tab: the terminal is only reachable with an agent identity, so a
   // dropped selector transparently falls back to the transcript (no mutation,
@@ -217,8 +216,8 @@
     {:else}
       <!-- Mounted only while visible so xterm fits a laid-out container; the
            keyed block re-mounts (re-attaches) when the agent identity changes. -->
-      {#key `${project}/${scope}`}
-        <TmuxTerminal project={project!} scope={scope!} />
+      {#key slug}
+        <TmuxTerminal slug={slug!} />
       {/key}
     {/if}
   </div>

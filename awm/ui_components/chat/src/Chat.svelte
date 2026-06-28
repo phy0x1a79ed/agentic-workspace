@@ -48,15 +48,14 @@
      *  absent (the composer's telemetry helpers stay dark). Lets a host render
      *  an <SttTelemetry> timeline against this composite's STT pipeline. */
     onTelemetry?: (e: TelemetryEvent) => void;
-    /** Agent identity. When both are set, the transcript pane gains a
+    /** Agent identity (the unit slug). When set, the transcript pane gains a
      *  Transcript | Terminal tablist (forwarded to <TtsHistory>) so the live
      *  agent's tmux pane is viewable/drivable alongside its transcript. */
-    project?: string;
-    scope?: string;
+    slug?: string;
   }
   let {
     posts, onSend, chatContext = '', onReplay, header, aside,
-    offline = false, onTelemetry, project, scope,
+    offline = false, onTelemetry, slug,
   }: Props = $props();
 
   // The single send seam. Both SttComposer signals call it; the gate drops a
@@ -74,7 +73,7 @@
   {/if}
 
   <div class="history-wrap">
-    <TtsHistory {posts} onspeak={onReplay} {project} {scope} />
+    <TtsHistory {posts} onspeak={onReplay} {slug} />
   </div>
 
   {#if aside}

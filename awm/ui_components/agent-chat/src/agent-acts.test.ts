@@ -10,9 +10,24 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { AgentAct } from '@awm/client';
-import { TranscriptFold } from './agent-acts.ts';
+import { TranscriptFold, parseHumanFrame } from './agent-acts.ts';
 
 const AUTHOR = 'agent:dev';
+
+/** A human-origin act as the agents service records it (record_in: direction in). */
+function humanAct(
+  body: string,
+  ts: number,
+  opts: { id?: string; kind?: string; injection?: boolean } = {},
+): AgentAct {
+  return {
+    id: opts.id ?? `in-${ts}`,
+    kind: opts.kind ?? 'message',
+    body,
+    meta: { direction: 'in', injection: !!opts.injection },
+    ts,
+  } as AgentAct;
+}
 
 /** A streamed act with `message_id` in meta (the coalesce key). */
 function act(
@@ -103,4 +118,38 @@ test('cursor tracks the most recent act, including hidden ones', () => {
 
   assert.equal(fold.lastId, 's1');
   assert.equal(fold.lastTs, new Date(105).toISOString());
+});
+
+test('parseHumanFrame splits the [from:…] frame into author + clean body', () => {
+  assert.deepEqual(parseHumanFrame('[from:user:operator]\nhello there'), {
+    author: 'user:operator',
+    body: 'hello there',
+  });
+  assert.deepEqual(parseHumanFrame('[notify:user:op]\nstop'), {
+    author: 'user:op',
+    body: 'stop',
+  });
+  // Unframed body falls back to a generic human author, body untouched.
+  assert.deepEqual(parseHumanFrame('raw'), { author: 'user:human', body: 'raw' });
+});
+
+test('a human-origin act renders as the human turn, not the agent voice', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  const spoken = fold.push(humanAct('[from:user:operator]\nping', 100, { id: 'in1' }));
+
+  assert.equal(fold.posts.length, 1);
+  assert.equal(fold.posts[0].author, 'user:operator', 'authored by the human, not agent:dev');
+  assert.equal(fold.posts[0].body, 'ping', 'frame stripped for display');
+  assert.equal(fold.posts[0].kind, 'text');
+  assert.equal(spoken, null, 'the human turn is never auto-spoken');
+});
+
+test('human turn interleaves with the agent reply by ts, deduped by id', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(humanAct('[from:user:op]\nquestion?', 100, { id: 'in1' }));
+  fold.push(act('message', 'answer', 200, { id: 'm1', message_id: 'm1' }));
+  fold.push(humanAct('[from:user:op]\nquestion?', 100, { id: 'in1' })); // backfill dup
+
+  assert.deepEqual(fold.posts.map((p) => p.body), ['question?', 'answer']);
+  assert.deepEqual(fold.posts.map((p) => p.author), ['user:op', AUTHOR]);
 });

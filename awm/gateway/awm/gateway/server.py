@@ -499,10 +499,16 @@ class HubRoutingMiddleware:
             proxy_session_ws,
         )
         from fastapi import WebSocket as _WS
+        from starlette.datastructures import Headers
         from starlette.responses import PlainTextResponse
 
         rel = path[len(rec.prefix):]
-        as_ = None
+        # Forward the advisory caller identity (the attaching placement's unit
+        # slug) so a service's attach-gated admin relay can resolve the caller.
+        # Headers(scope=...) reads the ASGI header list for both http and
+        # websocket scopes — the MCP /invoke path reads the same header. Purely
+        # advisory: no bearer, no change to the loopback no-auth model.
+        as_ = Headers(scope=scope).get("X-Awm-As")
 
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
