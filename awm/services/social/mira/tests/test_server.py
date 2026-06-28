@@ -50,6 +50,7 @@ class _FakeDriver:
 
     def __init__(self):
         self.script: list[dict] = []
+        self.last_fetch: dict | None = None
 
     async def identity(self):
         return {"id": "ME", "name": "me"}
@@ -57,7 +58,9 @@ class _FakeDriver:
     async def list_conversations(self):
         return [{"id": "C1", "name": "general", "kind": "channel"}]
 
-    async def fetch_messages(self, channel, oldest, limit):
+    async def fetch_messages(self, channel, oldest, limit, *, before=None):
+        self.last_fetch = {"channel": channel, "oldest": oldest,
+                           "limit": limit, "before": before}
         return self.script[:limit]
 
 
@@ -113,3 +116,47 @@ class TestWatcher:
 
 async def _aiopass():
     return None
+
+
+# --------------------------------------------------------------------------- #
+# GET /v1/{platform}/messages (on-demand history)                             #
+# --------------------------------------------------------------------------- #
+
+class _MsgReq:
+    """Minimal stand-in for an aiohttp request to _h_messages."""
+
+    def __init__(self, platform, query):
+        self.match_info = {"platform": platform}
+        self.query = query
+
+
+class TestMessagesEndpoint:
+    async def test_forwards_before_and_limit_to_driver(self):
+        import json
+
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        drv.script = [_msg("9.2", "U2", "newer"), _msg("9.1", "U1", "older")]
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+
+        resp = await api._h_messages(
+            _MsgReq("slack", {"channel": "C1", "limit": "10", "before": "9.5"}))
+        assert resp.status == 200
+        assert drv.last_fetch == {
+            "channel": "C1", "oldest": None, "limit": 10, "before": "9.5"}
+        body = json.loads(resp.text)
+        assert [m["text"] for m in body["messages"]] == ["newer", "older"]
+
+    async def test_before_optional(self):
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        await api._h_messages(_MsgReq("slack", {"channel": "C1"}))
+        assert drv.last_fetch["before"] is None
+
+    async def test_channel_required(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_messages(_MsgReq("slack", {}))
+        assert resp.status == 400
