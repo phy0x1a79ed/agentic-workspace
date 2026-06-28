@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from awm.agentcore import AgentConfig, open_agent, run_once
-from .conftest import requires_claude, requires_opencode
+from .conftest import requires_claude, requires_opencode, requires_tmux
 
 pytestmark = pytest.mark.live
 
@@ -58,6 +58,35 @@ async def test_claude_live_multiturn():
         assert "42" in second
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# claude-tmux (interactive TUI in a detached tmux session)
+# ---------------------------------------------------------------------------
+
+@requires_claude
+@requires_tmux
+async def test_claude_tmux_live_multiturn(tmp_path):
+    import asyncio
+    cfg = AgentConfig(harness="claude-tmux", mode="live", model="haiku",
+                      workdir=str(tmp_path), permissions="full",
+                      tmux_session_name="awm-pytest-tmux")
+    session = open_agent(cfg)
+    try:
+        await session.start()
+        # The detached tmux session exists while the agent runs.
+        assert session.alive() is True
+        await session.send("Reply with exactly the word PONG and nothing else.")
+        first = await _drain_first_message(session, timeout=120.0)
+        assert "PONG" in first.upper()
+        # A second turn closes on its own per-turn result (Stop hook).
+        await session.send("Now reply with exactly the word PING.")
+        second = await _drain_first_message(session, timeout=120.0)
+        assert "PING" in second.upper()
+    finally:
+        await session.close()
+        await asyncio.sleep(0.3)
+        assert session.alive() is False  # tmux session gone after close
 
 
 # ---------------------------------------------------------------------------

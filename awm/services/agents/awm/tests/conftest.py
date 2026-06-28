@@ -145,8 +145,18 @@ class _FakeCoreSession:
     async def send(self, text):
         self.sent.append(text)
 
+    async def wait(self):
+        # Mirrors the AgentSession seam: block on the child until it exits.
+        return await self._proc.wait()
+
+    def alive(self):
+        return self._proc.returncode is None
+
     async def close(self):
-        pass
+        # Resolve the fake proc so the rewired _waiter_loop unblocks and
+        # deregisters (stop/kill route through close() now), letting respawn
+        # complete in tests.
+        self._proc.terminate()
 
 
 @pytest.fixture

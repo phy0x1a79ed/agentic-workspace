@@ -21,16 +21,26 @@ SCOPE_CHANNEL_MANIFEST_FUNCTIONS = [
         "tool": "scope_post",
         "description": (
             "Post to a scope's channel. kind ∈ message|journal|system. "
-            "Journal entries are the scope's own debrief; structured fields go in meta."
+            "Journal entries are the scope's own debrief; structured fields go in meta. "
+            "Pass all structured params (kind, meta, to_scope) BEFORE the free-text "
+            "body, which must be the LAST argument — see the body param note."
         ),
+        # body is declared LAST on purpose. The harness serializes a tool call as
+        # ordered <parameter> blocks; a long multi-line value can bleed past its
+        # closing tag and swallow any parameter emitted AFTER it. Keeping the one
+        # long free-text field terminal means a bleed has no trailing param to
+        # corrupt (kind/meta survive). Sibling ops (agent_post, scope_create) put
+        # their free-text field last for the same reason. Do not move body up.
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "author", "type": "string", "required": True},
-            {"name": "body", "type": "string", "required": True},
             {"name": "kind", "type": "string", "required": False},
             {"name": "meta", "type": "object", "required": False},
             {"name": "to_scope", "type": "string", "required": False},
+            {"name": "body", "type": "string", "required": True,
+             "description": "Free-text post content. Pass this argument LAST — "
+                            "emit every other parameter before it."},
         ],
     },
     {

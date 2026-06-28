@@ -1,15 +1,15 @@
 """Server-side slash-command catalog for agent control.
 
-Slash commands posted to a room with a ``to:`` scope are routed here. If
-the command matches a registered server command, the handler runs and a
-result message is posted back to the room. Unknown commands fall through
-to the scope's claude stdin (via ``agent_instances.send_slash``) so /clear,
-/compact, plugin commands, etc. still work.
+Slash commands posted to a scope channel with a ``to:`` scope are routed here.
+If the command matches a registered server command, the handler runs and a
+result message is posted back to the scope channel. Unknown commands fall
+through to the scope's claude stdin (via ``agent_instances.send_slash``) so
+/clear, /compact, plugin commands, etc. still work.
 
 The catalog is intentionally small and explicit — each entry has a name,
 arg signature for the help panel, a one-line description, and an async
 handler that takes ``(scope_key, args)`` and returns the result string
-that will be posted to the room as a ``system`` message.
+that will be posted to the scope channel as a ``system`` message.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ async def _h_restart(scope_key: str, args: list[str]) -> str:
         scope_key, permission_mode=mode,
     )
     return (
-        f"restarted {scope_key} (pid={sess.proc.pid}, "
+        f"restarted {scope_key} (pid={sess.proc.pid if sess.proc else 0}, "
         f"mode={sess.permission_mode}, model={sess.model or 'default'}, "
         f"effort={sess.effort or 'default'})"
     )
@@ -80,7 +80,7 @@ async def _h_kill(scope_key: str, args: list[str]) -> str:
     if sess is None:
         return f"no active session for {scope_key}"
     await agent_instances.kill_session(sess.id)
-    return f"killed {scope_key} (pid={sess.proc.pid})"
+    return f"killed {scope_key} (pid={sess.proc.pid if sess.proc else 0})"
 
 
 async def _h_mode(scope_key: str, args: list[str]) -> str:
@@ -149,7 +149,7 @@ async def _h_clear(scope_key: str, args: list[str]) -> str:
     agent_instances.scrub_resume_queue_for_scope(sess.project, sess.scope)
     new = await agent_instances.respawn_session(scope_key, clear_history=True)
     return (
-        f"cleared {scope_key} (pid={new.proc.pid}, "
+        f"cleared {scope_key} (pid={new.proc.pid if new.proc else 0}, "
         f"mode={new.permission_mode}, model={new.model or 'default'}); "
         f"conversation context wiped"
     )
@@ -202,7 +202,7 @@ async def dispatch(scope_key: str, line: str) -> tuple[bool, str]:
 
     Returns ``(handled, message)``:
       - ``handled=True``: a registered server command ran; message is its
-        result string (post as ``system`` to the room).
+        result string (post as ``system`` to the scope channel).
       - ``handled=False``: the command isn't registered server-side; the
         caller should forward the raw line to the scope's claude stdin
         via ``agent_instances.send_slash``. ``message`` is empty.

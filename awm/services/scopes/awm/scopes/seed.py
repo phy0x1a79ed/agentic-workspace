@@ -3,9 +3,8 @@
 
 The modular cutover drops the shared runtime DB but leaves the old file on
 disk as a read-only legacy source. This module extracts the identity tables
-(projects/users/agents) straight, then **folds the old comms trio**
-(``session_logs`` + ``messages`` + ``rooms``/``room_transcripts``) into the
-unified ``scope_posts`` channel, and ``guest_list`` into ``scope_subscribers``.
+(projects/users/agents) straight, then folds the old comms pair
+(``session_logs`` + ``messages``) into the unified ``scope_posts`` channel.
 
 A scope IS the channel, so:
   - ``session_logs``    → ``scope_posts`` with ``kind='journal'`` (a self-post by
@@ -15,12 +14,6 @@ A scope IS the channel, so:
     state dropped). The recipient becomes the channel owner; non-agent
     recipients (user/project/system) become NON-LITERAL channels
     (owner_project='', the ref kept verbatim in owner_scope).
-  - ``rooms`` (no longer a table) only supply a ``room_id → (owner_project,
-    owner_scope)`` map; their transcripts fold into that owner's channel.
-    Multiple legacy rooms for one scope MERGE into the one channel, ordered
-    by ``ts`` — room identity is intentionally lost, content is not.
-  - ``room_transcripts``→ ``scope_posts`` (kind preserved).
-  - ``guest_list``      → ``scope_subscribers`` (deduped across folded rooms).
 
 Re-keying rules (per SCHEMA_HANDOFF.md):
   - ``agent_id`` → ``(project, scope)`` via the identity join.
@@ -47,9 +40,9 @@ from awm.scopes.dao import ScopesDAO, init
 
 log = logging.getLogger("awm.scopes.seed")
 
-# Embeddings source_types still seeded verbatim. 'session' and 'room' are
-# dropped: their source_ids point at the old session_logs / rooms ids that no
-# longer exist as such. Post-level search re-indexes lazily on first sync.
+# Embeddings source_types still seeded verbatim. 'session' is dropped: its
+# source_ids point at the old session_logs ids that no longer exist as such.
+# Post-level search re-indexes lazily on first sync.
 _SCOPES_EMBED_TYPES = {"scope", "project"}
 
 
@@ -104,36 +97,6 @@ def _ref_to_owner(ref: str) -> tuple[str, str]:
     return ("", ref)
 
 
-def _build_room_owner_map(
-    src: sqlite3.Connection,
-    agent_map: dict[str, tuple[str, str]],
-) -> dict[str, tuple[str, str, int]]:
-    """room_id → (owner_project, owner_scope, created_at). Unresolvable owners
-    are dropped (logged) so their guests/transcripts are skipped too."""
-    out: dict[str, tuple[str, str, int]] = {}
-    by_owner: dict[tuple[str, str], int] = {}
-    for r in src.execute(
-        "SELECT id, owner_agent_id, created_at FROM rooms"
-    ).fetchall():
-        ps = agent_map.get(r["owner_agent_id"])
-        if ps is None:
-            log.warning(
-                "seed rooms: unresolvable owner_agent_id=%s for room %s; "
-                "skipping room + its guests/transcripts",
-                r["owner_agent_id"], r["id"],
-            )
-            continue
-        out[r["id"]] = (ps[0], ps[1], r["created_at"] or 0)
-        by_owner[ps] = by_owner.get(ps, 0) + 1
-    for (proj, scope), n in by_owner.items():
-        if n > 1:
-            log.info(
-                "seed: folding %d legacy rooms for %s/%s into one channel",
-                n, proj, scope,
-            )
-    return out
-
-
 def seed_from_legacy(legacy_db: str | Path | None = None) -> dict[str, int]:
     """Seed scopes service DB from the legacy ``state.db``.
 
@@ -152,7 +115,6 @@ def seed_from_legacy(legacy_db: str | Path | None = None) -> dict[str, int]:
         "users": 0,
         "agents": 0,
         "scope_posts": 0,
-        "scope_subscribers": 0,
         "embeddings": 0,
     }
 
@@ -194,16 +156,16 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
             counts["users"] += 1
 
         for r in src.execute(
-            "SELECT id, project_id, scope, parent_id, status, agent_cli, branch, "
+            "SELECT id, project_id, scope, status, agent_cli, branch, "
             "worktree, display_name, is_vagrant, created_at, retired_at FROM agents"
         ).fetchall():
             dao.execute(
                 "INSERT OR IGNORE INTO agents "
-                "(id, project_id, scope, parent_id, status, agent_cli, branch, "
+                "(id, project_id, scope, status, agent_cli, branch, "
                 " worktree, display_name, is_vagrant, created_at, retired_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    r["id"], r["project_id"], r["scope"], r["parent_id"],
+                    r["id"], r["project_id"], r["scope"],
                     r["status"], r["agent_cli"] or "claude", r["branch"] or "",
                     r["worktree"] or "", r["display_name"] or r["scope"],
                     r["is_vagrant"] or 0, r["created_at"], r["retired_at"],
@@ -215,7 +177,6 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
     # Build lookup maps AFTER identity tables are seeded (join on legacy data).
     agent_map = _build_agent_map(src)
     user_map = _build_user_map(src)
-    room_owner = _build_room_owner_map(src, agent_map)
 
     # --- 2. session_logs → scope_posts (kind='journal', self-post) ----------
 
@@ -301,70 +262,7 @@ def _do_seed(src: sqlite3.Connection, counts: dict[str, int]) -> dict[str, int]:
             )
             counts["scope_posts"] += 1
 
-    # --- 4. guest_list → scope_subscribers (deduped across folded rooms) ----
-
-    with dao.transaction() as conn:
-        for r in src.execute(
-            "SELECT room_id, guest_kind, guest_ref, display_name FROM guest_list"
-        ).fetchall():
-            owner = room_owner.get(r["room_id"])
-            if owner is None:
-                continue  # room owner unresolvable (already logged)
-            owner_project, owner_scope, created_at = owner
-            natural_ref = _resolve_poly_ref(r["guest_ref"], agent_map, user_map)
-            if natural_ref is None:
-                log.warning(
-                    "seed guest_list: unresolvable guest_ref=%s in room %s; skipping",
-                    r["guest_ref"], r["room_id"],
-                )
-                continue
-            if natural_ref.startswith("agent:"):
-                stored_ref = natural_ref[len("agent:"):]
-            else:
-                stored_ref = natural_ref  # 'user:<name>' / 'system'
-            dao.execute(
-                "INSERT OR IGNORE INTO scope_subscribers "
-                "(owner_project, owner_scope, guest_kind, guest_ref, display_name, joined_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    owner_project, owner_scope, r["guest_kind"] or "agent",
-                    stored_ref, r["display_name"] or "", created_at,
-                ),
-                conn=conn,
-            )
-            counts["scope_subscribers"] += 1
-
-    # --- 5. room_transcripts → scope_posts (kind preserved) -----------------
-
-    with dao.transaction() as conn:
-        for r in src.execute(
-            "SELECT id, room_id, author, kind, body, meta, ts FROM room_transcripts"
-        ).fetchall():
-            owner = room_owner.get(r["room_id"])
-            if owner is None:
-                continue  # room owner unresolvable (already logged)
-            owner_project, owner_scope, _ = owner
-            natural_author = _resolve_poly_ref(r["author"], agent_map, user_map)
-            if natural_author is None:
-                log.warning(
-                    "seed room_transcripts: unresolvable author=%s in room %s; skipping",
-                    r["author"], r["room_id"],
-                )
-                continue
-            dao.execute(
-                "INSERT OR IGNORE INTO scope_posts "
-                "(id, owner_project, owner_scope, author, kind, body, meta, ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    r["id"], owner_project, owner_scope, natural_author,
-                    r["kind"] or "message", r["body"] or "",
-                    r["meta"] or "{}", r["ts"],
-                ),
-                conn=conn,
-            )
-            counts["scope_posts"] += 1
-
-    # --- 6. embeddings (identity-level source_types only) -------------------
+    # --- 4. embeddings (identity-level source_types only) -------------------
 
     with dao.transaction() as conn:
         for r in src.execute(

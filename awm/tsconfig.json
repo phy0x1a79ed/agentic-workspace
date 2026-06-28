@@ -58,6 +58,7 @@
       "@awm/primitives": ["./ui_components/primitives/src/index.ts"],
       "@awm/primitives/*": ["./ui_components/primitives/src/*"],
       "@awm/stt-composer": ["./ui_components/stt-composer/src/index.ts"],
+      "@awm/stt-telemetry": ["./ui_components/stt-telemetry/src/index.ts"],
       "@awm/tts-history": ["./ui_components/tts-history/src/index.ts"],
       "@awm/*": ["./ui_components/*/src/index.ts"]
     }

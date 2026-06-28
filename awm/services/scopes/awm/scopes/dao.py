@@ -23,10 +23,12 @@ from awm.persistence.databases import init_service_db
 from awm.persistence.embeddings import EMBEDDINGS_DDL
 
 SERVICE = "scopes"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-# Tables owned by the scopes service. v2 collapses the old rooms/messages/
-# session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``.
+# Tables owned by the scopes service. v2 collapsed the old rooms/messages/
+# session_logs trio into one ``scope_posts`` channel + ``scope_subscribers``;
+# v3 drops the vestigial ``agents.parent_id`` (rooms-era agent containment —
+# agents form no tree, a scope IS the channel).
 SCHEMA_SQL = """\
 -- Identity (kept relational — all in the scopes DB) -------------------
 CREATE TABLE IF NOT EXISTS projects (
@@ -46,7 +48,6 @@ CREATE TABLE IF NOT EXISTS agents (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES projects(id),
     scope         TEXT NOT NULL,
-    parent_id     TEXT REFERENCES agents(id),
     status        TEXT NOT NULL,
     agent_cli     TEXT NOT NULL,
     branch        TEXT NOT NULL,
@@ -57,7 +58,6 @@ CREATE TABLE IF NOT EXISTS agents (
     retired_at    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_agents_project_status ON agents(project_id, status);
-CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent_id);
 
 -- Scope channel (a scope IS the channel) ------------------------------
 -- One append-only post log per scope. Messages, journal (debrief) entries,
@@ -97,6 +97,17 @@ CREATE TABLE IF NOT EXISTS scope_subscribers (
 CREATE INDEX IF NOT EXISTS idx_scope_subscribers_ref ON scope_subscribers(guest_kind, guest_ref);
 """
 
+# Upgrades for an existing DB. v3 drops the rooms-era ``agents.parent_id``:
+# its dependent index goes first (SQLite refuses DROP COLUMN while an index
+# references it), then the column. Runs with FKs off (the migration loop sets
+# that), so the self-FK in the old column definition is dropped cleanly.
+MIGRATIONS: dict[tuple[int, int], str] = {
+    (2, 3): (
+        "DROP INDEX IF EXISTS idx_agents_parent;\n"
+        "ALTER TABLE agents DROP COLUMN parent_id;\n"
+    ),
+}
+
 _initialized = False
 
 
@@ -108,6 +119,7 @@ def init() -> None:
             SERVICE,
             SCHEMA_SQL + EMBEDDINGS_DDL,
             schema_version=SCHEMA_VERSION,
+            migrations=MIGRATIONS,
         )
         _initialized = True
 

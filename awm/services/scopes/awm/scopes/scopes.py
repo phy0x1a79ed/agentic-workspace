@@ -18,6 +18,7 @@ separate rooms/messages/session_logs machinery.
 from __future__ import annotations
 
 import os
+import re as _re
 import shutil
 import subprocess
 import tempfile
@@ -71,25 +72,23 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str) -
 def _default_context(project: str, scope: str) -> str:
     """Generate a default .awm/context.md for a new scope.
 
-    The skills service is out-of-process; we use a static debrief hint
-    rather than calling gatewayclient (non-essential for context.md).
+    Debrief is a native Claude Code skill (~/.claude/skills/debrief/), so the
+    context just names it — no skill-service lookup is needed.
     """
-    debrief_hint = '`skills_search query="debrief"`'
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
         f"1. Run `awm_refresh project={project} scope={scope}` to update local history and artifact indexes\n"
         f"2. Read `.awm/history.md` for session history, open issues, and resolved items\n"
-        f"3. Read `.awm/artifacts.md` for available data from sibling scopes\n"
-        f"4. Search for relevant skill protocols: `skills_search query=\"your task description\"`\n\n"
+        f"3. Read `.awm/artifacts.md` for available data from sibling scopes\n\n"
         f"## Work\n\n"
         f"- Code is in the current directory (this IS the git worktree)\n"
         f"- Project data is at `.awm/data/`\n"
-        f"- Skill protocols are at `.awm/skills/`\n"
+        f"- Reference protocols (git, mamba, etc.) are on disk at `.awm/skills/` if you need them\n"
         f"- Do NOT edit `.awm/history.md` or `.awm/artifacts.md` — use MCP tools\n\n"
         f"## Debrief\n\n"
-        f"When the user asks you to debrief (or says \"debrief\"), follow the debrief skill:\n"
-        f"{debrief_hint}\n"
+        f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
+        f"the end-of-session protocol that commits, journals, reconciles artifacts, and refreshes.\n"
     )
 
 
@@ -108,6 +107,23 @@ def _row_to_info(row) -> ScopeInfo:
         repo_path=row["worktree"],
         session=row["session"] or 1,
     )
+
+
+_TAG_RUN_RE = _re.compile(r"<[^>\n]*>")
+
+
+def _neutralise_title(text: str) -> str:
+    """Make an arbitrary string safe to render as a one-line markdown title.
+
+    A journal post with no ``meta.title`` falls back to its raw body, which can
+    contain newlines and — when a tool call was mangled in transport — literal
+    tool-call tag fragments (``</invoke>``, ``<meta>…</meta>``). Strip tag-like
+    runs and collapse whitespace so neither can smuggle markup or break the line
+    in the generated ``history.md``. Presentation-only; the stored row is intact.
+    """
+    text = _TAG_RUN_RE.sub("", text or "")
+    text = _re.sub(r"\s+", " ", text).strip()
+    return (text[:80] + "…") if len(text) > 80 else text
 
 
 def _generate_history_md(project: str, scope: str) -> str:
@@ -140,7 +156,7 @@ def _generate_history_md(project: str, scope: str) -> str:
     def _parse(row):
         meta = _coerce_meta(row["meta"])
         body = row["body"] or ""
-        title = meta.get("title") or (body[:80] + "…" if len(body) > 80 else body)
+        title = _neutralise_title(meta.get("title") or body)
         return meta, title
 
     sections = []

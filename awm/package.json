@@ -10,6 +10,10 @@
     "typecheck:pages": "svelte-check --tsconfig ./tsconfig.pages.json",
     "test": "node --test 'ui_components/**/*.test.ts'"
   },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
     "@types/node": "^22.0.0",

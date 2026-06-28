@@ -22,6 +22,7 @@ from awm.agents import agent_transcript
 from awm.agents import agent_bus
 from awm.agents._time import iso_to_ms
 from awm.agents.agent_slash import dispatch as slash_dispatch
+from awm.agents.terminal_session import terminal_session
 from awm.agents.models import (
     AgentSessionInfo,
     AgentSessionListResponse,
@@ -55,7 +56,11 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "create_session",
             "tool": "agent_spawn",
-            "description": "Spawn a new agent subprocess for (project, scope).",
+            "description": (
+                "Spawn a new agent subprocess for (project, scope). Defaults to "
+                "the claude-tmux harness (interactive TUI in a tmux session) so "
+                "the agent exposes a live 'terminal' session to attach to."
+            ),
             "params": [
                 {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
@@ -105,7 +110,27 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "enqueue_post",
             "tool": "agent_post",
-            "description": "Enqueue a scope-channel post into a running agent's stdin.",
+            "description": (
+                "Enqueue a scope-channel post into a running agent's stdin. "
+                "PASSIVE channel: the agent reads it at the next turn boundary."
+            ),
+            "params": [
+                {"name": "project", "type": "string", "required": True},
+                {"name": "scope", "type": "string", "required": True},
+                {"name": "author", "type": "string", "required": True},
+                {"name": "body", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "notify_agent",
+            "tool": "agent_notify",
+            "description": (
+                "FORCED-INTERRUPT channel: preempt a running agent's current "
+                "turn with a notification (tmux harness sends ESC then pastes "
+                "the body; headless falls back to a plain send). Use for "
+                "operator/inter-agent messages that must not wait for the turn "
+                "to finish. Contrast agent_post, which is passive/turn-aligned."
+            ),
             "params": [
                 {"name": "project", "type": "string", "required": True},
                 {"name": "scope", "type": "string", "required": True},
@@ -276,6 +301,19 @@ API_MANIFEST: dict[str, Any] = {
                 "id (uuid) so the client de-dupes the backfill/live overlap."
             ),
         },
+        {
+            "kind": "terminal",
+            "transport": "direct",
+            "description": (
+                "Interactive tmux terminal for a claude-tmux agent. Open with "
+                "init {project, scope} (or {session_id}), optional {cols, rows}: "
+                "the server attaches a PTY-backed `tmux attach` to the agent's "
+                "session and byte-relays it. Binary frames are raw terminal "
+                "bytes (output downstream, keystrokes upstream); text frames are "
+                "JSON control ({type:'resize',cols,rows}). Closing detaches the "
+                "client — it never kills the agent. Errors for a non-tmux agent."
+            ),
+        },
     ],
 }
 
@@ -298,7 +336,7 @@ async def _h_create_session(args: dict) -> dict:
     session = await ai.create_session(
         project=args["project"],
         scope=args["scope"],
-        agent_cli=args.get("agent_cli", "claude"),
+        agent_cli=args.get("agent_cli", "claude-tmux"),
         permission_mode=args.get("permission_mode", "default"),
         model=args.get("model"),
         effort=args.get("effort"),
@@ -307,7 +345,7 @@ async def _h_create_session(args: dict) -> dict:
         "session_id": session.id,
         "project": session.project,
         "scope": session.scope,
-        "pid": session.proc.pid,
+        "pid": session.proc.pid if session.proc else 0,
         "status": session.status,
     }
 
@@ -342,6 +380,16 @@ def _h_enqueue_post(args: dict) -> dict:
         return {"enqueued": False, "reason": "no active session"}
     ok = ai.enqueue_input(session, args["author"], args["body"])
     return {"enqueued": ok}
+
+
+async def _h_notify_agent(args: dict) -> dict:
+    project = args["project"]
+    scope = args["scope"]
+    session = ai.get_session_by_scope(project, scope)
+    if session is None:
+        return {"notified": False, "reason": "no active session"}
+    ok = await ai.notify_agent(session, args["author"], args["body"])
+    return {"notified": ok}
 
 
 def _h_agent_subscribe(args: dict) -> dict:
@@ -484,6 +532,7 @@ HANDLERS = {
     "tail_log": _h_tail_log,
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
+    "notify_agent": _h_notify_agent,
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
@@ -516,7 +565,10 @@ async def main() -> None:
     )
     await ServiceAdapter(
         "agents", API_MANIFEST, HANDLERS,
-        session_handlers={"transcript": _transcript_session},
+        session_handlers={
+            "transcript": _transcript_session,
+            "terminal": terminal_session,
+        },
         on_start=_on_start,
     ).run()
 

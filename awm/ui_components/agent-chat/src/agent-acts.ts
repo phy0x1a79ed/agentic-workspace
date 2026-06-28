@@ -21,7 +21,7 @@
  */
 
 import type { AgentAct } from '@awm/client';
-import type { Post } from '@awm/tts-history';
+import type { Post } from '@awm/chat';
 
 /** Author label for every agent-origin row, given the connected scope. */
 export function agentAuthor(project: string, scope: string): string {

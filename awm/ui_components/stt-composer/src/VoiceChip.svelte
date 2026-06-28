@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="chunk" class:live>
+<div class="chunk" class:live data-awm-component="VoiceChip">
   <span class="chunk-text">{text}</span>
   <!-- svelte-ignore a11y_consider_explicit_label -->
   <button

@@ -323,3 +323,108 @@ export function subscribeAgent(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Interactive tmux terminal (claude-tmux harness)
+// ---------------------------------------------------------------------------
+
+/** A handle to a live interactive terminal. */
+export interface TerminalSession {
+  /** Send keystrokes to the agent's pane (relayed as a binary frame). */
+  send(data: string): void;
+  /** Tell the server to resize the PTY/tmux client (JSON control frame). */
+  resize(cols: number, rows: number): void;
+  /** Detach (closes the WS; the agent's tmux session keeps running). */
+  close(): void;
+}
+
+/** Callbacks for {@link openTerminal}. */
+export interface TerminalHandlers {
+  /** Raw terminal output bytes (a binary frame) — feed straight to xterm. */
+  onData: (bytes: Uint8Array) => void;
+  /** A JSON error control frame (e.g. non-tmux agent / dead session). */
+  onError?: (message: string) => void;
+  /** The socket closed (detach / server gone). */
+  onClose?: () => void;
+}
+
+/**
+ * Open the agents service's `terminal` direct session for a claude-tmux agent:
+ * POST /svc/agents/session/terminal {project, scope, cols?, rows?}, then connect
+ * the returned WS as a bidirectional byte relay of `tmux attach`.
+ *
+ * Wire protocol (mirrors the backend `terminal_session`): binary frames are raw
+ * terminal bytes (output via `onData`, keystrokes via `send`); text frames are
+ * JSON control (`resize` upstream; `error` downstream). Allocation is async, so
+ * the socket isn't live the instant this returns. `close()` is safe to call
+ * before it finishes opening — it detaches, never killing the agent.
+ */
+export function openTerminal(
+  project: string,
+  scope: string,
+  opts: { cols?: number; rows?: number },
+  handlers: TerminalHandlers,
+): TerminalSession {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  const enc = new TextEncoder();
+
+  void (async () => {
+    try {
+      const { ws_path } = await svc('agents').session<{ ws_path: string }>('terminal', {
+        project,
+        scope,
+        ...(opts.cols ? { cols: opts.cols } : {}),
+        ...(opts.rows ? { rows: opts.rows } : {}),
+      });
+      if (closed) return;
+      ws = new WebSocket(toWsUrl(ws_path));
+      ws.binaryType = 'arraybuffer';
+      ws.addEventListener('message', (ev) => {
+        if (typeof ev.data === 'string') {
+          // Text frame = JSON control. Today that's only an error frame.
+          try {
+            const msg = JSON.parse(ev.data) as { type?: string; message?: string };
+            if (msg?.type === 'error') handlers.onError?.(msg.message ?? 'terminal error');
+          } catch {
+            /* ignore non-JSON text */
+          }
+          return;
+        }
+        handlers.onData(new Uint8Array(ev.data as ArrayBuffer));
+      });
+      ws.addEventListener('error', () => handlers.onError?.('terminal ws error'));
+      ws.addEventListener('close', () => handlers.onClose?.());
+    } catch (err) {
+      handlers.onError?.((err as Error).message);
+    }
+  })();
+
+  return {
+    send(data: string): void {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(enc.encode(data));
+      } catch {
+        /* ignore */
+      }
+    },
+    resize(cols: number, rows: number): void {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+      } catch {
+        /* ignore */
+      }
+    },
+    close(): void {
+      if (closed) return;
+      closed = true;
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}

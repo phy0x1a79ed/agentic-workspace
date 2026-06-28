@@ -29,7 +29,7 @@
   export function finalizeLiveChunk(_text: string) {}
 </script>
 
-<div class="text-tab">
+<div class="text-tab" data-awm-component="TextTab">
   <textarea
     bind:this={textarea}
     bind:value
@@ -46,6 +46,9 @@
     display: flex;
     flex-direction: column;
     width: 100%;
+    /* Intrinsic floor for content-hugging containers (gallery card); inert
+       when the parent is wider (agent/stt pages). */
+    min-width: 300px;
   }
   .editor {
     min-height: 96px;

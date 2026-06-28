@@ -28,7 +28,7 @@ from typing import Any, Literal, Optional
 # Config
 # ---------------------------------------------------------------------------
 
-Harness = Literal["claude", "opencode"]
+Harness = Literal["claude", "claude-tmux", "opencode"]
 Mode = Literal["live", "oneshot"]
 
 
@@ -54,8 +54,22 @@ class AgentConfig:
         workdir:        cwd for the subprocess (the worktree). None = caller cwd.
         resume_id:      harness session id to resume (claude --resume); opencode
                         uses it as the persistent session id to reattach to.
-        mcp_config:     path to an MCP config file to pass to the harness
-                        (claude --mcp-config). None = no MCP config.
+        mcp_config:     path to a pre-built MCP config file to pass to the
+                        harness (claude --mcp-config). An explicit override —
+                        the harness prefers a synthesized awm server (see
+                        ``awm_workspace``/``awm_port``) when those are set, and
+                        falls back to this otherwise. None = neither.
+        awm_workspace:  the hub's canonical workspace. Threaded in (NOT read from
+                        awm.config — agentcore is a leaf) so the harness can
+                        synthesize the ``awm`` MCP server's env. None = don't
+                        attach the awm server.
+        awm_port:       the hub's port. The load-bearing field — it selects which
+                        gateway the spawned ``awm-mcp`` proxy talks to. Set it to
+                        attach the awm MCP server; None = don't.
+        placement_as:   the placed agent's identity ``f"{project}/{unit_slug}"``.
+                        When set, the synthesized awm server carries ``AWM_AS`` so
+                        the agent's B-op tools resolve to its own task with no
+                        model-supplied token. None = conversational (no identity).
         system_prompt:  appended-system-prompt text (claude
                         --append-system-prompt). None = none.
         allowed_tools:  explicit tool allowlist (claude --allowedTools). Names
@@ -67,6 +81,10 @@ class AgentConfig:
         disallowed_tools: explicit tool denylist (claude --disallowedTools),
                         same name space as ``allowed_tools``. Applied on top of
                         the allowlist. None = no denylist.
+        tmux_session_name: for the ``claude-tmux`` harness, the tmux session
+                        name to create/attach (so a human can ``tmux attach``).
+                        None = the backend mints ``awm-<session-id[:8]>``.
+                        Ignored by other harnesses.
     """
 
     harness: Harness
@@ -77,9 +95,13 @@ class AgentConfig:
     workdir: Optional[str] = None
     resume_id: Optional[str] = None
     mcp_config: Optional[str] = None
+    awm_workspace: Optional[str] = None
+    awm_port: Optional[str] = None
+    placement_as: Optional[str] = None
     system_prompt: Optional[str] = None
     allowed_tools: Optional[list[str]] = None
     disallowed_tools: Optional[list[str]] = None
+    tmux_session_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

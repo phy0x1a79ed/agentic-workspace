@@ -1,7 +1,7 @@
 """Pydantic request/response models owned by the agents service.
 
 Covers agent spawning, tracked agent sessions, live agent-runtime state
-(pid/status/model/context), the room-scoped agent view, and the agent
+(pid/status/model/context), the scope-scoped agent view, and the agent
 slash-command surface.
 """
 
@@ -51,6 +51,7 @@ class AgentSessionInfo(BaseModel):
     exited_at: str | None = None
     exit_code: int | None = None
     attached: bool = False
+    tmux_session: str | None = None  # claude-tmux harness: human-attachable name
 
 
 class AgentSessionListResponse(BaseModel):
@@ -65,7 +66,7 @@ class AgentSessionActionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Live agent runtime state (room-scoped view of agents)
+# Live agent runtime state (scope-scoped view of agents)
 # ---------------------------------------------------------------------------
 
 class LiveAgentState(BaseModel):

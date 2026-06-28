@@ -1,7 +1,7 @@
-"""Rooms WebSocket envelope — typed builders for the JSON protocol.
+"""Scope-channel WebSocket envelope — typed builders for the JSON protocol.
 
-The wire format is one JSON object per WS text frame. See
-``awm/protocols/rooms_ws.md`` for the canonical reference.
+A scope IS the channel (there are no rooms). The wire format is one JSON object
+per WS text frame.
 
 → server (sent by subscriber):
     {"type": "post",    "body": "...", "kind": "text", "to": "<scope>?"}
@@ -13,7 +13,6 @@ The wire format is one JSON object per WS text frame. See
     {"type": "post",                 "post":  <Post>}
     {"type": "participant_joined",   "participant": {...}}
     {"type": "participant_left",     "participant": {...}}
-    {"type": "room_closed",          "ts": "<iso>"}
     {"type": "upstream_disconnected","peer": "<id>", "reason": "..."}
     {"type": "lagged"}    # consumer too slow; server closes 1011 after
     {"type": "error",   "message": "..."}
@@ -30,7 +29,6 @@ HISTORY = "history"
 POST = "post"
 PARTICIPANT_JOINED = "participant_joined"
 PARTICIPANT_LEFT = "participant_left"
-ROOM_CLOSED = "room_closed"
 UPSTREAM_DISCONNECTED = "upstream_disconnected"
 LAGGED = "lagged"
 ERROR = "error"
@@ -55,10 +53,6 @@ def participant_joined(participant: dict) -> dict:
 
 def participant_left(participant: dict) -> dict:
     return {"type": PARTICIPANT_LEFT, "participant": participant}
-
-
-def room_closed(ts: str) -> dict:
-    return {"type": ROOM_CLOSED, "ts": ts}
 
 
 def upstream_disconnected(peer: str, reason: str) -> dict:

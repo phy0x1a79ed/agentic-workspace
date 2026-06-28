@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 from pathlib import Path
 from typing import Optional
@@ -48,7 +49,7 @@ from awm.agentcore import AgentConfig, open_agent
 from awm.agentcore.session import AgentSession as _CoreSession
 
 
-_SUPPORTED_CLIS = {"claude", "opencode"}
+_SUPPORTED_CLIS = {"claude", "claude-tmux", "opencode"}
 _INPUT_QUEUE_SIZE = 128
 
 # Supervision (T4): a task-bound worker gets a hard turn budget — every turn
@@ -147,6 +148,9 @@ class AgentInstance:
         # profile; both carried across respawn. Default-empty for conversational.
         self.workdir: Optional[str] = None
         self.allowed_tools: Optional[list[str]] = None
+        # tmux session name for the claude-tmux harness (human-attachable);
+        # None for headless claude / opencode.
+        self.tmux_session: Optional[str] = None
         # Supervision: a hard turn budget that decrements every turn boundary,
         # no extension, no refill (only meaningful when mode != conversational).
         self.turn_budget: int = TASK_TURN_BUDGET
@@ -291,71 +295,46 @@ def _build_opencode_argv(
 # agentcore config builder
 # ---------------------------------------------------------------------------
 
-def _write_placement_mcp_config(awm_dir: Path, as_: str) -> Optional[str]:
-    """Write a per-placement ``spawn-mcp.json`` carrying the agent's identity.
+def _tmux_session_name(instance_id: int, scope: str) -> str:
+    """Deterministic, tmux-safe session name for a ``claude-tmux`` placement.
 
-    A placed agent submits work through MCP B-op tools (``edit_deliverable`` …)
-    that must resolve to ITS placement without the model supplying a token. We
-    clone the canonical ``spawn-mcp.json`` into the placement's own unit
-    (``<unit>/.awm/spawn-mcp.json``) and inject ``mcpServers.awm.env.AWM_AS =
-    f"{project}/{unit_slug}"``. Each placed ``claude`` spawns its OWN ``awm-mcp``
-    stdio child from this file, so that proxy stamps ``X-Awm-As`` on every
-    ``/invoke`` — the agents service resolves the open placement from it. Returns
-    the per-placement config path, or None to fall back to the canonical file
-    (no identity → the relays reject the call, which is the safe failure)."""
-    canonical = config.AWM_DIR / "spawn-mcp.json"
-    if not canonical.exists():
-        return None
-    try:
-        cfg = json.loads(canonical.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    servers = cfg.setdefault("mcpServers", {})
-    awm = servers.get("awm")
-    if isinstance(awm, dict):
-        env = awm.setdefault("env", {})
-        if isinstance(env, dict):
-            env["AWM_AS"] = as_
-    dest = awm_dir / "spawn-mcp.json"
-    try:
-        dest.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        return None
-    return str(dest)
+    ``awm-<instance_id>-<scope>`` with anything outside ``[A-Za-z0-9_-]``
+    collapsed to ``-`` (tmux treats ``.`` / ``:`` specially in target names).
+    Predictable from ``agent_list`` so a human knows what to ``tmux attach``."""
+    safe_scope = re.sub(r"[^A-Za-z0-9_-]", "-", scope)
+    return f"awm-{instance_id}-{safe_scope}"
 
 
 def _build_core_config(
     *, agent_cli: str, permission_mode: str, model: Optional[str],
     effort: Optional[str], resume_session_id: Optional[str],
-    workspace_dir: Path, awm_dir: Path,
+    workspace_dir: Path,
     allowed_tools: Optional[list[str]] = None,
     disallowed_tools: Optional[list[str]] = None,
-    mcp_config_override: Optional[str] = None,
+    placement_as: Optional[str] = None,
+    tmux_session_name: Optional[str] = None,
 ) -> AgentConfig:
     """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
 
     ``permission_mode == 'bypassPermissions'`` → full-open (``permissions='full'``);
     everything else maps to ``permissions='default'`` (the harness's own
-    default). ``effort`` rides ``params`` (claude). ``mcp_config`` is the
-    workspace ``spawn-mcp.json`` for claude; opencode is configured via the
-    ``OPENCODE_CONFIG`` env it inherits from this process, so it is not threaded
-    through the config here. ``allowed_tools`` / ``disallowed_tools`` are the
-    per-placement tool profile (a task-bound worker is full-open on permissions
-    but its tools — fs built-ins + which worker MCP tools — are scoped by the
-    allowlist; a conversational session passes neither and is unrestricted).
-    """
+    default). ``effort`` rides ``params`` (claude). ``allowed_tools`` /
+    ``disallowed_tools`` are the per-placement tool profile (a task-bound worker
+    is full-open on permissions but its tools — fs built-ins + which worker MCP
+    tools — are scoped by the allowlist; a conversational session passes neither
+    and is unrestricted).
+
+    MCP setup is **harness-owned**: we don't write any config file here. We
+    thread the hub's canonical workspace + port (so the harness can synthesize
+    the ``awm`` MCP server pointing back at THIS hub) and, for a placement,
+    ``placement_as`` (the agent's identity ``f"{project}/{unit_slug}"`` → the
+    synthesized server's ``AWM_AS`` → ``X-Awm-As`` → the B-op tools resolve to
+    its own task without a model-supplied token). ``placement_as=None`` is a
+    conversational session (awm tools, no identity)."""
     permissions = "full" if permission_mode == "bypassPermissions" else "default"
     params: dict = {}
     if effort:
         params["effort"] = effort
-    mcp_config: Optional[str] = None
-    if agent_cli == "claude":
-        if mcp_config_override:
-            mcp_config = mcp_config_override
-        else:
-            spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
-            if spawn_mcp.exists():
-                mcp_config = str(spawn_mcp)
     return AgentConfig(
         harness=agent_cli,
         mode="live",
@@ -364,9 +343,12 @@ def _build_core_config(
         permissions=permissions,
         workdir=str(workspace_dir),
         resume_id=resume_session_id,
-        mcp_config=mcp_config,
+        awm_workspace=str(config.canonical_workspace()),
+        awm_port=str(config.PORT),
+        placement_as=placement_as,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
+        tmux_session_name=tmux_session_name,
     )
 
 
@@ -375,7 +357,7 @@ def _build_core_config(
 # ---------------------------------------------------------------------------
 
 async def create_session(*, project: str, scope: str,
-                         agent_cli: str = "claude",
+                         agent_cli: str = "claude-tmux",
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
@@ -479,18 +461,23 @@ async def create_session(*, project: str, scope: str,
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
-        # A placement gets a per-placement spawn-mcp config carrying its identity
-        # (AWM_AS) so its B-op tools resolve to its own task without a token.
-        mcp_config_override = None
-        if task_bound and agent_cli == "claude":
-            mcp_config_override = _write_placement_mcp_config(
-                awm_dir, _scope_key(project, scope))
+        # MCP setup is harness-owned: a placement passes its identity
+        # (project/unit_slug) so the harness synthesizes an awm server with
+        # AWM_AS, and its B-op tools resolve to its own task without a token. A
+        # conversational session passes no identity (awm tools, no AWM_AS).
+        placement_as = _scope_key(project, scope) if task_bound else None
+        # The tmux harness gets a deterministic session name (human-attachable).
+        tmux_name = (
+            _tmux_session_name(instance_id, scope)
+            if agent_cli == "claude-tmux" else None
+        )
         core_config = _build_core_config(
             agent_cli=agent_cli, permission_mode=permission_mode,
             model=model, effort=effort, resume_session_id=resume_session_id,
-            workspace_dir=workspace_dir, awm_dir=awm_dir,
+            workspace_dir=workspace_dir,
             allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
-            mcp_config_override=mcp_config_override,
+            placement_as=placement_as,
+            tmux_session_name=tmux_name,
         )
         agent_session = open_agent(core_config)
 
@@ -527,6 +514,13 @@ async def create_session(*, project: str, scope: str,
         session.placement_token = placement_token
         session.workdir = str(workspace_dir)
         session.allowed_tools = allowed_tools
+        session.tmux_session = tmux_name
+        # Persist agent_cli (not a column) so lists/hydration report the harness
+        # correctly, plus the tmux session name for human attach.
+        data_patch: dict = {"agent_cli": agent_cli}
+        if tmux_name:
+            data_patch["tmux_session"] = tmux_name
+        dao.merge_instance_data(instance_id, data_patch)
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
@@ -541,12 +535,12 @@ async def create_session(*, project: str, scope: str,
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
-        proc = session.proc
-        if proc is not None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        # Tear down through the seam so a proc-less harness (tmux) is cleaned
+        # up too rather than leaking a detached session.
+        try:
+            await session.agent_session.close()
+        except Exception:  # noqa: BLE001
+            pass
         async with _registry_lock:
             _by_scope.pop(key, None)
             _registry_by_id.pop(instance_id, None)
@@ -604,12 +598,44 @@ async def _input_pump(session: AgentInstance) -> None:
 
 def enqueue_input(session: AgentInstance, post_author: str,
                   post_body: str) -> bool:
-    """Enqueue a scope-channel post for the agent's stdin pump."""
+    """Enqueue a scope-channel post for the agent's stdin pump.
+
+    This is the PASSIVE input channel: the post is queued and the agent consumes
+    it between turns (turn-aligned). For a mid-turn forced-interrupt, see
+    :func:`notify_agent`."""
     try:
         session.input_queue.put_nowait((post_author, post_body))
         return True
     except asyncio.QueueFull:
         return False
+
+
+async def notify_agent(session: AgentInstance, author: str, body: str) -> bool:
+    """FORCED-INTERRUPT notification: preempt the agent's current turn.
+
+    The third input channel (with passive ``enqueue_input`` and the human's
+    direct terminal keystrokes): an operator or another agent forces a message
+    in mid-turn via the harness :meth:`AgentSession.interrupt` seam — the tmux
+    harness sends ESC to cancel the in-flight turn, then pastes ``body``; a
+    headless harness falls back to a plain ``send``. The agent's OWN posts are
+    filtered (never self-notify), mirroring the passive path. Recorded to the
+    transcript as an injection. Returns False when filtered or the harness
+    rejects the interrupt."""
+    if _is_own_author(session, author):
+        return False
+    framed = f"[notify:{author}]\n{body}"
+    try:
+        await session.agent_session.interrupt(framed)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
+            fp.write(f"STDIN(notify) {framed!r}\n")
+    except OSError:
+        pass
+    from awm.agents import agent_transcript
+    agent_transcript.record_in(session, framed, injection=True)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -923,16 +949,19 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
 # ---------------------------------------------------------------------------
 
 async def _waiter_loop(session: AgentInstance) -> None:
-    proc = session.proc
-    if proc is None:
+    # Harness-agnostic liveness: subprocess backends await their child; the
+    # tmux backend polls its detached session. Both surface through wait().
+    try:
+        exit_code = await session.agent_session.wait()
+    except NotImplementedError:
         return
-    exit_code = await proc.wait()
-    session.exit_code = exit_code
+    session.exit_code = exit_code if exit_code is not None else 0
     session.exited_at_ms = now_ms()
     final = "killed" if session.status == "killed" else "exited"
     session.status = final
 
-    _get_dao().close_instance(session.id, ended_at=now_ms(), exit_code=exit_code)
+    _get_dao().close_instance(session.id, ended_at=now_ms(),
+                              exit_code=session.exit_code)
 
     # Liveness: a task-bound subprocess that died without a terminal outcome
     # must not strand its task in ACTIVE — force-fail it so the orchestrator can
@@ -974,6 +1003,7 @@ def _info_for_instance_row(row: dict) -> AgentSessionInfo:
         exited_at=ms_to_iso(row.get("ended_at")),
         exit_code=row.get("exit_code"),
         attached=False,
+        tmux_session=row.get("tmux_session"),
     )
 
 
@@ -994,7 +1024,8 @@ def _render_status(row: dict) -> str:
 
 def _hydrate_instance_row(row: dict) -> dict:
     instance_handle = _registry_by_id.get(row["id"])
-    pid = instance_handle.proc.pid if instance_handle else 0
+    pid = (instance_handle.proc.pid
+           if instance_handle and instance_handle.proc else 0)
     try:
         data = json.loads(row.get("data") or "{}")
     except (TypeError, ValueError):
@@ -1005,6 +1036,7 @@ def _hydrate_instance_row(row: dict) -> dict:
     out["render_status"] = _render_status(out)
     # agent_cli: not in agents.db; default to "claude" (or recover from data)
     out.setdefault("agent_cli", data.get("agent_cli") or "claude")
+    out["tmux_session"] = data.get("tmux_session")
     return out
 
 
@@ -1026,9 +1058,11 @@ async def stop_session(session_id: int) -> AgentSessionInfo:
     if session is None:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "stopping"
+    # Tear down through the harness seam (subprocess terminate / tmux
+    # kill-session) so the waiter loop observes the exit and deregisters.
     try:
-        session.proc.terminate()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 
@@ -1045,8 +1079,8 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "killed"
     try:
-        session.proc.kill()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 
@@ -1216,7 +1250,6 @@ async def compact_session(scope_key: str) -> str:
                 f"summary still available via transcript"
             )
 
-        # Audit notice — room broadcast stubbed.
         return (
             f"compacted {scope_key}: prior instance {prior_instance_id} "
             f"summarized → new instance {new_session.id} primed"
@@ -1410,25 +1443,3 @@ def start_resume_driver() -> asyncio.Task:
     return _resume_driver_task
 
 
-# ---------------------------------------------------------------------------
-# Rooms-service dispatcher wiring — NO-OP in modular mode
-# ---------------------------------------------------------------------------
-
-def _dispatch_local_post(scope_key: str, post_author: str,
-                         post_body: str) -> None:
-    """Forward a scope-channel post to the in-memory session's input queue."""
-    session = _by_scope.get(scope_key)
-    if session is None:
-        return
-    enqueue_input(session, post_author, post_body)
-
-
-def install_room_dispatchers() -> None:
-    """No-op in modular mode.
-
-    In the monolith, this wired rooms_svc callbacks. In the modular world,
-    room posts arrive via gatewayclient RPC (the scopes service routes them
-    here via the agent's registered RPC handler). The hub_adapter wires
-    those handlers on startup.
-    """
-    pass

@@ -390,7 +390,17 @@ class ServiceAdapter:
                 # retryable via raise_for_status below.
                 raise GiveUp(f"register rejected (409): {r.text}")
             r.raise_for_status()
-        return r.json()["service_id"]
+        data = r.json()
+        # The hub tells us its canonical workspace (where agents/data live).
+        # Bind it late so a shadow overlay — whose own AWM_WORKSPACE is an
+        # isolated local root — still resolves real work against the hub's
+        # workspace. Best-effort: a hub that predates this field returns "".
+        try:
+            from awm import config as _config
+            _config.set_canonical_workspace(data.get("canonical_workspace"))
+        except Exception:  # noqa: BLE001
+            pass
+        return data["service_id"]
 
     async def _run_target(self, hub_url: str, sid: str, *, name: str,
                           prefix: str, overlay: bool) -> None:

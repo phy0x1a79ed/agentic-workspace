@@ -10,6 +10,7 @@
    */
   import { tick } from 'svelte';
   import type { Post } from './types';
+  import TmuxTerminal from './TmuxTerminal.svelte';
 
   interface Props {
     posts: Post[];
@@ -19,8 +20,24 @@
      * speak controls.
      */
     onspeak?: (post: Post) => void;
+    /**
+     * Agent identity. When BOTH are provided, a Transcript | Terminal tablist
+     * appears and the Terminal tab attaches to that agent's live tmux pane
+     * (claude-tmux harness). Omit (the default) for a plain transcript — the
+     * stt/tts/gallery hosts that have no agent render exactly as before.
+     */
+    project?: string;
+    scope?: string;
   }
-  let { posts, onspeak }: Props = $props();
+  let { posts, onspeak, project, scope }: Props = $props();
+
+  // The Terminal tab exists only when we know which agent to attach to.
+  const hasAgent = $derived(!!(project && scope));
+  let activeTab = $state<'transcript' | 'terminal'>('transcript');
+  // Effective tab: the terminal is only reachable with an agent identity, so a
+  // dropped selector transparently falls back to the transcript (no mutation,
+  // no self-referential effect).
+  const shownTab = $derived(hasAgent ? activeTab : 'transcript');
 
   let scrollEl: HTMLDivElement | undefined = $state();
 
@@ -118,7 +135,8 @@
   }
 </script>
 
-<div class="transcript" bind:this={scrollEl}>
+{#snippet transcriptPane()}
+<div class="transcript" bind:this={scrollEl} data-awm-component="TtsHistory">
   {#if groups.length === 0}
     <div class="empty-state">
       <div class="empty-icon">◇</div>
@@ -174,8 +192,78 @@
     {/each}
   {/if}
 </div>
+{/snippet}
+
+{#if hasAgent}
+  <div class="tts-history">
+    <div class="tablist" role="tablist" aria-label="agent view">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={shownTab === 'transcript'}
+        class:active={shownTab === 'transcript'}
+        onclick={() => (activeTab = 'transcript')}
+      >Transcript</button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={shownTab === 'terminal'}
+        class:active={shownTab === 'terminal'}
+        onclick={() => (activeTab = 'terminal')}
+      >Terminal</button>
+    </div>
+    {#if shownTab === 'transcript'}
+      {@render transcriptPane()}
+    {:else}
+      <!-- Mounted only while visible so xterm fits a laid-out container; the
+           keyed block re-mounts (re-attaches) when the agent identity changes. -->
+      {#key `${project}/${scope}`}
+        <TmuxTerminal project={project!} scope={scope!} />
+      {/key}
+    {/if}
+  </div>
+{:else}
+  {@render transcriptPane()}
+{/if}
 
 <style>
+  .tts-history {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .tablist {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 2px;
+    padding: 4px 6px 0;
+    border-bottom: 1px solid var(--border, #333);
+    background: var(--surface, #1a1a1a);
+  }
+  .tablist button {
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: none;
+    color: var(--text3, #888);
+    font: inherit;
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 5px 12px;
+    border-radius: 4px 4px 0 0;
+    cursor: pointer;
+  }
+  .tablist button:hover { color: var(--text2, #bbb); }
+  .tablist button.active {
+    color: var(--text, #ddd);
+    background: var(--bg, #111);
+    border-color: var(--border, #333);
+  }
+  /* When tabbed, the transcript is no longer a direct child of the host's
+     `.history-wrap`, so re-assert the grow it would otherwise inherit. */
+  .tts-history > .transcript { flex: 1 1 auto; min-height: 0; }
   .transcript {
     flex: 1;
     overflow-y: auto;
@@ -183,7 +271,11 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    min-height: 0;
+    /* Intrinsic floor: standalone (gallery card) the transcript has no
+       height-constrained flex parent, so without this it collapses to its
+       content. Inside a height-constrained flex parent (agent/stt pages)
+       flex:1 grows it past this floor, so the floor is inert there. */
+    min-height: 280px;
     position: relative;
     background:
       linear-gradient(to bottom, color-mix(in oklab, var(--bg, #111) 50%, var(--surface, #1a1a1a)) 0, transparent 60px),

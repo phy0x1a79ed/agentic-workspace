@@ -51,6 +51,7 @@
   class="ptt"
   class:active
   type="button"
+  data-awm-component="SttButton"
   {disabled}
   aria-pressed={active}
   onmousedown={down}

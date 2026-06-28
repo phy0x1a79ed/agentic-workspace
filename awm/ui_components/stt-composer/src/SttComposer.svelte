@@ -2,6 +2,7 @@
   import SttButton from './SttButton.svelte';
   import SttComposerShell from './SttComposerShell.svelte';
   import { apiFetch, AuthError, toWsUrl } from '@awm/client';
+  import type { TelemetryEvent } from '@awm/stt-telemetry';
   // Vite-bundled worklet URL: `?url` returns the asset URL at build time.
   // The bundled file is fetched relative to the page origin, so it works
   // whether the page is served from /ui/stt/, /ui/agent/, or anywhere
@@ -27,9 +28,10 @@
   interface Props {
     /** Called with the final assembled text when the user hits Send. */
     onsend?: (text: string) => void;
-    /** Optional: also called on every silence-segmented final transcript,
-     *  even when the user hasn't hit Send. Useful for "auto-post each
-     *  finalized utterance" wiring (the agent page hooks this). */
+    /** Optional auto-post signal: fired per finalized utterance WITHOUT a Send
+     *  press — but only in **convo** mode (continuous, silence-segmented). PTT
+     *  no longer fires this; it buffers chips that post once on Send (`onsend`).
+     *  So onsend/onText are mutually exclusive per mode and one turn posts once. */
     onText?: (text: string) => void;
     /** Override the service prefix. Defaults to /svc/stt. */
     svcPrefix?: string;
@@ -41,6 +43,12 @@
     mockInitialChips?: string[];
     // Offline-only: scripted partial→finalize walk for vitest / dev pages.
     mockPartialScript?: PartialStep[];
+    /** Dev-only: when provided, every pipeline event (each audio chunk sent,
+     *  each control frame, every inbound frame, and the backend `metric` timing
+     *  frames) is reported here for a telemetry panel. Providing this also opts
+     *  the session into the backend metric stream (the start frame carries
+     *  `telemetry:true`). Omit it in production — zero overhead, no metrics. */
+    onTelemetry?: (e: TelemetryEvent) => void;
   }
   let {
     onsend,
@@ -49,7 +57,33 @@
     chatContext,
     mockInitialChips,
     mockPartialScript,
+    onTelemetry,
   }: Props = $props();
+
+  // --- Dev telemetry helpers (no-op unless onTelemetry is wired). ----------
+  function telem(dir: TelemetryEvent['dir'], event: string, detail?: string, dur?: number) {
+    onTelemetry?.({ t: performance.now(), dir, event, detail, dur });
+  }
+  // Short, render-cheap detail string for an inbound frame (truncate transcript
+  // text; summarize status/ready/error).
+  function shortDetail(msg: any): string {
+    if (typeof msg.text === 'string') {
+      return msg.text.length > 40 ? msg.text.slice(0, 40) + '…' : msg.text;
+    }
+    if (msg.type === 'status') return `${msg.stage}${msg.text ? ' · ' + msg.text : ''}`;
+    if (msg.type === 'ready') return msg.user ?? '';
+    if (msg.type === 'error') return msg.message ?? '';
+    return '';
+  }
+  // Flatten a backend `metric` frame's extra fields into a `k=v` string (drop the
+  // envelope keys already shown as columns).
+  function metricDetail(msg: any): string {
+    const skip = new Set(['type', 'event', 't', 'dur_ms']);
+    return Object.entries(msg)
+      .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ');
+  }
 
   const isMock = $derived(!!(mockInitialChips || mockPartialScript));
 
@@ -77,7 +111,6 @@
   let sourceNode: MediaStreamAudioSourceNode | null = null;
   let recording = false;
   let convoListening = $state(false);
-  let paused = $state(false);
 
   let micLevel = $state(0);
   let pendingLevel = 0;
@@ -174,11 +207,24 @@
     if (typeof ev.data !== 'string') return;
     let msg: any;
     try { msg = JSON.parse(ev.data); } catch { return; }
+    // Dev telemetry: backend metric frames are timing-only — log and stop, never
+    // let them fall through the frame switch. Every other frame is logged (with a
+    // short detail) and then dispatched normally.
+    if (msg.type === 'metric') {
+      telem('backend', msg.event, metricDetail(msg), msg.dur_ms);
+      return;
+    }
+    telem('in', msg.type, shortDetail(msg));
     if (msg.type === 'stt_result' && typeof msg.text === 'string') {
       // PTT path: one finalized chip per press. (Convo mode no longer emits
       // stt_result — it sends composer/submit instead.)
+      //
+      // Per-mode send contract: PTT only *buffers* the utterance as a chip; it
+      // does NOT auto-post. The accumulated chips post once when the user hits
+      // SEND (→ `onsend`). Only convo mode's `submit` (below) auto-posts each
+      // utterance via `onText`. This keeps `onsend` and `onText` mutually
+      // exclusive per mode, so a single turn never posts twice.
       composer?.finalizeLiveChunk(msg.text);
-      if (msg.text.trim()) onText?.(msg.text);
       if (!convoListening) {
         status = 'idle';
         statusText = '';
@@ -206,12 +252,9 @@
       }
     } else if (msg.type === 'status') {
       // Apply server stages in convo mode too (refining, listening, …) so the
-      // pipeline is visible. One guard: while locally paused, ignore a
-      // 'recording' frame so it doesn't clobber the local 'paused' note.
-      if (!(paused && msg.stage === 'recording')) {
-        status = msg.stage as typeof status;
-        statusText = msg.text ?? '';
-      }
+      // pipeline is visible.
+      status = msg.stage as typeof status;
+      statusText = msg.text ?? '';
     } else if (msg.type === 'error') {
       status = 'error';
       statusText = msg.message ?? 'error';
@@ -228,10 +271,7 @@
     sourceNode = audioCtx.createMediaStreamSource(micStream);
     workletNode = new AudioWorkletNode(audioCtx, 'mic-downsampler');
     workletNode.port.onmessage = (ev) => {
-      // Paused convo: hold the mic. Not sending tail audio also keeps the
-      // backend from silence-cutting (its partial loop skips when the tail
-      // is below threshold), so a thinking break never ends the statement.
-      const isHot = (recording || convoListening) && !paused;
+      const isHot = recording || convoListening;
       if (!isHot) return;
       const buf = ev.data as ArrayBuffer;
       const v = new Int16Array(buf);
@@ -242,6 +282,8 @@
         postLevel(Math.min(1, rms / 3000));
       }
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      // Telemetry: report each chunk's size; the panel coalesces the burst.
+      onTelemetry?.({ t: performance.now(), dir: 'out', event: 'audio_chunk', bytes: buf.byteLength });
       ws.send(buf);
     };
     sourceNode.connect(workletNode);
@@ -267,7 +309,10 @@
     }
     recording = true;
     composer?.beginLiveChunk();
-    ws.send(JSON.stringify({ type: 'start' }));
+    const startMsg: Record<string, unknown> = { type: 'start' };
+    if (onTelemetry) startMsg.telemetry = true;
+    ws.send(JSON.stringify(startMsg));
+    telem('out', 'start');
   }
 
   function onUp() {
@@ -277,21 +322,24 @@
     resetLevel();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'end' }));
+      telem('out', 'end');
     }
   }
 
-  // --- Convo: continuous start/stop + manual pause. -----------------------
+  // --- Convo: continuous start / stop. ------------------------------------
 
+  // The convo control is a plain START / STOP toggle: idle → start a continuous
+  // session; listening → stop and tear it down.
   async function onConvoToggle() {
     if (isMock) return;
     if (recording) return; // can't start a convo session mid-PTT-press
     if (convoListening) {
       convoListening = false;
-      paused = false;
       resetLevel();
       resetConvoText();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
+        telem('out', 'end');
       }
       status = 'idle';
       statusText = '';
@@ -310,46 +358,43 @@
       return;
     }
     convoListening = true;
-    paused = false;
     resetConvoText();
-    ws.send(JSON.stringify({ type: 'start', mode: 'continuous', context: contextSlice() }));
+    const startMsg: Record<string, unknown> = {
+      type: 'start', mode: 'continuous', context: contextSlice(),
+    };
+    if (onTelemetry) startMsg.telemetry = true;
+    ws.send(JSON.stringify(startMsg));
+    telem('out', 'convo_start');
     status = 'recording';
     statusText = 'listening…';
   }
 
-  function togglePause() {
-    if (!convoListening) return;
-    paused = !paused;
-    if (paused) {
-      resetLevel();
-      statusText = 'paused';
-    } else {
-      statusText = 'listening…';
+  // CLEAR during a convo session: wipe the accumulated composer text and send a
+  // cancel so the backend aborts any in-flight work (partial/silence loops, a
+  // pending submit, and the running refine) — nothing stale lands after. Ends
+  // the session (back to idle); press CONVO to start again.
+  function onConvoClear() {
+    if (isMock) return;
+    resetConvoText();
+    resetLevel();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'cancel' }));
+      telem('out', 'cancel');
     }
-  }
-
-  // The single convo control folds START / PAUSE / RESUME into one
-  // play/pause toggle: idle → start a continuous session; listening →
-  // pause (thinking break, session stays open); paused → resume. There is
-  // no STOP state on a play/pause toggle — a convo session is torn down by
-  // switching to the TEXT tab (see onTabSwitchRequest).
-  function onConvoButton() {
-    if (!convoListening) {
-      void onConvoToggle(); // start
-    } else {
-      togglePause();        // pause / resume
-    }
+    convoListening = false;
+    status = 'idle';
+    statusText = '';
   }
 
   function onTabSwitchRequest(target: 'text' | 'voice'): boolean {
     if (recording) return false; // don't yank the page mid-PTT-press
     if (target === 'text' && convoListening) {
       convoListening = false;
-      paused = false;
       resetLevel();
       resetConvoText();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'end' }));
+        telem('out', 'end');
       }
       status = 'idle';
       statusText = '';
@@ -364,7 +409,9 @@
     const ctx = chatContext; // track
     if (isMock || !convoListening) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'context', text: (ctx ?? '').slice(-CONTEXT_CAP) }));
+    const slice = (ctx ?? '').slice(-CONTEXT_CAP);
+    ws.send(JSON.stringify({ type: 'context', text: slice }));
+    telem('out', 'context', `${slice.length}c`);
   });
 
   $effect(() => {
@@ -411,13 +458,14 @@
   });
 </script>
 
-<section class="panel">
+<section class="panel" data-awm-component="SttComposer">
   <SttComposerShell
     bind:this={composer}
     {onsend}
     {onTabSwitchRequest}
     convo={convoListening}
     {convoText}
+    onConvoClear={onConvoClear}
     initialChips={mockInitialChips}
   >
     {#snippet voiceControls()}
@@ -426,13 +474,12 @@
         type="button"
         class="ctl convo"
         class:active={convoListening}
-        class:paused
-        onclick={onConvoButton}
+        onclick={() => void onConvoToggle()}
         aria-pressed={convoListening}
-        aria-label={!convoListening ? 'start conversation' : paused ? 'resume conversation' : 'pause conversation'}
+        aria-label={convoListening ? 'stop conversation' : 'start conversation'}
       >
-        <span class="conv-icon" aria-hidden="true">{convoListening && !paused ? '⏸' : '▶'}</span>
-        <span class="conv-lbl">{!convoListening ? 'CONVO' : paused ? 'RESUME' : 'PAUSE'}</span>
+        <span class="conv-icon" aria-hidden="true">{convoListening ? '⏹' : '▶'}</span>
+        <span class="conv-lbl">{convoListening ? 'STOP' : 'CONVO'}</span>
       </button>
     {/snippet}
 
@@ -446,7 +493,7 @@
   <div class="status mono" data-status={status}>
     <span
       class="dot"
-      class:active={status === 'recording' && !paused}
+      class:active={status === 'recording'}
       class:refining={status === 'refining'}
     ></span>
     <span class="txt">
@@ -464,6 +511,10 @@
     flex-direction: column;
     gap: var(--space-3, 12px);
     width: 100%;
+    /* Intrinsic floor so a content-hugging container (gallery card) gives a
+       sensible width and a horizontal scrollbar engages predictably below it;
+       inert when the parent is wider (agent/stt pages). */
+    min-width: 300px;
   }
 
   /* Thin horizontal mic-level strip, rendered across the bottom of the
@@ -515,11 +566,6 @@
     border-color: var(--recording, #f55);
     color: var(--text, #ddd);
   }
-  .ctl.convo.active.paused {
-    background: color-mix(in oklab, var(--atomizer, #ffb74d) 18%, var(--surface2, #222));
-    border-color: var(--atomizer, #ffb74d);
-  }
-
   .status {
     display: flex;
     align-items: center;
