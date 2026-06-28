@@ -118,6 +118,38 @@ class DiscordConnector(Connector):
             "ts": sent.created_at.isoformat() if sent.created_at else "",
         }
 
+    async def history(
+        self, channel: str, *, limit: int = 50, before: str | None = None
+    ) -> list[InboundMessage]:
+        import discord
+
+        if self._client is None:
+            raise RuntimeError(f"discord[{self.account.name}] not started")
+        await self._wait_ready()
+        target_id = int(channel)
+        target = self._client.get_channel(target_id)
+        if target is None:
+            target = await self._client.fetch_channel(target_id)
+        kwargs: dict = {"limit": limit}
+        if before:
+            kwargs["before"] = discord.Object(id=int(before))
+        out: list[InboundMessage] = []
+        async for message in target.history(**kwargs):  # newest-first by default
+            out.append(InboundMessage(
+                account=self.account.name,
+                platform=self.platform,
+                channel_id=str(message.channel.id),
+                channel_name=getattr(message.channel, "name", "") or "",
+                thread_id="",
+                sender_id=str(message.author.id),
+                sender_name=str(message.author),
+                message_id=str(message.id),
+                ts=message.created_at.isoformat() if message.created_at else "",
+                text=message.content or "",
+            ))
+        out.reverse()  # oldest->newest
+        return out
+
     async def list_channels(self) -> list[Channel]:
         import discord
 

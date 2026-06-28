@@ -68,8 +68,14 @@ class Driver(ABC):
 
     @abstractmethod
     async def fetch_messages(self, channel: str, oldest: str | None,
-                             limit: int) -> list[dict]:
-        """Normalised messages for ``channel``, newest-first from the platform."""
+                             limit: int, *, before: str | None = None) -> list[dict]:
+        """Normalised messages for ``channel``, newest-first from the platform.
+
+        ``oldest`` is the forward lower bound the inbound watcher uses for deltas
+        (messages *after* this marker). ``before`` is the backward upper bound for
+        on-demand history paging (messages *older than* this marker); platforms
+        without a usable cursor (Teams) ignore it.
+        """
 
     @abstractmethod
     async def send(self, channel: str, text: str,
@@ -125,9 +131,10 @@ if (!window.__awmMira.slack) {
       name: c.name || (c.user ? ('dm:' + c.user) : ''),
       kind: c.is_im ? 'dm' : (c.is_mpim ? 'group' : (c.is_private ? 'private' : 'channel'))}));
   };
-  S.history = async function (channel, oldest, limit) {
+  S.history = async function (channel, oldest, limit, latest) {
     const p = {channel: channel, limit: String(limit || 50)};
-    if (oldest) p.oldest = oldest;
+    if (oldest) p.oldest = oldest;   // forward bound (after this ts)
+    if (latest) p.latest = latest;   // backward bound (before this ts)
     const j = await S._call('conversations.history', p);
     return (j.messages || []).map(m => ({ts: m.ts, user: m.user || '',
       text: m.text || '', subtype: m.subtype || '', thread_ts: m.thread_ts || ''}));
@@ -160,8 +167,9 @@ class SlackDriver(Driver):
         return convs or []
 
     async def fetch_messages(self, channel: str, oldest: str | None,
-                             limit: int) -> list[dict]:
-        rows = await self._run("window.__awmMira.slack.history", channel, oldest, limit)
+                             limit: int, *, before: str | None = None) -> list[dict]:
+        rows = await self._run(
+            "window.__awmMira.slack.history", channel, oldest, limit, before)
         out = []
         for m in rows or []:
             if m.get("subtype"):  # joins/edits/system/bot echoes
@@ -333,7 +341,9 @@ class TeamsDriver(Driver):
         return convs or []
 
     async def fetch_messages(self, channel: str, oldest: str | None,
-                             limit: int) -> list[dict]:
+                             limit: int, *, before: str | None = None) -> list[dict]:
+        # Teams' ng.msg /conversations/{id}/messages takes only pageSize — no
+        # usable cursor — so both `oldest` and `before` are ignored (limit-only).
         rows = await self._run("window.__awmMira.teams.messages", channel, limit)
         out = []
         for m in rows or []:

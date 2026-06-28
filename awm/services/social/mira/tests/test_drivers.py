@@ -51,6 +51,12 @@ class TestSlackDriver:
         # the oldest marker is threaded into the helper call as a JSON arg
         assert '"100.0"' in page.exprs[-1]
 
+    async def test_fetch_messages_passes_before_as_latest(self):
+        page = FakePage({"window.__awmMira.slack.history": []})
+        await SlackDriver(page).fetch_messages("C1", None, 50, before="9.5")
+        # before is threaded as the 4th JS arg (mapped to Slack's `latest`).
+        assert '"9.5"' in page.exprs[-1]
+
     async def test_send_returns_helper_payload(self):
         page = FakePage({"window.__awmMira.slack.send":
                          {"message_id": "1.2", "channel_id": "C1", "ts": "1.2"}})
@@ -77,6 +83,14 @@ class TestTeamsDriver:
         assert m["platform"] == "teams"
         assert m["sender_name"] == "Bob" and m["text"] == "hello"
         assert m["marker"] == "1700000000002" == m["message_id"]
+
+    async def test_fetch_messages_ignores_before(self):
+        # Teams has no usable cursor; `before` must be silently dropped, not
+        # threaded into the helper call (which only ever gets channel + limit).
+        page = FakePage({"window.__awmMira.teams.messages": []})
+        await TeamsDriver(page).fetch_messages("19:abc", None, 20, before="9.5")
+        assert "19:abc" in page.exprs[-1]
+        assert '"9.5"' not in page.exprs[-1]
 
     async def test_list_conversations_passthrough(self):
         page = FakePage({"window.__awmMira.teams.listConversations":

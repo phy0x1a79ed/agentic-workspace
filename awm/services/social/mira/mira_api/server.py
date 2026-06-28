@@ -6,7 +6,8 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
     GET  /v1/health                      → per-platform target liveness
     GET  /v1/{platform}/identity         → who the session is logged in as
     GET  /v1/{platform}/channels         → channels/conversations visible
-    GET  /v1/{platform}/messages?channel=&limit=   → recent history
+    GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
+                                                           backwards; Slack only)
     POST /v1/{platform}/send  {channel,text,thread?}
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
 
@@ -145,8 +146,9 @@ class MiraAPI:
         if not channel:
             return web.json_response({"error": "channel is required"}, status=400)
         limit = int(request.query.get("limit", "20") or 20)
+        before = request.query.get("before") or None
         try:
-            msgs = await p.driver.fetch_messages(channel, None, limit)
+            msgs = await p.driver.fetch_messages(channel, None, limit, before=before)
             return web.json_response({"messages": msgs})
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)

@@ -287,3 +287,47 @@ class SocialDAO(BaseDAO):
         )
         rows.reverse()
         return rows
+
+    def search_messages(
+        self,
+        *,
+        query: str,
+        account: str | None = None,
+        platform: str | None = None,
+        channel: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Case-insensitive substring search over stored message ``text``.
+
+        Matches the newest ``limit`` rows whose ``text`` contains ``query``
+        (LIKE, with ``%``/``_``/``\\`` in the query escaped so they are literal),
+        honoring the optional account/platform/channel filters. Returned
+        oldest→newest within the matched window (same shape as ``list_messages``).
+        """
+        q = str(query or "")
+        # Escape LIKE metacharacters so a literal '%' doesn't match everything.
+        q = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses = ["text LIKE ? ESCAPE '\\'"]
+        params: list = [f"%{q}%"]
+        if account:
+            clauses.append("account = ?")
+            params.append(str(account).strip())
+        if platform:
+            clauses.append("platform = ?")
+            params.append(str(platform).strip())
+        if channel:
+            clauses.append("channel_id = ?")
+            params.append(str(channel).strip())
+        where = " WHERE " + " AND ".join(clauses)
+        try:
+            lim = max(1, min(int(limit), 500))
+        except (TypeError, ValueError):
+            lim = 50
+        rows = self.query_all(
+            "SELECT id, account, platform, direction, channel_id, channel_name, "
+            "thread_id, sender_id, sender_name, awm_user, text, ts, message_id, "
+            f"created_at FROM social_messages{where} ORDER BY id DESC LIMIT ?",
+            (*params, lim),
+        )
+        rows.reverse()
+        return rows

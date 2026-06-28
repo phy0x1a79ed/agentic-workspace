@@ -104,6 +104,16 @@ class MiraConnector(Connector):
         resp = await self._get(f"/v1/{self.platform}/identity")
         return Identity(id=resp.get("id", ""), name=resp.get("name", ""))
 
+    async def history(
+        self, channel: str, *, limit: int = 50, before: str | None = None
+    ) -> list[InboundMessage]:
+        params: dict = {"channel": channel, "limit": limit}
+        if before:
+            params["before"] = before
+        resp = await self._get(f"/v1/{self.platform}/messages", **params)
+        msgs = resp.get("messages", [])  # daemon returns newest-first
+        return [self._to_inbound(m) for m in reversed(msgs)]  # oldest->newest
+
     # -- inbound (WebSocket push) ------------------------------------------
 
     async def start(self) -> None:
@@ -157,6 +167,27 @@ class MiraConnector(Connector):
                     continue
                 await self._handle_inbound(frame.get("message") or {})
 
+    def _to_inbound(self, m: dict) -> InboundMessage:
+        """Map one daemon message dict to a normalised InboundMessage.
+
+        Shared by the live events stream and the on-demand history fetch — both
+        receive the daemon's normalised shape (see ``mira/mira_api/drivers.py``).
+        """
+        sender = m.get("sender_id", "") or ""
+        return InboundMessage(
+            account=self.account.name,
+            platform=self.platform,
+            channel_id=m.get("channel_id", ""),
+            channel_name=m.get("channel_name", ""),
+            thread_id=m.get("thread_id", "") or "",
+            sender_id=sender,
+            sender_name=m.get("sender_name", "") or sender,
+            message_id=m.get("message_id", ""),
+            ts=m.get("ts", ""),
+            text=m.get("text", "") or "",
+            raw=m,
+        )
+
     async def _handle_inbound(self, m: dict) -> None:
         if m.get("platform") != self.platform:
             return  # daemon multiplexes all platforms; keep only ours
@@ -164,20 +195,7 @@ class MiraConnector(Connector):
         if sender and sender == self._self_id:
             return  # echo of our own send (daemon also filters, belt + braces)
         try:
-            inbound = InboundMessage(
-                account=self.account.name,
-                platform=self.platform,
-                channel_id=m.get("channel_id", ""),
-                channel_name=m.get("channel_name", ""),
-                thread_id=m.get("thread_id", "") or "",
-                sender_id=sender,
-                sender_name=m.get("sender_name", "") or sender,
-                message_id=m.get("message_id", ""),
-                ts=m.get("ts", ""),
-                text=m.get("text", "") or "",
-                raw=m,
-            )
-            await self.on_message(inbound)
+            await self.on_message(self._to_inbound(m))
         except Exception as exc:  # noqa: BLE001 — one bad frame never kills the loop
             log.warning("mira[%s] inbound handler failed: %s",
                         self.account.name, exc)

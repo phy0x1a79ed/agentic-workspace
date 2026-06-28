@@ -161,26 +161,29 @@ class SlackConnector(Connector):
             types=SESSION_CONV_TYPES, exclude_archived=True, limit=200))
         return [c.get("id", "") for c in resp.get("channels", []) if c.get("id")]
 
+    def _inbound_from_slack(self, cid: str, m: dict) -> InboundMessage:
+        """Map one ``conversations.history`` message dict to an InboundMessage."""
+        sender = m.get("user") or ""
+        return InboundMessage(
+            account=self.account.name,
+            platform=self.platform,
+            channel_id=cid,
+            channel_name="",
+            thread_id=m.get("thread_ts", "") or "",
+            sender_id=sender,
+            sender_name=sender,
+            message_id=m.get("ts", ""),
+            ts=m.get("ts", ""),
+            text=m.get("text", "") or "",
+        )
+
     async def _emit_session_message(self, cid: str, m: dict) -> None:
         if m.get("subtype"):  # joins/edits/system/bot — not a plain message
             return
-        sender = m.get("user") or ""
-        if sender and sender == self._self_id:  # echo of our own send
-            return
+        if (m.get("user") or "") == self._self_id and self._self_id:
+            return  # echo of our own send
         try:
-            inbound = InboundMessage(
-                account=self.account.name,
-                platform=self.platform,
-                channel_id=cid,
-                channel_name="",
-                thread_id=m.get("thread_ts", "") or "",
-                sender_id=sender,
-                sender_name=sender,
-                message_id=m.get("ts", ""),
-                ts=m.get("ts", ""),
-                text=m.get("text", "") or "",
-            )
-            await self.on_message(inbound)
+            await self.on_message(self._inbound_from_slack(cid, m))
         except Exception as exc:  # noqa: BLE001 — one bad msg never kills the loop
             log.warning("slack[%s] session msg handler failed: %s",
                         self.account.name, exc)
@@ -337,6 +340,24 @@ class SlackConnector(Connector):
         auth = await self._auth_retry(lambda: self._web_client().auth_test())
         return Identity(
             id=auth.get("user_id", ""), name=auth.get("user", ""))
+
+    async def history(
+        self, channel: str, *, limit: int = 50, before: str | None = None
+    ) -> list[InboundMessage]:
+        # Slack's `latest` is the *upper* bound ("messages before this ts") — the
+        # correct backward-paging cursor. (`oldest` is the forward bound the
+        # session watcher uses for deltas; do NOT use it for `before`.)
+        kwargs: dict = {"channel": channel, "limit": limit}
+        if before:
+            kwargs["latest"] = before
+        resp = await self._auth_retry(
+            lambda: self._web_client().conversations_history(**kwargs))
+        out: list[InboundMessage] = []
+        for m in reversed(resp.get("messages", [])):  # API newest-first
+            if m.get("subtype"):  # joins/edits/system/bot echoes
+                continue
+            out.append(self._inbound_from_slack(channel, m))
+        return out
 
     async def close(self) -> None:
         if self._socket is not None:
