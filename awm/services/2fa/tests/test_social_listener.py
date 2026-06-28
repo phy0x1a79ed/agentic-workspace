@@ -30,9 +30,9 @@ def _instrument(svc):
     """Replace start_burst + _social_reply with recorders."""
     bursts, replies = [], []
 
-    async def _rec_burst(device, window=None, interval=None, count=1):
+    async def _rec_burst(device, window=None, interval=None, count=1, notify=None):
         bursts.append({"device": device, "window": window,
-                       "interval": interval, "count": count})
+                       "interval": interval, "count": count, "notify": notify})
         return {"status": "started", "device": device}
 
     async def _rec_reply(ev, text):
@@ -56,6 +56,7 @@ async def test_approve_arms_burst_with_social_tunables(tmp_path):
     assert b["window"] == 300.0      # 5 minutes
     assert b["interval"] == 2.0      # 2-second polls
     assert b["count"] == 1000        # stays armed the whole window
+    assert callable(b["notify"])     # progress callback wired through
     assert replies and replies[0].startswith("✅")
 
 

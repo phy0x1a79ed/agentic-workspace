@@ -218,6 +218,34 @@ async def test_burst_exits_when_counter_satisfied(tmp_path):
 
 
 @pytest.mark.smoke
+async def test_burst_notify_on_approval_and_window_end(tmp_path):
+    # One poll surfaces a tx the fake engine approves; with count=1 the window
+    # then ends. Expect a per-approval notify AND a window-end summary.
+    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
+                 burst_window_seconds=30.0, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    from awm.twofa.duo import Transaction
+    eng = FakeEngine(txs_per_poll=[[Transaction(urgid="a", raw={})]])
+    inject(svc, "cwl", eng)
+
+    msgs: list[str] = []
+
+    async def notify(text):
+        msgs.append(text)
+
+    await svc.start_burst("cwl", count=1, notify=notify)
+    rt = svc._devices["cwl"]
+    for _ in range(200):
+        await asyncio.sleep(0.02)
+        if not rt.burst_active():
+            break
+    await asyncio.sleep(0.05)  # let the fire-and-forget end-summary task run
+
+    assert any("approved on" in m for m in msgs)   # per-approval line
+    assert any("window ended" in m for m in msgs)  # end-of-window summary
+
+
+@pytest.mark.smoke
 async def test_concurrent_same_device_burst_spawns_one_task(tmp_path):
     cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
                  burst_window_seconds=0.4, burst_interval_seconds=0.05)

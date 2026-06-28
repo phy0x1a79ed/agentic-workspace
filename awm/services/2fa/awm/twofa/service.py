@@ -64,6 +64,10 @@ class DeviceRuntime:
     expected: int = 0
     burst_task: asyncio.Task | None = None
     last_burst: dict[str, Any] | None = None
+    # Optional async callable(str) the burst posts progress to (per-approval +
+    # window-end). Set by start_burst(notify=…); the social path uses it to
+    # echo outcomes back to the Discord DM. None = silent.
+    burst_notify: Any = None
 
     @property
     def enrolled(self) -> bool:
@@ -189,11 +193,17 @@ class TwoFAService:
         mins = int(self.cfg.social_window_seconds // 60) or 1
         log.info("2fa: social /approve → arming burst on %r (%.0fs window, %.0fs poll)",
                  rt.name, self.cfg.social_window_seconds, self.cfg.social_interval_seconds)
+
+        async def _notify(text: str) -> None:
+            # Echo burst progress (per-approval + window-end) back to the DM.
+            await self._social_reply(ev, text)
+
         await self.start_burst(
             rt.name,
             window=self.cfg.social_window_seconds,
             interval=self.cfg.social_interval_seconds,
             count=self.cfg.social_burst_count,
+            notify=_notify,
         )
         await self._social_reply(ev, f"✅ Duo approvals armed: `{rt.name}` — {mins} min")
 
@@ -368,13 +378,14 @@ class TwoFAService:
 
     async def start_burst(self, device: str, window: float | None = None,
                           interval: float | None = None,
-                          count: int = 1) -> dict[str, Any]:
+                          count: int = 1, notify: Any = None) -> dict[str, Any]:
         """Open (or extend) a counted burst on *device*.
 
         Adds ``count`` expected approvals and pushes the deadline to
         ``max(old, now+window)``. The first call spawns one poll task; overlapping
         calls reuse it. Returns ``started`` / ``extended`` immediately; polling
-        happens in the background task.
+        happens in the background task. ``notify`` (an async ``callable(str)``)
+        gets per-approval + window-end progress, if supplied.
         """
         rt = self._require_device(device)
         window = self.cfg.burst_window_seconds if window is None else float(window)
@@ -386,6 +397,8 @@ class TwoFAService:
             was_active = rt.burst_active()
             rt.expected += count
             rt.burst_deadline = max(rt.burst_deadline, time.monotonic() + window)
+            if notify is not None:
+                rt.burst_notify = notify
             if not was_active:
                 rt.burst_task = asyncio.create_task(self._run_burst(rt, engine, interval))
         return {
@@ -400,6 +413,7 @@ class TwoFAService:
                          interval: float) -> None:
         start_approved = engine.approved_count
         last_seen = start_approved
+        notify = rt.burst_notify  # captured: the target that armed this window
         log.info("2fa burst[%s]: interval %.1fs, expected %d, window %.0fs",
                  rt.name, interval, rt.expected, _remaining(rt))
         try:
@@ -420,6 +434,12 @@ class TwoFAService:
                 if delta > 0:
                     rt.expected = max(0, rt.expected - delta)
                     last_seen = now_approved
+                    if notify is not None:
+                        total = now_approved - start_approved
+                        await self._safe_notify(
+                            notify,
+                            f"✅ Duo login approved on `{rt.name}` "
+                            f"({total} this window)")
                 if rt.expected <= 0:
                     break
                 await asyncio.sleep(interval)
@@ -432,8 +452,23 @@ class TwoFAService:
             rt.expected = 0
             rt.burst_deadline = 0.0
             rt.burst_task = None
+            rt.burst_notify = None
             log.info("2fa burst[%s]: window ended; approved %d login(s)",
                      rt.name, approved)
+            if notify is not None:
+                # Fire-and-forget so cleanup stays await-free (and consistent vs.
+                # a concurrent re-arm). Summarises the window outcome.
+                summary = (f"⌛ Approval window ended on `{rt.name}` — "
+                           f"approved {approved} login(s)")
+                asyncio.create_task(self._safe_notify(notify, summary))
+
+    @staticmethod
+    async def _safe_notify(notify: Any, text: str) -> None:
+        """Call a burst notifier, swallowing any error (progress is best-effort)."""
+        try:
+            await notify(text)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("2fa burst notify failed: %s", exc)
 
 
 def _remaining(rt: DeviceRuntime) -> float:
