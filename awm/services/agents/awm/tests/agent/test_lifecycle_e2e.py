@@ -45,18 +45,18 @@ def fake_orch(agents_env):
     orch_client.reset_impl()
 
 
-async def _await_deregister(project, scope, tries=60):
+async def _await_deregister(scope, tries=60):
     """Wait for a retired placement's session to leave the registry (the fake
     proc resolves wait() on terminate(), so the waiter loop clears the scope)."""
     for _ in range(tries):
-        if ai_mod.get_session_by_scope(project, scope) is None:
+        if ai_mod.get_session_by_scope(scope) is None:
             return
         await asyncio.sleep(0.02)
-    raise AssertionError(f"session for {project}/{scope} never deregistered")
+    raise AssertionError(f"session for {scope} never deregistered")
 
 
 async def _place(mode, *, unit="leaf-1", brief="ship X", contracts_out=None):
-    args = {"task_id": "T-1", "project": "p", "unit_slug": unit,
+    args = {"task_id": "T-1", "unit_slug": unit,
             "brief": brief, "mode": mode}
     if contracts_out is not None:
         args["contracts_out"] = contracts_out
@@ -68,7 +68,7 @@ class TestLifecycle:
             self, agents_env, stub_core, fake_orch):
         UNIT = "leaf-1"
 
-        AS = f"p/{UNIT}"  # the placement identity the agent's proxy stamps
+        AS = UNIT  # the placement identity the agent's proxy stamps (the slug)
 
         # --- PLANNING: plan-worker stages the reserved "plan" deliverable ---
         res = await _place("plan", unit=UNIT)
@@ -77,11 +77,11 @@ class TestLifecycle:
             "content": "# Plan\n1. do the work\n2. produce out:1"}, AS)
         await placement.relay_indicate_done({}, AS)
         # Stop boundary: accept → orch.deliver("plan") → PLANNING done.
-        await placement.on_turn_boundary(ai_mod.get_session_by_scope("p", UNIT))
+        await placement.on_turn_boundary(ai_mod.get_session_by_scope(UNIT))
         assert ("deliver", {"task_id": "T-1", "agent_ref": res["agent_ref"],
                             "contract": "plan",
                             "payload_ref": _plan_path(agents_env)}) in fake_orch.ops
-        await _await_deregister("p", UNIT)
+        await _await_deregister(UNIT)
 
         # --- VERIFYING_PLAN: verifier (same unit) sees the plan, approves ---
         resv = await _place("verify", unit=UNIT)
@@ -90,14 +90,14 @@ class TestLifecycle:
         assert "PLAN VERIFIER" in kickoff and "do the work" in kickoff  # plan embedded
         await placement.relay_approve_plan({}, AS)
         assert any(op == "approve_plan" for op, _ in fake_orch.ops)
-        await _await_deregister("p", UNIT)
+        await _await_deregister(UNIT)
 
         # --- ACTIVE: worker (same unit) stages out:1 and delivers ---
         resw = await _place("worker", unit=UNIT, contracts_out=["out:1"])
         await placement.relay_edit_deliverable({
             "contract": "out:1", "content": "the result"}, AS)
         await placement.relay_indicate_done({}, AS)
-        await placement.on_turn_boundary(ai_mod.get_session_by_scope("p", UNIT))
+        await placement.on_turn_boundary(ai_mod.get_session_by_scope(UNIT))
 
         delivered = [kw for op, kw in fake_orch.ops
                      if op == "deliver" and kw["contract"] == "out:1"]
@@ -111,4 +111,4 @@ class TestLifecycle:
 
 def _plan_path(agents_env):
     return str(agents_env["awm_dir"] / "services" / "workspace" / "units"
-              / "p" / "leaf-1" / "deliverable" / "plan" / "payload")
+              / "leaf-1" / "deliverable" / "plan" / "payload")

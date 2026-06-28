@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.unit]
 
 def _attach(orch, *, goal, produces, depends_on=()):
     return orch.operations.orch_task_attach({
-        "project": "p", "goal": goal,
+        "goal": goal,
         "produces": [{"name": n, "spec": s} for (n, s) in produces],
         "depends_on": list(depends_on),
     })
@@ -82,11 +82,13 @@ def test_dag_reflects_delivery(orch):
     )
 
 
-def test_dag_project_filter(orch):
-    _build_shared_dag(orch)
-    dag = orch.operations.orch_dag({"project": "p"})
-    # All real work is in project p; tasks list excludes the _root sentinel.
-    assert all(t["is_root"] is False for t in dag["tasks"])
+def test_dag_is_global_with_no_project_key(orch):
+    a, b, c = _build_shared_dag(orch)
+    dag = orch.operations.orch_dag({})
+    # One global DAG: every task is present, no per-project filtering or key.
+    assert "project" not in dag
+    task_ids = {t["task_id"] for t in dag["tasks"]}
+    assert {a, b, c, orch.DAO().get_root()["id"]} <= task_ids
     # root_id is still reported so the client can special-case the sentinel.
     assert dag["root_id"] == orch.DAO().get_root()["id"]
 

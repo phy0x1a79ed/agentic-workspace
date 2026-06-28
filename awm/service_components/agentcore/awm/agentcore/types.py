@@ -66,7 +66,7 @@ class AgentConfig:
         awm_port:       the hub's port. The load-bearing field — it selects which
                         gateway the spawned ``awm-mcp`` proxy talks to. Set it to
                         attach the awm MCP server; None = don't.
-        placement_as:   the placed agent's identity ``f"{project}/{unit_slug}"``.
+        placement_as:   the placed agent's identity (the unit slug).
                         When set, the synthesized awm server carries ``AWM_AS`` so
                         the agent's B-op tools resolve to its own task with no
                         model-supplied token. None = conversational (no identity).

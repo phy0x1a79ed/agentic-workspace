@@ -28,7 +28,8 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 `AWM_SERVICE_NAME`, `AWM_SERVICE_ID`). No auth — the registration handshake
 carries no token.
 
-Units live under `<AWM_DIR>/services/workspace/units/<project>/<unit_slug>/`.
+Units live under `<workspace_root>/tasks/<unit_slug>/` (keyed on `unit_slug`
+alone — a task has no project).
 
 To iterate against a running sandbox without installing, use
 `awm dev shadow awm/services/workspace`; it execs this same `run.sh` as an overlay.

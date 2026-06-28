@@ -5,15 +5,18 @@ directly (acyclicity, edge re-pointing, durable repos + the live-link seam)."""
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
 def _open(orch, goal="work"):
-    return orch.operations.orch_node_open({"project": "p", "goal": goal})
+    return orch.operations.orch_node_open({"goal": goal})
+
+
+def _scopes(orch, tid):
+    return [{"name": r["name"], "project": r["project"], "scope": r["scope"]}
+            for r in orch.DAO().list_task_scopes(tid)]
 
 
 def test_relocate_repoints_funnel_to_new_consumer(orch):
@@ -62,7 +65,7 @@ def test_relocate_rejects_self_consumer(orch):
 def test_node_add_dependency_by_name(orch):
     # producer publishes a contract; consumer depends on it via the admin op.
     prod = orch.operations.orch_task_attach({
-        "project": "p", "goal": "make c1", "produces": [{"name": "c1"}]})
+        "goal": "make c1", "produces": [{"name": "c1"}]})
     consumer = _open(orch, "uses c1")
     ctid = consumer["task_id"]
     agent_ref = orch.DAO().get_task(ctid)["agent_ref"]
@@ -86,11 +89,11 @@ def test_node_add_dependency_rejects_cycle(orch):
              "contract_id": contract["id"]})
 
 
-def test_link_repo_persists_and_calls_seam(orch):
+def test_link_repo_attaches_and_calls_seam(orch):
     linked = {}
     orch.operations.configure(
-        link_repos_fn=lambda project, slug, repos: linked.update(
-            {"project": project, "slug": slug, "repos": repos}))
+        link_repos_fn=lambda slug, repos: linked.update(
+            {"slug": slug, "repos": repos}))
     tid = _open(orch)["task_id"]
     agent_ref = orch.DAO().get_task(tid)["agent_ref"]
 
@@ -98,10 +101,10 @@ def test_link_repo_persists_and_calls_seam(orch):
         {"task_id": tid, "agent_ref": agent_ref,
          "repo": {"name": "core", "project": "awm", "scope": "svc-agents"}})
     assert out["ok"] is True
-    repos = json.loads(orch.DAO().get_task(tid)["repos"])
-    assert repos == [{"name": "core", "project": "awm", "scope": "svc-agents"}]
-    # The live re-link seam fired with the merged list.
-    assert linked["repos"] == repos
+    expected = [{"name": "core", "project": "awm", "scope": "svc-agents"}]
+    assert _scopes(orch, tid) == expected
+    # The live re-link seam fired with the attached list (slug only).
+    assert linked["repos"] == expected
     assert linked["slug"] == orch.DAO().get_task(tid)["workspace_slug"]
 
 
@@ -110,15 +113,36 @@ def test_link_repo_merges_dedup_by_name(orch):
     tid = _open(orch)["task_id"]
     agent_ref = orch.DAO().get_task(tid)["agent_ref"]
     orch.operations.link_repo(
-        {"task_id": tid, "agent_ref": agent_ref, "repo": "alpha"})
+        {"task_id": tid, "agent_ref": agent_ref, "repo": "awm/alpha"})
     orch.operations.link_repo(
-        {"task_id": tid, "agent_ref": agent_ref, "repo": "beta"})
-    # Re-link alpha with a different target — dedup by name keeps one alpha.
+        {"task_id": tid, "agent_ref": agent_ref, "repo": "awm/beta"})
+    # Re-link alpha with a different scope under the SAME link name — the
+    # task_scopes unique (task_id, name) makes it an idempotent replace.
     orch.operations.link_repo(
         {"task_id": tid, "agent_ref": agent_ref,
-         "repo": {"name": "alpha", "scope": "alpha2"}})
-    repos = json.loads(orch.DAO().get_task(tid)["repos"])
+         "repo": {"name": "alpha", "project": "awm", "scope": "alpha2"}})
+    repos = _scopes(orch, tid)
     names = sorted(r["name"] for r in repos)
     assert names == ["alpha", "beta"]
     alpha = next(r for r in repos if r["name"] == "alpha")
     assert alpha["scope"] == "alpha2"
+
+
+def test_attach_scope_rejects_a_busy_scope(orch):
+    # A scope attaches to at most one active task. Attach it to task A, then a
+    # second attach onto a different active task B is rejected.
+    a = _open(orch, "task A")["task_id"]
+    orch.operations.orch_attach_scope(
+        {"task_id": a, "repo": "awm/shared-scope"})
+    b = _open(orch, "task B")["task_id"]
+    with pytest.raises(ValueError, match="active task"):
+        orch.operations.orch_attach_scope(
+            {"task_id": b, "repo": "awm/shared-scope"})
+    # After A detaches, B may attach it.
+    orch.operations.orch_detach_scope(
+        {"task_id": a, "scope_ref": "awm/shared-scope"})
+    out = orch.operations.orch_attach_scope(
+        {"task_id": b, "repo": "awm/shared-scope"})
+    assert out["ok"] is True
+    assert _scopes(orch, b) == [
+        {"name": "shared-scope", "project": "awm", "scope": "shared-scope"}]

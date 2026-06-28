@@ -30,11 +30,11 @@ Runbook (the seamless drop-in loop)
         placed in tasks/<workspace_slug>/ with CLAUDE.md + .awm/data + (if repo)
         repos/<name> symlinked to the existing scope; the task is attached=1.
 
-   b. ATTACH: open the agents 'transcript' WS session {project, scope: workspace_slug}.
+   b. ATTACH: open the agents 'transcript' WS session {scope: workspace_slug}.
       → asserts: orch_dag shows attached=1 (transcript presence → set_attached).
 
    c. ADMIN WHILE ATTACHED: invoke relocate_self {} as the placed agent's identity
-      (X-Awm-As: <project>/<workspace_slug>).
+      (X-Awm-As: <workspace_slug>).
       → asserts: ok; orch_dag shows the funnel re-pointed (still reaches root).
 
    d. DETACH: close the transcript WS, then invoke relocate_self again.

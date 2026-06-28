@@ -18,9 +18,8 @@ triplication. It drives —
 Each op resolves the caller's task from its placement identity (the per-placement
 ``AWM_AS`` → ``X-Awm-As`` → ``as_``) — so the model never passes a token or id —
 then forwards to the named orchestrator op as the RESOLVED ``{task_id,
-agent_ref}`` (plus the caller's ``project`` when ``inject_project`` is set, e.g.
-``create_node`` mints in the caller's project). ``forward`` is the subset of the
-caller's args passed straight through.
+agent_ref}``. ``forward`` is the subset of the caller's args passed straight
+through.
 """
 
 from __future__ import annotations
@@ -44,7 +43,6 @@ ADMIN_OPS: list[dict] = [
         "name": "create_node",
         "orch_op": "orch_task_attach",
         "requires_attached": True,
-        "inject_project": True,
         "description": (
             "Create a new node upstream of a consumer (root by default) — a "
             "prerequisite that runs autonomously. Optionally link a repo. Only "

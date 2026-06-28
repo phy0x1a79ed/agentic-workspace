@@ -139,14 +139,14 @@ class TestListSessionsLimit:
         """list_sessions returns newest-first (DAO ORDER BY id DESC); limit
         caps to the most recent N — the 'last N sessions' path."""
         dao = ai_mod._get_dao()
-        ids = [dao.open_instance(project="awm", scope="dev", log_path=None,
+        ids = [dao.open_instance(scope="dev", log_path=None,
                                  cli_session_id=None, started_at=1000 + i)
                for i in range(4)]
 
-        all_sessions = ai_mod.list_sessions(project="awm", scope="dev")
+        all_sessions = ai_mod.list_sessions(scope="dev")
         assert len(all_sessions) == 4
 
-        recent = ai_mod.list_sessions(project="awm", scope="dev", limit=2)
+        recent = ai_mod.list_sessions(scope="dev", limit=2)
         assert len(recent) == 2
         # newest-first: the two highest row ids (last inserted)
         assert [s.id for s in recent] == [ids[-1], ids[-2]]
@@ -260,7 +260,7 @@ class TestCreateSessionDispatch:
     @pytest.mark.asyncio
     async def test_rejects_unknown_agent_cli(self, awm_workspace):
         with pytest.raises(ValueError, match="Unknown agent CLI"):
-            await create_session(project="p", scope="s", agent_cli="codex")
+            await create_session(scope="s", agent_cli="codex")
 
     @pytest.mark.asyncio
     async def test_opencode_config_harness_and_workdir(
@@ -269,7 +269,7 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="opencode",
+        await create_session(scope="s", agent_cli="opencode",
                              workdir=str(ws))
 
         cfg = stub_agentcore["config"]
@@ -284,7 +284,7 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
+        await create_session(scope="s", agent_cli="claude",
                              permission_mode="bypassPermissions",
                              workdir=str(ws))
 
@@ -297,7 +297,7 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
+        await create_session(scope="s", agent_cli="claude",
                              permission_mode="default", workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "default"
@@ -309,18 +309,18 @@ class TestCreateSessionDispatch:
         # MCP setup is harness-owned now: create_session does NOT write or thread
         # a config FILE; it passes the hub's canonical workspace + port so the
         # harness synthesizes the awm server itself. Every session is a placement,
-        # so it carries its AWM_AS identity ("project/scope").
+        # so it carries its AWM_AS identity (the unit slug).
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
+        await create_session(scope="s", agent_cli="claude",
                              workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.mcp_config is None
         assert cfg.awm_port == str(ai_mod.config.PORT)
         assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
-        assert cfg.placement_as == "p/s"
+        assert cfg.placement_as == "s"
 
     @pytest.mark.asyncio
     async def test_effort_rides_params(
@@ -329,7 +329,7 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude",
+        await create_session(scope="s", agent_cli="claude",
                              effort="high", workdir=str(ws))
 
         assert stub_agentcore["config"].params.get("effort") == "high"
@@ -347,7 +347,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude", workdir=str(ws))
+            scope="s", agent_cli="claude", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "claude"
@@ -363,7 +363,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude", workdir=str(ws))
+            scope="s", agent_cli="claude", workdir=str(ws))
 
         import json
         row = ai_mod._get_dao().get_instance(session.id)
@@ -384,7 +384,7 @@ class TestClaudeHarness:
 
         # No agent_cli passed → defaults to claude (tmux) so every live agent
         # has a terminal to attach to.
-        session = await create_session(project="p", scope="s", workdir=str(ws))
+        session = await create_session(scope="s", workdir=str(ws))
 
         assert stub_agentcore["config"].harness == "claude"
         assert session.tmux_session == f"awm-{session.id}-s"
@@ -427,9 +427,9 @@ class TestBuildCoreConfig:
             cfg = ai_mod._build_core_config(
                 agent_cli=harness, permission_mode="default",
                 model=None, effort=None, resume_session_id=None,
-                workspace_dir=ws, placement_as="p/s",
+                workspace_dir=ws, placement_as="s",
             )
-            assert cfg.placement_as == "p/s"
+            assert cfg.placement_as == "s"
             assert cfg.awm_port == str(ai_mod.config.PORT)
             assert cfg.mcp_config is None
 
@@ -445,7 +445,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s", workdir=str(ws))
+        session = await create_session(scope="s", workdir=str(ws))
 
         ok = await ai_mod.notify_agent(session, "operator", "stop and read this")
 
@@ -461,11 +461,11 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s", workdir=str(ws))
+        session = await create_session(scope="s", workdir=str(ws))
 
         # The agent's own scope ref must never self-notify (mirrors the passive
         # path's _is_own_author guard).
-        ok = await ai_mod.notify_agent(session, "agent:p/s", "echo")
+        ok = await ai_mod.notify_agent(session, "agent:s", "echo")
 
         assert ok is False
         assert stub_agentcore["session"].interrupted == []
