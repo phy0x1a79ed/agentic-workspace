@@ -88,3 +88,21 @@ No auth — the registration handshake carries no token.
 
 To iterate against a running sandbox without installing, use
 `awm dev shadow awm/services/social`; it execs this same `run.sh` as an overlay.
+Under a shadow `AWM_WORKSPACE` is rewritten to a sandbox dir, so point the
+service at a real `social.toml` with **`AWM_SOCIAL_CONFIG=/abs/path/social.toml`**
+(the parallel of the 2fa service's `AWM_2FA_DIR`).
+
+## Discord slash command (`/approve`)
+
+The Discord connector registers one application command, `/approve [device]`,
+usable only as a **DM to the bot** (`interaction.guild is None`; guild-channel
+invocations are rejected). It's synced as a *global* command in `on_ready` —
+global is the only kind that appears in a DM. On invocation the connector acks
+within Discord's 3s deadline and emits a normalised event on the `command`
+emitter topic (`/svc/social/emit/command`) with `{command, device, account,
+channel_id, …}`. The service does nothing with `approve` itself — the **`2fa`**
+service subscribes to that topic and arms a Duo approval burst (see its INSTALL).
+
+Prereqs: a `[account.*]` with `platform = "discord"` and a bot token whose app
+was invited with the `applications.commands` scope. New slash commands can take
+up to ~1h to propagate on first global sync (usually faster).

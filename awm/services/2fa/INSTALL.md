@@ -88,6 +88,28 @@ yet, the shadow self-registers a journaled base — tear it down afterward with
 | `2fa_deny <urgid>` | deny a held login |
 | `2fa_approve_all` | open a 5-min approve-all window, clear all held |
 
+## Discord `/approve` (social-service subscription)
+
+At startup the service opens a best-effort, self-reconnecting subscription to
+the `social` service's `command` emit (`/svc/social/emit/command`). A Discord
+`/approve [device]` slash command — sent as a **DM to the bot**, handled by the
+`social` service — arrives as `{command:"approve", device, account, channel_id}`
+and arms a burst on the named device (default `cwl`): a 5-minute window polling
+every 2s, with a large expected-count so it stays armed the whole window
+(approving every push, not just the first). Per-approval and window-end progress
+is echoed back to the originating DM via `social_send`.
+
+Requires the `social` service on the same gateway with a Discord account
+configured (see its INSTALL). Inert when no `social` service is present. Tunables:
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `AWM_2FA_SOCIAL_SUBSCRIBE` | `1` | listen to social's slash commands (set `0` to disable) |
+| `AWM_2FA_SOCIAL_WINDOW` | `300.0` | armed-burst window seconds (5 min) |
+| `AWM_2FA_SOCIAL_INTERVAL` | `2.0` | armed-burst poll seconds |
+| `AWM_2FA_SOCIAL_COUNT` | `1000` | expected-count (large = stay armed the whole window) |
+| `AWM_2FA_SOCIAL_DEVICE` | `cwl` | device used when the command omits one |
+
 ## License
 
 This service is a port of the AGPL-3.0 `virtual-auth` project (itself derived
