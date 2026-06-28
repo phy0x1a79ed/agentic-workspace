@@ -241,6 +241,7 @@ class _FakeCoreSession:
     def __init__(self):
         self.config = None
         self.sent: list[str] = []
+        self.interrupted: list[str] = []
         self.started = False
         self.closed = False
         self._proc = _FakeProc()
@@ -256,6 +257,10 @@ class _FakeCoreSession:
 
     async def send(self, text):
         self.sent.append(text)
+
+    async def interrupt(self, text):
+        # Mirror the real AgentSession seam: capture the forced-interrupt.
+        self.interrupted.append(text)
 
     async def wait(self):
         # Delegates to the proc (blocks forever) so the rewired _waiter_loop
@@ -424,6 +429,20 @@ class TestClaudeTmuxHarness:
         assert info.agent_cli == "claude-tmux"
 
     @pytest.mark.asyncio
+    async def test_claude_tmux_is_the_default_harness(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+
+        # No agent_cli passed → defaults to claude-tmux so every live agent has
+        # a terminal to attach to.
+        session = await create_session(project="p", scope="s")
+
+        assert stub_agentcore["config"].harness == "claude-tmux"
+        assert session.tmux_session == f"awm-{session.id}-s"
+
+    @pytest.mark.asyncio
     async def test_threads_hub_workspace_and_port_for_harness_mcp(
         self, awm_workspace, stub_agentcore,
     ):
@@ -478,3 +497,40 @@ class TestBuildCoreConfig:
             assert cfg.placement_as == "p/s"
             assert cfg.awm_port == str(ai_mod.config.PORT)
             assert cfg.mcp_config is None
+
+
+class TestNotifyAgent:
+    """The forced-interrupt notification channel: preempts the current turn via
+    the harness interrupt seam, filters the agent's own posts, and is distinct
+    from the passive (turn-aligned) enqueue_input path."""
+
+    @pytest.mark.asyncio
+    async def test_notify_interrupts_not_enqueues(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+        session = await create_session(project="p", scope="s")
+
+        ok = await ai_mod.notify_agent(session, "operator", "stop and read this")
+
+        assert ok is True
+        core = stub_agentcore["session"]
+        # Went through interrupt (forced), NOT the passive send/enqueue queue.
+        assert core.interrupted == ["[notify:operator]\nstop and read this"]
+        assert core.sent == []
+
+    @pytest.mark.asyncio
+    async def test_notify_filters_agent_own_author(
+        self, awm_workspace, stub_agentcore,
+    ):
+        ws = awm_workspace["projects_dir"] / "p" / "s"
+        ws.mkdir(parents=True)
+        session = await create_session(project="p", scope="s")
+
+        # The agent's own scope ref must never self-notify (mirrors the passive
+        # path's _is_own_author guard).
+        ok = await ai_mod.notify_agent(session, "agent:p/s", "echo")
+
+        assert ok is False
+        assert stub_agentcore["session"].interrupted == []

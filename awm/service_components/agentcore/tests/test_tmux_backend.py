@@ -275,6 +275,36 @@ async def test_send_command_sequence(monkeypatch):
     assert last[1:] == ["send-keys", "-t", "%7", "Enter"]
 
 
+async def test_interrupt_sends_escape_then_pastes(monkeypatch):
+    """The forced-interrupt seam: ESC to cancel the in-flight turn, THEN the
+    same bracketed-paste prompt sequence as send()."""
+    s = _sess()
+    s._started = True
+    s._closed = False
+    s._tmux_bin = "tmux"
+    s._pane = "%7"
+
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(list(args))
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "awm.agentcore.claude_tmux_backend.asyncio.create_subprocess_exec",
+        fake_exec,
+    )
+
+    await s.interrupt("urgent")
+
+    # ESC first (cancel current generation) …
+    assert calls[0][1:] == ["send-keys", "-t", "%7", "Escape"]
+    # … then load-buffer → paste-buffer -p → send-keys Enter.
+    assert calls[1][1] == "load-buffer"
+    assert calls[2][1] == "paste-buffer" and "-p" in calls[2]
+    assert calls[3][1:] == ["send-keys", "-t", "%7", "Enter"]
+
+
 # ---------------------------------------------------------------------------
 # wait()/alive() over a mocked tmux has-session
 # ---------------------------------------------------------------------------

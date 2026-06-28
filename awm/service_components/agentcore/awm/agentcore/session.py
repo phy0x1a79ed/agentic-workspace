@@ -199,6 +199,18 @@ class AgentSession(ABC):
         """Push one user turn to the harness."""
         ...
 
+    async def interrupt(self, text: str) -> None:
+        """Force-deliver a notification that preempts the current turn.
+
+        Harness-agnostic seam (like :meth:`wait`). Where :meth:`send` is a
+        *passive* turn-aligned message — the harness consumes it between turns —
+        ``interrupt`` is a *forced-interrupt*: it should reach the agent even
+        mid-generation. The default falls back to :meth:`send` for harnesses
+        with no notion of mid-turn interruption; the tmux backend overrides it
+        to interrupt the live TUI (ESC) before delivering the message.
+        """
+        await self.send(text)
+
     @abstractmethod
     async def close(self) -> None:
         """Tear down the subprocess and stop pumping."""

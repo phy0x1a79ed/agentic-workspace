@@ -357,7 +357,7 @@ def _build_core_config(
 # ---------------------------------------------------------------------------
 
 async def create_session(*, project: str, scope: str,
-                         agent_cli: str = "claude",
+                         agent_cli: str = "claude-tmux",
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
@@ -598,12 +598,44 @@ async def _input_pump(session: AgentInstance) -> None:
 
 def enqueue_input(session: AgentInstance, post_author: str,
                   post_body: str) -> bool:
-    """Enqueue a scope-channel post for the agent's stdin pump."""
+    """Enqueue a scope-channel post for the agent's stdin pump.
+
+    This is the PASSIVE input channel: the post is queued and the agent consumes
+    it between turns (turn-aligned). For a mid-turn forced-interrupt, see
+    :func:`notify_agent`."""
     try:
         session.input_queue.put_nowait((post_author, post_body))
         return True
     except asyncio.QueueFull:
         return False
+
+
+async def notify_agent(session: AgentInstance, author: str, body: str) -> bool:
+    """FORCED-INTERRUPT notification: preempt the agent's current turn.
+
+    The third input channel (with passive ``enqueue_input`` and the human's
+    direct terminal keystrokes): an operator or another agent forces a message
+    in mid-turn via the harness :meth:`AgentSession.interrupt` seam — the tmux
+    harness sends ESC to cancel the in-flight turn, then pastes ``body``; a
+    headless harness falls back to a plain ``send``. The agent's OWN posts are
+    filtered (never self-notify), mirroring the passive path. Recorded to the
+    transcript as an injection. Returns False when filtered or the harness
+    rejects the interrupt."""
+    if _is_own_author(session, author):
+        return False
+    framed = f"[notify:{author}]\n{body}"
+    try:
+        await session.agent_session.interrupt(framed)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
+            fp.write(f"STDIN(notify) {framed!r}\n")
+    except OSError:
+        pass
+    from awm.agents import agent_transcript
+    agent_transcript.record_in(session, framed, injection=True)
+    return True
 
 
 # ---------------------------------------------------------------------------

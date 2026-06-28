@@ -231,6 +231,22 @@ class ClaudeTmuxSession(AgentSession):
             await self.start()
         if self._closed or not self._pane:
             raise RuntimeError("tmux claude session not available")
+        await self._paste_prompt(text)
+
+    async def interrupt(self, text: str) -> None:
+        """Forced-interrupt notification: ESC to cancel claude's in-flight turn,
+        then paste ``text`` as a fresh prompt. ESC in the claude TUI aborts a
+        running generation; a short settle beat lets the input box refocus
+        before the paste so the notification isn't swallowed mid-cancel."""
+        if not self._started:
+            await self.start()
+        if self._closed or not self._pane:
+            raise RuntimeError("tmux claude session not available")
+        await self._tmux("send-keys", "-t", self._pane, "Escape")
+        await asyncio.sleep(0.15)
+        await self._paste_prompt(text)
+
+    async def _paste_prompt(self, text: str) -> None:
         # Bracketed paste: a multi-line body lands as ONE prompt (no submit at
         # newlines), then an explicit Enter submits it.
         buf = f"awm{uuid.uuid4().hex[:8]}"
