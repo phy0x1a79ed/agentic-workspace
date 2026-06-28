@@ -344,11 +344,14 @@ class TestIntentAndQueueScrub:
 
 
 # ---------------------------------------------------------------------------
-# Compact gating
+# Slash passthrough gating
 # ---------------------------------------------------------------------------
 
-class TestCompactGating:
-    def test_compact_refuses_without_session(self):
-        """No registered AgentInstance for scope → NoSessionError."""
+class TestSlashPassthrough:
+    def test_slash_refuses_without_session(self):
+        """No registered AgentInstance for scope → NoSessionError.
+
+        ``/compact`` (and any non-server slash) is now native passthrough via
+        ``send_slash`` — which still guards a missing session."""
         with pytest.raises(ai_mod.NoSessionError):
-            asyncio.run(ai_mod.compact_session("p/missing"))
+            asyncio.run(ai_mod.send_slash("p/missing", "/compact"))

@@ -15,9 +15,9 @@ import sys
 import pytest
 
 from awm.agentcore import AgentConfig, open_agent
-from awm.agentcore.claude_tmux_backend import (
-    ClaudeTmuxSession,
-    build_claude_tmux_argv,
+from awm.agentcore.claude_backend import (
+    ClaudeSession,
+    build_claude_argv,
     _hook_settings,
     _launcher_script,
     _safe_json,
@@ -29,13 +29,13 @@ from awm.agentcore.claude_tmux_backend import (
 # ---------------------------------------------------------------------------
 
 def test_open_agent_dispatches_tmux():
-    s = open_agent(AgentConfig(harness="claude-tmux", workdir="/tmp"))
-    assert isinstance(s, ClaudeTmuxSession)
+    s = open_agent(AgentConfig(harness="claude", workdir="/tmp"))
+    assert isinstance(s, ClaudeSession)
 
 
 def test_argv_interactive_full_perms():
-    cfg = AgentConfig(harness="claude-tmux", model="haiku", permissions="full")
-    argv = build_claude_tmux_argv(cfg, "/bin/claude", "SID", "/s.json")
+    cfg = AgentConfig(harness="claude", model="haiku", permissions="full")
+    argv = build_claude_argv(cfg, "/bin/claude", "SID", "/s.json")
     # interactive: NONE of the headless stream-json flags
     for bad in ("--print", "--output-format=stream-json",
                 "--input-format=stream-json", "--include-partial-messages"):
@@ -47,8 +47,8 @@ def test_argv_interactive_full_perms():
 
 
 def test_argv_default_perms_and_resume():
-    cfg = AgentConfig(harness="claude-tmux", permissions="default", resume_id="R1")
-    argv = build_claude_tmux_argv(cfg, "/bin/claude", "SID", "/s.json")
+    cfg = AgentConfig(harness="claude", permissions="default", resume_id="R1")
+    argv = build_claude_argv(cfg, "/bin/claude", "SID", "/s.json")
     assert "--dangerously-skip-permissions" not in argv
     assert ["--permission-mode", "default"] == argv[1:3]
     # resume wins over a minted session id
@@ -60,14 +60,14 @@ def test_argv_tools_effort_mcp(tmp_path):
     mcp = tmp_path / "mcp.json"
     mcp.write_text("{}")
     cfg = AgentConfig(
-        harness="claude-tmux", permissions="full",
+        harness="claude", permissions="full",
         params={"effort": "high"},
         system_prompt="be terse",
         allowed_tools=["Read", "mcp__awm__edit_deliverable"],
         disallowed_tools=["Bash"],
         mcp_config=str(mcp),
     )
-    argv = build_claude_tmux_argv(cfg, "/bin/claude", "SID", "/s.json")
+    argv = build_claude_argv(cfg, "/bin/claude", "SID", "/s.json")
     assert ["--effort", "high"] == argv[argv.index("--effort"):argv.index("--effort") + 2]
     assert "--append-system-prompt" in argv and "be terse" in argv
     assert "Read,mcp__awm__edit_deliverable" in argv
@@ -76,9 +76,9 @@ def test_argv_tools_effort_mcp(tmp_path):
 
 
 def test_argv_bad_effort_raises():
-    cfg = AgentConfig(harness="claude-tmux", params={"effort": "ludicrous"})
+    cfg = AgentConfig(harness="claude", params={"effort": "ludicrous"})
     with pytest.raises(ValueError):
-        build_claude_tmux_argv(cfg, "/bin/claude", "SID", "/s.json")
+        build_claude_argv(cfg, "/bin/claude", "SID", "/s.json")
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +113,8 @@ def test_safe_json():
 # transcript line classification → stable ids
 # ---------------------------------------------------------------------------
 
-def _sess() -> ClaudeTmuxSession:
-    return ClaudeTmuxSession(AgentConfig(harness="claude-tmux", workdir="/tmp"))
+def _sess() -> ClaudeSession:
+    return ClaudeSession(AgentConfig(harness="claude", workdir="/tmp"))
 
 
 def test_classify_assistant_text_line():
@@ -260,7 +260,7 @@ async def test_send_command_sequence(monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(
-        "awm.agentcore.claude_tmux_backend.asyncio.create_subprocess_exec",
+        "awm.agentcore.claude_backend.asyncio.create_subprocess_exec",
         fake_exec,
     )
 
@@ -291,7 +291,7 @@ async def test_interrupt_sends_escape_then_pastes(monkeypatch):
         return _FakeProc()
 
     monkeypatch.setattr(
-        "awm.agentcore.claude_tmux_backend.asyncio.create_subprocess_exec",
+        "awm.agentcore.claude_backend.asyncio.create_subprocess_exec",
         fake_exec,
     )
 
@@ -322,12 +322,12 @@ def test_alive_reads_has_session(monkeypatch):
     s._closed = False
 
     monkeypatch.setattr(
-        "awm.agentcore.claude_tmux_backend.subprocess.run",
+        "awm.agentcore.claude_backend.subprocess.run",
         lambda *a, **k: _Run(0),
     )
     assert s.alive() is True
     monkeypatch.setattr(
-        "awm.agentcore.claude_tmux_backend.subprocess.run",
+        "awm.agentcore.claude_backend.subprocess.run",
         lambda *a, **k: _Run(1),
     )
     assert s.alive() is False
@@ -344,7 +344,7 @@ async def test_wait_returns_when_session_gone(monkeypatch):
     s._closed = False
 
     state = {"alive": True}
-    monkeypatch.setattr(ClaudeTmuxSession, "alive", lambda self: state["alive"])
+    monkeypatch.setattr(ClaudeSession, "alive", lambda self: state["alive"])
 
     async def killer():
         await asyncio.sleep(0.1)
@@ -358,13 +358,13 @@ async def test_wait_returns_when_session_gone(monkeypatch):
 async def test_start_writes_settings_and_launcher(monkeypatch, tmp_path):
     """_start writes the settings + launcher files and creates the tmux session
     (tmux + trust acceptance mocked)."""
-    s = ClaudeTmuxSession(AgentConfig(
-        harness="claude-tmux", workdir=str(tmp_path), permissions="full",
+    s = ClaudeSession(AgentConfig(
+        harness="claude", workdir=str(tmp_path), permissions="full",
         tmux_session_name="awm-test",
     ))
 
     monkeypatch.setattr(
-        "awm.agentcore.claude_tmux_backend.resolve_bin",
+        "awm.agentcore.claude_backend.resolve_bin",
         lambda name: f"/bin/{name}",
     )
     new_session_args = {}
@@ -377,8 +377,8 @@ async def test_start_writes_settings_and_launcher(monkeypatch, tmp_path):
     async def fake_accept(self):
         return None
 
-    monkeypatch.setattr(ClaudeTmuxSession, "_tmux_out", fake_tmux_out)
-    monkeypatch.setattr(ClaudeTmuxSession, "_accept_trust", fake_accept)
+    monkeypatch.setattr(ClaudeSession, "_tmux_out", fake_tmux_out)
+    monkeypatch.setattr(ClaudeSession, "_accept_trust", fake_accept)
 
     await s._start()
 

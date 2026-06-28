@@ -41,7 +41,6 @@ from awm.config import PROJECTS_DIR
 from awm.agents import dao as _dao_module
 from awm.agents.dao import AgentsDAO
 from awm.agents._time import now_ms, ms_to_iso, iso_to_ms, SYSTEM_REF
-from awm.agents._path import resolve_bin
 from awm.agents.models import AgentSessionInfo
 import awm.gatewayclient as gatewayclient
 
@@ -49,8 +48,17 @@ from awm.agentcore import AgentConfig, open_agent
 from awm.agentcore.session import AgentSession as _CoreSession
 
 
-_SUPPORTED_CLIS = {"claude", "claude-tmux", "opencode"}
+_SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
+
+
+def _normalize_cli(value: object) -> str:
+    """Map a persisted/legacy ``agent_cli`` onto a current one.
+
+    ``claude-tmux`` was folded into ``claude`` when tmux became the only claude
+    backend — a row minted under the old name still reads back as ``claude``."""
+    cli = str(value) if value else "claude"
+    return "claude" if cli == "claude-tmux" else cli
 
 # Supervision (T4): a task-bound worker gets a hard turn budget — every turn
 # boundary decrements it, with NO extension and NO refill. The final stretch
@@ -135,7 +143,6 @@ class AgentInstance:
         self.context_used: int = 0
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
-        self.compacting: bool = False
         # Task-bounded placement. For a conversational session these stay at
         # their defaults and every task path short-circuits. For a worker the
         # placement IS this instance row; placement_token names it, agent_ref is
@@ -148,8 +155,8 @@ class AgentInstance:
         # profile; both carried across respawn. Default-empty for conversational.
         self.workdir: Optional[str] = None
         self.allowed_tools: Optional[list[str]] = None
-        # tmux session name for the claude-tmux harness (human-attachable);
-        # None for headless claude / opencode.
+        # tmux session name for a claude agent (human-attachable); None for
+        # opencode (no tmux session).
         self.tmux_session: Optional[str] = None
         # Supervision: a hard turn budget that decrements every turn boundary,
         # no extension, no refill (only meaningful when mode != conversational).
@@ -257,46 +264,12 @@ _VALID_PERMISSION_MODES = (
 _VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
-def _build_claude_argv(
-    *, permission_mode: str, model: Optional[str], effort: Optional[str],
-    resume_session_id: Optional[str],
-) -> list[str]:
-    argv = [
-        resolve_bin("claude"), "--print", "--verbose",
-        "--input-format=stream-json", "--output-format=stream-json",
-        "--include-partial-messages",
-        f"--permission-mode={permission_mode}",
-    ]
-    if model:
-        argv.extend(["--model", model])
-    if effort:
-        argv.extend(["--effort", effort])
-    if resume_session_id:
-        argv.extend(["--resume", resume_session_id])
-    spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
-    if spawn_mcp.exists():
-        argv.extend(["--strict-mcp-config", "--mcp-config", str(spawn_mcp)])
-    return argv
-
-
-def _build_opencode_argv(
-    *, workspace_dir: Path, permission_mode: str, model: Optional[str],
-) -> list[str]:
-    argv = [resolve_bin("opencode"), "run", "--format", "json",
-            "--dir", str(workspace_dir)]
-    if permission_mode == "bypassPermissions":
-        argv.append("--dangerously-skip-permissions")
-    if model:
-        argv.extend(["--model", model])
-    return argv
-
-
 # ---------------------------------------------------------------------------
 # agentcore config builder
 # ---------------------------------------------------------------------------
 
 def _tmux_session_name(instance_id: int, scope: str) -> str:
-    """Deterministic, tmux-safe session name for a ``claude-tmux`` placement.
+    """Deterministic, tmux-safe session name for a ``claude`` agent.
 
     ``awm-<instance_id>-<scope>`` with anything outside ``[A-Za-z0-9_-]``
     collapsed to ``-`` (tmux treats ``.`` / ``:`` specially in target names).
@@ -357,7 +330,7 @@ def _build_core_config(
 # ---------------------------------------------------------------------------
 
 async def create_session(*, project: str, scope: str,
-                         agent_cli: str = "claude-tmux",
+                         agent_cli: str = "claude",
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
@@ -466,10 +439,11 @@ async def create_session(*, project: str, scope: str,
         # AWM_AS, and its B-op tools resolve to its own task without a token. A
         # conversational session passes no identity (awm tools, no AWM_AS).
         placement_as = _scope_key(project, scope) if task_bound else None
-        # The tmux harness gets a deterministic session name (human-attachable).
+        # A claude agent runs in tmux and gets a deterministic session name
+        # (human-attachable); opencode has no tmux session.
         tmux_name = (
             _tmux_session_name(instance_id, scope)
-            if agent_cli == "claude-tmux" else None
+            if agent_cli == "claude" else None
         )
         core_config = _build_core_config(
             agent_cli=agent_cli, permission_mode=permission_mode,
@@ -998,7 +972,7 @@ def _info_for_instance_row(row: dict) -> AgentSessionInfo:
         scope=row["scope"],
         pid=row.get("pid") or 0,
         status=row.get("render_status") or "exited",
-        agent_cli=row.get("agent_cli") or "claude",
+        agent_cli=_normalize_cli(row.get("agent_cli")),
         started_at=ms_to_iso(row["started_at"]) or "",
         exited_at=ms_to_iso(row.get("ended_at")),
         exit_code=row.get("exit_code"),
@@ -1034,8 +1008,9 @@ def _hydrate_instance_row(row: dict) -> dict:
     out["pid"] = pid
     out["exit_code"] = data.get("exit_code")
     out["render_status"] = _render_status(out)
-    # agent_cli: not in agents.db; default to "claude" (or recover from data)
-    out.setdefault("agent_cli", data.get("agent_cli") or "claude")
+    # agent_cli: not in agents.db; recover from data, default "claude", and
+    # fold the legacy "claude-tmux" name onto "claude".
+    out["agent_cli"] = _normalize_cli(out.get("agent_cli") or data.get("agent_cli"))
     out["tmux_session"] = data.get("tmux_session")
     return out
 
@@ -1154,20 +1129,21 @@ async def respawn_session(
 
 
 async def send_slash(scope_key: str, body: str) -> None:
+    """Forward a raw line into the agent's interactive TUI.
+
+    Pasted verbatim (NO ``[from:author]`` framing) so a leading-slash line runs
+    as claude's native slash command (``/compact``, ``/clear``, plugin commands,
+    …). Unframed and immediate, the native-passthrough successor to the old
+    headless stdin write. Recorded to the transcript as an injection."""
     session = _by_scope.get(scope_key)
     if session is None:
         raise NoSessionError(f"no active session for {scope_key}")
-    if session.proc is None or session.proc.stdin is None:
-        raise NoSessionError(f"session for {scope_key} has no stdin")
-    if session.proc.stdin.is_closing():
-        raise NoSessionError(f"session for {scope_key} stdin is closing")
-    payload = {
-        "type": "user",
-        "message": {"role": "user", "content": body},
-    }
-    line = (json.dumps(payload) + "\n").encode("utf-8")
-    session.proc.stdin.write(line)
-    await session.proc.stdin.drain()
+    try:
+        await session.agent_session.send(body)
+    except Exception as exc:  # noqa: BLE001
+        raise NoSessionError(
+            f"session for {scope_key} cannot accept input: {exc}"
+        ) from exc
     try:
         with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
             fp.write(f"STDIN(slash) {body!r}\n")
@@ -1175,88 +1151,6 @@ async def send_slash(scope_key: str, body: str) -> None:
         pass
     from awm.agents import agent_transcript
     agent_transcript.record_in(session, body, injection=True)
-
-
-# ---------------------------------------------------------------------------
-# Compact
-# ---------------------------------------------------------------------------
-
-_COMPACT_PROMPT = (
-    "Please summarize our entire conversation so far in a single message, "
-    "optimized to be a primer for a fresh agent that needs to continue this "
-    "work. Include: current task, key decisions, files touched, open "
-    "questions, and the next action you were about to take. Reply with ONLY "
-    "the summary, no preamble."
-)
-
-COMPACT_TIMEOUT_S = 180.0
-COMPACT_MIN_SUMMARY_CHARS = 50
-
-
-async def compact_session(scope_key: str) -> str:
-    from awm.agents import agent_transcript
-    session = _by_scope.get(scope_key)
-    if session is None:
-        raise NoSessionError(f"no active session for {scope_key}")
-    if session.agent_cli != "claude":
-        return (
-            f"/compact gated for agent_cli={session.agent_cli!r}; "
-            "opencode bridging is a separate plan"
-        )
-    if session.compacting:
-        return f"/compact already in flight for {scope_key}"
-    if agent_transcript.has_unmatched_tool_use(session.project, session.scope):
-        return (
-            f"compact refused: tool call in flight on {scope_key}; "
-            "wait for completion or /kill first"
-        )
-
-    session.compacting = True
-    prior_instance_id = session.id
-    queue = agent_transcript.subscribe_assistant_turns(prior_instance_id)
-    summary: str = ""
-    try:
-        try:
-            await send_slash(scope_key, _COMPACT_PROMPT)
-        except NoSessionError as exc:
-            return f"compact failed: {exc}"
-
-        try:
-            summary = await asyncio.wait_for(queue.get(), timeout=COMPACT_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            summary = agent_transcript.read_recent_assistant_text(session.project, session.scope)
-        if not summary or len(summary) < COMPACT_MIN_SUMMARY_CHARS:
-            return (
-                f"compact failed: no usable summary captured "
-                f"(got {len(summary)} chars); session untouched"
-            )
-
-        _get_dao().set_instance_intent(prior_instance_id, "compacted")
-
-        try:
-            new_session = await respawn_session(scope_key, clear_history=True)
-        except Exception as exc:  # noqa: BLE001
-            return (
-                f"compact respawn failed: {exc}; previous-session summary "
-                f"available via agent transcript (len {len(summary)})"
-            )
-
-        primer = f"[system: previous-session-summary]\n{summary}"
-        try:
-            await send_slash(scope_key, primer)
-        except NoSessionError as exc:
-            return (
-                f"compact primer injection failed: {exc}; session "
-                f"summary still available via transcript"
-            )
-
-        return (
-            f"compacted {scope_key}: prior instance {prior_instance_id} "
-            f"summarized → new instance {new_session.id} primed"
-        )
-    finally:
-        agent_transcript.unsubscribe_assistant_turns(prior_instance_id, queue)
-        session.compacting = False
 
 
 # ---------------------------------------------------------------------------
@@ -1376,9 +1270,11 @@ async def respawn_after_restart(project: str, scope: str, *,
 
 
 async def _watch_resume_health(session: AgentInstance) -> bool:
+    # Liveness via the harness seam (tmux has-session poll / opencode proc),
+    # NOT session.proc — a tmux claude agent has no child handle.
     try:
         await asyncio.wait_for(
-            session.proc.wait(), timeout=RESUME_HEALTH_WINDOW_S
+            session.agent_session.wait(), timeout=RESUME_HEALTH_WINDOW_S
         )
     except asyncio.TimeoutError:
         return True

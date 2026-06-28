@@ -9,7 +9,7 @@ import json
 
 from awm.agentcore import AgentConfig, AgentEvent
 from awm.agentcore import _mcp as mcp_mod
-from awm.agentcore.claude_backend import build_claude_argv, _classify
+from awm.agentcore.claude_backend import _classify
 from awm.agentcore.opencode_backend import _classify_parts, _extract_json_object
 
 
@@ -30,34 +30,8 @@ def test_event_has_id_and_ts():
     assert a.to_dict()["kind"] == "message"
 
 
-# ---- claude argv ----
-
-def test_claude_argv_full_perms():
-    argv = build_claude_argv(AgentConfig(harness="claude", permissions="full"))
-    assert "--permission-mode=bypassPermissions" in argv
-    assert "--output-format=stream-json" in argv
-
-
-def test_claude_argv_default_perms():
-    argv = build_claude_argv(
-        AgentConfig(harness="claude", permissions="default")
-    )
-    assert "--permission-mode=default" in argv
-
-
-def test_claude_argv_model_effort_resume():
-    argv = build_claude_argv(AgentConfig(
-        harness="claude", model="opus", params={"effort": "high"},
-        resume_id="sess-123",
-    ))
-    assert "--model" in argv and "opus" in argv
-    assert "--effort" in argv and "high" in argv
-    assert "--resume" in argv and "sess-123" in argv
-
-
-def test_claude_argv_bad_effort_raises():
-    with pytest.raises(ValueError):
-        build_claude_argv(AgentConfig(harness="claude", params={"effort": "x"}))
+# NOTE: claude argv is the interactive tmux argv now (the headless --print
+# backend was retired) — covered by tests/test_tmux_backend.py.
 
 
 # ---- harness-owned MCP synthesis ----
@@ -83,10 +57,6 @@ def test_claude_synthesizes_awm_server_with_identity(tmp_path, monkeypatch):
     assert awm["env"] == {
         "AWM_WORKSPACE": "/the/ws", "AWM_PORT": "7821", "AWM_AS": "p/leaf-1",
     }
-    # The argv then wires --mcp-config at that path.
-    argv = build_claude_argv(cfg)
-    assert "--strict-mcp-config" in argv
-    assert path in argv
 
 
 def test_conversational_has_no_awm_as(tmp_path, monkeypatch):
@@ -193,48 +163,6 @@ def test_classify_assistant_stamps_message_id():
     assert evts[1].data["message_id"] == "msg_xyz"
     # tool_use's own block id is distinct from the message id.
     assert evts[1].data["id"] == "t1"
-
-
-def test_event_source_tracks_message_start_id():
-    # message_start sets the session's current message id; the partials that
-    # follow inherit it even though their own frames omit it.
-    import asyncio
-    import json as _j
-
-    from awm.agentcore.claude_backend import ClaudeSession
-
-    sess = ClaudeSession(AgentConfig(harness="claude"))
-
-    class _FakeStdout:
-        def __init__(self, lines):
-            self._lines = list(lines)
-
-        async def readline(self):
-            if not self._lines:
-                return b""
-            return self._lines.pop(0)
-
-    class _FakeProc:
-        def __init__(self, stdout):
-            self.stdout = stdout
-
-    lines = [
-        (_j.dumps({"type": "stream_event",
-                   "event": {"type": "message_start",
-                             "message": {"id": "msg_live"}}}) + "\n").encode(),
-        (_j.dumps({"type": "stream_event",
-                   "event": {"type": "content_block_delta", "index": 0,
-                             "delta": {"type": "text_delta",
-                                       "text": "hi"}}}) + "\n").encode(),
-    ]
-    sess._proc = _FakeProc(_FakeStdout(lines))
-
-    async def _drain():
-        return [ev async for ev in sess._event_source()]
-
-    evts = asyncio.run(_drain())
-    partials = [e for e in evts if e.kind == "partial"]
-    assert partials and partials[0].data["message_id"] == "msg_live"
 
 
 def test_classify_result_ok_and_error():

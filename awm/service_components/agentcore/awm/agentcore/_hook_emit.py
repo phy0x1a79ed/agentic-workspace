@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Claude Code hook emitter for the tmux backend — a control-file appender.
 
-The interactive ``claude`` TUI emits no stream-json, so :class:`ClaudeTmuxSession`
+The interactive ``claude`` TUI emits no stream-json, so :class:`ClaudeSession`
 observes it out-of-band: it injects SessionStart + Stop hooks (via ``--settings``)
 that run *this* script. Claude invokes each hook with the hook payload JSON on
 stdin (``{session_id, transcript_path, hook_event_name, ...}``); we append a

@@ -1,6 +1,6 @@
 """Interactive terminal direct-session: relay a ``tmux attach`` PTY to a browser.
 
-A ``claude-tmux`` agent runs the real ``claude`` TUI inside a *detached* tmux
+A ``claude`` agent runs the real ``claude`` TUI inside a *detached* tmux
 session (``awm-<instance_id>-<scope>``, recorded as the instance's
 ``tmux_session``). This session handler attaches a PTY-backed ``tmux attach``
 client to that session and byte-relays it over the hub bridge, so a browser
@@ -55,7 +55,7 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
 
     Returns ``(tmux_session, None)`` on success or ``(None, error_message)``
     when the identity is missing, no live session exists, or the agent is not
-    running under the ``claude-tmux`` harness (so it has no pane to attach)."""
+    a claude agent (so it has no tmux pane to attach — e.g. opencode)."""
     sid = init.get("session_id")
     if sid is not None:
         try:
@@ -71,8 +71,8 @@ def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
         return None, "no live agent session for that identity"
     tmux = getattr(inst, "tmux_session", None)
     if not tmux:
-        return None, ("agent is not running under the claude-tmux harness "
-                      "(no terminal to attach)")
+        return None, ("agent has no tmux session to attach "
+                      "(not a claude agent)")
     return tmux, None
 
 
