@@ -313,6 +313,58 @@ class TestFnDispatch:
 
         asyncio.new_event_loop().run_until_complete(run())
 
+    def test_x_awm_as_header_is_forwarded_as_envelope_identity(self, running_hub):
+        """A browser POST carrying `X-Awm-As` threads that caller identity onto
+        the control envelope as `as`, so a service's attach-gated admin relay can
+        resolve the caller's placement. Absent the header, no `as` is sent."""
+        port, token = running_hub["port"], running_hub["token"]
+
+        async def run():
+            async with fake_service(
+                port, token, name="ident",
+                api={"functions": [{"name": "whoami"}]},
+            ) as svc:
+                async def auto_replier():
+                    seen: set[str] = set()
+                    while True:
+                        for env in list(svc.received):
+                            cid = env.get("id")
+                            if env.get("kind") != "call" or cid in seen:
+                                continue
+                            seen.add(cid)
+                            svc.send({"kind": "reply", "id": cid,
+                                       "ok": True, "result": {"as": env.get("as")}})
+                        await asyncio.sleep(0.01)
+
+                replier_task = asyncio.create_task(auto_replier())
+                try:
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        r = await client.post(
+                            f"http://127.0.0.1:{port}/svc/ident/fn/whoami",
+                            json={},
+                            headers={"X-Awm-As": "unit:demo-slug"},
+                        )
+                        assert r.status_code == 200, r.text
+                        assert r.json() == {"as": "unit:demo-slug"}
+                        env = await svc.wait_for(
+                            lambda e: e.get("kind") == "call"
+                            and e.get("as") == "unit:demo-slug",
+                        )
+                        assert env["as"] == "unit:demo-slug"
+
+                        # No header → no identity leaked onto the envelope.
+                        svc.received.clear()
+                        r2 = await client.post(
+                            f"http://127.0.0.1:{port}/svc/ident/fn/whoami",
+                            json={},
+                        )
+                        assert r2.status_code == 200, r2.text
+                        assert r2.json() == {"as": None}
+                finally:
+                    replier_task.cancel()
+
+        asyncio.new_event_loop().run_until_complete(run())
+
     def test_notify_returns_202_and_no_reply_needed(self, running_hub):
         port, token = running_hub["port"], running_hub["token"]
 

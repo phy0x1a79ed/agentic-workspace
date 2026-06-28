@@ -27,6 +27,9 @@ export {
 } from './channel';
 export {
   fetchDag,
+  openNode,
+  relocateSelf,
+  type OpenNodeResult,
   type TaskState,
   type DagTask,
   type DagContract,

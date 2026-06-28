@@ -11,6 +11,18 @@
 
 import { svc } from './svc';
 
+/**
+ * Result of opening a node — the orchestrator creates the task, places an
+ * attended worker on it, and hands back the attach handle. `workspace_slug` is
+ * the transcript/terminal key a chat then attaches to (the agent's identity);
+ * `agent_ref` is the placement's slug.
+ */
+export interface OpenNodeResult {
+  task_id: string;
+  workspace_slug: string;
+  agent_ref: string | null;
+}
+
 /** The explicit task lifecycle (see the orchestrator kernel's STATES). */
 export type TaskState =
   | 'blocked'
@@ -77,4 +89,36 @@ export interface DagSnapshot {
 /** Fetch the whole (single global) plan in one call. */
 export function fetchDag(): Promise<DagSnapshot> {
   return svc('orchestrator').fn<DagSnapshot>('orch_dag', {});
+}
+
+/**
+ * Open a node at the root (omit `consumer` = a top-level prerequisite of the
+ * global root). The orchestrator creates the task AND places an attended worker
+ * on it, returning the `workspace_slug` the chat attaches to. This is the DAG
+ * replacement for the old conversational "spawn an agent in a scope" — a public
+ * op (no identity header needed).
+ */
+export function openNode(goal: string, repo?: unknown): Promise<OpenNodeResult> {
+  return svc('orchestrator').fn<OpenNodeResult>('orch_node_open', {
+    goal,
+    ...(repo !== undefined ? { repo } : {}),
+  });
+}
+
+/**
+ * Re-point the ATTACHED node's funnel onto another consumer (the global root by
+ * default). Routes through the agents service's attach-gated admin relay, which
+ * resolves the caller's placement from the `X-Awm-As: <slug>` header — so the
+ * caller must pass the live unit slug it is attached to (not the default
+ * operator identity). Rejected by the relay when no human is attached.
+ */
+export function relocateSelf(
+  slug: string,
+  newConsumerTask?: string,
+): Promise<{ ok?: boolean; [k: string]: unknown }> {
+  return svc('agents').request('/fn/relocate_self', {
+    method: 'POST',
+    headers: { 'X-Awm-As': slug },
+    body: newConsumerTask ? { new_consumer_task: newConsumerTask } : {},
+  });
 }

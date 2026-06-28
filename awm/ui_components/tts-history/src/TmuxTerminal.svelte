@@ -10,8 +10,8 @@
    *
    * Mount this only while it is VISIBLE (the host renders it behind a tab guard)
    * — xterm must fit in a laid-out container, so a hidden zero-size mount would
-   * mis-size the grid. Switching the (project, scope) identity tears the session
-   * down and re-opens for the new agent, resetting the buffer.
+   * mis-size the grid. Switching the `slug` identity tears the session down and
+   * re-opens for the new agent, resetting the buffer.
    */
   import { onDestroy } from 'svelte';
   import { Terminal } from '@xterm/xterm';
@@ -20,11 +20,10 @@
   import { openTerminal, type TerminalSession } from '@awm/client';
 
   interface Props {
-    /** The agent identity to attach to. Re-attaches when either changes. */
-    project: string;
-    scope: string;
+    /** The agent identity (unit slug) to attach to. Re-attaches when it changes. */
+    slug: string;
   }
-  let { project, scope }: Props = $props();
+  let { slug }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -88,12 +87,11 @@
   // the host element is laid out before xterm measures it.
   $effect(() => {
     const el = host;
-    const p = project;
-    const s = scope;
+    const s = slug;
     teardown();
-    if (el && p && s) {
+    if (el && s) {
       queueMicrotask(() => {
-        if (host === el && project === p && scope === s) start(el, s);
+        if (host === el && slug === s) start(el, s);
       });
     }
     return teardown;

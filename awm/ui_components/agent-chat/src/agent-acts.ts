@@ -23,9 +23,31 @@
 import type { AgentAct } from '@awm/client';
 import type { Post } from '@awm/chat';
 
-/** Author label for every agent-origin row, given the connected scope (the slug). */
-export function agentAuthor(scope: string): string {
-  return `agent:${scope}`;
+/** Author label for every agent-origin row, given the connected slug. */
+export function agentAuthor(slug: string): string {
+  return `agent:${slug}`;
+}
+
+/**
+ * Human input the agents service spliced into the placement's stdin is recorded
+ * back into the SAME transcript (`record_in`) with `meta.direction === 'in'` and
+ * a framed body — `[from:<author>]\n<text>` for a passive enqueue, or
+ * `[notify:<author>]\n<text>` for a forced interrupt. The transcript is the
+ * single source of truth, so the chat renders the human turn from this act
+ * (no optimistic echo). Parse the frame back into a display author + clean body.
+ */
+const FRAME_RE = /^\[(?:from|notify):([^\]]*)\]\n?/;
+
+export function parseHumanFrame(body: string): { author: string; body: string } {
+  const m = body.match(FRAME_RE);
+  if (!m) return { author: 'user:human', body };
+  // The framed author already carries its `user:`/`agent:` prefix; pass through.
+  return { author: m[1] || 'user:human', body: body.slice(m[0].length) };
+}
+
+/** True for a transcript act that is human-origin input (recorded via record_in). */
+function isHumanAct(act: AgentAct): boolean {
+  return (act.meta ?? {})['direction'] === 'in';
 }
 
 /**
@@ -129,7 +151,12 @@ export class TranscriptFold {
     const kind = act.kind;
     if (HIDDEN_KINDS.has(kind)) return null;
 
-    const isMsg = kind === 'message' || kind === 'partial';
+    // A human-origin act (the operator's own enqueued message, recorded back
+    // into the transcript) renders as a human row — never the agent's voice and
+    // never auto-spoken. It carries no coalesce id, so each keys on its own act
+    // id. This is the single source of truth for the human turn (no echo).
+    const human = isHumanAct(act);
+    const isMsg = !human && (kind === 'message' || kind === 'partial');
     const key = isMsg ? coalesceKey(act) : act.id;
     const ts = typeof act.ts === 'number' && Number.isFinite(act.ts) ? act.ts : 0;
 
@@ -137,21 +164,23 @@ export class TranscriptFold {
     // Stale / out-of-order: an update older than what we already have is dropped.
     if (existing && ts < existing.ts) return null;
 
+    const framed = human ? parseHumanFrame(actBody(act)) : null;
     const post: Post = {
       id: key,
       ts: tsToIso(act.ts),
-      author: this.author,
-      kind: isMsg ? 'text' : postKind(kind),
-      body: actBody(act),
+      author: framed ? framed.author : this.author,
+      kind: human ? 'text' : isMsg ? 'text' : postKind(kind),
+      body: framed ? framed.body : actBody(act),
     };
     // Keep the original arrival slot on an in-place update; new keys append.
     const seq = existing ? existing.seq : this.seq++;
     this.entries.set(key, { ts, seq, post });
     this.render();
 
-    // Speak only the finalized message (not partials). The caller dedupes
-    // repeat speech by post id, so returning it on an idempotent re-fold is safe.
-    return kind === 'message' ? post : null;
+    // Speak only the finalized AGENT message (not partials, not the human turn).
+    // The caller dedupes repeat speech by post id, so returning it on an
+    // idempotent re-fold is safe.
+    return !human && kind === 'message' ? post : null;
   }
 
   /** Rebuild `posts` time-ordered (ts asc, arrival tiebreak). */
