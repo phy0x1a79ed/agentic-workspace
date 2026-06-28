@@ -44,7 +44,7 @@ def test_no_awm_server_without_hub_port(tmp_path):
 
 
 def test_claude_synthesizes_awm_server_with_identity(tmp_path, monkeypatch):
-    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(mcp_mod, "_resolve_awm_mcp", lambda: "/fake/awm-mcp")
     cfg = AgentConfig(
         harness="claude", workdir=str(tmp_path),
         awm_workspace="/the/ws", awm_port="7821", placement_as="p/leaf-1",
@@ -59,8 +59,34 @@ def test_claude_synthesizes_awm_server_with_identity(tmp_path, monkeypatch):
     }
 
 
+def test_resolve_awm_mcp_prefers_in_env_sibling(tmp_path, monkeypatch):
+    # P1: the awm-mcp command must be the in-env console script (direct,
+    # unbuffered stdio), NOT a PATH-searched ~/.local/bin shim that wraps
+    # `mamba run` and buffers the MCP handshake. Prefer the binary next to the
+    # running interpreter.
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python").write_text("")
+    sibling = bindir / "awm-mcp"
+    sibling.write_text("")
+    monkeypatch.setattr(mcp_mod.sys, "executable", str(bindir / "python"))
+    monkeypatch.setattr(
+        mcp_mod, "resolve_bin",
+        lambda name: (_ for _ in ()).throw(AssertionError("should not fall back")))
+    assert mcp_mod._resolve_awm_mcp() == str(sibling)
+
+
+def test_resolve_awm_mcp_falls_back_when_no_sibling(tmp_path, monkeypatch):
+    # No in-env sibling → fall back to the PATH search (resolve_bin).
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    monkeypatch.setattr(mcp_mod.sys, "executable", str(bindir / "python"))
+    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fallback/{name}")
+    assert mcp_mod._resolve_awm_mcp() == "/fallback/awm-mcp"
+
+
 def test_conversational_has_no_awm_as(tmp_path, monkeypatch):
-    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(mcp_mod, "_resolve_awm_mcp", lambda: "/fake/awm-mcp")
     cfg = AgentConfig(
         harness="claude", workdir=str(tmp_path),
         awm_workspace="/the/ws", awm_port="7821",  # no placement_as
@@ -70,7 +96,7 @@ def test_conversational_has_no_awm_as(tmp_path, monkeypatch):
 
 
 def test_opencode_synthesizes_awm_server(tmp_path, monkeypatch):
-    monkeypatch.setattr(mcp_mod, "resolve_bin", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(mcp_mod, "_resolve_awm_mcp", lambda: "/fake/awm-mcp")
     cfg = AgentConfig(
         harness="opencode", workdir=str(tmp_path),
         awm_workspace="/the/ws", awm_port="7821", placement_as="p/leaf-1",

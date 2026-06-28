@@ -181,9 +181,14 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
     # An attended node defaults to the claude harness (interactive, attachable
     # terminal + a capable model); unattended placements stay on the agents
     # service's own default (opencode / DSv4-free). Pure data — place_on_task
-    # reads ``harness`` when present, else picks its default.
+    # reads ``harness`` when present, else picks its default. The ``attached``
+    # intent is ALSO threaded as data so the agents-side supervisor freezes
+    # (no nag / no budget burn / no force-fail) on a born-attended node — a
+    # human-driven drop-in idles politely until detached. Without this the flag
+    # is hardcoded ``False`` at birth and the supervisor runs away (P2).
     if task["attached"]:
         payload["harness"] = "claude"
+        payload["attached"] = True
     # Existing scopes the node's unit links under repos/<name> (persisted on the
     # task so every (re)dispatch re-links them; the workspace symlink is
     # idempotent). Stored as a JSON list; tolerate a NULL / malformed value.
