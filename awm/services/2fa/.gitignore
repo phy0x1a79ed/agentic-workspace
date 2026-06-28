@@ -1,0 +1,9 @@
+# Sidecar written by install.sh (bakes the env's absolute interpreter path).
+.runtime-env
+
+# Belt-and-braces: device credentials live under $AWM_DIR/services/2fa/ (the
+# gitignored .awm/ runtime dir), never here — but never commit anything
+# password-equivalent even if a stray copy lands in this folder.
+creds.json
+device_key.pem
+*.pem
