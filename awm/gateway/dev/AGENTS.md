@@ -25,10 +25,16 @@ run side-by-side:
 
 | Scope worktree | uvicorn |
 |---|---|
-| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` |
+| `projects/awm/dev/` (`dev` branch — **release staging**) | `7821` |
 | `projects/awm/web-ui/` (`feat/web-ui`) | `7831` |
 | `projects/awm/web-backend/` (`feat/web-backend`) | `7841` |
+| `projects/awm/feat-dag/` (composition — pinned via `.env`) | `7861` |
+| `projects/awm/feat-gamebot/` (composition — pinned via `.env`) | `7871` |
 | any other scope (fallback) | `7851` |
+
+The `feat-dag` / `feat-gamebot` rows aren't in the dirname `case` — they pin
+their port via the gitignored `.env` below (the documented override), so the
+tracked `case` block never has to change.
 
 **The uvicorn port IS the service-hub origin for this sandbox.** `AGENTS.md`
 § "Service Hub" documents the hub at `:7819` (the production default — the

@@ -41,7 +41,7 @@ Scopes access project data via `.awm/data/`. All scopes in the same project shar
 ```
 projects/
   _vagrant/              # sentinel: per-user vagrant-scope handlers
-  awm/                   # AWM itself (dev, web-ui, comp-*, infra-*, voice, sentry, …)
+  awm/                   # AWM itself (dev, feat-dag, feat-gamebot, web-*, svc-*, comp-*, infra-*, …)
   container_builds/      # apptainer image recipes
   cyanoverse/            # cyanobacteria genomics figures + analyses
   drawio/                # diagrams + poster integration
@@ -114,6 +114,13 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 | `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners, the service hub itself. |
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
+
+**Composition scopes.** A couple of `feat-*` scopes are *standing* composition scopes — one per feature family — that own the cross-service wiring + integration playbooks for that family and run their **own isolated dev sandbox** (port pinned via a gitignored `awm/gateway/dev/.env`), factoring `svc-*`/`comp-*` units out as they stabilize:
+
+- **`feat-dag`** (`:7861`) — conversational agents + voice (`stt`/`tts`) + web-ui chat + **DAG orchestration** (agents/orchestrator/workspace services, `@awm/chat`, `@awm/dag-graph`).
+- **`feat-gamebot`** (`:7871`) — LLM-driven web-game bots (realm/effector/agent-runner/timer services).
+
+`dev` is **not** a feature scope — it is the **release-staging / promotion** worktree (`feat → dev → release`, prod deploys) and runs the shared seeded sandbox at `:7821`.
 
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
