@@ -16,13 +16,17 @@ SHARE="$HOME/.local/share/awm-social-mira"
 BIN="$HOME/.local/bin"
 UNITS="$HOME/.config/systemd/user"
 
-echo "== helper venv (isolated; only websocket-client) =="
+echo "== helper venv (websocket-client for the extractor, aiohttp for the daemon) =="
 mkdir -p "$SHARE" "$BIN" "$UNITS"
 if [ ! -x "$SHARE/venv/bin/python" ]; then
     python3 -m venv "$SHARE/venv"
 fi
-"$SHARE/venv/bin/pip" install -q --upgrade pip websocket-client
+"$SHARE/venv/bin/pip" install -q --upgrade pip websocket-client aiohttp
 cp "$HERE/awm-slack-creds.py" "$SHARE/awm-slack-creds.py"
+
+echo "== mira API daemon package ($SHARE/mira_api) =="
+rm -rf "$SHARE/mira_api"
+cp -r "$HERE/mira_api" "$SHARE/mira_api"
 
 echo "== extractor wrapper ($BIN/awm-slack-creds) =="
 cat > "$BIN/awm-slack-creds" <<EOF
@@ -41,6 +45,9 @@ systemctl --user enable --now awm-display.service
 systemctl --user enable --now awm-wm.service
 systemctl --user enable --now awm-slack.service
 systemctl --user enable --now awm-opera-teams.service
+# The API daemon needs the awm bearer token + TLS certs in ~/.awm; it serves on
+# 172.16.0.24:7822 over the awm-network. Started last (Opera must be up first).
+systemctl --user enable --now awm-mira-api.service
 
 echo "== status =="
 systemctl --user --no-pager --plain list-units 'awm-*' || true
