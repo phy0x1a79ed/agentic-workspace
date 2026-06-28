@@ -71,25 +71,23 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str) -
 def _default_context(project: str, scope: str) -> str:
     """Generate a default .awm/context.md for a new scope.
 
-    The skills service is out-of-process; we use a static debrief hint
-    rather than calling gatewayclient (non-essential for context.md).
+    Debrief is a native Claude Code skill (~/.claude/skills/debrief/), so the
+    context just names it — no skill-service lookup is needed.
     """
-    debrief_hint = '`skills_search query="debrief"`'
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
         f"1. Run `awm_refresh project={project} scope={scope}` to update local history and artifact indexes\n"
         f"2. Read `.awm/history.md` for session history, open issues, and resolved items\n"
-        f"3. Read `.awm/artifacts.md` for available data from sibling scopes\n"
-        f"4. Search for relevant skill protocols: `skills_search query=\"your task description\"`\n\n"
+        f"3. Read `.awm/artifacts.md` for available data from sibling scopes\n\n"
         f"## Work\n\n"
         f"- Code is in the current directory (this IS the git worktree)\n"
         f"- Project data is at `.awm/data/`\n"
-        f"- Skill protocols are at `.awm/skills/`\n"
+        f"- Reference protocols (git, mamba, etc.) are on disk at `.awm/skills/` if you need them\n"
         f"- Do NOT edit `.awm/history.md` or `.awm/artifacts.md` — use MCP tools\n\n"
         f"## Debrief\n\n"
-        f"When the user asks you to debrief (or says \"debrief\"), follow the debrief skill:\n"
-        f"{debrief_hint}\n"
+        f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
+        f"the end-of-session protocol that commits, journals, reconciles artifacts, and refreshes.\n"
     )
 
 
