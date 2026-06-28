@@ -25,6 +25,8 @@ COPY config/server-settings.json   /factorio/config/server-settings.json
 COPY config/map-gen-settings.json  /factorio/config/map-gen-settings.json
 # Enabling the Space Age mods is just listing them here.
 COPY config/mod-list.json          /opt/factorio/mods/mod-list.json
+# Companion mod: the script-controlled character body (spawn/move/observe).
+COPY mods/game-bot-control         /opt/factorio/mods/game-bot-control
 
 COPY supervise.py /factorio/supervise.py
 
