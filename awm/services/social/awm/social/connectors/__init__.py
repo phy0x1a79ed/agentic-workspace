@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from awm.social.config import AccountConfig
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Channel, Command, Connector, Identity, InboundMessage, OnCommand,
+    OnMessage,
 )
 from awm.social.connectors.discord_conn import DiscordConnector
 from awm.social.connectors.gmail_conn import GmailConnector
@@ -21,11 +22,17 @@ REGISTRY: dict[str, type[Connector]] = {
 }
 
 
-def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
+def build(
+    cfg: AccountConfig,
+    on_message: OnMessage,
+    on_command: OnCommand | None = None,
+) -> Connector:
     """Construct the connector for one configured account.
 
     Raises ``KeyError`` (via a clear ``ValueError``) for an unknown platform —
     config validation already rejects those, so this is a belt-and-braces guard.
+    ``on_command`` is only honoured by connectors with a command surface
+    (Discord); the others accept and ignore it.
     """
     cls = REGISTRY.get(cfg.platform)
     if cls is None:
@@ -40,10 +47,10 @@ def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
         display_name=cfg.display_name,
         address=cfg.address,
     )
-    return cls(account, on_message)
+    return cls(account, on_message, on_command=on_command)
 
 
 __all__ = [
-    "REGISTRY", "build", "Connector", "Account", "Channel", "Identity",
-    "InboundMessage", "OnMessage",
+    "REGISTRY", "build", "Connector", "Account", "Channel", "Command",
+    "Identity", "InboundMessage", "OnCommand", "OnMessage",
 ]

@@ -41,8 +41,9 @@ _REFRESHABLE = ("invalid_auth", "not_authed", "token_revoked", "token_expired")
 class SlackConnector(Connector):
     platform = "slack"
 
-    def __init__(self, account: Account, on_message: OnMessage) -> None:
-        super().__init__(account, on_message)
+    def __init__(self, account: Account, on_message: OnMessage,
+                 on_command=None) -> None:
+        super().__init__(account, on_message, on_command)
         self._web = None       # AsyncWebClient (send / list)
         self._socket = None     # SocketModeClient (receive, API mode)
         self._self_id = ""      # our own user id, to drop echoes

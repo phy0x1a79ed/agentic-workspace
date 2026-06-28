@@ -16,22 +16,34 @@ import asyncio
 import logging
 
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Channel, Command, Connector, Identity, InboundMessage, OnCommand,
+    OnMessage,
 )
 
 log = logging.getLogger("awm.social.connectors.discord")
+
+# Slash command exposed by the bot. Kept deliberately tiny — one command, used
+# by DMing the bot, that other services react to via the adapter's ``command``
+# emit. ``approve`` is consumed by the 2fa service to arm a Duo approval burst.
+APPROVE_COMMAND = "approve"
+# Duo devices a user can target. Mirrors the 2fa service's device names; offered
+# as Discord choices so the slash UI is a pick-list rather than free text.
+DEVICE_CHOICES = ("cwl", "alliance")
 
 
 class DiscordConnector(Connector):
     platform = "discord"
 
-    def __init__(self, account: Account, on_message: OnMessage) -> None:
-        super().__init__(account, on_message)
+    def __init__(self, account: Account, on_message: OnMessage,
+                 on_command: OnCommand | None = None) -> None:
+        super().__init__(account, on_message, on_command)
         self._client = None  # type: ignore[assignment]
+        self._tree = None    # discord.app_commands.CommandTree
         self._ready = asyncio.Event()
 
     def _build_client(self):
         import discord
+        from discord import app_commands
 
         intents = discord.Intents.default()
         # Privileged intent: required to read message text. Must be toggled on
@@ -39,10 +51,23 @@ class DiscordConnector(Connector):
         # and we log it as a permanent failure.
         intents.message_content = True
         client = discord.Client(intents=intents)
+        tree = app_commands.CommandTree(client)
+        self._tree = tree
+        self._register_commands(tree, app_commands)
 
         @client.event
         async def on_ready():  # noqa: ANN202
             self._ready.set()
+            # Global sync: a global command is the only kind that shows up in a
+            # DM with the bot (guild-scoped commands never do). First propagation
+            # can lag (up to ~1h) but is usually quick; re-syncs are cheap no-ops.
+            try:
+                synced = await tree.sync()
+                log.info("discord[%s] synced %d app command(s)",
+                         self.account.name, len(synced))
+            except Exception as exc:  # noqa: BLE001 — never kill the ready path
+                log.warning("discord[%s] command sync failed: %s",
+                            self.account.name, exc)
             log.info("discord[%s] ready as %s", self.account.name, client.user)
 
         @client.event
@@ -69,6 +94,64 @@ class DiscordConnector(Connector):
                             self.account.name, exc)
 
         return client
+
+    def _register_commands(self, tree, app_commands) -> None:
+        """Register the bot's slash command(s) on the command tree.
+
+        One command — ``/approve [device]`` — usable only as a DM to the bot
+        (``interaction.guild is None``). It acks within Discord's 3-second
+        interaction deadline, then hands a normalised :class:`Command` to the
+        injected ``on_command`` callback (the adapter emits it for the 2fa
+        service to consume). The command surface stays here; the *meaning* of
+        ``approve`` lives entirely on the 2fa side.
+        """
+
+        choices = [app_commands.Choice(name=d, value=d) for d in DEVICE_CHOICES]
+
+        @tree.command(
+            name=APPROVE_COMMAND,
+            description="Auto-approve Duo logins for 5 minutes (DM the bot).",
+        )
+        @app_commands.describe(device="Duo device to approve for (default cwl)")
+        @app_commands.choices(device=choices)
+        async def approve(interaction, device: str | None = None):  # noqa: ANN001, ANN202
+            # DM-only authorization: only honour invocations in a DM to the bot.
+            if interaction.guild is not None:
+                try:
+                    await interaction.response.send_message(
+                        "DM me to use this command.", ephemeral=True)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("discord[%s] guild-reject reply failed: %s",
+                              self.account.name, exc)
+                return
+            # With a str param + choices, discord hands back the chosen value
+            # directly (not a Choice object).
+            dev = device or "cwl"
+            # Ack first — the burst is armed asynchronously by the 2fa service.
+            try:
+                await interaction.response.send_message(
+                    f"⏳ Arming `{dev}` Duo approvals for 5 min…")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("discord[%s] approve ack failed: %s",
+                            self.account.name, exc)
+            if self.on_command is None:
+                return
+            user = getattr(interaction, "user", None)
+            cmd = Command(
+                account=self.account.name,
+                platform=self.platform,
+                name=APPROVE_COMMAND,
+                options={"device": dev},
+                user_id=str(getattr(user, "id", "")) if user else "",
+                user_name=str(user) if user else "",
+                channel_id=str(getattr(interaction, "channel_id", "") or ""),
+                is_dm=True,
+            )
+            try:
+                await self.on_command(cmd)
+            except Exception as exc:  # noqa: BLE001 — never bubble into the dispatcher
+                log.warning("discord[%s] on_command handler failed: %s",
+                            self.account.name, exc)
 
     async def start(self) -> None:
         try:
