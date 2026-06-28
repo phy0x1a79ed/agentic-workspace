@@ -54,9 +54,7 @@ until you actually bring an exit up.
     user          = "cwl@app"            # note the @app realm suffix
     password      = "..."
     second_factor = "push"               # optional; line fed to openconnect's Duo prompt
-    # virtual-auth on-demand Duo auto-approver on mira (see § 2FA):
-    va_burst_url  = "http://10.74.81.111:8077/burst"
-    va_token      = "..."                # the [serve] token from mira's virtual-auth config
+    twofa_device  = "cwl"                # local awm 2fa device to auto-approve (see § 4); "" disables
 
     [proton]
     username = "..."
@@ -65,27 +63,55 @@ until you actually bring an exit up.
 
 `image` is overridable per profile (defaults `awm-vpn-ubc` / `awm-vpn-proton`).
 
-## 4. 2FA (UBC) — virtual-auth Duo auto-approve
+## 4. 2FA (UBC) — local awm `2fa` Duo auto-approve
 
-UBC requires Duo 2FA. The `virtual-auth` service runs an **on-demand** Duo
-auto-approver on mira: you fire a short "burst" that approves the *first* pending
-login within ~1s, then exits (no always-on polling). The UBC image's `dial.sh`
-does this automatically: it `POST`s `$VA_BURST_URL` with header `X-Token:
-$VA_TOKEN` **immediately before** dialing, so the push that openconnect triggers
-is the one the burst approves.
+UBC requires Duo 2FA. The local awm **`2fa`** service (an in-process Duo
+auto-approver) handles it — no more mira/`virtual-auth`. Right before a UBC dial,
+the **host-side** `vpn_up` arms a burst on the configured device by POSTing
+`/svc/2fa/fn/burst {"device": "<twofa_device>"}` on this same gateway; the burst
+auto-approves the *first* pending login within ~1s, so the push `openconnect`
+triggers goes through unattended.
 
-- **Endpoint:** `http://10.74.81.111:8077/burst` over ZeroTier (LAN fallback
-  `172.16.0.24:8077`). `GET /health` is unauthenticated; `POST /burst` needs the token.
-- **Token:** the `[serve] token` in `~/.config/virtual-auth/config.toml` on mira
-  (also in `~/.config/va-login.env` on Cosmos). Copy it into `vpn.toml`; treat it
-  like a password (it can approve *any* login to the CWL Duo account).
-- **Constraints:** one login per burst (the service serializes UBC `up`, and the
-  singleton prevents two concurrent UBC dials); the burst→dial window is ~60s; the
-  **container** must have ZeroTier reachability to mira's `:8077`. Sanity-check
-  first: `curl -fsS http://10.74.81.111:8077/health`.
+- **No token, no network hop:** the call is loopback to our own gateway
+  (`$AWM_HUB_URL`); the container itself makes no 2FA call (it can't reach the
+  host gateway before the tunnel is up). The arming happens on the cold path of
+  `up` only — a no-op `up` on an already-running exit never fires a burst.
+- **Device:** `twofa_device` in the `[ubc]` table (default `"cwl"`). The named
+  device must be enrolled in the `2fa` service (`awm 2fa devices`). Set
+  `twofa_device = ""` to disable (the dial will then hang on Duo unless 2FA is
+  otherwise satisfied).
+- **Prereq:** the `2fa` service must be running and the device enrolled. Verify:
+  `awm 2fa status device=cwl`. The burst window default is ~60s — ample for the
+  container start + dial.
 
-If `va_burst_url` is omitted, the dial skips the burst and will hang on Duo unless
-2FA is otherwise satisfied.
+## 4a. SSH bounce (ProxyJump) — reaching hosts *behind* the VPN
+
+Each exit also runs a **bounce sshd** in the container's netns (the proven
+`projects/vpn_bounce` architecture), published on the host at `bounce_port`
+(ubc `2222`, proton `2223`). An `ssh -W %h:%p` / `ProxyJump` through it egresses
+via the tunnel — this is how host-side `ssh sockeye` reaches UBC ARC.
+
+- **Key:** a single bounce keypair is generated on first `up` at
+  `$AWM_DIR/services/vpn/bounce` (private, `0600`) `+ .pub`. The public key is
+  injected into every container as the sole authorized key; point your
+  `~/.ssh/config` bounce host's `IdentityFile` at the private key.
+- **Host keys** are regenerated per container start, so the bounce host should use
+  `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null` (as the legacy
+  `vpn_ubc` block already does).
+- **Example** `~/.ssh/config`:
+
+      Host vpn_ubc
+          HostName localhost
+          Port 2222
+          User root
+          IdentitiesOnly yes
+          PreferredAuthentications publickey
+          IdentityFile ~/agentic_workspace/.awm/services/vpn/bounce
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+
+  Then `Host sockeye … ProxyCommand ssh -W %h:%p vpn_ubc` tunnels through, exactly
+  as it did against the old standalone `vpn_bounce` container.
 
 ## 5. Proton notes
 
@@ -114,10 +140,16 @@ with `bash run.sh`, and injects only three env vars (`AWM_HUB_URL`,
       "network_mode": "container:awm-vpn-ubc",
       "exit_ip": "...",
       "status": "up",
-      "usage": "… Route any process through it by joining its network namespace …"
+      "bounce_host": "localhost",
+      "bounce_port": 2222,
+      "bounce_user": "root",
+      "bounce_key": "/home/.../.awm/services/vpn/bounce",
+      "usage": "… Route a process through it two ways: netns attach OR SSH ProxyJump …"
     }
 
-- **Any process** (e.g. an ssh client container): `docker run --network=container:awm-vpn-ubc <image> …`.
+- **netns attach** (browsers, docker'd procs): `docker run --network=container:awm-vpn-ubc <image> …`.
+- **SSH ProxyJump/-W** (reach a host behind the VPN, e.g. sockeye): tunnel through
+  the bounce sshd at `localhost:bounce_port` with the `bounce_key` — see § 4a.
 - **A browser session:** `rlm_browser.acquire{game, opts:{vpn:"ubc"}}` — rlm-browser
   brings the exit up via `vpn_up` and launches Chrome with `--network=container:awm-vpn-ubc`.
   Implementing that `opts.vpn` handling is rlm-browser's job; this service ships the

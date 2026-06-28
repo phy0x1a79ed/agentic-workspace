@@ -21,13 +21,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
         dialog \
         supervisor \
+        openssh-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Community protonvpn-cli. (--break-system-packages for PEP 668 on bookworm.)
 RUN pip3 install --no-cache-dir --break-system-packages protonvpn-cli
 
 COPY supervisord.conf /etc/supervisord.conf
+COPY sshd_config      /etc/ssh/sshd_config
 COPY dial.sh          /usr/local/bin/dial.sh
-RUN chmod +x /usr/local/bin/dial.sh
+COPY ssh_server       /usr/local/bin/ssh_server
+RUN chmod +x /usr/local/bin/dial.sh /usr/local/bin/ssh_server
 
+EXPOSE 22
 ENTRYPOINT ["supervisord", "-c", "/etc/supervisord.conf"]

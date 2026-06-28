@@ -4,25 +4,15 @@
 # supervisord.conf). Reads everything from env injected by the vpn service:
 #   UBC_SERVER, UBC_USER, UBC_PASSWORD   — primary credentials
 #   UBC_SECOND_FACTOR                    — Duo factor line (default "push")
-#   VA_BURST_URL, VA_TOKEN               — virtual-auth Duo auto-approver (optional)
+#
+# The Duo push this dial triggers is auto-approved by the local awm `2fa`
+# service: the host-side `vpn_up` arms a `2fa_burst device=<twofa_device>` on the
+# gateway right before we start (see container.py). No in-container 2FA call —
+# the container can't reach the host gateway before the tunnel is up.
 set -eu
 
 # MTU tune to avoid fragmentation on the Cisco ASA endpoint (vpn_bounce lesson).
 ip link set dev eth0 mtu 1400 2>/dev/null || true
-
-# --- 2FA: arm the on-demand Duo auto-approver on mira BEFORE dialing ----------
-# virtual-auth watches the CWL Duo account and approves the first pending login
-# within ~1s. We fire the burst, then immediately dial so the push we trigger is
-# the one it approves. Best-effort: if no URL is configured, skip and rely on
-# 2FA being otherwise satisfied. (One login per burst — the vpn service
-# serializes UBC `up` so two dials never race the single approval.)
-if [ -n "${VA_BURST_URL:-}" ]; then
-    echo "[dial] arming virtual-auth Duo burst at $VA_BURST_URL"
-    if ! curl -fsS --max-time 15 -X POST "$VA_BURST_URL" \
-            -H "X-Token: ${VA_TOKEN:-}" >/dev/null; then
-        echo "[dial] WARN: virtual-auth burst request failed — dial may hang on Duo"
-    fi
-fi
 
 # --- dial ---------------------------------------------------------------------
 # openconnect reads successive password prompts from stdin lines: the primary
