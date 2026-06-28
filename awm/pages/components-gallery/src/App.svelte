@@ -11,6 +11,7 @@
   } from '@awm/stt-composer';
   import { TtsHistory, type Post } from '@awm/tts-history';
   import { AgentChat } from '@awm/agent-chat';
+  import { TaskList, FocusPanel, buildIndex, type DagSnapshot } from '@awm/dag-graph';
 
   // ── Theme / token surface ──────────────────────────────────────────────
   //
@@ -112,6 +113,45 @@
     // Surface the speak affordance without a TTS backend.
   }
 
+  // ── dag-graph: a mock plan (a true DAG — c-ui feeds two tasks) ───────────
+  // Shaped per @awm/client's DagSnapshot wire types. Offline; no orchestrator
+  // service is contacted. Covers a spread of task states so the list grouping
+  // shows. The dag-graph package ships no single composite — consumers compose
+  // TaskList + FocusPanel off one shared buildIndex (as the dag-telemetry page
+  // does), so the demo below mirrors that idiomatic usage.
+  const dagSnapshot: DagSnapshot = {
+    project: 'awm',
+    root_id: 't-root',
+    tasks: [
+      { task_id: 't-root', goal: 'Ship the release', state: 'blocked', is_root: true, mode: null, workspace_slug: null, agent_ref: null, created_at: 1000, updated_at: 1000 },
+      { task_id: 't-api', goal: 'Build the /orders API endpoint', state: 'completed', is_root: false, mode: 'worker', workspace_slug: 'feat-orders-api', agent_ref: 'agent:worker:7a1', created_at: 1010, updated_at: 1200 },
+      { task_id: 't-ui', goal: 'Build the orders UI', state: 'active', is_root: false, mode: 'worker', workspace_slug: 'feat-orders-ui', agent_ref: 'agent:worker:9c2', created_at: 1020, updated_at: 1300 },
+      { task_id: 't-tests', goal: 'Write integration tests', state: 'ready', is_root: false, mode: null, workspace_slug: null, agent_ref: null, created_at: 1030, updated_at: 1030 },
+      { task_id: 't-deploy', goal: 'Deploy to staging', state: 'blocked', is_root: false, mode: null, workspace_slug: null, agent_ref: null, created_at: 1040, updated_at: 1040 },
+      { task_id: 't-spec', goal: 'Spec out the auth rework', state: 'decomposing', is_root: false, mode: 'planner', workspace_slug: 'feat-auth-spec', agent_ref: 'agent:planner:3f0', created_at: 1050, updated_at: 1260 },
+      { task_id: 't-migrate', goal: 'Migrate the legacy DB', state: 'failed', is_root: false, mode: 'worker', workspace_slug: 'feat-db-migrate', agent_ref: 'agent:worker:b41', created_at: 1060, updated_at: 1280 },
+      { task_id: 't-legacy', goal: 'Remove the deprecated client', state: 'abandoned', is_root: false, mode: null, workspace_slug: null, agent_ref: null, created_at: 1070, updated_at: 1290 },
+    ],
+    contracts: [
+      { contract_id: 'c-api', name: 'orders-api', spec: 'REST endpoints for orders CRUD', producer_task: 't-api', delivered: true, payload_ref: 'artifact:api-spec', delivered_ts: 1200 },
+      { contract_id: 'c-ui', name: 'orders-ui', spec: 'Built orders UI bundle', producer_task: 't-ui', delivered: false, payload_ref: null, delivered_ts: null },
+      { contract_id: 'c-tests', name: 'test-suite', spec: 'Passing integration test suite', producer_task: 't-tests', delivered: false, payload_ref: null, delivered_ts: null },
+      { contract_id: 'c-deploy', name: 'staging-deploy', spec: 'Live staging deployment', producer_task: 't-deploy', delivered: false, payload_ref: null, delivered_ts: null },
+    ],
+    edges: [
+      { edge_id: 'e1', consumer_task: 't-ui', contract_id: 'c-api', contract_name: 'orders-api', producer_task: 't-api', delivered: true },
+      { edge_id: 'e2', consumer_task: 't-tests', contract_id: 'c-ui', contract_name: 'orders-ui', producer_task: 't-ui', delivered: false },
+      { edge_id: 'e3', consumer_task: 't-deploy', contract_id: 'c-ui', contract_name: 'orders-ui', producer_task: 't-ui', delivered: false },
+      { edge_id: 'e4', consumer_task: 't-deploy', contract_id: 'c-tests', contract_name: 'test-suite', producer_task: 't-tests', delivered: false },
+      { edge_id: 'e5', consumer_task: 't-root', contract_id: 'c-deploy', contract_name: 'staging-deploy', producer_task: 't-deploy', delivered: false },
+    ],
+  };
+
+  // One index, shared by TaskList + FocusPanel (re-derives if the snapshot ref
+  // changes). Selecting a task in either pane drives the other.
+  const dagIndex = $derived(buildIndex(dagSnapshot));
+  let dagSelected = $state<string | null>('t-deploy');
+
   // ── Components explorer: composition forest ─────────────────────────────
   //
   // There is no runtime import scan in the browser, so the dependency forest is
@@ -132,7 +172,12 @@
   const sttComposer = cnode('SttComposer', [sttShell, sttButton]);
   const ttsHistory = cnode('TtsHistory');
   const agentChat = cnode('AgentChat', [sttComposer, ttsHistory]);
-  const FOREST: CNode[] = [agentChat, sttComposer, ttsHistory];
+  // dag-graph: the composed plan view (the demo name; the package exports no
+  // single composite) over its two real shipped components.
+  const dagTaskList = cnode('TaskList');
+  const dagFocusPanel = cnode('FocusPanel');
+  const dagGraph = cnode('DagGraph', [dagTaskList, dagFocusPanel]);
+  const FOREST: CNode[] = [agentChat, sttComposer, ttsHistory, dagGraph];
 
   // Primitives are standalone — nothing composite renders them — so they form a
   // flat leaf group to satisfy "all components". Their live demos live in the
@@ -337,6 +382,21 @@
     </div>
   {:else if name === 'TtsHistory'}
     <div class="live-frame"><TtsHistory posts={mockPosts} onspeak={noopSpeak} /></div>
+  {:else if name === 'DagGraph'}
+    <div class="live-frame">
+      <div class="dag-grid">
+        <div class="dag-pane">
+          <TaskList index={dagIndex} selectedTaskId={dagSelected} onSelectTask={(id) => (dagSelected = id)} />
+        </div>
+        <div class="dag-pane focus">
+          <FocusPanel index={dagIndex} selectedTaskId={dagSelected} onSelectTask={(id) => (dagSelected = id)} />
+        </div>
+      </div>
+    </div>
+  {:else if name === 'TaskList'}
+    <div class="live-frame"><TaskList index={dagIndex} selectedTaskId={dagSelected} onSelectTask={(id) => (dagSelected = id)} /></div>
+  {:else if name === 'FocusPanel'}
+    <div class="live-frame"><FocusPanel index={dagIndex} selectedTaskId={dagSelected} onSelectTask={(id) => (dagSelected = id)} /></div>
   {/if}
 {/snippet}
 
@@ -825,6 +885,33 @@
      here for any composer shell rendered inside a live demo. */
   .live-frame :global(.shell) {
     height: auto;
+  }
+
+  /* dag-graph composed view: list | focus, matching the dag-telemetry layout. */
+  .dag-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: var(--space-4);
+    align-items: start;
+    padding: var(--space-3);
+  }
+  .dag-pane {
+    min-width: 0;
+  }
+  .dag-pane.focus {
+    border-left: 1px solid var(--border);
+    padding-left: var(--space-4);
+  }
+  @media (max-width: 720px) {
+    .dag-grid {
+      grid-template-columns: 1fr;
+    }
+    .dag-pane.focus {
+      border-left: 0;
+      border-top: 1px solid var(--border);
+      padding-left: 0;
+      padding-top: var(--space-3);
+    }
   }
 
   /* ── components explorer ── */
