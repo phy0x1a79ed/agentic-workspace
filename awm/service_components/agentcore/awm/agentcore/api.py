@@ -1,8 +1,8 @@
 """Public entry points: ``open_agent`` (the config factory) + ``run_once``.
 
-These are the single dynamic entry points both callers (the agents service,
-the stt cleanup) use. ``open_agent(config)`` selects the backend from
-``config.harness`` and threads everything else in. ``run_once`` is generic over
+These are the single dynamic entry points the agents service uses.
+``open_agent(config)`` selects the backend from ``config.harness`` and threads
+everything else in. ``run_once`` is generic over
 the session — open → send → drain until terminal → close — so a one-shot is
 just a wrapped live session.
 
@@ -26,18 +26,17 @@ def open_agent(config: AgentConfig) -> AgentSession:
     ``config.mode`` is advisory (both backends implement both modes — one-shot
     is realized via :func:`run_once`).
     """
-    if config.harness == "claude":
+    # ``claude`` is the interactive tmux-driven TUI backend (the headless
+    # ``--print`` backend was retired). ``claude-tmux`` is accepted as a silent
+    # legacy alias so a persisted row minted under the old name still resolves.
+    if config.harness in ("claude", "claude-tmux"):
         from .claude_backend import ClaudeSession
         return ClaudeSession(config)
-    if config.harness == "claude-tmux":
-        from .claude_tmux_backend import ClaudeTmuxSession
-        return ClaudeTmuxSession(config)
     if config.harness == "opencode":
         from .opencode_backend import OpencodeSession
         return OpencodeSession(config)
     raise ValueError(
-        f"Unknown harness {config.harness!r}; "
-        "expected 'claude' | 'claude-tmux' | 'opencode'"
+        f"Unknown harness {config.harness!r}; expected 'claude' | 'opencode'"
     )
 
 

@@ -3,8 +3,8 @@
 Slash commands posted to a scope channel with a ``to:`` scope are routed here.
 If the command matches a registered server command, the handler runs and a
 result message is posted back to the scope channel. Unknown commands fall
-through to the scope's claude stdin (via ``agent_instances.send_slash``) so
-/clear, /compact, plugin commands, etc. still work.
+through and are pasted into the agent's interactive TUI (via
+``agent_instances.send_slash``) so plugin commands, etc. run natively.
 
 The catalog is intentionally small and explicit — each entry has a name,
 arg signature for the help panel, a one-line description, and an async
@@ -131,12 +131,13 @@ async def _h_cli(scope_key: str, args: list[str]) -> str:
 
 
 async def _h_compact(scope_key: str, args: list[str]) -> str:
-    # Claude's `/compact` REPL command isn't honored by the headless
-    # stream-json pipeline awm uses, so we synthesize the same outcome
-    # ourselves: ask the agent to self-summarize, capture the summary
-    # from the structured transcript, respawn with the summary as primer.
-    # Implementation in agent_instances.compact_session.
-    return await agent_instances.compact_session(scope_key)
+    # The agent runs the real interactive claude TUI, which honors `/compact`
+    # natively — so we just paste it in (no synthesis / respawn-with-primer).
+    try:
+        await agent_instances.send_slash(scope_key, "/compact")
+    except agent_instances.NoSessionError as exc:
+        return f"compact failed: {exc}"
+    return f"forwarded /compact to {scope_key} (claude compacts in-session)"
 
 
 async def _h_clear(scope_key: str, args: list[str]) -> str:
@@ -181,7 +182,7 @@ _COMMANDS: list[SlashCommand] = [
     SlashCommand("/model", "<name>", "Respawn with --model. e.g. opus, sonnet, haiku, or full id.", _h_model),
     SlashCommand("/effort", "<level>", "Respawn with --effort. Choices: low, medium, high, xhigh, max.", _h_effort),
     SlashCommand("/cli", "<name>", "Respawn under a different agent CLI (e.g. claude). Listed in /cli with no args.", _h_cli),
-    SlashCommand("/compact", "", "Not supported in headless mode — claude /compact is REPL-only.", _h_compact),
+    SlashCommand("/compact", "", "Compact the conversation in-session via claude's native /compact.", _h_compact),
     SlashCommand("/clear", "", "Wipe conversation context: respawn without --resume.", _h_clear),
     SlashCommand("/help", "", "Echo this catalog plus the scope's claude commands.", _h_help),
 ]
@@ -204,7 +205,7 @@ async def dispatch(scope_key: str, line: str) -> tuple[bool, str]:
       - ``handled=True``: a registered server command ran; message is its
         result string (post as ``system`` to the scope channel).
       - ``handled=False``: the command isn't registered server-side; the
-        caller should forward the raw line to the scope's claude stdin
+        caller should forward the raw line into the agent's TUI
         via ``agent_instances.send_slash``. ``message`` is empty.
 
     Raises ``SlashParseError`` if ``line`` isn't a valid slash form.

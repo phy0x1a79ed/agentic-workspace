@@ -3,8 +3,8 @@
 The full PTY relay (`terminal_session`) is integration-level — it spawns a real
 `tmux attach` against a live agent session and is exercised by the live-hub
 harness. Here we cover the pure resolution logic that decides whether a relay
-can even start: which agent the init identity names, and whether it runs under
-the claude-tmux harness (so it has a pane to attach)."""
+can even start: which agent the init identity names, and whether it is a claude
+agent (so it has a tmux pane to attach)."""
 from __future__ import annotations
 
 import asyncio
@@ -44,12 +44,13 @@ def test_no_live_session(monkeypatch):
 
 
 def test_non_tmux_agent_has_no_terminal(monkeypatch):
-    # A headless claude agent: no tmux_session → nothing to attach.
+    # An opencode agent (the only non-tmux harness now): no tmux_session →
+    # nothing to attach.
     monkeypatch.setattr(ai, "get_session_by_scope",
                         lambda p, s: _FakeInstance(tmux_session=None))
     sess, err = ts._resolve_tmux_session({"project": "p", "scope": "s"})
     assert sess is None
-    assert "claude-tmux harness" in err
+    assert "no tmux session" in err
 
 
 def test_resolves_tmux_session_by_scope(monkeypatch):

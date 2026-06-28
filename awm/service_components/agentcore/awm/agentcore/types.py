@@ -28,7 +28,7 @@ from typing import Any, Literal, Optional
 # Config
 # ---------------------------------------------------------------------------
 
-Harness = Literal["claude", "claude-tmux", "opencode"]
+Harness = Literal["claude", "opencode"]
 Mode = Literal["live", "oneshot"]
 
 
@@ -81,10 +81,10 @@ class AgentConfig:
         disallowed_tools: explicit tool denylist (claude --disallowedTools),
                         same name space as ``allowed_tools``. Applied on top of
                         the allowlist. None = no denylist.
-        tmux_session_name: for the ``claude-tmux`` harness, the tmux session
-                        name to create/attach (so a human can ``tmux attach``).
-                        None = the backend mints ``awm-<session-id[:8]>``.
-                        Ignored by other harnesses.
+        tmux_session_name: for the ``claude`` harness, the tmux session name to
+                        create/attach (so a human can ``tmux attach``). None =
+                        the backend mints ``awm-<session-id[:8]>``. Ignored by
+                        other harnesses.
     """
 
     harness: Harness
