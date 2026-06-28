@@ -50,6 +50,25 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "orch_node_open",
+            "tool": "orch_node_open",
+            "description": "Seamless drop-in: create a node (prerequisite of a "
+                           "consumer, root by default) and place an attended "
+                           "worker on it directly — an interactive claude agent a "
+                           "human attaches to. Optional repo links existing "
+                           "scope(s) into the unit. Returns task_id + "
+                           "workspace_slug (the attach handle) + agent_ref.",
+            "params": [
+                {"name": "project", "type": "string", "required": True},
+                {"name": "goal", "type": "string", "required": True},
+                {"name": "consumer", "type": "string", "required": False},
+                {"name": "repo", "type": "object", "required": False,
+                 "description": (
+                     "Existing scope(s) to link into the unit: a scope string, a "
+                     "{scope, project?, name?} object, or a list of either.")},
+            ],
+        },
+        {
             "name": "orch_task_attach",
             "tool": "orch_task_attach",
             "description": "Attach a task to the global DAG as a prerequisite "
@@ -105,6 +124,7 @@ API_MANIFEST: dict[str, Any] = {
 HANDLERS = {
     # public (manifest-visible)
     "orch_task_create": operations.orch_task_create,
+    "orch_node_open": operations.orch_node_open,
     "orch_task_attach": operations.orch_task_attach,
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
@@ -117,6 +137,11 @@ HANDLERS = {
     "approve_plan": operations.approve_plan,
     "reject_plan": operations.reject_plan,
     "set_attached": operations.set_attached,
+    # attached-only admin ops (DAG restructuring) — manifest-omitted; reached
+    # only through the agents service's attach-gated admin relay.
+    "relocate_task": operations.relocate_task,
+    "node_add_dependency": operations.node_add_dependency,
+    "link_repo": operations.link_repo,
     # planner reads — manifest-omitted (reached via the catch-all), read-only.
     "search_tasks": operations.search_tasks,
     "search_contracts": operations.search_contracts,
@@ -133,11 +158,22 @@ def _reclaim_workspace(project: str, unit_slug: str) -> None:
                             {"project": project, "unit_slug": unit_slug})
 
 
+def _link_repos(project: str, unit_slug: str, repos: list) -> None:
+    """Live-link scopes into a node's unit (the admin ``link_repo`` seam).
+
+    A synchronous gateway call to the workspace service's
+    ``workspace_link_repos``; ``operations.link_repo`` wraps it best-effort."""
+    gatewayclient.call_sync("workspace", "workspace_link_repos",
+                            {"project": project, "unit_slug": unit_slug,
+                             "repos": repos})
+
+
 async def _on_start() -> None:
     """Stand up the DB, wire the reclaim seam, start the dispatch drain loop,
     then re-dispatch the resting frontier left by any prior run."""
     dao.init()
-    operations.configure(reclaim_workspace_fn=_reclaim_workspace)
+    operations.configure(reclaim_workspace_fn=_reclaim_workspace,
+                         link_repos_fn=_link_repos)
     dispatch.start_drain_loop()
     # Boot reconcile: re-dispatch ready + planner-less decomposing nodes; leave
     # placements out (active / decomposing-with-agent) alone.

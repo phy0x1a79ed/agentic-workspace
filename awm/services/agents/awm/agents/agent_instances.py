@@ -37,12 +37,10 @@ from pathlib import Path
 from typing import Optional
 
 from awm import config
-from awm.config import PROJECTS_DIR
 from awm.agents import dao as _dao_module
 from awm.agents.dao import AgentsDAO
-from awm.agents._time import now_ms, ms_to_iso, iso_to_ms, SYSTEM_REF
+from awm.agents._time import now_ms, ms_to_iso
 from awm.agents.models import AgentSessionInfo
-import awm.gatewayclient as gatewayclient
 
 from awm.agentcore import AgentConfig, open_agent
 from awm.agentcore.session import AgentSession as _CoreSession
@@ -67,11 +65,6 @@ def _normalize_cli(value: object) -> str:
 # per-session counter; placement.py reads them back for the driver.
 TASK_TURN_BUDGET = 100
 TASK_WARN_REMAINING = 15
-
-# Scope→stdin delivery rides a LIVE subscription to the scopes `posts` emitter
-# (not a poll). On each (re)connect a single cursored `scope_fetch` closes the
-# gap for anything posted while we were disconnected; this caps that read.
-_SCOPE_RESYNC_BATCH = 50
 
 # Module-level DAO instance (initialized after dao.init() is called).
 _dao: AgentsDAO | None = None
@@ -130,9 +123,6 @@ class AgentInstance:
         self.reader_task: Optional[asyncio.Task] = None
         self.waiter_task: Optional[asyncio.Task] = None
         self.input_pump_task: Optional[asyncio.Task] = None
-        self.scope_poll_task: Optional[asyncio.Task] = None
-        # Cursor for the scope→stdin poller (ISO ts of the last post delivered).
-        self.scope_poll_after_ts: Optional[str] = None
         self.stdin_ready: asyncio.Event = asyncio.Event()
         self.stdin_frames_log = log_path.parent / "agent.log"
         self.permission_mode: str = "default"
@@ -143,11 +133,10 @@ class AgentInstance:
         self.context_used: int = 0
         self.context_max: Optional[int] = None
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
-        # Task-bounded placement. For a conversational session these stay at
-        # their defaults and every task path short-circuits. For a worker the
-        # placement IS this instance row; placement_token names it, agent_ref is
-        # the stable placement identity, task_ref binds it to the task.
-        self.mode: str = "conversational"
+        # Task-bounded placement: the placement IS this instance row.
+        # placement_token names it, agent_ref is the stable placement identity,
+        # task_ref binds it to the task. (Overwritten in create_session.)
+        self.mode: str = "worker"
         self.task_ref: Optional[str] = None
         self.agent_ref: Optional[str] = None
         self.placement_token: Optional[str] = None
@@ -190,9 +179,6 @@ _registry_by_id: dict[int, AgentInstance] = {}
 _by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
 
-# Resume wake schedule — scope_key → unix-ms.
-_resume_schedule: dict[str, int] = {}
-
 
 class ScopeBusyError(Exception):
     """A second AgentInstance spawn for an already-running scope was attempted."""
@@ -200,58 +186,6 @@ class ScopeBusyError(Exception):
 
 class NoSessionError(Exception):
     """No agent instance exists for the requested scope."""
-
-
-# ---------------------------------------------------------------------------
-# Identity helpers (scopes RPC)
-# ---------------------------------------------------------------------------
-
-_ref_cache = gatewayclient.RefCache(ttl=120.0)
-
-
-async def _ensure_scope_exists(project: str, scope: str,
-                                agent_cli: str,
-                                worktree: Path,
-                                as_: str | None = None) -> None:
-    """Ensure project + scope exist in the scopes service.
-
-    Calls ensureProject then ensureScope via gatewayclient. Does not return
-    an agent_id — the natural key (project, scope) is the identity.
-    """
-    bare = PROJECTS_DIR / project / ".bare"
-    await gatewayclient.call(
-        "scopes", "ensureProject",
-        {"project": project, "repo_path": str(bare)},
-        as_=as_,
-    )
-    await gatewayclient.call(
-        "scopes", "ensureScope",
-        {
-            "project": project, "scope": scope,
-            "branch": f"feat/{scope}",
-            "worktree": str(worktree),
-            "agent_cli": agent_cli,
-            "status": "active",
-        },
-        as_=as_,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Scope channel output (a scope IS the channel; post the agent's rendered
-# output to its own scope channel via the scopes service)
-# ---------------------------------------------------------------------------
-
-async def _post_to_scope(*, project: str, scope: str, author: str,
-                         body: str, kind: str) -> None:
-    """Post one rendered agent event to the agent's scope channel."""
-    try:
-        await gatewayclient.call('scopes', 'scope_post', {
-            'project': project, 'scope': scope,
-            'author': author, 'body': body, 'kind': kind,
-        })
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +270,7 @@ async def create_session(*, project: str, scope: str,
                          effort: Optional[str] = None,
                          resume_session_id: Optional[str] = None,
                          fresh: bool = False,
-                         mode: str = "conversational",
+                         mode: str = "worker",
                          task_ref: Optional[str] = None,
                          agent_ref: Optional[str] = None,
                          placement_token: Optional[str] = None,
@@ -344,17 +278,17 @@ async def create_session(*, project: str, scope: str,
                          allowed_tools: Optional[list[str]] = None,
                          disallowed_tools: Optional[list[str]] = None,
                          ) -> AgentInstance:
-    """Spawn a CLI subprocess and register it.
+    """Spawn a CLI subprocess for a placement and register it.
 
-    The ``mode``/``task_ref``/``agent_ref``/``placement_token`` params are the
-    task-bounded placement extension; they default such that every existing
-    conversational caller is unchanged. When ``mode != 'conversational'`` the
-    session is a **placement**: its workdir is the workspace UNIT (``workdir``,
-    required), NOT a git scope, so it does NOT touch the scopes service (no
-    ensure-scope, no scope-channel delivery — a human attaches via the
-    transcript WS and pushes text via ``agent_post``). ``allowed_tools`` /
-    ``disallowed_tools`` carry the per-mode tool profile. The DAO insert records
-    the placement row and the supervision driver takes over the lifecycle."""
+    Every session is a task-bounded **placement**: it runs in a workspace UNIT
+    (``workdir``, required — provisioned by the workspace service), NEVER a git
+    scope, and never touches the scopes service. ``(project, scope)`` is the
+    natural key (``scope`` == the unit slug). There is no conversational mode:
+    a human attaches via the transcript WS and pushes text via ``agent_post``
+    (direct enqueue). ``mode`` is the placement mode (worker/plan/planner/verify)
+    and ``allowed_tools`` / ``disallowed_tools`` carry its tool profile. The DAO
+    insert records the placement row and the supervision driver owns the
+    lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
@@ -368,17 +302,14 @@ async def create_session(*, project: str, scope: str,
         raise ValueError(
             f"Invalid effort {effort!r}; choices: {list(_VALID_EFFORTS)}"
         )
+    if not workdir:
+        raise ValueError(
+            "a placement requires a workdir (the workspace unit path)")
 
     key = _scope_key(project, scope)
-    task_bound = mode != "conversational"
-    if task_bound:
-        # Placement: the workdir is the workspace UNIT (provisioned by the
-        # workspace service), not a git scope under PROJECTS_DIR.
-        if not workdir:
-            raise ValueError("task-bound placement requires a workdir (unit path)")
-        workspace_dir = Path(workdir)
-    else:
-        workspace_dir = PROJECTS_DIR / project / scope
+    # The workdir is the workspace UNIT (provisioned by the workspace service),
+    # not a git scope under PROJECTS_DIR.
+    workspace_dir = Path(workdir)
     if not workspace_dir.exists():
         raise FileNotFoundError(f"Workspace dir not found at {workspace_dir}")
     awm_dir = workspace_dir / ".awm"
@@ -392,53 +323,28 @@ async def create_session(*, project: str, scope: str,
                 f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
             )
 
-        # Conversational sessions live in a git scope (ensure it exists). A
-        # placement runs in a workspace unit and never touches the scopes svc.
-        if not task_bound:
-            try:
-                await _ensure_scope_exists(
-                    project=project, scope=scope,
-                    agent_cli=agent_cli, worktree=workspace_dir,
-                )
-            except gatewayclient.GatewayCallError as exc:
-                raise RuntimeError(
-                    f"Failed to ensure scope {project}/{scope} via scopes RPC: {exc}"
-                ) from exc
-
         dao = _get_dao()
         # Resume id recovery.
         if resume_session_id is None and not fresh:
             resume_session_id = dao.get_latest_cli_session_id(project, scope)
 
-        if mode == "conversational":
-            instance_id = dao.open_instance(
-                project=project, scope=scope,
-                log_path=str(log_path),
-                cli_session_id=resume_session_id,
-                started_at=now_ms(),
-            )
-        else:
-            instance_id = dao.open_task_instance(
-                project=project, scope=scope,
-                log_path=str(log_path),
-                cli_session_id=resume_session_id,
-                started_at=now_ms(),
-                mode=mode,
-                task_ref=task_ref,
-                agent_ref=agent_ref,
-                placement_token=placement_token,
-            )
-
-        # A scope IS the channel — it exists once the scope does (ensured
-        # above); no separate room to provision.
+        instance_id = dao.open_task_instance(
+            project=project, scope=scope,
+            log_path=str(log_path),
+            cli_session_id=resume_session_id,
+            started_at=now_ms(),
+            mode=mode,
+            task_ref=task_ref,
+            agent_ref=agent_ref,
+            placement_token=placement_token,
+        )
 
         # Build the agentcore config and drive an AgentSession. The subprocess
         # + stream parsing live in agentcore now; we keep only the supervisor.
-        # MCP setup is harness-owned: a placement passes its identity
+        # MCP setup is harness-owned: the placement passes its identity
         # (project/unit_slug) so the harness synthesizes an awm server with
-        # AWM_AS, and its B-op tools resolve to its own task without a token. A
-        # conversational session passes no identity (awm tools, no AWM_AS).
-        placement_as = _scope_key(project, scope) if task_bound else None
+        # AWM_AS, and its B-op tools resolve to its own task without a token.
+        placement_as = _scope_key(project, scope)
         # A claude agent runs in tmux and gets a deterministic session name
         # (human-attachable); opencode has no tmux session.
         tmux_name = (
@@ -501,11 +407,8 @@ async def create_session(*, project: str, scope: str,
     session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
-    # Conversational sessions subscribe to the scope channel so human posts reach
-    # stdin. A placement has no scope channel — a human attaches via the
-    # transcript WS and pushes text via agent_post (direct enqueue), so skip it.
-    if not task_bound:
-        session.scope_poll_task = asyncio.create_task(_scope_delivery_loop(session))
+    # No scope-channel delivery loop: a human attaches via the transcript WS and
+    # pushes text via agent_post (direct enqueue) — every node is a placement.
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
@@ -613,16 +516,8 @@ async def notify_agent(session: AgentInstance, author: str, body: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Scope → stdin delivery (cross-service, live subscription)
+# Own-author filter (don't deliver an agent's own output back to itself)
 # ---------------------------------------------------------------------------
-# A scope IS the channel. Human `message`-kind posts to the scope must reach the
-# agent's stdin. The scopes service emits a `posts` event on every new post, so
-# the agents service SUBSCRIBES to it (no poll). On each (re)connect a single
-# cursored `scope_fetch` closes the gap for anything posted while disconnected,
-# then the live stream takes over. The agent's OWN posts (author
-# `agent:proj/scope`) are ignored — agent output lives in the transcript, not
-# re-delivered to itself. The cursor (ISO ts of the last delivered post) dedupes
-# the resync/live overlap.
 
 def _is_own_author(session: AgentInstance, author: str) -> bool:
     """True if `author` is this agent's own scope ref (don't self-deliver)."""
@@ -632,94 +527,6 @@ def _is_own_author(session: AgentInstance, author: str) -> bool:
     if a.startswith(("agent:", "scope:")):
         a = a.split(":", 1)[1]
     return a == f"{session.project}/{session.scope}"
-
-
-def _maybe_deliver_post(session: AgentInstance, post: dict) -> None:
-    """Route one scope post into the agent stdin if it's a fresh human message.
-
-    Cursored on the ISO ts of the last delivered post so the resync/live overlap
-    never double-delivers; only ``message``-kind posts not authored by the agent
-    itself are enqueued."""
-    if post.get('kind') != 'message':
-        return
-    ts = post.get('ts')
-    ts_ms = iso_to_ms(ts)
-    cursor_ms = iso_to_ms(session.scope_poll_after_ts)
-    if cursor_ms is not None and ts_ms is not None and ts_ms <= cursor_ms:
-        return
-    if ts:
-        session.scope_poll_after_ts = ts
-    author = post.get('author') or ''
-    if _is_own_author(session, author):
-        return
-    enqueue_input(session, author, post.get('body') or '')
-
-
-async def _resync_scope_posts(session: AgentInstance) -> None:
-    """One cursored `scope_fetch` to deliver anything posted during a gap.
-
-    Run on each (re)connect before going live so a dropped WS never loses a
-    human message. Best-effort: a transient RPC failure is swallowed (the live
-    subscription still covers everything from here on)."""
-    try:
-        res = await gatewayclient.call('scopes', 'scope_fetch', {
-            'project': session.project, 'scope': session.scope,
-            'kind': 'message', 'limit': _SCOPE_RESYNC_BATCH, 'order': 'desc',
-        })
-    except Exception:  # noqa: BLE001
-        return
-    posts = (res or {}).get('posts') or []
-    # Oldest→newest of the (newest-first) batch; the cursor filter dedupes.
-    for post in reversed(posts):
-        _maybe_deliver_post(session, post)
-
-
-async def _scope_delivery_loop(session: AgentInstance) -> None:
-    """Subscribe to the scopes `posts` emitter and route human posts to stdin.
-
-    A live subscription (``gatewayclient.subscribe('scopes', 'posts')``), not a
-    poll. Each (re)connect first runs a one-shot cursored resync to close the
-    disconnect gap, then consumes live events filtered to this session's
-    ``(project, scope)``. A clean WS close means "reconnect," not "done";
-    reconnects use the same exponential backoff shape as the adapter."""
-    # Seed the cursor at the newest existing post so we don't replay history
-    # into stdin on attach (the transcript/backfill carries history already).
-    try:
-        recent = await gatewayclient.call('scopes', 'scope_fetch', {
-            'project': session.project, 'scope': session.scope,
-            'kind': 'message', 'limit': 1, 'order': 'desc',
-        })
-        posts = (recent or {}).get('posts') or []
-        if posts:
-            session.scope_poll_after_ts = posts[0].get('ts')
-    except Exception:  # noqa: BLE001
-        pass
-
-    backoff = 1.0
-    while True:
-        try:
-            # Close the gap for anything posted while we were disconnected,
-            # then go live. The cursor dedupes the resync/live overlap.
-            await _resync_scope_posts(session)
-            async for ev in gatewayclient.subscribe('scopes', 'posts'):
-                if not isinstance(ev, dict):
-                    continue
-                if (ev.get('project') != session.project
-                        or ev.get('scope') != session.scope):
-                    continue
-                post = ev.get('post')
-                if isinstance(post, dict):
-                    _maybe_deliver_post(session, post)
-            # Clean close → reconnect promptly.
-            backoff = 1.0
-        except asyncio.CancelledError:
-            return
-        except Exception:  # noqa: BLE001
-            backoff = min(backoff * 2, 30.0)
-        try:
-            await asyncio.sleep(backoff)
-        except asyncio.CancelledError:
-            return
 
 
 # ---------------------------------------------------------------------------
@@ -906,16 +713,13 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
         if kind == "result":
             session._partial_accum.clear()
             session._msg_accum.clear()
-            # Outer-loop turn boundary: drive task-bound workers (decrement the
-            # hard turn budget, inject the next prompt / force-fail at 0).
-            # Conversational sessions short-circuit on this single check — no
-            # behavioural change, no injected turns.
-            if getattr(session, "mode", "conversational") != "conversational":
-                from awm.agents import placement
-                try:
-                    await placement.on_turn_boundary(session)
-                except Exception:  # noqa: BLE001
-                    pass
+            # Outer-loop turn boundary: drive the placement (decrement the hard
+            # turn budget, inject the next prompt / force-fail at 0).
+            from awm.agents import placement
+            try:
+                await placement.on_turn_boundary(session)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -937,20 +741,17 @@ async def _waiter_loop(session: AgentInstance) -> None:
     _get_dao().close_instance(session.id, ended_at=now_ms(),
                               exit_code=session.exit_code)
 
-    # Liveness: a task-bound subprocess that died without a terminal outcome
-    # must not strand its task in ACTIVE — force-fail it so the orchestrator can
+    # Liveness: a placement subprocess that died without a terminal outcome must
+    # not strand its task in ACTIVE — force-fail it so the orchestrator can
     # re-place. A clean terminal or an intentional stop/respawn no-ops inside.
-    if getattr(session, "mode", "conversational") != "conversational":
-        from awm.agents import placement
-        try:
-            await placement.reclaim_if_dead(session)
-        except Exception:  # noqa: BLE001
-            pass
+    from awm.agents import placement
+    try:
+        await placement.reclaim_if_dead(session)
+    except Exception:  # noqa: BLE001
+        pass
 
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
-    if session.scope_poll_task is not None:
-        session.scope_poll_task.cancel()
 
     async with _registry_lock:
         if _by_scope.get(session.scope_key) is session:
@@ -1095,7 +896,7 @@ async def respawn_session(
         placement_token = current.placement_token
         task_workdir = current.workdir
         task_allowed_tools = current.allowed_tools
-        if task_mode != "conversational" and placement_token is not None:
+        if placement_token is not None:
             _get_dao().clear_placement_token(current.id)
 
         if force:
@@ -1187,155 +988,17 @@ def tail_log(session_id: int, lines: int = 200) -> str:
     return "".join(data[-lines:])
 
 
-def scrub_resume_queue_for_scope(project: str, scope: str) -> int:
-    """Clear in-memory resume schedule for a scope. No-op if not scheduled."""
-    key = _scope_key(project, scope)
-    return 1 if _resume_schedule.pop(key, None) is not None else 0
-
-
 # ---------------------------------------------------------------------------
 # Reconciliation on startup
 # ---------------------------------------------------------------------------
 
 def reconcile_on_startup() -> None:
-    """Close open agent_instances rows and seed resume schedule."""
-    dao = _get_dao()
-    dao.close_all_open_instances(now_ms())
+    """Close any agent_instances rows left open by a prior run.
 
-    # Retire vagrant agents: STUB — vagrant status lives in scopes DB.
-    # The scopes service handles this in its own reconcile.
-
-    # Schedule resume for scopes that were recently active (had an open row).
-    # In v1 we don't have a separate agents.status column — rely on scopes RPC
-    # for true status. Seed resume for any scope that had an open instance row.
-    recently_open = dao.get_active_scopes()  # returns scopes with cli_session_id
-    for r in recently_open:
-        scope_key = _scope_key(r["project"], r["scope"])
-        _resume_schedule[scope_key] = now_ms()
-
-
-# ---------------------------------------------------------------------------
-# Auto-resume driver
-# ---------------------------------------------------------------------------
-
-RESUME_HEALTH_WINDOW_S = 15.0
-MAX_REPLAY_POSTS = 200
-MAX_CONCURRENT_RESUMES = 3
-RESUME_DRIVER_POLL_S = 5.0
-RESUME_MAX_ATTEMPTS = 3
-
-_resume_attempts: dict[str, int] = {}
-_resume_driver_task: asyncio.Task | None = None
-
-
-def _due_resume_scope_keys() -> list[str]:
-    now = now_ms()
-    return [key for key, when in list(_resume_schedule.items()) if when <= now]
-
-
-def _reschedule_resume(scope_key: str, delay_ms: int) -> None:
-    _resume_schedule[scope_key] = now_ms() + delay_ms
-
-
-def _drop_resume(scope_key: str) -> None:
-    _resume_schedule.pop(scope_key, None)
-    _resume_attempts.pop(scope_key, None)
-
-
-async def respawn_after_restart(project: str, scope: str, *,
-                                cli_session_id: str | None = None,
-                                primer_text: str | None = None
-                                ) -> AgentInstance:
-    """Spawn a fresh AgentInstance for a scope whose previous handle is gone."""
-    scope_key = _scope_key(project, scope)
-    if _by_scope.get(scope_key) is not None:
-        return _by_scope[scope_key]
-    if primer_text:
-        session = await create_session(
-            project=project, scope=scope,
-            agent_cli="claude",
-            permission_mode="bypassPermissions",
-            resume_session_id=None,
-            fresh=True,
-        )
-        await send_slash(scope_key, primer_text)
-        return session
-    return await create_session(
-        project=project, scope=scope,
-        agent_cli="claude",
-        permission_mode="bypassPermissions",
-        resume_session_id=cli_session_id,
-        fresh=False,
-    )
-
-
-async def _watch_resume_health(session: AgentInstance) -> bool:
-    # Liveness via the harness seam (tmux has-session poll / opencode proc),
-    # NOT session.proc — a tmux claude agent has no child handle.
-    try:
-        await asyncio.wait_for(
-            session.agent_session.wait(), timeout=RESUME_HEALTH_WINDOW_S
-        )
-    except asyncio.TimeoutError:
-        return True
-    return (session.exit_code or 0) == 0
-
-
-async def _drive_one_resume(scope_key: str, semaphore: asyncio.Semaphore) -> None:
-    async with semaphore:
-        attempts = _resume_attempts.get(scope_key, 0) + 1
-        _resume_attempts[scope_key] = attempts
-        if "/" not in scope_key:
-            _drop_resume(scope_key)
-            return
-        project, scope = scope_key.split("/", 1)
-        row = _get_dao().get_latest_instance_for_scope(project, scope)
-        if row is None:
-            _drop_resume(scope_key)
-            return
-        cli_session_id = row.get("cli_session_id")
-        if attempts > RESUME_MAX_ATTEMPTS:
-            cli_session_id = None
-
-        try:
-            session = await respawn_after_restart(
-                project, scope, cli_session_id=cli_session_id)
-        except Exception:  # noqa: BLE001
-            if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(scope_key)
-                return
-            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
-            return
-
-        healthy = await _watch_resume_health(session)
-        if not healthy:
-            if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(scope_key)
-                return
-            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
-            return
-
-        _drop_resume(scope_key)
-
-
-async def _drive_resume_queue() -> None:
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESUMES)
-    while True:
-        due = _due_resume_scope_keys()
-        if due:
-            tasks = [
-                asyncio.create_task(_drive_one_resume(key, semaphore))
-                for key in due
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(RESUME_DRIVER_POLL_S)
-
-
-def start_resume_driver() -> asyncio.Task:
-    global _resume_driver_task
-    if _resume_driver_task is not None and not _resume_driver_task.done():
-        return _resume_driver_task
-    _resume_driver_task = asyncio.create_task(_drive_resume_queue())
-    return _resume_driver_task
+    A placement whose subprocess is gone after a restart is NOT auto-resumed by
+    this service — the orchestrator owns re-dispatch (its boot reconcile
+    re-places resting nodes; an out-state node's liveness is reported back via
+    ``orch.fail``). So boot is a pure cleanup: close stale rows, nothing more."""
+    _get_dao().close_all_open_instances(now_ms())
 
 

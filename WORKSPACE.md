@@ -11,9 +11,11 @@ Context is assembled general → specific: this file first, then the cwd-local `
 | `WORKSPACE.md` | This file — loaded by every scope agent via harness-native mechanism (CC Reads per global instructions; OC auto-injects via per-scope opencode config) |
 | `AGENTS.md` | AWM-internal architecture (loaded when cwd has it locally — CC Reads via walk-up, OC walks it natively) |
 | `README.md` | Human setup/usage guide (never auto-injected) |
-| `awm/` | AWM service package (Python) + skills catalog |
+| `awm/` | AWM service package (Python) |
+| `skills/` | Reference protocol docs (read-only; the skills *service* is retired) |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
-| `projects/` | Project bare repos + git worktrees (agents work here) |
+| `projects/` | Project bare repos + git worktrees (scope agents work here) |
+| `tasks/` | Per-task workspace units — DAG node execution sandboxes (gitignored) |
 | `.awm/` | Workspace runtime state (`spawn-mcp.json`, `mcp-opencode.json`, etc.) |
 | `.mcp.json` | Canonical MCP server registry — fans out via the exporter framework |
 
@@ -138,7 +140,6 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
-| `awm skill list / search / get / reindex` | Skill catalog |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules

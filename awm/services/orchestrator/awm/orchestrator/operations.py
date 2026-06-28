@@ -23,6 +23,7 @@ wired to the workspace service's ``workspace_retain`` at integration).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from typing import Any, Callable
@@ -62,19 +63,26 @@ _project_exists_fn: Callable[[str], bool] = _default_project_exists
 # service's ``workspace_retain`` at integration; no-op by default so the kernel
 # stays offline).
 _reclaim_workspace_fn: Callable[[str, str], None] | None = None
+# Live-link existing scopes into a node's workspace unit (wired to the workspace
+# service's ``workspace_link_repos`` at integration; no-op by default offline).
+# Signature: (project, unit_slug, repos) -> None.
+_link_repos_fn: Callable[[str, str, list], None] | None = None
 
 
 def configure(
     *,
     project_exists_fn: Callable[[str], bool] | None = None,
     reclaim_workspace_fn: Callable[[str, str], None] | None = None,
+    link_repos_fn: Callable[[str, str, list], None] | None = None,
 ) -> None:
     """Override the cross-service seams (tests / integration)."""
-    global _project_exists_fn, _reclaim_workspace_fn
+    global _project_exists_fn, _reclaim_workspace_fn, _link_repos_fn
     if project_exists_fn is not None:
         _project_exists_fn = project_exists_fn
     if reclaim_workspace_fn is not None:
         _reclaim_workspace_fn = reclaim_workspace_fn
+    if link_repos_fn is not None:
+        _link_repos_fn = link_repos_fn
 
 
 def _verify_agent(task: dict, agent_ref: str | None) -> None:
@@ -124,6 +132,7 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
     produces = args.get("produces") or []
     depends_on = args.get("depends_on") or []
     consumer_id = args.get("consumer")
+    repos = normalize_repos(args.get("repo"), project)
     if any(c.get("name") == PLAN_CONTRACT for c in produces):
         raise ValueError(f"{PLAN_CONTRACT!r} is a reserved contract name")
 
@@ -134,6 +143,8 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
         if dao.get_task(consumer, conn=conn) is None:
             raise ValueError(f"consumer task {consumer!r} does not exist")
         task_id = dao.create_task(project, goal, state="blocked", conn=conn)
+        if repos:
+            dao.update_task(task_id, repos=json.dumps(repos), conn=conn)
 
         produced_ids: list[str] = []
         for c in produces:
@@ -222,6 +233,92 @@ def orch_task_create(args: dict[str, Any]) -> dict[str, Any]:
     dispatch.enqueue([(task_id, "planner")])
     task = dao.get_task(task_id)
     return {"task_id": task_id, "state": task["state"], "consumer": consumer}
+
+
+def normalize_repos(repo: Any, default_project: str) -> list[dict]:
+    """Normalize an ``orch_node_open`` / ``link_repo`` ``repo`` arg to the
+    workspace-service ``repos`` shape — a list of ``{name, project, scope}``.
+
+    Accepts a bare scope string (``"svc-agents"`` → project defaults to the
+    node's project, name = scope), a dict (``{scope, project?, name?}``), or a
+    list of either. Items missing a ``scope`` are dropped."""
+    if not repo:
+        return []
+    items = repo if isinstance(repo, list) else [repo]
+    out: list[dict] = []
+    for it in items:
+        if isinstance(it, str) and it.strip():
+            out.append({"name": it, "project": default_project, "scope": it})
+        elif isinstance(it, dict) and it.get("scope"):
+            out.append({
+                "name": it.get("name") or it["scope"],
+                "project": it.get("project") or default_project,
+                "scope": it["scope"],
+            })
+    return out
+
+
+def orch_node_open(args: dict[str, Any]) -> dict[str, Any]:
+    """Seamless drop-in: create a node and place an **attended worker** on it.
+
+    The drop-in counterpart to :func:`orch_task_create` (which dispatches a
+    planner to specify the task first). This one wires a fresh task as a
+    prerequisite (upstream) of a consumer — the global root by default — mints its
+    workspace unit slug, marks it ``attached`` (so the placement defaults to the
+    claude harness — an interactive, human-attachable terminal), and dispatches a
+    **worker directly** (skipping the plan → verify → planner legs; the human
+    drives). The node has one synthetic ``deliverable`` contract so the consumer
+    has something to wait on. An optional ``repo`` links one (or more) existing
+    scopes into the unit under ``repos/<name>``.
+
+    Returns ``{task_id, workspace_slug, agent_ref, state, consumer}``. The
+    ``workspace_slug`` is minted synchronously (the handle a human uses to open
+    the agent's terminal / transcript WS at ``(project, workspace_slug)``);
+    ``agent_ref`` populates once the async dispatch drain places the worker
+    (visible via ``orch_dag``), so it may be null at return under live dispatch.
+    """
+    init()
+    project = str(args.get("project", "")).strip()
+    goal = str(args.get("goal", "")).strip()
+    if not project:
+        raise ValueError("project is required")
+    if not _project_exists_fn(project):
+        raise ValueError(f"project {project!r} does not exist "
+                         "(orchestrator never creates projects)")
+    consumer_id = args.get("consumer")
+    repos = normalize_repos(args.get("repo"), project)
+
+    dao = OrchestratorDAO()
+    with dao.transaction() as conn:
+        root = dao.ensure_root(conn=conn)
+        consumer = consumer_id or root["id"]
+        if dao.get_task(consumer, conn=conn) is None:
+            raise ValueError(f"consumer task {consumer!r} does not exist")
+        # Born in ``plan_approved`` — the resting state that dispatches a WORKER
+        # directly (REST_MODE['plan_approved'] == 'worker'), skipping the
+        # plan/verify/planner legs.
+        task_id = dao.create_task(project, goal, state="plan_approved", conn=conn)
+        cid = dao.create_contract(
+            project, f"{project}:{task_id[:8]}:deliverable", goal, task_id,
+            conn=conn)
+        if not kernel.check_acyclic(dao, consumer, task_id, conn=conn):
+            raise ValueError("attaching upstream of the consumer would "
+                             "create a cycle")
+        dao.create_edge(consumer, cid, conn=conn)
+        # Attended + a pre-minted workspace slug (so it is returned non-null and
+        # the worker placement reuses it). repos persist on the task so the
+        # placement payload can re-link them on every (re)dispatch.
+        workspace_slug = f"orch-{task_id[:8]}"
+        dao.update_task(task_id, attached=1, workspace_slug=workspace_slug,
+                        repos=json.dumps(repos) if repos else None, conn=conn)
+        dao.add_attempt_memory(task_id, "created", reason_type="attended-open",
+                               conn=conn)
+
+    dispatch.enqueue([(task_id, "worker")])
+    task = dao.get_task(task_id)
+    return {"task_id": task_id, "workspace_slug": task["workspace_slug"],
+            "agent_ref": task["agent_ref"], "state": task["state"],
+            "consumer": consumer}
 
 
 def orch_status(args: dict[str, Any]) -> dict[str, Any]:
@@ -642,6 +739,112 @@ def set_attached(args: dict[str, Any]) -> dict[str, Any]:
     attached = 1 if args.get("attached") else 0
     dao.update_task(task["id"], attached=attached)
     return {"ok": True, "task_id": task["id"], "attached": bool(attached)}
+
+
+# ---------------------------------------------------------------------------
+# Attached-only admin ops (DAG restructuring; manifest-OMITTED).
+# ---------------------------------------------------------------------------
+# These are the live-DAG mutations an ATTENDED agent can drive (relocate itself,
+# create nodes, add dependencies, link repos). They are reached only through the
+# agents service's attach-gated admin relay (which resolves the caller's task +
+# verifies the human is attached before forwarding) — never an MCP tool, never
+# callable by an unattended placement. ``_verify_agent`` still pins the caller to
+# its own task as defence in depth.
+
+
+def relocate_task(args: dict[str, Any]) -> dict[str, Any]:
+    """Re-point a node's funnel onto a different consumer (root by default).
+
+    Drops every existing dependency edge that consumes one of the task's
+    contracts and re-adds the consumer→contract edge to ``new_consumer_task``
+    (the global root if omitted), keeping the node on a path to root. Acyclicity
+    is enforced per edge. Delivered contracts are left wired (a relocation does
+    not un-deliver work)."""
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    with dao.transaction() as conn:
+        root = dao.ensure_root(conn=conn)
+        new_consumer = args.get("new_consumer_task") or root["id"]
+        if dao.get_task(new_consumer, conn=conn) is None:
+            raise ValueError(f"consumer task {new_consumer!r} does not exist")
+        if new_consumer == task["id"]:
+            raise ValueError("a node cannot consume its own deliverable")
+        moved = 0
+        for c in dao.list_contracts_by_producer(task["id"], conn=conn):
+            if c["delivered_ts"] is not None:
+                continue  # delivered work stays wired
+            if not kernel.check_acyclic(dao, new_consumer, task["id"], conn=conn):
+                raise ValueError("relocating under that consumer would create "
+                                 "a cycle")
+            dao.delete_edges_for_contract(c["id"], conn=conn)
+            dao.create_edge(new_consumer, c["id"], conn=conn)
+            moved += 1
+    return {"ok": True, "task_id": task["id"], "consumer": new_consumer,
+            "edges_moved": moved}
+
+
+def node_add_dependency(args: dict[str, Any]) -> dict[str, Any]:
+    """Make a node consume an existing contract (a new dependency edge).
+
+    ``contract`` is the contract id (or its name, resolved within the task's
+    project). Acyclicity is enforced. A dependency on an undelivered contract
+    does not re-block an already-active node — it records the edge for the DAG."""
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    ref = args.get("contract_id") or args.get("contract")
+    if not ref:
+        raise ValueError("contract id or name is required")
+    contract = dao.get_contract(ref) or dao.get_contract_by_name(
+        task["project"], str(ref))
+    if contract is None:
+        raise ValueError(f"unknown contract {ref!r}")
+    with dao.transaction() as conn:
+        if not kernel.check_acyclic(dao, task["id"], contract["producer_task"],
+                                    conn=conn):
+            raise ValueError("that dependency would create a cycle")
+        dao.create_edge(task["id"], contract["id"], conn=conn)
+    return {"ok": True, "task_id": task["id"], "contract_id": contract["id"]}
+
+
+def link_repo(args: dict[str, Any]) -> dict[str, Any]:
+    """Link existing scope(s) into a node's workspace unit (durable + live).
+
+    Appends the normalized repo(s) to the task's ``repos`` (deduped by name) and,
+    via the workspace seam, re-links the unit's ``repos/<name>`` symlinks now —
+    so an attended agent gets the repo in its cwd immediately, and any respawn
+    re-links from the persisted list."""
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    new = normalize_repos(args.get("repo"), task["project"])
+    if not new:
+        raise ValueError("repo is required")
+    try:
+        existing = json.loads(task["repos"]) if task["repos"] else []
+    except (TypeError, ValueError):
+        existing = []
+    by_name = {r["name"]: r for r in existing if isinstance(r, dict)}
+    for r in new:
+        by_name[r["name"]] = r
+    merged = list(by_name.values())
+    dao.update_task(task["id"], repos=json.dumps(merged))
+    if _link_repos_fn is not None and task["workspace_slug"]:
+        try:
+            _link_repos_fn(task["project"], task["workspace_slug"], merged)
+        except Exception as exc:  # noqa: BLE001 — re-link is best-effort
+            log.warning("orchestrator: live repo link failed: %s", exc)
+    return {"ok": True, "task_id": task["id"], "repos": merged}
 
 
 def search_tasks(args: dict[str, Any]) -> dict[str, Any]:

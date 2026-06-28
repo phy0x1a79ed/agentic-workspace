@@ -59,7 +59,6 @@ def agents_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr("awm.config.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr(ai_mod, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(_cfg, "AWM_DIR", awm_dir)
     monkeypatch.setattr(dbs_mod, "SERVICES_DIR", awm_dir / "services")
 

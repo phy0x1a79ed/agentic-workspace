@@ -16,16 +16,41 @@ def units(awm_workspace):
 
 
 class TestCreate:
-    def test_lays_out_unit_dirs_and_context(self, units):
+    def test_lays_out_unit_dirs_and_brief(self, units):
         res = units.create(project="p", unit_slug="u1",
                             context_md="# brief\nhello")
         path = Path(res["path"])
         assert path.is_dir()
-        assert (path / "CONTEXT.md").read_text() == "# brief\nhello"
+        # The brief is CLAUDE.md so the claude harness auto-loads it.
+        assert (path / "CLAUDE.md").read_text() == "# brief\nhello"
         assert (path / "inputs").is_dir()
         assert (path / "deliverable").is_dir()
         assert (path / "scratch").is_dir()
         assert res["state"] == "active"
+
+    def test_unit_lives_under_tasks_dir(self, units, awm_workspace):
+        res = units.create(project="p", unit_slug="u1b", context_md="")
+        assert Path(res["path"]) == awm_workspace["tasks_dir"] / "p" / "u1b"
+
+    def test_scaffolds_awm_data_symlink(self, units):
+        res = units.create(project="proj", unit_slug="u1c", context_md="")
+        data_link = Path(res["path"]) / ".awm" / "data"
+        assert data_link.is_symlink()
+        # Relative, pointing back to the shared project data dir; no skills link.
+        import os
+        assert os.readlink(data_link) == "../../../data/proj"
+        assert not (Path(res["path"]) / ".awm" / "skills").exists()
+
+    def test_links_repos_to_scopes(self, units):
+        res = units.create(
+            project="p", unit_slug="u1d", context_md="",
+            repos=[{"name": "core", "project": "awm", "scope": "svc-agents"}],
+        )
+        assert res["repos"] == ["core"]
+        link = Path(res["path"]) / "repos" / "core"
+        assert link.is_symlink()
+        import os
+        assert os.readlink(link) == "../../../projects/awm/svc-agents"
 
     def test_materializes_inline_prereadings_read_only(self, units):
         res = units.create(
@@ -54,7 +79,7 @@ class TestCreate:
         (deliverable / "payload").write_text("work")
         # Re-create: CONTEXT rewritten, prior deliverable survives.
         res2 = units.create(project="p", unit_slug="u4", context_md="v2")
-        assert (Path(res2["path"]) / "CONTEXT.md").read_text() == "v2"
+        assert (Path(res2["path"]) / "CLAUDE.md").read_text() == "v2"
         assert (deliverable / "payload").read_text() == "work"
 
 
@@ -64,7 +89,7 @@ class TestRetain:
         out = units.retain(project="p", unit_slug="r1")
         assert out["retained"] is True
         assert out["state"] == "idle"
-        assert (Path(res["path"]) / "CONTEXT.md").exists()
+        assert (Path(res["path"]) / "CLAUDE.md").exists()
         # Resolve reflects the idle state.
         assert units.resolve(project="p", unit_slug="r1")["state"] == "idle"
 

@@ -27,10 +27,11 @@ API_MANIFEST: dict[str, Any] = {
             "name": "workspace_create",
             "tool": "workspace_create",
             "description": (
-                "Provision a workspace unit (the DAG execution sandbox): a "
-                "directory with CONTEXT.md (the brief), read-only inputs/<name> "
-                "pre-readings, and deliverable/<contract>/ staging. Idempotent "
-                "on (project, unit_slug)."
+                "Provision a workspace unit (the DAG node's canonical execution "
+                "sandbox): a directory with CLAUDE.md (the brief), a .awm/ (with a "
+                "data symlink to shared project data), read-only inputs/<name> "
+                "pre-readings, deliverable/<contract>/ staging, and repos/<name> "
+                "symlinks to existing scopes. Idempotent on (project, unit_slug)."
             ),
             "params": [
                 {"name": "project", "type": "string", "required": True},
@@ -41,6 +42,24 @@ API_MANIFEST: dict[str, Any] = {
                      "List of {name, content} (inline text) or {name, path} "
                      "(source file/dir to copy). Materialized read-only under "
                      "inputs/<name>.")},
+                {"name": "repos", "type": "array", "required": False,
+                 "description": (
+                     "List of {name, project, scope} existing scopes to link "
+                     "under repos/<name> (symlinked to projects/<project>/<scope>).")},
+            ],
+        },
+        {
+            "name": "workspace_link_repos",
+            "tool": "workspace_link_repos",
+            "description": (
+                "Link (or refresh) existing scopes under a unit's repos/<name> "
+                "without rewriting the brief — the admin link_repo primitive."
+            ),
+            "params": [
+                {"name": "project", "type": "string", "required": True},
+                {"name": "unit_slug", "type": "string", "required": True},
+                {"name": "repos", "type": "array", "required": True,
+                 "description": "[{name, project, scope}] scopes to link."},
             ],
         },
         {
@@ -87,7 +106,11 @@ HANDLERS = {
         project=args["project"], unit_slug=args["unit_slug"],
         context_md=args.get("context_md", ""),
         prereadings=args.get("prereadings") or [],
+        repos=args.get("repos") or [],
     ),
+    "workspace_link_repos": lambda args: units.link_repos(
+        project=args["project"], unit_slug=args["unit_slug"],
+        repos=args.get("repos") or []),
     "workspace_retain": lambda args: units.retain(
         project=args["project"], unit_slug=args["unit_slug"]),
     "workspace_destroy": lambda args: units.destroy(

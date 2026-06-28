@@ -50,7 +50,6 @@ def awm_workspace(tmp_path, monkeypatch):
 
     monkeypatch.setattr("awm.config.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr(ai_mod, "PROJECTS_DIR", projects_dir)
     # ai_mod.config is the imported module; patch its AWM_DIR attr in place.
     import awm.config as _cfg
     monkeypatch.setattr(_cfg, "AWM_DIR", awm_dir)
@@ -270,7 +269,8 @@ class TestCreateSessionDispatch:
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="opencode")
+        await create_session(project="p", scope="s", agent_cli="opencode",
+                             workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "opencode"
@@ -285,7 +285,8 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(project="p", scope="s", agent_cli="claude",
-                             permission_mode="bypassPermissions")
+                             permission_mode="bypassPermissions",
+                             workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "full"
 
@@ -297,7 +298,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(project="p", scope="s", agent_cli="claude",
-                             permission_mode="default")
+                             permission_mode="default", workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "default"
 
@@ -307,18 +308,19 @@ class TestCreateSessionDispatch:
     ):
         # MCP setup is harness-owned now: create_session does NOT write or thread
         # a config FILE; it passes the hub's canonical workspace + port so the
-        # harness synthesizes the awm server itself. A conversational session
-        # carries no AWM_AS identity.
+        # harness synthesizes the awm server itself. Every session is a placement,
+        # so it carries its AWM_AS identity ("project/scope").
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
 
-        await create_session(project="p", scope="s", agent_cli="claude")
+        await create_session(project="p", scope="s", agent_cli="claude",
+                             workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.mcp_config is None
         assert cfg.awm_port == str(ai_mod.config.PORT)
         assert cfg.awm_workspace == str(ai_mod.config.canonical_workspace())
-        assert cfg.placement_as is None
+        assert cfg.placement_as == "p/s"
 
     @pytest.mark.asyncio
     async def test_effort_rides_params(
@@ -328,7 +330,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(project="p", scope="s", agent_cli="claude",
-                             effort="high")
+                             effort="high", workdir=str(ws))
 
         assert stub_agentcore["config"].params.get("effort") == "high"
 
@@ -345,7 +347,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude")
+            project="p", scope="s", agent_cli="claude", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "claude"
@@ -361,7 +363,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            project="p", scope="s", agent_cli="claude")
+            project="p", scope="s", agent_cli="claude", workdir=str(ws))
 
         import json
         row = ai_mod._get_dao().get_instance(session.id)
@@ -382,7 +384,7 @@ class TestClaudeHarness:
 
         # No agent_cli passed → defaults to claude (tmux) so every live agent
         # has a terminal to attach to.
-        session = await create_session(project="p", scope="s")
+        session = await create_session(project="p", scope="s", workdir=str(ws))
 
         assert stub_agentcore["config"].harness == "claude"
         assert session.tmux_session == f"awm-{session.id}-s"
@@ -443,7 +445,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s")
+        session = await create_session(project="p", scope="s", workdir=str(ws))
 
         ok = await ai_mod.notify_agent(session, "operator", "stop and read this")
 
@@ -459,7 +461,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(project="p", scope="s")
+        session = await create_session(project="p", scope="s", workdir=str(ws))
 
         # The agent's own scope ref must never self-notify (mirrors the passive
         # path's _is_own_author guard).
