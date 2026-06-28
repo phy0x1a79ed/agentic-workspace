@@ -19,7 +19,14 @@ token(s). Shape::
     token = "xoxp-..."
     app_token = "xapp-..."
 
-Tokens live ONLY in this file — the DB and logs hold metadata only. Returning
+    [account.slack-mira]           # Slack web-session "me", creds pulled live from
+    platform = "slack"             # a logged-in client on the mira host (durable;
+    creds_cmd = "ssh mira /home/tony/.local/bin/awm-slack-creds"  # never on disk).
+
+A web-session account may instead pin the pair inline (``token = "xoxc-..."`` +
+``cookie = "xoxd-..."``, or ``cookie_file``) — both are required together. The
+``creds_cmd`` form fetches the ``xoxc-`` token and ``d`` cookie at runtime, so
+nothing secret is stored. Tokens live ONLY in this file — the DB and logs hold metadata only. Returning
 an empty list means "no accounts": the service still boots with zero live
 connections, since every connector is opt-in.
 """
@@ -49,6 +56,8 @@ class AccountConfig:
     platform: str
     token: str
     app_token: str | None = None
+    cookie: str | None = None     # Slack session 'd' cookie (xoxc session mode)
+    creds_cmd: str | None = None  # command printing {token,cookie} JSON (mira pull)
     display_name: str | None = None
     address: str | None = None  # mailbox/login address (required for gmail)
     enabled: bool = True
@@ -57,12 +66,16 @@ class AccountConfig:
     def kind(self) -> str:
         """Best-effort "bot" vs "user" label, derived from platform + token.
 
-        Gmail (an App-Password mailbox) and Slack user OAuth tokens (``xoxp-``)
-        are "user" identities; everything else (Slack bot ``xoxb-``, Discord bot
-        tokens) is a "bot". This is a display hint only — never an authz decision.
+        Gmail (an App-Password mailbox), Slack user OAuth tokens (``xoxp-``), and
+        Slack web-session tokens (``xoxc-``, including the ``creds_cmd`` pull mode
+        where the token is fetched at runtime) are "user" identities; everything
+        else (Slack bot ``xoxb-``, Discord bot tokens) is a "bot". This is a
+        display hint only — never an authz decision.
         """
-        if self.platform == "gmail" or self.token.startswith("xoxp-"):
+        if self.platform == "gmail" or self.token.startswith(("xoxp-", "xoxc-")):
             return "user"
+        if self.platform == "slack" and self.creds_cmd:
+            return "user"  # mira session pull — token is xoxc-, fetched live
         return "bot"
 
 
@@ -145,12 +158,37 @@ def load(path: Path | None = None) -> list[AccountConfig]:
                 f"{path}: [account.{name}].platform must be one of "
                 f"{', '.join(KNOWN_PLATFORMS)}"
             )
+        creds_cmd = section.get("creds_cmd")
+        if creds_cmd is not None and (
+            not isinstance(creds_cmd, str) or not creds_cmd.strip()
+        ):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].creds_cmd must be a non-empty string"
+            )
+        creds_cmd = creds_cmd.strip() if creds_cmd else None
+        # With creds_cmd the token (and cookie) are fetched live at runtime, so a
+        # static token in the file is optional.
         token = _resolve_secret(
             section.get("token"), section.get("token_file"),
-            path, f"[account.{name}].token")
+            path, f"[account.{name}].token",
+            required=creds_cmd is None) or ""
         app_token = _resolve_secret(
             section.get("app_token"), section.get("app_token_file"),
             path, f"[account.{name}].app_token", required=False)
+        cookie = _resolve_secret(
+            section.get("cookie"), section.get("cookie_file"),
+            path, f"[account.{name}].cookie", required=False)
+        # Slack web-session mode: an inline xoxc- token needs its paired 'd'
+        # cookie (neither works alone). The creds_cmd path supplies both at
+        # runtime, so it's exempt.
+        if (
+            platform == "slack" and not creds_cmd
+            and token.startswith("xoxc-") and not cookie
+        ):
+            raise SocialConfigError(
+                f"{path}: [account.{name}] an xoxc- session token requires a "
+                f"paired cookie (or cookie_file), or use creds_cmd"
+            )
         display_name = section.get("display_name")
         if display_name is not None and not isinstance(display_name, str):
             raise SocialConfigError(
@@ -174,8 +212,10 @@ def load(path: Path | None = None) -> list[AccountConfig]:
         accounts.append(AccountConfig(
             name=str(name).strip(),
             platform=platform,
-            token=token,            # already resolved + cleaned
+            token=token,            # already resolved + cleaned (or "" w/ creds_cmd)
             app_token=app_token,    # resolved (or None)
+            cookie=cookie,          # Slack 'd' cookie (or None)
+            creds_cmd=creds_cmd,    # mira pull command (or None)
             display_name=display_name.strip() if display_name else None,
             address=address.strip() if address else None,
             enabled=enabled,

@@ -35,6 +35,8 @@ def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
         platform=cfg.platform,
         token=cfg.token,
         app_token=cfg.app_token,
+        cookie=cfg.cookie,
+        creds_cmd=cfg.creds_cmd,
         display_name=cfg.display_name,
         address=cfg.address,
     )

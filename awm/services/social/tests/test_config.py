@@ -120,3 +120,63 @@ token = "abcd efgh ijkl mnop"
 """)
         with pytest.raises(cfg.SocialConfigError):
             cfg.load(p)
+
+
+class TestSlackSession:
+    """Slack web-session accounts: a creds_cmd pull, or an inline xoxc+cookie pair."""
+
+    def test_creds_cmd_makes_token_optional(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.slack-mira]
+platform = "slack"
+creds_cmd = "ssh mira /home/tony/.local/bin/awm-slack-creds"
+""")
+        a = cfg.load(p)[0]
+        assert a.token == ""                       # fetched live, not on disk
+        assert a.creds_cmd.startswith("ssh mira")
+        assert a.kind == "user"                    # session = "me", not a bot
+
+    def test_xoxc_inline_requires_cookie(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.slack-me]
+platform = "slack"
+token = "xoxc-abc"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)
+
+    def test_xoxc_inline_with_cookie_ok(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.slack-me]
+platform = "slack"
+token = "xoxc-abc"
+cookie = "xoxd-xyz"
+""")
+        a = cfg.load(p)[0]
+        assert a.token == "xoxc-abc"
+        assert a.cookie == "xoxd-xyz"
+        assert a.kind == "user"
+
+    def test_cookie_file_resolved_relative_to_config(self, tmp_path):
+        from awm.social import config as cfg
+        (tmp_path / "ck").write_text("xoxd-fromfile\n")
+        p = _write(tmp_path / "social.toml", """
+[account.slack-me]
+platform = "slack"
+token = "xoxc-abc"
+cookie_file = "ck"
+""")
+        assert cfg.load(p)[0].cookie == "xoxd-fromfile"
+
+    def test_empty_creds_cmd_rejected(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.slack-mira]
+platform = "slack"
+creds_cmd = "   "
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load(p)

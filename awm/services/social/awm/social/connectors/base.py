@@ -29,6 +29,8 @@ class Account:
     platform: str
     token: str
     app_token: str | None = None
+    cookie: str | None = None     # Slack session 'd' cookie (xoxc session mode)
+    creds_cmd: str | None = None  # command printing {token,cookie} JSON (mira pull)
     display_name: str | None = None
     address: str | None = None  # mailbox/login address (gmail uses this)
 
