@@ -261,7 +261,17 @@
 </script>
 
 <div class="agent-chat-root" data-awm-component="AgentChat">
-  <Chat {posts} onSend={send} {chatContext} onReplay={speak} {offline}>
+  <!-- Pass the CONNECTED identity (frozen at connect time) so the Terminal tab
+       attaches to the live agent; empty until connected → transcript only. -->
+  <Chat
+    {posts}
+    onSend={send}
+    {chatContext}
+    onReplay={speak}
+    {offline}
+    project={liveProject}
+    scope={liveScope}
+  >
     {#snippet header()}
       <header class="hdr">
         <form
