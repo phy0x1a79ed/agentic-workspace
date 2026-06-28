@@ -1,0 +1,9 @@
+{
+  "name": "game-bot-control",
+  "version": "0.1.0",
+  "title": "Game Bot Control",
+  "author": "awm",
+  "description": "Script-controlled character body for agent play: spawn/move/observe over RCON. State lives in `storage` so the body survives save/load.",
+  "factorio_version": "2.1",
+  "dependencies": ["base"]
+}

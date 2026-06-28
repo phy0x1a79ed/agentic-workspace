@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 def _attach(orch, goal="big job"):
     """Attach a leaf task (producing c1) upstream of root."""
     return orch.operations.orch_task_attach({
-        "project": "p", "goal": goal,
+        "goal": goal,
         "produces": [{"name": "c1", "spec": "the deliverable"}],
     })
 

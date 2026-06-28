@@ -40,7 +40,7 @@ function sharedDag(): DagSnapshot {
   const bOut = contract('ct-b', 'b_out', 'B');
   const cOut = contract('ct-c', 'c_out', 'C');
   return {
-    project: 'p', root_id: 'root',
+    root_id: 'root',
     tasks: [
       task('root', { is_root: true }), task('A', { state: 'active' }),
       task('B'), task('C'),

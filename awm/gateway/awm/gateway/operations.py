@@ -521,7 +521,7 @@ def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
     # inspect.Signature forbids a no-default parameter after a defaulted one, so
     # build params then stable-sort required-before-optional. Every field is a
     # --flag Option and dispatch is by **kwargs, so reordering is invisible to
-    # the CLI surface.
+    # the CLI surface. See memory awm_cli_signature_param_order.
     sig_params = [
         _schema_param_to_signature(n, p, n in required) for n, p in props.items()
     ]

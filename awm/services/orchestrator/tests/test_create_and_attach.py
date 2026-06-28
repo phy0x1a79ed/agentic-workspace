@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
 def _create(orch, goal="figure out what to build"):
-    return orch.operations.orch_task_create({"project": "p", "goal": goal})
+    return orch.operations.orch_task_create({"goal": goal})
 
 
 def test_create_places_attended_initial_planner_without_spending_budget(orch):
@@ -69,7 +69,7 @@ def test_empty_spec_commit_flows_through_the_worker_legs(orch):
 
 def test_set_attached_toggles_the_flag(orch):
     res = orch.operations.orch_task_attach({
-        "project": "p", "goal": "do it",
+        "goal": "do it",
         "produces": [{"name": "c1", "spec": "out"}]})
     tid = res["task_id"]
     dao = orch.DAO()
@@ -88,7 +88,7 @@ def test_set_attached_toggles_the_flag(orch):
 
 def test_reject_plan_exhausting_budget_abandons_and_escalates(orch):
     res = orch.operations.orch_task_attach({
-        "project": "p", "goal": "do it",
+        "goal": "do it",
         "produces": [{"name": "c1", "spec": "out"}]})
     tid = res["task_id"]
     dao = orch.DAO()

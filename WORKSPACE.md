@@ -11,9 +11,11 @@ Context is assembled general → specific: this file first, then the cwd-local `
 | `WORKSPACE.md` | This file — loaded by every scope agent via harness-native mechanism (CC Reads per global instructions; OC auto-injects via per-scope opencode config) |
 | `AGENTS.md` | AWM-internal architecture (loaded when cwd has it locally — CC Reads via walk-up, OC walks it natively) |
 | `README.md` | Human setup/usage guide (never auto-injected) |
-| `awm/` | AWM service package (Python) + skills catalog |
+| `awm/` | AWM service package (Python) |
+| `skills/` | Reference protocol docs (read-only; the skills *service* is retired) |
 | `data/` | Shared data (per-project; raw, staged, outputs) |
-| `projects/` | Project bare repos + git worktrees (agents work here) |
+| `projects/` | Project bare repos + git worktrees (scope agents work here) |
+| `tasks/` | Per-task workspace units — DAG node execution sandboxes (gitignored) |
 | `.awm/` | Workspace runtime state (`spawn-mcp.json`, `mcp-opencode.json`, etc.) |
 | `.mcp.json` | Canonical MCP server registry — fans out via the exporter framework |
 
@@ -41,7 +43,7 @@ Scopes access project data via `.awm/data/`. All scopes in the same project shar
 ```
 projects/
   _vagrant/              # sentinel: per-user vagrant-scope handlers
-  awm/                   # AWM itself (dev, web-ui, comp-*, infra-*, voice, sentry, …)
+  awm/                   # AWM itself (dev, feat-dag, feat-gamebot, web-*, svc-*, comp-*, infra-*, …)
   container_builds/      # apptainer image recipes
   cyanoverse/            # cyanobacteria genomics figures + analyses
   drawio/                # diagrams + poster integration
@@ -115,6 +117,13 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
 
+**Composition scopes.** A couple of `feat-*` scopes are *standing* composition scopes — one per feature family — that own the cross-service wiring + integration playbooks for that family and run their **own isolated dev sandbox** (port pinned via a gitignored `awm/gateway/dev/.env`), factoring `svc-*`/`comp-*` units out as they stabilize:
+
+- **`feat-dag`** (`:7861`) — conversational agents + voice (`stt`/`tts`) + web-ui chat + **DAG orchestration** (agents/orchestrator/workspace services, `@awm/chat`, `@awm/dag-graph`).
+- **`feat-gamebot`** (`:7871`) — LLM-driven web-game bots (realm/effector/agent-runner/timer services).
+
+`dev` is **not** a feature scope — it is the **release-staging / promotion** worktree (`feat → dev → release`, prod deploys) and runs the shared seeded sandbox at `:7821`.
+
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
 ## Git Model
@@ -138,7 +147,6 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
-| `awm skill list / search / get / reindex` | Skill catalog |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules

@@ -46,16 +46,15 @@ def fake_orch(agents_env):
 
 
 def _seed(agents_env, *, token="plt-1", task="T-1", agent="agt-1", mode="worker",
-          project="p", scope="leaf-1", contracts_out=("out:1",)):
+          scope="leaf-1", contracts_out=("out:1",)):
     """Insert an open placement row + lay out its workspace unit, with the
     placement spec on the row's data (what the relays resolve against)."""
     dao = AgentsDAO()
     iid = dao.open_task_instance(
-        project=project, scope=scope, log_path=None, cli_session_id=None,
+        scope=scope, log_path=None, cli_session_id=None,
         started_at=now_ms(), mode=mode, task_ref=task, agent_ref=agent,
         placement_token=token)
-    wp = (agents_env["awm_dir"] / "services" / "workspace" / "units"
-          / project / scope)
+    wp = (agents_env["awm_dir"] / "services" / "workspace" / "units" / scope)
     (wp / "deliverable").mkdir(parents=True, exist_ok=True)
     dao.merge_instance_data(iid, {
         "placement": {"mode": mode, "workspace_path": str(wp),
@@ -72,15 +71,15 @@ def _data(iid):
     return json.loads(AgentsDAO().get_instance(iid)["data"])
 
 
-# The placement's identity is f"{project}/{scope}" — what the per-placement
+# The placement's identity is the scope (the unit slug) — what the per-placement
 # AWM_AS carries and the relays resolve against (the second positional `as_`).
-_AS = "p/leaf-1"
+_AS = "leaf-1"
 
 
 class TestIdentityResolution:
     async def test_unknown_identity_rejected(self, agents_env, fake_orch):
         with pytest.raises(placement.PlacementError):
-            await placement.relay_indicate_done({}, "p/does-not-exist")
+            await placement.relay_indicate_done({}, "does-not-exist")
 
     async def test_missing_identity_rejected(self, agents_env, fake_orch):
         with pytest.raises(placement.PlacementError):

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-social"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM social service: multi-platform messaging connectors (Discord, Slack, …)."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+    "discord.py>=2.3",
+    "slack_sdk>=3.27",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/social/.
+[tool.setuptools.packages.find]
+include = ["awm.social*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+    "subprocess: spawns child processes (git, mcp, supervised hub backends)",
+    "unit: pure unit tests (models, validation, registries)",
+    "hub: hub routing / stripes / static / passthrough / service dispatch",
+    "scopes: scope CRUD + git worktree",
+    "messaging: rooms / messages / posts / control plane",
+    "auth: login / exposed app / auth service",
+    "mcp: mcp server / exports / cli context emit",
+    "artifacts: artifact registry",
+    "sessions: session log / history",
+    "agent: agent instances / vagrant sessions",
+    "misc: outliers (skills, locks, voice config, ssh tunnel)",
+    "integration: cross-component integration tests",
+]

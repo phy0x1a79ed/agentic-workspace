@@ -1,0 +1,32 @@
+{
+  "_comment": "Railworld + rich/massive resources. Resources are spread out (low frequency, the rail-world signature) but each patch is enormous (size 6) and very dense (richness 6). Enemies thinned out like a rail world. Used once to bake seeds/railworld-rich.zip; not read at runtime.",
+
+  "terrain_segmentation": 1,
+  "water": 1,
+  "width": 0,
+  "height": 0,
+  "starting_area": 2,
+  "peaceful_mode": false,
+
+  "autoplace_controls": {
+    "iron-ore":    { "frequency": 0.5, "size": 6, "richness": 6 },
+    "copper-ore":  { "frequency": 0.5, "size": 6, "richness": 6 },
+    "coal":        { "frequency": 0.5, "size": 6, "richness": 6 },
+    "stone":       { "frequency": 0.5, "size": 6, "richness": 6 },
+    "uranium-ore": { "frequency": 0.5, "size": 6, "richness": 6 },
+    "crude-oil":   { "frequency": 0.5, "size": 6, "richness": 6 },
+
+    "trees":       { "frequency": 1, "size": 1, "richness": 1 },
+    "enemy-base":  { "frequency": 0.3, "size": 0.5, "richness": 1 }
+  },
+
+  "cliff_settings": {
+    "name": "cliff",
+    "cliff_elevation_0": 10,
+    "cliff_elevation_interval": 40,
+    "richness": 0.3
+  },
+
+  "seed": 1234567,
+  "starting_points": [ { "x": 0, "y": 0 } ]
+}

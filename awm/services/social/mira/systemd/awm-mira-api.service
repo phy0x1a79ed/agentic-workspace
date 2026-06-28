@@ -1,0 +1,26 @@
+[Unit]
+Description=AWM mira API daemon (REST + WS over the awm-network; drives Opera Slack/Teams)
+Documentation=awm/services/social/mira/README.md
+# The daemon drives the logged-in Opera tabs over CDP, so Opera must be up first.
+After=awm-opera-teams.service network-online.target
+Requires=awm-opera-teams.service
+Wants=network-online.target
+
+[Service]
+# Bind the awm-network interface ONLY (not 0.0.0.0/docker/wan), serve TLS from
+# the shared awm certs, and authenticate every request with the awm bearer token.
+Environment=MIRA_API_HOST=172.16.0.24
+Environment=MIRA_API_PORT=7822
+Environment=MIRA_CDP_BASE=http://127.0.0.1:9224
+Environment=MIRA_PLATFORMS=slack,teams
+Environment=MIRA_POLL_INTERVAL=15
+Environment=MIRA_TLS_CERT=%h/.awm/tls/cert.pem
+Environment=MIRA_TLS_KEY=%h/.awm/tls/key.pem
+Environment=MIRA_AUTH_TOKEN_FILE=%h/.awm/auth.token
+WorkingDirectory=%h/.local/share/awm-social-mira
+ExecStart=%h/.local/share/awm-social-mira/venv/bin/python -m mira_api
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
