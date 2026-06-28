@@ -312,6 +312,10 @@ async def place_on_task(args: dict) -> dict:
     contracts_out = args.get("contracts_out") or []
     prereadings = args.get("prereadings") or []
     repos = args.get("repos") or []
+    # Born-attended intent (a human-driven drop-in via ``orch_node_open``):
+    # seeds the row's ``attached`` flag so the supervisor freezes from turn one
+    # (P2). Transcript WS open/close still flips it live via ``set_attached``.
+    attached = bool(args.get("attached"))
     mode = args.get("mode", "worker")
     if mode not in _VALID_MODES:
         raise ValueError(f"unknown placement mode {mode!r}; "
@@ -386,7 +390,7 @@ async def place_on_task(args: dict) -> dict:
         },
         "staged": {}, "done": False,
         "graph": {"subtasks": [], "dependencies": [], "contracts": []},
-        "attached": False,
+        "attached": attached,
     })
 
     ai.enqueue_input(session, "orchestrator", kickoff)
@@ -868,7 +872,7 @@ async def _accept_decompose(row: dict, data: dict, session) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Supervision driver (per-mode accept + hard turn budget; attach is passive)
+# Supervision driver (per-mode accept + hard turn budget; freeze while attached)
 # ---------------------------------------------------------------------------
 
 def _continuation_prompt(mode: str, task_id: str, remaining: int) -> str:
@@ -924,14 +928,18 @@ async def on_turn_boundary(session) -> None:
        event).
     2. per-mode acceptance: worker/plan deliver, planner commit. If accepted the
        task already advanced — done.
-    3. otherwise decrement the hard budget and inject the next prompt; at 0,
-       force-fail while retaining work.
+    3. while ATTACHED → freeze: no budget burn, no nag, no force-fail. A
+       human-driven node idles politely; their messages still splice in via
+       ``agent_post`` → ``enqueue_input`` and the agent replies on its normal
+       turn. A real terminal (the acceptance check above, or ``task_fail``) still
+       completes the node, so an attended worker that genuinely delivers advances.
+    4. otherwise (autonomous) decrement the hard budget and inject the next
+       prompt; at 0, force-fail while retaining work.
 
-    Attach is deliberately PASSIVE (T2): the agent keeps working autonomously
-    whether or not a human is attached. A human message splices in via
-    ``agent_post`` → ``enqueue_input`` and the agent replies on its normal turn;
-    the ``attached`` flag is only a latent orchestrator hint (don't reclaim a
-    task a human is on), not a supervisor gate."""
+    Attach GATES the supervisor (P2): on detach (``set_attached(False)``)
+    autonomous supervision resumes from the current ``turn_budget`` — freezing
+    skips the decrement rather than resetting it, so nothing is lost across an
+    attach/detach cycle."""
     token = getattr(session, "placement_token", None)
     if not token:
         return
@@ -951,6 +959,12 @@ async def on_turn_boundary(session) -> None:
         if await _accept_decompose(row, data, session):
             return
     # verify has no auto-accept — its verdict is a terminal tool call.
+
+    # Freeze while a human is driving: skip the budget decrement / re-prompt /
+    # force-fail entirely. The acceptance check above already ran, so a real
+    # deliver still advances the task; we only suppress the autonomous nag.
+    if data.get("attached"):
+        return
 
     session.turn_budget -= 1
     remaining = session.turn_budget
@@ -1011,12 +1025,13 @@ async def set_attached(project: str, scope: str, attached: bool) -> None:
     """Mark/unmark a live placement as user-attached + mirror to the kernel.
 
     Driven by transcript-subscription presence (a human opened/closed the live
-    'transcript' WS for this placement). Attach is PASSIVE (T2): it does NOT gate
-    the supervisor — the agent keeps working autonomously and a human message
-    just splices in (see ``on_turn_boundary``). The flag is a latent orchestrator
-    hint: ``orch.set_attached`` tells the orchestrator not to reclaim a task a
-    human is driving (the auto-reclaim loop is a deferred follow-on).
-    Best-effort throughout."""
+    'transcript' WS for this placement). Attach GATES the supervisor (P2): while
+    attached, ``on_turn_boundary`` freezes (no budget burn / nag / force-fail) so
+    a human-driven node idles politely; on detach autonomous supervision resumes
+    from the current budget. The flag is ALSO a latent orchestrator hint:
+    ``orch.set_attached`` tells the orchestrator not to reclaim a task a human is
+    driving (the auto-reclaim loop is a deferred follow-on). Best-effort
+    throughout."""
     session = ai.get_session_by_scope(project, scope)
     if session is None or getattr(session, "mode", "conversational") == "conversational":
         return

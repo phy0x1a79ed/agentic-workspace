@@ -203,16 +203,49 @@ class TestAcceptance:
         assert "approve_plan" in body
 
 
-class TestAttachIsPassive:
-    async def test_attached_does_not_freeze_supervisor(self, agents_env, fake_orch):
-        # T2: attach is passive — the agent keeps working autonomously whether or
-        # not a human is attached. The budget still decrements and the supervisor
-        # still nudges; attach is only a latent orchestrator hint, not a gate.
+class TestAttachFreezes:
+    async def test_attached_freezes_supervisor(self, agents_env, fake_orch):
+        # P2: attach GATES the supervisor — a human-driven node idles politely.
+        # The budget does NOT decrement, no continuation is injected, and the
+        # node is never force-failed.
         iid, _ = _seed(agents_env, attached=True)
         s = _FakeSup(iid=iid, token="plt-1", turn_budget=50)
         await placement.on_turn_boundary(s)
-        assert s.turn_budget == 49                  # decremented as usual
-        author, body = s.input_queue.get_nowait()   # continuation injected
+        assert s.turn_budget == 50                  # frozen — not decremented
+        assert s.input_queue.empty()                # no nag injected
+        assert not fake_orch.calls                  # no fail / no deliver
+
+    async def test_attached_never_force_fails_at_low_budget(
+            self, agents_env, fake_orch):
+        # Even at budget=1 (one decrement from force-fail) an attached node holds.
+        iid, _ = _seed(agents_env, attached=True)
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=1)
+        await placement.on_turn_boundary(s)
+        assert s.turn_budget == 1
+        assert not fake_orch.calls                  # NOT force-failed
+
+    async def test_attached_still_delivers_on_real_terminal(
+            self, agents_env, fake_orch):
+        # The per-mode acceptance check runs BEFORE the freeze, so an attended
+        # worker that legitimately stages + marks done still advances.
+        iid, wp = _seed(agents_env, done=True, attached=True)
+        _stage(wp, "out:1")
+        AgentsDAO().merge_instance_data(
+            iid, {"staged": {"out:1": "deliverable/out:1/payload"}})
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=50)
+        await placement.on_turn_boundary(s)
+        assert any(c[0] == "deliver" for c in fake_orch.calls)
+        assert _data(iid)["placement_outcome"] == "delivered"
+
+    async def test_detach_resumes_supervision_from_current_budget(
+            self, agents_env, fake_orch):
+        # After detach (attached flipped False) the autonomous loop resumes from
+        # the budget where it froze — freezing skipped the decrement, didn't reset.
+        iid, _ = _seed(agents_env, attached=False)
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=42)
+        await placement.on_turn_boundary(s)
+        assert s.turn_budget == 41                  # supervision active again
+        author, body = s.input_queue.get_nowait()
         assert author == "supervisor" and "Continue task" in body
 
 
