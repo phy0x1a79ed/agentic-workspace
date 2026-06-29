@@ -148,6 +148,32 @@ def test_build_raises_on_failure(monkeypatch, data_dir, fake_target):
         runner.build(str(fake_target))
 
 
+def test_build_wipes_prior_output_for_full_rebuild(monkeypatch, data_dir, fake_target):
+    """``graphify extract`` is incremental+destructive (a one-file edit collapses
+    the graph to only that file's nodes). ``_do_build`` must wipe the prior
+    ``graphify-out/`` so every build is a full one — else auto-rebuild-on-stale
+    would gut the graph instead of refreshing it. Assert the prior output is gone
+    by the time extract runs."""
+    monkeypatch.setenv("GRAPHIFY_BIN", "/bin/graphify")
+    out = runner.out_dir_for(fake_target.resolve())
+    # Seed a pre-existing (stale) build with a sentinel that a full wipe removes.
+    write_graph(out, nodes=4946, edges=9731)
+    sentinel = out / "graphify-out" / "STALE_NODE_DATA"
+    sentinel.write_text("nodes from files that no longer changed")
+
+    saw_sentinel = {}
+
+    def fake_run(cmd, **kw):
+        # By the time extract runs, the prior graphify-out must be gone.
+        saw_sentinel["present"] = sentinel.exists()
+        write_graph(runner.Path(cmd[cmd.index("--out") + 1]), nodes=3, edges=2)
+        return types.SimpleNamespace(returncode=0, stdout="wrote … 3 nodes, 2 edges", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner.build(str(fake_target))
+    assert saw_sentinel["present"] is False  # prior output wiped before extract
+
+
 # -- query ------------------------------------------------------------------
 
 

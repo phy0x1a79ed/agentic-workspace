@@ -14,10 +14,12 @@ Design notes (from the spike, graphify 0.9.1):
     sitter AST. As a belt-and-braces guarantee we also strip known LLM API-key
     env vars from the build subprocess, so a build can never make a paid call.
   - **Redirected output.** ``extract --out <dir>`` writes ``<dir>/graphify-out/``
-    (graph.json + manifest.json + an incremental ``cache/``), leaving the
-    scanned worktree untouched. Re-running a build is incremental via that
-    cache. Read commands (``query``, ``path``, ``explain``, ``affected``) take
-    ``--graph <dir>/graphify-out/graph.json`` and print plain text.
+    (graph.json + manifest.json + a ``cache/``), leaving the scanned worktree
+    untouched. Each build is a *full* build — ``_do_build`` wipes the prior
+    ``graphify-out/`` first, because ``extract``'s incremental mode is
+    destructive (see ``_do_build``). Read commands (``query``, ``path``,
+    ``explain``, ``affected``) take ``--graph <dir>/graphify-out/graph.json``
+    and print plain text.
   - **Single graph lock.** All operations that read or write graph.json hold
     ``_GRAPH_LOCK``, so a build subprocess rewriting the file can never race
     against a query subprocess reading it.
@@ -182,8 +184,20 @@ def is_stale(target: str | None = None) -> tuple[bool, int]:
 
 
 def _do_build(tgt: Path) -> subprocess.CompletedProcess:
-    """Raw extract — caller must hold ``_GRAPH_LOCK``."""
+    """Raw full extract — caller must hold ``_GRAPH_LOCK``.
+
+    ``graphify extract`` is *incremental and destructive*: against an existing
+    ``graphify-out/`` (its ``manifest.json`` tracking per-file ast-hashes) it
+    re-processes only changed files and writes a ``graph.json`` containing **only
+    those** — silently dropping every unchanged file's nodes (a one-file edit
+    collapses a 4946-node graph to ~3). It does not merge into the prior graph.
+    So a rebuild-in-place would gut the graph rather than refresh it, defeating
+    the whole staleness/auto-rebuild trust layer. We force a full build by
+    removing the prior output dir first; a clean extract of the awm tree is only
+    ~2-3s, so the incremental cache buys nothing worth this correctness hole.
+    """
     out = out_dir_for(tgt)
+    shutil.rmtree(out / "graphify-out", ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [graphify_bin(), "extract", str(tgt), "--no-cluster", "--out", str(out)]
     proc = subprocess.run(
