@@ -4,7 +4,11 @@ A Python feature service in the `awm.graphify` namespace. It wraps the
 [`graphify`](https://github.com/safishamsi/graphify) CLI to keep a queryable
 knowledge graph of the awm codebase, and exposes a thin `build` / `query` /
 `path` / `status` surface over the gateway catalog (MCP + CLI + HTTP) so agents
-can ask structural questions about awm.
+can ask structural questions about awm. On the collapsed MCP surface these are
+verbs under the single `graphify` domain tool (`graphify(verb="build")`,
+`verb="query"`, `verb="path"`, `verb="status"`); CLI/HTTP stay expanded as
+`graphify_*` (`awm graphify build`, `POST /invoke {name:"graphify_build"}`).
+Call `graphify(verb="describe")` to list verbs and their parameter schemas.
 
 **AST-only, local, no API key.** The graph is built from tree-sitter ASTs only;
 no LLM backend or key is involved (see *Indexing policy* below). Build of the
@@ -68,3 +72,9 @@ The generated graph lives under `$AWM_DIR/services/graphify/<hash>/graphify-out/
     awm graphify status          # exists=true, node/edge counts
     awm graphify query --question "what connects the gateway to the scopes service"
     awm graphify path --a serve --b create_session
+
+Via MCP (collapsed domain surface):
+
+    graphify(verb="describe")    # list verbs + param schemas
+    graphify(verb="build")
+    graphify(verb="status")
