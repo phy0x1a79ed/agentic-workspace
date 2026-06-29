@@ -58,12 +58,19 @@ class TestPlaceOnTask:
         assert data["done"] is False and data["staged"] == {}
 
     async def test_spawn_carries_worker_tool_profile(self, agents_env, stub_core):
-        await _place(agents_env)
+        res = await _place(agents_env)
         cfg = stub_core["opened"][0]
-        # full fs built-ins + the worker MCP tools, scoped by the allowlist.
+        # Full fs built-ins + the single collapsed agent-domain tool. Per-verb
+        # scoping moved server-side (VERB_PROFILES) — allowed_tools no longer
+        # names individual placement verbs.
         assert "Write" in cfg.allowed_tools
-        assert "mcp__awm__edit_deliverable" in cfg.allowed_tools
-        assert "mcp__awm__add_subtask" not in cfg.allowed_tools
+        assert "mcp__awm__agent" in cfg.allowed_tools
+        assert not any(t.startswith("mcp__awm__") and t != "mcp__awm__agent"
+                       for t in cfg.allowed_tools)
+        # The per-mode verb allowlist is recorded on the row for the server gate.
+        data = json.loads(AgentsDAO().resolve_placement(res["placement_token"])["data"])
+        assert "edit_deliverable" in data["allowed_verbs"]
+        assert "add_subtask" not in data["allowed_verbs"]  # planner-only verb
 
     async def test_kickoff_enqueued(self, agents_env, stub_core):
         await _place(agents_env)
@@ -97,10 +104,42 @@ class TestPlaceOnTask:
         assert new.mode == "worker"
         assert new.placement_token == token            # token stable
         assert new.workdir == first.workdir            # unit carried forward
-        assert "mcp__awm__edit_deliverable" in new.allowed_tools
+        assert "mcp__awm__agent" in new.allowed_tools
         dao = AgentsDAO()
         assert dao.resolve_placement(token)["id"] == new.id
         assert dao.get_instance(first.id)["placement_token"] is None
+
+
+class TestServerSideVerbGate:
+    """ensure_verb_allowed — the server-side per-verb confinement that replaces
+    claude --allowedTools for the collapsed `agent` domain (and is the ONLY
+    enforcement under the default opencode harness)."""
+
+    async def test_allows_in_profile_verb(self, agents_env, stub_core):
+        await _place(agents_env, mode="worker")
+        # worker may stage deliverables — no raise.
+        placement.ensure_verb_allowed("leaf-1", "edit_deliverable")
+
+    async def test_rejects_out_of_profile_verb(self, agents_env, stub_core):
+        await _place(agents_env, mode="worker")
+        # add_subtask is planner-only → rejected for a worker.
+        with pytest.raises(placement.PlacementError):
+            placement.ensure_verb_allowed("leaf-1", "add_subtask")
+
+    async def test_verify_cannot_deliver(self, agents_env, stub_core):
+        await _place(agents_env, mode="verify", unit_slug="leaf-v")
+        with pytest.raises(placement.PlacementError):
+            placement.ensure_verb_allowed("leaf-v", "edit_deliverable")
+        # but its own verdict verbs pass
+        placement.ensure_verb_allowed("leaf-v", "approve_plan")
+
+    async def test_task_fail_always_allowed(self, agents_env, stub_core):
+        await _place(agents_env, mode="verify", unit_slug="leaf-v")
+        placement.ensure_verb_allowed("leaf-v", "task_fail")
+
+    async def test_unknown_identity_rejected(self, agents_env, stub_core):
+        with pytest.raises(placement.PlacementError):
+            placement.ensure_verb_allowed("no-such-placement", "edit_deliverable")
 
 
 class TestModeProfiles:
@@ -110,18 +149,22 @@ class TestModeProfiles:
         cfg = stub_core["opened"][0]
         assert "Write" not in cfg.allowed_tools          # read-only fs
         assert "Read" in cfg.allowed_tools
-        assert "mcp__awm__edit_deliverable" in cfg.allowed_tools
+        assert "mcp__awm__agent" in cfg.allowed_tools
         row = AgentsDAO().resolve_placement(res["placement_token"])
-        assert json.loads(row["data"])["placement"]["contracts_out"] == ["plan"]
+        data = json.loads(row["data"])
+        assert data["placement"]["contracts_out"] == ["plan"]
+        assert "edit_deliverable" in data["allowed_verbs"]
 
     async def test_verify_mode_has_no_filesystem_tools(
             self, agents_env, stub_core):
-        await _place(agents_env, mode="verify", unit_slug="leaf-v")
+        res = await _place(agents_env, mode="verify", unit_slug="leaf-v")
         cfg = stub_core["opened"][0]
         for fs in ("Read", "Write", "Edit", "Bash", "Grep", "Glob"):
             assert fs not in (cfg.allowed_tools or [])
-        assert "mcp__awm__approve_plan" in cfg.allowed_tools
-        assert "mcp__awm__reject_plan" in cfg.allowed_tools
+        # Only the collapsed agent domain; the verify verbs are gated server-side.
+        assert cfg.allowed_tools == ["mcp__awm__agent"]
+        data = json.loads(AgentsDAO().resolve_placement(res["placement_token"])["data"])
+        assert set(data["allowed_verbs"]) == {"approve_plan", "reject_plan", "task_fail"}
 
     async def test_verify_kickoff_carries_objective_and_plan(
             self, agents_env, stub_core):
@@ -143,10 +186,12 @@ class TestModeProfiles:
         assert "THE PLAN BODY" in sent
 
     async def test_planner_mode_gets_graph_tools(self, agents_env, stub_core):
-        await _place(agents_env, mode="planner", unit_slug="leaf-pl")
+        res = await _place(agents_env, mode="planner", unit_slug="leaf-pl")
         cfg = stub_core["opened"][0]
-        assert "mcp__awm__add_subtask" in cfg.allowed_tools
-        assert "Write" not in cfg.allowed_tools
+        assert "mcp__awm__agent" in cfg.allowed_tools
+        assert "Write" not in cfg.allowed_tools          # read-only fs
+        data = json.loads(AgentsDAO().resolve_placement(res["placement_token"])["data"])
+        assert "add_subtask" in data["allowed_verbs"]    # graph verbs permitted
 
     async def test_unknown_mode_rejected(self, agents_env, stub_core):
         with pytest.raises(ValueError):

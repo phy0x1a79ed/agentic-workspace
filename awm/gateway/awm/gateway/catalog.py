@@ -77,7 +77,7 @@ from starlette.concurrency import run_in_threadpool
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
-from awm.gateway.operations import _call_service, operations_to_mcp_tools
+from awm.gateway.operations import _call_service, _to_mcp_tool, operations_to_mcp_tools
 
 log = logging.getLogger("awm.gateway.catalog")
 
@@ -205,6 +205,168 @@ def _find_service_fn(name: str) -> tuple[ServiceRecord | None, str | None]:
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Per-domain projection (the collapsed MCP read surface) — T1
+# ---------------------------------------------------------------------------
+# The expanded ``list_tools()`` projection above stays exactly as-is (the CLI
+# generator and the flat ``/invoke`` dispatch both depend on it). This second,
+# *parallel* projection folds that same surface by **domain** — the projected
+# tool name split on the first underscore (``scope_create`` → domain ``scope`` /
+# verb ``create``). One service can yield several domains (scopes → scope /
+# project / ref); gateway-native ops group by their ``cli_group`` (``gateway`` /
+# ``services``) with the verb being their ``cli_command``. The MCP stdio proxy
+# requests this view (``GET /tools?view=domains``), so a non-deferring client
+# carries ~8–10 generic tools instead of ~71 verb-tools; verbs + their full
+# param schemas are learned on demand via the reserved ``describe`` verb.
+
+_DESCRIBE_VERB = "describe"
+
+# The minimal envelope every domain tool advertises (discovery-only — the rich
+# per-verb schema is fetched via ``describe``, never inlined here).
+_DOMAIN_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verb": {
+            "type": "string",
+            "description": "The operation to run within this domain. Use "
+                           "verb='describe' (optionally args={verb:<name>}) to "
+                           "list the domain's verbs and their parameter schemas.",
+        },
+        "args": {
+            "type": "object",
+            "description": "Arguments for the chosen verb (see describe).",
+        },
+    },
+    "required": ["verb"],
+}
+
+
+def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
+    """Fold the live (native + service) tool surface into ``{domain: [verb…]}``.
+
+    Each verb entry is ``{"verb": str, "tool": Tool}`` — the ``Tool`` carries the
+    full per-verb description + ``inputSchema`` (byte-identical to the expanded
+    projection), reused verbatim by :func:`_describe_domain`. Native ops are
+    folded first so a service can never shadow a gateway-native verb (first-wins,
+    mirroring ``list_tools``'s duplicate handling). Sync over a GIL-safe registry
+    snapshot — same contract as ``list_tools``."""
+    domains: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+
+    def _add(domain: str, verb: str, tool: Tool, *, origin: str) -> None:
+        key = (domain, verb)
+        if key in seen:
+            log.warning(
+                "duplicate domain verb %s/%s from %s — skipping", domain, verb, origin)
+            return
+        seen.add(key)
+        domains.setdefault(domain, []).append({"verb": verb, "tool": tool})
+
+    # Native gateway control ops: domain = cli_group, verb = cli_command.
+    for op in GATEWAY_OPERATIONS:
+        if "mcp" not in op.surfaces:
+            continue
+        _add(op.cli_group, op.cli_command, _to_mcp_tool(op), origin="gateway-native")
+
+    # Registered services: domain/verb from the projected tool name.
+    for rec in get_registry().service_records():
+        for fn in (rec.api or {}).get("functions", []) or []:
+            if not (isinstance(fn, dict) and fn.get("name")):
+                continue
+            tname = _tool_name(rec, fn)
+            domain, _, verb = tname.partition("_")
+            if not verb:  # no underscore → single-verb domain named after itself
+                verb = domain
+            _add(domain, verb, _fn_to_tool(rec, fn), origin=f"service {rec.name!r}")
+
+    return domains
+
+
+def list_domain_tools() -> list[Tool]:
+    """Project the collapsed per-domain MCP surface — one ``Tool`` per domain,
+    each advertising the minimal ``{verb, args}`` envelope. Names every verb in
+    the free-text description (cheap discovery) while keeping the schema minimal
+    per the discovery-only decision."""
+    out: list[Tool] = []
+    for domain, verbs in _domain_catalog().items():
+        verb_names = [v["verb"] for v in verbs]
+        desc = (
+            f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
+            f"Call with {{verb, args}}; verb='describe' (optionally "
+            f"args={{verb:<name>}}) returns full parameter schemas."
+        )
+        out.append(Tool(name=domain, description=desc,
+                        inputSchema=dict(_DOMAIN_INPUT_SCHEMA)))
+    return out
+
+
+def _describe_domain(domain: str, verb: str | None = None,
+                     catalog: dict[str, list[dict[str, Any]]] | None = None) -> dict:
+    """Answer ``verb='describe'`` from the catalog alone (no service round-trip).
+
+    Returns ``{domain, verbs:[{verb, description, params}]}`` where ``params`` is
+    the verb's full ``inputSchema`` — the same schema the expanded per-verb tool
+    advertised. ``verb`` narrows to a single entry."""
+    cat = catalog if catalog is not None else _domain_catalog()
+    verbs = cat.get(domain)
+    if verbs is None:
+        raise ValueError(f"Unknown domain: {domain}")
+    items = [v for v in verbs if verb is None or v["verb"] == verb]
+    if verb is not None and not items:
+        raise ValueError(f"Unknown verb {verb!r} for domain {domain!r}")
+    return {
+        "domain": domain,
+        "verbs": [
+            {"verb": v["verb"], "description": v["tool"].description,
+             "params": v["tool"].inputSchema}
+            for v in items
+        ],
+    }
+
+
+def _find_native_op(domain: str, verb: str):
+    """Locate the MCP-surface gateway-native Operation for a domain/verb pair
+    (domain = ``cli_group``, verb = ``cli_command``), else ``None``."""
+    for op in GATEWAY_OPERATIONS:
+        if "mcp" in op.surfaces and op.cli_group == domain and op.cli_command == verb:
+            return op
+    return None
+
+
+async def _dispatch_domain(name: str, args: dict, as_: str | None,
+                           catalog: dict[str, list[dict[str, Any]]]) -> str:
+    """Dispatch a collapsed per-domain tool call (``{verb, args}``).
+
+    ``verb='describe'`` is answered from the catalog. A native verb routes
+    through its Operation (same handler as the HTTP route + CLI command); a
+    service verb is resolved back to its internal function via the existing
+    ``_find_service_fn`` reverse lookup (so a name≠tool divergence like
+    ``scope_refresh`` → internal ``awm_refresh`` still routes) and RPC'd with the
+    ``as_`` placement identity threaded exactly as the flat path does."""
+    verb = args.get("verb")
+    inner = args.get("args") or {}
+    if not isinstance(inner, dict):
+        raise ValueError("'args' must be an object")
+    if verb == _DESCRIBE_VERB:
+        return _serialize(_describe_domain(name, inner.get("verb"), catalog))
+
+    op = _find_native_op(name, verb)
+    if op is not None:
+        if inspect.iscoroutinefunction(op.service_func):
+            return _serialize(await _call_service(op, inner))
+        return _serialize(await run_in_threadpool(_call_service, op, inner))
+
+    rec, fn = _find_service_fn(f"{name}_{verb}")
+    if rec is None and verb == name:  # single-verb (no-underscore) domain
+        rec, fn = _find_service_fn(name)
+    if rec is None or fn is None:
+        raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
+    ch = rpc.get_control(rec.service_id)
+    if ch is None:
+        raise RuntimeError(f"service {rec.name!r} control channel not open")
+    return _serialize(await ch.call(fn, inner, as_=as_))
+
+
 async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     """Route a tool call to its handler and return the serialized result.
 
@@ -215,7 +377,20 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     for an unknown tool (→ 404) and ``RuntimeError`` when a service's control
     channel is not open (→ 500), matching ``/invoke``'s existing exception→HTTP
     translation.
+
+    Collapsed per-domain calls (the ``GET /tools?view=domains`` surface) arrive
+    here too: a payload whose ``name`` is a known domain and whose ``args``
+    carries a ``verb`` is routed to :func:`_dispatch_domain` *ahead* of the flat
+    branches. The ``"verb" in args`` guard keeps a future flat tool literally
+    named like a domain from being hijacked, and the flat branches below stay
+    intact so the CLI's by-name ``/invoke`` posts keep working.
     """
+    args = args or {}
+    if "verb" in args:
+        domains = _domain_catalog()
+        if name in domains:
+            return await _dispatch_domain(name, args, as_, domains)
+
     op = _GATEWAY_OPS_BY_NAME.get(name)
     if op is not None:
         if inspect.iscoroutinefunction(op.service_func):
