@@ -41,3 +41,8 @@ export {
   type DagEdge,
   type DagSnapshot,
 } from './dag';
+export {
+  fetchConfigContracts,
+  saveConfigContract,
+  type ConfigContract,
+} from './config';

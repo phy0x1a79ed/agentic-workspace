@@ -17,6 +17,7 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter
 from awm.gatewayclient.adapter import SessionContext
 from awm.agents import admin_ops
+from awm.agents.driver_config import DRIVER_CONTRACT
 from awm.agents import dao
 from awm.agents import agent_instances as ai
 from awm.agents import agent_transcript
@@ -284,6 +285,12 @@ API_MANIFEST: dict[str, Any] = {
         },
     ],
     "emitters": [],
+    # Opt-in config contract (the default-driver settings). Its presence is the
+    # marker the gateway `config` aggregator keys off; the title + schema let
+    # discovery skip an extra RPC. config_get/config_set are in HANDLERS but NOT
+    # in functions[] — RPC-reachable for the aggregator, never projected as
+    # per-service MCP/HTTP/CLI tools (the settings page is the surface).
+    "config": DRIVER_CONTRACT.manifest_fragment(),
     "sessions": [
         {
             "kind": "transcript",
@@ -573,6 +580,10 @@ def _admin_relay(op_name: str):
 # One gated handler per admin op, generated from the registry (single source).
 for _op in admin_ops.ADMIN_OPS:
     HANDLERS[_op["name"]] = _admin_relay(_op["name"])
+
+# Config contract handlers (config_get/config_set), reached by the gateway
+# aggregator over RPC. Not in the manifest functions[] → not projected as tools.
+HANDLERS.update(DRIVER_CONTRACT.handlers())
 
 
 def _on_start() -> None:

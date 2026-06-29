@@ -33,7 +33,6 @@
   // Terminal states: a task here is finished — its retained transcript is shown
   // read-only (composer hidden) rather than as a live conversation.
   const TERMINAL = new Set(['completed', 'failed', 'abandoned']);
-
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);

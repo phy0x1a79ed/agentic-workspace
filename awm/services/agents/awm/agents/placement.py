@@ -366,6 +366,24 @@ def _read_staged_plan(workspace_path: str) -> str:
     return ""
 
 
+def _resolve_driver(args: dict) -> tuple[str, str | None]:
+    """Resolve the ``(harness, model)`` a dispatch spawns under.
+
+    Precedence: explicit ``args`` > env override (``AWM_PLACEMENT_HARNESS`` /
+    ``AWM_PLACEMENT_MODEL``) > the opt-in ``agents`` config contract's stored
+    default > the contract field default (``opencode`` / ``None``). The contract
+    read is a single-row load, so a change saved in the settings UI applies on
+    the next dispatch with no restart, while explicit overrides still win.
+    """
+    from awm.agents.driver_config import DRIVER_CONTRACT
+    driver = DRIVER_CONTRACT.load_model()
+    harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
+               or driver.harness)
+    model = (args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL")
+             or driver.model)
+    return harness, model
+
+
 # ---------------------------------------------------------------------------
 # place_on_task (contract A)
 # ---------------------------------------------------------------------------
@@ -449,9 +467,7 @@ async def place_on_task(args: dict) -> dict:
     # (``--allowedTools``); under opencode it's threaded but not yet honored, so
     # the read-only/no-fs guarantee for plan/verify/planner is a claude-only
     # property today (worker is full-tool regardless). Tracked as a follow-up.
-    harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
-               or "opencode")
-    model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
+    harness, model = _resolve_driver(args)
     # Reasoning effort (claude only — opencode ignores it). Threaded the same way
     # as the model: per-placement arg → AWM_PLACEMENT_EFFORT → the harness default
     # (None → the CLI's own default). create_session validates it against the
