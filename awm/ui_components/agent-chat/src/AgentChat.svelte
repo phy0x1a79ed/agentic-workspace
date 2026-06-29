@@ -48,11 +48,21 @@
     /** Fully offline (gallery/demo): never connect, and put the embedded
      *  SttComposer in mock mode so it opens no /svc/stt session. Default false. */
     offline?: boolean;
+    /** Embedded in a parent that owns task selection (e.g. the DAG telemetry
+     *  page): seed the slug ONLY from the prop (no URL / localStorage), and hide
+     *  the identity bar. The parent re-mounts via `{#key slug}` to switch tasks.
+     *  Default false (standalone /ui/agent/ keeps its bar + URL/localStorage). */
+    embedded?: boolean;
+    /** Read-only: hide the composer entirely (transcript-only). Used for a
+     *  finished task whose retained transcript is reviewed but not extended. */
+    readonly?: boolean;
   }
   let {
     slug: initSlug,
     autoConnect = true,
     offline = false,
+    embedded = false,
+    readonly = false,
   }: Props = $props();
 
   // --- Identity (URL ?unit=/?slug=/?task= → localStorage fallback) ----------
@@ -64,6 +74,10 @@
   // The prop is read non-reactively (untrack) — it only seeds the editable
   // field; after mount the identity bar owns `slug`.
   function initialIdentity(): { slug: string; task: string } {
+    // Embedded: the parent owns selection — seed ONLY from the prop, never from
+    // the URL or localStorage (those belong to the standalone /ui/agent/ page,
+    // and writing them here would let the two pages fight over the same key).
+    if (embedded) return { slug: initSlug ?? '', task: '' };
     if (typeof window === 'undefined') return { slug: initSlug ?? '', task: '' };
     const params = new URLSearchParams(window.location.search);
     const slug =
@@ -164,7 +178,9 @@
     error = null;
     status = 'connecting';
     liveSlug = s;
-    if (typeof window !== 'undefined') localStorage.setItem(KEY_SLUG, s);
+    // Don't persist in embedded mode — the slug is parent-driven and would
+    // otherwise clobber the standalone page's remembered identity.
+    if (!embedded && typeof window !== 'undefined') localStorage.setItem(KEY_SLUG, s);
 
     fold = new TranscriptFold(agentAuthor(s));
     spokenIds = new Set();
@@ -304,7 +320,7 @@
   onDestroy(() => disconnect());
 </script>
 
-<div class="agent-chat-root" data-awm-component="AgentChat">
+<div class="agent-chat-root" class:embedded data-awm-component="AgentChat">
   <!-- Pass the CONNECTED slug (frozen at connect time) so the Terminal tab
        attaches to the live agent; empty until connected → transcript only. -->
   <Chat
@@ -313,9 +329,11 @@
     {chatContext}
     onReplay={speak}
     {offline}
+    {readonly}
     slug={liveSlug}
   >
     {#snippet header()}
+      {#if !embedded}
       <header class="hdr">
         <form
           class="connect-bar"
@@ -390,6 +408,7 @@
       {#if !connected && !error}
         <p class="hint mono">enter a unit slug and connect, or create a node at the root.</p>
       {/if}
+      {/if}
     {/snippet}
   </Chat>
 </div>
@@ -408,6 +427,16 @@
     max-width: 720px;
     margin: 0 auto;
     width: 100%;
+  }
+  /* Embedded in a parent that owns the frame (the DAG telemetry CHAT tab):
+     drop the standalone/gallery framing (centering, width cap, min-height floor)
+     and grow to fill the host panel so the transcript uses the full height
+     instead of sitting at the 440px floor with empty space below it. */
+  .agent-chat-root.embedded {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-width: none;
+    margin: 0;
   }
   .hdr {
     display: flex;

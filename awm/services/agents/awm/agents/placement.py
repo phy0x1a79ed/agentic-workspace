@@ -365,6 +365,11 @@ async def place_on_task(args: dict) -> dict:
     harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
                or "opencode")
     model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
+    # Reasoning effort (claude only — opencode ignores it). Threaded the same way
+    # as the model: per-placement arg → AWM_PLACEMENT_EFFORT → the harness default
+    # (None → the CLI's own default). create_session validates it against the
+    # allowed set before the claude backend renders it as ``--effort``.
+    effort = args.get("effort") or os.environ.get("AWM_PLACEMENT_EFFORT") or None
     # The lifecycle reuses one unit across stages; the prior stage's subprocess
     # may still be retiring on this scope. Wait for it to vacate before spawning.
     await _await_scope_free(unit_slug)
@@ -376,6 +381,7 @@ async def place_on_task(args: dict) -> dict:
         workdir=workspace_path,
         allowed_tools=_allowed_tools_for(mode),
         model=model,
+        effort=effort,
     )
 
     # Record the placement spec on the row so the relays + supervisor can resolve

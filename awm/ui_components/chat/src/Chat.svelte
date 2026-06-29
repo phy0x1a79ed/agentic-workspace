@@ -52,10 +52,13 @@
      *  Transcript | Terminal tablist (forwarded to <TtsHistory>) so the live
      *  agent's tmux pane is viewable/drivable alongside its transcript. */
     slug?: string;
+    /** Transcript-only: hide the composer entirely (no input region). Used for
+     *  a finished placement whose transcript is reviewed but not extended. */
+    readonly?: boolean;
   }
   let {
     posts, onSend, chatContext = '', onReplay, header, aside,
-    offline = false, onTelemetry, slug,
+    offline = false, onTelemetry, slug, readonly = false,
   }: Props = $props();
 
   // The single send seam. Both SttComposer signals call it; the gate drops a
@@ -80,15 +83,17 @@
     <section class="chat-aside">{@render aside()}</section>
   {/if}
 
-  <div class="composer-wrap">
-    <SttComposer
-      onsend={submit}
-      onText={submit}
-      {chatContext}
-      {onTelemetry}
-      mockInitialChips={offline ? [] : undefined}
-    />
-  </div>
+  {#if !readonly}
+    <div class="composer-wrap">
+      <SttComposer
+        onsend={submit}
+        onText={submit}
+        {chatContext}
+        {onTelemetry}
+        mockInitialChips={offline ? [] : undefined}
+      />
+    </div>
+  {/if}
 </div>
 
 <style>
