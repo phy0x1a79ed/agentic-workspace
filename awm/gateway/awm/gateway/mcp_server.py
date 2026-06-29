@@ -53,8 +53,15 @@ async def list_tools() -> list[Tool]:
     up to the MCP client. Deliberately no fallback to a bundled snapshot: a
     stale list is worse than an honest error because it silently drifts from
     the live tool surface after a core restart.
+
+    Requests the collapsed per-domain surface (``?view=domains``): one generic
+    ``{verb, args}`` tool per domain instead of ~71 verb-tools, so a
+    non-deferring client (a spawned agentcore bot, opencode) carries a tiny tool
+    surface and learns each domain's verbs + params on demand via the reserved
+    ``describe`` verb. The CLI/HTTP surfaces stay expanded (they read the default
+    ``/tools``).
     """
-    data = await _request_with_retry("GET", "/tools")
+    data = await _request_with_retry("GET", "/tools", params={"view": "domains"})
     return [Tool.model_validate(t) for t in data["tools"]]
 
 
@@ -102,6 +109,7 @@ async def _request_with_retry(
     json_body: dict | None = None,
     max_wait: float = 10.0,
     headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
@@ -117,7 +125,7 @@ async def _request_with_retry(
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body,
-                                         headers=headers)
+                                         headers=headers, params=params)
                 r.raise_for_status()
                 return r.json()
             except httpx.HTTPStatusError:
