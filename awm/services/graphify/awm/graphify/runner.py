@@ -3,7 +3,8 @@
 This module owns everything that touches the on-disk world: resolving which
 source tree to index ("the active worktree" by default), where the generated
 graph lives (under ``$AWM_DIR/services/graphify/`` — never inside the worktree),
-and shelling out to the ``graphify`` binary for build / query / path / status.
+and shelling out to the ``graphify`` binary for build / query / path / status /
+explain / affected; plus in-memory graph parses for find / refs.
 
 Design notes (from the spike, graphify 0.9.1):
   - **AST-only, no LLM, no key.** ``graphify extract`` requires an API key only
@@ -15,8 +16,14 @@ Design notes (from the spike, graphify 0.9.1):
   - **Redirected output.** ``extract --out <dir>`` writes ``<dir>/graphify-out/``
     (graph.json + manifest.json + an incremental ``cache/``), leaving the
     scanned worktree untouched. Re-running a build is incremental via that
-    cache. ``query`` / ``path`` read ``--graph <dir>/graphify-out/graph.json``
-    and print plain text.
+    cache. Read commands (``query``, ``path``, ``explain``, ``affected``) take
+    ``--graph <dir>/graphify-out/graph.json`` and print plain text.
+  - **Single graph lock.** All operations that read or write graph.json hold
+    ``_GRAPH_LOCK``, so a build subprocess rewriting the file can never race
+    against a query subprocess reading it.
+  - **Freshness on read.** Read verbs call ``_ensure_fresh`` under the lock,
+    rebuilding automatically if the graph is missing or stale. ``status`` is
+    the exception — it never rebuilds, just reports staleness.
 
 The handlers in ``hub_adapter`` are thin lambdas over the functions here; the
 ServiceAdapter runs each sync handler in a worker thread, so the blocking
@@ -28,11 +35,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from awm.config import SERVICES_DIR
 
@@ -48,9 +57,15 @@ _LLM_KEY_VARS = (
     "DEEPSEEK_API_KEY",
 )
 
-# One build at a time per process: graphify writes a single graphify-out/ tree
-# per target and two concurrent extracts against the same --out would race.
-_BUILD_LOCK = threading.Lock()
+# Shared lock for all graph operations: builds hold it for the full extract
+# subprocess; reads hold it for _ensure_fresh + the CLI subprocess.
+# Concurrent reads therefore serialize — acceptable for a dev tool; a
+# readers-writer lock is a future optimisation.
+_GRAPH_LOCK = threading.Lock()
+
+# (str(graph_json_path), mtime_float) → parsed graph data.
+# Keyed by mtime so a post-build re-read sees the new file automatically.
+_GRAPH_CACHE: dict[tuple[str, float], dict[str, Any]] = {}
 
 
 # -- binary + target + output resolution ------------------------------------
@@ -118,6 +133,10 @@ def graph_json(target: Path) -> Path:
     return out_dir_for(target) / "graphify-out" / "graph.json"
 
 
+def manifest_json(target: Path) -> Path:
+    return out_dir_for(target) / "graphify-out" / "manifest.json"
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
@@ -129,45 +148,195 @@ def _ast_only_env() -> dict[str, str]:
     return env
 
 
-# -- operations -------------------------------------------------------------
+# -- staleness + freshness --------------------------------------------------
 
 
-def build(target: str | None = None) -> dict:
-    """Build/refresh the AST graph for ``target`` (default: the active tree).
+def is_stale(target: str | None = None) -> tuple[bool, int]:
+    """Check whether the graph is out of date relative to the source tree.
 
-    Runs ``graphify extract <target> --no-cluster --out <data>`` with LLM keys
-    stripped. Incremental across runs via graphify's own cache. Returns the
-    post-build :func:`status`.
+    Compares each file recorded in ``manifest.json`` (graphify's own incremental
+    cache) against its current mtime. Returns ``(stale, changed)`` where
+    ``stale`` is True when any tracked file has changed and ``changed`` is the
+    count. Returns ``(True, 0)`` when the graph or manifest does not exist yet.
+
+    Never triggers a rebuild — that is ``_ensure_fresh``'s job.
     """
     tgt = resolve_target(target)
+    gj = graph_json(tgt)
+    mj = manifest_json(tgt)
+    if not gj.exists() or not mj.exists():
+        return True, 0
+    try:
+        manifest = json.loads(mj.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True, 0
+    changed = 0
+    for relpath, info in manifest.items():
+        src = tgt / relpath
+        if not src.exists():
+            changed += 1
+            continue
+        if abs(src.stat().st_mtime - info.get("mtime", 0)) > 0.01:
+            changed += 1
+    return changed > 0, changed
+
+
+def _do_build(tgt: Path) -> subprocess.CompletedProcess:
+    """Raw extract — caller must hold ``_GRAPH_LOCK``."""
     out = out_dir_for(tgt)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [graphify_bin(), "extract", str(tgt), "--no-cluster", "--out", str(out)]
-    with _BUILD_LOCK:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, env=_ast_only_env(), timeout=900
-        )
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, env=_ast_only_env(), timeout=900
+    )
     if proc.returncode != 0:
-        detail = (proc.stderr.strip() or proc.stdout.strip() or "unknown error")
+        detail = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
         raise RuntimeError(f"graphify extract failed (rc={proc.returncode}): {detail}")
-    result = status(str(tgt))
-    # graphify's last stdout line is the "wrote … N nodes, M edges" summary.
-    tail = (proc.stdout.strip().splitlines() or [""])[-1]
-    result["summary"] = tail
+    return proc
+
+
+def _ensure_fresh(tgt: Path) -> Path:
+    """Rebuild if the graph is missing or stale; return the graph.json path.
+
+    Caller must hold ``_GRAPH_LOCK``.
+    """
+    gj = graph_json(tgt)
+    if not gj.exists():
+        _do_build(tgt)
+    else:
+        stale, _ = is_stale(str(tgt))
+        if stale:
+            _do_build(tgt)
+    return graph_json(tgt)
+
+
+# -- graph.json in-memory loader (for find / refs) --------------------------
+
+
+def _load_graph(gj: Path) -> dict[str, Any]:
+    """Parse graph.json and return a ``{nodes, by_id, labels, edges}`` dict.
+
+    Results are mtime-keyed in ``_GRAPH_CACHE``; a post-build re-read always
+    sees the fresh file. Caller must hold ``_GRAPH_LOCK``.
+    """
+    mtime = gj.stat().st_mtime
+    cache_key = (str(gj), mtime)
+    if cache_key not in _GRAPH_CACHE:
+        # Evict any earlier entry for this path.
+        for k in list(_GRAPH_CACHE):
+            if k[0] == str(gj):
+                del _GRAPH_CACHE[k]
+        data = json.loads(gj.read_text())
+        nodes: list[dict] = data.get("nodes", [])
+        by_id: dict[str, dict] = {n["id"]: n for n in nodes if "id" in n}
+        # Label index: lower-cased label → [node, ...] (ambiguity is common).
+        labels: dict[str, list[dict]] = {}
+        for n in nodes:
+            lbl = n.get("label", "")
+            labels.setdefault(lbl.lower(), []).append(n)
+        _GRAPH_CACHE[cache_key] = {
+            "nodes": nodes,
+            "by_id": by_id,
+            "labels": labels,
+            "edges": data.get("edges", []),
+        }
+    return _GRAPH_CACHE[cache_key]
+
+
+# -- CLI output parsers -----------------------------------------------------
+
+_NODE_RE = re.compile(
+    r"^NODE\s+(.+?)\s+\[src=(\S+)\s+loc=(L\d+)"
+)
+_EDGE_RE = re.compile(
+    r"^EDGE\s+(.+?)\s+--(\S+).*?-->\s+(.+?)(?:\s*\[|\s*$)"
+)
+_TRUNCATED_RE = re.compile(r"\(truncated\s+[—-]\s+(\d+)\s+more\s+nodes")
+
+
+def _parse_traversal(text: str) -> dict[str, Any]:
+    """Parse ``graphify query`` / ``graphify affected`` output into structured JSON.
+
+    Extracts NODE and EDGE lines; always retains ``text`` as a fallback. Treats
+    unrecognised lines as opaque so a minor CLI format drift degrades gracefully.
+    """
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    truncated = False
+    extra = 0
+
+    for line in text.splitlines():
+        m = _NODE_RE.match(line)
+        if m:
+            nodes.append({"label": m.group(1).strip(), "file": m.group(2), "line": m.group(3)})
+            continue
+        m = _EDGE_RE.match(line)
+        if m:
+            edges.append({
+                "source": m.group(1).strip(),
+                "relation": m.group(2).strip(),
+                "target": m.group(3).strip(),
+            })
+            continue
+        m = _TRUNCATED_RE.search(line)
+        if m:
+            truncated = True
+            extra = int(m.group(1))
+
+    result: dict[str, Any] = {"nodes": nodes, "edges": edges, "text": text}
+    if truncated:
+        result["truncated"] = True
+        result["extra"] = extra
     return result
 
 
-def _require_graph(tgt: Path) -> Path:
-    gj = graph_json(tgt)
-    if not gj.exists():
-        raise RuntimeError(
-            f"no graph for {tgt} yet — run graphify_build first "
-            f"(expected {gj})"
-        )
-    return gj
+def _parse_path(text: str) -> dict[str, Any]:
+    """Parse ``graphify path`` output into a steps list."""
+    steps: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "-->" in stripped:
+            steps = [s.strip() for s in stripped.split("-->")]
+    return {"steps": steps, "text": text}
 
 
-def _run_read(args: list[str], gj: Path) -> str:
+def _parse_explain(text: str) -> dict[str, Any]:
+    """Parse ``graphify explain`` output into structured fields."""
+    result: dict[str, Any] = {"text": text}
+    connections: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("Node:"):
+            result["label"] = s.removeprefix("Node:").strip()
+        elif s.startswith("ID:"):
+            result["id"] = s.removeprefix("ID:").strip()
+        elif s.startswith("Source:"):
+            parts = s.removeprefix("Source:").strip().split()
+            if parts:
+                result["file"] = parts[0]
+            if len(parts) > 1:
+                result["line"] = parts[1]
+        elif s.startswith("Type:"):
+            result["type"] = s.removeprefix("Type:").strip()
+        elif s.startswith("Community:"):
+            result["community"] = s.removeprefix("Community:").strip()
+        elif s.startswith("Degree:"):
+            try:
+                result["degree"] = int(s.removeprefix("Degree:").strip())
+            except ValueError:
+                pass
+        elif s.startswith("-->") or s.startswith("<--"):
+            connections.append(s)
+    if connections:
+        result["connections"] = connections
+    return result
+
+
+# -- CLI read helper --------------------------------------------------------
+
+
+def _run_read_raw(args: list[str], gj: Path) -> str:
+    """Run a read-only graphify CLI command; caller must hold ``_GRAPH_LOCK``."""
     proc = subprocess.run(
         [graphify_bin(), *args, "--graph", str(gj)],
         capture_output=True,
@@ -175,35 +344,227 @@ def _run_read(args: list[str], gj: Path) -> str:
         timeout=120,
     )
     if proc.returncode != 0:
-        detail = (proc.stderr.strip() or proc.stdout.strip() or "unknown error")
+        detail = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
         raise RuntimeError(f"graphify {args[0]} failed (rc={proc.returncode}): {detail}")
     return proc.stdout.rstrip()
 
 
-def query(question: str, target: str | None = None) -> dict:
-    """BFS traversal of the graph for a natural-language question."""
+# -- public operations ------------------------------------------------------
+
+
+def build(target: str | None = None) -> dict:
+    """Build or refresh the AST graph for ``target`` (default: the active tree).
+
+    Runs ``graphify extract <target> --no-cluster --out <data>`` with LLM keys
+    stripped. Incremental across runs via graphify's own cache. Returns the
+    post-build :func:`status`.
+    """
     tgt = resolve_target(target)
-    gj = _require_graph(tgt)
-    return {"result": _run_read(["query", question], gj), "graph": str(gj)}
+    with _GRAPH_LOCK:
+        proc = _do_build(tgt)
+    result = status(str(tgt))
+    tail = (proc.stdout.strip().splitlines() or [""])[-1]
+    result["summary"] = tail
+    return result
+
+
+def query(
+    question: str,
+    context: list[str] | None = None,
+    budget: int | None = None,
+    target: str | None = None,
+) -> dict:
+    """BFS traversal of the graph for a natural-language question.
+
+    ``context`` filters the traversal to specific edge types (e.g. ``['call']``),
+    reducing result size and avoiding token-budget truncation. ``budget`` sets
+    the output token cap (default: graphify's internal default, ~2000).
+    """
+    tgt = resolve_target(target)
+    args = ["query", question]
+    if context:
+        for c in context:
+            args += ["--context", c]
+    if budget is not None:
+        args += ["--budget", str(budget)]
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        text = _run_read_raw(args, gj)
+    return {**_parse_traversal(text), "graph": str(gj)}
 
 
 def path(a: str, b: str, target: str | None = None) -> dict:
     """Shortest path between two node labels."""
     tgt = resolve_target(target)
-    gj = _require_graph(tgt)
-    return {"result": _run_read(["path", a, b], gj), "graph": str(gj)}
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        text = _run_read_raw(["path", a, b], gj)
+    return {**_parse_path(text), "graph": str(gj)}
+
+
+def explain(node: str, target: str | None = None) -> dict:
+    """Plain-language explanation of a node and its immediate connections."""
+    tgt = resolve_target(target)
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        text = _run_read_raw(["explain", node], gj)
+    return {**_parse_explain(text), "graph": str(gj)}
+
+
+def affected(
+    node: str,
+    depth: int | None = None,
+    relations: list[str] | None = None,
+    target: str | None = None,
+) -> dict:
+    """Transitive impact of changing ``node`` — finds all nodes that would break.
+
+    ``depth`` limits traversal depth (default: 2). ``relations`` restricts which
+    edge types to follow (default: calls, imports, references, and friends).
+    """
+    tgt = resolve_target(target)
+    args = ["affected", node]
+    if depth is not None:
+        args += ["--depth", str(depth)]
+    if relations:
+        for r in relations:
+            args += ["--relation", r]
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        text = _run_read_raw(args, gj)
+    return {**_parse_traversal(text), "graph": str(gj)}
+
+
+def find(
+    pattern: str,
+    limit: int = 50,
+    target: str | None = None,
+) -> dict:
+    """Search for nodes whose label matches ``pattern`` (case-insensitive substring).
+
+    Returns matches ranked exact-first, then substring, up to ``limit``. Always
+    returns all matches; use ``limit`` to cap the response size. A ``count``
+    field reports the total matches found before truncation.
+    """
+    tgt = resolve_target(target)
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        graph = _load_graph(gj)
+
+    pat = pattern.lower()
+    exact: list[dict] = []
+    partial: list[dict] = []
+    for node in graph["nodes"]:
+        label_lower = node.get("label", "").lower()
+        if label_lower == pat:
+            exact.append(node)
+        elif pat in label_lower:
+            partial.append(node)
+
+    total = len(exact) + len(partial)
+    matches = (exact + partial)[:limit]
+    return {
+        "pattern": pattern,
+        "count": total,
+        "truncated": total > limit,
+        "matches": [
+            {
+                "label": n.get("label"),
+                "id": n.get("id"),
+                "file": n.get("source_file"),
+                "line": n.get("source_location"),
+                "type": n.get("file_type"),
+            }
+            for n in matches
+        ],
+        "graph": str(gj),
+    }
+
+
+def refs(
+    node: str,
+    direction: str = "both",
+    target: str | None = None,
+) -> dict:
+    """Find callers, callees, and importers of a node (by label substring).
+
+    ``direction`` is ``'in'`` (what calls/imports this node), ``'out'``
+    (what this node calls/uses), or ``'both'`` (default).
+
+    Returns ``matched_nodes`` listing every node the pattern resolved to
+    (ambiguity is surfaced, not silently collapsed), plus ``in`` / ``out``
+    edge lists with the remote node's ``file:line`` and ``relation``.
+    """
+    if direction not in ("in", "out", "both"):
+        raise ValueError(f"direction must be 'in', 'out', or 'both', got {direction!r}")
+
+    tgt = resolve_target(target)
+    with _GRAPH_LOCK:
+        gj = _ensure_fresh(tgt)
+        graph = _load_graph(gj)
+
+    pat = node.lower()
+    matched_ids: set[str] = set()
+    matched_nodes: list[dict] = []
+    for n in graph["nodes"]:
+        if pat in n.get("label", "").lower():
+            matched_ids.add(n["id"])
+            matched_nodes.append({
+                "label": n.get("label"),
+                "id": n.get("id"),
+                "file": n.get("source_file"),
+                "line": n.get("source_location"),
+            })
+
+    by_id = graph["by_id"]
+
+    def _edge_record(e: dict, role: str) -> dict:
+        other_id = e["target"] if role == "out" else e["source"]
+        other = by_id.get(other_id, {})
+        return {
+            "relation": e.get("relation"),
+            "context": e.get("context"),
+            "other_label": other.get("label"),
+            "other_id": other_id,
+            "other_file": other.get("source_file"),
+            "other_line": other.get("source_location"),
+            "source_file": e.get("source_file"),
+            "source_line": e.get("source_location"),
+        }
+
+    result: dict[str, Any] = {
+        "node": node,
+        "matched_nodes": matched_nodes,
+        "graph": str(gj),
+    }
+    if direction in ("in", "both"):
+        result["in"] = [
+            _edge_record(e, "in")
+            for e in graph["edges"]
+            if e.get("target") in matched_ids
+        ]
+    if direction in ("out", "both"):
+        result["out"] = [
+            _edge_record(e, "out")
+            for e in graph["edges"]
+            if e.get("source") in matched_ids
+        ]
+    return result
 
 
 def status(target: str | None = None) -> dict:
-    """Whether a graph exists for ``target``, with node/edge counts + build time.
+    """Whether a graph exists for ``target``, with node/edge counts, build time,
+    and a staleness signal.
 
-    Stat-only — never triggers a rebuild.
+    Never triggers a rebuild — callers that want freshness should use the read
+    verbs (``query``, ``find``, etc.) which call ``_ensure_fresh`` automatically.
     """
     tgt = resolve_target(target)
     out = out_dir_for(tgt)
     gj = graph_json(tgt)
     if not gj.exists():
         return {"target": str(tgt), "exists": False, "out_dir": str(out)}
+    stale, changed = is_stale(str(tgt))
     data = json.loads(gj.read_text())
     return {
         "target": str(tgt),
@@ -211,6 +572,8 @@ def status(target: str | None = None) -> dict:
         "nodes": len(data.get("nodes", [])),
         "edges": len(data.get("edges", [])),
         "built_at": _iso(gj.stat().st_mtime),
+        "stale": stale,
+        "changed": changed,
         "graph": str(gj),
         "out_dir": str(out),
     }
