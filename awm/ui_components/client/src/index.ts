@@ -28,8 +28,10 @@ export {
 export {
   fetchDag,
   openNode,
+  createTask,
   relocateSelf,
   type OpenNodeResult,
+  type CreateTaskResult,
   type TaskState,
   type DagTask,
   type DagContract,

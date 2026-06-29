@@ -106,6 +106,29 @@ export function openNode(goal: string, repo?: unknown): Promise<OpenNodeResult> 
 }
 
 /**
+ * Result of creating a vague task — the orchestrator creates the task and rests
+ * it in a planner-needed state; the planner is placed asynchronously and mints
+ * the unit slug on dispatch, so NO `workspace_slug` comes back here (unlike
+ * `openNode`). The caller selects by `task_id` and lets the DAG poll fill in the
+ * slug a beat later.
+ */
+export interface CreateTaskResult {
+  task_id: string;
+  state: TaskState;
+  consumer: string | null;
+}
+
+/**
+ * Create a vague top-level task and let the orchestrator's PLANNER specify it
+ * conversationally (the "plan it first" path), as opposed to `openNode` which
+ * drops an attended worker straight onto a concrete goal. Public op (no identity
+ * header). The task appears in a specifying state and may spawn child tasks.
+ */
+export function createTask(goal: string): Promise<CreateTaskResult> {
+  return svc('orchestrator').fn<CreateTaskResult>('orch_task_create', { goal });
+}
+
+/**
  * Re-point the ATTACHED node's funnel onto another consumer (the global root by
  * default). Routes through the agents service's attach-gated admin relay, which
  * resolves the caller's placement from the `X-Awm-As: <slug>` header — so the

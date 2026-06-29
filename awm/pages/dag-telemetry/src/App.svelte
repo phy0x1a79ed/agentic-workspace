@@ -17,10 +17,20 @@
    */
   import { onDestroy } from 'svelte';
   import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
-  import { fetchDag, type DagSnapshot, type DagTask } from '@awm/client';
-  import TaskChat from './lib/TaskChat.svelte';
+  import {
+    fetchDag,
+    openNode,
+    createTask,
+    type DagSnapshot,
+    type DagTask,
+  } from '@awm/client';
+  import { AgentChat } from '@awm/agent-chat';
 
   const POLL_MS = 3000;
+
+  // Terminal states: a task here is finished — its retained transcript is shown
+  // read-only (composer hidden) rather than as a live conversation.
+  const TERMINAL = new Set(['completed', 'failed', 'abandoned']);
 
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
@@ -33,6 +43,7 @@
   const selected = $derived<DagTask | null>(
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
+  const isTerminal = $derived(!!selected && TERMINAL.has(selected.state));
 
   // The orchestrator plan is a single GLOBAL DAG — always fetch the whole graph;
   // there is no per-project view filter.
@@ -42,6 +53,37 @@
       error = null;
     } catch (err) {
       error = (err as Error).message;
+    }
+  }
+
+  // --- Create a new task ---------------------------------------------------
+
+  let showNew = $state(false);
+  let newGoal = $state('');
+  let newMode = $state<'worker' | 'planner'>('worker');
+  let busyNew = $state(false);
+
+  async function submitNew(e?: Event) {
+    e?.preventDefault();
+    const goal = newGoal.trim();
+    if (!goal || busyNew) return;
+    busyNew = true;
+    error = null;
+    try {
+      // drop-in worker (orch_node_open) → concrete goal, attended worker placed
+      // immediately; plan it first (orch_task_create) → vague goal, the planner
+      // specifies it (slug minted a poll later).
+      const res =
+        newMode === 'worker' ? await openNode(goal) : await createTask(goal);
+      newGoal = '';
+      showNew = false;
+      await refresh();
+      selectedId = res.task_id;
+      activeTab = 'chat';
+    } catch (err) {
+      error = `create task failed: ${(err as Error).message}`;
+    } finally {
+      busyNew = false;
     }
   }
 
@@ -62,7 +104,44 @@
 <main class="dag">
   <header class="top">
     <h1 class="mono">DAG telemetry</h1>
+    <button
+      class="newbtn mono"
+      type="button"
+      title="create a new task"
+      onclick={() => (showNew = !showNew)}
+    >+ new task</button>
   </header>
+
+  {#if showNew}
+    <form class="new-form mono" onsubmit={submitNew}>
+      <input
+        class="field mono"
+        type="text"
+        placeholder="goal for the new task"
+        bind:value={newGoal}
+        aria-label="new task goal"
+      />
+      <div class="mode-toggle mono" role="radiogroup" aria-label="creation mode">
+        <button
+          type="button"
+          class="mode"
+          class:active={newMode === 'worker'}
+          onclick={() => (newMode = 'worker')}
+          title="place an attended worker straight onto a concrete goal"
+        >drop-in worker</button>
+        <button
+          type="button"
+          class="mode"
+          class:active={newMode === 'planner'}
+          onclick={() => (newMode = 'planner')}
+          title="let the planner specify a vague goal first"
+        >plan it first</button>
+      </div>
+      <button class="newbtn mono" type="submit" disabled={busyNew || !newGoal.trim()}>
+        {busyNew ? 'creating…' : 'create'}
+      </button>
+    </form>
+  {/if}
 
   {#if error}<p class="error mono">{error}</p>{/if}
 
@@ -92,13 +171,10 @@
           {/if}
         {:else if selected && selected.workspace_slug}
           {#key selected.workspace_slug}
-            <TaskChat
-              workspaceSlug={selected.workspace_slug}
-              goal={selected.goal}
-            />
+            <AgentChat slug={selected.workspace_slug} embedded readonly={isTerminal} />
           {/key}
         {:else if selected}
-          <p class="hint mono">task <code>{selected.task_id}</code> ({selected.state}) has no workspace unit yet — nothing to attach to.</p>
+          <p class="hint mono">task <code>{selected.task_id}</code> is <code>{selected.state}</code> — no agent attached yet (the planner mints its unit on dispatch).</p>
         {:else}
           <p class="hint mono">select a task to watch its live conversation.</p>
         {/if}
@@ -131,6 +207,68 @@
     font-size: 13px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+  .newbtn {
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    color: var(--text2, #bbb);
+    padding: 4px 10px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .newbtn:hover:not(:disabled) {
+    background: var(--surface3, #2a2a2a);
+    color: var(--text, #ddd);
+    border-color: var(--atomizer, #ffb74d);
+  }
+  .newbtn:disabled { opacity: 0.5; cursor: default; }
+  .new-form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border, #333);
+    background: var(--surface, #1a1a1a);
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+  }
+  .field {
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    color: var(--text, #ddd);
+    padding: 4px 8px;
+    font-size: 11px;
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+  .field:focus { outline: none; border-color: var(--atomizer, #ffb74d); }
+  .mode-toggle {
+    display: inline-flex;
+    gap: 2px;
+    flex: 0 0 auto;
+  }
+  .mode {
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    color: var(--text3, #888);
+    padding: 4px 10px;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .mode:first-child { border-radius: 3px 0 0 3px; }
+  .mode:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+  .mode:hover { color: var(--text2, #bbb); }
+  .mode.active {
+    color: var(--text, #ddd);
+    background: var(--surface3, #2a2a2a);
+    border-color: var(--atomizer, #ffb74d);
   }
   .error {
     margin: 0;

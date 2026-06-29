@@ -106,6 +106,10 @@ def test_deliver_completes_task_and_root(orch):
     fresh = dao.get_task(tid)
     assert fresh["state"] == "completed"
     assert fresh["agent_ref"] is None  # placement cleared on completion
+    # ...but the unit slug is RETAINED: the unit is kept (not deleted), so its
+    # transcript stays addressable for a read-only review of the finished task.
+    assert fresh["workspace_slug"] == task["workspace_slug"]
+    assert fresh["workspace_slug"] is not None
 
     # Root consumed the task's contract; with its sole prerequisite delivered it
     # completes too (a sentinel: it never got a worker).
