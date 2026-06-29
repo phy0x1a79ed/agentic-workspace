@@ -67,7 +67,6 @@ export interface DagEdge {
 }
 
 export interface DagSnapshot {
-  project: string | null;
   /** The global root sentinel task id (a consumer of all top-level work). */
   root_id: string | null;
   tasks: DagTask[];
@@ -75,10 +74,7 @@ export interface DagSnapshot {
   edges: DagEdge[];
 }
 
-/** Fetch the whole plan in one call. Omit `project` for the global DAG. */
-export function fetchDag(project?: string): Promise<DagSnapshot> {
-  return svc('orchestrator').fn<DagSnapshot>(
-    'orch_dag',
-    project ? { project } : {},
-  );
+/** Fetch the whole (single global) plan in one call. */
+export function fetchDag(): Promise<DagSnapshot> {
+  return svc('orchestrator').fn<DagSnapshot>('orch_dag', {});
 }

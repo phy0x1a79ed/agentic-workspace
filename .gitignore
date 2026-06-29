@@ -21,6 +21,9 @@ NAME.md
 # Workspace runtime directories (not tracked)
 data/
 projects/
+# Per-task workspace units (workspace service execution sandboxes — gitignored,
+# the DAG-node analog of projects/).
+tasks/
 
 # SvelteKit static build output — registered with the hub via
 # `awm hub register --dir build/`, not committed.
@@ -63,3 +66,5 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+secrets

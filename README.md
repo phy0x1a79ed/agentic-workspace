@@ -312,7 +312,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm artifact register`, `awm skill search`, …) from the same live `GET /tools` catalog the MCP surface reads — so the shell mirrors the MCP tool set with no separate list to maintain. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm artifact register`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 

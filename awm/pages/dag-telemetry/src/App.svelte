@@ -22,6 +22,7 @@
 
   const POLL_MS = 3000;
 
+  // The orchestrator owns a single global DAG — there is nothing to filter.
   let snapshot = $state<DagSnapshot | null>(null);
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
@@ -45,7 +46,7 @@
     }
   }
 
-  // Poll loop.
+  // Poll loop — the single global DAG, refreshed on an interval.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
     void refresh();
@@ -91,9 +92,8 @@
             <p class="hint mono">loading the plan…</p>
           {/if}
         {:else if selected && selected.workspace_slug}
-          {#key `${snapshot?.project ?? ''}/${selected.workspace_slug}`}
+          {#key selected.workspace_slug}
             <TaskChat
-              project={snapshot?.project ?? ''}
               workspaceSlug={selected.workspace_slug}
               goal={selected.goal}
             />

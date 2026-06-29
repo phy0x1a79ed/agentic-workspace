@@ -53,7 +53,6 @@ def orch(tmp_path, monkeypatch):
 
     dispatch.reset()
     dispatch.configure(place_fn=stub_place, sync=True)
-    operations.configure(project_exists_fn=lambda project: True)
 
     ns = types.SimpleNamespace(
         dao=dao, dispatch=dispatch, kernel=kernel, operations=operations,

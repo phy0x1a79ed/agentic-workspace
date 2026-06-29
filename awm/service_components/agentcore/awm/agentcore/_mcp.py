@@ -20,11 +20,29 @@ threaded in via :class:`AgentConfig`, not read from awm.config.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
 from ._path import resolve_bin
 from .types import AgentConfig
+
+
+def _resolve_awm_mcp() -> str:
+    """Resolve the ``awm-mcp`` stdio proxy command for a spawned agent.
+
+    Prefer the binary that sits **next to the running interpreter**
+    (``<sys.executable dir>/awm-mcp``) — i.e. the in-env console script. That
+    path execs the proxy DIRECTLY with unbuffered stdio, which the MCP JSON-RPC
+    stdio handshake requires. The PATH-searched ``resolve_bin`` would otherwise
+    pick a ``~/.local/bin/awm-mcp`` shim that wraps ``mamba run`` WITHOUT
+    ``--no-capture-output``; its buffered stdout never flushes the handshake, so
+    the spawned worker's awm MCP server silently never initializes. Fall back to
+    ``resolve_bin`` only when the in-env sibling is absent."""
+    sibling = Path(sys.executable).resolve().parent / "awm-mcp"
+    if sibling.exists():
+        return str(sibling)
+    return resolve_bin("awm-mcp")
 
 
 def _awm_server_env(config: AgentConfig) -> dict[str, str]:
@@ -72,7 +90,7 @@ def write_claude_mcp_config(config: AgentConfig) -> Optional[str]:
     if awm_dir is None:
         return None
     try:
-        command = resolve_bin("awm-mcp")
+        command = _resolve_awm_mcp()
     except RuntimeError:
         return None
     cfg = {"mcpServers": {"awm": {
@@ -98,7 +116,7 @@ def write_opencode_mcp_config(config: AgentConfig) -> Optional[str]:
     if awm_dir is None:
         return None
     try:
-        command = resolve_bin("awm-mcp")
+        command = _resolve_awm_mcp()
     except RuntimeError:
         return None
     cfg = {

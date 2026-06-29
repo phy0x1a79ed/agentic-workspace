@@ -27,13 +27,13 @@ API_MANIFEST: dict[str, Any] = {
             "name": "workspace_create",
             "tool": "workspace_create",
             "description": (
-                "Provision a workspace unit (the DAG execution sandbox): a "
-                "directory with CONTEXT.md (the brief), read-only inputs/<name> "
-                "pre-readings, and deliverable/<contract>/ staging. Idempotent "
-                "on (project, unit_slug)."
+                "Provision a workspace unit (the DAG node's canonical execution "
+                "sandbox): a directory with CLAUDE.md (the brief), a .awm/ metadata "
+                "dir, read-only inputs/<name> pre-readings, deliverable/<contract>/ "
+                "staging, and repos/<name> symlinks to existing scopes. Units are "
+                "keyed on unit_slug alone (no project). Idempotent on unit_slug."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "unit_slug", "type": "string", "required": True},
                 {"name": "context_md", "type": "string", "required": False},
                 {"name": "prereadings", "type": "array", "required": False,
@@ -41,6 +41,25 @@ API_MANIFEST: dict[str, Any] = {
                      "List of {name, content} (inline text) or {name, path} "
                      "(source file/dir to copy). Materialized read-only under "
                      "inputs/<name>.")},
+                {"name": "repos", "type": "array", "required": False,
+                 "description": (
+                     "List of {name, project, scope} existing scopes to link "
+                     "under repos/<name> (symlinked to projects/<project>/<scope>; "
+                     "the project/scope are the scope's own coordinates).")},
+            ],
+        },
+        {
+            "name": "workspace_link_repos",
+            "tool": "workspace_link_repos",
+            "description": (
+                "Link (or refresh) existing scopes under a unit's repos/<name> "
+                "without rewriting the brief — the admin link_repo primitive. "
+                "The unit is keyed on unit_slug."
+            ),
+            "params": [
+                {"name": "unit_slug", "type": "string", "required": True},
+                {"name": "repos", "type": "array", "required": True,
+                 "description": "[{name, project, scope}] scopes to link."},
             ],
         },
         {
@@ -48,19 +67,21 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "workspace_retain",
             "description": (
                 "Free a unit but keep its contents (mark idle) — the "
-                "free-but-retain primitive for audit and planner/lifecycle reuse."
+                "free-but-retain primitive for audit and planner/lifecycle reuse. "
+                "The unit is keyed on unit_slug."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "unit_slug", "type": "string", "required": True},
             ],
         },
         {
             "name": "workspace_destroy",
             "tool": "workspace_destroy",
-            "description": "Remove a unit directory and its row (terminal cleanup).",
+            "description": (
+                "Remove a unit directory and its row (terminal cleanup). The unit "
+                "is keyed on unit_slug."
+            ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "unit_slug", "type": "string", "required": True},
             ],
         },
@@ -70,10 +91,9 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Return a unit's on-disk path + state (active|idle|unknown) "
                 "without hardcoding the layout — used to recover a workdir on "
-                "respawn."
+                "respawn. The unit is keyed on unit_slug."
             ),
             "params": [
-                {"name": "project", "type": "string", "required": True},
                 {"name": "unit_slug", "type": "string", "required": True},
             ],
         },
@@ -84,16 +104,16 @@ API_MANIFEST: dict[str, Any] = {
 
 HANDLERS = {
     "workspace_create": lambda args: units.create(
-        project=args["project"], unit_slug=args["unit_slug"],
+        unit_slug=args["unit_slug"],
         context_md=args.get("context_md", ""),
         prereadings=args.get("prereadings") or [],
+        repos=args.get("repos") or [],
     ),
-    "workspace_retain": lambda args: units.retain(
-        project=args["project"], unit_slug=args["unit_slug"]),
-    "workspace_destroy": lambda args: units.destroy(
-        project=args["project"], unit_slug=args["unit_slug"]),
-    "workspace_resolve": lambda args: units.resolve(
-        project=args["project"], unit_slug=args["unit_slug"]),
+    "workspace_link_repos": lambda args: units.link_repos(
+        unit_slug=args["unit_slug"], repos=args.get("repos") or []),
+    "workspace_retain": lambda args: units.retain(unit_slug=args["unit_slug"]),
+    "workspace_destroy": lambda args: units.destroy(unit_slug=args["unit_slug"]),
+    "workspace_resolve": lambda args: units.resolve(unit_slug=args["unit_slug"]),
 }
 
 

@@ -1,0 +1,21 @@
+#!/bin/sh
+# Bounce sshd entry — ported from projects/vpn_bounce/main/load/bin/{ssh_server,
+# update_key}. Generates host keys on first boot, installs the bounce public key
+# the vpn service injects (-e BOUNCE_AUTHORIZED_KEY) as the sole authorized key,
+# then runs sshd in the foreground under supervisor.
+set -eu
+
+# Fresh host keys per container start. The host pins nothing for the bounce:
+# ~/.ssh/config uses `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null`,
+# so a new host key each run is fine (and the container is ephemeral anyway).
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A
+mkdir -p /var/run/sshd /run/sshd /root/.ssh
+chmod 700 /root/.ssh
+
+# The authorized key is injected by the vpn service (container.py -> cfg.env).
+# Empty key => no one can log in (fail-safe), but the tunnel/kill-switch still run.
+printf '%s\n' "${BOUNCE_AUTHORIZED_KEY:-}" > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+
+# -D foreground (so supervisor owns it), -e log to stderr (-> stdout via redirect).
+exec /usr/sbin/sshd -D -e
