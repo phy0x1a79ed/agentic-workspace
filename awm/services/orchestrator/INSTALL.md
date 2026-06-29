@@ -31,11 +31,14 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Five **public** tools are projected into the MCP catalog (`/tools`):
+Five **public** operations are projected into the gateway catalog (`/tools`):
 `orch_task_create` (create a vague task into an attended specification),
 `orch_task_attach`, `orch_status`, `orch_frontier`, `orch_dag` (the whole plan
 in one shot — tasks, contracts, and denormalized dependency edges — for a client
-to visualize the DAG).
+to visualize the DAG). On the collapsed MCP surface these are verbs under the
+single `orch` domain tool (`orch(verb="task_create", args={…})`, `verb="dag"`, …);
+on CLI/HTTP they stay expanded as `orch_*` (`awm orch task-create`,
+`POST /invoke {name:"orch_dag"}`). Call `orch(verb="describe")` to list them.
 
 The **privileged** plan-mutation ops — `claim`, `deliver`, `fail`,
 `decompose_commit`, `approve_plan`, `reject_plan`, `set_attached` — are

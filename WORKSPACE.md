@@ -68,12 +68,12 @@ Each project has one or more scope worktrees under it; `awm scope list --project
 
 Every scope agent runs this on session start (the `.awm/context.md` for newly-created scopes embeds the boilerplate; agents in long-lived scopes can re-run it any time to refresh):
 
-1. `mcp__awm__scope_refresh project=<p> scope=<s>` — re-renders `.awm/history.md` and `.awm/artifacts.md` from the DB.
+1. `scope(verb="refresh", args={project:<p>, scope:<s>})` — re-renders `.awm/history.md` and `.awm/artifacts.md` from the DB.
 2. Read `.awm/history.md` — open + resolved session log for this scope and its siblings.
 3. Read `.awm/artifacts.md` — registered artifacts (data files, model outputs, figures) from sibling scopes.
-4. `mcp__awm__scope_fetch scope=<s> kind=message` (and optionally the `workspace` channel) — anything addressed to you or the workspace that's waiting.
+4. `scope(verb="fetch", args={scope:<s>, kind:"message"})` (and optionally the `workspace` channel) — anything addressed to you or the workspace that's waiting.
 
-`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use `scope_refresh`, `scope_post`, and `artifact_register` MCP tools.
+`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use the `scope` domain's `refresh`/`post` verbs and `artifact`'s `register` verb (`scope(verb="refresh", …)`, etc.).
 
 ## MCP Tools
 
