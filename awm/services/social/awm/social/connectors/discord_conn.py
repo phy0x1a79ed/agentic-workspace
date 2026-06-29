@@ -233,8 +233,8 @@ class DiscordConnector(Connector):
         out.reverse()  # oldest->newest
         return out
 
-    async def list_channels(self) -> list[Channel]:
-        import discord
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        import discord  # noqa: F401
 
         if self._client is None:
             raise RuntimeError(f"discord[{self.account.name}] not started")
@@ -247,6 +247,17 @@ class DiscordConnector(Connector):
                     name=f"{guild.name}#{ch.name}",
                     kind="text",
                 ))
+        if include_dms:
+            # Already-open DM channels the bot can see. (Discord opens a DM
+            # lazily on first contact; this lists the ones that exist.)
+            for dm in getattr(self._client, "private_channels", []):
+                if getattr(dm, "type", None) is discord.ChannelType.private:
+                    recipient = getattr(dm, "recipient", None)
+                    out.append(Channel(
+                        id=str(dm.id),
+                        name=str(recipient) if recipient else f"dm:{dm.id}",
+                        kind="dm",
+                    ))
         return out
 
     async def identity(self) -> Identity:

@@ -95,10 +95,16 @@ class MiraConnector(Connector):
             "ts": resp.get("ts", ""),
         }
 
-    async def list_channels(self) -> list[Channel]:
-        resp = await self._get(f"/v1/{self.platform}/channels")
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        params = {"include_dms": "true"} if include_dms else {}
+        resp = await self._get(f"/v1/{self.platform}/channels", **params)
         return [Channel(id=c.get("id", ""), name=c.get("name", ""),
                         kind=c.get("kind", "")) for c in resp.get("channels", [])]
+
+    async def open_dm(self, user: str) -> Channel:
+        resp = await self._post(f"/v1/{self.platform}/open_dm", {"user": user})
+        return Channel(id=resp.get("id", ""), name=resp.get("name", "") or user,
+                       kind=resp.get("kind", "dm"))
 
     async def identity(self) -> Identity:
         resp = await self._get(f"/v1/{self.platform}/identity")

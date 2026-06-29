@@ -116,8 +116,20 @@ async def _h_channels(args: dict) -> dict:
     if conn is None:
         raise RuntimeError(
             f"account {account!r} is not configured or not connected")
-    chans = await conn.list_channels()
+    chans = await conn.list_channels(include_dms=bool(args.get("include_dms")))
     return {"channels": [vars(c) for c in chans]}
+
+
+async def _h_open_dm(args: dict) -> dict:
+    """Resolve a platform user (id, or name where supported) to a DM channel and
+    open it. Returns the channel so it can be fed straight to ``history``/``send``."""
+    account = args["account"]
+    conn = _connectors.get(account)
+    if conn is None:
+        raise RuntimeError(
+            f"account {account!r} is not configured or not connected")
+    ch = await conn.open_dm(args["user"])
+    return {"channel": vars(ch)}
 
 
 def _h_accounts(args: dict) -> dict:
@@ -164,6 +176,18 @@ async def _h_history(args: dict) -> dict:
         limit=int(args.get("limit", 50)),
         before=args.get("before") or None,
     )
+    stored, new = _persist_inbound(msgs)
+    return {"messages": stored, "fetched": len(msgs), "new": new}
+
+
+def _persist_inbound(msgs) -> tuple[list, int]:
+    """Persist fetched inbound messages through the live-inbound dedupe path.
+
+    Returns ``(stored_rows, new_count)`` — a row dict per message (or a
+    ``{deduped: True, …}`` marker for one the ``(platform, account, message_id)``
+    index already had). Shared by ``history`` and ``backfill`` so both feed
+    ``social_messages`` / ``social_search`` identically and stay idempotent.
+    """
     stored, new = [], 0
     for m in msgs:
         awm_user = _dao.lookup(m.platform, m.sender_id) or ""
@@ -187,7 +211,48 @@ async def _h_history(args: dict) -> dict:
         else:
             stored.append({"deduped": True, "message_id": m.message_id,
                            "text": m.text, "ts": m.ts})
-    return {"messages": stored, "fetched": len(msgs), "new": new}
+    return stored, new
+
+
+async def _h_backfill(args: dict) -> dict:
+    """Enumerate every conversation an account can see (channels + DMs) and fetch
+    each one's history, so the stored-message surface — and thus ``social_search``
+    — covers the account's full reachable history rather than only the
+    conversations someone explicitly ran ``history`` over.
+
+    Conversations the connector genuinely cannot read (e.g. Teams team-channels
+    whose history endpoint 404s) are reported in ``results`` with ``ok: False``
+    and the error, never silently dropped (so coverage gaps are visible).
+    """
+    account = args["account"]
+    conn = _connectors.get(account)
+    if conn is None:
+        raise RuntimeError(
+            f"account {account!r} is not configured or not connected")
+    limit = int(args.get("limit", 50))
+    include_dms = args.get("include_dms", True)  # backfill defaults to everything
+    chans = await conn.list_channels(include_dms=bool(include_dms))
+    results, total_new, total_fetched, unreadable = [], 0, 0, 0
+    for ch in chans:
+        entry = {"channel": ch.id, "name": ch.name, "kind": ch.kind}
+        try:
+            msgs = await conn.history(ch.id, limit=limit)
+        except Exception as exc:  # noqa: BLE001 — one unreadable conv never aborts the sweep
+            unreadable += 1
+            results.append({**entry, "ok": False, "error": str(exc)})
+            continue
+        _stored, new = _persist_inbound(msgs)
+        total_new += new
+        total_fetched += len(msgs)
+        results.append({**entry, "ok": True, "fetched": len(msgs), "new": new})
+    return {
+        "account": account,
+        "conversations": len(chans),
+        "fetched": total_fetched,
+        "new": total_new,
+        "unreadable": unreadable,
+        "results": results,
+    }
 
 
 def _h_search(args: dict) -> dict:
@@ -277,9 +342,36 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "channels",
             "tool": "social_channels",
-            "description": "List channels visible to a configured account.",
+            "description": "List channels visible to a configured account. "
+                           "`include_dms=true` also enumerates direct/group DMs "
+                           "(kind 'dm'/'group') where the platform supports it.",
             "params": [
                 {"name": "account", "type": "string", "required": True},
+                {"name": "include_dms", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "backfill",
+            "tool": "social_backfill",
+            "description": "Fetch + persist history for EVERY conversation an "
+                           "account can see (channels + DMs), so social_search "
+                           "covers its full reachable history. Reports per-"
+                           "conversation counts and any unreadable ones.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "limit", "type": "number", "required": False},
+                {"name": "include_dms", "type": "boolean", "required": False},
+            ],
+        },
+        {
+            "name": "open_dm",
+            "tool": "social_open_dm",
+            "description": "Resolve a platform user (by id, or by name where the "
+                           "platform supports it) to a direct-message channel and "
+                           "open it. Returns the channel for use with history/send.",
+            "params": [
+                {"name": "account", "type": "string", "required": True},
+                {"name": "user", "type": "string", "required": True},
             ],
         },
         {
@@ -326,9 +418,11 @@ API_MANIFEST: dict[str, Any] = {
 HANDLERS = {
     "send": _h_send,
     "channels": _h_channels,
+    "open_dm": _h_open_dm,
     "accounts": _h_accounts,
     "messages": _h_messages,
     "history": _h_history,
+    "backfill": _h_backfill,
     "search": _h_search,
     "list_operators": _h_list_operators,
     "add_operator": _h_add_operator,
