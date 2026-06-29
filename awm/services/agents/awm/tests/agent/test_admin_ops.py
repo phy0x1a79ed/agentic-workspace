@@ -32,21 +32,27 @@ def _orch_calls(agents_env, op):
 
 
 class TestRegistryDerivation:
-    def test_worker_profile_lists_every_admin_tool(self):
-        profile = placement.TOOL_PROFILES["worker"]
+    def test_worker_profile_permits_every_admin_verb(self):
+        # The admin verbs are now permitted server-side (VERB_PROFILES), not via
+        # claude --allowedTools (which carries only the collapsed agent domain).
+        worker_verbs = placement.VERB_PROFILES["worker"]
         for name in admin_ops.ADMIN_TOOL_NAMES:
-            assert f"mcp__awm__{name}" in profile
-        # plan/verify/planner do NOT get the admin tools.
+            assert name in worker_verbs
+        # plan/verify/planner do NOT get the admin verbs.
         for mode in ("plan", "verify", "planner"):
-            assert not any(f"mcp__awm__{n}" in placement.TOOL_PROFILES[mode]
+            assert not any(n in placement.VERB_PROFILES[mode]
                            for n in admin_ops.ADMIN_TOOL_NAMES)
+        # Every mode's allowed_tools is just the one agent-domain tool (+ fs).
+        for mode in ("worker", "plan", "planner", "verify"):
+            assert "mcp__awm__agent" in placement.TOOL_PROFILES[mode]
 
     def test_manifest_and_handlers_cover_the_registry(self):
         from awm.agents import hub_adapter
         tools = {f.get("tool") or f["name"]
                  for f in hub_adapter.API_MANIFEST["functions"]}
         for name in admin_ops.ADMIN_TOOL_NAMES:
-            assert name in tools
+            # Admin ops fold into the agent domain (tool == f"agent_{name}").
+            assert f"agent_{name}" in tools
             assert name in hub_adapter.HANDLERS
 
 
