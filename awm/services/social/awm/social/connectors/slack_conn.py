@@ -38,6 +38,23 @@ SESSION_HISTORY_LIMIT = 50
 _REFRESHABLE = ("invalid_auth", "not_authed", "token_revoked", "token_expired")
 
 
+def _slack_kind(ch: dict) -> str:
+    """Classify a Slack conversation dict into a connector ``Channel.kind``."""
+    if ch.get("is_im"):
+        return "dm"
+    if ch.get("is_mpim"):
+        return "group"
+    if ch.get("is_private"):
+        return "private"
+    return "channel"
+
+
+def _looks_like_user_id(s: str) -> bool:
+    """Slack user ids are ``U…`` (and ``W…`` on enterprise grid), all-caps
+    alphanumerics. Anything else is treated as a name to resolve."""
+    return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
+
+
 class SlackConnector(Connector):
     platform = "slack"
 
@@ -325,17 +342,66 @@ class SlackConnector(Connector):
             "ts": resp.get("ts", ""),
         }
 
-    async def list_channels(self) -> list[Channel]:
-        resp = await self._auth_retry(lambda: self._web_client().conversations_list(
-            types="public_channel,private_channel", limit=200))
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        if include_dms:
+            # ``users.conversations`` (not ``conversations.list``) is the call
+            # that returns the *caller's* im/mpim conversations alongside its
+            # channels — the same set the session watcher tails.
+            resp = await self._auth_retry(
+                lambda: self._web_client().users_conversations(
+                    types=SESSION_CONV_TYPES, exclude_archived=True, limit=200))
+        else:
+            resp = await self._auth_retry(
+                lambda: self._web_client().conversations_list(
+                    types="public_channel,private_channel", limit=200))
         out: list[Channel] = []
         for ch in resp.get("channels", []):
             out.append(Channel(
                 id=ch.get("id", ""),
-                name=ch.get("name", ""),
-                kind="channel",
+                # im conversations carry no ``name`` — fall back to the peer
+                # user id so the row is still identifiable.
+                name=ch.get("name", "") or ch.get("user", ""),
+                kind=_slack_kind(ch),
             ))
         return out
+
+    async def _resolve_user_id(self, who: str) -> str:
+        """Map a Slack user *name* (``name`` / display / real name) to its id.
+
+        ``who`` that already looks like a user id (``U…``/``W…``) is returned
+        as-is. Otherwise ``users.list`` is paged and matched case-insensitively.
+        """
+        if _looks_like_user_id(who):
+            return who
+        want = who.lstrip("@").lower()
+        cursor = ""
+        while True:
+            kwargs = {"limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await self._auth_retry(
+                lambda kwargs=kwargs: self._web_client().users_list(**kwargs))
+            for u in resp.get("members", []):
+                prof = u.get("profile") or {}
+                names = {
+                    (u.get("name") or "").lower(),
+                    (u.get("real_name") or "").lower(),
+                    (prof.get("display_name") or "").lower(),
+                    (prof.get("real_name") or "").lower(),
+                }
+                if want in names and not u.get("deleted"):
+                    return u.get("id", "")
+            cursor = (resp.get("response_metadata") or {}).get("next_cursor", "")
+            if not cursor:
+                break
+        raise RuntimeError(f"no slack user matches {who!r}")
+
+    async def open_dm(self, user: str) -> Channel:
+        uid = await self._resolve_user_id(user)
+        resp = await self._auth_retry(
+            lambda: self._web_client().conversations_open(users=uid))
+        ch = resp.get("channel") or {}
+        return Channel(id=ch.get("id", ""), name=user, kind="dm")
 
     async def identity(self) -> Identity:
         auth = await self._auth_retry(lambda: self._web_client().auth_test())

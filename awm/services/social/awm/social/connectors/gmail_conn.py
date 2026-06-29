@@ -299,7 +299,9 @@ class GmailConnector(Connector):
     ) -> dict:
         return await asyncio.to_thread(self._send_sync, channel, text, thread)
 
-    async def list_channels(self) -> list[Channel]:
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        # Gmail has no DM concept — mailboxes are the only "channels"; the flag
+        # is accepted for ABC parity and ignored.
         def _list() -> list[Channel]:
             m = self._imap_login()
             try:

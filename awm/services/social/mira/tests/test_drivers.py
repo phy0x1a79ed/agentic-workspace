@@ -69,6 +69,15 @@ class TestSlackDriver:
         chans = await SlackDriver(page).list_channels()
         assert chans[0]["id"] == "C1"
 
+    async def test_open_dm_invokes_helper_with_user(self):
+        page = FakePage({"window.__awmMira.slack.openDM":
+                         {"id": "D1", "name": "", "kind": "dm"}})
+        out = await SlackDriver(page).open_dm("alice")
+        assert out == {"id": "D1", "name": "", "kind": "dm"}
+        # the user arg is threaded into the helper call
+        assert json.dumps("alice") in page.exprs[-1]
+        assert "window.__awmMira.slack.openDM" in page.exprs[-1]
+
 
 class TestTeamsDriver:
     async def test_fetch_messages_normalises(self):
@@ -104,3 +113,10 @@ class TestTeamsDriver:
         await TeamsDriver(page).send("19:abc", "hi", thread=None)
         expr = page.exprs[-1]
         assert "19:abc" in expr and json.dumps("hi") in expr
+
+    async def test_open_dm_not_supported(self):
+        # Teams has no DM-open path; the base default must raise so the server
+        # surfaces a clean 501 rather than a generic 502.
+        page = FakePage({})
+        with pytest.raises(NotImplementedError):
+            await TeamsDriver(page).open_dm("8:orgid:u2")

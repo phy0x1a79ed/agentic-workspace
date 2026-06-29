@@ -55,8 +55,16 @@ class _FakeDriver:
     async def identity(self):
         return {"id": "ME", "name": "me"}
 
-    async def list_conversations(self):
+    async def list_channels(self):
         return [{"id": "C1", "name": "general", "kind": "channel"}]
+
+    async def list_conversations(self):
+        return [{"id": "C1", "name": "general", "kind": "channel"},
+                {"id": "D1", "name": "dm:bob", "kind": "dm"}]
+
+    async def open_dm(self, user):
+        self.opened_dm = user
+        return {"id": "D1", "name": "", "kind": "dm"}
 
     async def fetch_messages(self, channel, oldest, limit, *, before=None):
         self.last_fetch = {"channel": channel, "oldest": oldest,
@@ -160,3 +168,76 @@ class TestMessagesEndpoint:
             "slack", page=None, driver=_FakeDriver())
         resp = await api._h_messages(_MsgReq("slack", {}))
         assert resp.status == 400
+
+
+class _JsonReq:
+    """Minimal stand-in for an aiohttp request with a JSON body."""
+
+    def __init__(self, platform, body, query=None):
+        self.match_info = {"platform": platform}
+        self.query = query or {}
+        self._body = body
+
+    async def json(self):
+        if self._body is _NO_BODY:
+            raise ValueError("no body")
+        return self._body
+
+
+_NO_BODY = object()
+
+
+class TestChannelsEndpoint:
+    async def test_channels_only_by_default(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_channels(_MsgReq("slack", {}))
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert [c["id"] for c in body["channels"]] == ["C1"]
+
+    async def test_include_dms_returns_conversations(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_channels(
+            _MsgReq("slack", {"include_dms": "true"}))
+        body = json.loads(resp.text)
+        assert {c["id"] for c in body["channels"]} == {"C1", "D1"}
+
+
+class TestOpenDmEndpoint:
+    async def test_open_dm_resolves_and_returns_channel(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        resp = await api._h_open_dm(_JsonReq("slack", {"user": "alice"}))
+        assert resp.status == 200
+        assert json.loads(resp.text) == {"id": "D1", "name": "", "kind": "dm"}
+        assert drv.opened_dm == "alice"
+
+    async def test_open_dm_user_required(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_open_dm(_JsonReq("slack", {}))
+        assert resp.status == 400
+
+    async def test_open_dm_unsupported_is_501(self):
+        api = MiraAPI("http://x", [], "secret")
+
+        class _NoDmDriver(_FakeDriver):
+            platform = "teams"
+
+            async def open_dm(self, user):
+                from mira_api.drivers import Driver
+                return await Driver.open_dm(self, user)
+
+        api._platforms["teams"] = Platform(
+            "teams", page=None, driver=_NoDmDriver())
+        resp = await api._h_open_dm(_JsonReq("teams", {"user": "x"}))
+        assert resp.status == 501

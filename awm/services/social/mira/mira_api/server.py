@@ -5,10 +5,13 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
 
     GET  /v1/health                      → per-platform target liveness
     GET  /v1/{platform}/identity         → who the session is logged in as
-    GET  /v1/{platform}/channels         → channels/conversations visible
+    GET  /v1/{platform}/channels[?include_dms=true]  → channels (or, with
+                                                       include_dms, all im/mpim
+                                                       conversations too)
     GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
                                                            backwards; Slack only)
     POST /v1/{platform}/send  {channel,text,thread?}
+    POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
 
 Every route requires ``Authorization: Bearer <token>``. The daemon polls each
@@ -75,6 +78,7 @@ class MiraAPI:
         app.router.add_get("/v1/{platform}/channels", self._h_channels)
         app.router.add_get("/v1/{platform}/messages", self._h_messages)
         app.router.add_post("/v1/{platform}/send", self._h_send)
+        app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
         return app
@@ -135,8 +139,31 @@ class MiraAPI:
 
     async def _h_channels(self, request: web.Request) -> web.Response:
         p = self._platform(request)
+        # ``include_dms=true`` returns the full conversation set (im/mpim too) via
+        # the driver's ``list_conversations`` — the same set the inbound watcher
+        # tails — instead of the channels-only ``list_channels``.
+        include_dms = request.query.get("include_dms", "").lower() in (
+            "1", "true", "yes")
         try:
-            return web.json_response({"channels": await p.driver.list_channels()})
+            chans = await (p.driver.list_conversations() if include_dms
+                           else p.driver.list_channels())
+            return web.json_response({"channels": chans})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_open_dm(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        user = body.get("user")
+        if not user:
+            return web.json_response({"error": "user is required"}, status=400)
+        try:
+            return web.json_response(await p.driver.open_dm(user))
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 

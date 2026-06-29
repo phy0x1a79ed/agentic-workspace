@@ -161,8 +161,24 @@ class Connector(ABC):
             f"{self.platform} connector does not support history fetch")
 
     @abstractmethod
-    async def list_channels(self) -> list[Channel]:
-        """List channels/conversations visible to this account."""
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        """List channels/conversations visible to this account.
+
+        ``include_dms=True`` additionally enumerates direct/group DMs (their
+        ``kind`` is ``"dm"`` / ``"group"``). Connectors whose platform has no DM
+        concept (or that can't enumerate them) ignore the flag and return their
+        channel list unchanged.
+        """
+
+    async def open_dm(self, user: str) -> Channel:
+        """Resolve a platform user (by id, or by name where supported) to a DM
+        conversation and open it, returning the :class:`Channel`.
+
+        Non-abstract: a connector whose platform has no DM concept leaves this
+        default, which raises and the verb surfaces a clean error.
+        """
+        raise NotImplementedError(
+            f"{self.platform} connector does not support opening DMs")
 
     @abstractmethod
     async def identity(self) -> Identity:

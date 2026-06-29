@@ -182,8 +182,9 @@ class TestManifest:
         tools = {f.get("tool", f["name"]) for f in fns}
         assert tools == {
             "social_send", "social_messages", "social_history", "social_search",
-            "social_accounts", "social_channels", "social_operators",
-            "social_operator_add", "social_operator_remove", "social_lookup",
+            "social_accounts", "social_channels", "social_open_dm",
+            "social_backfill", "social_operators", "social_operator_add",
+            "social_operator_remove", "social_lookup",
         }
         # Every declared function has a handler.
         for f in fns:
@@ -225,3 +226,103 @@ class TestConnectorHistoryDefault:
         c = _Bare(Account(name="x", platform="bare", token=""), _noop)
         with pytest.raises(NotImplementedError):
             await c.history("C1")
+
+    async def test_base_open_dm_raises_not_implemented(self):
+        from awm.social.connectors.base import Account, Connector
+
+        class _Bare(Connector):
+            platform = "bare"
+
+            async def start(self): ...
+            async def send(self, channel, text, *, thread=None): return {}
+            async def list_channels(self, *, include_dms=False): return []
+            async def identity(self): ...
+            async def close(self): ...
+
+        c = _Bare(Account(name="x", platform="bare", token=""), _noop)
+        with pytest.raises(NotImplementedError):
+            await c.open_dm("U123")
+
+
+class _FakeDmWeb:
+    """Stand-in AsyncWebClient for the Slack DM-exposure tests: channel/DM
+    enumeration, user resolution (paged), and conversations.open."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def users_conversations(self, **kw):
+        self.calls.append(("users_conversations", dict(kw)))
+        return {"channels": [
+            {"id": "C1", "name": "general", "is_channel": True},
+            {"id": "G1", "name": "secret", "is_private": True},
+            {"id": "D1", "user": "UALICE", "is_im": True},
+            {"id": "M1", "name": "mpdm-a--b", "is_mpim": True},
+        ]}
+
+    async def conversations_list(self, **kw):
+        self.calls.append(("conversations_list", dict(kw)))
+        return {"channels": [{"id": "C1", "name": "general"}]}
+
+    async def users_list(self, **kw):
+        self.calls.append(("users_list", dict(kw)))
+        # Two pages, to exercise cursor paging.
+        if not kw.get("cursor"):
+            return {"members": [{"id": "UME", "name": "me"}],
+                    "response_metadata": {"next_cursor": "pg2"}}
+        return {"members": [
+            {"id": "UALICE", "name": "alice",
+             "profile": {"display_name": "Alice A"}}],
+                "response_metadata": {"next_cursor": ""}}
+
+    async def conversations_open(self, **kw):
+        self.calls.append(("conversations_open", dict(kw)))
+        return {"channel": {"id": "D1"}}
+
+
+class TestSlackDms:
+    def _conn(self, web):
+        from awm.social.connectors.base import Account
+        from awm.social.connectors.slack_conn import SlackConnector
+        c = SlackConnector(
+            Account(name="s", platform="slack", token="xoxc-x", cookie="c"),
+            _noop)
+        c._web = web
+        return c
+
+    async def test_list_channels_excludes_dms_by_default(self):
+        web = _FakeDmWeb()
+        chans = await self._conn(web).list_channels()
+        assert web.calls[0][0] == "conversations_list"
+        assert [c.id for c in chans] == ["C1"]
+
+    async def test_list_channels_include_dms_enumerates_ims(self):
+        web = _FakeDmWeb()
+        chans = await self._conn(web).list_channels(include_dms=True)
+        assert web.calls[0][0] == "users_conversations"
+        kinds = {c.id: c.kind for c in chans}
+        assert kinds == {"C1": "channel", "G1": "private",
+                         "D1": "dm", "M1": "group"}
+        # An im has no name → falls back to the peer user id.
+        assert next(c.name for c in chans if c.id == "D1") == "UALICE"
+
+    async def test_open_dm_by_user_id(self):
+        web = _FakeDmWeb()
+        ch = await self._conn(web).open_dm("UALICE")
+        assert ch.id == "D1" and ch.kind == "dm"
+        # A bare id needs no users.list lookup.
+        assert not any(c[0] == "users_list" for c in web.calls)
+        assert ("conversations_open", {"users": "UALICE"}) in web.calls
+
+    async def test_open_dm_resolves_name_via_users_list(self):
+        web = _FakeDmWeb()
+        ch = await self._conn(web).open_dm("alice")
+        assert ch.id == "D1"
+        # Resolved the name across paged users.list, then opened by id.
+        assert any(c[0] == "users_list" for c in web.calls)
+        assert ("conversations_open", {"users": "UALICE"}) in web.calls
+
+    async def test_open_dm_unknown_name_raises(self):
+        web = _FakeDmWeb()
+        with pytest.raises(RuntimeError):
+            await self._conn(web).open_dm("nobody")

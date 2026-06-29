@@ -74,6 +74,33 @@ marks your mail read). For `social_send`, `channel` is the recipient address and
 `thread` (optional) is an RFC822 `Message-ID` to reply into; a `Subject:` first
 line in the text sets the subject. UBC-webmail / WeChat later get their own path.
 
+## Reading history & DMs
+
+Live receive only tails messages that arrive *after* connect. To reach existing
+messages — including ones from before the service came up — and DMs:
+
+- **`social_history account= channel= [limit=] [before=]`** fetches a channel's
+  existing messages via its connector, persists them through the same dedupe path
+  as live inbound, and returns them. They then show up in `social_messages` and
+  `social_search`. `before` pages backwards (Slack ts / connector cursor; Teams
+  has no usable cursor and ignores it).
+- **`social_channels account= [include_dms=true]`** lists channels; with
+  `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
+  the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
+- **`social_open_dm account= user=`** resolves a platform user — by id, or by
+  name where the platform supports a directory lookup (Slack `users.list`) — to a
+  DM channel and opens it, returning the channel id for use with `history`/`send`.
+- **`social_backfill account= [limit=] [include_dms=true]`** enumerates *every*
+  conversation the account can see (channels + DMs) and runs `history` over each,
+  so `social_search` covers the account's full reachable history. Conversations a
+  connector genuinely can't read (e.g. Teams `@thread.tacv2` team-channels, served
+  by a different backend than the ng.msg chat service) are reported per-row with
+  `ok: false` + the error, never silently dropped.
+
+Slack and Teams run through the mira daemon; the DM/conversation enumeration and
+`open_dm` for those platforms live in `mira/mira_api/` and require the mira host
+to be running the updated daemon (`mira/install-mira.sh`).
+
 ## Run
 
 You never invoke the service by hand in normal operation. The gateway discovers

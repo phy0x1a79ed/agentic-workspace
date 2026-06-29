@@ -81,6 +81,13 @@ class Driver(ABC):
     async def send(self, channel: str, text: str,
                    thread: str | None = None) -> dict: ...
 
+    async def open_dm(self, user: str) -> dict:
+        """Resolve ``user`` (platform id, or name where supported) to a DM and
+        open it → ``{id, name, kind}``. Non-abstract: platforms without a DM-open
+        path leave this default, which the server surfaces as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support open_dm")
+
 
 # --------------------------------------------------------------------------- #
 # Slack                                                                        #
@@ -88,8 +95,9 @@ class Driver(ABC):
 
 SLACK_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.slack) {
+if (!window.__awmMira.slack || window.__awmMira.slack._v !== 2) {
   const S = {};
+  S._v = 2;  // bump when adding/changing helpers so a long-lived page self-upgrades
   S._token = function () {
     let lc;
     try { lc = JSON.parse(localStorage.getItem('localConfig_v2')); }
@@ -145,6 +153,30 @@ if (!window.__awmMira.slack) {
     const j = await S._call('chat.postMessage', p);
     return {message_id: j.ts, channel_id: j.channel || channel, ts: j.ts};
   };
+  S._resolveUser = async function (user) {
+    if (/^[UW][A-Z0-9]+$/.test(user)) return user;     // already a user id
+    const want = String(user).replace(/^@/, '').toLowerCase();
+    let cursor = '';
+    do {
+      const p = {limit: '200'};
+      if (cursor) p.cursor = cursor;
+      const j = await S._call('users.list', p);
+      for (const m of (j.members || [])) {
+        const pr = m.profile || {};
+        const names = [m.name, m.real_name, pr.display_name, pr.real_name]
+          .map(x => (x || '').toLowerCase());
+        if (!m.deleted && names.indexOf(want) >= 0) return m.id;
+      }
+      cursor = (j.response_metadata || {}).next_cursor || '';
+    } while (cursor);
+    throw new Error('no slack user matches ' + user);
+  };
+  S.openDM = async function (user) {
+    const uid = await S._resolveUser(user);
+    const j = await S._call('conversations.open', {users: uid});
+    const ch = j.channel || {};
+    return {id: ch.id || '', name: '', kind: 'dm'};
+  };
   window.__awmMira.slack = S;
 }
 """
@@ -193,6 +225,10 @@ class SlackDriver(Driver):
                    thread: str | None = None) -> dict:
         return await self._run("window.__awmMira.slack.send", channel, text, thread)
 
+    async def open_dm(self, user: str) -> dict:
+        res = await self._run("window.__awmMira.slack.openDM", user)
+        return res or {}
+
 
 # --------------------------------------------------------------------------- #
 # Teams                                                                        #
@@ -200,9 +236,11 @@ class SlackDriver(Driver):
 
 TEAMS_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.teams) {
+if (!window.__awmMira.teams || window.__awmMira.teams._v !== 2) {
+  const _prev = window.__awmMira.teams;
   const T = {};
-  T._auth = null;  // {skype, base, exp}
+  T._v = 2;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  T._auth = _prev ? _prev._auth : null;  // {skype, base, exp} — preserved across upgrade
   T._spaces = function () {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);

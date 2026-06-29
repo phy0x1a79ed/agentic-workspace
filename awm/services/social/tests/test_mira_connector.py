@@ -70,6 +70,8 @@ class _StubDaemon:
         self.push_frames = []   # frames the WS pushes right after connect
         self.history_calls = []  # (platform, query-dict) per /messages request
         self.history_msgs = []   # what /messages returns (newest-first)
+        self.channels_calls = []  # (platform, query-dict) per /channels request
+        self.open_dm_calls = []   # (platform, body-dict) per /open_dm request
         self._runner = None
         self.base = ""
 
@@ -81,6 +83,7 @@ class _StubDaemon:
         app.router.add_get("/v1/{platform}/channels", self._channels)
         app.router.add_get("/v1/{platform}/messages", self._messages)
         app.router.add_post("/v1/{platform}/send", self._send)
+        app.router.add_post("/v1/{platform}/open_dm", self._open_dm)
         app.router.add_get("/v1/events", self._events)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -99,9 +102,18 @@ class _StubDaemon:
 
     async def _channels(self, request):
         from aiohttp import web
-        return web.json_response({"channels": [
-            {"id": "C1", "name": "general", "kind": "channel"},
-            {"id": "D1", "name": "dm:bob", "kind": "dm"}]})
+        self.channels_calls.append(
+            (request.match_info["platform"], dict(request.query)))
+        chans = [{"id": "C1", "name": "general", "kind": "channel"}]
+        if request.query.get("include_dms") == "true":
+            chans.append({"id": "D1", "name": "dm:bob", "kind": "dm"})
+        return web.json_response({"channels": chans})
+
+    async def _open_dm(self, request):
+        from aiohttp import web
+        body = await request.json()
+        self.open_dm_calls.append((request.match_info["platform"], body))
+        return web.json_response({"id": "D1", "name": "", "kind": "dm"})
 
     async def _messages(self, request):
         from aiohttp import web
@@ -173,8 +185,30 @@ class TestMiraConnectorRest:
         c = _conn(daemon)
         try:
             chans = await c.list_channels()
+            assert {ch.id for ch in chans} == {"C1"}
+            assert {ch.kind for ch in chans} == {"channel"}
+            # No include_dms param sent on the default path.
+            assert daemon.channels_calls[-1][1] == {}
+        finally:
+            await c.close()
+
+    async def test_list_channels_include_dms(self, daemon):
+        c = _conn(daemon)
+        try:
+            chans = await c.list_channels(include_dms=True)
             assert {ch.id for ch in chans} == {"C1", "D1"}
             assert {ch.kind for ch in chans} == {"channel", "dm"}
+            assert daemon.channels_calls[-1][1] == {"include_dms": "true"}
+        finally:
+            await c.close()
+
+    async def test_open_dm_posts_user_and_maps_channel(self, daemon):
+        c = _conn(daemon, platform="slack")
+        try:
+            ch = await c.open_dm("UALICE")
+            assert ch.id == "D1" and ch.kind == "dm"
+            platform, body = daemon.open_dm_calls[-1]
+            assert platform == "slack" and body == {"user": "UALICE"}
         finally:
             await c.close()
 
