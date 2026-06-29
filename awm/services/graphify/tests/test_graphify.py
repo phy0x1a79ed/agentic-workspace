@@ -174,6 +174,50 @@ def test_build_wipes_prior_output_for_full_rebuild(monkeypatch, data_dir, fake_t
     assert saw_sentinel["present"] is False  # prior output wiped before extract
 
 
+def test_build_prunes_shell_path_super_hub(monkeypatch, data_dir, fake_target):
+    """A ``PATH`` node sourced from a shell script is a spurious super-hub —
+    ``graphify`` turns ``PATH=...`` in run.sh into a node and every Python file
+    that mentions PATH gets an edge into it, so BFS routes paths through it.
+    ``_do_build`` must drop that node + its incident edges after extract, while
+    leaving a legitimately code-sourced ``PATH`` symbol untouched."""
+    monkeypatch.setenv("GRAPHIFY_BIN", "/bin/graphify")
+
+    def fake_run(cmd, **kw):
+        out = runner.Path(cmd[cmd.index("--out") + 1])
+        gj = out / "graphify-out" / "graph.json"
+        gj.parent.mkdir(parents=True, exist_ok=True)
+        gj.write_text(json.dumps({
+            "nodes": [
+                {"id": "sh_path", "label": "PATH", "file_type": "code",
+                 "source_file": "/awm/gateway/dev/run.sh", "source_location": "L110"},
+                {"id": "py_path", "label": "PATH", "file_type": "code",
+                 "source_file": "/awm/config.py", "source_location": "L4"},
+                {"id": "caller", "label": "create_session()", "file_type": "code",
+                 "source_file": "/awm/sessions.py", "source_location": "L5"},
+            ],
+            # caller→sh_path is the bogus bridge; caller→py_path is legit.
+            "edges": [
+                {"source": "caller", "target": "sh_path", "relation": "calls"},
+                {"source": "caller", "target": "py_path", "relation": "references"},
+            ],
+            "hyperedges": [], "input_tokens": 0, "output_tokens": 0,
+        }))
+        return types.SimpleNamespace(returncode=0, stdout="wrote … 3 nodes, 2 edges", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    runner.build(str(fake_target))
+
+    gj = runner.graph_json(fake_target.resolve())
+    data = json.loads(gj.read_text())
+    ids = {n["id"] for n in data["nodes"]}
+    assert "sh_path" not in ids          # shell-sourced PATH super-hub dropped
+    assert "py_path" in ids              # code-sourced PATH symbol preserved
+    assert "caller" in ids
+    # The bogus bridge edge is gone; the legit reference survives.
+    assert all(e["target"] != "sh_path" for e in data["edges"])
+    assert any(e["target"] == "py_path" for e in data["edges"])
+
+
 # -- query ------------------------------------------------------------------
 
 
