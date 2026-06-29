@@ -37,6 +37,34 @@ trustworthy or more useful to an agent navigating awm during development?"
   deduped + ranked, with edge labels. Plain text is hard to act on
   programmatically.
 
+## Dogfood findings (2026-06-28 live :7871 run — feed these into the tiers)
+
+Validated live: run.sh resolved GRAPHIFY_BIN from graphify-spike with nothing
+pre-set (#2 works e2e); build 4843 nodes/9521 edges in 3.68s; graph.json
+`input_tokens:0 output_tokens:0` (AST-only/no-key intact); all 4 RPCs work.
+Findings, sharpening the tiers:
+
+1. **Query result is token-budget-truncated (~2000 tok).** A moderate query
+   ("how does the gateway register a service") returned a `truncated — N more
+   nodes cut` hint pointing at graphify CLI flags I'm NOT exposing:
+   `context_filter=['call']` and a `get_node <symbol>` lookup. → The
+   agent-shaped-output item (Tier 1) should surface/parameterize these
+   (context_filter passthrough, a node-lookup verb) so consumers can narrow
+   instead of hitting a wall.
+2. **Ambiguous labels.** `register()` matches several nodes (hub.py vs mcp.py vs
+   gatewayclient); `path` silently picked one. → Confirms the value of Tier 2
+   `find <label>` (disambiguate before pathing) — promote it alongside refs.
+3. **Shadow teardown leaves an orphan.** When the `awm dev shadow` parent got
+   SIGTERM, the spawned hub_adapter survived and re-registered under a new
+   service_id (needed `awm services stop` + `DELETE /hub/services/graphify`).
+   This is the **shared dev-shadow / ServiceAdapter** path, NOT graphify code —
+   out of scope for this loop (would be scope creep into gatewayclient). FLAG
+   for human; do not fix here. (Matches the known shadow-teardown footgun.)
+4. **Target = the worktree's own awm subtree** (by design via `_find_awm_root`
+   from `__file__`). Shadowing from a feature worktree indexes that worktree's
+   snapshot, not prod. Not a bug; worth a one-line note in INSTALL.md for
+   dogfooders who want to query prod (`GRAPHIFY_TARGET=/…/agentic_workspace/awm`).
+
 ## Tier 2 — the questions an agent actually asks
 
 - [ ] **`refs` / `neighbors <symbol>`.** Directional callers / callees /
@@ -101,3 +129,17 @@ on the key invariant) — reaching it means flag-and-stop, not build.
   dogfood of #2 dispatched to a sonnet subagent (validates GRAPHIFY_BIN resolves
   live from graphify-spike). Next Tier 1: staleness signal (#4) → auto-rebuild →
   read-lock (#3) → agent-shaped output, shaped by dogfood findings.
+- 2026-06-28 — Live :7871 dogfood PASSED (Task #3): #2 validated e2e, AST-only
+  confirmed, all RPCs work; 4 findings recorded above. Sandbox + shadow torn
+  down clean (port 7871 free, no stray procs). **PAUSED here by user ("pause and
+  debrief, continue later").**
+  RESUME POINTER → next iteration:
+    a. Recon the on-disk graph.json + manifest.json schema (a built graph is at
+       `./.awm-shadow/.awm/services/graphify/e9ff6e554480/graphify-out/`) for
+       node fields (file/line) + the scanned-file list → informs both the
+       staleness check and agent-shaped output.
+    b. Ship Tier 1 #4 staleness signal + #3 read-lock (small, pure-Python,
+       unit-testable) — delegate impl to a sonnet subagent w/ tight spec.
+    c. Then auto-rebuild-if-stale, then agent-shaped output (parameterize
+       context_filter + add node-lookup per dogfood finding #1).
+  All work stays on feat/svc-graphify; dogfood on :7871; no merge (human-gated).
