@@ -36,4 +36,5 @@ fi
 
 [ -f ./.runtime-env ] && . ./.runtime-env
 [ -n "${AWM_ENV_BIN:-}" ] && export PATH="$AWM_ENV_BIN:$PATH"
+[ -n "${GRAPHIFY_BIN:-}" ] && export GRAPHIFY_BIN
 exec "${AWM_PYTHON:-python}" -m "$MODULE"
