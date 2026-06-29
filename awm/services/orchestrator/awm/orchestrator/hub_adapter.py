@@ -187,16 +187,58 @@ def _link_repos(unit_slug: str, repos: list) -> None:
                             {"unit_slug": unit_slug, "repos": repos})
 
 
+# Non-terminal agent-session statuses — a scope reporting any of these still has
+# a live placement. (AgentSessionInfo.status ∈ starting|running|stopping|exited|
+# killed|orphaned.)
+_LIVE_STATUSES = frozenset({"starting", "running", "stopping"})
+
+
+async def _live_scopes() -> "set[str] | None":
+    """The set of workspace-unit slugs the agents service still has a live
+    session for — the liveness signal :func:`kernel.recover_orphans` reconciles
+    out-state placements against.
+
+    The agents service may not be registered yet when the orchestrator boots
+    (a full gateway restart brings both up concurrently), so the
+    ``list_sessions`` call is retried a few times with a short backoff. On
+    persistent failure we return ``None`` — the *unknown* sentinel that makes
+    recovery a conservative no-op rather than blindly re-dispatching placements
+    that might still be live.
+    """
+    last_err: Exception | None = None
+    for attempt in range(5):
+        try:
+            resp = await gatewayclient.call("agents", "list_sessions", {})
+        except Exception as exc:  # noqa: BLE001 — agents may not be up yet
+            last_err = exc
+            await asyncio.sleep(1.0)
+            continue
+        sessions = (resp or {}).get("sessions", [])
+        return {
+            s["scope"] for s in sessions
+            if s.get("scope") and s.get("status") in _LIVE_STATUSES
+        }
+    log.warning("orchestrator: agents service unreachable at boot (%s); "
+                "skipping orphan recovery this cycle", last_err)
+    return None
+
+
 async def _on_start() -> None:
     """Stand up the DB, wire the reclaim seam, start the dispatch drain loop,
-    then re-dispatch the resting frontier left by any prior run."""
+    recover orphaned placements, then re-dispatch the resting frontier."""
     dao.init()
     operations.configure(reclaim_workspace_fn=_reclaim_workspace,
                          link_repos_fn=_link_repos)
     dispatch.start_drain_loop()
-    # Boot reconcile: re-dispatch ready + planner-less decomposing nodes; leave
-    # placements out (active / decomposing-with-agent) alone.
-    dispatch.enqueue(kernel.reconcile(OrchestratorDAO()))
+    # Boot recovery: a full gateway restart bounces the agents service too, which
+    # closes every open instance — so out-state placements may be dead with no
+    # one left to report it. Reset orphaned out-state nodes (those whose unit has
+    # no live session) back to their resting state...
+    db = OrchestratorDAO()
+    kernel.recover_orphans(db, await _live_scopes())
+    # ...then the reconcile sweep re-dispatches the resting frontier — including
+    # the just-recovered nodes — onto their retained workspace units.
+    dispatch.enqueue(kernel.reconcile(db))
 
 
 async def main() -> None:
