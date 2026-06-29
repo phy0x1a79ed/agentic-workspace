@@ -41,14 +41,20 @@ export type TaskState =
 export interface DagTask {
   task_id: string;
   goal: string;
+  /** Human-set headline, shown above the goal (separate from the goal text). */
+  title: string;
+  /** Free-text tags (searchable in the task list). Defaults to `[]`. */
+  tags: string[];
   state: TaskState;
   is_root: boolean;
   /** 'plan' | 'verify' | 'worker' | 'planner' | null — the placement (if any) currently out. */
   mode: string | null;
   workspace_slug: string | null;
   agent_ref: string | null;
-  /** Human-attached flag (orthogonal to lifecycle). */
+  /** Human-attached flag (orthogonal to lifecycle; tied to live chat presence). */
   attached?: boolean;
+  /** Sticky pause: freezes the autonomous supervisor; survives chat disconnect. */
+  paused?: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -102,6 +108,46 @@ export function openNode(goal: string, repo?: unknown): Promise<OpenNodeResult> 
   return svc('orchestrator').fn<OpenNodeResult>('orch_node_open', {
     goal,
     ...(repo !== undefined ? { repo } : {}),
+  });
+}
+
+/**
+ * Set a task's human title (the headline above its goal). Public op — the user's
+ * own edit, no identity header. The agent counterpart writes it via the agents
+ * attach-gated admin relay, only while a human is connected.
+ */
+export function setTitle(
+  taskId: string,
+  title: string,
+): Promise<{ ok?: boolean; title?: string }> {
+  return svc('orchestrator').fn('orch_set_title', { task_id: taskId, title });
+}
+
+/** Set a task's free-text tags (a list of strings; searchable). Public op. */
+export function setTags(
+  taskId: string,
+  tags: string[],
+): Promise<{ ok?: boolean; tags?: string[] }> {
+  return svc('orchestrator').fn('orch_set_tags', { task_id: taskId, tags });
+}
+
+/**
+ * Toggle a task's sticky `paused` flag by its unit slug. Routes through the
+ * agents service so the LIVE placement's supervisor freezes/resumes at once;
+ * the agents side mirrors it durably to the orchestrator (passing `task_id` so
+ * the durable write lands even when no placement is currently live). The flag
+ * survives chat disconnect — that is the whole point (keep the supervisor out
+ * while you walk away).
+ */
+export function setPaused(
+  slug: string,
+  paused: boolean,
+  taskId?: string,
+): Promise<{ ok?: boolean; paused?: boolean }> {
+  return svc('agents').fn('set_paused', {
+    scope: slug,
+    paused,
+    ...(taskId ? { task_id: taskId } : {}),
   });
 }
 

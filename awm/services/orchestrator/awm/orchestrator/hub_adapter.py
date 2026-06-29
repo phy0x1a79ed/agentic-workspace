@@ -128,6 +128,36 @@ API_MANIFEST: dict[str, Any] = {
                            "visualize the global DAG.",
             "params": [],
         },
+        {
+            "name": "orch_set_title",
+            "tool": "orch_set_title",
+            "description": "Set a task's human title (the headline shown above its "
+                           "goal). The user's direct edit.",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+                {"name": "title", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "orch_set_tags",
+            "tool": "orch_set_tags",
+            "description": "Set a task's free-text tags (a list of strings, "
+                           "searchable in the UI).",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+                {"name": "tags", "type": "array", "required": True},
+            ],
+        },
+        {
+            "name": "orch_set_paused",
+            "tool": "orch_set_paused",
+            "description": "Set a task's sticky paused flag (durable; freezes the "
+                           "autonomous supervisor; survives chat disconnect).",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+                {"name": "paused", "type": "boolean", "required": True},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -149,6 +179,9 @@ HANDLERS = {
     "orch_status": operations.orch_status,
     "orch_frontier": operations.orch_frontier,
     "orch_dag": operations.orch_dag,
+    "orch_set_title": operations.orch_set_title,
+    "orch_set_tags": operations.orch_set_tags,
+    "orch_set_paused": operations.orch_set_paused,
     # privileged (manifest-OMITTED — agents harness only)
     "claim": operations.claim,
     "deliver": operations.deliver,
@@ -157,6 +190,8 @@ HANDLERS = {
     "approve_plan": operations.approve_plan,
     "reject_plan": operations.reject_plan,
     "set_attached": operations.set_attached,
+    "set_title": operations.set_title,
+    "set_tags": operations.set_tags,
     # attached-only admin ops (DAG restructuring) — manifest-omitted; reached
     # only through the agents service's attach-gated admin relay.
     "relocate_task": operations.relocate_task,

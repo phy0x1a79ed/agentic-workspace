@@ -156,7 +156,26 @@ export class TranscriptFold {
     this.lastTs = tsToIso(act.ts);
 
     const kind = act.kind;
-    if (HIDDEN_KINDS.has(kind)) return null;
+
+    // Working presence (transient, bus-only): the agents service emits a
+    // `status` act with `meta.phase === 'working'` at each turn START — the
+    // single chokepoint covering a human-initiated turn AND the supervisor's
+    // autonomous continuation. Show a skeleton "agent working" row; it is
+    // cleared the moment the turn yields real content (below) or ends (`result`).
+    if (kind === 'status') {
+      if ((act.meta ?? {})['phase'] === 'working') this.showWorking(act.ts);
+      return null;
+    }
+    if (HIDDEN_KINDS.has(kind)) {
+      // The terminal `result` closes the turn — drop any lingering skeleton even
+      // when the turn produced only tool calls (no final text bubble cleared it).
+      if (kind === 'result') this.clearWorking();
+      return null;
+    }
+    // Any visible AGENT content (message / partial / tool_use / tool_result /
+    // error) means the turn is producing output — retire the skeleton. A human
+    // act never clears it (the human turn lands BEFORE the working signal).
+    if (!isHumanAct(act)) this.clearWorking();
 
     // A human-origin act (the operator's own enqueued message, recorded back
     // into the transcript) renders as a human row — never the agent's voice and
@@ -239,6 +258,34 @@ export class TranscriptFold {
     const seq = existing ? existing.seq : this.seq++;
     this.entries.set(cid, { ts, seq, post });
     this.render();
+  }
+
+  /** The stable key for the single transient working skeleton (one per fold —
+   *  a new turn's working signal replaces the prior skeleton in place). */
+  private static readonly WORKING_KEY = '__working__';
+
+  /** Show / refresh the transient "agent working" skeleton at `ts`. */
+  private showWorking(ts: number | undefined): void {
+    const t = typeof ts === 'number' && Number.isFinite(ts) ? ts : Date.now();
+    const existing = this.entries.get(TranscriptFold.WORKING_KEY);
+    const seq = existing ? existing.seq : this.seq++;
+    const post: Post = {
+      id: TranscriptFold.WORKING_KEY,
+      ts: tsToIso(t),
+      author: this.author,
+      kind: 'text',
+      body: '',
+      status: 'working',
+    };
+    this.entries.set(TranscriptFold.WORKING_KEY, { ts: t, seq, post });
+    this.render();
+  }
+
+  /** Retire the working skeleton (turn produced content / ended / reconnect).
+   *  Public so the host can clear it on a `lagged`/reconnect (a stale skeleton
+   *  must not survive — the transient signal is never replayed on backfill). */
+  clearWorking(): void {
+    if (this.entries.delete(TranscriptFold.WORKING_KEY)) this.render();
   }
 
   /** Force a status onto an existing entry (the `failed` path). No-op if the

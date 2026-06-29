@@ -450,6 +450,12 @@ async def _input_pump(session: AgentInstance) -> None:
             return
         except Exception:  # noqa: BLE001
             return
+        # The turn has begun (this send is the single chokepoint for human AND
+        # autonomous/supervisor turns) — publish the transient "working" presence
+        # act so the chat shows the agent acting from turn-start, before its first
+        # token. The frontend clears it on the turn's first real content / result.
+        from awm.agents import agent_transcript
+        agent_transcript.publish_working(session)
         try:
             with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
                 fp.write(f"STDIN {framed_body!r}\n")
@@ -458,7 +464,6 @@ async def _input_pump(session: AgentInstance) -> None:
         # record_in upserts under the client correlation id (when supplied) so
         # the browser's optimistic chip reconciles in place, stamps the row
         # `delivered`, and publishes it live (the human turn streams back).
-        from awm.agents import agent_transcript
         agent_transcript.record_in(
             session, framed_body, injection=False, act_id=client_id)
 
@@ -474,9 +479,18 @@ def enqueue_input(session: AgentInstance, post_author: str,
     row in place; internal callers (kickoff/supervisor) omit it."""
     try:
         session.input_queue.put_nowait((post_author, post_body, client_id))
-        return True
     except asyncio.QueueFull:
         return False
+    # Browser-originated post (carries a client_id): publish the human turn to
+    # the live bus NOW, so a connected chat sees it immediately instead of only
+    # when the agent next takes a turn (the slow-read bug). ``record_in`` later
+    # upserts the same id; the two fold to one row. Internal callers (kickoff /
+    # supervisor) omit client_id and so never publish a spurious human turn.
+    if client_id:
+        from awm.agents import agent_transcript
+        framed_body = f"[from:{post_author}]\n{post_body}"
+        agent_transcript.publish_inbound(session, framed_body, client_id)
+    return True
 
 
 async def notify_agent(session: AgentInstance, author: str, body: str) -> bool:

@@ -231,3 +231,61 @@ test('a failed tool result flips its call to error', () => {
   fold.push(toolResult(150, 'use-2', true));
   assert.equal(fold.posts.find((p) => p.id === 'tu-use-2')?.status, 'error');
 });
+
+/** The transient turn-start "working" signal (status act, meta.phase=working). */
+function workingAct(ts: number): AgentAct {
+  return { id: `w-${ts}`, kind: 'status', body: '', meta: { phase: 'working' }, ts } as AgentAct;
+}
+
+test('working signal renders a skeleton row, cleared by the first reply', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(workingAct(100));
+  assert.equal(fold.posts.length, 1, 'the skeleton shows while the agent acts');
+  assert.equal(fold.posts[0].status, 'working');
+  // The turn's first real content retires the skeleton in place of a reply row.
+  const spoken = fold.push(act('message', 'hi', 200, { id: 'm1', message_id: 'm1' }));
+  assert.equal(fold.posts.length, 1, 'skeleton replaced, not stacked');
+  assert.equal(fold.posts[0].status ?? '', '', 'the reply is a normal row');
+  assert.equal(fold.posts[0].body, 'hi');
+  assert.ok(spoken, 'the reply still auto-speaks');
+});
+
+test('working skeleton is cleared by a tool call (a content-less turn)', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(workingAct(100));
+  fold.push(toolUse('Bash', 150, 'use-w'));
+  assert.equal(fold.posts.find((p) => p.status === 'working'), undefined,
+    'a tool_use retires the skeleton');
+  assert.equal(fold.posts.find((p) => p.id === 'tu-use-w')?.status, 'running');
+});
+
+test('working skeleton is cleared by the terminal result', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(workingAct(100));
+  fold.push(act('result', 'done', 200, { id: 'r1' }));
+  assert.equal(fold.posts.length, 0, 'result with no text still clears the skeleton');
+});
+
+test('a new working signal replaces the prior skeleton (one at most)', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(workingAct(100));
+  fold.push(workingAct(200));
+  const skeletons = fold.posts.filter((p) => p.status === 'working');
+  assert.equal(skeletons.length, 1, 'never more than one skeleton row');
+});
+
+test('clearWorking drops a lingering skeleton (the lagged/reconnect path)', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(workingAct(100));
+  assert.equal(fold.posts.length, 1);
+  fold.clearWorking();
+  assert.equal(fold.posts.length, 0);
+});
+
+test('the human turn does NOT clear the working skeleton (it precedes it)', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  // Human turn lands, then the working signal for the turn it triggered.
+  fold.push(humanAct('[from:user:op]\nq', 100, { id: 'in1' }));
+  fold.push(workingAct(110));
+  assert.ok(fold.posts.find((p) => p.status === 'working'), 'skeleton survives the human turn');
+});

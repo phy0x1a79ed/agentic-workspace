@@ -121,6 +121,21 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "set_paused",
+            "tool": "agent_set_paused",
+            "description": (
+                "Set a task's sticky paused flag by its unit slug. Pauses freeze "
+                "the autonomous supervisor (it stays out even after the human "
+                "disconnects) and survive a redispatch. Updates the live placement "
+                "at once and mirrors durably to the orchestrator."
+            ),
+            "params": [
+                {"name": "scope", "type": "string", "required": True},
+                {"name": "paused", "type": "boolean", "required": True},
+                {"name": "task_id", "type": "string", "required": False},
+            ],
+        },
+        {
             "name": "agent_subscribe",
             "tool": "agent_subscribe",
             "description": (
@@ -357,6 +372,14 @@ def _h_enqueue_post(args: dict) -> dict:
     return {"enqueued": ok}
 
 
+async def _h_set_paused(args: dict) -> dict:
+    """UI pause toggle (by unit slug): set the live + durable sticky paused flag."""
+    from awm.agents import placement
+    await placement.set_paused(
+        args["scope"], bool(args.get("paused")), args.get("task_id"))
+    return {"ok": True, "scope": args["scope"], "paused": bool(args.get("paused"))}
+
+
 async def _h_notify_agent(args: dict) -> dict:
     session = ai.get_session_by_scope(args["scope"])
     if session is None:
@@ -512,6 +535,7 @@ HANDLERS = {
     "tail_log": _h_tail_log,
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
+    "set_paused": _h_set_paused,
     "notify_agent": _h_notify_agent,
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,

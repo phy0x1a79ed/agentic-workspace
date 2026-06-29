@@ -149,7 +149,11 @@
       maybeAutoSpeak(spoken);
     } else if (ev.type === 'lagged') {
       // Server dropped us behind a backpressure window and closed the socket.
-      // Reconnect from the last act we folded so we don't miss the tail.
+      // Reconnect from the last act we folded so we don't miss the tail. Drop any
+      // lingering working skeleton first — the transient signal is never replayed
+      // on backfill, so it would otherwise hang forever.
+      fold.clearWorking();
+      rebuild();
       reconnectAgent();
     } else if (ev.type === 'error') {
       error = ev.message;

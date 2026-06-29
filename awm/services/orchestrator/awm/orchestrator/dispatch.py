@@ -221,6 +221,12 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         payload["effort"] = effort
     if task["attached"]:
         payload["attached"] = True
+    # The sticky human pause rides alongside ``attached`` so a respawn/redispatch
+    # re-seeds the live placement's freeze flag from the durable task row (the
+    # supervisor freezes on ``attached OR paused``). Independent of ``attached``:
+    # a button-created node is born paused even after the human detaches.
+    if task["paused"]:
+        payload["paused"] = True
     log.info("orchestrator: placement %s mode=%s harness=%s model=%s effort=%s "
              "attached=%s", task["id"], mode, harness or "(agents-default)",
              model or "(harness-default)", effort or "(harness-default)",

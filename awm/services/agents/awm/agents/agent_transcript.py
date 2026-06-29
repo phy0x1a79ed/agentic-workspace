@@ -258,6 +258,50 @@ def record_in(session, body: str, *, injection: bool = False,
     return act
 
 
+WORKING_ACT_PREFIX = "working:"
+
+
+def publish_inbound(session, framed_body: str, act_id: str) -> None:
+    """Publish a human turn to the live bus IMMEDIATELY (bus-only, not persisted).
+
+    The responsiveness fix: today the human turn only reaches a connected chat
+    inside ``_input_pump`` → :func:`record_in`, which is turn-aligned (it lands
+    when the agent next takes a turn). Publishing here, at ``enqueue`` time, makes
+    the human turn appear at once — ``record_in`` later upserts the SAME ``act_id``
+    so the two fold to one durable row (the browser's optimistic chip reconciles
+    by id). ``meta.status = "delivered"`` flips the optimistic ``sending`` chip to
+    received promptly."""
+    if not act_id:
+        return
+    act = {"id": act_id, "kind": "message", "body": framed_body,
+           "meta": {"direction": "in", "injection": False, "status": "delivered"},
+           "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def publish_working(session) -> None:
+    """Publish a TRANSIENT "agent working" presence act (bus-only, not persisted).
+
+    Emitted at each turn START (the ``_input_pump`` ``send`` chokepoint), so the
+    chat shows the agent is acting from the instant a turn begins — covering a
+    human-initiated turn AND the supervisor's autonomous continuation (both reach
+    the agent through ``send``). A stable per-scope id means a fresh working act
+    REPLACES the prior one rather than stacking. The frontend clears it on the
+    turn's first real content (partial / message) or on ``result``."""
+    act = {"id": f"{WORKING_ACT_PREFIX}{session.scope}", "kind": "status",
+           "body": "", "meta": {"phase": "working", "direction": "out",
+                                "transient": True}, "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Read paths
 # ---------------------------------------------------------------------------

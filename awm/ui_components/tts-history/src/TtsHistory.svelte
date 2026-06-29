@@ -209,18 +209,31 @@
       {:else}
         {@const sp = g.post}
         {@const speaking = speakingKey === postKey(sp)}
+        {@const working = sp.status === 'working'}
         <article
           class="post chip kind-{sp.kind ?? 'text'}"
           data-status={sp.status ?? ''}
           class:dim={sp.status === 'sending' || sp.status === 'failed'}
+          class:working
         >
           <div class="post-main">
             <span class="author">{sp.author}</span>
-            <div class="body">{sp.body ?? ''}</div>
+            {#if working}
+              <!-- Turn-start skeleton: the agent is acting (a tool call or an
+                   internal turn) but has produced no text yet. Cleared on the
+                   turn's first real content / result. -->
+              <div class="body working-ind" aria-label="agent working">
+                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+            {:else}
+              <div class="body">{sp.body ?? ''}</div>
+            {/if}
           </div>
           <aside class="rail">
             <span class="ts mono">{shortTs(sp.ts)}</span>
-            {#if isHumanStatus(sp.status)}
+            {#if working}
+              <!-- no receipt / no speak button for the transient skeleton -->
+            {:else if isHumanStatus(sp.status)}
               <span class="receipt" data-status={sp.status} title={sp.status} aria-label={sp.status}>
                 {receiptGlyph(sp.status)}
               </span>
@@ -401,6 +414,24 @@
 
   /* Body dims while the human turn is unconfirmed (sending) or failed. */
   .post.dim .body { opacity: 0.55; }
+
+  /* Turn-start "agent working" skeleton — an animated three-dot indicator that
+     shows the agent is acting before its first token (a tool call or an internal
+     turn). Cleared the moment the turn yields real content / ends. */
+  .post.working { opacity: 0.85; }
+  .working-ind { display: flex; align-items: center; min-height: 1.2em; }
+  .working-ind .dots { display: inline-flex; gap: 4px; }
+  .working-ind .dots i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--atomizer, #ffb74d);
+    animation: awm-working 1.1s ease-in-out infinite;
+  }
+  .working-ind .dots i:nth-child(2) { animation-delay: 0.18s; }
+  .working-ind .dots i:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes awm-working {
+    0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-2px); }
+  }
 
   /* Speak button — a 44×44 square that flips to a live equalizer mid-playback. */
   .speak {

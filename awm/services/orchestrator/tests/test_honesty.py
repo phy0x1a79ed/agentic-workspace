@@ -16,9 +16,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 PUBLIC = {"orch_task_create", "orch_node_open", "orch_task_attach",
           "orch_attach_scope", "orch_detach_scope",
-          "orch_status", "orch_frontier", "orch_dag"}
+          "orch_status", "orch_frontier", "orch_dag",
+          "orch_set_title", "orch_set_tags", "orch_set_paused"}
 PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
-              "approve_plan", "reject_plan", "set_attached"}
+              "approve_plan", "reject_plan", "set_attached",
+              "set_title", "set_tags"}
 
 
 def test_manifest_lists_only_public_ops(orch):

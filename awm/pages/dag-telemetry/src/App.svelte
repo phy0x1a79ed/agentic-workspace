@@ -20,7 +20,9 @@
   import {
     fetchDag,
     openNode,
-    createTask,
+    setTitle,
+    setTags,
+    setPaused,
     type DagSnapshot,
     type DagTask,
   } from '@awm/client';
@@ -36,10 +38,43 @@
   let error = $state<string | null>(null);
   let selectedId = $state<string | null>(null);
   let activeTab = $state<'info' | 'chat'>('info');
+  let query = $state('');
 
-  // One index, shared by TaskList + FocusPanel; re-derives on each fresh snapshot.
-  const index = $derived(snapshot ? buildIndex(snapshot) : null);
-  const tasks = $derived<DagTask[]>(snapshot?.tasks ?? []);
+  // Optimistic edit overlay: a user edit to title/tags/paused is applied locally
+  // at once and held until the 3s poll confirms the server agrees (otherwise the
+  // poll would visibly snap the field back). Keyed by task_id; each field cleared
+  // independently once the snapshot matches it ("my edit wins" until confirmed).
+  type Edit = { title?: string; tags?: string[]; paused?: boolean };
+  let edits = $state<Record<string, Edit>>({});
+
+  function sameTags(a: string[], b: string[]): boolean {
+    return a.length === b.length && a.every((x, i) => x === b[i]);
+  }
+  function reconcileEdits(snap: DagSnapshot) {
+    let changed = false;
+    for (const t of snap.tasks) {
+      const e = edits[t.task_id];
+      if (!e) continue;
+      if (e.title !== undefined && e.title === (t.title ?? '')) { delete e.title; changed = true; }
+      if (e.paused !== undefined && e.paused === !!t.paused) { delete e.paused; changed = true; }
+      if (e.tags !== undefined && sameTags(e.tags, t.tags ?? [])) { delete e.tags; changed = true; }
+      if (Object.keys(e).length === 0) delete edits[t.task_id];
+    }
+    if (changed) edits = { ...edits };
+  }
+
+  // One index, shared by TaskList + FocusPanel; built from the OVERLAID snapshot
+  // so both views reflect optimistic edits, then re-derives on each fresh poll.
+  const tasks = $derived<DagTask[]>(
+    (snapshot?.tasks ?? []).map((t) => {
+      const e = edits[t.task_id];
+      return e ? { ...t, ...e } : t;
+    }),
+  );
+  const overlaid = $derived<DagSnapshot | null>(
+    snapshot ? { ...snapshot, tasks } : null,
+  );
+  const index = $derived(overlaid ? buildIndex(overlaid) : null);
   const selected = $derived<DagTask | null>(
     tasks.find((t) => t.task_id === selectedId) ?? null,
   );
@@ -49,7 +84,9 @@
   // there is no per-project view filter.
   async function refresh() {
     try {
-      snapshot = await fetchDag();
+      const snap = await fetchDag();
+      reconcileEdits(snap);
+      snapshot = snap;
       error = null;
     } catch (err) {
       error = (err as Error).message;
@@ -57,26 +94,17 @@
   }
 
   // --- Create a new task ---------------------------------------------------
+  // One click: place an attended worker on an EMPTY goal (born paused, idle until
+  // the first human turn), select it, and drop straight into the chat composer.
 
-  let showNew = $state(false);
-  let newGoal = $state('');
-  let newMode = $state<'worker' | 'planner'>('worker');
   let busyNew = $state(false);
 
-  async function submitNew(e?: Event) {
-    e?.preventDefault();
-    const goal = newGoal.trim();
-    if (!goal || busyNew) return;
+  async function newTask() {
+    if (busyNew) return;
     busyNew = true;
     error = null;
     try {
-      // drop-in worker (orch_node_open) → concrete goal, attended worker placed
-      // immediately; plan it first (orch_task_create) → vague goal, the planner
-      // specifies it (slug minted a poll later).
-      const res =
-        newMode === 'worker' ? await openNode(goal) : await createTask(goal);
-      newGoal = '';
-      showNew = false;
+      const res = await openNode('');
       await refresh();
       selectedId = res.task_id;
       activeTab = 'chat';
@@ -85,6 +113,25 @@
     } finally {
       busyNew = false;
     }
+  }
+
+  // --- Edit handlers (optimistic, then persist) ----------------------------
+
+  function applyEdit(taskId: string, patch: Edit) {
+    edits[taskId] = { ...edits[taskId], ...patch };
+    edits = { ...edits };
+  }
+  async function onSetTitle(taskId: string, title: string) {
+    applyEdit(taskId, { title });
+    try { await setTitle(taskId, title); } catch (err) { error = (err as Error).message; }
+  }
+  async function onSetTags(taskId: string, tags: string[]) {
+    applyEdit(taskId, { tags });
+    try { await setTags(taskId, tags); } catch (err) { error = (err as Error).message; }
+  }
+  async function onSetPaused(slug: string, paused: boolean, taskId: string) {
+    applyEdit(taskId, { paused });
+    try { await setPaused(slug, paused, taskId); } catch (err) { error = (err as Error).message; }
   }
 
   // Poll loop.
@@ -104,51 +151,28 @@
 <main class="dag">
   <header class="top">
     <h1 class="mono">DAG telemetry</h1>
+    <input
+      class="search mono"
+      type="search"
+      placeholder="search title · tags · goal"
+      aria-label="search tasks"
+      bind:value={query}
+    />
     <button
       class="newbtn mono"
       type="button"
-      title="create a new task"
-      onclick={() => (showNew = !showNew)}
-    >+ new task</button>
+      title="start a new agent (you type the first message)"
+      disabled={busyNew}
+      onclick={newTask}
+    >{busyNew ? 'starting…' : '+ new task'}</button>
   </header>
-
-  {#if showNew}
-    <form class="new-form mono" onsubmit={submitNew}>
-      <input
-        class="field mono"
-        type="text"
-        placeholder="goal for the new task"
-        bind:value={newGoal}
-        aria-label="new task goal"
-      />
-      <div class="mode-toggle mono" role="radiogroup" aria-label="creation mode">
-        <button
-          type="button"
-          class="mode"
-          class:active={newMode === 'worker'}
-          onclick={() => (newMode = 'worker')}
-          title="place an attended worker straight onto a concrete goal"
-        >drop-in worker</button>
-        <button
-          type="button"
-          class="mode"
-          class:active={newMode === 'planner'}
-          onclick={() => (newMode = 'planner')}
-          title="let the planner specify a vague goal first"
-        >plan it first</button>
-      </div>
-      <button class="newbtn mono" type="submit" disabled={busyNew || !newGoal.trim()}>
-        {busyNew ? 'creating…' : 'create'}
-      </button>
-    </form>
-  {/if}
 
   {#if error}<p class="error mono">{error}</p>{/if}
 
   <div class="panels">
     <section class="left">
       {#if index}
-        <TaskList {index} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
+        <TaskList {index} {query} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
       {:else}
         <p class="hint mono">loading the plan…</p>
       {/if}
@@ -164,7 +188,14 @@
         {#if activeTab === 'info'}
           {#if index}
             <div class="focuswrap">
-              <FocusPanel {index} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
+              <FocusPanel
+                {index}
+                selectedTaskId={selectedId}
+                onSelectTask={(id) => (selectedId = id)}
+                {onSetTitle}
+                {onSetTags}
+                {onSetPaused}
+              />
             </div>
           {:else}
             <p class="hint mono">loading the plan…</p>
@@ -226,50 +257,17 @@
     border-color: var(--atomizer, #ffb74d);
   }
   .newbtn:disabled { opacity: 0.5; cursor: default; }
-  .new-form {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--border, #333);
-    background: var(--surface, #1a1a1a);
-    flex: 0 0 auto;
-    flex-wrap: wrap;
-  }
-  .field {
+  .search {
+    flex: 1 1 200px;
+    min-width: 0;
     background: var(--surface2, #222);
     border: 1px solid var(--border, #333);
     border-radius: 3px;
     color: var(--text, #ddd);
     padding: 4px 8px;
     font-size: 11px;
-    flex: 1 1 200px;
-    min-width: 0;
   }
-  .field:focus { outline: none; border-color: var(--atomizer, #ffb74d); }
-  .mode-toggle {
-    display: inline-flex;
-    gap: 2px;
-    flex: 0 0 auto;
-  }
-  .mode {
-    background: var(--surface2, #222);
-    border: 1px solid var(--border, #333);
-    color: var(--text3, #888);
-    padding: 4px 10px;
-    font-size: 10px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .mode:first-child { border-radius: 3px 0 0 3px; }
-  .mode:last-child { border-radius: 0 3px 3px 0; border-left: none; }
-  .mode:hover { color: var(--text2, #bbb); }
-  .mode.active {
-    color: var(--text, #ddd);
-    background: var(--surface3, #2a2a2a);
-    border-color: var(--atomizer, #ffb74d);
-  }
+  .search:focus { outline: none; border-color: var(--atomizer, #ffb74d); }
   .error {
     margin: 0;
     padding: 6px 14px;

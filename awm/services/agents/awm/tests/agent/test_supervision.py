@@ -31,6 +31,7 @@ class FakeOrch:
     async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
     async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
+    async def set_paused(self, **kw): return self._rec("set_paused", kw)
 
 
 @pytest.fixture
@@ -56,7 +57,8 @@ class _FakeSup:
 
 
 def _seed(agents_env, *, token="plt-1", mode="worker", contracts_out=("out:1",),
-          done=False, staged=None, graph=None, attached=False, intent="live"):
+          done=False, staged=None, graph=None, attached=False, paused=False,
+          intent="live"):
     dao = AgentsDAO()
     iid = dao.open_task_instance(
         scope="leaf-1", log_path=None, cli_session_id=None,
@@ -70,7 +72,7 @@ def _seed(agents_env, *, token="plt-1", mode="worker", contracts_out=("out:1",),
                       "brief": ""},
         "staged": staged or {}, "done": done,
         "graph": graph or {"subtasks": [], "dependencies": [], "contracts": []},
-        "attached": attached, "intent": intent,
+        "attached": attached, "paused": paused, "intent": intent,
     }
     dao.merge_instance_data(iid, patch)
     return iid, str(wp)
@@ -200,6 +202,37 @@ class TestAcceptance:
         assert not fake_orch.calls
         _a, body, _cid = s.input_queue.get_nowait()
         assert "approve_plan" in body
+
+
+class TestPausedFreezes:
+    async def test_paused_freezes_supervisor_even_when_detached(
+            self, agents_env, fake_orch):
+        # The sticky pause freezes the supervisor INDEPENDENT of attachment — so a
+        # human can walk away (attached=False) without the autonomous loop barging
+        # in: no decrement, no nag, no force-fail.
+        iid, _ = _seed(agents_env, attached=False, paused=True)
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=50)
+        await placement.on_turn_boundary(s)
+        assert s.turn_budget == 50                  # frozen — not decremented
+        assert s.input_queue.empty()                # no nag injected
+        assert not fake_orch.calls                  # no fail / no deliver
+
+    async def test_paused_never_force_fails_at_low_budget(
+            self, agents_env, fake_orch):
+        iid, _ = _seed(agents_env, attached=False, paused=True)
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=1)
+        await placement.on_turn_boundary(s)
+        assert s.turn_budget == 1
+        assert not fake_orch.calls                  # NOT force-failed
+
+    async def test_unpaused_detached_resumes_supervision(
+            self, agents_env, fake_orch):
+        # With neither flag set the autonomous loop runs as normal (the control:
+        # proves the freeze above is the pause, not something else).
+        iid, _ = _seed(agents_env, attached=False, paused=False)
+        s = _FakeSup(iid=iid, token="plt-1", turn_budget=50)
+        await placement.on_turn_boundary(s)
+        assert s.turn_budget == 49                  # decremented — supervised
 
 
 class TestAttachFreezes:
