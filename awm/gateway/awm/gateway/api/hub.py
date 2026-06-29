@@ -377,7 +377,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                 except json.JSONDecodeError:
                     log.warning("invalid JSON on service control WS %s", service_id)
                     continue
-                _route_inbound(ch, rec, env)
+                _route_inbound(ch, service_id, env)
         except Exception:
             return
         finally:
@@ -433,13 +433,21 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                       rec.name, exc_info=True)
 
 
-def _route_inbound(ch: "rpc.ControlChannel", rec: ServiceRecord,
+def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
                    env: dict[str, Any]) -> None:
     kind = env.get("kind")
     if kind == "ready":
         ch.set_api(env.get("api") or {})
-        rec.api = ch.api
-        rec.backend_status = "ready"
+        # Re-look-up the record fresh by service_id rather than trusting a record
+        # captured at WS-accept time: a concurrent reconcile / disconnect-respawn
+        # may have replaced the registry record for this service_id in the
+        # interim, and flipping a stale (already-evicted) record to ``ready``
+        # would leave the live one stuck ``starting`` with an empty ``api``.
+        registry = get_registry()
+        rec = registry.get_by_id(service_id)
+        if rec is not None:
+            rec.api = ch.api
+            rec.backend_status = "ready"
     elif kind == "reply":
         ch.handle_reply(env)
     elif kind == "emit":

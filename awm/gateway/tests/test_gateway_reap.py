@@ -130,7 +130,7 @@ async def test_reap_never_kills_own_pid(monkeypatch):
 async def test_reap_dry_run_lists_without_killing(monkeypatch):
     killed = _capture_kills(monkeypatch)
     _fake_scan(monkeypatch, [
-        {"pid": 3001, "cmdline": "python -m awm.discord.hub_adapter",
+        {"pid": 3001, "cmdline": "python -m awm.social.hub_adapter",
          "hub_url": "http://127.0.0.1:7819/"},
     ])
     out = await go._op_services_reap(go.ReapRequest(dry_run=True))

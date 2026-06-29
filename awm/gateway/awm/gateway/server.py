@@ -299,9 +299,14 @@ async def lifespan(app: FastAPI):
         from awm.gateway.hub.supervisor import (
             bootstrap_discovered_services,
             reconcile_journaled_services,
+            self_heal_loop,
         )
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
+        # 3. Periodic self-heal: re-bootstrap any service later found wedged
+        #    (dead PID, no ready control) without waiting for a gateway restart
+        #    — covers crashes that bypass the control-WS disconnect watchdog.
+        asyncio.create_task(self_heal_loop())
 
     try:
         asyncio.create_task(_bring_up_services())
