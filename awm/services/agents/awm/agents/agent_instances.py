@@ -437,7 +437,7 @@ async def _input_pump(session: AgentInstance) -> None:
     session.stdin_ready.set()
     while True:
         try:
-            post_author, post_body = await session.input_queue.get()
+            post_author, post_body, client_id = await session.input_queue.get()
         except asyncio.CancelledError:
             return
         framed_body = f"[from:{post_author}]\n{post_body}"
@@ -455,20 +455,25 @@ async def _input_pump(session: AgentInstance) -> None:
                 fp.write(f"STDIN {framed_body!r}\n")
         except OSError:
             pass
-        # record_in signature: (session, body, *, injection=False)
+        # record_in upserts under the client correlation id (when supplied) so
+        # the browser's optimistic chip reconciles in place, stamps the row
+        # `delivered`, and publishes it live (the human turn streams back).
         from awm.agents import agent_transcript
-        agent_transcript.record_in(session, framed_body, injection=False)
+        agent_transcript.record_in(
+            session, framed_body, injection=False, act_id=client_id)
 
 
 def enqueue_input(session: AgentInstance, post_author: str,
-                  post_body: str) -> bool:
+                  post_body: str, client_id: str | None = None) -> bool:
     """Enqueue a scope-channel post for the agent's stdin pump.
 
     This is the PASSIVE input channel: the post is queued and the agent consumes
     it between turns (turn-aligned). For a mid-turn forced-interrupt, see
-    :func:`notify_agent`."""
+    :func:`notify_agent`. ``client_id`` is an optional browser correlation id
+    threaded to ``record_in`` so an optimistic chip reconciles to the recorded
+    row in place; internal callers (kickoff/supervisor) omit it."""
     try:
-        session.input_queue.put_nowait((post_author, post_body))
+        session.input_queue.put_nowait((post_author, post_body, client_id))
         return True
     except asyncio.QueueFull:
         return False

@@ -120,16 +120,22 @@ export async function postToScope(
  * unit, not a scopes channel). The message rides the agent's next turn; the
  * reply streams back through its transcript. Returns whether it was enqueued
  * (false when no live session holds the `scope`).
+ *
+ * `opts.clientId` is a browser correlation id: the agents service upserts the
+ * recorded human turn under it and publishes it live, so an optimistic chip the
+ * UI folded under the same id reconciles in place (one row, never two) and its
+ * status advances `sending → sent` on confirmed delivery.
  */
 export async function enqueueAgentPost(
   scope: string,
   body: string,
-  author?: string,
+  opts: { author?: string; clientId?: string } = {},
 ): Promise<boolean> {
   const { enqueued } = await svc('agents').fn<{ enqueued: boolean }>('enqueue_post', {
     scope,
-    author: author ?? awmAs(),
+    author: opts.author ?? awmAs(),
     body,
+    ...(opts.clientId ? { client_id: opts.clientId } : {}),
   });
   return !!enqueued;
 }

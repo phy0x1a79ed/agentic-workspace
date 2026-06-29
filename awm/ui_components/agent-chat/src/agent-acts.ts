@@ -105,6 +105,9 @@ interface FoldEntry {
   ts: number;
   seq: number;
   post: Post;
+  /** For a human turn: the ts its stdin write was confirmed (the `received`
+   *  derivation flips a `sent` chip once an agent act lands after this). */
+  deliveredTs?: number;
 }
 
 /**
@@ -127,6 +130,10 @@ export class TranscriptFold {
 
   /** key → folded entry (the upsert table). */
   private entries = new Map<string, FoldEntry>();
+
+  /** tool_use id → the entry key of its `running` chip, so a later
+   *  tool_result closes the matching call (`done`/`error`). */
+  private toolByUseId = new Map<string, string>();
 
   /** Monotonic arrival counter — the tiebreak for equal-ts rows. */
   private seq = 0;
@@ -154,15 +161,34 @@ export class TranscriptFold {
     // A human-origin act (the operator's own enqueued message, recorded back
     // into the transcript) renders as a human row — never the agent's voice and
     // never auto-spoken. It carries no coalesce id, so each keys on its own act
-    // id. This is the single source of truth for the human turn (no echo).
+    // id. This is the single source of truth for the human turn; an optimistic
+    // chip the composer folded under the same id (a client correlation id)
+    // reconciles here in place.
     const human = isHumanAct(act);
     const isMsg = !human && (kind === 'message' || kind === 'partial');
     const key = isMsg ? coalesceKey(act) : act.id;
     const ts = typeof act.ts === 'number' && Number.isFinite(act.ts) ? act.ts : 0;
 
     const existing = this.entries.get(key);
-    // Stale / out-of-order: an update older than what we already have is dropped.
-    if (existing && ts < existing.ts) return null;
+    // Stale / out-of-order: an update older than what we already have is
+    // dropped — EXCEPT a human act reconciling its own optimistic chip (same
+    // key). Loopback clock skew can make the server's delivered ts predate the
+    // optimistic `sending` chip's local ts; dropping it would strand the chip
+    // at `sending`, so a human reconcile always advances.
+    if (existing && ts < existing.ts && !human) return null;
+
+    // Status: a human turn is `sent` the moment the agents service records it
+    // (delivery confirmed); tool acts carry their own running/done lifecycle.
+    let status: string | undefined = existing?.post.status;
+    if (human) {
+      status = 'sent';
+    } else if (kind === 'tool_use') {
+      status = 'running';
+      const useId = (act.meta?.['data'] as { id?: unknown } | undefined)?.id;
+      if (typeof useId === 'string' && useId) this.toolByUseId.set(useId, key);
+    } else if (kind === 'tool_result') {
+      this.closeToolCall(act);
+    }
 
     const framed = human ? parseHumanFrame(actBody(act)) : null;
     const post: Post = {
@@ -171,16 +197,78 @@ export class TranscriptFold {
       author: framed ? framed.author : this.author,
       kind: human ? 'text' : isMsg ? 'text' : postKind(kind),
       body: framed ? framed.body : actBody(act),
+      ...(status !== undefined ? { status } : {}),
     };
     // Keep the original arrival slot on an in-place update; new keys append.
     const seq = existing ? existing.seq : this.seq++;
-    this.entries.set(key, { ts, seq, post });
+    const entry: FoldEntry = { ts, seq, post };
+    if (human) entry.deliveredTs = ts;
+    this.entries.set(key, entry);
+
+    // `received` derivation: any agent-origin act after a delivered human turn
+    // confirms the model consumed it. Flip outstanding `sent` chips. Runs on
+    // backfill too, so a reloaded finished task shows `received` correctly.
+    if (!human) this.markReceivedBefore(ts);
+
     this.render();
 
     // Speak only the finalized AGENT message (not partials, not the human turn).
     // The caller dedupes repeat speech by post id, so returning it on an
     // idempotent re-fold is safe.
     return !human && kind === 'message' ? post : null;
+  }
+
+  /**
+   * Optimistically fold a human turn the instant Send is pressed, keyed by a
+   * client correlation id. It renders as a `sending` chip; the delivered act
+   * (recorded by the agents service under the same id) reconciles it to `sent`
+   * in {@link push}. {@link markStatus} flips it to `failed` if the enqueue is
+   * rejected. No persistence — purely the local optimistic row.
+   */
+  pushOptimistic(cid: string, body: string, author = 'user:human'): void {
+    const ts = Date.now();
+    const post: Post = {
+      id: cid,
+      ts: tsToIso(ts),
+      author,
+      kind: 'text',
+      body,
+      status: 'sending',
+    };
+    const existing = this.entries.get(cid);
+    const seq = existing ? existing.seq : this.seq++;
+    this.entries.set(cid, { ts, seq, post });
+    this.render();
+  }
+
+  /** Force a status onto an existing entry (the `failed` path). No-op if the
+   *  key is unknown (e.g. the delivered act already reconciled it). */
+  markStatus(id: string, status: string): void {
+    const e = this.entries.get(id);
+    if (!e) return;
+    e.post = { ...e.post, status };
+    this.render();
+  }
+
+  /** Close the `running` tool chip a tool_result answers, by its tool_use id. */
+  private closeToolCall(act: AgentAct): void {
+    const data = (act.meta?.['data'] ?? {}) as { tool_use_id?: unknown; is_error?: unknown };
+    const useId = data.tool_use_id;
+    if (typeof useId !== 'string' || !useId) return;
+    const targetKey = this.toolByUseId.get(useId);
+    if (!targetKey) return;
+    const te = this.entries.get(targetKey);
+    if (te) te.post = { ...te.post, status: data.is_error ? 'error' : 'done' };
+  }
+
+  /** Flip every outstanding `sent` human chip delivered before `ts` to
+   *  `received` (an agent act at `ts` proves the model consumed it). */
+  private markReceivedBefore(ts: number): void {
+    for (const e of this.entries.values()) {
+      if (e.post.status === 'sent' && e.deliveredTs !== undefined && e.deliveredTs < ts) {
+        e.post = { ...e.post, status: 'received' };
+      }
+    }
   }
 
   /** Rebuild `posts` time-ordered (ts asc, arrival tiebreak). */

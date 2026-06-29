@@ -34,6 +34,7 @@
     fetchDag,
     openNode,
     relocateSelf,
+    awmAs,
     type AgentSubscription,
     type AgentStreamEvent,
   } from '@awm/client';
@@ -212,19 +213,32 @@
     const t = text.trim();
     if (!t || !connected || sending) return;
     sending = true;
+    // Optimistic chip: render a `sending` row immediately, keyed by a client
+    // correlation id. The agents service records the human turn back under the
+    // SAME id and streams it live (record_in), so this chip reconciles to
+    // `sent` in place — one row, never two. The author matches the framed
+    // identity the service stamps, so the reconcile doesn't relabel the chip.
+    const cid = crypto.randomUUID();
+    const author = awmAs();
+    if (fold) {
+      fold.pushOptimistic(cid, t, author);
+      rebuild();
+    }
     try {
-      const enqueued = await enqueueAgentPost(liveSlug, t);
+      const enqueued = await enqueueAgentPost(liveSlug, t, { author, clientId: cid });
       if (!enqueued) {
         // No live session holds this slug (the placement isn't running). The
-        // message wasn't delivered — surface it rather than silently dropping.
+        // message wasn't delivered — mark the chip failed rather than letting
+        // it sit at `sending`, and surface the reason.
+        fold?.markStatus(cid, 'failed');
+        rebuild();
         error = 'no live agent holds this slug — message not delivered';
       } else {
         error = null;
       }
-      // The delivered message returns through the transcript (record_in), so we
-      // don't echo it locally — that keeps the transcript the single source of
-      // truth and avoids a double-render.
     } catch (err) {
+      fold?.markStatus(cid, 'failed');
+      rebuild();
       error = `send failed: ${(err as Error).message}`;
     } finally {
       sending = false;
@@ -360,7 +374,7 @@
             type="button"
             title="create a new node at the root"
             onclick={() => { showNew = !showNew; showRelocate = false; }}
-          >＋ node</button>
+          >+ node</button>
           <button
             class="ctl mono"
             type="button"

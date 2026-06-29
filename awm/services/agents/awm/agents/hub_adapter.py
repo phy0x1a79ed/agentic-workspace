@@ -101,6 +101,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "scope", "type": "string", "required": True},
                 {"name": "author", "type": "string", "required": True},
                 {"name": "body", "type": "string", "required": True},
+                {"name": "client_id", "type": "string", "required": False},
             ],
         },
         {
@@ -351,7 +352,8 @@ def _h_enqueue_post(args: dict) -> dict:
     session = ai.get_session_by_scope(args["scope"])
     if session is None:
         return {"enqueued": False, "reason": "no active session"}
-    ok = ai.enqueue_input(session, args["author"], args["body"])
+    ok = ai.enqueue_input(session, args["author"], args["body"],
+                          client_id=args.get("client_id"))
     return {"enqueued": ok}
 
 

@@ -153,3 +153,81 @@ test('human turn interleaves with the agent reply by ts, deduped by id', () => {
   assert.deepEqual(fold.posts.map((p) => p.body), ['question?', 'answer']);
   assert.deepEqual(fold.posts.map((p) => p.author), ['user:op', AUTHOR]);
 });
+
+// ---------------------------------------------------------------------------
+// Status lifecycle — user chip (sending→sent→received→failed) + tool chip
+// ---------------------------------------------------------------------------
+
+/** A tool act carrying the agentcore correlation data (id / tool_use_id). */
+function toolUse(name: string, ts: number, useId: string): AgentAct {
+  return {
+    id: `tu-${useId}`, kind: 'tool_use', body: `[tool_use: ${name}]`,
+    meta: { data: { name, id: useId } }, ts,
+  } as AgentAct;
+}
+function toolResult(ts: number, useId: string, isError = false): AgentAct {
+  return {
+    id: `tr-${useId}`, kind: 'tool_result', body: 'output',
+    meta: { data: { tool_use_id: useId, is_error: isError } }, ts,
+  } as AgentAct;
+}
+
+test('optimistic chip goes sending → sent → received, one row throughout', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.pushOptimistic('cid-1', 'ping', 'user:op');
+  assert.equal(fold.posts.length, 1);
+  assert.equal(fold.posts[0].status, 'sending');
+  assert.equal(fold.posts[0].id, 'cid-1');
+
+  // The agents service records the human turn back under the SAME id (cid).
+  fold.push(humanAct('[from:user:op]\nping', 1_000, { id: 'cid-1' }));
+  assert.equal(fold.posts.length, 1, 'reconciles in place — no second row');
+  assert.equal(fold.posts[0].status, 'sent');
+  assert.equal(fold.posts[0].body, 'ping');
+
+  // The agent's next act proves the model consumed the input.
+  fold.push(act('message', 'pong', 2_000, { id: 'm1', message_id: 'm1' }));
+  assert.equal(fold.posts.find((p) => p.id === 'cid-1')?.status, 'received');
+});
+
+test('a rejected enqueue marks the optimistic chip failed', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.pushOptimistic('cid-x', 'ping', 'user:op');
+  fold.markStatus('cid-x', 'failed');
+  assert.equal(fold.posts[0].status, 'failed');
+});
+
+test('reconcile advances even when the delivered ts predates the chip', () => {
+  // Loopback clock skew: the server's delivered ts is earlier than the local
+  // optimistic ts. The stale-drop must be bypassed for the human reconcile, or
+  // the chip would strand at `sending`.
+  const fold = new TranscriptFold(AUTHOR);
+  fold.pushOptimistic('cid-2', 'ping', 'user:op');
+  const staleTs = 1; // far older than Date.now() used by pushOptimistic
+  fold.push(humanAct('[from:user:op]\nping', staleTs, { id: 'cid-2' }));
+  assert.equal(fold.posts.length, 1);
+  assert.equal(fold.posts[0].status, 'sent', 'reconcile is not dropped as stale');
+});
+
+test('backfill of a finished task derives received with no optimistic chip', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  // Replayed straight from the transcript: human turn then a later agent act.
+  fold.push(humanAct('[from:user:op]\nq', 100, { id: 'in1' }));
+  fold.push(act('message', 'a', 200, { id: 'm1', message_id: 'm1' }));
+  assert.equal(fold.posts.find((p) => p.id === 'in1')?.status, 'received');
+});
+
+test('a tool call flips running → done when its result lands', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(toolUse('Bash', 100, 'use-1'));
+  assert.equal(fold.posts.find((p) => p.id === 'tu-use-1')?.status, 'running');
+  fold.push(toolResult(150, 'use-1'));
+  assert.equal(fold.posts.find((p) => p.id === 'tu-use-1')?.status, 'done');
+});
+
+test('a failed tool result flips its call to error', () => {
+  const fold = new TranscriptFold(AUTHOR);
+  fold.push(toolUse('Bash', 100, 'use-2'));
+  fold.push(toolResult(150, 'use-2', true));
+  assert.equal(fold.posts.find((p) => p.id === 'tu-use-2')?.status, 'error');
+});

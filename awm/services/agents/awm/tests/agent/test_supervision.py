@@ -93,7 +93,7 @@ class TestTurnBudget:
         s = _FakeSup(iid=iid, token="plt-1", turn_budget=TASK_TURN_BUDGET)
         await placement.on_turn_boundary(s)
         assert s.turn_budget == TASK_TURN_BUDGET - 1
-        author, body = s.input_queue.get_nowait()
+        author, body, _cid = s.input_queue.get_nowait()
         assert author == "supervisor" and "Continue task" in body
         assert "edit_deliverable" in body          # worker-mode hint
         assert not fake_orch.calls
@@ -102,7 +102,7 @@ class TestTurnBudget:
         iid, _ = _seed(agents_env)
         s = _FakeSup(iid=iid, token="plt-1", turn_budget=TASK_WARN_REMAINING + 1)
         await placement.on_turn_boundary(s)
-        _a, body = s.input_queue.get_nowait()
+        _a, body, _cid = s.input_queue.get_nowait()
         assert "force-failed" in body and "Checkpoint" in body
 
     async def test_force_fail_at_zero_retains(self, agents_env, fake_orch):
@@ -188,7 +188,7 @@ class TestAcceptance:
         await placement.on_turn_boundary(s)
         assert not any(c[0] == "decompose_commit" for c in fake_orch.calls)
         assert _data(iid)["done"] is False          # done cleared
-        _a, body = s.input_queue.get_nowait()
+        _a, body, _cid = s.input_queue.get_nowait()
         assert "funnel" in body
 
     async def test_verify_has_no_auto_accept(self, agents_env, fake_orch):
@@ -198,7 +198,7 @@ class TestAcceptance:
         await placement.on_turn_boundary(s)
         # No deliver/approve auto-fired; just nudged toward a verdict.
         assert not fake_orch.calls
-        _a, body = s.input_queue.get_nowait()
+        _a, body, _cid = s.input_queue.get_nowait()
         assert "approve_plan" in body
 
 
@@ -244,7 +244,7 @@ class TestAttachFreezes:
         s = _FakeSup(iid=iid, token="plt-1", turn_budget=42)
         await placement.on_turn_boundary(s)
         assert s.turn_budget == 41                  # supervision active again
-        author, body = s.input_queue.get_nowait()
+        author, body, _cid = s.input_queue.get_nowait()
         assert author == "supervisor" and "Continue task" in body
 
 

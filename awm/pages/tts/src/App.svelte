@@ -184,7 +184,7 @@
         <div class="tts-bar">
           <label class="vol" title="output volume">
             <span class="vol-icon" aria-hidden="true"
-              >{vol.value === 0 ? '🔇' : vol.value < 0.5 ? '🔈' : vol.value < 0.9 ? '🔉' : '🔊'}</span
+              >{vol.value === 0 ? 'x' : vol.value < 0.5 ? '▁' : vol.value < 0.9 ? '▄' : '█'}</span
             >
             <Slider
               value={vol.value}
