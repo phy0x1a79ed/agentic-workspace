@@ -11,7 +11,7 @@
     --bg:#070b12; --panel:#0c131e; --panel2:#0a0f18;
     --line:rgba(122,164,206,.14); --line2:rgba(122,164,206,.30);
     --text:#dbe6f2; --muted:#6d8198;
-    --cyan:#2fd9f5; --air:#ff3b4e; --amber:#ffb020; --good:#46e6a3;
+    --cyan:#2fd9f5; --air:#ff3b4e; --amber:#ffb020; --good:#46e6a3; --purple:#a06bff;
     --mono:ui-monospace,"SF Mono",Menlo,monospace; --sans:system-ui,sans-serif;
   }
   * { box-sizing: border-box; }
@@ -37,8 +37,8 @@
   .conn.connecting .txt { color:var(--amber); }
   .conn.connected .dot { background:var(--good); box-shadow:0 0 9px var(--good); }
   .conn.connected .txt { color:var(--good); }
-  .conn.streaming .dot { background:var(--cyan); box-shadow:0 0 9px var(--cyan); animation:pulse 1.2s ease-in-out infinite; }
-  .conn.streaming .txt { color:var(--cyan); }
+  .conn.streaming .dot { background:var(--purple); box-shadow:0 0 9px var(--purple); animation:pulse 1.2s ease-in-out infinite; }
+  .conn.streaming .txt { color:var(--purple); }
 
   main {
     flex:1 1 auto; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -50,7 +50,7 @@
   .ring-level { fill:none; stroke:var(--air); stroke-width:8; stroke-linecap:round;
     transition:stroke .25s ease, filter .25s ease; }
   #stage[data-state="connected"] .ring-level { stroke:var(--good); filter:drop-shadow(0 0 7px rgba(70,230,163,.6)); }
-  #stage[data-state="streaming"] .ring-level { stroke:var(--cyan); filter:drop-shadow(0 0 9px rgba(47,217,245,.7)); }
+  #stage[data-state="streaming"] .ring-level { stroke:var(--purple); filter:drop-shadow(0 0 9px rgba(160,107,255,.7)); }
 
   .toggle {
     width:200px; min-height:64px; border-radius:16px; cursor:pointer;
@@ -70,9 +70,9 @@
     box-shadow:0 0 0 1px rgba(70,230,163,.35), 0 0 30px -8px rgba(70,230,163,.45), 0 10px 30px -16px rgba(0,0,0,.9);
   }
   #stage[data-state="streaming"] .toggle {
-    border-color:rgba(47,217,245,.6); color:#fff;
-    background:radial-gradient(120% 140% at 50% 20%,rgba(47,217,245,.26),transparent 62%),linear-gradient(180deg,#0a1722,#08111a);
-    box-shadow:0 0 0 1px rgba(47,217,245,.4), 0 0 34px -6px rgba(47,217,245,.5), 0 10px 30px -16px rgba(0,0,0,.9);
+    border-color:rgba(160,107,255,.6); color:#fff;
+    background:radial-gradient(120% 140% at 50% 20%,rgba(160,107,255,.26),transparent 62%),linear-gradient(180deg,#15102a,#0c0a18);
+    box-shadow:0 0 0 1px rgba(160,107,255,.4), 0 0 34px -6px rgba(160,107,255,.5), 0 10px 30px -16px rgba(0,0,0,.9);
     animation:streampulse 1.4s ease-in-out infinite;
   }
   #stage[data-state="offline"] .toggle {
@@ -93,8 +93,8 @@
 
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.35;} }
   @keyframes streampulse {
-    0%,100% { box-shadow:0 0 0 1px rgba(47,217,245,.4), 0 0 30px -8px rgba(47,217,245,.45), 0 10px 30px -16px rgba(0,0,0,.9); }
-    50%     { box-shadow:0 0 0 1px rgba(47,217,245,.6), 0 0 48px -2px rgba(47,217,245,.65), 0 10px 30px -16px rgba(0,0,0,.9); }
+    0%,100% { box-shadow:0 0 0 1px rgba(160,107,255,.4), 0 0 30px -8px rgba(160,107,255,.45), 0 10px 30px -16px rgba(0,0,0,.9); }
+    50%     { box-shadow:0 0 0 1px rgba(160,107,255,.6), 0 0 48px -2px rgba(160,107,255,.65), 0 10px 30px -16px rgba(0,0,0,.9); }
   }
   @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
 </style>
@@ -245,6 +245,15 @@ function stop() {
 }
 
 toggle.addEventListener("click", () => { on ? stop() : start(); });
+
+// spacebar toggles start/stop (ignore when the button itself is focused — it
+// already fires its own click — and ignore auto-repeat while the key is held)
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" && e.key !== " ") return;
+  if (e.repeat || e.target === toggle) return;
+  e.preventDefault();   // don't scroll the page
+  on ? stop() : start();
+});
 
 // ── level meter ──
 function tick() {
