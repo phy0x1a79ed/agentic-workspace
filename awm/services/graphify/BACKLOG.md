@@ -11,10 +11,11 @@ trustworthy or more useful to an agent navigating awm during development?"
 
 ## Tier 0 — prerequisites (must land before the rest is dogfoodable)
 
-- [ ] **#2 dev-shadow GRAPHIFY_BIN resolution.** run.sh dev branch runs under
+- [x] **#2 dev-shadow GRAPHIFY_BIN resolution.** run.sh dev branch runs under
   `mamba run -n awm` without GRAPHIFY_BIN → shadow builds fail. Fix: source
   `.runtime-env` if present, else resolve the binary from `${GRAPHIFY_ENV:-graphify}`.
-  This unblocks the whole :7871 dogfood workflow.
+  This unblocks the whole :7871 dogfood workflow. _(9b1f570; shell resolution
+  verified against graphify-spike. Live :7871 dogfood pending Task #3.)_
 
 ## Tier 1 — make the existing graph trustworthy + usable
 
@@ -93,3 +94,6 @@ on the key invariant) — reaching it means flag-and-stop, not build.
 - 2026-06-28 — Loop scaffolding authored (LOOP.md + BACKLOG.md). Baseline:
   service committed at b88695e, 14/14 unit tests green, real-binary +
   feat-dag :7861 e2e verified pre-loop. Starting Tier 0 #2.
+- 2026-06-28 — Tier 0 #2 shipped (9b1f570): dev-shadow GRAPHIFY_BIN resolution.
+  + LOOP.md: delegate heavy work to sonnet subagents to preserve orchestrator
+  context. Next: bring up :7871 + live dogfood, then Tier 1.

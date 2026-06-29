@@ -29,6 +29,18 @@ judgment call.
 - **awm data rules**: raw data immutable; write outputs under `.awm/data/`;
   never hand-edit `.awm/history.md` or `.awm/artifacts.md`.
 
+## Delegate to sonnet subagents (preserve orchestrator context)
+
+The orchestrator (me) holds the loop state and conclusions; **push the heavy
+lifting down to `sonnet` subagents** (`Agent` tool, `model: "sonnet"`) so the
+main context stays lean across many iterations. Good candidates to delegate per
+iteration: implementing a scoped backlog item, writing/running the unit suite,
+investigating a live-dogfood failure, reconnaissance reads of the graphify CLI
+or awm internals. Give each a crisp brief + acceptance check; have it return
+only the conclusion / diff summary / pass-fail, not file dumps. Keep for the
+orchestrator: picking the item, the commit, ticking the backlog, the
+stop/continue decision. Trivial one-liners aren't worth a subagent — judgment.
+
 ## Per-iteration recipe
 
 1. **Orient.** Read `LOOP.md` + `BACKLOG.md`. Pick the highest-priority
