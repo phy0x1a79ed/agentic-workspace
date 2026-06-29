@@ -51,7 +51,7 @@ If this is a workspace-level skill with no obvious project/scope, skip this step
 
 ### 3. Verify every tool call against the live tool surface
 
-awm is a modular gateway: each MCP tool is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. A tool exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it.
+awm is a modular gateway: every operation is **projected from a feature service's `ready.api` manifest**, not hand-registered in one dispatch file. An operation exists if some service under `awm/services/<svc>/` declares the underlying function in its manifest and the gateway projects it. Note the MCP surface is **collapsed by domain** — an agent sees one generic `{verb, args}` tool per domain (`scope`, `agent`, `rlm`, …) and learns a domain's verbs via its reserved `describe` verb — while the CLI/HTTP surfaces and the **default** `GET /tools` stay **expanded** (one `<domain>_<verb>` entry per op). For skill verification, the expanded list is exactly what you want.
 
 Two cheap ways to confirm a tool is live:
 
@@ -61,7 +61,7 @@ Two cheap ways to confirm a tool is live:
   curl -s http://127.0.0.1:7819/tools | jq -r '.tools[].name'   # substitute your sandbox port
   ```
 
-  The MCP client's own tool listing is the same source of truth.
+  That default `/tools` is the **expanded** per-verb list (still the source of truth for whether an op exists). The MCP *client* now lists the collapsed per-domain tools (`GET /tools?view=domains`); to enumerate a domain's verbs from a client, call its `describe` verb — e.g. `scope(verb="describe")`.
 
 - **Grep the services** for the underlying op/manifest entry:
 
@@ -69,7 +69,7 @@ Two cheap ways to confirm a tool is live:
   Grep pattern="\"<fn>\"|name=\"<fn>\"" path=awm/services
   ```
 
-  The projected MCP name is `<service>_<fn>` by default, overridable by a `"tool"` key on the manifest function (see `awm/gateway/awm/gateway/catalog.py::_tool_name`). So a tool surfacing as `scope_post` may be op `post` on the `scopes` service with a `tool="scope_post"` override.
+  The projected op name is `<service>_<fn>` by default, overridable by a `"tool"` key on the manifest function (see `awm/gateway/awm/gateway/catalog.py::_tool_name`). So an op surfacing as `scope_post` may be op `post` on the `scopes` service with a `tool="scope_post"` override. On the collapsed MCP surface that's the `scope` domain tool with verb `post` (`scope(verb="post", args={…})`); on CLI/HTTP it stays expanded (`awm scope post` / `POST /invoke {name:"scope_post"}`).
 
 **If a tool the skill calls has no match, it's a ghost.** Decide whether to:
 

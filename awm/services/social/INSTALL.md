@@ -2,8 +2,10 @@
 
 A Python feature service in the `awm.social` namespace. It connects to external
 messaging platforms (Discord, Slack today; Teams / Gmail / WeChat later) and
-exposes one unified `social_*` MCP surface for sending, receiving, and operator
-management. It needs the `awm` conda env to contain its package plus the shared
+exposes one unified `social` MCP domain for sending, receiving, and operator
+management — agents call `social(verb="send", args={…})` etc. (run
+`social(verb="describe")` to list verbs); the operations stay expanded as
+`social_*` on the CLI/HTTP surfaces (`awm social send`, `{name:"social_send"}`). It needs the `awm` conda env to contain its package plus the shared
 component libraries it imports (`config`, `persistence`, `gatewayclient`) and its
 platform SDKs (`discord.py`, `slack_sdk`).
 

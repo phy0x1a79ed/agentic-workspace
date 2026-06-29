@@ -118,7 +118,11 @@ body is a separate `character`; a joining human spawns as their own player.
 
 ## Realm-family contract
 
-Functions are projected into the gateway catalog as `rlm_factorio_<verb>` tools:
+Functions are projected into the gateway catalog as `rlm_factorio_<verb>` ops —
+on the collapsed MCP surface they fold under the shared `rlm` domain tool as verbs
+`factorio_<verb>` (`rlm(verb="factorio_world_new", args={…})`; `rlm(verb="describe")`
+lists them, alongside rlm-browser's `browser_*` verbs); CLI/HTTP stay expanded as
+`rlm_factorio_<verb>`:
 
 - **lifecycle** — `acquire(game, opts?) -> {session_id}` · `release(session_id)` ·
   `reset(session_id)` · `status(session_id?)`

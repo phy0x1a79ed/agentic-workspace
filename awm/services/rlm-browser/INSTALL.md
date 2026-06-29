@@ -54,7 +54,11 @@ Profiles live on the Linux fs at `AWM_DIR/services/rlm-browser/profiles/<game>/`
 
 ## Contract — relay + live introspection
 
-Functions are projected into the gateway catalog as `rlm_browser_<verb>` tools.
+Functions are projected into the gateway catalog as `rlm_browser_<verb>` ops. On
+the collapsed MCP surface they fold under the shared `rlm` domain tool as verbs
+`browser_<verb>` (`rlm(verb="browser_acquire", args={…})`; `rlm(verb="describe")`
+lists them, alongside rlm-factorio's `factorio_*` verbs); CLI/HTTP stay expanded
+as `rlm_browser_<verb>` (`awm rlm browser-acquire`).
 The browser command set is deliberately **not** hand-authored: the act surface is
 a single CDP relay, and the command catalog is discovered live from the running
 Chrome.

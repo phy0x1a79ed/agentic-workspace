@@ -38,14 +38,14 @@ The canonical MCP registry is `<workspace>/.mcp.json`. AWM fans it out to backen
 | `claude-spawn` | `<workspace>/.awm/spawn-mcp.json` | claude subprocesses launched by AWM (`--strict-mcp-config`) |
 | `opencode` | `<workspace>/.awm/mcp-opencode.json` | opencode subprocesses launched by AWM (via `OPENCODE_CONFIG`) — also the base that per-scope `mcp-opencode.json` files overlay `instructions` onto |
 
-Trigger a re-sync from a running agent with the `awm_mcp_sync` MCP tool, or restart the gateway (`awm.service`) — its lifespan hook calls `sync_mcp_configs()` on startup.
+Trigger a re-sync from a running agent with the `gateway` domain tool's `mcp-sync` verb (`gateway(verb="mcp-sync")` — `awm_mcp_sync` on CLI/HTTP), or restart the gateway (`awm.service`) — its lifespan hook calls `sync_mcp_configs()` on startup.
 
 **Registration semantics**: every server listed in `.mcp.json` is *advertised* to spawned agents regardless of whether the upstream service is currently running. The agent will see the tool surface; calls fail with a clear error when the service is down. This makes service availability discoverable (an agent knows `chrome-devtools` *exists* even if the Chrome instance hasn't been started yet).
 
 ### Adding a new MCP
 
 1. Append the server block to `<workspace>/.mcp.json` (stdio: `command`/`args`/`env`; HTTP: `url`/`type`).
-2. Call `awm_mcp_sync` MCP tool — both backends regenerate.
+2. Call `gateway(verb="mcp-sync")` (the `awm_mcp_sync` op) — both backends regenerate.
 3. New agent spawns pick it up. Already-running agents must reconnect.
 
 See `skill_get path="tools/mcp.md"` for the per-server fields and the `tools/chrome-devtools.md` / `tools/plotly.md` / etc. for service-specific notes.

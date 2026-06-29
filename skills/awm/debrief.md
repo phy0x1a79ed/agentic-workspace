@@ -14,6 +14,8 @@ are all `scope_posts` addressed by `(project, scope)`. Journaling a session is a
 `scope_post` with `kind=journal` — there is no separate `session_log` tool, and
 journal entries are not "resolved" (the old read-state/resolve model is gone).
 
+> **Call convention.** The `<domain>_<verb>` names below (`scope_post`, `artifact_sync`, `scope_refresh`, …) are **operation** names. On the collapsed MCP surface, call them as the domain tool's verb — `scope(verb="post", args={kind:"journal", …})`, `artifact(verb="sync")`, etc. (`scope(verb="describe")` lists a domain's verbs). On the CLI/HTTP surfaces they stay expanded (`awm scope post …`, `POST /invoke {name:"scope_post"}`).
+
 ## Steps
 
 1. **Update project docs.** If the session changed how the project works — new scripts, new workflows, changed conventions, fixed bugs that affect usage — update `AGENTS.md` (or equivalent project docs) to reflect the current state. Docs should describe the world as it is now, not as it was before the session. Skip if no user-facing behavior changed.
