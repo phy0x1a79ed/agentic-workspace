@@ -63,6 +63,25 @@ class InboundMessage:
 
 
 @dataclass(frozen=True)
+class Command:
+    """A slash/application-command invocation, normalised across connectors.
+
+    Only platforms with a real command surface (Discord application commands)
+    ever produce these; everything else leaves ``on_command`` unused. The
+    adapter turns one of these into an ``emit`` so other services can react.
+    """
+
+    account: str
+    platform: str
+    name: str                                # command name, e.g. "approve"
+    options: dict = field(default_factory=dict)  # parsed option name → value
+    user_id: str = ""
+    user_name: str = ""
+    channel_id: str = ""
+    is_dm: bool = False                       # invoked in a DM to the bot?
+
+
+@dataclass(frozen=True)
 class Channel:
     """A channel/conversation a connector can list."""
 
@@ -80,6 +99,7 @@ class Identity:
 
 
 OnMessage = Callable[[InboundMessage], Awaitable[None]]
+OnCommand = Callable[[Command], Awaitable[None]]
 
 
 class Connector(ABC):
@@ -92,9 +112,16 @@ class Connector(ABC):
 
     platform: str = "base"
 
-    def __init__(self, account: Account, on_message: OnMessage) -> None:
+    def __init__(
+        self,
+        account: Account,
+        on_message: OnMessage,
+        on_command: OnCommand | None = None,
+    ) -> None:
         self.account = account
         self.on_message = on_message
+        # Only set for platforms with a command surface (Discord). Others ignore.
+        self.on_command = on_command
 
     @abstractmethod
     async def start(self) -> None:

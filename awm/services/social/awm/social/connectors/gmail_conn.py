@@ -86,8 +86,9 @@ def _body_text(msg: email.message.Message) -> str:
 class GmailConnector(Connector):
     platform = "gmail"
 
-    def __init__(self, account: Account, on_message: OnMessage) -> None:
-        super().__init__(account, on_message)
+    def __init__(self, account: Account, on_message: OnMessage,
+                 on_command=None) -> None:
+        super().__init__(account, on_message, on_command)
         self._addr = account.address or ""
         self._pw = account.token
         self._baseline = 0  # highest IMAP UID seen; 0 = not yet established

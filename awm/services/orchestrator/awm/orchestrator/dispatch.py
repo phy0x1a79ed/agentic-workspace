@@ -168,9 +168,8 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
                 "reason_text": last["reason_text"],
                 "partial_ref": last["payload_ref"],
             }
-    return {
+    payload = {
         "task_id": task["id"],
-        "project": task["project"],
         "unit_slug": unit_slug,
         "brief": json.dumps(brief),
         "contracts_in": contracts_in,
@@ -178,6 +177,25 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         "prereadings": prereadings,
         "mode": mode,
     }
+    # An attended node defaults to the claude harness (interactive, attachable
+    # terminal + a capable model); unattended placements stay on the agents
+    # service's own default (opencode / DSv4-free). Pure data — place_on_task
+    # reads ``harness`` when present, else picks its default. The ``attached``
+    # intent is ALSO threaded as data so the agents-side supervisor freezes
+    # (no nag / no budget burn / no force-fail) on a born-attended node — a
+    # human-driven drop-in idles politely until detached. Without this the flag
+    # is hardcoded ``False`` at birth and the supervisor runs away (P2).
+    if task["attached"]:
+        payload["harness"] = "claude"
+        payload["attached"] = True
+    # The task's attached git scopes — linked into the unit under repos/<name>
+    # on every (re)dispatch (the workspace symlink is idempotent). Read from the
+    # first-class task_scopes relation as the workspace ``repos`` shape.
+    repos = [{"name": r["name"], "project": r["project"], "scope": r["scope"]}
+             for r in dao.list_task_scopes(task["id"])]
+    if repos:
+        payload["repos"] = repos
+    return payload
 
 
 # ---------------------------------------------------------------------------

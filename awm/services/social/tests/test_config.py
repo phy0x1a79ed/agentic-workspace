@@ -17,6 +17,18 @@ class TestLoad:
         from awm.social import config as cfg
         assert cfg.load(tmp_path / "absent.toml") == []
 
+    def test_awm_social_config_override(self, tmp_path, monkeypatch):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "elsewhere.toml", """
+[account.discord-bot]
+platform = "discord"
+token = "dtoken"
+""")
+        monkeypatch.setenv("AWM_SOCIAL_CONFIG", str(p))
+        accounts = cfg.load()  # no explicit path → resolves via the override
+        assert [a.name for a in accounts] == ["discord-bot"]
+        assert accounts[0].token == "dtoken"
+
     def test_loads_named_accounts(self, tmp_path):
         from awm.social import config as cfg
         p = _write(tmp_path / "social.toml", """

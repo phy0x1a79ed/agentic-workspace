@@ -59,7 +59,6 @@ def agents_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr("awm.config.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.config.PROJECTS_DIR", projects_dir)
-    monkeypatch.setattr(ai_mod, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(_cfg, "AWM_DIR", awm_dir)
     monkeypatch.setattr(dbs_mod, "SERVICES_DIR", awm_dir / "services")
 
@@ -67,14 +66,13 @@ def agents_env(tmp_path, monkeypatch):
     units_root = awm_dir / "services" / "workspace" / "units"
 
     def _unit_path(a):
-        return units_root / a["project"] / (a.get("unit_slug") or a.get("scope"))
+        # The workspace unit is keyed on the slug ALONE (no project segment) —
+        # mirrors the real service's tasks/<slug>/ layout.
+        return units_root / (a.get("unit_slug") or a.get("scope"))
 
     async def _fake_call(service, fn, args=None, *, as_=None, **kw):
         a = args or {}
         calls.append((service, fn, a))
-        if fn == "scope_create":
-            ws = projects_dir / a["project"] / a["scope"]
-            ws.mkdir(parents=True, exist_ok=True)
         if fn == "workspace_create":
             path = _unit_path(a)
             (path / "deliverable").mkdir(parents=True, exist_ok=True)

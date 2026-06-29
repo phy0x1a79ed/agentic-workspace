@@ -188,7 +188,9 @@ class TestManifest:
         # Every declared function has a handler.
         for f in fns:
             assert f["name"] in HANDLERS
-        assert API_MANIFEST["emitters"] == [{"topic": "message"}]
+        # Inbound messages + slash-command invocations are both emitted.
+        assert API_MANIFEST["emitters"] == [
+            {"topic": "message"}, {"topic": "command"}]
 
     def test_send_requires_account_channel_text(self):
         from awm.social.hub_adapter import API_MANIFEST

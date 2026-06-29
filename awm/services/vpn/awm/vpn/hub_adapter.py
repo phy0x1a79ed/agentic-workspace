@@ -39,13 +39,17 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Bring a VPN exit up (profile: 'ubc' or 'proton'). Idempotent "
                 "singleton — at most one awm-vpn-<profile> container at a time; "
-                "a second call returns the existing exit. Waits for the tunnel "
-                "and an in-netns leak-check, then returns a descriptor: "
+                "a second call returns the existing exit. For UBC, arms the local "
+                "awm 2fa Duo auto-approver (a burst on the configured device) "
+                "right before dialing so the push auto-approves. Waits for the "
+                "tunnel and an in-netns leak-check, then returns a descriptor: "
                 "{profile, container, attach, network_mode, exit_ip, status, "
-                "usage} — usage explains how to route a process (or an "
-                "rlm-browser session) through this exit. Fails closed: if the "
-                "tunnel never comes up the container is removed and an error is "
-                "returned. Requires creds in $AWM_DIR/vpn.toml and a built image."
+                "bounce_host, bounce_port, bounce_user, bounce_key, usage}. Route "
+                "a process through the exit by netns attach (--network=container:"
+                "awm-vpn-<profile>) OR by SSH ProxyJump/-W through the bounce sshd "
+                "at localhost:bounce_port. Fails closed: if the tunnel never comes "
+                "up the container is removed and an error is returned. Requires "
+                "creds in $AWM_DIR/vpn.toml and a built image."
             ),
             "params": [
                 {"name": "profile", "type": "string", "required": True},

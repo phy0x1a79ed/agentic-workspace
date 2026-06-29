@@ -1,8 +1,7 @@
 """VPN profile config.
 
 Lives at ``$AWM_DIR/vpn.toml`` (workspace-local; chmod 0600 — it holds VPN
-credentials and the virtual-auth token). One ``[<profile>]`` table per VPN exit.
-Shape::
+credentials). One ``[<profile>]`` table per VPN exit. Shape::
 
     [ubc]
     # image defaults to "awm-vpn-ubc"; build it from containers/ubc/.
@@ -10,10 +9,9 @@ Shape::
     user          = "cwl@app"
     password      = "..."
     second_factor = "push"          # optional; line fed to openconnect's 2FA prompt
-    # virtual-auth on-demand Duo auto-approver (mira). The ubc dialer POSTs a
-    # "burst" here right before dialing so the Duo push auto-approves (~1s).
-    va_burst_url  = "http://10.74.81.111:8077/burst"
-    va_token      = "..."           # the [serve] token from mira's virtual-auth config
+    # UBC's Duo push is auto-approved by the local awm `2fa` service: vpn_up arms
+    # a burst on this device right before dialing. Defaults to "cwl"; "" disables.
+    twofa_device  = "cwl"
 
     [proton]
     # image defaults to "awm-vpn-proton"; build it from containers/proton/.
@@ -31,6 +29,7 @@ container at ``docker run``; the dialer scripts inside the image read them.
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +42,48 @@ CONFIG_FILE: Path = config.AWM_DIR / "vpn.toml"
 PROFILES: tuple[str, ...] = ("ubc", "proton")
 DEFAULT_IMAGE = {"ubc": "awm-vpn-ubc", "proton": "awm-vpn-proton"}
 
+# Each profile's co-located bounce sshd is published on the host at this port, so
+# `ssh -W %h:%p` / ProxyJump through localhost:<port> egresses via that tunnel
+# (the vpn_bounce architecture). ubc=2222 matches the legacy vpn_bounce port, so
+# ~/.ssh/config's `vpn_ubc` Port line is unchanged across the cutover.
+BOUNCE_PORT = {"ubc": 2222, "proton": 2223}
+
+# The vpn service's own dir (alongside vpn.db) — holds the bounce keypair.
+SERVICE_DIR: Path = config.AWM_DIR / "services" / "vpn"
+
+
+def bounce_port(profile: str) -> int:
+    """Host port the profile's bounce sshd is published on (KeyError if unknown)."""
+    return BOUNCE_PORT[profile]
+
+
+def bounce_key_path() -> Path:
+    """Host path of the bounce SSH private key (0600); public key is `.pub`."""
+    return SERVICE_DIR / "bounce"
+
+
+def ensure_bounce_key() -> str:
+    """Generate the bounce keypair on first use; return the public key text.
+
+    One keypair serves every profile: the public key is injected into each
+    container as the sole authorized key (see ``ssh_server``), and the private
+    key is what ``~/.ssh/config``'s bounce host points ``IdentityFile`` at.
+    ed25519, no passphrase, stored 0600 under :data:`SERVICE_DIR`.
+    """
+    priv = bounce_key_path()
+    pub = priv.with_suffix(".pub")
+    if not pub.exists():
+        SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+        # Remove a half-written private key so ssh-keygen doesn't prompt to overwrite.
+        priv.unlink(missing_ok=True)
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "awm-vpn-bounce",
+             "-f", str(priv)],
+            check=True, capture_output=True, text=True,
+        )
+        priv.chmod(0o600)
+    return pub.read_text().strip()
+
 
 class VpnConfigError(Exception):
     """Raised when vpn.toml is missing or a profile section is malformed."""
@@ -54,6 +95,8 @@ class ProfileConfig:
     image: str
     # env injected into the container at `docker run -e KEY=VAL`.
     env: dict[str, str] = field(default_factory=dict)
+    # 2fa device whose Duo burst the host arms before dialing (None = no 2FA).
+    twofa_device: str | None = None
 
 
 def _load_toml() -> dict:
@@ -100,25 +143,38 @@ def load_profile(profile: str) -> ProfileConfig:
 
     image = _opt(section, "image", DEFAULT_IMAGE[profile])
 
+    # The bounce sshd in every profile authorizes this one public key.
+    bounce_pubkey = ensure_bounce_key()
+    twofa_device: str | None = None
+
     if profile == "ubc":
+        # UBC's Duo push is auto-approved by the local awm `2fa` service: the
+        # host-side `vpn_up` arms a burst on this device right before dialing
+        # (see container.py). Key absent => default "cwl"; present-but-blank =>
+        # disabled (None); otherwise the named device.
+        raw_device = section.get("twofa_device")
+        if raw_device is None:
+            twofa_device = "cwl"
+        elif isinstance(raw_device, str) and raw_device.strip():
+            twofa_device = raw_device.strip()
+        else:
+            twofa_device = None
         env = {
             "UBC_SERVER": _req(section, "server", profile),
             "UBC_USER": _req(section, "user", profile),
             "UBC_PASSWORD": _req(section, "password", profile),
             "UBC_SECOND_FACTOR": _opt(section, "second_factor", "push"),
-            # virtual-auth burst: optional but strongly recommended for UBC's
-            # Duo 2FA. If absent the dialer simply skips the burst (and the dial
-            # will hang on Duo unless 2FA is otherwise satisfied).
-            "VA_BURST_URL": _opt(section, "va_burst_url"),
-            "VA_TOKEN": _opt(section, "va_token"),
+            "BOUNCE_AUTHORIZED_KEY": bounce_pubkey,
         }
     elif profile == "proton":
         env = {
             "PROTON_USERNAME": _req(section, "username", profile),
             "PROTON_PASSWORD": _req(section, "password", profile),
             "PROTON_SERVER": _opt(section, "server"),
+            "BOUNCE_AUTHORIZED_KEY": bounce_pubkey,
         }
     else:  # pragma: no cover - guarded by the PROFILES check above
         env = {}
 
-    return ProfileConfig(profile=profile, image=image, env=env)
+    return ProfileConfig(profile=profile, image=image, env=env,
+                         twofa_device=twofa_device)

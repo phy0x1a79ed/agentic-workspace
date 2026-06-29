@@ -20,7 +20,7 @@ def _names(calls):
 
 
 async def _place(agents_env, **over):
-    args = {"task_id": "T-1", "project": "p", "unit_slug": "leaf-1",
+    args = {"task_id": "T-1", "unit_slug": "leaf-1",
             "brief": "do the thing", "contracts_in": ["in:1"],
             "contracts_out": ["out:1"], "mode": "worker"}
     args.update(over)
@@ -54,7 +54,7 @@ class TestPlaceOnTask:
         spec = data["placement"]
         assert spec["mode"] == "worker"
         assert spec["contracts_out"] == ["out:1"]
-        assert spec["workspace_path"].endswith("/p/leaf-1")
+        assert spec["workspace_path"].endswith("/leaf-1")
         assert data["done"] is False and data["staged"] == {}
 
     async def test_spawn_carries_worker_tool_profile(self, agents_env, stub_core):
@@ -86,11 +86,11 @@ class TestPlaceOnTask:
             self, agents_env, stub_core):
         res = await _place(agents_env)
         token = res["placement_token"]
-        first = ai_mod.get_session_by_scope("p", "leaf-1")
+        first = ai_mod.get_session_by_scope("leaf-1")
         assert first.agent_ref == res["agent_ref"]
-        assert first.workdir.endswith("/p/leaf-1")
+        assert first.workdir.endswith("/leaf-1")
 
-        new = await ai_mod.respawn_session("p/leaf-1")
+        new = await ai_mod.respawn_session("leaf-1")
 
         assert new.id != first.id
         assert new.agent_ref == res["agent_ref"]      # identity carried forward
@@ -129,7 +129,7 @@ class TestModeProfiles:
         # kickoff can embed it (the verifier has no fs to read it itself).
         from pathlib import Path
         unit = (agents_env["awm_dir"] / "services" / "workspace" / "units"
-                / "p" / "leaf-v")
+                / "leaf-v")
         plan_dir = unit / "deliverable" / "plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / "payload").write_text("THE PLAN BODY")

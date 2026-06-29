@@ -20,10 +20,13 @@ def awm_workspace(tmp_path, monkeypatch):
     awm_dir.mkdir()
     services_dir = awm_dir / "services"
     services_dir.mkdir()
+    tasks_dir = workspace / "tasks"
 
     monkeypatch.setattr("awm.config.WORKSPACE_ROOT", workspace)
     monkeypatch.setattr("awm.config.AWM_DIR", awm_dir)
     monkeypatch.setattr("awm.config.SERVICES_DIR", services_dir)
+    # Units live under TASKS_DIR now (the top-level tasks/ dir); redirect it too.
+    monkeypatch.setattr("awm.config.TASKS_DIR", tasks_dir)
     monkeypatch.setattr("awm.persistence.databases.SERVICES_DIR", services_dir)
 
     import awm.workspace.dao as dao_mod
@@ -33,4 +36,5 @@ def awm_workspace(tmp_path, monkeypatch):
         "workspace": workspace,
         "awm_dir": awm_dir,
         "services_dir": services_dir,
+        "tasks_dir": tasks_dir,
     }

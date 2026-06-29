@@ -97,6 +97,46 @@ def _rm_quiet(name: str) -> None:
     _docker(["rm", "-f", name], check=False)
 
 
+# -- 2FA burst (host-side) -------------------------------------------------
+
+def arm_2fa_burst(device: str) -> bool:
+    """Arm the local awm ``2fa`` Duo auto-approver for one push, best-effort.
+
+    POSTs ``/svc/2fa/fn/burst`` on our own gateway (``AWM_HUB_URL``) right before
+    a dial, so the Duo push openconnect triggers is auto-approved (~1s) instead
+    of waiting on a human phone tap. This replaces the old in-container POST to
+    mira's virtual-auth: the container can't reach the host gateway before its
+    tunnel is up, so the arming has to happen here on the host.
+
+    Returns True on a clean 2xx. Never raises — if the 2fa service is down the
+    dial simply falls back to a manual Duo approval (and likely times out).
+    """
+    import json
+    import os
+
+    hub = os.environ.get("AWM_HUB_URL", "").rstrip("/")
+    if not hub:
+        log.warning("AWM_HUB_URL unset; cannot arm 2fa burst for device %r", device)
+        return False
+    url = f"{hub}/svc/2fa/fn/burst"
+    try:
+        proc = subprocess.run(
+            ["curl", "-fsS", "--max-time", "15", "-X", "POST", url,
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps({"device": device})],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("2fa burst arm error (device=%r): %s", device, exc)
+        return False
+    if proc.returncode != 0:
+        log.warning("2fa burst arm failed (device=%r): %s", device,
+                    (proc.stderr or proc.stdout or "").strip() or "non-zero exit")
+        return False
+    log.info("armed 2fa burst device=%r before dial", device)
+    return True
+
+
 # -- IP / leak check -------------------------------------------------------
 
 def host_ip() -> str:
@@ -141,14 +181,16 @@ def descriptor(profile: str, *, status: str, exit_ip: str = "") -> dict:
     """The self-documenting result: how to route a process through this exit."""
     name = container_name(profile)
     attach = f"--network=container:{name}"
+    port = config.bounce_port(profile)
+    key = config.bounce_key_path()
     usage = (
         f"VPN exit '{profile}' "
         + ("is UP. " if status == "up" else f"is {status}. ")
-        + f"Route any process through it by joining its network namespace: "
-        f"`docker run {attach} <image> …` (or add `network_mode: \"container:{name}\"` "
-        f"in compose). For a browser session on this VPN, call "
-        f"rlm_browser.acquire{{game, opts:{{vpn:'{profile}'}}}} — rlm-browser "
-        f"launches Chrome with `{attach}`."
+        + f"Route a process through it two ways: (1) netns attach — "
+        f"`docker run {attach} <image> …` (or `network_mode: \"container:{name}\"` "
+        f"in compose), e.g. rlm_browser.acquire{{game, opts:{{vpn:'{profile}'}}}}; "
+        f"(2) SSH ProxyJump/-W through the bounce sshd at localhost:{port} "
+        f"(user root, key {key}) — e.g. `ssh -W host:port -i {key} -p {port} root@localhost`."
     )
     return {
         "profile": profile,
@@ -157,6 +199,10 @@ def descriptor(profile: str, *, status: str, exit_ip: str = "") -> dict:
         "network_mode": f"container:{name}",
         "exit_ip": exit_ip,
         "status": status,
+        "bounce_host": "localhost",
+        "bounce_port": port,
+        "bounce_user": "root",
+        "bounce_key": str(key),
         "usage": usage,
     }
 
@@ -189,11 +235,19 @@ def up(profile: str) -> dict:
 
     cfg = config.load_profile(profile)  # raises if creds missing/malformed
 
+    # Arm the local 2fa Duo auto-approver right before dialing (UBC's Duo push).
+    # Cold path only — an already-running exit short-circuited above, so we never
+    # fire a needless burst on a no-op `up`.
+    if cfg.twofa_device:
+        arm_2fa_burst(cfg.twofa_device)
+
     # Pass creds via `-e KEY` (value taken from our env, not argv) so secrets
-    # don't show up in `docker inspect`/`ps`. NET_ADMIN + tun for the dialer.
+    # don't show up in `docker inspect`/`ps`. NET_ADMIN + tun for the dialer;
+    # publish the bounce sshd so host-side `ssh -W`/ProxyJump can egress here.
     run_env = {**_subprocess_env(), **cfg.env}
     args = ["run", "-d", "--name", name,
-            "--cap-add=NET_ADMIN", "--device=/dev/net/tun"]
+            "--cap-add=NET_ADMIN", "--device=/dev/net/tun",
+            "-p", f"{config.bounce_port(profile)}:22"]
     for key in cfg.env:
         args += ["-e", key]
     args.append(cfg.image)

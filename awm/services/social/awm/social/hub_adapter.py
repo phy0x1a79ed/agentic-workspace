@@ -63,6 +63,29 @@ async def _on_message(inbound: connectors.InboundMessage) -> None:
         await _adapter.emit("message", row)
 
 
+async def _on_command(cmd: connectors.Command) -> None:
+    """Emit a normalised slash-command invocation for live subscribers.
+
+    Unlike messages these aren't persisted — a command is an ephemeral trigger,
+    not a record. The 2fa service subscribes to ``/svc/social/emit/command`` and
+    reacts to ``name == "approve"`` by arming a Duo approval burst.
+    """
+    if _adapter is None:
+        return
+    payload = {
+        "command": cmd.name,
+        "account": cmd.account,
+        "platform": cmd.platform,
+        "options": cmd.options,
+        "device": cmd.options.get("device"),
+        "user_id": cmd.user_id,
+        "user_name": cmd.user_name,
+        "channel_id": cmd.channel_id,
+        "is_dm": cmd.is_dm,
+    }
+    await _adapter.emit("command", payload)
+
+
 # -- handlers ---------------------------------------------------------------
 
 async def _h_send(args: dict) -> dict:
@@ -296,7 +319,7 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
     ],
-    "emitters": [{"topic": "message"}],
+    "emitters": [{"topic": "message"}, {"topic": "command"}],
     "sessions": [],
 }
 
@@ -343,7 +366,7 @@ def _on_start() -> None:
             log.info("account %s disabled; not connecting", cfg.name)
             continue
         try:
-            conn = connectors.build(cfg, _on_message)
+            conn = connectors.build(cfg, _on_message, _on_command)
         except ValueError as exc:
             log.error("cannot build connector for %s: %s", cfg.name, exc)
             continue

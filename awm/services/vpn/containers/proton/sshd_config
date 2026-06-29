@@ -1,0 +1,16 @@
+# Bounce sshd for the Proton VPN exit — ported from projects/vpn_bounce
+# (load/sshd_config). Shares the container's netns with the Proton tunnel, so an
+# `ssh -W %h:%p` / `ProxyJump` through it egresses via Proton. Forwarding is the
+# whole job; AllowTcpForwarding is the load-bearing line. Key-only: the sole
+# authorized key is the bounce keypair the vpn service injects (see ssh_server).
+AuthorizedKeysFile	.ssh/authorized_keys
+
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+
+Subsystem	sftp	internal-sftp

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from awm.social.config import AccountConfig
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Channel, Command, Connector, Identity, InboundMessage, OnCommand,
+    OnMessage,
 )
 from awm.social.connectors.discord_conn import DiscordConnector
 from awm.social.connectors.gmail_conn import GmailConnector
@@ -22,13 +23,21 @@ REGISTRY: dict[str, type[Connector]] = {
 }
 
 
-def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
+def build(
+    cfg: AccountConfig,
+    on_message: OnMessage,
+    on_command: OnCommand | None = None,
+) -> Connector:
     """Construct the connector for one configured account.
 
     Routing: ``source = "mira"`` accounts (Slack/Teams driven on the mira host)
     use :class:`MiraConnector` regardless of platform; everything else uses the
     native per-platform connector from ``REGISTRY``. Config validation already
     rejects unknown platforms, so the ``ValueError`` is belt-and-braces.
+
+    ``on_command`` is only honoured by connectors with a command surface
+    (Discord); the others accept and ignore it. The mira connector has no
+    command surface, so it is built with ``on_message`` only.
     """
     account = Account(
         name=cfg.name,
@@ -49,10 +58,10 @@ def build(cfg: AccountConfig, on_message: OnMessage) -> Connector:
     cls = REGISTRY.get(cfg.platform)
     if cls is None:
         raise ValueError(f"no connector for platform {cfg.platform!r}")
-    return cls(account, on_message)
+    return cls(account, on_message, on_command=on_command)
 
 
 __all__ = [
-    "REGISTRY", "build", "Connector", "Account", "Channel", "Identity",
-    "InboundMessage", "OnMessage",
+    "REGISTRY", "build", "Connector", "Account", "Channel", "Command",
+    "Identity", "InboundMessage", "OnCommand", "OnMessage",
 ]

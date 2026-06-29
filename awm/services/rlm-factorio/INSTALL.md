@@ -8,13 +8,14 @@ conda env to contain its package plus the shared component libraries it imports
 (`config`, `persistence`, `gatewayclient`), and it needs **Docker** on the host
 (the engine lifecycle is `docker compose`-driven).
 
-> **Status: lifecycle + world ops are LIVE; live-control is stubbed.**
+> **Status: lifecycle + world ops + live-control are LIVE; emitters pending.**
 > `acquire` builds/starts the appliance and waits for the engine; `world_new` /
 > `world_save` / `world_load` drive the supervisor (sacred-saves invariant —
 > only `world_save` writes a named `.zip`); `release` tears the container down
-> (the saves volume survives). `observe` / `exec_lua` / `pause` are declared in
-> the contract but return an honest stub — they need RCON, which is a later pass
-> (see this scope's `.awm/context.md`).
+> (the saves volume survives). `observe` / `exec_lua` / `pause` and the player-body
+> verbs (`body_spawn` / `body_move` / `body_stop`) are LIVE over RCON, backed by
+> the baked-in `game-bot-control` mod. The `factorio` emitter is declared but not
+> fired yet (the events pass — see this scope's `.awm/context.md`).
 
 ## Install
 
@@ -48,7 +49,7 @@ tree holding only this service; `--docker` also drives a live appliance round-tr
 `appliance/` holds the container that owns the engine, ported from the game-bot
 POC:
 
-- `Dockerfile` — Debian + pinned **Factorio 2.0.77** headless + Space Age mods.
+- `Dockerfile` — Debian + pinned **Factorio 2.1.8** headless + Space Age mods.
 - `docker-compose.yml` — parameterized by `FACTORIO_*` env (single-session
   defaults: project `rlm-factorio`, container `rlm-factorio-appliance`, ports
   `12140/udp` game + `12142/tcp` control, volume `rlm-factorio-saves`).
@@ -58,6 +59,62 @@ POC:
 First `acquire` builds the image (downloads a large Factorio tarball — minutes).
 **Multiplayer is UDP-only on the game port**; a TCP-only Windows→WSL portproxy
 will not carry it — rely on Docker's port publishing / a UDP forward.
+
+## Joining the world as a desktop / Steam client
+
+A human can connect their own Factorio client to the running appliance and play
+alongside the agent. `server-settings.json` ships with **no password, no
+account verification, LAN visibility on, unlimited players**, so the only
+barriers are version + mods.
+
+**Three things must match the server, or the join is refused:**
+
+1. **Exact engine version.** The image is pinned (currently **2.1.8**, the
+   *experimental* branch). The client must be the same build — in Steam,
+   *Factorio → Properties → Betas →* opt into the matching version.
+2. **The Space Age expansion.** The server enables `space-age` + `quality` +
+   `elevated-rails` + `recycler` (all DLC). The client must **own** the
+   expansion — these mods can't be downloaded, only owned.
+3. **The `game-bot-control` mod.** This is the catch: it's a **private local
+   mod, not on the mod portal**, so Factorio **cannot auto-sync it on join** (the
+   server doesn't push non-portal mod files). The client must install it by hand.
+
+### Installing `game-bot-control` on a client
+
+Package the mod into a portal-shaped zip (top folder `game-bot-control_<ver>/`
+containing `info.json` + `control.lua`) — emitted to `appliance/dist/`:
+
+    python3 - <<'PY'
+    import json, zipfile
+    src = "appliance/mods/game-bot-control"
+    ver = json.load(open(f"{src}/info.json"))["version"]
+    dist = f"game-bot-control_{ver}"
+    with zipfile.ZipFile(f"appliance/dist/{dist}.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for f in ("info.json", "control.lua"):
+            z.write(f"{src}/{f}", f"{dist}/{f}")
+    PY
+
+Then drop the zip into the client's **mods folder** (do *not* unzip — Factorio
+reads mod zips directly) and enable it. The folder location is whatever the
+client's `config-path.cfg` resolves to; with the default
+`use-system-read-write-data-directories=true` it's the OS user-data dir:
+
+- **Windows:** `%APPDATA%\Factorio\mods` (`C:\Users\<you>\AppData\Roaming\Factorio\mods`)
+- **Linux:** `~/.factorio/mods`
+
+Enable it in that folder's `mod-list.json` (`{"name":"game-bot-control","enabled":true}`)
+— Factorio only rescans the mods folder at **startup**, so fully relaunch the
+client after copying. The mod is pure control-stage script (no prototypes), so
+its checksum matches whether the server runs it from a directory and the client
+from a zip.
+
+### Connect
+
+With version + DLC + mod aligned: *Multiplayer → Connect to address →*
+**`localhost:12140`** (Docker Desktop forwards the published UDP port to the
+Windows host's loopback). From another LAN device, use the host's LAN IP +
+`:12140` and allow inbound **UDP 12140** through the host firewall. The agent
+body is a separate `character`; a joining human spawns as their own player.
 
 ## Realm-family contract
 

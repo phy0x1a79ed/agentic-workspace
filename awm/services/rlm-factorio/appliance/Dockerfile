@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 
 # Pin to a specific stable release so the server matches the Steam client that
 # joins it. Bump in lockstep with the desktop client.
-ARG FACTORIO_VERSION=2.0.77
+ARG FACTORIO_VERSION=2.1.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl xz-utils ca-certificates python3 \
@@ -25,6 +25,8 @@ COPY config/server-settings.json   /factorio/config/server-settings.json
 COPY config/map-gen-settings.json  /factorio/config/map-gen-settings.json
 # Enabling the Space Age mods is just listing them here.
 COPY config/mod-list.json          /opt/factorio/mods/mod-list.json
+# Companion mod: the script-controlled character body (spawn/move/observe).
+COPY mods/game-bot-control         /opt/factorio/mods/game-bot-control
 
 COPY supervise.py /factorio/supervise.py
 

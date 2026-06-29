@@ -15,8 +15,8 @@ services:
     build:
       context: .
       args:
-        FACTORIO_VERSION: "2.0.77"
-    image: rlm-factorio/appliance:2.0.77
+        FACTORIO_VERSION: "2.1.8"
+    image: rlm-factorio/appliance:2.1.8
     container_name: ${FACTORIO_CONTAINER:-rlm-factorio-appliance}
     restart: unless-stopped
     ports:

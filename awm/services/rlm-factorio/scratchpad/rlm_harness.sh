@@ -51,6 +51,21 @@ invoke() {
     case "$RESP_CODE" in 2*) return 0 ;; *) return 1 ;; esac
 }
 
+# Extract a dotted path from a JSON string. Usage: jget "$RESP_BODY" snapshot.position.x
+# Prints empty + returns nonzero on any miss, so callers can guard with [ -n ... ].
+jget() {
+    printf '%s' "$1" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for k in sys.argv[1].split("."):
+        d = d[int(k)] if k.lstrip("-").isdigit() else d[k]
+    print(d)
+except Exception:
+    sys.exit(1)
+' "$2" 2>/dev/null
+}
+
 cleanup() {
     say "teardown"
     # Kill the whole gateway process group (gateway + any service it spawned).
@@ -128,14 +143,57 @@ else
     bad "no running appliance container"
 fi
 
-invoke world_save "{\"session_id\":\"$SID\",\"name\":\"t1\"}" \
-    && ok "world_save t1 -> $RESP_BODY" || bad "world_save failed ($RESP_CODE): $RESP_BODY"
-invoke world_new "{\"session_id\":\"$SID\",\"seed\":123}" \
-    && ok "world_new seed=123 -> $RESP_BODY" || bad "world_new failed ($RESP_CODE): $RESP_BODY"
-invoke world_load "{\"session_id\":\"$SID\",\"name\":\"t1\"}" \
-    && ok "world_load t1 -> $RESP_BODY" || bad "world_load failed ($RESP_CODE): $RESP_BODY"
-invoke status "{\"session_id\":\"$SID\"}" \
-    && ok "status(session) -> $RESP_BODY" || bad "status failed ($RESP_CODE): $RESP_BODY"
+# Body play needs a world whose map-gen ran the game-bot-control mod's on_init.
+# The persistent saves volume may hold a pre-mod _active.zip, so generate a
+# fresh world first (the documented "first run must be world_new").
+say "player-body lifecycle (spawn -> move -> observe -> save/load)"
+invoke world_new "{\"session_id\":\"$SID\",\"seed\":424242}" \
+    && ok "world_new seed=424242 -> $RESP_BODY" || bad "world_new failed ($RESP_CODE): $RESP_BODY"
+
+invoke body_spawn "{\"session_id\":\"$SID\",\"x\":0,\"y\":0}"
+if [ "$RESP_CODE" = 200 ] && [ -n "$(jget "$RESP_BODY" position.x)" ]; then
+    ok "body_spawn -> $RESP_BODY"
+else
+    bad "body_spawn failed ($RESP_CODE): $RESP_BODY"
+fi
+
+invoke observe "{\"session_id\":\"$SID\"}" || true
+if [ "$(jget "$RESP_BODY" snapshot.body)" = "True" ] && [ -n "$(jget "$RESP_BODY" snapshot.health)" ]; then
+    ok "observe sees a live body (health=$(jget "$RESP_BODY" snapshot.health)) -> $RESP_BODY"
+else
+    bad "observe did not see a spawned body ($RESP_CODE): $RESP_BODY"
+fi
+
+# One-shot move + poll: the body walks toward x=20 then stops (walking:false).
+invoke body_move "{\"session_id\":\"$SID\",\"x\":20,\"y\":0}" \
+    && ok "body_move -> $RESP_BODY" || bad "body_move failed ($RESP_CODE): $RESP_BODY"
+say "polling observe while the body walks toward x=20"
+moved=0 last_x=""
+for _ in $(seq 1 30); do
+    invoke observe "{\"session_id\":\"$SID\"}" || true
+    x="$(jget "$RESP_BODY" snapshot.position.x)"
+    w="$(jget "$RESP_BODY" snapshot.walking)"
+    [ -n "$x" ] && last_x="$x"
+    if [ "$w" = "False" ] && [ -n "$x" ] \
+       && python3 -c "import sys; sys.exit(0 if abs(float('$x')-20)<1.0 else 1)" 2>/dev/null; then
+        moved=1; break
+    fi
+    sleep 1
+done
+[ "$moved" = 1 ] && ok "body walked to x≈$last_x and stopped" \
+    || bad "body did not converge on x=20 (last x=$last_x)"
+
+# Persistence: the body lives in the mod's storage, so it survives save/load.
+invoke world_save "{\"session_id\":\"$SID\",\"name\":\"bodytest\",\"overwrite\":true}" \
+    && ok "world_save bodytest -> $RESP_BODY" || bad "world_save failed ($RESP_CODE): $RESP_BODY"
+invoke world_load "{\"session_id\":\"$SID\",\"name\":\"bodytest\"}" \
+    && ok "world_load bodytest -> $RESP_BODY" || bad "world_load failed ($RESP_CODE): $RESP_BODY"
+invoke observe "{\"session_id\":\"$SID\"}" || true
+if [ "$(jget "$RESP_BODY" snapshot.body)" = "True" ]; then
+    ok "body persisted across save/load -> $RESP_BODY"
+else
+    bad "body lost across save/load ($RESP_CODE): $RESP_BODY"
+fi
 
 invoke release "{\"session_id\":\"$SID\"}" \
     && ok "release -> $RESP_BODY" || bad "release failed ($RESP_CODE): $RESP_BODY"

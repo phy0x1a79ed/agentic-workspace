@@ -46,6 +46,7 @@ connections, since every connector is opt-in.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,18 @@ from pathlib import Path
 from awm import config
 
 
+# Default config path. ``AWM_SOCIAL_CONFIG`` overrides it wholesale — needed
+# under ``awm dev shadow``, which rewrites ``AWM_WORKSPACE`` to a sandbox dir
+# that doesn't hold the real ``social.toml`` (the same shape as the 2fa
+# service's ``AWM_2FA_DIR`` override). Resolved at load() time, not import.
 CONFIG_FILE = config.AWM_DIR / "social.toml"
+
+
+def _config_file() -> Path:
+    override = os.environ.get("AWM_SOCIAL_CONFIG")
+    if override and override.strip():
+        return Path(override.strip())
+    return config.AWM_DIR / "social.toml"
 
 # Platforms this build knows how to connect. The config loader validates
 # against it so a typo'd platform fails loudly instead of silently never
@@ -189,7 +201,7 @@ def load(path: Path | None = None) -> list[AccountConfig]:
     :class:`SocialConfigError` if it exists but is malformed — better to fail
     loudly than silently drop an account on a typo.
     """
-    path = path if path is not None else CONFIG_FILE
+    path = path if path is not None else _config_file()
     if not path.exists():
         return []
     try:

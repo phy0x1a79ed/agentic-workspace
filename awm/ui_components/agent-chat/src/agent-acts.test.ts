@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import type { AgentAct } from '@awm/client';
 import { TranscriptFold } from './agent-acts.ts';
 
-const AUTHOR = 'agent:awm/dev';
+const AUTHOR = 'agent:dev';
 
 /** A streamed act with `message_id` in meta (the coalesce key). */
 function act(

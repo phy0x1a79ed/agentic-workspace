@@ -12,12 +12,14 @@ supervisor's control surface (sacred-saves invariant preserved — only
 ``world_save`` ever writes a named ``.zip``), ``release`` tears the container
 down (the saves volume survives).
 
-The perceive/extra-act verbs ``observe`` / ``exec_lua`` / ``pause`` are declared
-in the contract now but answer with an honest stub: they need RCON, which the
-POC probed and shelved. Wiring them is a later pass (add ``--rcon-port`` to the
-supervisor + ``/exec-lua`` / ``/observe`` / ``/pause`` routes) — no manifest
-change required, so the contract is stable. The ``factorio`` emitter is declared
-now for the same reason.
+The perceive/extra-act verbs ``observe`` / ``exec_lua`` / ``pause`` are LIVE over
+RCON: the supervisor runs an in-container RCON client against the engine, and the
+baked-in ``game-bot-control`` mod owns a script-controlled character body. The
+body verbs ``body_spawn`` / ``body_move`` / ``body_stop`` drive that character
+(one-shot move + poll ``observe`` to watch it converge); the body persists across
+save/load because it lives in the mod's ``storage``. The ``factorio`` emitter is
+declared but not fired yet — events land with a later pass (the mod already keeps
+a bounded events ring buffer for it).
 
 Single-session for now: ``acquire`` is idempotent (at most one live appliance;
 a second acquire returns the existing session, erroring on a game mismatch). The
@@ -100,12 +102,14 @@ API_MANIFEST: dict[str, Any] = {
             "name": "observe",
             "tool": "rlm_factorio_observe",
             "description": (
-                "Observe a session: returns {snapshot, screenshot?} of the live "
-                "world. STUB — needs RCON+lua state queries (later pass); returns "
-                "a placeholder."
+                "Observe a session: returns {snapshot, screenshot} of the live "
+                "world over RCON. The snapshot carries tick, paused, and (if a "
+                "body is spawned) its position/health/inventory plus a capped "
+                "nearby-entity summary. screenshot is null (not captured)."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
+                {"name": "radius", "type": "integer", "required": False},
             ],
         },
         # ---- act: world lifecycle (sacred saves) ----
@@ -150,13 +154,13 @@ API_MANIFEST: dict[str, Any] = {
             ],
             "timeout": 600.0,  # engine re-exec from the named save
         },
-        # ---- act: live control (RCON-backed; stubbed) ----
+        # ---- act: live control (RCON-backed) ----
         {
             "name": "pause",
             "tool": "rlm_factorio_pause",
             "description": (
-                "Pause/unpause the live world (game.tick_paused). STUB — needs "
-                "RCON (later pass)."
+                "Pause/unpause the live world (game.tick_paused) over RCON. "
+                "Returns {paused} with the resulting state."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -167,12 +171,50 @@ API_MANIFEST: dict[str, Any] = {
             "name": "exec_lua",
             "tool": "rlm_factorio_exec_lua",
             "description": (
-                "Submit a lua script to the running world, returning its result. "
-                "STUB — needs RCON /silent-command (later pass)."
+                "Run a lua script in the running world via RCON /silent-command. "
+                "Returns {output} = whatever the script printed; to get a value "
+                "back the script must call rcon.print(...)."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
                 {"name": "code", "type": "string", "required": True},
+            ],
+        },
+        # ---- act: player body (RCON + game-bot-control mod) ----
+        {
+            "name": "body_spawn",
+            "tool": "rlm_factorio_body_spawn",
+            "description": (
+                "Spawn the agent's character body in the live world (idempotent — "
+                "returns the existing body if already spawned). Returns "
+                "{position, surface}. The body persists across save/load/new."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "surface", "type": "string", "required": False},
+                {"name": "x", "type": "number", "required": False},
+                {"name": "y", "type": "number", "required": False},
+            ],
+        },
+        {
+            "name": "body_move",
+            "tool": "rlm_factorio_body_move",
+            "description": (
+                "Set the body's walk target and return immediately (one-shot). "
+                "Poll observe to watch it converge then stop. Spawn first."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+            ],
+        },
+        {
+            "name": "body_stop",
+            "tool": "rlm_factorio_body_stop",
+            "description": "Clear the body's walk target and halt it in place.",
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
             ],
         },
     ],
@@ -189,15 +231,6 @@ API_MANIFEST: dict[str, Any] = {
     ],
     "sessions": [],
 }
-
-# Placeholder perception payload returned by ``observe`` until RCON lands.
-_PLACEHOLDER_SNAPSHOT = {
-    "tick": None,
-    "paused": None,
-    "players": [],
-    "note": "placeholder snapshot; RCON+lua perception not wired yet",
-}
-
 
 def _require_session(session_id: str) -> dict:
     """Look up a session or raise — used by act/perceive verbs."""
@@ -310,19 +343,44 @@ def _world_load(args: dict) -> dict:
     return result
 
 
-# ---- act/perceive: RCON-backed (stubbed until the RCON pass) --------------
-
-def _stub(verb: str, args: dict) -> dict:
-    """Validate the session and return an honest 'not wired yet' ack."""
-    _require_session(args["session_id"])
-    echoed = {k: v for k, v in args.items() if k != "session_id"}
-    return {"ok": True, "verb": verb, "session_id": args["session_id"],
-            "args": echoed, "note": "stub; needs RCON (later pass)"}
-
+# ---- act/perceive: RCON-backed -------------------------------------------
 
 def _observe(args: dict) -> dict:
-    _require_session(args["session_id"])
-    return {"snapshot": dict(_PLACEHOLDER_SNAPSHOT), "screenshot": None}
+    """Snapshot the live world over RCON (real perception, replacing the stub).
+
+    The supervisor's /observe route asks the game-bot-control mod for the world/
+    body state; we return it as {snapshot, screenshot} (screenshot is always None
+    — not captured)."""
+    row = _require_session(args["session_id"])
+    body = {"radius": args["radius"]} if args.get("radius") is not None else {}
+    snapshot = appliance.control_post(row, "/observe", body)
+    return {"snapshot": snapshot, "screenshot": None}
+
+
+def _pause(args: dict) -> dict:
+    row = _require_session(args["session_id"])
+    return appliance.control_post(row, "/pause", {"paused": bool(args["paused"])})
+
+
+def _exec_lua(args: dict) -> dict:
+    row = _require_session(args["session_id"])
+    return appliance.control_post(row, "/exec-lua", {"code": args["code"]})
+
+
+def _body_spawn(args: dict) -> dict:
+    row = _require_session(args["session_id"])
+    body = {k: args[k] for k in ("surface", "x", "y") if args.get(k) is not None}
+    return appliance.control_post(row, "/body/spawn", body)
+
+
+def _body_move(args: dict) -> dict:
+    row = _require_session(args["session_id"])
+    return appliance.control_post(row, "/body/move", {"x": args["x"], "y": args["y"]})
+
+
+def _body_stop(args: dict) -> dict:
+    row = _require_session(args["session_id"])
+    return appliance.control_post(row, "/body/stop", {})
 
 
 HANDLERS = {
@@ -334,8 +392,11 @@ HANDLERS = {
     "world_new": _world_new,
     "world_save": _world_save,
     "world_load": _world_load,
-    "pause": lambda args: _stub("pause", args),
-    "exec_lua": lambda args: _stub("exec_lua", args),
+    "pause": _pause,
+    "exec_lua": _exec_lua,
+    "body_spawn": _body_spawn,
+    "body_move": _body_move,
+    "body_stop": _body_stop,
 }
 
 
