@@ -24,7 +24,10 @@ run "$WS/awm/services/graphify"
 if ! mamba run -n "$GENV" graphify --version >/dev/null 2>&1; then
     echo "+ provisioning graphify CLI into env '$GENV'"
     mamba create -y -n "$GENV" python=3.11 >/dev/null
-    mamba run -n "$GENV" pip install graphifyy
+    # Pinned: the runner's argv + graph.json contract was reverse-engineered
+    # against graphify 0.9.1. An unpinned bump could silently change the CLI
+    # surface or output shape; revisit the runner before moving this pin.
+    mamba run -n "$GENV" pip install 'graphifyy==0.9.1'
 fi
 GBIN="$(mamba run -n "$GENV" python -c 'import shutil; print(shutil.which("graphify"))')"
 
