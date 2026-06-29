@@ -89,6 +89,7 @@ The domains, by family:
 - **Artifacts** (`artifact`) — register / search / get / delete / sync.
 - **Orchestrator / workspace** (`orch`, `workspace`) — DAG task control and unit provisioning.
 - **Lifecycle** (`gateway` verbs `status`/`restart`/`mcp-sync`/`list`/`deregister`, `services` verbs `list`/`start`/`stop`/…).
+- **Code navigation** (`graphify`) — an AST knowledge graph of the awm source tree. `find` (label → `file:line`), `refs` (callers/callees/importers, `direction: in|out|both`), `query` (NL BFS traversal), `path` (shortest path between two labels), `affected` (blast radius of a change), `explain`, plus `build`/`status`. **Reach for this before dispatching an Explore agent** for any "where is X / what calls or imports Y / what's the impact of changing Z" question on the awm tree — it answers structurally (most verbs in-process), not by grepping. Caveat: it indexes the **deployed/release** tree, not your uncommitted worktree changes, so use Explore for code you just wrote (and for non-awm projects, which it doesn't index).
 
 New domains/verbs appear in the listing automatically as services register — no restart, nothing to mirror here. (`describe` is a reserved verb on every domain.)
 
