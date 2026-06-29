@@ -1,0 +1,6 @@
+# install.sh sidecar (absolute interpreter path; host-specific)
+.runtime-env
+# minted leaf cert + key + mirrored CA + SAN marker (host-specific, regenerated).
+# The ROOT CA private key lives OUTSIDE the worktree (~/.config/remote-audio/ca)
+# and is never committed.
+.certs/
