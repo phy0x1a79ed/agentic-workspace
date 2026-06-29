@@ -19,9 +19,9 @@ trustworthy or more useful to an agent navigating awm during development?"
 
 ## Tier 1 — make the existing graph trustworthy + usable
 
-- [ ] **#1 Pin the CLI.** install.sh `pip install graphifyy` → `graphifyy==0.9.1`
+- [x] **#1 Pin the CLI.** install.sh `pip install graphifyy` → `graphifyy==0.9.1`
   (the runner contract was reverse-engineered against 0.9.1; an unpinned bump
-  could silently break argv/output).
+  could silently break argv/output). _(ca300a8; confirmed spike env runs 0.9.1.)_
 - [ ] **Auto-rebuild-if-stale (trust).** query/path/status should know when the
   graph is older than the source tree. Add a `stale` signal first (see #4),
   then let query/path opt to auto-rebuild (or loudly warn) when stale, so a
@@ -97,3 +97,7 @@ on the key invariant) — reaching it means flag-and-stop, not build.
 - 2026-06-28 — Tier 0 #2 shipped (9b1f570): dev-shadow GRAPHIFY_BIN resolution.
   + LOOP.md: delegate heavy work to sonnet subagents to preserve orchestrator
   context. Next: bring up :7871 + live dogfood, then Tier 1.
+- 2026-06-28 — Tier 1 #1 shipped (ca300a8): pin graphifyy==0.9.1. Live :7871
+  dogfood of #2 dispatched to a sonnet subagent (validates GRAPHIFY_BIN resolves
+  live from graphify-spike). Next Tier 1: staleness signal (#4) → auto-rebuild →
+  read-lock (#3) → agent-shaped output, shaped by dogfood findings.
