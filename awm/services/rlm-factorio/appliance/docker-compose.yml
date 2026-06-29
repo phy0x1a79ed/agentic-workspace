@@ -1,0 +1,32 @@
+# Factorio appliance. Long-lived; the supervisor owns the engine inside.
+#
+# Networking note: under Docker Desktop on WSL2, `network_mode: host` binds to
+# the Desktop VM namespace rather than the WSL distro's eth0, so we publish
+# ports explicitly instead. Control is bound to loopback (the realm service runs
+# on the same host); the game UDP port is published broadly for Steam-join.
+#
+# Single-session defaults below. The pool seam: the realm service brings each
+# session up under its own `docker compose -p <project>`, which namespaces the
+# volume (and default container name) per project for free — so a pool only
+# varies the FACTORIO_* values per session, no structural change here. The
+# internal ports (12140/12142) are fixed; only the published HOST ports vary.
+services:
+  factorio:
+    build:
+      context: .
+      args:
+        FACTORIO_VERSION: "2.1.8"
+    image: rlm-factorio/appliance:2.1.8
+    container_name: ${FACTORIO_CONTAINER:-rlm-factorio-appliance}
+    restart: unless-stopped
+    ports:
+      - "${FACTORIO_GAME_PORT:-12140}:12140/udp"        # game traffic (Steam-join)
+      # Control surface. Published plainly (not 127.0.0.1-bound): Docker Desktop
+      # on WSL2 rejects a loopback-specific publish via /forwards/expose (500).
+      - "${FACTORIO_CONTROL_PORT:-12142}:12142"         # supervisor control
+
+    volumes:
+      - factorio-saves:/factorio/saves
+
+volumes:
+  factorio-saves:

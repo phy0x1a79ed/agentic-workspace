@@ -1,0 +1,17 @@
+# Bounce sshd for the UBC VPN exit — ported from projects/vpn_bounce
+# (load/sshd_config). This sshd shares the container's netns with openconnect, so
+# an `ssh -W %h:%p` / `ProxyJump` through it egresses via the UBC tunnel. That is
+# the entire job — forwarding, not interactive shells — so AllowTcpForwarding is
+# the load-bearing line. Key-only: the sole authorized key is the bounce keypair
+# the vpn service injects (see ssh_server); no passwords on a published port.
+AuthorizedKeysFile	.ssh/authorized_keys
+
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+
+Subsystem	sftp	internal-sftp

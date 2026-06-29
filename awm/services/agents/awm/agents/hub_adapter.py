@@ -139,7 +139,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "get_slash_catalog",
-            "tool": "slash_catalog",
+            "tool": "agent_slash_catalog",
             "description": "Return the server slash-command catalog.",
         },
         {
@@ -157,7 +157,7 @@ API_MANIFEST: dict[str, Any] = {
         # worker / plan: stage outputs, then indicate done.
         {
             "name": "edit_deliverable",
-            "tool": "edit_deliverable",
+            "tool": "agent_edit_deliverable",
             "description": (
                 "Stage (replace) the content for one output contract of your "
                 "placed task. Call as many times as needed; each call replaces "
@@ -170,7 +170,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "indicate_done",
-            "tool": "indicate_done",
+            "tool": "agent_indicate_done",
             "description": (
                 "Mark your placed task's deliverable complete. The harness "
                 "validates it at your next stop and advances the task; editing a "
@@ -180,7 +180,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "task_fail",
-            "tool": "task_fail",
+            "tool": "agent_task_fail",
             "description": (
                 "Give up on your placed task. Call with a reason_type and "
                 "reason_text, and optionally a partial_ref to preserve partial "
@@ -195,7 +195,7 @@ API_MANIFEST: dict[str, Any] = {
         # verify: a verdict on the staged plan (terminal on call).
         {
             "name": "approve_plan",
-            "tool": "approve_plan",
+            "tool": "agent_approve_plan",
             "description": (
                 "Verifier: the plan satisfies the objective. Advances the task "
                 "from VERIFYING_PLAN to ACTIVE. Takes no arguments."
@@ -204,7 +204,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "reject_plan",
-            "tool": "reject_plan",
+            "tool": "agent_reject_plan",
             "description": (
                 "Verifier: the plan does not satisfy the objective. Send it back "
                 "to re-plan with a concise reason."
@@ -216,7 +216,7 @@ API_MANIFEST: dict[str, Any] = {
         # planner: buffer a sub-DAG, committed when you indicate done.
         {
             "name": "add_subtask",
-            "tool": "add_subtask",
+            "tool": "agent_add_subtask",
             "description": (
                 "Planner: add a subtask to the pending sub-DAG (objective + the "
                 "outputs it must produce)."
@@ -229,7 +229,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "add_dependency",
-            "tool": "add_dependency",
+            "tool": "agent_add_dependency",
             "description": (
                 "Planner: add a dependency edge (from_id → to_id) to the pending "
                 "sub-DAG — from_id is the upstream producer, to_id the downstream "
@@ -245,7 +245,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "define_contract",
-            "tool": "define_contract",
+            "tool": "agent_define_contract",
             "description": "Planner: define a contract used by the pending sub-DAG.",
             "params": [
                 {"name": "name", "type": "string", "required": True},
@@ -253,7 +253,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search_tasks",
-            "tool": "search_tasks",
+            "tool": "agent_search_tasks",
             "description": "Planner read: search existing tasks (reuse nodes).",
             "params": [
                 {"name": "query", "type": "string", "required": False},
@@ -261,7 +261,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "search_contracts",
-            "tool": "search_contracts",
+            "tool": "agent_search_contracts",
             "description": "Planner read: search existing contracts.",
             "params": [
                 {"name": "query", "type": "string", "required": False},
@@ -305,7 +305,7 @@ API_MANIFEST: dict[str, Any] = {
 API_MANIFEST["functions"].extend(
     {
         "name": op["name"],
-        "tool": op["name"],
+        "tool": f"agent_{op['name']}",
         "description": op["description"],
         "params": op["params"],
     }
@@ -484,14 +484,23 @@ async def _h_place_on_task(args: dict) -> dict:
     return await placement.place_on_task(args)
 
 
-def _relay(fn_name: str):
+def _relay(fn_name: str, verb: str):
     """Build an async handler that dispatches to ``placement.<fn_name>``.
 
     Declares the second positional ``as_`` so the adapter forwards the caller
     identity (``X-Awm-As``): the placement B-op relays resolve their placement
-    from it, so a placed agent never supplies a token."""
+    from it, so a placed agent never supplies a token.
+
+    The placement tools all collapse onto the single ``agent`` MCP domain now
+    (``mcp__awm__agent`` + ``verb``), so the per-mode tool restriction can no
+    longer ride claude's ``--allowedTools`` (one domain tool, all verbs) — and
+    never could under the default opencode harness, which ignores it. So gate
+    server-side: ``ensure_verb_allowed`` rejects a verb the caller's placement
+    mode does not permit (``task_fail`` always allowed). Defense-in-depth, not a
+    trust boundary — the ``as_`` identity is spoofable on the loopback bus."""
     async def _handler(args: dict, as_: str | None = None) -> dict:
         from awm.agents import placement
+        placement.ensure_verb_allowed(as_, verb)
         return await getattr(placement, fn_name)(args, as_)
     return _handler
 
@@ -509,25 +518,30 @@ HANDLERS = {
     "reconcile": _h_reconcile,
     # Task-bounded placement (manifest-omitted op reached via catch-all).
     "place_on_task": _h_place_on_task,
-    # Placement tools (also in the manifest, MCP-visible to placed agents).
-    "edit_deliverable": _relay("relay_edit_deliverable"),
-    "indicate_done": _relay("relay_indicate_done"),
-    "task_fail": _relay("relay_task_fail"),
-    "approve_plan": _relay("relay_approve_plan"),
-    "reject_plan": _relay("relay_reject_plan"),
-    "add_subtask": _relay("relay_add_subtask"),
-    "add_dependency": _relay("relay_add_dependency"),
-    "define_contract": _relay("relay_define_contract"),
-    "search_tasks": _relay("relay_search_tasks"),
-    "search_contracts": _relay("relay_search_contracts"),
+    # Placement tools (also in the manifest, MCP-visible to placed agents under
+    # the `agent` domain; verb == the internal fn name == the HANDLERS key).
+    "edit_deliverable": _relay("relay_edit_deliverable", "edit_deliverable"),
+    "indicate_done": _relay("relay_indicate_done", "indicate_done"),
+    "task_fail": _relay("relay_task_fail", "task_fail"),
+    "approve_plan": _relay("relay_approve_plan", "approve_plan"),
+    "reject_plan": _relay("relay_reject_plan", "reject_plan"),
+    "add_subtask": _relay("relay_add_subtask", "add_subtask"),
+    "add_dependency": _relay("relay_add_dependency", "add_dependency"),
+    "define_contract": _relay("relay_define_contract", "define_contract"),
+    "search_tasks": _relay("relay_search_tasks", "search_tasks"),
+    "search_contracts": _relay("relay_search_contracts", "search_contracts"),
 }
 
 
 def _admin_relay(op_name: str):
     """Build the gated relay handler for one admin op (forwards the caller
-    identity ``as_`` so ``placement.relay_admin`` resolves + attach-gates it)."""
+    identity ``as_`` so ``placement.relay_admin`` resolves + attach-gates it).
+
+    Two gates stack: ``ensure_verb_allowed`` (mode permits this admin verb) then
+    ``relay_admin``'s own live attach-gate (a human is attached right now)."""
     async def _handler(args: dict, as_: str | None = None) -> dict:
         from awm.agents import placement
+        placement.ensure_verb_allowed(as_, op_name)
         return await placement.relay_admin(op_name, args, as_)
     return _handler
 

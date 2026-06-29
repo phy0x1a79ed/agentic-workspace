@@ -56,6 +56,28 @@ class TestToolsEndpoint:
             # dump shape drifts, this blows up.
             Tool.model_validate(t)
 
+    def test_view_domains_returns_envelope_tools(self, client):
+        from mcp.types import Tool
+
+        resp = client.get("/tools", params={"view": "domains"})
+        assert resp.status_code == 200
+        tools = resp.json()["tools"]
+        assert tools, "expected at least the gateway-native domains"
+        names = {t["name"] for t in tools}
+        # gateway-native ops fold to the gateway / services domains
+        assert {"gateway", "services"} <= names
+        for t in tools:
+            Tool.model_validate(t)
+            schema = t["inputSchema"]
+            assert schema["required"] == ["verb"]
+            assert set(schema["properties"]) == {"verb", "args"}
+
+    def test_view_domains_is_strictly_smaller(self, client):
+        expanded = client.get("/tools").json()["tools"]
+        domains = client.get("/tools", params={"view": "domains"}).json()["tools"]
+        # The collapse only ever shrinks the surface.
+        assert len(domains) <= len(expanded)
+
 
 # ---------------------------------------------------------------------------
 # Tool-name projection: the per-op ``"tool"`` override + collision handling.

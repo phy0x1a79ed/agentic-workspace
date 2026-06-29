@@ -60,40 +60,87 @@ def _mint_placement_token() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-mode tool profiles (contract D, via the claude --allowedTools lever)
+# Per-mode tool profiles (contract D) — split across two levers
 # ---------------------------------------------------------------------------
-# One allowlist scopes BOTH filesystem access (built-in tools) AND which worker
-# tools (MCP, named mcp__awm__<tool>) a placed agent may call. A verify
-# placement gets NO filesystem tools; plan/planner get read-only built-ins.
+# The whole placement toolset now collapses onto ONE generic MCP domain tool,
+# ``mcp__awm__agent`` (called with ``{verb, args}``), so claude's
+# ``--allowedTools`` lever can no longer scope WHICH placement verb runs — it is
+# all-or-nothing on the domain tool, and opencode (the default harness) ignores
+# the lever entirely. So the levers split:
+#
+# * ``TOOL_PROFILES`` (claude --allowedTools) still scopes FILESYSTEM access via
+#   the built-in tools (verify = none, plan/planner = read-only, worker = full)
+#   and grants the single ``mcp__awm__agent`` domain tool.
+# * ``VERB_PROFILES`` is the per-mode allowlist of agent-domain VERBS, enforced
+#   SERVER-SIDE in :func:`ensure_verb_allowed` (so it holds under opencode too).
 
 _BUILTIN_READONLY = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite"]
 _BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
 
-_AWM = "mcp__awm__"
-_WORKER_TOOLS = [_AWM + "edit_deliverable", _AWM + "indicate_done", _AWM + "task_fail"]
-# Attach-gated DAG-restructuring tools (configurable registry). LISTED for every
-# worker, but each one's gate rejects it unless a human is attached — so an
-# unattended worker has them in its profile yet can never restructure the DAG.
-_ADMIN_TOOLS = [_AWM + n for n in admin_ops.ADMIN_TOOL_NAMES]
-_PLANNER_TOOLS = [
-    _AWM + "add_subtask", _AWM + "add_dependency", _AWM + "define_contract",
-    _AWM + "search_tasks", _AWM + "search_contracts",
-    _AWM + "indicate_done", _AWM + "task_fail",
-]
-_VERIFY_TOOLS = [_AWM + "approve_plan", _AWM + "reject_plan", _AWM + "task_fail"]
+_AGENT_DOMAIN = "mcp__awm__agent"
 
 TOOL_PROFILES: dict[str, list[str]] = {
-    "worker": _BUILTIN_FULL + _WORKER_TOOLS + _ADMIN_TOOLS,
-    "plan": _BUILTIN_READONLY + _WORKER_TOOLS,
-    "planner": _BUILTIN_READONLY + _PLANNER_TOOLS,
-    "verify": list(_VERIFY_TOOLS),  # no filesystem at all
+    "worker": _BUILTIN_FULL + [_AGENT_DOMAIN],
+    "plan": _BUILTIN_READONLY + [_AGENT_DOMAIN],
+    "planner": _BUILTIN_READONLY + [_AGENT_DOMAIN],
+    "verify": [_AGENT_DOMAIN],  # no filesystem at all
 }
+
+# Attach-gated DAG-restructuring verbs (configurable registry). PERMITTED for
+# every worker, but ``relay_admin`` rejects each unless a human is attached — so
+# an unattended worker may name them yet can never restructure the DAG.
+_ADMIN_VERBS = set(admin_ops.ADMIN_TOOL_NAMES)
+_WORKER_VERBS = {"edit_deliverable", "indicate_done", "task_fail"}
+_PLANNER_VERBS = {
+    "add_subtask", "add_dependency", "define_contract",
+    "search_tasks", "search_contracts", "indicate_done", "task_fail",
+}
+_VERIFY_VERBS = {"approve_plan", "reject_plan", "task_fail"}
+
+VERB_PROFILES: dict[str, set[str]] = {
+    "worker": _WORKER_VERBS | _ADMIN_VERBS,
+    "plan": set(_WORKER_VERBS),
+    "planner": set(_PLANNER_VERBS),
+    "verify": set(_VERIFY_VERBS),
+}
+
+# task_fail is the universal escape hatch — always permitted regardless of mode.
+_ALWAYS_ALLOWED_VERBS = {"task_fail"}
 
 _VALID_MODES = set(TOOL_PROFILES)
 
 
 def _allowed_tools_for(mode: str) -> list[str]:
     return list(TOOL_PROFILES.get(mode, TOOL_PROFILES["worker"]))
+
+
+def _allowed_verbs_for(mode: str) -> list[str]:
+    return sorted(VERB_PROFILES.get(mode, VERB_PROFILES["worker"]))
+
+
+def ensure_verb_allowed(as_: str | None, verb: str) -> None:
+    """Server-side gate: reject an agent-domain verb the caller's placement mode
+    does not permit. Raises :class:`PlacementError` (→ a structured 500 the MCP
+    proxy passes to the model verbatim).
+
+    This is the per-verb confinement for placed agents now that the toolset is
+    one opaque ``mcp__awm__agent`` domain tool — and the ONLY enforcement under
+    the default opencode harness, which ignores ``--allowedTools``. It is
+    defense-in-depth / a guardrail, NOT a trust boundary: the ``as_`` identity is
+    plaintext + spoofable on the unauthenticated loopback bus (an agent with
+    ``Bash`` can curl ``/invoke`` directly). ``task_fail`` is always allowed."""
+    if verb in _ALWAYS_ALLOWED_VERBS:
+        return
+    row = _resolve_open_placement_for(as_)
+    allowed = _row_data(row).get("allowed_verbs")
+    if allowed is None:
+        # Legacy row (spawned before allowed_verbs was recorded) — fall back to
+        # the static per-mode profile so the gate is never fail-open.
+        allowed = _allowed_verbs_for(_spec(row).get("mode") or "worker")
+    if verb not in allowed:
+        raise PlacementError(
+            f"verb {verb!r} is not permitted for this placement "
+            f"(allowed: {', '.join(sorted(allowed))})")
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +228,25 @@ def render_brief(*, task_id: str, mode: str, brief: str,
     return "\n".join(parts)
 
 
+def _placement_tool_note() -> str:
+    """One-liner on the collapsed tool surface: every placement verb is reached
+    through the single ``agent`` MCP domain tool (``agent(verb, args)``); call
+    ``agent(verb="describe")`` to see the verbs your mode permits."""
+    return (
+        "Your placement verbs (edit_deliverable, indicate_done, task_fail, …) are "
+        "all reached through the single `agent` tool — call it as "
+        "`agent(verb=\"<name>\", args={...})`; `agent(verb=\"describe\")` lists "
+        "every verb with its parameters."
+    )
+
+
 def _kickoff_text(*, task_id: str, mode: str) -> str:
     """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
         f"You have been placed on task `{task_id}` as a **{mode}**. Read "
         f"`./CLAUDE.md` for your objective, inputs, contracts, and how to "
         f"finish. Your placement tools act on this task automatically — you "
-        f"never pass a token or id. Begin now."
+        f"never pass a token or id. {_placement_tool_note()} Begin now."
     )
 
 
@@ -206,7 +265,7 @@ def _verify_kickoff(*, task_id: str, brief: str, contracts_out: list,
         "sanity check, not a re-plan. Call exactly one: `approve_plan()` if it "
         "satisfies the objective, or `reject_plan(reason=\"...\")` with a "
         "concise reason if it does not. (These act on your own task "
-        "automatically — no token or id.)"
+        "automatically — no token or id.)\n\n" + _placement_tool_note()
     )
 
 
@@ -392,6 +451,10 @@ async def place_on_task(args: dict) -> dict:
             "contracts_in": contracts_in, "contracts_out": contracts_out,
             "brief": brief,
         },
+        # The agent-domain verbs this mode may invoke — read back by
+        # ``ensure_verb_allowed`` to gate the collapsed ``mcp__awm__agent`` tool
+        # server-side (the only enforcement under the default opencode harness).
+        "allowed_verbs": _allowed_verbs_for(mode),
         "staged": {}, "done": False,
         "graph": {"subtasks": [], "dependencies": [], "contracts": []},
         "attached": attached,

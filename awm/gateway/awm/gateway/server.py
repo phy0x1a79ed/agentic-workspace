@@ -370,15 +370,22 @@ register_fastapi_routes(app, GATEWAY_OPERATIONS)
 # ---------------------------------------------------------------------------
 
 @app.get("/tools")
-def list_tools_endpoint():
+def list_tools_endpoint(view: str | None = None):
     """Return the current MCP tool definitions from the live catalog.
 
     The thin stdio proxy fetches this on every `list_tools` call instead of
     caching at its own startup. That keeps the proxy stateless: tools that
     appear/vanish as services register show up immediately, with no Claude
     Code restart. Sync over a GIL-safe registry snapshot — see catalog.py.
+
+    ``view=domains`` returns the collapsed per-domain projection (one generic
+    ``{verb, args}`` tool per domain — what the MCP proxy advertises so a
+    non-deferring client carries ~8–10 tools instead of ~71). Any other value
+    (default) returns the expanded per-verb surface, which the CLI generator and
+    the flat ``/invoke`` dispatch still depend on.
     """
-    return {"tools": [t.model_dump(by_alias=True) for t in catalog.list_tools()]}
+    tools = catalog.list_domain_tools() if view == "domains" else catalog.list_tools()
+    return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
 @app.post("/invoke")

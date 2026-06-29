@@ -1,0 +1,21 @@
+SPDX-License-Identifier: AGPL-3.0-or-later
+
+This service (`awm/services/2fa/`, the `awm-twofa` dist) is a port of the
+`virtual-auth` project, which is licensed under the GNU Affero General Public
+License v3.0 or later and is itself a faithful port of the reverse-engineered
+reference implementation `falsidge/ruo` (also AGPL-3.0).
+
+Because of that provenance this dist is licensed **AGPL-3.0-or-later**, even
+though the rest of the awm repository is MIT. The MIT license at the repository
+root does NOT apply to the files in this folder.
+
+The full AGPL-3.0 license text is available at:
+
+    https://www.gnu.org/licenses/agpl-3.0.txt
+
+If this dist is ever distributed (or run as a network service for third
+parties), the AGPL's source-availability obligations apply. For purely
+internal/loopback use within this workspace they are not triggered, but the
+license designation is recorded here so the provenance is never lost.
+
+Copyright (c) the virtual-auth / ruo authors and contributors.
