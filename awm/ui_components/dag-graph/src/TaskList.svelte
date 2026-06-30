@@ -14,20 +14,27 @@
     index: DagIndex;
     selectedTaskId?: string | null;
     onSelectTask?: (taskId: string) => void;
+    /** Free-text filter: matched (case-insensitive) against title, tags, and goal. */
+    query?: string;
   }
-  let { index, selectedTaskId = null, onSelectTask }: Props = $props();
+  let { index, selectedTaskId = null, onSelectTask, query = '' }: Props = $props();
 
   interface Group { state: TaskState; tasks: DagTask[] }
 
-  const root = $derived.by<DagTask | null>(() => {
-    for (const t of index.taskById.values()) if (t.is_root) return t;
-    return null;
-  });
+  // Client-side free-text match over the already-fetched tasks — title, tags,
+  // and goal. Empty query matches everything.
+  function matches(t: DagTask, q: string): boolean {
+    if (!q) return true;
+    const hay = `${t.title ?? ''} ${(t.tags ?? []).join(' ')} ${t.goal ?? ''}`.toLowerCase();
+    return hay.includes(q);
+  }
 
   const groups = $derived.by<Group[]>(() => {
+    const q = query.trim().toLowerCase();
     const byState = new Map<TaskState, DagTask[]>();
     for (const t of index.taskById.values()) {
       if (t.is_root) continue;
+      if (!matches(t, q)) continue;
       const list = byState.get(t.state);
       if (list) list.push(t);
       else byState.set(t.state, [t]);
@@ -75,9 +82,13 @@
                 onclick={() => onSelectTask?.(t.task_id)}
               >
                 <span class="badge"><Tag tone={STATE_META[t.state].tone}>{STATE_META[t.state].label}</Tag></span>
-                <span class="goal" title={t.goal}>{t.goal || '(no goal)'}</span>
+                {#if t.paused}<span class="pmark" title="paused">⏸</span>{/if}
+                <span class="goal" title={t.goal}>{t.title || t.goal || '(no goal)'}</span>
+                {#each (t.tags ?? []).slice(0, 3) as tag (tag)}
+                  <span class="chip">{tag}</span>
+                {/each}
                 {#if t.workspace_slug || t.agent_ref}
-                  <span class="sub">{t.agent_ref ?? t.workspace_slug}</span>
+                  <span class="sub">{t.mode ? `${t.mode}·` : ''}{t.agent_ref ?? t.workspace_slug}</span>
                 {/if}
               </button>
             </li>
@@ -86,12 +97,6 @@
       {/if}
     </section>
   {/each}
-
-  {#if root}
-    <div class="root" title="the global root sentinel — all work is a prerequisite of it">
-      ◇ root · <span class="rstate">{STATE_META[root.state].label}</span>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -138,19 +143,18 @@
     border-color: color-mix(in oklab, var(--atomizer) 45%, var(--border));
   }
   .badge { flex: 0 0 auto; }
+  .pmark { flex: 0 0 auto; font-size: 10px; color: var(--warn); }
   .goal {
     flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chip {
+    flex: 0 0 auto; font-size: 9px; color: var(--text2); background: var(--surface3);
+    border-radius: var(--radius-md); padding: 0 var(--space-1);
+    max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .sub {
     flex: 0 0 auto; font-family: var(--mono); font-size: 9px; color: var(--text3);
     max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-
-  .root {
-    margin-top: var(--space-2); padding: var(--space-1) var(--space-2);
-    font-family: var(--mono); font-size: 10px; color: var(--text3);
-    border-top: 1px dashed var(--border);
-  }
-  .rstate { color: var(--text2); }
 </style>

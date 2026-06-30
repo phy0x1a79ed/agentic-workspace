@@ -1,7 +1,5 @@
 @import './tokens.css';
 
-html, body { height: 100%; margin: 0; }
-
 .shell {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -118,5 +116,3 @@ html, body { height: 100%; margin: 0; }
   border-radius: var(--radius-md);
   cursor: pointer;
 }
-
-.mono { font-family: var(--mono); }

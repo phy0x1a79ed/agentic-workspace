@@ -34,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "orchestrator"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # The explicit node lifecycle — a TRUE state machine: every distinct position is
 # its own named state. A *rest* state means a placement is needed (no agent
@@ -98,8 +98,11 @@ SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
     id              TEXT PRIMARY KEY,
     goal            TEXT NOT NULL DEFAULT '',
+    title           TEXT NOT NULL DEFAULT '',   -- human-set headline (separate from goal)
+    tags            TEXT NOT NULL DEFAULT '[]',  -- JSON array of free-text tags (searchable)
     state           TEXT NOT NULL DEFAULT 'blocked',
     is_root         INTEGER NOT NULL DEFAULT 0,
+    paused          INTEGER NOT NULL DEFAULT 0,   -- sticky human pause (freezes supervisor; survives detach)
     -- placement bookkeeping: which placement (if any) is currently out.
     mode            TEXT,            -- 'plan'|'verify'|'worker'|'planner' | NULL (no placement out)
     workspace_slug  TEXT,            -- workspace-service unit slug minted at dispatch; cleared on reclaim
@@ -181,6 +184,11 @@ CREATE INDEX IF NOT EXISTS idx_attempt_memories_task ON attempt_memories(task_id
 # drop the per-task ``repos`` JSON (replaced by the first-class ``task_scopes``
 # table), and swap the project-keyed indexes. SQLite 3.35+ supports ALTER TABLE
 # DROP COLUMN, so the column drops + index swaps are direct.
+# v3→v4 (this scope): add the human-facing task metadata — a separate ``title``,
+# a JSON ``tags`` array (free-text, searchable), and a sticky ``paused`` flag
+# (orthogonal to ``attached`` — it survives WS detach so the supervisor stays out
+# while a human owns/left the task). All three carry constant defaults, so the
+# ADD COLUMNs are direct.
 MIGRATIONS: dict[tuple[int, int], str] = {
     (1, 2): "ALTER TABLE tasks ADD COLUMN repos TEXT;\n",
     (2, 3): (
@@ -204,6 +212,11 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "CREATE INDEX IF NOT EXISTS idx_task_scopes_ref ON task_scopes(scope_ref);\n"
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_scopes_task_name "
         "ON task_scopes(task_id, name);\n"
+    ),
+    (3, 4): (
+        "ALTER TABLE tasks ADD COLUMN title TEXT NOT NULL DEFAULT '';\n"
+        "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';\n"
+        "ALTER TABLE tasks ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;\n"
     ),
 }
 
@@ -316,11 +329,13 @@ class OrchestratorDAO(BaseDAO):
         """Patch named columns on a task; always bumps ``updated_at``.
 
         Allowed columns: state, mode, workspace_slug, agent_ref,
-        placement_token, plan_ref, attached, replan_budget, retry_count, goal.
+        placement_token, plan_ref, attached, replan_budget, retry_count, goal,
+        title, tags, paused.
         """
         allowed = {
             "state", "mode", "workspace_slug", "agent_ref", "placement_token",
             "plan_ref", "attached", "replan_budget", "retry_count", "goal",
+            "title", "tags", "paused",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:

@@ -25,7 +25,8 @@ import logging
 import time
 
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Attachment, Channel, Connector, Identity, InboundMessage,
+    OnMessage,
 )
 
 log = logging.getLogger("awm.social.connectors.slack")
@@ -53,6 +54,29 @@ def _looks_like_user_id(s: str) -> bool:
     """Slack user ids are ``U…`` (and ``W…`` on enterprise grid), all-caps
     alphanumerics. Anything else is treated as a name to resolve."""
     return bool(s) and s[0] in ("U", "W") and s[1:].isalnum() and s.isupper()
+
+
+def _attachments_of(m: dict) -> list[Attachment]:
+    """Map a Slack message's ``files[]`` to normalised attachment metadata.
+
+    ``url`` carries ``url_private`` (a stable but auth-gated link);
+    :meth:`SlackConnector.download_attachments` GETs it with the session's own
+    credentials. Hidden/tombstoned files (no ``url_private``) are skipped.
+    """
+    out: list[Attachment] = []
+    for i, f in enumerate(m.get("files", []) or []):
+        url = f.get("url_private_download") or f.get("url_private") or ""
+        if not url and f.get("mode") in ("hidden", "tombstone"):
+            continue
+        out.append(Attachment(
+            idx=i,
+            filename=f.get("name") or f.get("title") or f"attachment-{i}",
+            mime=f.get("mimetype", "") or "",
+            size=int(f.get("size", 0) or 0),
+            url=url,
+            ref={"id": f.get("id", ""), "url": url},
+        ))
+    return out
 
 
 class SlackConnector(Connector):
@@ -166,6 +190,7 @@ class SlackConnector(Connector):
                 message_id=event.get("ts", ""),
                 ts=event.get("ts", ""),
                 text=event.get("text", "") or "",
+                attachments=_attachments_of(event),
             )
             await self.on_message(inbound)
         except Exception as exc:  # noqa: BLE001 — one bad event never kills the loop
@@ -193,6 +218,10 @@ class SlackConnector(Connector):
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
+<<<<<<< HEAD
+=======
+            attachments=_attachments_of(m),
+>>>>>>> feat/svc-social
         )
 
     async def _emit_session_message(self, cid: str, m: dict) -> None:
@@ -408,7 +437,11 @@ class SlackConnector(Connector):
         return Identity(
             id=auth.get("user_id", ""), name=auth.get("user", ""))
 
+<<<<<<< HEAD
     async def history(
+=======
+    async def fetch(
+>>>>>>> feat/svc-social
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         # Slack's `latest` is the *upper* bound ("messages before this ts") — the
@@ -426,6 +459,106 @@ class SlackConnector(Connector):
             out.append(self._inbound_from_slack(channel, m))
         return out
 
+<<<<<<< HEAD
+=======
+    async def search(
+        self, query: str, *, limit: int = 50, channel: str | None = None
+    ) -> list[InboundMessage]:
+        """Native ``search.messages`` over the account's reachable history.
+
+        Needs a token with ``search:read`` — the session ``xoxc`` user token has
+        it; a ``xoxb`` bot token does not and Slack returns
+        ``not_allowed_token_type`` (surfaced here as a clean error, not a crash).
+        ``channel`` (a name, not an id) is folded in as an ``in:`` filter.
+        """
+        from slack_sdk.errors import SlackApiError
+
+        q = query
+        if channel:
+            q = f"{query} in:{channel}".strip()
+        try:
+            resp = await self._auth_retry(
+                lambda: self._web_client().search_messages(query=q, count=limit))
+        except SlackApiError as exc:
+            err = ""
+            try:
+                err = (exc.response or {}).get("error", "") or ""
+            except Exception:  # noqa: BLE001
+                err = ""
+            if err in ("not_allowed_token_type", "missing_scope"):
+                raise RuntimeError(
+                    f"slack[{self.account.name}] search needs a user token with "
+                    f"search:read (got {err!r}); fetch a channel directly instead"
+                ) from exc
+            raise
+        matches = ((resp.get("messages") or {}).get("matches")) or []
+        out: list[InboundMessage] = []
+        for m in matches:
+            cid = (m.get("channel") or {}).get("id", "") or ""
+            sender = m.get("user") or m.get("username") or ""
+            out.append(InboundMessage(
+                account=self.account.name,
+                platform=self.platform,
+                channel_id=cid,
+                channel_name=(m.get("channel") or {}).get("name", "") or "",
+                thread_id="",
+                sender_id=m.get("user", "") or "",
+                sender_name=sender,
+                message_id=m.get("ts", ""),
+                ts=m.get("ts", ""),
+                text=m.get("text", "") or "",
+                attachments=_attachments_of(m),
+                raw={"permalink": m.get("permalink", "")},
+            ))
+        return out
+
+    async def _message_at(self, channel: str, ts: str) -> dict:
+        """Re-fetch the single message at ``ts`` (so its ``files[]`` are fresh)."""
+        resp = await self._auth_retry(
+            lambda: self._web_client().conversations_history(
+                channel=channel, latest=ts, oldest=ts, inclusive=True, limit=1))
+        msgs = resp.get("messages", []) or []
+        if not msgs:
+            raise RuntimeError(
+                f"slack[{self.account.name}] message {ts!r} not found in {channel!r}")
+        return msgs[0]
+
+    async def _download_file(self, url: str) -> bytes:
+        """GET a ``url_private`` with the session's own credentials.
+
+        Slack gates ``url_private`` on the same auth the web client uses: a
+        ``Bearer`` token always, plus the ``d`` cookie in session mode.
+        """
+        import aiohttp
+
+        headers = {"Authorization": f"Bearer {self._token}"}
+        if self._session and self._cookie:
+            headers["Cookie"] = f"d={self._cookie}"
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(url, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=120)) as r:
+                if r.status >= 400:
+                    raise RuntimeError(
+                        f"slack[{self.account.name}] file GET {r.status}")
+                return await r.read()
+
+    async def download_attachments(
+        self, channel: str, message_id: str, *, idx: int | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        m = await self._message_at(channel, message_id)
+        out: list[tuple[str, str, bytes]] = []
+        for i, f in enumerate(m.get("files", []) or []):
+            if idx is not None and i != idx:
+                continue
+            url = f.get("url_private_download") or f.get("url_private") or ""
+            if not url:
+                continue
+            data = await self._download_file(url)
+            out.append((f.get("name") or f.get("title") or f"attachment-{i}",
+                        f.get("mimetype", "") or "", data))
+        return out
+
+>>>>>>> feat/svc-social
     async def close(self) -> None:
         if self._socket is not None:
             try:

@@ -88,6 +88,25 @@ class Driver(ABC):
         raise NotImplementedError(
             f"{self.platform} driver does not support open_dm")
 
+    async def search(self, query: str, limit: int,
+                     channel: str | None = None) -> list[dict]:
+        """Search the platform's own index for ``query`` → normalised messages.
+
+        Non-abstract: a platform with no usable search surface leaves this
+        default, which the server surfaces as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support search")
+
+    async def download(self, channel: str, message_id: str,
+                       idx: int | None = None) -> list[dict]:
+        """Re-fetch one message and return its attachments as
+        ``[{filename, mime, b64}]`` (base64 so bytes survive the JSON hop).
+
+        Non-abstract: a platform that can't retrieve files leaves this default,
+        which the server surfaces as 501."""
+        raise NotImplementedError(
+            f"{self.platform} driver does not support attachment download")
+
 
 # --------------------------------------------------------------------------- #
 # Slack                                                                        #
@@ -95,9 +114,24 @@ class Driver(ABC):
 
 SLACK_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.slack || window.__awmMira.slack._v !== 2) {
+if (!window.__awmMira.slack || window.__awmMira.slack._v !== 3) {
   const S = {};
-  S._v = 2;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  S._v = 3;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  S._b64 = function (buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const CH = 0x8000;  // chunk to avoid arg-count limits on String.fromCharCode
+    for (let i = 0; i < bytes.length; i += CH)
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(bin);
+  };
+  S._files = function (m) {
+    return (m.files || []).map((f, i) => ({
+      idx: i, filename: f.name || f.title || ('attachment-' + i),
+      mime: f.mimetype || '', size: Number(f.size || 0) || 0,
+      url: f.url_private || '',
+      ref: {id: f.id || '', url: f.url_private_download || f.url_private || ''}}));
+  };
   S._token = function () {
     let lc;
     try { lc = JSON.parse(localStorage.getItem('localConfig_v2')); }
@@ -145,7 +179,37 @@ if (!window.__awmMira.slack || window.__awmMira.slack._v !== 2) {
     if (latest) p.latest = latest;   // backward bound (before this ts)
     const j = await S._call('conversations.history', p);
     return (j.messages || []).map(m => ({ts: m.ts, user: m.user || '',
-      text: m.text || '', subtype: m.subtype || '', thread_ts: m.thread_ts || ''}));
+      text: m.text || '', subtype: m.subtype || '', thread_ts: m.thread_ts || '',
+      files: S._files(m)}));
+  };
+  S.search = async function (query, count) {
+    const j = await S._call('search.messages',
+      {query: query, count: String(count || 50)});
+    const matches = ((j.messages || {}).matches) || [];
+    return matches.map(m => ({ts: m.ts, channel: (m.channel || {}).id || '',
+      channel_name: (m.channel || {}).name || '', user: m.user || '',
+      username: m.username || '', text: m.text || '',
+      permalink: m.permalink || '', files: S._files(m)}));
+  };
+  S.download = async function (channel, ts, idx) {
+    const j = await S._call('conversations.history',
+      {channel: channel, latest: ts, oldest: ts, inclusive: 'true', limit: '1'});
+    const msg = (j.messages || [])[0];
+    if (!msg) throw new Error('slack message ' + ts + ' not found');
+    const files = msg.files || [];
+    const out = [];
+    for (let i = 0; i < files.length; i++) {
+      if (idx != null && i !== idx) continue;
+      const f = files[i];
+      const url = f.url_private_download || f.url_private;
+      if (!url) continue;
+      const r = await fetch(url, {credentials: 'include'});
+      if (!r.ok) throw new Error('slack file ' + i + ' GET ' + r.status);
+      const buf = await r.arrayBuffer();
+      out.push({filename: f.name || f.title || ('attachment-' + i),
+        mime: f.mimetype || '', b64: S._b64(buf)});
+    }
+    return out;
   };
   S.send = async function (channel, text, thread) {
     const p = {channel: channel, text: text};
@@ -218,8 +282,37 @@ class SlackDriver(Driver):
                 "text": m.get("text", "") or "",
                 "ts": ts,
                 "marker": ts,
+                "attachments": m.get("files", []) or [],
             })
         return out
+
+    async def search(self, query: str, limit: int,
+                     channel: str | None = None) -> list[dict]:
+        q = f"{query} in:{channel}".strip() if channel else query
+        rows = await self._run("window.__awmMira.slack.search", q, limit)
+        out = []
+        for m in rows or []:
+            ts = m.get("ts", "")
+            out.append({
+                "platform": "slack",
+                "channel_id": m.get("channel", "") or "",
+                "channel_name": m.get("channel_name", "") or "",
+                "message_id": ts,
+                "thread_id": "",
+                "sender_id": m.get("user", "") or "",
+                "sender_name": m.get("username", "") or m.get("user", "") or "",
+                "text": m.get("text", "") or "",
+                "ts": ts,
+                "marker": ts,
+                "attachments": m.get("files", []) or [],
+            })
+        return out
+
+    async def download(self, channel: str, message_id: str,
+                       idx: int | None = None) -> list[dict]:
+        res = await self._run(
+            "window.__awmMira.slack.download", channel, message_id, idx)
+        return res or []
 
     async def send(self, channel: str, text: str,
                    thread: str | None = None) -> dict:
@@ -236,11 +329,31 @@ class SlackDriver(Driver):
 
 TEAMS_PRELUDE = r"""
 window.__awmMira = window.__awmMira || {};
-if (!window.__awmMira.teams || window.__awmMira.teams._v !== 2) {
+if (!window.__awmMira.teams || window.__awmMira.teams._v !== 3) {
   const _prev = window.__awmMira.teams;
   const T = {};
-  T._v = 2;  // bump when adding/changing helpers so a long-lived page self-upgrades
+  T._v = 3;  // bump when adding/changing helpers so a long-lived page self-upgrades
   T._auth = _prev ? _prev._auth : null;  // {skype, base, exp} — preserved across upgrade
+  T._b64 = function (buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH)
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(bin);
+  };
+  T._files = function (m) {
+    // Teams stows attachment metadata in properties.files as a JSON string.
+    let files = [];
+    const p = m.properties || {};
+    if (p.files) { try { files = JSON.parse(p.files); } catch (e) { files = []; } }
+    return files.map((f, i) => ({
+      idx: i, filename: f.title || f.fileName || f.name || ('attachment-' + i),
+      mime: f.fileType ? ('application/' + f.fileType) : '',
+      size: Number(f.fileSize || f.size || 0) || 0,
+      url: f.objectUrl || f.fileUrl || '',
+      ref: {itemid: f.itemid || f.id || '', objectUrl: f.objectUrl || f.fileUrl || ''}}));
+  };
   T._spaces = function () {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -333,7 +446,7 @@ if (!window.__awmMira.teams || window.__awmMira.teams._v !== 2) {
       channel_id: channel, channel_name: '',
       thread_id: '', sender_id: m.from || '', sender_name: m.imdisplayname || '',
       text: T._strip(m.content || ''), ts: m.composetime || m.originalarrivaltime || '',
-      messagetype: m.messagetype || ''};
+      messagetype: m.messagetype || '', attachments: T._files(m)};
   };
   T.messages = async function (channel, limit) {
     const r = await T._req('/v1/users/ME/conversations/' +
@@ -341,6 +454,63 @@ if (!window.__awmMira.teams || window.__awmMira.teams._v !== 2) {
     if (!r.ok) throw new Error('messages ' + r.status);
     const b = await r.json();
     return (b.messages || []).filter(T._isReal).map(m => T._mapMsg(m, channel));
+  };
+  T.search = async function (query, limit, channel) {
+    // No native cross-conversation search on the ng.msg chat service, so this is
+    // a best-effort client-side scan: filter recent messages per conversation.
+    const ql = String(query || '').toLowerCase();
+    const cap = limit || 50;
+    let convs;
+    if (channel) {
+      convs = [{id: channel}];
+    } else {
+      const r = await T._req(
+        '/v1/users/ME/conversations?view=msnp24Equivalent&pageSize=50&startTime=1', {});
+      if (!r.ok) throw new Error('list ' + r.status);
+      const b = await r.json();
+      convs = (b.conversations || [])
+        .filter(c => (c.id || '').indexOf('19:') === 0).slice(0, 40);
+    }
+    const out = [];
+    for (const c of convs) {
+      try {
+        const r = await T._req('/v1/users/ME/conversations/' +
+          encodeURIComponent(c.id) + '/messages?pageSize=50', {});
+        if (!r.ok) continue;
+        const b = await r.json();
+        for (const m of (b.messages || [])) {
+          if (!T._isReal(m)) continue;
+          const mapped = T._mapMsg(m, c.id);
+          if (ql && mapped.text.toLowerCase().indexOf(ql) < 0) continue;
+          out.push(mapped);
+          if (out.length >= cap) return out;
+        }
+      } catch (e) { /* one unreadable conversation never aborts the scan */ }
+    }
+    return out;
+  };
+  T.download = async function (channel, messageId, idx) {
+    const r = await T._req('/v1/users/ME/conversations/' +
+      encodeURIComponent(channel) + '/messages?pageSize=50', {});
+    if (!r.ok) throw new Error('messages ' + r.status);
+    const b = await r.json();
+    const msg = (b.messages || []).find(m => (m.id || '') === String(messageId));
+    if (!msg) throw new Error('teams message ' + messageId + ' not found');
+    const files = T._files(msg);
+    const out = [];
+    for (let i = 0; i < files.length; i++) {
+      if (idx != null && i !== idx) continue;
+      const f = files[i];
+      const url = (f.ref && f.ref.objectUrl) || f.url;
+      if (!url) continue;
+      try {
+        const rr = await fetch(url, {credentials: 'include'});
+        if (!rr.ok) continue;
+        const buf = await rr.arrayBuffer();
+        out.push({filename: f.filename, mime: f.mime, b64: T._b64(buf)});
+      } catch (e) { /* SharePoint-hosted files may need separate auth — skip */ }
+    }
+    return out;
   };
   T.send = async function (channel, text, thread) {
     const body = {content: text, messagetype: 'RichText/Html', contenttype: 'text',
@@ -383,21 +553,36 @@ class TeamsDriver(Driver):
         # Teams' ng.msg /conversations/{id}/messages takes only pageSize — no
         # usable cursor — so both `oldest` and `before` are ignored (limit-only).
         rows = await self._run("window.__awmMira.teams.messages", channel, limit)
-        out = []
-        for m in rows or []:
-            out.append({
-                "platform": "teams",
-                "channel_id": channel,
-                "channel_name": m.get("channel_name", ""),
-                "message_id": m.get("message_id", ""),
-                "thread_id": m.get("thread_id", "") or "",
-                "sender_id": m.get("sender_id", "") or "",
-                "sender_name": m.get("sender_name", "") or "",
-                "text": m.get("text", "") or "",
-                "ts": m.get("ts", "") or "",
-                "marker": m.get("marker", "") or "",
-            })
-        return out
+        return [self._normalise(m, channel) for m in rows or []]
+
+    @staticmethod
+    def _normalise(m: dict, channel: str) -> dict:
+        return {
+            "platform": "teams",
+            "channel_id": m.get("channel_id", "") or channel,
+            "channel_name": m.get("channel_name", ""),
+            "message_id": m.get("message_id", ""),
+            "thread_id": m.get("thread_id", "") or "",
+            "sender_id": m.get("sender_id", "") or "",
+            "sender_name": m.get("sender_name", "") or "",
+            "text": m.get("text", "") or "",
+            "ts": m.get("ts", "") or "",
+            "marker": m.get("marker", "") or "",
+            "attachments": m.get("attachments", []) or [],
+        }
+
+    async def search(self, query: str, limit: int,
+                     channel: str | None = None) -> list[dict]:
+        rows = await self._run(
+            "window.__awmMira.teams.search", query, limit, channel)
+        return [self._normalise(m, m.get("channel_id", "") or "")
+                for m in rows or []]
+
+    async def download(self, channel: str, message_id: str,
+                       idx: int | None = None) -> list[dict]:
+        res = await self._run(
+            "window.__awmMira.teams.download", channel, message_id, idx)
+        return res or []
 
     async def send(self, channel: str, text: str,
                    thread: str | None = None) -> dict:

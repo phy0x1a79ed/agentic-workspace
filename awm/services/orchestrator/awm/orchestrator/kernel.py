@@ -32,12 +32,20 @@ human.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
-from awm.orchestrator.dao import REST_MODE, STATES
+from awm.orchestrator.dao import OUT_STATE, REST_MODE, STATES
 
 if TYPE_CHECKING:  # avoid a hard import cost on the hot path
     from awm.orchestrator.dao import OrchestratorDAO
+
+log = logging.getLogger("awm.orchestrator.kernel")
+
+# Inverse of ``REST_MODE``: the placement mode a node was running maps back to
+# the *resting* state it should return to when its placement is orphaned and we
+# re-drive it through the normal dispatch legs.
+_MODE_REST = {mode: state for state, mode in REST_MODE.items()}
 
 # A worker may fail transiently this many times (auto-retry to ``ready``)
 # before the node rests in ``failed``.
@@ -322,14 +330,71 @@ def complete_task(dao: "OrchestratorDAO", task_id: str) -> bool:
     contracts = dao.list_contracts_by_producer(task_id)
     if any(c["delivered_ts"] is None for c in contracts):
         return False
+    # Keep ``workspace_slug`` on the completed row: the unit is retained (not
+    # deleted), so its transcript stays addressable for a read-only review of a
+    # finished task. Scope exclusivity is enforced over ``task_scopes`` (see
+    # ``check_scope_free``), not the slug, so retaining it is safe.
     dao.update_task(task_id, state="completed", mode=None, agent_ref=None,
-                    workspace_slug=None, placement_token=None)
+                    placement_token=None)
     return True
 
 
 # ---------------------------------------------------------------------------
-# Boot reconcile — re-dispatch the resting frontier, leave placements alone
+# Boot recovery + reconcile — re-drive orphaned placements, then re-dispatch
+# the resting frontier
 # ---------------------------------------------------------------------------
+
+
+def recover_orphans(dao: "OrchestratorDAO", live_scopes: "set[str] | None") -> None:
+    """Reset out-state nodes whose placement is no longer live so the boot
+    :func:`reconcile` sweep re-drives them.
+
+    A node in an *out* state (``planning`` / ``verifying_plan`` / ``active`` /
+    ``decomposing``) implies a live agent placement. That holds across an
+    *orchestrator-only* restart — but a full gateway restart also bounces the
+    agents service, which closes every open instance on its own boot, so the
+    agent is gone and nobody will ever call ``orch.fail``. The node would freeze
+    forever.
+
+    ``live_scopes`` is the set of workspace-unit slugs the agents service still
+    reports a non-terminal session for (gathered by the caller). For each
+    out-state node: if its ``workspace_slug`` is still live, leave it alone (no
+    double-spawn). Otherwise it is orphaned — reset it to the *resting*
+    predecessor of its current ``mode`` (via :data:`_MODE_REST`) and clear the
+    stale ``agent_ref`` / ``placement_token`` / ``mode``, so the immediately
+    following :func:`reconcile` re-dispatches the same leg onto the retained unit
+    (partial work persists; a fresh agent resumes). Recovery is uniform —
+    attended drop-ins are recovered too (their ``attached`` flag persists on the
+    row, so the new placement is re-marked attached).
+
+    ``live_scopes is None`` is the *unknown* sentinel (the agents service was
+    unreachable at boot): recovery is skipped entirely so we never blindly
+    re-dispatch a placement that might still be live. No-op, logged by the caller.
+    """
+    if live_scopes is None:
+        return
+    out_states = list(OUT_STATE.values())
+    placeholders = ", ".join("?" for _ in out_states)
+    for row in dao.query_all(
+        f"SELECT id, state, mode, workspace_slug FROM tasks "
+        f"WHERE state IN ({placeholders}) ORDER BY created_at",
+        tuple(out_states),
+    ):
+        if row["workspace_slug"] and row["workspace_slug"] in live_scopes:
+            continue  # placement still live — leave it
+        rest_state = _MODE_REST.get(row["mode"])
+        if rest_state is None:
+            # Out-state with no recoverable mode — shouldn't happen; skip rather
+            # than wedge the boot path.
+            log.warning("orchestrator: orphaned task %s in %s has unmappable "
+                        "mode %r; skipping recovery", row["id"], row["state"],
+                        row["mode"])
+            continue
+        log.info("orchestrator: recovering orphaned task %s (%s -> %s, "
+                 "slug=%s); re-dispatching %s", row["id"], row["state"],
+                 rest_state, row["workspace_slug"], row["mode"])
+        dao.update_task(row["id"], state=rest_state, mode=None,
+                        agent_ref=None, placement_token=None)
 
 
 def reconcile(dao: "OrchestratorDAO") -> list[DispatchIntent]:
@@ -338,9 +403,10 @@ def reconcile(dao: "OrchestratorDAO") -> list[DispatchIntent]:
     Re-dispatches every node resting in a placement-needed state, mapping the
     state to its mode via :data:`dao.REST_MODE` (``ready``→plan,
     ``plan_delivered``→verify, ``plan_approved``→worker,
-    ``decompose_pending``→planner). Nodes with a placement out (any out-state)
-    are **left untouched**: their agent and workspace persist across an
-    orchestrator restart, and the agents service owns their liveness.
+    ``decompose_pending``→planner). Nodes with a placement still out (any
+    out-state) are left untouched here — orphaned ones were already reset to
+    their resting state by :func:`recover_orphans` (called first at boot), so a
+    dead placement lands back in this sweep while a live one stays put.
     """
     out: list[DispatchIntent] = []
     rest_states = list(REST_MODE)

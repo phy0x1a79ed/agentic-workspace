@@ -22,20 +22,15 @@ trustworthy or more useful to an agent navigating awm during development?"
 - [x] **#1 Pin the CLI.** install.sh `pip install graphifyy` → `graphifyy==0.9.1`
   (the runner contract was reverse-engineered against 0.9.1; an unpinned bump
   could silently break argv/output). _(ca300a8; confirmed spike env runs 0.9.1.)_
-- [ ] **Auto-rebuild-if-stale (trust).** query/path/status should know when the
-  graph is older than the source tree. Add a `stale` signal first (see #4),
-  then let query/path opt to auto-rebuild (or loudly warn) when stale, so a
-  consumer never silently reasons over a graph that predates their edits.
-- [ ] **#4 Staleness signal.** `status()` returns `stale: bool` = (max source
-  mtime under target, excluding ignored paths) > built_at. Cheap, unlocks the
-  above.
-- [ ] **#3 Read-during-rebuild safety.** query/path don't take `_BUILD_LOCK`
-  while build rewrites graph.json (torn-read race). Fix: read under a shared
-  lock, or build to a temp dir + atomic swap.
-- [ ] **Agent-shaped output.** query/path return raw CLI text. Give the consumer
-  structured JSON: parsed nodes/edges, `file:line` refs that are clickable,
-  deduped + ranked, with edge labels. Plain text is hard to act on
-  programmatically.
+- [x] **Auto-rebuild-if-stale (trust).** `_ensure_fresh()` auto-rebuilds when the
+  graph is missing or stale; all read verbs call it under `_GRAPH_LOCK`. _(7d25ff7)_
+- [x] **#4 Staleness signal.** `status()` returns `stale: bool` + `changed: int`
+  via `is_stale()` which compares `manifest.json` per-file mtimes. _(7d25ff7)_
+- [x] **#3 Read-during-rebuild safety.** Single `_GRAPH_LOCK` covers builds and
+  reads; no torn-read race. _(7d25ff7)_
+- [x] **Agent-shaped output.** query/path/explain/affected return structured JSON
+  (nodes/edges/steps/truncated); `find`/`refs` return structured edge+node
+  records with file:line. _(7d25ff7)_
 
 ## Dogfood findings (2026-06-28 live :7871 run — feed these into the tiers)
 
@@ -67,13 +62,14 @@ Findings, sharpening the tiers:
 
 ## Tier 2 — the questions an agent actually asks
 
-- [ ] **`refs` / `neighbors <symbol>`.** Directional callers / callees /
-  importers of a symbol. Highest-value, most common navigation need.
-- [ ] **`affected <symbol>`.** Transitive impact of changing a symbol (who
-  breaks). Highest ceiling — the question agents most want answered before a
-  refactor.
-- [ ] **`find <label>`.** Resolve/disambiguate a fuzzy name to concrete nodes
-  before pathing (path needs exact labels today).
+- [x] **`refs` / `neighbors <symbol>`.** Directional callers / callees /
+  importers of a symbol. Pure `graph.json` parse; returns structured edges. _(7d25ff7)_
+- [x] **`affected <symbol>`.** Transitive impact of changing a symbol. Wraps
+  native `graphify affected` with `--depth`/`--relation` passthrough. _(7d25ff7)_
+- [x] **`find <label>`.** Resolve/disambiguate a fuzzy name; exact-before-
+  substring ranking; surfaces all ambiguous matches. _(7d25ff7)_
+- [x] **`explain <node>`.** Plain-language node + connections; wraps native
+  `graphify explain`; structured parse. _(7d25ff7)_
 
 ## Tier 3 — semantic wiring (AST-only blind spots)
 
@@ -130,16 +126,11 @@ on the key invariant) — reaching it means flag-and-stop, not build.
   live from graphify-spike). Next Tier 1: staleness signal (#4) → auto-rebuild →
   read-lock (#3) → agent-shaped output, shaped by dogfood findings.
 - 2026-06-28 — Live :7871 dogfood PASSED (Task #3): #2 validated e2e, AST-only
-  confirmed, all RPCs work; 4 findings recorded above. Sandbox + shadow torn
-  down clean (port 7871 free, no stray procs). **PAUSED here by user ("pause and
-  debrief, continue later").**
-  RESUME POINTER → next iteration:
-    a. Recon the on-disk graph.json + manifest.json schema (a built graph is at
-       `./.awm-shadow/.awm/services/graphify/e9ff6e554480/graphify-out/`) for
-       node fields (file/line) + the scanned-file list → informs both the
-       staleness check and agent-shaped output.
-    b. Ship Tier 1 #4 staleness signal + #3 read-lock (small, pure-Python,
-       unit-testable) — delegate impl to a sonnet subagent w/ tight spec.
-    c. Then auto-rebuild-if-stale, then agent-shaped output (parameterize
-       context_filter + add node-lookup per dogfood finding #1).
-  All work stays on feat/svc-graphify; dogfood on :7871; no merge (human-gated).
+  confirmed, all RPCs work; 4 findings recorded above. PAUSED.
+- 2026-06-29 — Finalized API contract (7d25ff7): Tier 1 + Tier 2 fully shipped.
+  Trust layer (staleness+lock+auto-rebuild), structured output, query context/budget
+  passthrough, explain+affected (CLI wrap), find+refs (graph.json parse). 36/36
+  unit tests green. **DEPLOYED to prod :7819** (cherry-pick onto release, install.sh,
+  enabled.json, gateway start — graphify ready, 4946 nodes/9747 edges, all 8 verbs
+  e2e verified). Also fixed run.sh GRAPHIFY_BIN export bug (ffdc196/ddbed01).
+  Definition-of-happy MET — service live on prod, Tier-2 verbs verified e2e.

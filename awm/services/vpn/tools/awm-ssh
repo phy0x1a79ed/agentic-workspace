@@ -1,22 +1,58 @@
 #!/usr/bin/env bash
 # awm-ssh — ssh wrapper for autonomous Duo logins (sockeye, fir).
 #
-# Identical to `ssh` except it installs the awm-duo-askpass helper and forces
-# OpenSSH to consult it, so the Duo keyboard-interactive menu is answered
+# Identical to `ssh` except it (1) arms the right Duo burst on the awm `2fa`
+# service for the target host and (2) installs the awm-duo-askpass helper and
+# forces OpenSSH to consult it, so the Duo keyboard-interactive menu is answered
 # automatically (our 2fa auto-approver device is selected; the burst approves the
-# push). The Duo *burst* itself is armed transparently by the `Match host … exec`
-# hooks in ~/.ssh/config — so a bare `ssh <host>` still works, you just pick the
-# Duo option yourself. Use this wrapper to skip that manual tap.
+# push). The result: a fully hands-free login.
 #
-#   awm-ssh sockeye 'hostname'
-#   awm-ssh fir
+#   awm-ssh sockeye 'hostname'   # arms the cwl burst + ensures the UBC VPN exit
+#   awm-ssh fir                  # arms the alliance burst
+#
+# Bare `ssh sockeye` / `ssh fir` are deliberately VANILLA — no burst, no askpass,
+# you tap the phone / pick the Duo option yourself. All the autonomous machinery
+# lives here in the wrapper, not in ~/.ssh/config, so plain ssh is untouched.
 #
 # SSH_ASKPASS_REQUIRE=force is scoped to this process only (not your shell), so
-# your normal interactive `ssh` is unaffected.
+# your normal interactive `ssh` is unaffected. A burst-arm failure (2fa service
+# down, etc.) never blocks the connect — the bare ssh still runs.
 set -euo pipefail
 
 export SSH_ASKPASS="${AWM_DUO_ASKPASS:-$HOME/.ssh/awm-duo-askpass}"
 export SSH_ASKPASS_REQUIRE=force
 export AWM_DUO_DEVICES="${AWM_DUO_DEVICES:-awm|Mira}"
+
+# Resolve the ssh destination: the first bare (non-option) argument, skipping
+# options and the tokens that value-taking options consume. We only need it to
+# choose which Duo burst to arm, so approximate OpenSSH's grammar — good enough
+# for our host aliases; an unrecognised target simply arms nothing.
+_awm_ssh_target() {
+    local skip=0 a
+    for a in "$@"; do
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        case "$a" in
+            -o|-i|-p|-l|-F|-L|-R|-D|-W|-J|-b|-c|-e|-I|-m|-O|-Q|-S|-w|-E)
+                skip=1 ;;          # consumes the next token
+            --) : ;;               # end of options; next bare token is the host
+            -*) : ;;               # a flag (or glued value like -p22) — ignore
+            *) printf '%s\n' "$a"; return 0 ;;
+        esac
+    done
+}
+
+target="$(_awm_ssh_target "$@")"
+host="${target##*@}"   # strip any user@ prefix
+
+case "$host" in
+    *sockeye*)
+        # cwl burst + ensure the UBC VPN bounce container/tunnel is up (the
+        # sockeye ProxyCommand bounces through it). Never blocks the connect.
+        "$HOME/.ssh/awm-sockeye-up.sh" || true
+        ;;
+    fir|fir.*)
+        awm 2fa burst --device alliance >/dev/null 2>&1 || true
+        ;;
+esac
 
 exec ssh "$@"

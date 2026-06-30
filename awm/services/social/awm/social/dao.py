@@ -1,15 +1,18 @@
 """Social service data access — the social service's OWN SQLite DB
 (``AWM_DIR/services/social/social.db``).
 
-Three tables, all metadata only — **never a token** (tokens live solely in
+Two tables, all metadata only — **never a token** (tokens live solely in
 ``social.toml``):
 
 - ``social_accounts``  — one row per configured identity (name, platform, kind).
 - ``social_operators`` — platform-scoped allowlist: a ``(platform, user id)``
   maps to an ``awm_user``. Generalises the old ``discord_operators`` by adding
   the ``platform`` column.
-- ``social_messages``  — every message seen, inbound or outbound, for poll
-  (``social_messages`` tool) and dedupe of redelivered inbound events.
+
+There is deliberately **no message store**: the external platforms (Slack,
+Gmail, Teams, Discord) are the source of truth, so fetch/search/download query
+them live rather than mirroring messages here. A schema-v2 migration drops the
+former ``social_messages`` table from any existing DB.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db
 
 SERVICE = "social"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS social_accounts (
@@ -40,40 +43,27 @@ CREATE TABLE IF NOT EXISTS social_operators (
     added_at         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (platform, platform_user_id)
 );
-
-CREATE TABLE IF NOT EXISTS social_messages (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    account      TEXT NOT NULL,
-    platform     TEXT NOT NULL,
-    direction    TEXT NOT NULL,
-    channel_id   TEXT NOT NULL DEFAULT '',
-    channel_name TEXT NOT NULL DEFAULT '',
-    thread_id    TEXT NOT NULL DEFAULT '',
-    sender_id    TEXT NOT NULL DEFAULT '',
-    sender_name  TEXT NOT NULL DEFAULT '',
-    awm_user     TEXT NOT NULL DEFAULT '',
-    text         TEXT NOT NULL DEFAULT '',
-    ts           TEXT NOT NULL DEFAULT '',
-    message_id   TEXT NOT NULL DEFAULT '',
-    created_at   TEXT NOT NULL DEFAULT ''
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_social_messages_dedupe
-    ON social_messages (platform, account, message_id)
-    WHERE message_id <> '';
-
-CREATE INDEX IF NOT EXISTS ix_social_messages_channel
-    ON social_messages (platform, channel_id, id);
 """
+
+# v1 → v2: the local message mirror is gone (query platforms live). Drop the
+# orphan table + its indexes from any existing prod/dev DB. Idempotent.
+MIGRATIONS = {
+    (1, 2): """\
+DROP INDEX IF EXISTS ux_social_messages_dedupe;
+DROP INDEX IF EXISTS ix_social_messages_channel;
+DROP TABLE IF EXISTS social_messages;
+""",
+}
 
 _initialized = False
 
 
 def init() -> None:
-    """Idempotently create the social service's DB + its three tables."""
+    """Idempotently create the social service's DB + its two tables."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+        init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                        migrations=MIGRATIONS)
         _initialized = True
 
 
@@ -82,7 +72,7 @@ def _now() -> str:
 
 
 class SocialDAO(BaseDAO):
-    """CRUD over the social service's three tables."""
+    """CRUD over the social service's two tables (accounts + operators)."""
 
     def __init__(self, conn: sqlite3.Connection | None = None) -> None:
         super().__init__(SERVICE, conn=conn)
@@ -189,6 +179,7 @@ class SocialDAO(BaseDAO):
             (str(platform).strip(), str(platform_user_id).strip()),
         )
         return row["awm_user"] if row else None
+<<<<<<< HEAD
 
     # -- messages ----------------------------------------------------------
 
@@ -331,3 +322,5 @@ class SocialDAO(BaseDAO):
         )
         rows.reverse()
         return rows
+=======
+>>>>>>> feat/svc-social

@@ -16,5 +16,12 @@ export interface Post {
   /** Post text — backend field name is `body`. */
   body: string;
   kind?: string;
+  /**
+   * Lifecycle state for a chip that has one. Two disjoint vocabularies keyed
+   * off the value: a human turn is `sending | sent | received | failed`; a tool
+   * call is `running | done | error`. Absent on rows that have no lifecycle
+   * (agent text, system, membership).
+   */
+  status?: string;
   [k: string]: unknown;
 }
