@@ -18,11 +18,7 @@ A scope **is** its channel: the journal is a `scope_post kind=journal` keyed by
 threads carry forward by being referenced in the next one.
 
 > **Call convention.** The `<domain>_<verb>` names below (`scope_post`, `artifact_sync`, `scope_refresh`, …) are **operation** names. On the collapsed MCP surface, call them as the domain tool's verb — `scope(verb="post", args={kind:"journal", …})`, `artifact(verb="sync")`, etc. (`scope(verb="describe")` lists a domain's verbs). On the CLI/HTTP surfaces they stay expanded (`awm scope post …`, `POST /invoke {name:"scope_post"}`).
-<<<<<<< HEAD
 
-## Steps
-=======
->>>>>>> feat/svc-social
 
 ## 1. Commit the session's work
 

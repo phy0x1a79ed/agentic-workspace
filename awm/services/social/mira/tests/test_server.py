@@ -58,8 +58,6 @@ class _FakeDriver:
     async def list_channels(self):
         return [{"id": "C1", "name": "general", "kind": "channel"}]
 
-<<<<<<< HEAD
-=======
     async def list_conversations(self):
         return [{"id": "C1", "name": "general", "kind": "channel"},
                 {"id": "D1", "name": "dm:bob", "kind": "dm"}]
@@ -68,7 +66,6 @@ class _FakeDriver:
         self.opened_dm = user
         return {"id": "D1", "name": "", "kind": "dm"}
 
->>>>>>> feat/svc-social
     async def fetch_messages(self, channel, oldest, limit, *, before=None):
         self.last_fetch = {"channel": channel, "oldest": oldest,
                            "limit": limit, "before": before}
@@ -180,8 +177,6 @@ class TestMessagesEndpoint:
             "slack", page=None, driver=_FakeDriver())
         resp = await api._h_messages(_MsgReq("slack", {}))
         assert resp.status == 400
-<<<<<<< HEAD
-=======
 
 
 class _JsonReq:
@@ -321,4 +316,3 @@ class TestDownloadEndpoint:
         await api._h_download(
             _MsgReq("slack", {"channel": "C1", "message_id": "9.2"}))
         assert drv.last_download["idx"] is None
->>>>>>> feat/svc-social

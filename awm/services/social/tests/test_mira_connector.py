@@ -70,15 +70,12 @@ class _StubDaemon:
         self.push_frames = []   # frames the WS pushes right after connect
         self.history_calls = []  # (platform, query-dict) per /messages request
         self.history_msgs = []   # what /messages returns (newest-first)
-<<<<<<< HEAD
-=======
         self.channels_calls = []  # (platform, query-dict) per /channels request
         self.open_dm_calls = []   # (platform, body-dict) per /open_dm request
         self.search_calls = []   # (platform, query-dict) per /search request
         self.search_msgs = []    # what /search returns
         self.download_calls = []  # (platform, query-dict) per /download request
         self.download_files = []  # what /download returns ([{filename,mime,b64}])
->>>>>>> feat/svc-social
         self._runner = None
         self.base = ""
 
@@ -89,11 +86,8 @@ class _StubDaemon:
         app.router.add_get("/v1/{platform}/identity", self._identity)
         app.router.add_get("/v1/{platform}/channels", self._channels)
         app.router.add_get("/v1/{platform}/messages", self._messages)
-<<<<<<< HEAD
-=======
         app.router.add_get("/v1/{platform}/search", self._search)
         app.router.add_get("/v1/{platform}/download", self._download)
->>>>>>> feat/svc-social
         app.router.add_post("/v1/{platform}/send", self._send)
         app.router.add_post("/v1/{platform}/open_dm", self._open_dm)
         app.router.add_get("/v1/events", self._events)

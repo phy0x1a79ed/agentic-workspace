@@ -181,16 +181,10 @@ class TestManifest:
         fns = API_MANIFEST["functions"]
         tools = {f.get("tool", f["name"]) for f in fns}
         assert tools == {
-<<<<<<< HEAD
-            "social_send", "social_messages", "social_history", "social_search",
-            "social_accounts", "social_channels", "social_operators",
-            "social_operator_add", "social_operator_remove", "social_lookup",
-=======
             "social_send", "social_fetch", "social_search",
             "social_download_attachments", "social_accounts", "social_channels",
             "social_open_dm", "social_operators", "social_operator_add",
             "social_operator_remove", "social_lookup",
->>>>>>> feat/svc-social
         }
         # Every declared function has a handler.
         for f in fns:
@@ -206,20 +200,6 @@ class TestManifest:
         required = {p["name"] for p in send["params"] if p["required"]}
         assert required == {"account", "channel", "text"}
 
-<<<<<<< HEAD
-    def test_history_and_search_required_params(self):
-        from awm.social.hub_adapter import API_MANIFEST
-
-        hist = next(f for f in API_MANIFEST["functions"] if f["name"] == "history")
-        assert {p["name"] for p in hist["params"] if p["required"]} == {
-            "account", "channel"}
-        srch = next(f for f in API_MANIFEST["functions"] if f["name"] == "search")
-        assert {p["name"] for p in srch["params"] if p["required"]} == {"query"}
-
-
-class TestConnectorHistoryDefault:
-    async def test_base_history_raises_not_implemented(self):
-=======
     def test_fetch_and_search_required_params(self):
         from awm.social.hub_adapter import API_MANIFEST
 
@@ -243,7 +223,6 @@ class TestConnectorHistoryDefault:
 
 class TestConnectorDefaults:
     def _bare(self):
->>>>>>> feat/svc-social
         from awm.social.connectors.base import Account, Connector
 
         class _Bare(Connector):
@@ -251,9 +230,6 @@ class TestConnectorDefaults:
 
             async def start(self): ...
             async def send(self, channel, text, *, thread=None): return {}
-<<<<<<< HEAD
-            async def list_channels(self): return []
-=======
             async def list_channels(self, *, include_dms=False): return []
             async def identity(self): ...
             async def close(self): ...
@@ -281,15 +257,11 @@ class TestConnectorDefaults:
             async def start(self): ...
             async def send(self, channel, text, *, thread=None): return {}
             async def list_channels(self, *, include_dms=False): return []
->>>>>>> feat/svc-social
             async def identity(self): ...
             async def close(self): ...
 
         c = _Bare(Account(name="x", platform="bare", token=""), _noop)
         with pytest.raises(NotImplementedError):
-<<<<<<< HEAD
-            await c.history("C1")
-=======
             await c.open_dm("U123")
 
 
@@ -375,4 +347,3 @@ class TestSlackDms:
         web = _FakeDmWeb()
         with pytest.raises(RuntimeError):
             await self._conn(web).open_dm("nobody")
->>>>>>> feat/svc-social

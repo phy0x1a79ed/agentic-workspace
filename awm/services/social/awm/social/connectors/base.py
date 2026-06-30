@@ -162,26 +162,6 @@ class Connector(ABC):
         ``message_id`` when the platform supplies one).
         """
 
-<<<<<<< HEAD
-    async def history(
-        self, channel: str, *, limit: int = 50, before: str | None = None
-    ) -> list[InboundMessage]:
-        """Fetch existing messages from ``channel`` on demand (newest batch).
-
-        Unlike :meth:`start` — which only live-tails messages arriving *after*
-        connect — ``history`` pulls messages that already exist on the platform,
-        including ones sent before the service came up. ``before`` is an optional
-        platform cursor (message id / ts) to page backwards from. Returns
-        normalised :class:`InboundMessage` objects ordered **oldest→newest** (the
-        same order :func:`SocialDAO.list_messages` returns), so the adapter can
-        persist them straight through its dedupe path.
-
-        Non-abstract: a connector whose platform can't fetch history simply leaves
-        this default, which raises and the verb surfaces a clean error.
-        """
-        raise NotImplementedError(
-            f"{self.platform} connector does not support history fetch")
-=======
     async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
@@ -237,7 +217,6 @@ class Connector(ABC):
         """
         raise NotImplementedError(
             f"{self.platform} connector does not support attachment download")
->>>>>>> feat/svc-social
 
     @abstractmethod
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:

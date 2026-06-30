@@ -439,15 +439,9 @@ HANDLERS = {
     "channels": _h_channels,
     "open_dm": _h_open_dm,
     "accounts": _h_accounts,
-<<<<<<< HEAD
-    "messages": _h_messages,
-    "history": _h_history,
-    "search": _h_search,
-=======
     "fetch": _h_fetch,
     "search": _h_search,
     "download_attachments": _h_download_attachments,
->>>>>>> feat/svc-social
     "list_operators": _h_list_operators,
     "add_operator": _h_add_operator,
     "remove_operator": _h_remove_operator,

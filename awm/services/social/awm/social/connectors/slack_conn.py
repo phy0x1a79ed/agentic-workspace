@@ -218,10 +218,7 @@ class SlackConnector(Connector):
             message_id=m.get("ts", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
-<<<<<<< HEAD
-=======
             attachments=_attachments_of(m),
->>>>>>> feat/svc-social
         )
 
     async def _emit_session_message(self, cid: str, m: dict) -> None:
@@ -437,11 +434,7 @@ class SlackConnector(Connector):
         return Identity(
             id=auth.get("user_id", ""), name=auth.get("user", ""))
 
-<<<<<<< HEAD
-    async def history(
-=======
     async def fetch(
->>>>>>> feat/svc-social
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         # Slack's `latest` is the *upper* bound ("messages before this ts") — the
@@ -459,8 +452,6 @@ class SlackConnector(Connector):
             out.append(self._inbound_from_slack(channel, m))
         return out
 
-<<<<<<< HEAD
-=======
     async def search(
         self, query: str, *, limit: int = 50, channel: str | None = None
     ) -> list[InboundMessage]:
@@ -558,7 +549,6 @@ class SlackConnector(Connector):
                         f.get("mimetype", "") or "", data))
         return out
 
->>>>>>> feat/svc-social
     async def close(self) -> None:
         if self._socket is not None:
             try:

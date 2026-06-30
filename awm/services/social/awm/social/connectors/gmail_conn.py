@@ -242,21 +242,7 @@ class GmailConnector(Connector):
                     continue
                 raw = fetched[0][1]
                 msg = email.message_from_bytes(raw)
-<<<<<<< HEAD
-                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
-                out.append({
-                    "channel_id": from_addr,
-                    "channel_name": "INBOX",
-                    "sender_id": from_addr,
-                    "sender_name": str(msg.get("From", "")),
-                    "message_id": msg.get("Message-ID", "") or str(uid),
-                    "ts": msg.get("Date", ""),
-                    "text": _body_text(msg),
-                    "subject": str(msg.get("Subject", "")),
-                })
-=======
                 out.append(_row_from_msg(msg, uid))
->>>>>>> feat/svc-social
             return out
         finally:
             try:
@@ -264,9 +250,6 @@ class GmailConnector(Connector):
             except Exception:  # noqa: BLE001
                 pass
 
-<<<<<<< HEAD
-    async def history(
-=======
     # -- search + attachment download (blocking IMAP) -----------------------
 
     def _search_sync(self, query: str, limit: int) -> list[dict]:
@@ -376,7 +359,6 @@ class GmailConnector(Connector):
         )
 
     async def fetch(
->>>>>>> feat/svc-social
         self, channel: str = "", *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         if not self._addr:
@@ -390,23 +372,7 @@ class GmailConnector(Connector):
                 before_uid = None  # non-UID cursor: ignore, return most recent
         rows = await asyncio.to_thread(
             self._history_sync, channel, limit, before_uid)
-<<<<<<< HEAD
-        return [InboundMessage(
-            account=self.account.name,
-            platform=self.platform,
-            channel_id=d["channel_id"],
-            channel_name=d["channel_name"],
-            thread_id="",
-            sender_id=d["sender_id"],
-            sender_name=d["sender_name"],
-            message_id=d["message_id"],
-            ts=d["ts"],
-            text=d["text"],
-            raw={"subject": d["subject"]},
-        ) for d in rows]
-=======
         return [self._inbound(d) for d in rows]
->>>>>>> feat/svc-social
 
     async def start(self) -> None:
         if not self._addr:
