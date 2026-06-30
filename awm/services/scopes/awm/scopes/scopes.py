@@ -37,6 +37,7 @@ from awm.scopes.git_utils import run_git, detect_default_branch
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
+    agent_record_for_scope,
     ensure_agent,
     ensure_project,
     project_id_for_name,
@@ -48,6 +49,7 @@ from awm.scopes.models import (
     ScopeCreateRequest,
     ScopeUpdateRequest,
     ScopeSyncRequest,
+    ScatterGatherResponse,
     ScopeInfo,
     ScopeListResponse,
     ScopeActionResponse,
@@ -787,6 +789,184 @@ def sync_scope(project: str, scope: str, req: ScopeSyncRequest) -> ScopeActionRe
         scope=scope,
         status="active",
         message=f"Synced {feature_branch} with {base} via {req.strategy}",
+    )
+
+
+def _has_merge_in_progress(worktree: Path) -> bool:
+    """True iff a merge is mid-flight (MERGE_HEAD present) in ``worktree``."""
+    r = run_git(["git", "-C", str(worktree), "rev-parse", "--verify", "-q", "MERGE_HEAD"])
+    return r.returncode == 0
+
+
+def _merge_one(worktree: Path, scope: str, branch: str, source_ref: str,
+               message: str) -> dict:
+    """Merge ``source_ref`` into the branch checked out at ``worktree``.
+
+    Batch-safe: on a conflict the merge is rolled back with ``git merge
+    --abort`` (only when a merge is actually in progress, so an "Already up to
+    date" / fast-forward is never misclassified) and the worktree is left
+    clean. Returns ``{scope, branch, result, detail}`` with ``result`` ∈
+    ``merged | up_to_date | conflict | error``.
+    """
+    r = run_git(["git", "-C", str(worktree), "merge", source_ref, "-m", message])
+    out = (r.stdout or "") + (r.stderr or "")
+    if r.returncode == 0:
+        if "Already up to date" in out:
+            return {"scope": scope, "branch": branch, "result": "up_to_date",
+                    "detail": "already up to date"}
+        return {"scope": scope, "branch": branch, "result": "merged",
+                "detail": out.strip().splitlines()[-1] if out.strip() else "merged"}
+    # Non-zero: a real conflict (or other merge failure). Roll back only when a
+    # merge is genuinely in progress, else we'd misreport a no-op/FF as a failed
+    # abort and could leave a stray MERGE_HEAD (see MERGE_HEAD-lingers footgun).
+    if _has_merge_in_progress(worktree):
+        run_git(["git", "-C", str(worktree), "merge", "--abort"])
+        return {"scope": scope, "branch": branch, "result": "conflict",
+                "detail": "merge conflict — aborted, worktree left clean"}
+    return {"scope": scope, "branch": branch, "result": "error",
+            "detail": (r.stderr or out).strip()}
+
+
+def _hub_record(project: str, hub: str, bare_dir: Path) -> dict:
+    """Resolve the hub scope's DB row (branch + worktree). Falls back to
+    ``feat/<hub>`` / ``PROJECTS_DIR/project/hub`` if no row exists — but a hub
+    is normally a real scope, so the row is the authoritative source for legacy
+    flat branches like ``dev`` (branch ``dev``, not ``feat/dev``)."""
+    rec = agent_record_for_scope(project, hub, active_only=False)
+    if rec is not None:
+        return {"branch": rec["branch"], "worktree": Path(rec["worktree"])}
+    return {"branch": f"feat/{hub}", "worktree": PROJECTS_DIR / project / hub}
+
+
+def _peripheral_record(project: str, p: str) -> dict:
+    """Resolve a peripheral scope's branch + worktree (DB row, else default)."""
+    rec = agent_record_for_scope(project, p, active_only=False)
+    if rec is not None:
+        return {"branch": rec["branch"], "worktree": Path(rec["worktree"])}
+    return {"branch": f"feat/{p}", "worktree": PROJECTS_DIR / project / p}
+
+
+def _summarize(results: list[dict]) -> dict:
+    summary: dict[str, int] = {}
+    for r in results:
+        summary[r["result"]] = summary.get(r["result"], 0) + 1
+    return summary
+
+
+def gather_scope(project: str, hub: str, peripherals: list[str],
+                 strategy: str = "merge") -> ScatterGatherResponse:
+    """Fan-in: merge each peripheral's branch into the hub's branch.
+
+    Runs in the hub's worktree. The hub worktree must be clean and on the hub
+    branch (the whole fan-in needs a clean hub). A per-peripheral conflict is
+    aborted and reported; the batch continues. Local-only — no push.
+    """
+    validate_name(project, kind="project name")
+    validate_name(hub, kind="scope name")
+    if strategy != "merge":
+        raise ValueError("gather only supports strategy='merge' (rebase is not "
+                         "meaningful for a shared hub).")
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    if not bare_dir.exists():
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
+
+    hub_rec = _hub_record(project, hub, bare_dir)
+    hub_branch = hub_rec["branch"]
+    hub_worktree = hub_rec["worktree"]
+    if not hub_worktree.exists():
+        raise FileNotFoundError(f"Hub worktree not found at {hub_worktree}")
+
+    r = run_git(["git", "-C", str(hub_worktree), "status", "--porcelain"])
+    if r.returncode != 0:
+        raise RuntimeError(f"git status failed in hub worktree: {r.stderr}")
+    if r.stdout.strip():
+        raise RuntimeError(
+            f"Hub worktree {hub_worktree} has uncommitted changes — refusing to "
+            f"gather:\n{r.stdout}"
+        )
+    r = run_git(["git", "-C", str(hub_worktree), "rev-parse", "--abbrev-ref", "HEAD"])
+    current = (r.stdout or "").strip()
+    if current != hub_branch:
+        raise RuntimeError(
+            f"Hub worktree HEAD is on '{current}', expected hub branch "
+            f"'{hub_branch}'. Check out the hub branch before gathering."
+        )
+
+    results: list[dict] = []
+    for p in peripherals:
+        validate_name(p, kind="scope name")
+        prec = _peripheral_record(project, p)
+        p_branch = prec["branch"]
+        verify = run_git(["git", "-C", str(bare_dir), "rev-parse", "--verify",
+                          "-q", f"refs/heads/{p_branch}"])
+        if verify.returncode != 0:
+            results.append({"scope": p, "branch": p_branch, "result": "skipped",
+                            "detail": f"branch {p_branch} not found"})
+            continue
+        results.append(_merge_one(
+            hub_worktree, p, p_branch, p_branch,
+            f"Gather {p_branch} into {hub_branch}",
+        ))
+
+    return ScatterGatherResponse(
+        project=project, hub=hub, hub_branch=hub_branch, direction="gather",
+        results=results, summary=_summarize(results),
+    )
+
+
+def scatter_scope(project: str, hub: str, peripherals: list[str],
+                  strategy: str = "merge") -> ScatterGatherResponse:
+    """Fan-out: merge the hub's branch into each peripheral's branch.
+
+    Each merge runs in that peripheral's own worktree. A dirty or off-branch
+    peripheral is skipped (one dirty sibling must not abort the batch); a
+    conflict is aborted and reported. Local-only — no push.
+    """
+    validate_name(project, kind="project name")
+    validate_name(hub, kind="scope name")
+    if strategy != "merge":
+        raise ValueError("scatter only supports strategy='merge' (rebase is not "
+                         "meaningful for fan-out).")
+    bare_dir = PROJECTS_DIR / project / ".bare"
+    if not bare_dir.exists():
+        raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
+
+    hub_rec = _hub_record(project, hub, bare_dir)
+    hub_branch = hub_rec["branch"]
+    verify = run_git(["git", "-C", str(bare_dir), "rev-parse", "--verify",
+                      "-q", f"refs/heads/{hub_branch}"])
+    if verify.returncode != 0:
+        raise FileNotFoundError(f"Hub branch '{hub_branch}' not found")
+
+    results: list[dict] = []
+    for p in peripherals:
+        validate_name(p, kind="scope name")
+        prec = _peripheral_record(project, p)
+        p_branch = prec["branch"]
+        p_worktree = prec["worktree"]
+        if not p_worktree.exists():
+            results.append({"scope": p, "branch": p_branch, "result": "skipped",
+                            "detail": f"worktree not found at {p_worktree}"})
+            continue
+        r = run_git(["git", "-C", str(p_worktree), "status", "--porcelain"])
+        if r.returncode != 0 or r.stdout.strip():
+            results.append({"scope": p, "branch": p_branch, "result": "skipped",
+                            "detail": "worktree dirty — skipped"})
+            continue
+        r = run_git(["git", "-C", str(p_worktree), "rev-parse", "--abbrev-ref", "HEAD"])
+        current = (r.stdout or "").strip()
+        if current != p_branch:
+            results.append({"scope": p, "branch": p_branch, "result": "skipped",
+                            "detail": f"HEAD on '{current}', expected '{p_branch}'"})
+            continue
+        results.append(_merge_one(
+            p_worktree, p, p_branch, hub_branch,
+            f"Scatter {hub_branch} into {p_branch}",
+        ))
+
+    return ScatterGatherResponse(
+        project=project, hub=hub, hub_branch=hub_branch, direction="scatter",
+        results=results, summary=_summarize(results),
     )
 
 
