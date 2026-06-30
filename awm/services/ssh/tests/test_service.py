@@ -33,18 +33,18 @@ class TestConfig:
         assert cfg.twofa_device == "alliance"
         assert cfg.user == "phyberos"
 
-    def test_chamois_needs_vpn_and_cwl(self) -> None:
+    def test_chamois_needs_vpn_no_2fa(self) -> None:
         cfg = resolve_host("chamois")
         assert cfg.needs_vpn
         assert cfg.vpn_profile == "ubc"
-        assert cfg.twofa_device == "cwl"
+        assert cfg.twofa_device == ""
         assert cfg.user == "tliu"
 
-    def test_micb0_needs_vpn_and_cwl(self) -> None:
+    def test_micb0_needs_vpn_no_2fa(self) -> None:
         cfg = resolve_host("micb0")
         assert cfg.needs_vpn
         assert cfg.vpn_profile == "ubc"
-        assert cfg.twofa_device == "cwl"
+        assert cfg.twofa_device == ""
         assert cfg.user == "tliu"
 
     def test_sockeye_variants(self) -> None:
