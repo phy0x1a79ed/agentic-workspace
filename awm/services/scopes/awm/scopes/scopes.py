@@ -904,7 +904,7 @@ def gather_scope(project: str, hub: str, peripherals: list[str],
                             "detail": f"branch {p_branch} not found"})
             continue
         results.append(_merge_one(
-            hub_worktree, p, hub_branch, p_branch,
+            hub_worktree, p, p_branch, p_branch,
             f"Gather {p_branch} into {hub_branch}",
         ))
 

@@ -94,6 +94,9 @@ def test_gather_clean_fan_in(scopes_workspace, hub_repo):
     by = _results_by_scope(resp)
     assert by["p1"]["result"] == "merged"
     assert by["p2"]["result"] == "merged"
+    # Each result is labelled with the PERIPHERAL's branch (not the hub's).
+    assert by["p1"]["branch"] == "feat/p1"
+    assert by["p2"]["branch"] == "feat/p2"
     # Both peripherals' files are now on the hub worktree.
     assert (hub_repo["hub_wt"] / "p1.txt").exists()
     assert (hub_repo["hub_wt"] / "p2.txt").exists()
@@ -109,6 +112,8 @@ def test_scatter_clean_fan_out(scopes_workspace, hub_repo):
     by = _results_by_scope(resp)
     assert by["p1"]["result"] == "merged"
     assert by["p2"]["result"] == "merged"
+    assert by["p1"]["branch"] == "feat/p1"
+    assert by["p2"]["branch"] == "feat/p2"
     assert (hub_repo["p_wts"]["p1"] / "hub.txt").exists()
     assert (hub_repo["p_wts"]["p2"] / "hub.txt").exists()
 
