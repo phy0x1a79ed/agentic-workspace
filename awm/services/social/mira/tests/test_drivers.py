@@ -69,6 +69,49 @@ class TestSlackDriver:
         chans = await SlackDriver(page).list_channels()
         assert chans[0]["id"] == "C1"
 
+    async def test_open_dm_invokes_helper_with_user(self):
+        page = FakePage({"window.__awmMira.slack.openDM":
+                         {"id": "D1", "name": "", "kind": "dm"}})
+        out = await SlackDriver(page).open_dm("alice")
+        assert out == {"id": "D1", "name": "", "kind": "dm"}
+        # the user arg is threaded into the helper call
+        assert json.dumps("alice") in page.exprs[-1]
+        assert "window.__awmMira.slack.openDM" in page.exprs[-1]
+
+    async def test_fetch_messages_maps_attachments(self):
+        page = FakePage({"window.__awmMira.slack.history": [
+            {"ts": "3.0", "user": "U1", "text": "see attached",
+             "files": [{"idx": 0, "filename": "draft.docx", "mime": "application/x",
+                        "size": 42, "url": "u", "ref": {"id": "F1"}}]}]})
+        msgs = await SlackDriver(page).fetch_messages("C1", None, 50)
+        assert msgs[0]["attachments"][0]["filename"] == "draft.docx"
+
+    async def test_search_normalises_matches(self):
+        page = FakePage({"window.__awmMira.slack.search": [
+            {"ts": "9.2", "channel": "C1", "channel_name": "general",
+             "user": "U2", "username": "bob", "text": "manuscript",
+             "permalink": "p", "files": []}]})
+        msgs = await SlackDriver(page).search("manuscript", 20)
+        assert len(msgs) == 1
+        m = msgs[0]
+        assert m["platform"] == "slack" and m["channel_id"] == "C1"
+        assert m["text"] == "manuscript" and m["sender_name"] == "bob"
+        # query threaded into the helper call
+        assert json.dumps("manuscript") in page.exprs[-1]
+
+    async def test_search_folds_channel_into_query(self):
+        page = FakePage({"window.__awmMira.slack.search": []})
+        await SlackDriver(page).search("draft", 20, channel="general")
+        assert "in:general" in page.exprs[-1]
+
+    async def test_download_passthrough(self):
+        page = FakePage({"window.__awmMira.slack.download": [
+            {"filename": "a.docx", "mime": "application/x", "b64": "QQ=="}]})
+        out = await SlackDriver(page).download("C1", "9.2", 0)
+        assert out == [{"filename": "a.docx", "mime": "application/x", "b64": "QQ=="}]
+        # channel + message_id + idx threaded through
+        assert json.dumps("9.2") in page.exprs[-1]
+
 
 class TestTeamsDriver:
     async def test_fetch_messages_normalises(self):
@@ -104,3 +147,35 @@ class TestTeamsDriver:
         await TeamsDriver(page).send("19:abc", "hi", thread=None)
         expr = page.exprs[-1]
         assert "19:abc" in expr and json.dumps("hi") in expr
+
+    async def test_open_dm_not_supported(self):
+        # Teams has no DM-open path; the base default must raise so the server
+        # surfaces a clean 501 rather than a generic 502.
+        page = FakePage({})
+        with pytest.raises(NotImplementedError):
+            await TeamsDriver(page).open_dm("8:orgid:u2")
+
+    async def test_fetch_messages_carries_attachments(self):
+        page = FakePage({"window.__awmMira.teams.messages": [
+            {"message_id": "1", "marker": "1", "channel_id": "19:abc",
+             "sender_id": "u", "sender_name": "Bob", "text": "file",
+             "ts": "t", "attachments": [{"idx": 0, "filename": "x.pdf",
+                                         "mime": "application/pdf", "size": 1,
+                                         "url": "u", "ref": {}}]}]})
+        msgs = await TeamsDriver(page).fetch_messages("19:abc", None, 20)
+        assert msgs[0]["attachments"][0]["filename"] == "x.pdf"
+
+    async def test_search_normalises(self):
+        page = FakePage({"window.__awmMira.teams.search": [
+            {"message_id": "2", "marker": "2", "channel_id": "19:abc",
+             "sender_id": "u", "sender_name": "Bob", "text": "report",
+             "ts": "t", "attachments": []}]})
+        msgs = await TeamsDriver(page).search("report", 50)
+        assert msgs[0]["platform"] == "teams" and msgs[0]["text"] == "report"
+        assert msgs[0]["channel_id"] == "19:abc"
+
+    async def test_download_passthrough(self):
+        page = FakePage({"window.__awmMira.teams.download": [
+            {"filename": "x.pdf", "mime": "application/pdf", "b64": "QQ=="}]})
+        out = await TeamsDriver(page).download("19:abc", "2", None)
+        assert out[0]["filename"] == "x.pdf"

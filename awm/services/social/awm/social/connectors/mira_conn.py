@@ -22,12 +22,28 @@ import asyncio
 import logging
 
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Attachment, Channel, Connector, Identity, InboundMessage,
+    OnMessage,
 )
 
 log = logging.getLogger("awm.social.connectors.mira")
 
 WS_RETRY_MAX_S = 30.0
+
+
+def _to_attachments(items: list) -> list[Attachment]:
+    """Map the daemon's normalised attachment dicts to :class:`Attachment`."""
+    out: list[Attachment] = []
+    for a in items or []:
+        out.append(Attachment(
+            idx=int(a.get("idx", 0) or 0),
+            filename=a.get("filename", "") or "",
+            mime=a.get("mime", "") or "",
+            size=int(a.get("size", 0) or 0),
+            url=a.get("url", "") or "",
+            ref=a.get("ref") or {},
+        ))
+    return out
 
 
 class MiraConnector(Connector):
@@ -95,16 +111,26 @@ class MiraConnector(Connector):
             "ts": resp.get("ts", ""),
         }
 
-    async def list_channels(self) -> list[Channel]:
-        resp = await self._get(f"/v1/{self.platform}/channels")
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        params = {"include_dms": "true"} if include_dms else {}
+        resp = await self._get(f"/v1/{self.platform}/channels", **params)
         return [Channel(id=c.get("id", ""), name=c.get("name", ""),
                         kind=c.get("kind", "")) for c in resp.get("channels", [])]
+
+    async def open_dm(self, user: str) -> Channel:
+        resp = await self._post(f"/v1/{self.platform}/open_dm", {"user": user})
+        return Channel(id=resp.get("id", ""), name=resp.get("name", "") or user,
+                       kind=resp.get("kind", "dm"))
 
     async def identity(self) -> Identity:
         resp = await self._get(f"/v1/{self.platform}/identity")
         return Identity(id=resp.get("id", ""), name=resp.get("name", ""))
 
+<<<<<<< HEAD
     async def history(
+=======
+    async def fetch(
+>>>>>>> feat/svc-social
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         params: dict = {"channel": channel, "limit": limit}
@@ -114,6 +140,37 @@ class MiraConnector(Connector):
         msgs = resp.get("messages", [])  # daemon returns newest-first
         return [self._to_inbound(m) for m in reversed(msgs)]  # oldest->newest
 
+<<<<<<< HEAD
+=======
+    async def search(
+        self, query: str, *, limit: int = 50, channel: str | None = None
+    ) -> list[InboundMessage]:
+        params: dict = {"query": query, "limit": limit}
+        if channel:
+            params["channel"] = channel
+        resp = await self._get(f"/v1/{self.platform}/search", **params)
+        # Daemon ranks newest/most-relevant first; preserve that order.
+        return [self._to_inbound(m) for m in resp.get("messages", [])]
+
+    async def download_attachments(
+        self, channel: str, message_id: str, *, idx: int | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        import base64
+
+        params: dict = {"channel": channel, "message_id": message_id}
+        if idx is not None:
+            params["idx"] = idx
+        resp = await self._get(f"/v1/{self.platform}/download", **params)
+        out: list[tuple[str, str, bytes]] = []
+        for f in resp.get("files", []) or []:
+            out.append((
+                f.get("filename", "") or "",
+                f.get("mime", "") or "",
+                base64.b64decode(f.get("b64", "") or ""),
+            ))
+        return out
+
+>>>>>>> feat/svc-social
     # -- inbound (WebSocket push) ------------------------------------------
 
     async def start(self) -> None:
@@ -185,6 +242,10 @@ class MiraConnector(Connector):
             message_id=m.get("message_id", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
+<<<<<<< HEAD
+=======
+            attachments=_to_attachments(m.get("attachments") or []),
+>>>>>>> feat/svc-social
             raw=m,
         )
 

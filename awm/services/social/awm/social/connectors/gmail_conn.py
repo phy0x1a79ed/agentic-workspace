@@ -35,7 +35,8 @@ import smtplib
 from email.message import EmailMessage
 
 from awm.social.connectors.base import (
-    Account, Channel, Connector, Identity, InboundMessage, OnMessage,
+    Account, Attachment, Channel, Connector, Identity, InboundMessage,
+    OnMessage,
 )
 
 log = logging.getLogger("awm.social.connectors.gmail")
@@ -45,6 +46,9 @@ SMTP_PORT = 465  # implicit TLS (SMTP_SSL)
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 POLL_INTERVAL_S = 30.0
+# Gmail's virtual mailbox holding every message (archived or not) — the right
+# scope for search + by-Message-ID lookup, which INBOX alone would miss.
+ALL_MAIL = "[Gmail]/All Mail"
 
 
 def _split_subject(text: str) -> tuple[str, str]:
@@ -81,6 +85,79 @@ def _body_text(msg: email.message.Message) -> str:
         return msg.get_payload() if isinstance(msg.get_payload(), str) else ""
     charset = msg.get_content_charset() or "utf-8"
     return payload.decode(charset, errors="replace")
+
+
+def _is_attachment_part(part: email.message.Message) -> bool:
+    """A MIME part counts as a downloadable attachment if it carries a filename
+    or an explicit ``Content-Disposition: attachment``."""
+    if part.get_filename():
+        return True
+    disp = str(part.get("Content-Disposition", "")).lower()
+    return disp.startswith("attachment")
+
+
+def _extract_attachments(msg: email.message.Message, uid: str) -> list[Attachment]:
+    """Build :class:`Attachment` metadata for a parsed message's file parts.
+
+    Each attachment's :attr:`Attachment.idx` is its ordinal among the message's
+    file parts (0-based) — the same ordinal :func:`_attachment_bytes` re-derives
+    on download, so ``download_attachments(idx=…)`` lines up.
+    """
+    out: list[Attachment] = []
+    if not msg.is_multipart():
+        return out
+    ordinal = 0
+    for part in msg.walk():
+        if not _is_attachment_part(part):
+            continue
+        payload = part.get_payload(decode=True)
+        out.append(Attachment(
+            idx=ordinal,
+            filename=part.get_filename() or f"attachment-{ordinal}",
+            mime=part.get_content_type(),
+            size=len(payload) if payload else 0,
+            ref={"uid": str(uid), "ord": ordinal},
+        ))
+        ordinal += 1
+    return out
+
+
+def _attachment_bytes(
+    msg: email.message.Message, idx: int | None
+) -> list[tuple[str, str, bytes]]:
+    """Pull ``(filename, mime, bytes)`` for a message's attachments.
+
+    ``idx`` restricts to a single attachment by its ordinal (see
+    :func:`_extract_attachments`); ``None`` returns them all.
+    """
+    out: list[tuple[str, str, bytes]] = []
+    ordinal = 0
+    for part in msg.walk():
+        if not _is_attachment_part(part):
+            continue
+        if idx is None or ordinal == idx:
+            payload = part.get_payload(decode=True) or b""
+            out.append((part.get_filename() or f"attachment-{ordinal}",
+                        part.get_content_type(), payload))
+        ordinal += 1
+    return out
+
+
+def _row_from_msg(msg: email.message.Message, uid: str | int) -> dict:
+    """Normalise a parsed message into the dict the connector maps to an
+    :class:`InboundMessage` (shared by the poll loop, fetch, and search)."""
+    from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
+    return {
+        "channel_id": from_addr,
+        "channel_name": "INBOX",
+        "sender_id": from_addr,
+        "sender_name": str(msg.get("From", "")),
+        "message_id": msg.get("Message-ID", "") or str(uid),
+        "ts": msg.get("Date", ""),
+        "text": _body_text(msg),
+        "subject": str(msg.get("Subject", "")),
+        "attachments": _extract_attachments(msg, str(uid)),
+    }
 
 
 class GmailConnector(Connector):
@@ -126,17 +203,7 @@ class GmailConnector(Connector):
                     continue
                 raw = fetched[0][1]
                 msg = email.message_from_bytes(raw)
-                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
-                out.append({
-                    "channel_id": from_addr,
-                    "channel_name": "INBOX",
-                    "sender_id": from_addr,
-                    "sender_name": str(msg.get("From", "")),
-                    "message_id": msg.get("Message-ID", "") or str(uid),
-                    "ts": msg.get("Date", ""),
-                    "text": _body_text(msg),
-                    "subject": str(msg.get("Subject", "")),
-                })
+                out.append(_row_from_msg(msg, uid))
             return out, (max(fresh) if fresh else baseline)
         finally:
             try:
@@ -175,6 +242,7 @@ class GmailConnector(Connector):
                     continue
                 raw = fetched[0][1]
                 msg = email.message_from_bytes(raw)
+<<<<<<< HEAD
                 from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
                 out.append({
                     "channel_id": from_addr,
@@ -186,6 +254,9 @@ class GmailConnector(Connector):
                     "text": _body_text(msg),
                     "subject": str(msg.get("Subject", "")),
                 })
+=======
+                out.append(_row_from_msg(msg, uid))
+>>>>>>> feat/svc-social
             return out
         finally:
             try:
@@ -193,7 +264,119 @@ class GmailConnector(Connector):
             except Exception:  # noqa: BLE001
                 pass
 
+<<<<<<< HEAD
     async def history(
+=======
+    # -- search + attachment download (blocking IMAP) -----------------------
+
+    def _search_sync(self, query: str, limit: int) -> list[dict]:
+        """Blocking Gmail search over All Mail via IMAP ``X-GM-RAW``.
+
+        ``X-GM-RAW`` accepts the full Gmail query syntax (``from:``, ``subject:``,
+        ``has:attachment``, …). Returns the newest ``limit`` matches, newest-first.
+        """
+        m = self._imap_login()
+        try:
+            typ, _ = m.select(ALL_MAIL, readonly=True)
+            if typ != "OK":
+                m.select("INBOX", readonly=True)
+            # X-GM-RAW takes one quoted string; escape embedded quotes/backslashes.
+            q = '"' + str(query).replace("\\", "\\\\").replace('"', '\\"') + '"'
+            typ, data = m.uid("search", None, "X-GM-RAW", q)
+            if typ != "OK":
+                return []
+            uids = sorted(
+                int(x) for x in (data[0].split() if data and data[0] else []))
+            uids = uids[-max(1, limit):]  # newest N
+            out: list[dict] = []
+            for uid in reversed(uids):  # newest-first
+                typ, fetched = m.uid("fetch", str(uid), "(BODY.PEEK[])")
+                if typ != "OK" or not fetched or not fetched[0]:
+                    continue
+                msg = email.message_from_bytes(fetched[0][1])
+                out.append(_row_from_msg(msg, uid))
+            return out
+        finally:
+            try:
+                m.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _download_sync(
+        self, message_id: str, idx: int | None
+    ) -> list[tuple[str, str, bytes]]:
+        """Blocking re-fetch of one message (by RFC822 Message-ID, or raw UID
+        fallback) → its attachments' bytes. Reads with BODY.PEEK (never marks
+        the mail read)."""
+        m = self._imap_login()
+        try:
+            typ, _ = m.select(ALL_MAIL, readonly=True)
+            if typ != "OK":
+                m.select("INBOX", readonly=True)
+            raw: bytes | None = None
+            typ, data = m.uid("search", None, "HEADER", "Message-ID", message_id)
+            uids = (data[0].split() if typ == "OK" and data and data[0] else [])
+            if uids:
+                target = uids[-1].decode() if isinstance(uids[-1], bytes) else uids[-1]
+                typ, fetched = m.uid("fetch", target, "(BODY.PEEK[])")
+                if typ == "OK" and fetched and fetched[0]:
+                    raw = fetched[0][1]
+            if raw is None and str(message_id).isdigit():
+                # Fallback: message_id was a bare UID (fetch used str(uid)).
+                typ, fetched = m.uid("fetch", str(message_id), "(BODY.PEEK[])")
+                if typ == "OK" and fetched and fetched[0]:
+                    raw = fetched[0][1]
+            if raw is None:
+                raise RuntimeError(
+                    f"gmail[{self.account.name}] message {message_id!r} not found")
+            msg = email.message_from_bytes(raw)
+            return _attachment_bytes(msg, idx)
+        finally:
+            try:
+                m.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def search(
+        self, query: str, *, limit: int = 50, channel: str | None = None
+    ) -> list[InboundMessage]:
+        if not self._addr:
+            raise RuntimeError(
+                f"gmail[{self.account.name}] no address configured")
+        # Scope to one correspondent by folding `channel` (an address) into the
+        # Gmail query when given.
+        q = query
+        if channel and "@" in channel:
+            q = f"from:{channel} {query}".strip()
+        rows = await asyncio.to_thread(self._search_sync, q, int(limit))
+        return [self._inbound(d) for d in rows]
+
+    async def download_attachments(
+        self, channel: str, message_id: str, *, idx: int | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        if not self._addr:
+            raise RuntimeError(
+                f"gmail[{self.account.name}] no address configured")
+        return await asyncio.to_thread(self._download_sync, message_id, idx)
+
+    def _inbound(self, d: dict) -> InboundMessage:
+        return InboundMessage(
+            account=self.account.name,
+            platform=self.platform,
+            channel_id=d["channel_id"],
+            channel_name=d["channel_name"],
+            thread_id="",
+            sender_id=d["sender_id"],
+            sender_name=d["sender_name"],
+            message_id=d["message_id"],
+            ts=d["ts"],
+            text=d["text"],
+            attachments=d.get("attachments", []),
+            raw={"subject": d["subject"]},
+        )
+
+    async def fetch(
+>>>>>>> feat/svc-social
         self, channel: str = "", *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         if not self._addr:
@@ -207,6 +390,7 @@ class GmailConnector(Connector):
                 before_uid = None  # non-UID cursor: ignore, return most recent
         rows = await asyncio.to_thread(
             self._history_sync, channel, limit, before_uid)
+<<<<<<< HEAD
         return [InboundMessage(
             account=self.account.name,
             platform=self.platform,
@@ -220,6 +404,9 @@ class GmailConnector(Connector):
             text=d["text"],
             raw={"subject": d["subject"]},
         ) for d in rows]
+=======
+        return [self._inbound(d) for d in rows]
+>>>>>>> feat/svc-social
 
     async def start(self) -> None:
         if not self._addr:
@@ -245,19 +432,7 @@ class GmailConnector(Connector):
                     self._poll_sync, self._baseline)
                 backoff = 1.0
                 for d in msgs:
-                    inbound = InboundMessage(
-                        account=self.account.name,
-                        platform=self.platform,
-                        channel_id=d["channel_id"],
-                        channel_name=d["channel_name"],
-                        thread_id="",
-                        sender_id=d["sender_id"],
-                        sender_name=d["sender_name"],
-                        message_id=d["message_id"],
-                        ts=d["ts"],
-                        text=d["text"],
-                        raw={"subject": d["subject"]},
-                    )
+                    inbound = self._inbound(d)
                     try:
                         await self.on_message(inbound)
                     except Exception as exc:  # noqa: BLE001 — one bad msg never kills the loop
@@ -299,7 +474,9 @@ class GmailConnector(Connector):
     ) -> dict:
         return await asyncio.to_thread(self._send_sync, channel, text, thread)
 
-    async def list_channels(self) -> list[Channel]:
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        # Gmail has no DM concept — mailboxes are the only "channels"; the flag
+        # is accepted for ABC parity and ignored.
         def _list() -> list[Channel]:
             m = self._imap_login()
             try:

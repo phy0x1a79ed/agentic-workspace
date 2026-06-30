@@ -65,14 +65,24 @@ def services_root() -> Path:
     if env := os.environ.get("AWM_SERVICES_DIR"):
         return Path(env).resolve()
     import awm.gateway
-    here = Path(awm.gateway.__file__).resolve()
-    for parent in here.parents:
+    # ``awm.gateway`` resolves as a regular package (``__file__`` points at its
+    # ``__init__.py``) under a plain install, but as a PEP 420 *namespace*
+    # package (``__file__`` is ``None``; ``__path__`` lists the dirs) when a
+    # worktree shadow puts ``awm.gateway`` on more than one root via PYTHONPATH
+    # — the intentional nested ``awm/gateway/awm/gateway`` layout. ``Path(None)``
+    # raised ``TypeError`` in the namespace case and wedged discovery wholesale.
+    # Anchor on the package directory either way.
+    if awm.gateway.__file__ is not None:
+        pkg_dir = Path(awm.gateway.__file__).resolve().parent
+    else:
+        pkg_dir = Path(next(iter(awm.gateway.__path__))).resolve()
+    for parent in pkg_dir.parents:
         cand = parent / "services"
         if parent.name == "awm" and cand.is_dir():
             return cand
-    # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway/__init__.py
-    # → parents[3] == <root>/awm.
-    return here.parents[3] / "services"
+    # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway
+    # → parents[2] == <root>/awm.
+    return pkg_dir.parents[2] / "services"
 
 
 # ---------------------------------------------------------------------------

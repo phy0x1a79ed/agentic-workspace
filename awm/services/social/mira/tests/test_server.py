@@ -55,13 +55,33 @@ class _FakeDriver:
     async def identity(self):
         return {"id": "ME", "name": "me"}
 
-    async def list_conversations(self):
+    async def list_channels(self):
         return [{"id": "C1", "name": "general", "kind": "channel"}]
 
+<<<<<<< HEAD
+=======
+    async def list_conversations(self):
+        return [{"id": "C1", "name": "general", "kind": "channel"},
+                {"id": "D1", "name": "dm:bob", "kind": "dm"}]
+
+    async def open_dm(self, user):
+        self.opened_dm = user
+        return {"id": "D1", "name": "", "kind": "dm"}
+
+>>>>>>> feat/svc-social
     async def fetch_messages(self, channel, oldest, limit, *, before=None):
         self.last_fetch = {"channel": channel, "oldest": oldest,
                            "limit": limit, "before": before}
         return self.script[:limit]
+
+    async def search(self, query, limit, channel=None):
+        self.last_search = {"query": query, "limit": limit, "channel": channel}
+        return self.script[:limit]
+
+    async def download(self, channel, message_id, idx=None):
+        self.last_download = {"channel": channel, "message_id": message_id,
+                              "idx": idx}
+        return [{"filename": "draft.docx", "mime": "application/x", "b64": "QQ=="}]
 
 
 def _msg(marker, sender, text):
@@ -160,3 +180,145 @@ class TestMessagesEndpoint:
             "slack", page=None, driver=_FakeDriver())
         resp = await api._h_messages(_MsgReq("slack", {}))
         assert resp.status == 400
+<<<<<<< HEAD
+=======
+
+
+class _JsonReq:
+    """Minimal stand-in for an aiohttp request with a JSON body."""
+
+    def __init__(self, platform, body, query=None):
+        self.match_info = {"platform": platform}
+        self.query = query or {}
+        self._body = body
+
+    async def json(self):
+        if self._body is _NO_BODY:
+            raise ValueError("no body")
+        return self._body
+
+
+_NO_BODY = object()
+
+
+class TestChannelsEndpoint:
+    async def test_channels_only_by_default(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_channels(_MsgReq("slack", {}))
+        assert resp.status == 200
+        body = json.loads(resp.text)
+        assert [c["id"] for c in body["channels"]] == ["C1"]
+
+    async def test_include_dms_returns_conversations(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_channels(
+            _MsgReq("slack", {"include_dms": "true"}))
+        body = json.loads(resp.text)
+        assert {c["id"] for c in body["channels"]} == {"C1", "D1"}
+
+
+class TestOpenDmEndpoint:
+    async def test_open_dm_resolves_and_returns_channel(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        resp = await api._h_open_dm(_JsonReq("slack", {"user": "alice"}))
+        assert resp.status == 200
+        assert json.loads(resp.text) == {"id": "D1", "name": "", "kind": "dm"}
+        assert drv.opened_dm == "alice"
+
+    async def test_open_dm_user_required(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_open_dm(_JsonReq("slack", {}))
+        assert resp.status == 400
+
+    async def test_open_dm_unsupported_is_501(self):
+        api = MiraAPI("http://x", [], "secret")
+
+        class _NoDmDriver(_FakeDriver):
+            platform = "teams"
+
+            async def open_dm(self, user):
+                from mira_api.drivers import Driver
+                return await Driver.open_dm(self, user)
+
+        api._platforms["teams"] = Platform(
+            "teams", page=None, driver=_NoDmDriver())
+        resp = await api._h_open_dm(_JsonReq("teams", {"user": "x"}))
+        assert resp.status == 501
+
+
+class TestSearchEndpoint:
+    async def test_forwards_query_limit_channel(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        drv.script = [_msg("9.2", "U2", "manuscript")]
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        resp = await api._h_search(_MsgReq(
+            "slack", {"query": "manuscript", "limit": "20", "channel": "C1"}))
+        assert resp.status == 200
+        assert drv.last_search == {
+            "query": "manuscript", "limit": 20, "channel": "C1"}
+        body = json.loads(resp.text)
+        assert [m["text"] for m in body["messages"]] == ["manuscript"]
+
+    async def test_query_required(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_search(_MsgReq("slack", {}))
+        assert resp.status == 400
+
+    async def test_unsupported_is_501(self):
+        api = MiraAPI("http://x", [], "secret")
+
+        class _NoSearchDriver(_FakeDriver):
+            async def search(self, query, limit, channel=None):
+                from mira_api.drivers import Driver
+                return await Driver.search(self, query, limit, channel)
+
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_NoSearchDriver())
+        resp = await api._h_search(_MsgReq("slack", {"query": "x"}))
+        assert resp.status == 501
+
+
+class TestDownloadEndpoint:
+    async def test_forwards_channel_message_idx(self):
+        import json
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        resp = await api._h_download(_MsgReq(
+            "slack", {"channel": "C1", "message_id": "9.2", "idx": "0"}))
+        assert resp.status == 200
+        assert drv.last_download == {
+            "channel": "C1", "message_id": "9.2", "idx": 0}
+        body = json.loads(resp.text)
+        assert body["files"][0]["filename"] == "draft.docx"
+
+    async def test_channel_and_message_required(self):
+        api = MiraAPI("http://x", [], "secret")
+        api._platforms["slack"] = Platform(
+            "slack", page=None, driver=_FakeDriver())
+        resp = await api._h_download(_MsgReq("slack", {"channel": "C1"}))
+        assert resp.status == 400
+
+    async def test_idx_optional(self):
+        api = MiraAPI("http://x", [], "secret")
+        drv = _FakeDriver()
+        api._platforms["slack"] = Platform("slack", page=None, driver=drv)
+        await api._h_download(
+            _MsgReq("slack", {"channel": "C1", "message_id": "9.2"}))
+        assert drv.last_download["idx"] is None
+>>>>>>> feat/svc-social
