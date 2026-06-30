@@ -110,6 +110,28 @@ class TestPlaceOnTask:
         assert dao.get_instance(first.id)["placement_token"] is None
 
 
+class TestWaitForUserAndPaused:
+    async def test_empty_goal_worker_idles_no_kickoff(self, agents_env, stub_core):
+        # The "+ new task" button path: an attended worker on an EMPTY goal is
+        # placed but NOT kicked off — it idles for the human's first turn.
+        await _place(agents_env, brief=json.dumps({"goal": "", "mode": "worker"}),
+                     attached=True, paused=True)
+        await asyncio.sleep(0.05)
+        assert stub_core["session"].sent == []          # no kickoff injected
+
+    async def test_nonempty_goal_worker_still_kicks_off(self, agents_env, stub_core):
+        await _place(agents_env,
+                     brief=json.dumps({"goal": "do it", "mode": "worker"}))
+        await asyncio.sleep(0.05)
+        assert any("Begin now" in s for s in stub_core["session"].sent)
+
+    async def test_paused_seeded_onto_instance_data(self, agents_env, stub_core):
+        res = await _place(agents_env, paused=True)
+        data = json.loads(
+            AgentsDAO().resolve_placement(res["placement_token"])["data"])
+        assert data["paused"] is True
+
+
 class TestServerSideVerbGate:
     """ensure_verb_allowed — the server-side per-verb confinement that replaces
     claude --allowedTools for the collapsed `agent` domain (and is the ONLY

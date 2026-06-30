@@ -478,7 +478,7 @@
         aria-pressed={convoListening}
         aria-label={convoListening ? 'stop conversation' : 'start conversation'}
       >
-        <span class="conv-icon" aria-hidden="true">{convoListening ? '⏹' : '▶'}</span>
+        <span class="conv-icon" aria-hidden="true">{convoListening ? '▮' : '▶'}</span>
         <span class="conv-lbl">{convoListening ? 'STOP' : 'CONVO'}</span>
       </button>
     {/snippet}

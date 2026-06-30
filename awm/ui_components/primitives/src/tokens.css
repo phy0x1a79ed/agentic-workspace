@@ -33,8 +33,12 @@
 }
 
 html, body {
+  height: 100%;
+  margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
   font-size: 13px;
 }
+
+.mono { font-family: var(--mono); }

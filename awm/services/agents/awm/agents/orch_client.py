@@ -16,6 +16,8 @@ Outcome ops (one per terminal worker action):
 Side-channel ops:
     set_attached      mirror the orthogonal user-attached flag to the kernel so
                       it won't reclaim a task a human is driving
+    set_paused        mirror the sticky human-pause flag to the kernel (durable;
+                      keeps the supervisor frozen even after the human detaches)
     search_tasks      planner read: existing tasks (so a sub-DAG can reuse nodes)
     search_contracts  planner read: existing contracts
 
@@ -54,6 +56,9 @@ class _GatewayOrch:
 
     async def set_attached(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "set_attached", kw)
+
+    async def set_paused(self, **kw: Any) -> Any:
+        return await gatewayclient.call(ORCH_SERVICE, "orch_set_paused", kw)
 
     async def search_tasks(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "search_tasks", kw)
@@ -106,6 +111,10 @@ async def reject_plan(**kw: Any) -> Any:
 
 async def set_attached(**kw: Any) -> Any:
     return await _IMPL.set_attached(**kw)
+
+
+async def set_paused(**kw: Any) -> Any:
+    return await _IMPL.set_paused(**kw)
 
 
 async def search_tasks(**kw: Any) -> Any:

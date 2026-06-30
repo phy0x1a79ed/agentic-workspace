@@ -350,6 +350,114 @@ async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Config contracts — aggregate every opted-in service contract + the gateway's
+# own global slot into one settings surface; route writes back to the owner.
+# ---------------------------------------------------------------------------
+
+_GLOBAL_KEY = "gateway"
+
+
+def _global_contract() -> dict[str, Any]:
+    """The gateway's own global config slot.
+
+    Intentionally empty for now (no global settings are defined yet). When a
+    global setting is chosen, declare it in a Pydantic model here and persist via
+    ``awm.persistence.config_service``'s KV — the aggregator + settings page
+    already render whatever schema this returns, so only this function changes.
+    """
+    return {
+        "key": _GLOBAL_KEY,
+        "title": "Gateway (global)",
+        "schema": {"type": "object", "title": "GlobalSettings", "properties": {}},
+        "values": {},
+        "unavailable": False,
+    }
+
+
+async def _op_config_contracts() -> dict[str, Any]:
+    """Every opted-in config contract + live values, for the settings page.
+
+    Walks the hub registry: a service whose ``ready.api`` carries a ``config``
+    block has opted in (the default-off marker). Its live values come from an RPC
+    ``config_get`` (the service persists them locally); a registered-but-down
+    service degrades to ``unavailable`` rather than failing the whole list — its
+    schema still shows from the manifest. The gateway's own global slot is always
+    appended.
+    """
+    from awm.gateway.hub import rpc
+    from awm.gateway.hub.registry import get_registry
+
+    registry = get_registry()
+    out: list[dict[str, Any]] = []
+    for rec in await registry.list():
+        if rec.kind != "service":
+            continue
+        cfg = (rec.api or {}).get("config")
+        if not cfg:
+            continue  # opted out — the default for every current service.
+        entry: dict[str, Any] = {
+            "key": rec.name,
+            "title": cfg.get("title", rec.name),
+            "schema": cfg.get("schema", {}),
+            "values": None,
+            "unavailable": True,
+        }
+        ch = rpc.get_control(rec.service_id)
+        if ch is not None:
+            try:
+                got = await ch.call("config_get", {})
+                if isinstance(got, dict):
+                    entry["title"] = got.get("title", entry["title"])
+                    entry["schema"] = got.get("schema", entry["schema"])
+                    entry["values"] = got.get("values", {})
+                    entry["unavailable"] = False
+            except Exception:  # noqa: BLE001 — RpcError / timeout / closed channel
+                pass  # leave it as unavailable with the manifest schema.
+        out.append(entry)
+    out.append(_global_contract())
+    return {"contracts": out}
+
+
+class ConfigSetRequest(BaseModel):
+    """Body for ``config set`` — write one contract's values to its owner."""
+
+    key: str
+    values: dict[str, Any] = {}
+
+
+async def _op_config_set(req: ConfigSetRequest) -> dict[str, Any]:
+    """Persist a contract's values to its owning registrant.
+
+    Routes to the named service's ``config_set`` over RPC (the service validates
+    + persists locally), or to the gateway global slot when ``key`` is the global
+    slot. Returns the saved contract entry. ``FileNotFoundError`` (→ 404) for an
+    unknown key; ``RuntimeError`` (→ 500) when the owning service is down.
+    """
+    from awm.gateway.hub import rpc
+    from awm.gateway.hub.registry import get_registry
+
+    if req.key == _GLOBAL_KEY:
+        return _global_contract()  # no global settings to persist yet.
+
+    registry = get_registry()
+    rec = registry.get_by_name("service", req.key)
+    if rec is None:
+        raise FileNotFoundError(f"unknown config contract: {req.key}")
+    if not (rec.api or {}).get("config"):
+        raise ValueError(f"service {req.key!r} has no config contract")
+    ch = rpc.get_control(rec.service_id)
+    if ch is None:
+        raise RuntimeError(f"service {req.key!r} control channel not open")
+    saved = await ch.call("config_set", {"values": req.values or {}})
+    entry: dict[str, Any] = {"key": req.key, "unavailable": False}
+    if isinstance(saved, dict):
+        entry["title"] = saved.get("title", req.key)
+        entry["schema"] = saved.get("schema", {})
+        entry["values"] = saved.get("values", {})
+    return entry
+
+
+# ---------------------------------------------------------------------------
 # Operation registry — one entry per migratable control op.
 # ---------------------------------------------------------------------------
 
@@ -479,5 +587,32 @@ GATEWAY_OPERATIONS: list[Operation] = [
             description="List the orphaned hub_adapters without killing them.",
         )],
         surfaces=_CLI,
+    ),
+    # --- config contracts (settings page) ---------------------------------
+    Operation(
+        name="config_contracts",
+        description="List every opted-in service config contract + live values "
+                    "(plus the gateway global slot) for the settings page.",
+        service_func=_op_config_contracts,
+        http_method="GET", http_path="/config/contracts",
+        cli_group="config", cli_command="contracts",
+        output=JsonOutput(), surfaces=_CLI,
+    ),
+    Operation(
+        name="config_set",
+        description="Persist a config contract's values to its owning service "
+                    "(or the gateway global slot).",
+        service_func=_op_config_set,
+        http_method="POST", http_path="/config/set",
+        cli_group="config", cli_command="set",
+        output=JsonOutput(),
+        request_model=ConfigSetRequest,
+        params=[
+            Param(name="key", type="string", required=True,
+                  description="Contract key: a service name, or 'gateway'."),
+            Param(name="values", type="object", required=False,
+                  description="Field values to persist (full object)."),
+        ],
+        surfaces=_MCP_HTTP,
     ),
 ]

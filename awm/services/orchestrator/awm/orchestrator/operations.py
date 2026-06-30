@@ -27,6 +27,7 @@ slug — wired to the workspace service at integration.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from typing import Any, Callable
@@ -35,6 +36,32 @@ from awm.orchestrator import dispatch, kernel
 from awm.orchestrator.dao import PLAN_CONTRACT, OrchestratorDAO, init
 
 log = logging.getLogger("awm.orchestrator.operations")
+
+
+def _parse_tags(raw: Any) -> list[str]:
+    """Decode the ``tags`` column (a JSON array string) to a list of strings.
+
+    Tolerant of legacy NULL / empty / malformed values — returns ``[]``."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    try:
+        val = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return [str(t) for t in val] if isinstance(val, list) else []
+
+
+def _encode_tags(tags: Any) -> str:
+    """Encode a tags value (list or single string) to the stored JSON array."""
+    if tags is None:
+        items: list[str] = []
+    elif isinstance(tags, str):
+        items = [tags]
+    else:
+        items = [str(t) for t in tags]
+    return json.dumps(items)
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +322,12 @@ def orch_node_open(args: dict[str, Any]) -> dict[str, Any]:
         # (re)dispatch (the workspace symlink is idempotent).
         _attach_scopes(dao, task_id, repos, conn=conn)
         # Attended + a pre-minted workspace slug (so it is returned non-null and
-        # the worker placement reuses it).
+        # the worker placement reuses it). Born ``paused`` — the sticky flag keeps
+        # the supervisor out so a button-created node idles for the human's first
+        # turn instead of being auto-progressed.
         workspace_slug = f"orch-{task_id[:8]}"
-        dao.update_task(task_id, attached=1, workspace_slug=workspace_slug,
-                        conn=conn)
+        dao.update_task(task_id, attached=1, paused=1,
+                        workspace_slug=workspace_slug, conn=conn)
         dao.add_attempt_memory(task_id, "created", reason_type="attended-open",
                                conn=conn)
 
@@ -334,10 +363,11 @@ def orch_status(args: dict[str, Any]) -> dict[str, Any]:
         "complete": complete,
         "escalations": escalations,
         "tasks": [
-            {"task_id": t["id"], "goal": t["goal"], "state": t["state"],
+            {"task_id": t["id"], "goal": t["goal"], "title": t["title"],
+             "tags": _parse_tags(t["tags"]), "state": t["state"],
              "is_root": bool(t["is_root"]), "workspace_slug": t["workspace_slug"],
              "agent_ref": t["agent_ref"], "mode": t["mode"],
-             "attached": bool(t["attached"])}
+             "attached": bool(t["attached"]), "paused": bool(t["paused"])}
             for t in tasks
         ],
     }
@@ -376,10 +406,11 @@ def orch_dag(args: dict[str, Any]) -> dict[str, Any]:
     return {
         "root_id": root["id"] if root else None,
         "tasks": [
-            {"task_id": t["id"], "goal": t["goal"], "state": t["state"],
+            {"task_id": t["id"], "goal": t["goal"], "title": t["title"],
+             "tags": _parse_tags(t["tags"]), "state": t["state"],
              "is_root": bool(t["is_root"]), "mode": t["mode"],
              "workspace_slug": t["workspace_slug"], "agent_ref": t["agent_ref"],
-             "attached": bool(t["attached"]),
+             "attached": bool(t["attached"]), "paused": bool(t["paused"]),
              "created_at": t["created_at"], "updated_at": t["updated_at"]}
             for t in tasks
         ],
@@ -397,6 +428,57 @@ def orch_dag(args: dict[str, Any]) -> dict[str, Any]:
             for e in edges
         ],
     }
+
+
+def orch_set_title(args: dict[str, Any]) -> dict[str, Any]:
+    """Set a task's human title (the headline shown above its goal).
+
+    Public, no identity — this is the user's UI editing the title directly. The
+    agent-gated counterpart (``set_title``) is the worker writing it while
+    attached.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    title = str(args.get("title", ""))
+    dao.update_task(task["id"], title=title)
+    return {"ok": True, "task_id": task["id"], "title": title}
+
+
+def orch_set_tags(args: dict[str, Any]) -> dict[str, Any]:
+    """Set a task's free-text tags (a list; searchable in the UI).
+
+    Public, no identity. ``tags`` is a list of strings (a bare string is wrapped).
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    encoded = _encode_tags(args.get("tags"))
+    dao.update_task(task["id"], tags=encoded)
+    return {"ok": True, "task_id": task["id"], "tags": json.loads(encoded)}
+
+
+def orch_set_paused(args: dict[str, Any]) -> dict[str, Any]:
+    """Set a task's sticky ``paused`` flag (durable; survives WS detach).
+
+    Public, no identity — the durable mirror the agents service writes on the
+    user's behalf (and the UI's direct fallback). The agents-side ``set_paused``
+    also flips the live placement's in-memory flag so the supervisor sees it at
+    once; this op is the persistence so it shows in ``orch_dag`` and survives a
+    redispatch.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    paused = 1 if args.get("paused") else 0
+    dao.update_task(task["id"], paused=paused)
+    return {"ok": True, "task_id": task["id"], "paused": bool(paused)}
 
 
 # ---------------------------------------------------------------------------
@@ -713,6 +795,47 @@ def set_attached(args: dict[str, Any]) -> dict[str, Any]:
     attached = 1 if args.get("attached") else 0
     dao.update_task(task["id"], attached=attached)
     return {"ok": True, "task_id": task["id"], "attached": bool(attached)}
+
+
+def set_title(args: dict[str, Any]) -> dict[str, Any]:
+    """The placed agent sets its task's title — **only while attached**.
+
+    Agent-gated (``_verify_agent`` pins the caller to its placement) and gated on
+    ``attached``: the worker may curate the title/tags solely while a human has
+    the chat open (the "only while connected" rule). Rejected otherwise; the user
+    edits via the public ``orch_set_title`` any time.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if not task["attached"]:
+        return {"ok": False, "error": "agent may set the title only while the "
+                                      "task is attached (a human connected)"}
+    title = str(args.get("title", ""))
+    dao.update_task(task["id"], title=title)
+    return {"ok": True, "task_id": task["id"], "title": title}
+
+
+def set_tags(args: dict[str, Any]) -> dict[str, Any]:
+    """The placed agent sets its task's tags — **only while attached**.
+
+    The tags counterpart to :func:`set_title`; same agent + attached gate.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if not task["attached"]:
+        return {"ok": False, "error": "agent may set tags only while the task "
+                                      "is attached (a human connected)"}
+    encoded = _encode_tags(args.get("tags"))
+    dao.update_task(task["id"], tags=encoded)
+    return {"ok": True, "task_id": task["id"], "tags": json.loads(encoded)}
 
 
 # ---------------------------------------------------------------------------
