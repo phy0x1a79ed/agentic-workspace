@@ -344,43 +344,6 @@ class TestMiraConnectorDownload:
             await c.close()
 
 
-class TestMiraConnectorHistory:
-    async def test_history_maps_and_reverses(self, daemon):
-        # daemon returns newest-first; connector must yield oldest-first.
-        daemon.history_msgs = [
-            {"platform": "slack", "channel_id": "C1", "channel_name": "general",
-             "sender_id": "U2", "sender_name": "bob", "message_id": "9.2",
-             "ts": "9.2", "text": "newer", "thread_id": "", "marker": "9.2"},
-            {"platform": "slack", "channel_id": "C1", "channel_name": "general",
-             "sender_id": "U1", "sender_name": "amy", "message_id": "9.1",
-             "ts": "9.1", "text": "older", "thread_id": "", "marker": "9.1"},
-        ]
-        c = _conn(daemon, platform="slack")
-        try:
-            msgs = await c.history("C1", limit=10, before="9.5")
-            assert [m.text for m in msgs] == ["older", "newer"]  # oldest-first
-            assert msgs[0].sender_name == "amy" and msgs[0].channel_id == "C1"
-            assert msgs[0].account == "slack-mira" and msgs[0].platform == "slack"
-            # channel/limit/before all reached the daemon as query params.
-            platform, query = daemon.history_calls[-1]
-            assert platform == "slack"
-            assert query["channel"] == "C1"
-            assert query["limit"] == "10"
-            assert query["before"] == "9.5"
-        finally:
-            await c.close()
-
-    async def test_history_omits_before_when_absent(self, daemon):
-        daemon.history_msgs = []
-        c = _conn(daemon, platform="slack")
-        try:
-            await c.history("C1", limit=5)
-            _platform, query = daemon.history_calls[-1]
-            assert "before" not in query
-        finally:
-            await c.close()
-
-
 class TestMiraConnectorInbound:
     async def test_ws_frame_forwarded_with_filtering(self, daemon):
         received = []

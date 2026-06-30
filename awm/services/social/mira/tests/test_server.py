@@ -316,3 +316,130 @@ class TestDownloadEndpoint:
         await api._h_download(
             _MsgReq("slack", {"channel": "C1", "message_id": "9.2"}))
         assert drv.last_download["idx"] is None
+
+
+# --------------------------------------------------------------------------- #
+# cloud file-store (fs) routes                                                 #
+# --------------------------------------------------------------------------- #
+
+import json as _json
+
+
+class _FsReq:
+    """Minimal request stand-in for the fs handlers (match_info/query/json)."""
+
+    def __init__(self, name, query=None, body=None):
+        self.match_info = {"name": name}
+        self.query = query or {}
+        self._body = body
+
+    async def json(self):
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+def _payload(resp):
+    return _json.loads(resp.body)
+
+
+class _FakeStorage:
+    def __init__(self):
+        self.calls = []
+
+    async def ls(self, path):
+        self.calls.append(("ls", path))
+        return [{"name": "a.txt", "path": path + "/a.txt", "is_dir": False}]
+
+    async def stat(self, path):
+        self.calls.append(("stat", path))
+        return {"name": "a.txt", "path": path, "is_dir": False}
+
+    async def get(self, path):
+        self.calls.append(("get", path))
+        return {"filename": "a.txt", "mime": "text/plain", "b64": "aGk="}
+
+    async def put(self, path, b64, mime=None):
+        self.calls.append(("put", path, b64, mime))
+        return {"name": "a.txt", "path": path, "is_dir": False}
+
+    async def rm(self, path):
+        self.calls.append(("rm", path))
+
+    async def search(self, query, limit, root=None):
+        self.calls.append(("search", query, limit, root))
+        return [{"name": "hit.txt", "path": "/r/hit.txt", "is_dir": False}]
+
+
+def _api_with_storage():
+    api = MiraAPI("http://x", [], "secret", storage=["onedrive"])
+    fake = _FakeStorage()
+    api._storage["onedrive"] = fake
+    return api, fake
+
+
+class TestFsRoutes:
+    async def test_ls(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_ls(_FsReq("onedrive", {"path": "/r/sub"}))
+        assert resp.status == 200
+        assert _payload(resp)["entries"][0]["name"] == "a.txt"
+        assert fake.calls[-1] == ("ls", "/r/sub")
+
+    async def test_unknown_storage_404(self):
+        from aiohttp import web
+        api, _ = _api_with_storage()
+        with pytest.raises(web.HTTPNotFound):
+            await api._h_fs_ls(_FsReq("nope", {"path": "/r"}))
+
+    async def test_get_requires_path(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_get(_FsReq("onedrive", {}))
+        assert resp.status == 400
+
+    async def test_get_passthrough(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_get(_FsReq("onedrive", {"path": "/r/a.txt"}))
+        assert _payload(resp)["b64"] == "aGk="
+        assert fake.calls[-1] == ("get", "/r/a.txt")
+
+    async def test_put(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_put(_FsReq(
+            "onedrive", body={"path": "/r/up.bin", "b64": "AAEC",
+                              "mime": "application/octet-stream"}))
+        assert resp.status == 200
+        assert fake.calls[-1] == ("put", "/r/up.bin", "AAEC",
+                                  "application/octet-stream")
+
+    async def test_put_requires_path_and_b64(self):
+        api, _ = _api_with_storage()
+        resp = await api._h_fs_put(_FsReq("onedrive", body={"path": "/r/x"}))
+        assert resp.status == 400
+
+    async def test_rm(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_rm(_FsReq("onedrive", body={"path": "/r/old"}))
+        assert _payload(resp)["ok"] is True
+        assert fake.calls[-1] == ("rm", "/r/old")
+
+    async def test_search_threads_root(self):
+        api, fake = _api_with_storage()
+        resp = await api._h_fs_search(_FsReq(
+            "onedrive", {"query": "hit", "limit": "10", "root": "/r"}))
+        assert _payload(resp)["entries"][0]["name"] == "hit.txt"
+        assert fake.calls[-1] == ("search", "hit", 10, "/r")
+
+    async def test_health_includes_storage(self):
+        class _DeadPage:
+            target_url = "https://x.sharepoint.com/teams/x"
+
+            async def healthy(self):
+                return False
+
+        api, fake = _api_with_storage()
+        fake.page = _DeadPage()
+        resp = await api._h_health(_FsReq("onedrive"))
+        body = _payload(resp)
+        assert "onedrive" in body["storage"]
+        assert body["storage"]["onedrive"]["healthy"] is False

@@ -115,6 +115,65 @@ and require the mira host to be running the updated daemon
 images resolve in-session, but SharePoint-hosted files may need separate auth and
 are skipped rather than erroring the whole call.
 
+## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
+
+Beyond messaging, the service can give awm full **file** access to cloud drives
+through a separate **buckets** surface (it is not a messaging connector). Each
+`[bucket.<name>]` section in `social.toml` configures one store; the verbs are
+`social_buckets` (list configured buckets) and `social_bucket_ls / get / put /
+rm / search`. Paths are POSIX-style and **relative to the bucket's `root`**
+(omit `path`, or pass `""`, for the root). Downloads land in a system temp dir
+(outside the workspace) and return paths; `put` reads a local `src` file — bytes
+never inline into the RPC.
+
+```toml
+[bucket.gdrive-phyber]          # Google Drive via an OAuth2 refresh token.
+kind = "google_drive"
+client_id = "....apps.googleusercontent.com"
+client_secret_file = "gdrive.secret"   # or inline client_secret = "..."
+refresh_token_file = "gdrive-phyber.token"   # or inline refresh_token = "..."
+# root = "<drive-folder-id>"    # optional: scope to one Drive folder (default: whole drive)
+
+[bucket.onedrive-ubc]           # UBC SharePoint, via the mira session (see below).
+kind = "onedrive"
+source = "mira"                 # OneDrive is reachable ONLY through the mira daemon
+site = "https://ubcca.sharepoint.com"
+root = "/teams/ubcMICB-gr-HallamLab/Shared Documents/Hallam_Lab_roadmaps/Tony-L_-roadmap-_"
+```
+
+**Google Drive (OAuth2).** A Google App Password (the Gmail path) cannot reach
+Drive, so a bucket needs its own OAuth2 client. One-time, in the Google Cloud
+console: create a project, enable the **Drive API**, configure the OAuth consent
+screen (add the account as a test user), and create a **Desktop app** OAuth
+client. Then run the consent helper **once per account**:
+
+    python scripts/gdrive_auth.py --client-secrets /path/to/client_secret.json --bucket-name gdrive-phyber
+
+It prints a `refresh_token` (and a ready TOML snippet). Paste the
+`client_id`/`client_secret`/`refresh_token` into the section above (secrets
+prefer `*_file` references to a gitignored file). The scope is the **full
+`drive` scope** — read, overwrite, *and delete* across the whole account — so
+treat the refresh token like a password. `social_bucket_search` matches file
+names across the whole drive (Drive query can't scope a name search to a
+sub-tree); Google-native docs are exported on `get` (Docs→pdf, Sheets→csv).
+
+**OneDrive / SharePoint (via mira).** The UBC student account can't mint an
+offline OAuth token without a Microsoft app registration + tenant admin consent,
+so this reuses the **mira** pattern (the same host that drives Teams/Slack): the
+mira daemon keeps a logged-in `*.sharepoint.com` tab in Opera and drives the
+SharePoint REST API in-page over CDP, same-origin with the session cookie. The
+bucket here is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It
+requires the `[mira]` block (already configured for Teams/Slack) and the
+redeployed daemon with `MIRA_STORAGE=onedrive` plus a logged-in SharePoint tab —
+see `mira/README.md`. The `root` is the document library's **server-relative
+path** (decode `%20` etc. from the share URL). Personal OneDrive differs only by
+host (`<tenant>-my.sharepoint.com`) + root path. Writes use the SharePoint
+request digest automatically.
+
+The Google libraries (`google-api-python-client`, `google-auth`,
+`google-auth-oauthlib`) are declared deps, imported lazily — the service still
+boots without them; only `google_drive` buckets need them.
+
 ## Run
 
 You never invoke the service by hand in normal operation. The gateway discovers

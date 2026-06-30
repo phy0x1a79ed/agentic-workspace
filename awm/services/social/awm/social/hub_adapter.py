@@ -25,6 +25,7 @@ from typing import Any
 
 from awm import config
 from awm.gatewayclient import ServiceAdapter
+from awm.social import buckets as buckets_mod
 from awm.social import config as social_config
 from awm.social import connectors
 from awm.social.attachments import write_attachments
@@ -38,6 +39,10 @@ log = logging.getLogger("awm.social.hub_adapter")
 _adapter: ServiceAdapter | None = None
 _connectors: dict[str, connectors.Connector] = {}
 _accounts: dict[str, social_config.AccountConfig] = {}
+# Cloud file-store backends, keyed by bucket name. Plain request/response
+# objects (no live socket), so unlike connectors they get no background task.
+_buckets: dict[str, buckets_mod.Bucket] = {}
+_bucket_cfgs: dict[str, social_config.BucketConfig] = {}
 _dao = SocialDAO()
 
 # Bounded in-memory dedupe of redelivered inbound events, keyed by
@@ -211,61 +216,6 @@ async def _h_download_attachments(args: dict) -> dict:
     return {"files": written, "count": len(written), "dir": out_dir}
 
 
-async def _h_history(args: dict) -> dict:
-    """Fetch existing messages from a channel via its connector + persist them.
-
-    Pulls messages that already exist on the platform (including ones sent before
-    the service came up), persists each through the same dedupe path as live
-    inbound (so a re-fetch adds nothing new), and returns the stored rows. The
-    persisted messages are then visible to ``social_messages`` and
-    ``social_search``.
-    """
-    account = args["account"]
-    conn = _connectors.get(account)
-    if conn is None:
-        raise RuntimeError(
-            f"account {account!r} is not configured or not connected")
-    msgs = await conn.history(
-        args["channel"],
-        limit=int(args.get("limit", 50)),
-        before=args.get("before") or None,
-    )
-    stored, new = [], 0
-    for m in msgs:
-        awm_user = _dao.lookup(m.platform, m.sender_id) or ""
-        row = _dao.record_message(
-            account=m.account,
-            platform=m.platform,
-            direction="in",
-            channel_id=m.channel_id,
-            channel_name=m.channel_name,
-            thread_id=m.thread_id,
-            sender_id=m.sender_id,
-            sender_name=m.sender_name,
-            awm_user=awm_user,
-            text=m.text,
-            ts=m.ts,
-            message_id=m.message_id,
-        )
-        if row is not None:
-            new += 1
-            stored.append(row)
-        else:
-            stored.append({"deduped": True, "message_id": m.message_id,
-                           "text": m.text, "ts": m.ts})
-    return {"messages": stored, "fetched": len(msgs), "new": new}
-
-
-def _h_search(args: dict) -> dict:
-    return {"messages": _dao.search_messages(
-        query=args["query"],
-        account=args.get("account"),
-        platform=args.get("platform"),
-        channel=args.get("channel"),
-        limit=args.get("limit", 50),
-    )}
-
-
 def _h_list_operators(args: dict) -> dict:
     return {"operators": _dao.list_operators(args.get("platform"))}
 
@@ -283,6 +233,75 @@ def _h_remove_operator(args: dict) -> dict:
 def _h_lookup(args: dict) -> dict:
     return {"awm_user": _dao.lookup(
         args["platform"], args["platform_user_id"])}
+
+
+# -- bucket (cloud file store) handlers -------------------------------------
+
+def _bucket(name: str) -> buckets_mod.Bucket:
+    b = _buckets.get(name)
+    if b is None:
+        raise RuntimeError(
+            f"bucket {name!r} is not configured or failed to build")
+    return b
+
+
+def _entry_to_dict(e: buckets_mod.Entry) -> dict:
+    return {"name": e.name, "path": e.path, "is_dir": e.is_dir,
+            "size": e.size, "mime": e.mime, "modified": e.modified, "id": e.id}
+
+
+def _h_buckets(args: dict) -> dict:
+    """List configured buckets with kind + live status."""
+    out = []
+    for name, cfg in _bucket_cfgs.items():
+        out.append({
+            "name": name,
+            "kind": cfg.kind,
+            "root": cfg.root,
+            "live": name in _buckets,
+        })
+    return {"buckets": out}
+
+
+async def _h_bucket_ls(args: dict) -> dict:
+    entries = await _bucket(args["bucket"]).ls(args.get("path", "") or "")
+    return {"entries": [_entry_to_dict(e) for e in entries],
+            "count": len(entries)}
+
+
+async def _h_bucket_get(args: dict) -> dict:
+    """Download one file to a system temp dir (outside AWM_DIR) and return its
+    path — reuses the attachment sink so large files never inline into the RPC."""
+    filename, mime, data = await _bucket(args["bucket"]).get(args["path"])
+    written = write_attachments([(filename, mime, data)])
+    out_dir = os.path.dirname(written[0]["path"]) if written else ""
+    return {"files": written, "count": len(written), "dir": out_dir}
+
+
+async def _h_bucket_put(args: dict) -> dict:
+    """Upload a local file's bytes to ``path`` in the bucket (create/overwrite).
+
+    The source is a local filesystem path (``src``) the service reads — bytes are
+    never inlined into the RPC payload.
+    """
+    src = args["src"]
+    with open(src, "rb") as fh:
+        data = fh.read()
+    entry = await _bucket(args["bucket"]).put(
+        args["path"], data, mime=args.get("mime") or None)
+    return {"entry": _entry_to_dict(entry)}
+
+
+async def _h_bucket_rm(args: dict) -> dict:
+    await _bucket(args["bucket"]).rm(args["path"])
+    return {"ok": True, "path": args["path"]}
+
+
+async def _h_bucket_search(args: dict) -> dict:
+    entries = await _bucket(args["bucket"]).search(
+        args["query"], limit=int(args.get("limit", 50)))
+    return {"entries": [_entry_to_dict(e) for e in entries],
+            "count": len(entries)}
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -339,31 +358,6 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "channel", "type": "string", "required": True},
                 {"name": "message_id", "type": "string", "required": True},
                 {"name": "idx", "type": "number", "required": False},
-            ],
-        },
-        {
-            "name": "history",
-            "tool": "social_history",
-            "description": "Fetch a channel's existing messages via its connector "
-                           "(incl. ones from before the service started), persist "
-                           "them, and return them. `before` pages backwards.",
-            "params": [
-                {"name": "account", "type": "string", "required": True},
-                {"name": "channel", "type": "string", "required": True},
-                {"name": "limit", "type": "number", "required": False},
-                {"name": "before", "type": "string", "required": False},
-            ],
-        },
-        {
-            "name": "search",
-            "tool": "social_search",
-            "description": "Full-text (substring) search over stored messages.",
-            "params": [
-                {"name": "query", "type": "string", "required": True},
-                {"name": "account", "type": "string", "required": False},
-                {"name": "platform", "type": "string", "required": False},
-                {"name": "channel", "type": "string", "required": False},
-                {"name": "limit", "type": "number", "required": False},
             ],
         },
         {
@@ -429,6 +423,72 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "platform_user_id", "type": "string", "required": True},
             ],
         },
+        {
+            "name": "buckets",
+            "tool": "social_buckets",
+            "description": "List configured cloud file-store buckets (Google "
+                           "Drive, OneDrive/SharePoint) with kind, root, and live "
+                           "status.",
+        },
+        {
+            "name": "bucket_ls",
+            "tool": "social_bucket_ls",
+            "description": "List the immediate children of a folder in a bucket. "
+                           "`path` is relative to the bucket root (omit for root). "
+                           "Returns entries with name, path, is_dir, size, mime.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_get",
+            "tool": "social_bucket_get",
+            "description": "Download one file from a bucket to a system temp dir "
+                           "(outside the awm workspace) and return its absolute "
+                           "path + metadata. Google-native docs are exported "
+                           "(Docs→pdf, Sheets→csv).",
+            "timeout": 300,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_put",
+            "tool": "social_bucket_put",
+            "description": "Upload a local file (`src` = a filesystem path) to "
+                           "`path` in a bucket, creating or overwriting it. "
+                           "Returns the resulting entry.",
+            "timeout": 300,
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+                {"name": "src", "type": "string", "required": True},
+                {"name": "mime", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "bucket_rm",
+            "tool": "social_bucket_rm",
+            "description": "Delete the file/folder at `path` in a bucket.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "path", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "bucket_search",
+            "tool": "social_bucket_search",
+            "description": "Search a bucket for files matching `query` (Google "
+                           "Drive: name match across the drive; OneDrive: "
+                           "SharePoint search). Returns matching entries.",
+            "params": [
+                {"name": "bucket", "type": "string", "required": True},
+                {"name": "query", "type": "string", "required": True},
+                {"name": "limit", "type": "number", "required": False},
+            ],
+        },
     ],
     "emitters": [{"topic": "message"}, {"topic": "command"}],
     "sessions": [],
@@ -446,6 +506,12 @@ HANDLERS = {
     "add_operator": _h_add_operator,
     "remove_operator": _h_remove_operator,
     "lookup": _h_lookup,
+    "buckets": _h_buckets,
+    "bucket_ls": _h_bucket_ls,
+    "bucket_get": _h_bucket_get,
+    "bucket_put": _h_bucket_put,
+    "bucket_rm": _h_bucket_rm,
+    "bucket_search": _h_bucket_search,
 }
 
 
@@ -486,6 +552,23 @@ def _on_start() -> None:
         loop.create_task(conn.start())
         log.info("account %s (%s) connector launched",
                  cfg.name, cfg.platform)
+
+    # Cloud file-store buckets are plain request/response objects — built eagerly
+    # but with no background task. A malformed [bucket] section is logged and
+    # skipped, fully isolated from the account path above.
+    try:
+        bucket_cfgs = social_config.load_buckets()
+    except social_config.SocialConfigError as exc:
+        log.error("social.toml [bucket] invalid; no buckets loaded: %s", exc)
+        bucket_cfgs = []
+    for bcfg in bucket_cfgs:
+        _bucket_cfgs[bcfg.name] = bcfg
+        try:
+            _buckets[bcfg.name] = buckets_mod.build(bcfg)
+        except (ValueError, RuntimeError) as exc:
+            log.error("cannot build bucket %s: %s", bcfg.name, exc)
+            continue
+        log.info("bucket %s (%s) ready", bcfg.name, bcfg.kind)
 
 
 async def main() -> None:

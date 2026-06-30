@@ -276,3 +276,153 @@ source = "mira"
         from awm.social import connectors
         assert "teams" in cfg.KNOWN_PLATFORMS
         assert "teams" not in connectors.REGISTRY  # only reachable via mira
+
+
+class TestLoadBuckets:
+    def test_missing_file_returns_empty(self, tmp_path):
+        from awm.social import config as cfg
+        assert cfg.load_buckets(tmp_path / "absent.toml") == []
+
+    def test_no_bucket_table_returns_empty(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.discord-bot]
+platform = "discord"
+token = "t"
+""")
+        assert cfg.load_buckets(p) == []
+
+    def test_loads_google_drive_bucket(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.gdrive-phyber]
+kind = "google_drive"
+client_id = "cid.apps.googleusercontent.com"
+client_secret = "secret"
+refresh_token = "1//rt"
+root = "FOLDERID"
+""")
+        buckets = cfg.load_buckets(p)
+        assert [b.name for b in buckets] == ["gdrive-phyber"]
+        b = buckets[0]
+        assert b.kind == "google_drive" and b.client_id.endswith(".com")
+        assert b.client_secret == "secret" and b.refresh_token == "1//rt"
+        assert b.root == "FOLDERID"
+
+    def test_google_drive_secret_file(self, tmp_path):
+        from awm.social import config as cfg
+        (tmp_path / "rt").write_text("1//fromfile\n")
+        p = _write(tmp_path / "social.toml", """
+[bucket.g]
+kind = "google_drive"
+client_id = "cid"
+client_secret = "sec"
+refresh_token_file = "rt"
+""")
+        b = cfg.load_buckets(p)[0]
+        assert b.refresh_token == "1//fromfile"
+
+    def test_google_drive_requires_client_id(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.g]
+kind = "google_drive"
+client_secret = "sec"
+refresh_token = "rt"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)
+
+    def test_google_drive_requires_refresh_token(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.g]
+kind = "google_drive"
+client_id = "cid"
+client_secret = "sec"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)
+
+    def test_loads_onedrive_bucket_via_mira(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[mira]
+url = "https://172.16.0.24:7822"
+token = "miratok"
+verify_tls = false
+
+[bucket.onedrive-ubc]
+kind = "onedrive"
+source = "mira"
+site = "https://ubcca.sharepoint.com"
+root = "/teams/x/Shared Documents/Hallam"
+""")
+        b = cfg.load_buckets(p)[0]
+        assert b.kind == "onedrive" and b.source == "mira"
+        assert b.site == "https://ubcca.sharepoint.com"
+        assert b.root == "/teams/x/Shared Documents/Hallam"
+        assert b.mira_url == "https://172.16.0.24:7822"
+        assert b.mira_token == "miratok" and b.mira_verify_tls is False
+
+    def test_onedrive_requires_mira_source(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.o]
+kind = "onedrive"
+site = "https://x.sharepoint.com"
+root = "/teams/x"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)  # onedrive is mira-only → source = "mira" required
+
+    def test_onedrive_requires_site(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[mira]
+url = "https://h:7822"
+token = "t"
+
+[bucket.o]
+kind = "onedrive"
+source = "mira"
+root = "/teams/x"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)
+
+    def test_onedrive_mira_source_needs_mira_block(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.o]
+kind = "onedrive"
+source = "mira"
+site = "https://x.sharepoint.com"
+root = "/teams/x"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)  # source = "mira" but no [mira] block
+
+    def test_rejects_unknown_kind(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[bucket.x]
+kind = "dropbox"
+""")
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)
+
+    def test_malformed_bucket_does_not_break_accounts(self, tmp_path):
+        from awm.social import config as cfg
+        p = _write(tmp_path / "social.toml", """
+[account.discord-bot]
+platform = "discord"
+token = "t"
+
+[bucket.x]
+kind = "dropbox"
+""")
+        # accounts still load; only load_buckets raises on the bad section.
+        assert [a.name for a in cfg.load(p)] == ["discord-bot"]
+        with pytest.raises(cfg.SocialConfigError):
+            cfg.load_buckets(p)
