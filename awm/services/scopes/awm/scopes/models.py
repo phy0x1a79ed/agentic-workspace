@@ -51,6 +51,22 @@ class ScopeSyncRequest(BaseModel):
     from_branch: str | None = None
 
 
+class ScatterGatherResponse(BaseModel):
+    """Result of a batch fan-in (gather) or fan-out (scatter) merge.
+
+    ``results`` is one dict per peripheral, each
+    ``{scope, branch, result, detail}`` where ``result`` ∈
+    ``merged | up_to_date | conflict | skipped | error``. ``summary`` counts
+    the results by outcome.
+    """
+    project: str
+    hub: str
+    hub_branch: str
+    direction: str          # 'gather' (peripherals→hub) | 'scatter' (hub→peripherals)
+    results: list[dict]
+    summary: dict
+
+
 class ScopeInfo(BaseModel):
     project: str
     scope: str
