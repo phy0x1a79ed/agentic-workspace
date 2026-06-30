@@ -5,11 +5,6 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
 
     GET  /v1/health                      → per-platform target liveness
     GET  /v1/{platform}/identity         → who the session is logged in as
-<<<<<<< HEAD
-    GET  /v1/{platform}/channels         → channels/conversations visible
-    GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
-                                                           backwards; Slack only)
-=======
     GET  /v1/{platform}/channels[?include_dms=true]  → channels (or, with
                                                        include_dms, all im/mpim
                                                        conversations too)
@@ -19,7 +14,6 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
                                                         (Teams: best-effort scan)
     GET  /v1/{platform}/download?channel=&message_id=&idx=  → one message's
                                        attachments as [{filename,mime,b64}]
->>>>>>> feat/svc-social
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}

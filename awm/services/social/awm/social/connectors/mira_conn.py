@@ -126,11 +126,7 @@ class MiraConnector(Connector):
         resp = await self._get(f"/v1/{self.platform}/identity")
         return Identity(id=resp.get("id", ""), name=resp.get("name", ""))
 
-<<<<<<< HEAD
-    async def history(
-=======
     async def fetch(
->>>>>>> feat/svc-social
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         params: dict = {"channel": channel, "limit": limit}
@@ -140,8 +136,6 @@ class MiraConnector(Connector):
         msgs = resp.get("messages", [])  # daemon returns newest-first
         return [self._to_inbound(m) for m in reversed(msgs)]  # oldest->newest
 
-<<<<<<< HEAD
-=======
     async def search(
         self, query: str, *, limit: int = 50, channel: str | None = None
     ) -> list[InboundMessage]:
@@ -170,7 +164,6 @@ class MiraConnector(Connector):
             ))
         return out
 
->>>>>>> feat/svc-social
     # -- inbound (WebSocket push) ------------------------------------------
 
     async def start(self) -> None:
@@ -242,10 +235,7 @@ class MiraConnector(Connector):
             message_id=m.get("message_id", ""),
             ts=m.get("ts", ""),
             text=m.get("text", "") or "",
-<<<<<<< HEAD
-=======
             attachments=_to_attachments(m.get("attachments") or []),
->>>>>>> feat/svc-social
             raw=m,
         )
 
