@@ -14,10 +14,12 @@ Design notes (from the spike, graphify 0.9.1):
     sitter AST. As a belt-and-braces guarantee we also strip known LLM API-key
     env vars from the build subprocess, so a build can never make a paid call.
   - **Redirected output.** ``extract --out <dir>`` writes ``<dir>/graphify-out/``
-    (graph.json + manifest.json + an incremental ``cache/``), leaving the
-    scanned worktree untouched. Re-running a build is incremental via that
-    cache. Read commands (``query``, ``path``, ``explain``, ``affected``) take
-    ``--graph <dir>/graphify-out/graph.json`` and print plain text.
+    (graph.json + manifest.json + a ``cache/``), leaving the scanned worktree
+    untouched. Each build is a *full* build — ``_do_build`` wipes the prior
+    ``graphify-out/`` first, because ``extract``'s incremental mode is
+    destructive (see ``_do_build``). Read commands (``query``, ``path``,
+    ``explain``, ``affected``) take ``--graph <dir>/graphify-out/graph.json``
+    and print plain text.
   - **Single graph lock.** All operations that read or write graph.json hold
     ``_GRAPH_LOCK``, so a build subprocess rewriting the file can never race
     against a query subprocess reading it.
@@ -62,6 +64,16 @@ _LLM_KEY_VARS = (
 # Concurrent reads therefore serialize — acceptable for a dev tool; a
 # readers-writer lock is a future optimisation.
 _GRAPH_LOCK = threading.Lock()
+
+# Spurious "super-hub" labels to strip from the graph after each build, when
+# anchored to a shell script (see _prune_noise). ``graphify``'s AST pass turns a
+# shell env-var assignment like ``PATH=...`` in run.sh into a node, and every
+# Python file that references the name gets an edge into it — ``PATH`` alone
+# accrued 113 inbound edges, so BFS (query/path) routes shortest-paths through
+# it (``serve → … → PATH → create_session``). Deliberately narrow: only ``PATH``
+# today, leaving the smaller sibling env-var hubs (AWM_PORT, GIT_CONFIG_*, …) in
+# place. Widen by adding labels here.
+_NOISE_HUB_LABELS = frozenset({"PATH"})
 
 # (str(graph_json_path), mtime_float) → parsed graph data.
 # Keyed by mtime so a post-build re-read sees the new file automatically.
@@ -181,9 +193,64 @@ def is_stale(target: str | None = None) -> tuple[bool, int]:
     return changed > 0, changed
 
 
+def _prune_noise(out: Path) -> None:
+    """Strip spurious super-hub nodes from a freshly-built ``graph.json``.
+
+    Removes every node whose label is in :data:`_NOISE_HUB_LABELS` **and** whose
+    source file is a shell script (``.sh``), plus every edge incident to a
+    removed node. Anchoring on ``.sh`` keeps a legitimate Python ``PATH`` symbol
+    untouched — only the shell-env-var misattribution is dropped. See
+    :data:`_NOISE_HUB_LABELS` for why these nodes pollute traversals.
+
+    Operates on the on-disk ``graph.json`` that *every* verb consumes — the CLI
+    read-commands (query/path/affected) via ``--graph`` and the in-memory
+    find/refs via :func:`_load_graph` — so the fix covers all of them. Edges are
+    matched by node **id** (labels are ambiguous). ``hyperedges`` is empty under
+    ``--no-cluster`` so it needs no filtering; enabling clustering would require
+    extending this. Caller must hold ``_GRAPH_LOCK``.
+    """
+    gj = out / "graphify-out" / "graph.json"
+    if not gj.exists():
+        return
+    data = json.loads(gj.read_text())
+    drop_ids = {
+        n["id"]
+        for n in data.get("nodes", [])
+        if "id" in n
+        and n.get("label") in _NOISE_HUB_LABELS
+        and str(n.get("source_file", "")).endswith(".sh")
+    }
+    if not drop_ids:
+        return
+    data["nodes"] = [n for n in data.get("nodes", []) if n.get("id") not in drop_ids]
+    data["edges"] = [
+        e
+        for e in data.get("edges", [])
+        if e.get("source") not in drop_ids and e.get("target") not in drop_ids
+    ]
+    gj.write_text(json.dumps(data))
+
+
 def _do_build(tgt: Path) -> subprocess.CompletedProcess:
-    """Raw extract — caller must hold ``_GRAPH_LOCK``."""
+    """Raw full extract — caller must hold ``_GRAPH_LOCK``.
+
+    ``graphify extract`` is *incremental and destructive*: against an existing
+    ``graphify-out/`` (its ``manifest.json`` tracking per-file ast-hashes) it
+    re-processes only changed files and writes a ``graph.json`` containing **only
+    those** — silently dropping every unchanged file's nodes (a one-file edit
+    collapses a 4946-node graph to ~3). It does not merge into the prior graph.
+    So a rebuild-in-place would gut the graph rather than refresh it, defeating
+    the whole staleness/auto-rebuild trust layer. We force a full build by
+    removing the prior output dir first; a clean extract of the awm tree is only
+    ~2-3s, so the incremental cache buys nothing worth this correctness hole.
+
+    After a successful extract we :func:`_prune_noise` the graph in place to drop
+    spurious shell-env-var super-hubs (see that helper). The ``build()`` summary
+    echoes the raw CLI node count, which therefore reads one higher than the
+    pruned ``status()`` count — harmless, since ``status`` re-reads the file.
+    """
     out = out_dir_for(tgt)
+    shutil.rmtree(out / "graphify-out", ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     cmd = [graphify_bin(), "extract", str(tgt), "--no-cluster", "--out", str(out)]
     proc = subprocess.run(
@@ -192,6 +259,7 @@ def _do_build(tgt: Path) -> subprocess.CompletedProcess:
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or "unknown error"
         raise RuntimeError(f"graphify extract failed (rc={proc.returncode}): {detail}")
+    _prune_noise(out)
     return proc
 
 

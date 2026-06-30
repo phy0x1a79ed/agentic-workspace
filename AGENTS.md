@@ -146,7 +146,7 @@ Federation is gone — see git history for the deletion. No `/peer/*` routes, no
 
 ## Implementation file map
 
-The Service Hub section above carries the *external* contract; this maps each piece to the file that implements it if you're about to change it (modular tree under `awm/gateway/awm/gateway/`):
+The Service Hub section above carries the *external* contract; this maps each piece to the file that implements it if you're about to change it (modular tree under `awm/gateway/awm/gateway/`). When you need to locate something *not* mapped here — a symbol, its callers, the blast radius of a change — query the **`graphify` MCP tool** (`find`/`refs`/`query`/`affected`) before spawning an Explore agent; it's an AST graph of this tree (it indexes the deployed/release tree, so it lags uncommitted worktree edits). The map:
 
 - **Service discovery** — `hub/discovery.py` (filesystem scan of `awm/services/*` for `run.sh`; reads `.awm/services/enabled.json`).
 - **Registry overlay + kinds** — `hub/registry.py` (one `_stacks` dict per prefix; base + at most one live overlay via `replace_overlays` = last-connect-wins eviction, NOT LIFO stacking; `kind` Literal = `url` | `static` | `page` | `service`; `register_page`).
