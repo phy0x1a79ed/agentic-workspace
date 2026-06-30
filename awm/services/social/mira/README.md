@@ -41,9 +41,18 @@ It binds **`172.16.0.24:7822` only** (the awm-network interface — not
     GET  /v1/health                       per-platform CDP target liveness
     GET  /v1/{platform}/identity          who the session is logged in as
     GET  /v1/{platform}/channels          channels/conversations visible
-    GET  /v1/{platform}/messages?channel=&limit=   recent history
+    GET  /v1/{platform}/messages?channel=&limit=   recent history (+ attachments)
+    GET  /v1/{platform}/search?query=&limit=&channel=   native message search
+                                          (Teams: best-effort recent-message scan)
+    GET  /v1/{platform}/download?channel=&message_id=&idx=   one message's
+                                          attachments as [{filename,mime,b64}]
     POST /v1/{platform}/send  {channel,text,thread?}
     GET  /v1/events                       WS; pushes inbound {type:"message", …}
+
+Messages carry an `attachments` array (`idx, filename, mime, size, url, ref`);
+`/download` re-fetches the message in-session and returns the file bytes base64-
+encoded over the REST hop (Slack `url_private` with the `d` cookie; Teams hosted
+content — SharePoint-hosted files may need separate auth and are skipped).
 
 `{platform}` is `slack` or `teams`. The daemon polls each platform on mira (the
 **inbound watcher**) and pushes new messages to all WS clients, so awm-side

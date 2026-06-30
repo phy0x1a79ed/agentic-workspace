@@ -16,11 +16,31 @@ import asyncio
 import logging
 
 from awm.social.connectors.base import (
-    Account, Channel, Command, Connector, Identity, InboundMessage, OnCommand,
-    OnMessage,
+    Account, Attachment, Channel, Command, Connector, Identity, InboundMessage,
+    OnCommand, OnMessage,
 )
 
 log = logging.getLogger("awm.social.connectors.discord")
+
+
+def _attachments_of(message) -> list[Attachment]:  # noqa: ANN001
+    """Map a discord.py message's ``.attachments`` to normalised metadata.
+
+    Discord CDN urls are time-limited signed links, so ``url`` here is advisory
+    only — :meth:`DiscordConnector.download_attachments` re-fetches the message
+    and reads each file live rather than trusting a stored url.
+    """
+    out: list[Attachment] = []
+    for i, a in enumerate(getattr(message, "attachments", []) or []):
+        out.append(Attachment(
+            idx=i,
+            filename=getattr(a, "filename", "") or f"attachment-{i}",
+            mime=getattr(a, "content_type", "") or "",
+            size=int(getattr(a, "size", 0) or 0),
+            url=getattr(a, "url", "") or "",
+            ref={"id": str(getattr(a, "id", ""))},
+        ))
+    return out
 
 # Slash command exposed by the bot. Kept deliberately tiny — one command, used
 # by DMing the bot, that other services react to via the adapter's ``command``
@@ -87,6 +107,7 @@ class DiscordConnector(Connector):
                     message_id=str(message.id),
                     ts=message.created_at.isoformat() if message.created_at else "",
                     text=message.content or "",
+                    attachments=_attachments_of(message),
                 )
                 await self.on_message(inbound)
             except Exception as exc:  # noqa: BLE001 — one bad message never kills the loop
@@ -201,7 +222,15 @@ class DiscordConnector(Connector):
             "ts": sent.created_at.isoformat() if sent.created_at else "",
         }
 
-    async def history(
+    async def _resolve_channel(self, channel: str):
+        """Resolve a channel id to a discord.py channel object (cached or fetched)."""
+        target_id = int(channel)
+        target = self._client.get_channel(target_id)
+        if target is None:
+            target = await self._client.fetch_channel(target_id)
+        return target
+
+    async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
         import discord
@@ -209,10 +238,7 @@ class DiscordConnector(Connector):
         if self._client is None:
             raise RuntimeError(f"discord[{self.account.name}] not started")
         await self._wait_ready()
-        target_id = int(channel)
-        target = self._client.get_channel(target_id)
-        if target is None:
-            target = await self._client.fetch_channel(target_id)
+        target = await self._resolve_channel(channel)
         kwargs: dict = {"limit": limit}
         if before:
             kwargs["before"] = discord.Object(id=int(before))
@@ -229,9 +255,33 @@ class DiscordConnector(Connector):
                 message_id=str(message.id),
                 ts=message.created_at.isoformat() if message.created_at else "",
                 text=message.content or "",
+                attachments=_attachments_of(message),
             ))
         out.reverse()  # oldest->newest
         return out
+
+    async def download_attachments(
+        self, channel: str, message_id: str, *, idx: int | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        # No stored urls: re-fetch the message so the CDN links are fresh, then
+        # read each attachment's bytes in-session (discord.py signs the request).
+        if self._client is None:
+            raise RuntimeError(f"discord[{self.account.name}] not started")
+        await self._wait_ready()
+        target = await self._resolve_channel(channel)
+        message = await target.fetch_message(int(message_id))
+        out: list[tuple[str, str, bytes]] = []
+        for i, a in enumerate(getattr(message, "attachments", []) or []):
+            if idx is not None and i != idx:
+                continue
+            data = await a.read()
+            out.append((getattr(a, "filename", "") or f"attachment-{i}",
+                        getattr(a, "content_type", "") or "", data))
+        return out
+
+    # `search` is intentionally not implemented: a Discord *bot* token cannot
+    # use the user message-search endpoint, so the ABC default raises a clean
+    # "not supported" error. `fetch` covers per-channel history retrieval.
 
     async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
         import discord  # noqa: F401

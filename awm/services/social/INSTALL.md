@@ -74,32 +74,46 @@ marks your mail read). For `social_send`, `channel` is the recipient address and
 `thread` (optional) is an RFC822 `Message-ID` to reply into; a `Subject:` first
 line in the text sets the subject. UBC-webmail / WeChat later get their own path.
 
-## Reading history & DMs
+## Reading messages, searching & attachments
 
-Live receive only tails messages that arrive *after* connect. To reach existing
-messages — including ones from before the service came up — and DMs:
+The service keeps **no local message store** — the external platforms are the
+source of truth, and every read queries them live. (Live receive still only
+*emits* messages arriving after connect, for subscribers like the 2fa
+`/approve` flow; it never persists.) The read surface:
 
-- **`social_history account= channel= [limit=] [before=]`** fetches a channel's
-  existing messages via its connector, persists them through the same dedupe path
-  as live inbound, and returns them. They then show up in `social_messages` and
-  `social_search`. `before` pages backwards (Slack ts / connector cursor; Teams
-  has no usable cursor and ignores it).
+- **`social_fetch account= channel= [limit=] [before=]`** fetches a channel's
+  existing messages live from the platform (including ones from before the
+  service started), each with an `attachments` list (`idx`, `filename`, `mime`,
+  `size`, `url`). `before` pages backwards (Slack ts / connector cursor; Teams
+  has no usable cursor and ignores it). Nothing is stored.
+- **`social_search account= query= [channel=] [limit=]`** runs the platform's
+  **own** search live and returns matches with attachment metadata. Per platform:
+  Slack uses `search.messages` (needs a user token with `search:read` — the
+  session `xoxc` token has it; a `xoxb` bot token does not and surfaces a clean
+  error); Gmail uses IMAP `X-GM-RAW` (full Gmail query syntax: `from:`,
+  `has:attachment`, …) over *All Mail*; Teams is best-effort (no native chat
+  search, so a client-side scan of recent messages per conversation); a Discord
+  **bot** account cannot search at all — use `social_fetch`.
+- **`social_download_attachments account= channel= message_id= [idx=]`** pulls a
+  message's attachments to a **system temp dir outside the awm workspace**
+  (honoring `$TMPDIR`) and returns `{files:[{filename, mime, size, path}], dir}`.
+  It re-fetches the message live so signed/expiring urls are always fresh
+  (Discord CDN links, Slack `url_private`). `idx` optionally selects one
+  attachment. Returns paths, not bytes — large files never bloat the RPC payload
+  (the verb declares a generous 300s timeout for the download hop).
 - **`social_channels account= [include_dms=true]`** lists channels; with
   `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
   the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
 - **`social_open_dm account= user=`** resolves a platform user — by id, or by
   name where the platform supports a directory lookup (Slack `users.list`) — to a
-  DM channel and opens it, returning the channel id for use with `history`/`send`.
-- **`social_backfill account= [limit=] [include_dms=true]`** enumerates *every*
-  conversation the account can see (channels + DMs) and runs `history` over each,
-  so `social_search` covers the account's full reachable history. Conversations a
-  connector genuinely can't read (e.g. Teams `@thread.tacv2` team-channels, served
-  by a different backend than the ng.msg chat service) are reported per-row with
-  `ok: false` + the error, never silently dropped.
+  DM channel and opens it, returning the channel id for use with `fetch`/`send`.
 
-Slack and Teams run through the mira daemon; the DM/conversation enumeration and
-`open_dm` for those platforms live in `mira/mira_api/` and require the mira host
-to be running the updated daemon (`mira/install-mira.sh`).
+Slack and Teams run through the mira daemon; conversation enumeration, `open_dm`,
+`search`, and attachment `download` for those platforms live in `mira/mira_api/`
+and require the mira host to be running the updated daemon
+(`mira/install-mira.sh`). Teams attachment download is best-effort: hosted-content
+images resolve in-session, but SharePoint-hosted files may need separate auth and
+are skipped rather than erroring the whole call.
 
 ## Run
 

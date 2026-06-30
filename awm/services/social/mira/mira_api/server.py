@@ -10,6 +10,10 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
                                                        conversations too)
     GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
                                                            backwards; Slack only)
+    GET  /v1/{platform}/search?query=&limit=&channel=  → native message search
+                                                        (Teams: best-effort scan)
+    GET  /v1/{platform}/download?channel=&message_id=&idx=  → one message's
+                                       attachments as [{filename,mime,b64}]
     POST /v1/{platform}/send  {channel,text,thread?}
     POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
@@ -77,6 +81,8 @@ class MiraAPI:
         app.router.add_get("/v1/{platform}/identity", self._h_identity)
         app.router.add_get("/v1/{platform}/channels", self._h_channels)
         app.router.add_get("/v1/{platform}/messages", self._h_messages)
+        app.router.add_get("/v1/{platform}/search", self._h_search)
+        app.router.add_get("/v1/{platform}/download", self._h_download)
         app.router.add_post("/v1/{platform}/send", self._h_send)
         app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
         app.on_startup.append(self._on_startup)
@@ -177,6 +183,38 @@ class MiraAPI:
         try:
             msgs = await p.driver.fetch_messages(channel, None, limit, before=before)
             return web.json_response({"messages": msgs})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_search(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        query = request.query.get("query", "")
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+        limit = int(request.query.get("limit", "50") or 50)
+        channel = request.query.get("channel") or None
+        try:
+            msgs = await p.driver.search(query, limit, channel)
+            return web.json_response({"messages": msgs})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_download(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        channel = request.query.get("channel", "")
+        message_id = request.query.get("message_id", "")
+        if not channel or not message_id:
+            return web.json_response(
+                {"error": "channel and message_id are required"}, status=400)
+        idx_raw = request.query.get("idx")
+        idx = int(idx_raw) if idx_raw not in (None, "") else None
+        try:
+            files = await p.driver.download(channel, message_id, idx)
+            return web.json_response({"files": files})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 

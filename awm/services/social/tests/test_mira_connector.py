@@ -72,6 +72,10 @@ class _StubDaemon:
         self.history_msgs = []   # what /messages returns (newest-first)
         self.channels_calls = []  # (platform, query-dict) per /channels request
         self.open_dm_calls = []   # (platform, body-dict) per /open_dm request
+        self.search_calls = []   # (platform, query-dict) per /search request
+        self.search_msgs = []    # what /search returns
+        self.download_calls = []  # (platform, query-dict) per /download request
+        self.download_files = []  # what /download returns ([{filename,mime,b64}])
         self._runner = None
         self.base = ""
 
@@ -82,6 +86,8 @@ class _StubDaemon:
         app.router.add_get("/v1/{platform}/identity", self._identity)
         app.router.add_get("/v1/{platform}/channels", self._channels)
         app.router.add_get("/v1/{platform}/messages", self._messages)
+        app.router.add_get("/v1/{platform}/search", self._search)
+        app.router.add_get("/v1/{platform}/download", self._download)
         app.router.add_post("/v1/{platform}/send", self._send)
         app.router.add_post("/v1/{platform}/open_dm", self._open_dm)
         app.router.add_get("/v1/events", self._events)
@@ -120,6 +126,18 @@ class _StubDaemon:
         self.history_calls.append(
             (request.match_info["platform"], dict(request.query)))
         return web.json_response({"messages": self.history_msgs})
+
+    async def _search(self, request):
+        from aiohttp import web
+        self.search_calls.append(
+            (request.match_info["platform"], dict(request.query)))
+        return web.json_response({"messages": self.search_msgs})
+
+    async def _download(self, request):
+        from aiohttp import web
+        self.download_calls.append(
+            (request.match_info["platform"], dict(request.query)))
+        return web.json_response({"files": self.download_files})
 
     async def _send(self, request):
         from aiohttp import web
@@ -213,23 +231,30 @@ class TestMiraConnectorRest:
             await c.close()
 
 
-class TestMiraConnectorHistory:
-    async def test_history_maps_and_reverses(self, daemon):
+class TestMiraConnectorFetch:
+    async def test_fetch_maps_attachments_and_reverses(self, daemon):
         # daemon returns newest-first; connector must yield oldest-first.
         daemon.history_msgs = [
             {"platform": "slack", "channel_id": "C1", "channel_name": "general",
              "sender_id": "U2", "sender_name": "bob", "message_id": "9.2",
-             "ts": "9.2", "text": "newer", "thread_id": "", "marker": "9.2"},
+             "ts": "9.2", "text": "newer", "thread_id": "", "marker": "9.2",
+             "attachments": [{"idx": 0, "filename": "draft.docx",
+                              "mime": "application/x", "size": 42,
+                              "url": "https://files/...", "ref": {"id": "F1"}}]},
             {"platform": "slack", "channel_id": "C1", "channel_name": "general",
              "sender_id": "U1", "sender_name": "amy", "message_id": "9.1",
              "ts": "9.1", "text": "older", "thread_id": "", "marker": "9.1"},
         ]
         c = _conn(daemon, platform="slack")
         try:
-            msgs = await c.history("C1", limit=10, before="9.5")
+            msgs = await c.fetch("C1", limit=10, before="9.5")
             assert [m.text for m in msgs] == ["older", "newer"]  # oldest-first
             assert msgs[0].sender_name == "amy" and msgs[0].channel_id == "C1"
             assert msgs[0].account == "slack-mira" and msgs[0].platform == "slack"
+            # attachment metadata maps through onto the newer message.
+            att = msgs[1].attachments
+            assert len(att) == 1 and att[0].filename == "draft.docx"
+            assert att[0].size == 42 and att[0].ref == {"id": "F1"}
             # channel/limit/before all reached the daemon as query params.
             platform, query = daemon.history_calls[-1]
             assert platform == "slack"
@@ -239,13 +264,76 @@ class TestMiraConnectorHistory:
         finally:
             await c.close()
 
-    async def test_history_omits_before_when_absent(self, daemon):
+    async def test_fetch_omits_before_when_absent(self, daemon):
         daemon.history_msgs = []
         c = _conn(daemon, platform="slack")
         try:
-            await c.history("C1", limit=5)
+            await c.fetch("C1", limit=5)
             _platform, query = daemon.history_calls[-1]
             assert "before" not in query
+        finally:
+            await c.close()
+
+
+class TestMiraConnectorSearch:
+    async def test_search_maps_and_threads_params(self, daemon):
+        daemon.search_msgs = [
+            {"platform": "slack", "channel_id": "C1", "channel_name": "general",
+             "sender_id": "U2", "sender_name": "bob", "message_id": "9.2",
+             "ts": "9.2", "text": "manuscript draft", "thread_id": "",
+             "marker": "9.2", "attachments": []},
+        ]
+        c = _conn(daemon, platform="slack")
+        try:
+            msgs = await c.search("manuscript", limit=20, channel="C1")
+            assert [m.text for m in msgs] == ["manuscript draft"]
+            platform, query = daemon.search_calls[-1]
+            assert platform == "slack"
+            assert query["query"] == "manuscript"
+            assert query["limit"] == "20"
+            assert query["channel"] == "C1"
+        finally:
+            await c.close()
+
+    async def test_search_omits_channel_when_absent(self, daemon):
+        daemon.search_msgs = []
+        c = _conn(daemon, platform="teams")
+        try:
+            await c.search("q", limit=5)
+            _platform, query = daemon.search_calls[-1]
+            assert "channel" not in query
+        finally:
+            await c.close()
+
+
+class TestMiraConnectorDownload:
+    async def test_download_decodes_base64_bytes(self, daemon):
+        import base64
+        raw = b"PK\x03\x04 manuscript bytes"
+        daemon.download_files = [
+            {"filename": "draft.docx", "mime": "application/x",
+             "b64": base64.b64encode(raw).decode()}]
+        c = _conn(daemon, platform="slack")
+        try:
+            files = await c.download_attachments("C1", "9.2", idx=0)
+            assert len(files) == 1
+            filename, mime, data = files[0]
+            assert filename == "draft.docx" and mime == "application/x"
+            assert data == raw
+            platform, query = daemon.download_calls[-1]
+            assert platform == "slack"
+            assert query["channel"] == "C1" and query["message_id"] == "9.2"
+            assert query["idx"] == "0"
+        finally:
+            await c.close()
+
+    async def test_download_omits_idx_when_absent(self, daemon):
+        daemon.download_files = []
+        c = _conn(daemon, platform="slack")
+        try:
+            await c.download_attachments("C1", "9.2")
+            _platform, query = daemon.download_calls[-1]
+            assert "idx" not in query
         finally:
             await c.close()
 

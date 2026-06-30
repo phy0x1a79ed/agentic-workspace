@@ -181,9 +181,9 @@ class TestManifest:
         fns = API_MANIFEST["functions"]
         tools = {f.get("tool", f["name"]) for f in fns}
         assert tools == {
-            "social_send", "social_messages", "social_history", "social_search",
-            "social_accounts", "social_channels", "social_open_dm",
-            "social_backfill", "social_operators", "social_operator_add",
+            "social_send", "social_fetch", "social_search",
+            "social_download_attachments", "social_accounts", "social_channels",
+            "social_open_dm", "social_operators", "social_operator_add",
             "social_operator_remove", "social_lookup",
         }
         # Every declared function has a handler.
@@ -200,18 +200,29 @@ class TestManifest:
         required = {p["name"] for p in send["params"] if p["required"]}
         assert required == {"account", "channel", "text"}
 
-    def test_history_and_search_required_params(self):
+    def test_fetch_and_search_required_params(self):
         from awm.social.hub_adapter import API_MANIFEST
 
-        hist = next(f for f in API_MANIFEST["functions"] if f["name"] == "history")
-        assert {p["name"] for p in hist["params"] if p["required"]} == {
+        fetch = next(f for f in API_MANIFEST["functions"] if f["name"] == "fetch")
+        assert {p["name"] for p in fetch["params"] if p["required"]} == {
             "account", "channel"}
         srch = next(f for f in API_MANIFEST["functions"] if f["name"] == "search")
-        assert {p["name"] for p in srch["params"] if p["required"]} == {"query"}
+        assert {p["name"] for p in srch["params"] if p["required"]} == {
+            "account", "query"}
+
+    def test_download_attachments_params_and_timeout(self):
+        from awm.social.hub_adapter import API_MANIFEST
+
+        dl = next(f for f in API_MANIFEST["functions"]
+                  if f["name"] == "download_attachments")
+        assert {p["name"] for p in dl["params"] if p["required"]} == {
+            "account", "channel", "message_id"}
+        # Large files: a generous per-function timeout overrides the 30s RPC default.
+        assert dl.get("timeout", 0) >= 120
 
 
-class TestConnectorHistoryDefault:
-    async def test_base_history_raises_not_implemented(self):
+class TestConnectorDefaults:
+    def _bare(self):
         from awm.social.connectors.base import Account, Connector
 
         class _Bare(Connector):
@@ -219,13 +230,23 @@ class TestConnectorHistoryDefault:
 
             async def start(self): ...
             async def send(self, channel, text, *, thread=None): return {}
-            async def list_channels(self): return []
+            async def list_channels(self, *, include_dms=False): return []
             async def identity(self): ...
             async def close(self): ...
 
-        c = _Bare(Account(name="x", platform="bare", token=""), _noop)
+        return _Bare(Account(name="x", platform="bare", token=""), _noop)
+
+    async def test_base_fetch_raises_not_implemented(self):
         with pytest.raises(NotImplementedError):
-            await c.history("C1")
+            await self._bare().fetch("C1")
+
+    async def test_base_search_raises_not_implemented(self):
+        with pytest.raises(NotImplementedError):
+            await self._bare().search("q")
+
+    async def test_base_download_raises_not_implemented(self):
+        with pytest.raises(NotImplementedError):
+            await self._bare().download_attachments("C1", "m1")
 
     async def test_base_open_dm_raises_not_implemented(self):
         from awm.social.connectors.base import Account, Connector
