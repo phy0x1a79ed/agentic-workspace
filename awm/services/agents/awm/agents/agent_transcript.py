@@ -213,16 +213,91 @@ def record_raw_out(session, line: str) -> None:
         pass
 
 
-def record_in(session, body: str, *, injection: bool = False) -> None:
-    """Persist a framed stdin write."""
+def record_in(session, body: str, *, injection: bool = False,
+              act_id: str | None = None) -> dict | None:
+    """Persist a framed stdin write and fan it out to live subscribers.
+
+    The human's own input is recorded back into the SAME transcript so the chat
+    renders the human turn from the stream (no optimistic echo on the wire).
+    Like every agent-OUTPUT path (``record_event`` / ``upsert_message_act``),
+    this must ALSO publish to the live act bus — otherwise a connected chat only
+    learns of the human turn on a reconnect/backfill, which never happens in a
+    normal session (the original bug).
+
+    ``act_id`` is an optional client correlation id: when given the row is
+    UPSERTED under it, so an optimistic ``sending`` chip the browser folded
+    under the same id reconciles in place (one row, never two); when absent a
+    server uuid is minted. ``meta.status`` is stamped ``"delivered"`` (the stdin
+    write is confirmed by the time we get here). Returns the wire act
+    (``{id, kind, body, meta, ts}``) the bus published, or None on a persistence
+    failure.
+    """
     kind = "slash" if injection else "message"
+    ts = now_ms()
+    meta = {"direction": "in", "injection": injection, "status": "delivered"}
     try:
-        _get_dao().insert_transcript(
-            scope=session.scope,
-            kind=kind, body=body,
-            meta={"direction": "in", "injection": injection},
-            ts=now_ms(),
-        )
+        if act_id:
+            row_id = _get_dao().upsert_transcript(
+                id=act_id, scope=session.scope,
+                kind=kind, body=body, meta=meta, ts=ts,
+            )
+        else:
+            row_id = _get_dao().insert_transcript(
+                scope=session.scope,
+                kind=kind, body=body, meta=meta, ts=ts,
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    act = {"id": row_id, "kind": kind, "body": body, "meta": meta, "ts": ts}
+    # Lazy import: agent_bus imports only asyncio, so no import cycle.
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+    return act
+
+
+WORKING_ACT_PREFIX = "working:"
+
+
+def publish_inbound(session, framed_body: str, act_id: str) -> None:
+    """Publish a human turn to the live bus IMMEDIATELY (bus-only, not persisted).
+
+    The responsiveness fix: today the human turn only reaches a connected chat
+    inside ``_input_pump`` → :func:`record_in`, which is turn-aligned (it lands
+    when the agent next takes a turn). Publishing here, at ``enqueue`` time, makes
+    the human turn appear at once — ``record_in`` later upserts the SAME ``act_id``
+    so the two fold to one durable row (the browser's optimistic chip reconciles
+    by id). ``meta.status = "delivered"`` flips the optimistic ``sending`` chip to
+    received promptly."""
+    if not act_id:
+        return
+    act = {"id": act_id, "kind": "message", "body": framed_body,
+           "meta": {"direction": "in", "injection": False, "status": "delivered"},
+           "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def publish_working(session) -> None:
+    """Publish a TRANSIENT "agent working" presence act (bus-only, not persisted).
+
+    Emitted at each turn START (the ``_input_pump`` ``send`` chokepoint), so the
+    chat shows the agent is acting from the instant a turn begins — covering a
+    human-initiated turn AND the supervisor's autonomous continuation (both reach
+    the agent through ``send``). A stable per-scope id means a fresh working act
+    REPLACES the prior one rather than stacking. The frontend clears it on the
+    turn's first real content (partial / message) or on ``result``."""
+    act = {"id": f"{WORKING_ACT_PREFIX}{session.scope}", "kind": "status",
+           "body": "", "meta": {"phase": "working", "direction": "out",
+                                "transient": True}, "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
     except Exception:  # noqa: BLE001
         pass
 

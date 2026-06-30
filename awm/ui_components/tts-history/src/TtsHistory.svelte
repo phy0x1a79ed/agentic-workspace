@@ -21,18 +21,17 @@
      */
     onspeak?: (post: Post) => void;
     /**
-     * Agent identity. When BOTH are provided, a Transcript | Terminal tablist
-     * appears and the Terminal tab attaches to that agent's live tmux pane
-     * (claude-tmux harness). Omit (the default) for a plain transcript — the
-     * stt/tts/gallery hosts that have no agent render exactly as before.
+     * Agent identity (the unit slug). When provided, a Transcript | Terminal
+     * tablist appears and the Terminal tab attaches to that agent's live tmux
+     * pane (claude-tmux harness). Omit (the default) for a plain transcript —
+     * the stt/tts/gallery hosts that have no agent render exactly as before.
      */
-    project?: string;
-    scope?: string;
+    slug?: string;
   }
-  let { posts, onspeak, project, scope }: Props = $props();
+  let { posts, onspeak, slug }: Props = $props();
 
   // The Terminal tab exists only when we know which agent to attach to.
-  const hasAgent = $derived(!!(project && scope));
+  const hasAgent = $derived(!!slug);
   let activeTab = $state<'transcript' | 'terminal'>('transcript');
   // Effective tab: the terminal is only reachable with an agent identity, so a
   // dropped selector transparently falls back to the transcript (no mutation,
@@ -133,6 +132,38 @@
     const a = p.author ?? '';
     return a.startsWith('agent:') || a.startsWith('user:');
   }
+
+  // The human-turn receipt vocabulary (disjoint from the tool running/done set)
+  // — the rail renders a receipt glyph for these and a speak button otherwise.
+  const USER_STATUSES = new Set(['sending', 'sent', 'received', 'failed']);
+  function isHumanStatus(s: string | undefined): boolean {
+    return !!s && USER_STATUSES.has(s);
+  }
+  function receiptGlyph(s: string | undefined): string {
+    switch (s) {
+      case 'sending': return '⋯';
+      case 'sent': return '✓';
+      case 'received': return '✓✓';
+      case 'failed': return '⚠';
+      default: return '';
+    }
+  }
+
+  // Per-row speak state: the rail's play button flips to a live equalizer while
+  // its message is being spoken. `onspeak` may return a promise (the agent-chat
+  // host forwards `playOnce(...)`); we toggle the state off when it settles so
+  // the button reflects real playback, not a fixed timer.
+  let speakingKey = $state<string | undefined>(undefined);
+  async function doSpeak(p: Post): Promise<void> {
+    const k = postKey(p);
+    if (speakingKey === k) return; // already playing this row
+    speakingKey = k;
+    try {
+      await onspeak?.(p);
+    } finally {
+      if (speakingKey === k) speakingKey = undefined;
+    }
+  }
 </script>
 
 {#snippet transcriptPane()}
@@ -151,20 +182,24 @@
           <span class="ts">{shortTs(g.items[g.items.length - 1].ts)}</span>
         </div>
       {:else if g.kind === 'tools'}
+        {@const running = g.items.some((t) => t.kind === 'tool_use' && t.status === 'running')}
         <article class="post kind-tools">
           <header>
             <button class="tool-toggle" type="button" onclick={() => (expanded[g.key] = !expanded[g.key])}>
               <span class="caret">{expanded[g.key] ? '▾' : '▸'}</span>
               <span class="author">{g.author}</span>
-              <span class="count mono">⚙ {g.items.length} tool {g.items.length === 1 ? 'call' : 'calls'}</span>
+              <span class="count mono">{g.items.length} tool {g.items.length === 1 ? 'call' : 'calls'}</span>
+              {#if running}
+                <span class="running-dot" aria-label="running" title="running"></span>
+              {/if}
             </button>
             <span class="ts mono">{shortTs(g.items[g.items.length - 1].ts)}</span>
           </header>
           {#if expanded[g.key]}
             <ul class="tool-list">
               {#each g.items as t (postKey(t))}
-                <li class="tool-row kind-{t.kind ?? 'text'}">
-                  <span class="tool-kind mono">{t.kind === 'tool_result' ? '←' : '→'}</span>
+                <li class="tool-row kind-{t.kind ?? 'text'}" class:running={t.kind === 'tool_use' && t.status === 'running'}>
+                  <span class="tool-kind mono">{t.kind === 'tool_result' ? '←' : t.status === 'running' ? '◌' : '→'}</span>
                   <span class="tool-body mono">{toolLabel(t)}</span>
                 </li>
               {/each}
@@ -172,21 +207,53 @@
           {/if}
         </article>
       {:else}
-        <article class="post kind-{g.post.kind ?? 'text'}">
-          <header>
-            <span class="author">{g.post.author}</span>
-            {#if onspeak && isSpeakable(g.post)}
-              <button
-                class="tts-btn"
-                type="button"
-                title="replay"
-                aria-label="replay"
-                onclick={() => onspeak?.(g.post)}
-              >🔊</button>
+        {@const sp = g.post}
+        {@const speaking = speakingKey === postKey(sp)}
+        {@const working = sp.status === 'working'}
+        <article
+          class="post chip kind-{sp.kind ?? 'text'}"
+          data-status={sp.status ?? ''}
+          class:dim={sp.status === 'sending' || sp.status === 'failed'}
+          class:working
+        >
+          <div class="post-main">
+            <span class="author">{sp.author}</span>
+            {#if working}
+              <!-- Turn-start skeleton: the agent is acting (a tool call or an
+                   internal turn) but has produced no text yet. Cleared on the
+                   turn's first real content / result. -->
+              <div class="body working-ind" aria-label="agent working">
+                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+            {:else}
+              <div class="body">{sp.body ?? ''}</div>
             {/if}
-            <span class="ts mono">{shortTs(g.post.ts)}</span>
-          </header>
-          <div class="body">{g.post.body ?? ''}</div>
+          </div>
+          <aside class="rail">
+            <span class="ts mono">{shortTs(sp.ts)}</span>
+            {#if working}
+              <!-- no receipt / no speak button for the transient skeleton -->
+            {:else if isHumanStatus(sp.status)}
+              <span class="receipt" data-status={sp.status} title={sp.status} aria-label={sp.status}>
+                {receiptGlyph(sp.status)}
+              </span>
+            {:else if onspeak && isSpeakable(sp)}
+              <button
+                class="speak"
+                type="button"
+                data-speaking={speaking}
+                title={speaking ? 'speaking' : 'replay message'}
+                aria-label={speaking ? 'speaking' : 'replay message'}
+                onclick={() => doSpeak(sp)}
+              >
+                {#if speaking}
+                  <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+                {:else}
+                  <span class="glyph" aria-hidden="true">▶</span>
+                {/if}
+              </button>
+            {/if}
+          </aside>
         </article>
       {/if}
     {/each}
@@ -217,8 +284,8 @@
     {:else}
       <!-- Mounted only while visible so xterm fits a laid-out container; the
            keyed block re-mounts (re-attaches) when the agent identity changes. -->
-      {#key `${project}/${scope}`}
-        <TmuxTerminal project={project!} scope={scope!} />
+      {#key slug}
+        <TmuxTerminal slug={slug!} />
       {/key}
     {/if}
   </div>
@@ -280,7 +347,18 @@
     background:
       linear-gradient(to bottom, color-mix(in oklab, var(--bg, #111) 50%, var(--surface, #1a1a1a)) 0, transparent 60px),
       var(--bg, #111);
+    /* Themed slim scrollbar — Firefox. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border, #333) transparent;
   }
+  /* Themed slim scrollbar — WebKit/Blink. */
+  .transcript::-webkit-scrollbar { width: 8px; }
+  .transcript::-webkit-scrollbar-track { background: transparent; }
+  .transcript::-webkit-scrollbar-thumb {
+    background: var(--border, #333);
+    border-radius: 4px;
+  }
+  .transcript::-webkit-scrollbar-thumb:hover { background: var(--text3, #888); }
   .transcript::after {
     content: '';
     position: absolute; inset: 0; pointer-events: none;
@@ -295,26 +373,140 @@
     flex-direction: column;
     gap: 4px;
   }
-  .post header {
+  /* A solo chip is a two-track row: the message body on the left, a fixed-width
+     status rail on the right (timestamp pinned top; a speak button on agent
+     turns / a delivery receipt on human turns below it). The rail is a
+     flex-fixed item so a long body wraps in the left track instead of
+     squeezing the 44px touch target. */
+  .post.chip {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 10px;
+    padding: 0;
+  }
+  .post-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0 8px 12px;
+  }
+  .rail {
+    flex: 0 0 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-left: 1px solid var(--border, #333);
+  }
+  .post.kind-tools header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 10px;
   }
   .author { font-family: var(--mono, monospace); font-size: 11px; color: var(--atomizer, #ffb74d); letter-spacing: 0.3px; }
-  .ts     { font-size: 10px; color: var(--text3, #888); margin-left: auto; }
-  .tts-btn {
+  .ts     { font-size: 10px; color: var(--text3, #888); }
+  .rail .ts { width: 100%; text-align: center; }
+  .body   { color: var(--text, #ddd); white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; }
+
+  /* Body dims while the human turn is unconfirmed (sending) or failed. */
+  .post.dim .body { opacity: 0.55; }
+
+  /* Turn-start "agent working" skeleton — an animated three-dot indicator that
+     shows the agent is acting before its first token (a tool call or an internal
+     turn). Cleared the moment the turn yields real content / ends. */
+  .post.working { opacity: 0.85; }
+  .working-ind { display: flex; align-items: center; min-height: 1.2em; }
+  .working-ind .dots { display: inline-flex; gap: 4px; }
+  .working-ind .dots i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--atomizer, #ffb74d);
+    animation: awm-working 1.1s ease-in-out infinite;
+  }
+  .working-ind .dots i:nth-child(2) { animation-delay: 0.18s; }
+  .working-ind .dots i:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes awm-working {
+    0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-2px); }
+  }
+
+  /* Speak button — a 44×44 square that flips to a live equalizer mid-playback. */
+  .speak {
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: transparent;
-    border: 0;
-    padding: 0 4px;
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
     color: var(--text3, #888);
     cursor: pointer;
-    font-size: 11px;
-    line-height: 1;
-    opacity: 0.6;
+    padding: 0;
+    transition: color 0.12s, border-color 0.12s;
   }
-  .tts-btn:hover { opacity: 1; color: var(--atomizer, #ffb74d); }
-  .body   { color: var(--text, #ddd); white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.5; }
+  .speak:hover { color: var(--atomizer, #ffb74d); border-color: var(--atomizer, #ffb74d); }
+  .speak:focus-visible {
+    outline: 2px solid var(--atomizer, #ffb74d);
+    outline-offset: 2px;
+    color: var(--atomizer, #ffb74d);
+  }
+  .speak[data-speaking='true'] { border-color: var(--atomizer, #ffb74d); }
+  .speak .glyph { font-size: 18px; line-height: 1; }
+  /* Equalizer: three bars rising and falling while the message is spoken. */
+  .speak .eq { display: inline-flex; align-items: flex-end; gap: 3px; height: 20px; }
+  .speak .eq i {
+    width: 3px;
+    height: 100%;
+    background: var(--atomizer, #ffb74d);
+    transform-origin: bottom;
+    animation: eq-bounce 0.9s ease-in-out infinite;
+  }
+  .speak .eq i:nth-child(2) { animation-delay: 0.18s; }
+  .speak .eq i:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes eq-bounce {
+    0%, 100% { transform: scaleY(0.35); }
+    50%      { transform: scaleY(1); }
+  }
+
+  /* Delivery receipt — the human turn's lifecycle, mono glyphs (no emoji). */
+  .receipt {
+    font-family: var(--mono, monospace);
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text3, #888);
+    min-height: 16px;
+  }
+  .receipt[data-status='received'] { color: var(--atomizer, #ffb74d); }
+  .receipt[data-status='failed']   { color: var(--warn, #f55); }
+  .receipt[data-status='sending']  { color: var(--text3, #888); opacity: 0.7; }
+
+  /* Tool-call running indicator — a CSS-pulsed amber dot, no glyph. */
+  .running-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--atomizer, #ffb74d);
+    display: inline-block;
+    margin-left: 2px;
+    animation: dot-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes dot-pulse {
+    0%, 100% { opacity: 0.3; }
+    50%      { opacity: 1; }
+  }
+  .tool-row.running .tool-kind { color: var(--atomizer, #ffb74d); animation: dot-pulse 1.1s ease-in-out infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .speak .eq i,
+    .running-dot,
+    .tool-row.running .tool-kind { animation: none; }
+    .speak .eq i { transform: scaleY(0.6); }
+    .running-dot { opacity: 0.8; }
+  }
 
   .post.kind-system .author { color: var(--text3, #888); }
   .post.kind-slash  .author { color: var(--warn, #f55); }

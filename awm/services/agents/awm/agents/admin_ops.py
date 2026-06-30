@@ -81,6 +81,33 @@ ADMIN_OPS: list[dict] = [
         ],
         "forward": ["repo"],
     },
+    {
+        "name": "set_title",
+        "orch_op": "set_title",
+        "requires_attached": True,
+        "description": (
+            "Set THIS task's human title (the headline shown above its goal in "
+            "the task view). Only while a human is attached."
+        ),
+        "params": [
+            {"name": "title", "type": "string", "required": True},
+        ],
+        "forward": ["title"],
+    },
+    {
+        "name": "set_tags",
+        "orch_op": "set_tags",
+        "requires_attached": True,
+        "description": (
+            "Set THIS task's free-text tags (a list of strings, searchable in "
+            "the task view). Replaces the existing tags. Only while a human is "
+            "attached."
+        ),
+        "params": [
+            {"name": "tags", "type": "array", "required": True},
+        ],
+        "forward": ["tags"],
+    },
 ]
 
 # name → entry, for the relay + tool-profile lookups.

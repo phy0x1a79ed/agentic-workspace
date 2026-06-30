@@ -135,12 +135,16 @@ def test_cli_groups_and_commands_generated():
 
     app = typer.Typer()
     groups = register_cli_commands(app, GATEWAY_OPERATIONS, api_func=lambda *a, **k: None)
-    assert set(groups) == {"gateway", "services"}
+    assert set(groups) == {"gateway", "services", "config"}
     gw = {c.name for c in groups["gateway"].registered_commands}
     sv = {c.name for c in groups["services"].registered_commands}
+    cf = {c.name for c in groups["config"].registered_commands}
     # Generated CLI commands only (list/start stay hand-authored → not here):
     assert {"status", "restart", "mcp-sync", "list", "deregister"} <= gw
     assert {"stop", "restart", "enable", "disable"} <= sv
+    # config_contracts is CLI-visible; config_set is mcp+http only (its values
+    # dict doesn't round-trip cleanly through a CLI option).
+    assert cf == {"contracts"}
     # list/start are mcp+http only — the generator must NOT emit them:
     assert "list" not in sv
     assert "start" not in sv

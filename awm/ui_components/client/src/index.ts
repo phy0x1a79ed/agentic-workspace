@@ -27,9 +27,22 @@ export {
 } from './channel';
 export {
   fetchDag,
+  openNode,
+  createTask,
+  relocateSelf,
+  setTitle,
+  setTags,
+  setPaused,
+  type OpenNodeResult,
+  type CreateTaskResult,
   type TaskState,
   type DagTask,
   type DagContract,
   type DagEdge,
   type DagSnapshot,
 } from './dag';
+export {
+  fetchConfigContracts,
+  saveConfigContract,
+  type ConfigContract,
+} from './config';

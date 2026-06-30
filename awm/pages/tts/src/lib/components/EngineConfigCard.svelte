@@ -11,7 +11,7 @@
    *             hardcoded engine knowledge.
    */
   import { Card, CollapsibleSection, PanelLabel, Select } from '@awm/primitives';
-  import DynamicConfigForm from '$lib/components/DynamicConfigForm.svelte';
+  import { DynamicConfigForm } from '@awm/settings';
   import { listEngines, type EngineRegistry } from '$lib/api/tts';
 
   interface Props {

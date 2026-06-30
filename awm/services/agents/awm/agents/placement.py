@@ -240,6 +240,23 @@ def _placement_tool_note() -> str:
     )
 
 
+def _brief_goal(brief: str) -> str:
+    """Extract the goal string from a structured (JSON) brief, tolerantly.
+
+    The dispatch payload encodes the brief as ``json.dumps({"goal", "mode", ...})``.
+    A plain (non-JSON) brief is treated as the goal itself. Returns ``""`` when no
+    goal is present — the wait-for-user signal for an attended drop-in worker."""
+    if not brief:
+        return ""
+    try:
+        data = json.loads(brief)
+    except (ValueError, TypeError):
+        return brief.strip()
+    if isinstance(data, dict):
+        return str(data.get("goal") or "").strip()
+    return str(brief).strip()
+
+
 def _kickoff_text(*, task_id: str, mode: str) -> str:
     """First stdin message for a worker/plan/planner — wakes the turn loop."""
     return (
@@ -349,6 +366,24 @@ def _read_staged_plan(workspace_path: str) -> str:
     return ""
 
 
+def _resolve_driver(args: dict) -> tuple[str, str | None]:
+    """Resolve the ``(harness, model)`` a dispatch spawns under.
+
+    Precedence: explicit ``args`` > env override (``AWM_PLACEMENT_HARNESS`` /
+    ``AWM_PLACEMENT_MODEL``) > the opt-in ``agents`` config contract's stored
+    default > the contract field default (``opencode`` / ``None``). The contract
+    read is a single-row load, so a change saved in the settings UI applies on
+    the next dispatch with no restart, while explicit overrides still win.
+    """
+    from awm.agents.driver_config import DRIVER_CONTRACT
+    driver = DRIVER_CONTRACT.load_model()
+    harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
+               or driver.harness)
+    model = (args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL")
+             or driver.model)
+    return harness, model
+
+
 # ---------------------------------------------------------------------------
 # place_on_task (contract A)
 # ---------------------------------------------------------------------------
@@ -373,6 +408,12 @@ async def place_on_task(args: dict) -> dict:
     # seeds the row's ``attached`` flag so the supervisor freezes from turn one
     # (P2). Transcript WS open/close still flips it live via ``set_attached``.
     attached = bool(args.get("attached"))
+    # Sticky human pause (also seeded from ``orch_node_open`` / a redispatch of a
+    # paused row): the supervisor freezes on ``attached OR paused``, and unlike
+    # ``attached`` it is never cleared on detach. Stored in the instance data so
+    # ``on_turn_boundary`` reads it; mirrored durably via the agents ``set_paused``
+    # verb.
+    paused = bool(args.get("paused"))
     mode = args.get("mode", "worker")
     if mode not in _VALID_MODES:
         raise ValueError(f"unknown placement mode {mode!r}; "
@@ -398,6 +439,11 @@ async def place_on_task(args: dict) -> dict:
     workspace_path = await _workspace_create(
         unit_slug, context_md, prereadings, repos)
 
+    # Wait-for-user worker (the "+ new task" button path): an attended worker
+    # placed on an EMPTY goal should sit idle until the human types the first
+    # turn — no auto-kickoff. Detect an empty goal off the structured brief.
+    wait_for_user = mode == "worker" and not _brief_goal(brief)
+
     # Build the kickoff. verify reads the staged plan off disk (it can't itself).
     if mode == "verify":
         plan_text = _read_staged_plan(workspace_path)
@@ -421,9 +467,12 @@ async def place_on_task(args: dict) -> dict:
     # (``--allowedTools``); under opencode it's threaded but not yet honored, so
     # the read-only/no-fs guarantee for plan/verify/planner is a claude-only
     # property today (worker is full-tool regardless). Tracked as a follow-up.
-    harness = (args.get("harness") or os.environ.get("AWM_PLACEMENT_HARNESS")
-               or "opencode")
-    model = args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL") or None
+    harness, model = _resolve_driver(args)
+    # Reasoning effort (claude only — opencode ignores it). Threaded the same way
+    # as the model: per-placement arg → AWM_PLACEMENT_EFFORT → the harness default
+    # (None → the CLI's own default). create_session validates it against the
+    # allowed set before the claude backend renders it as ``--effort``.
+    effort = args.get("effort") or os.environ.get("AWM_PLACEMENT_EFFORT") or None
     # The lifecycle reuses one unit across stages; the prior stage's subprocess
     # may still be retiring on this scope. Wait for it to vacate before spawning.
     await _await_scope_free(unit_slug)
@@ -435,6 +484,7 @@ async def place_on_task(args: dict) -> dict:
         workdir=workspace_path,
         allowed_tools=_allowed_tools_for(mode),
         model=model,
+        effort=effort,
     )
 
     # Record the placement spec on the row so the relays + supervisor can resolve
@@ -452,9 +502,14 @@ async def place_on_task(args: dict) -> dict:
         "staged": {}, "done": False,
         "graph": {"subtasks": [], "dependencies": [], "contracts": []},
         "attached": attached,
+        "paused": paused,
     })
 
-    ai.enqueue_input(session, "orchestrator", kickoff)
+    # Suppress the kickoff for a wait-for-user worker so it idles until the first
+    # human turn arrives through ``enqueue_input``; every other placement is woken
+    # immediately. ``paused`` already keeps the supervisor from nagging it.
+    if not wait_for_user:
+        ai.enqueue_input(session, "orchestrator", kickoff)
 
     return {"agent_ref": agent_ref, "unit_slug": unit_slug,
             "scope": unit_slug, "placement_token": placement_token}
@@ -1016,10 +1071,13 @@ async def on_turn_boundary(session) -> None:
             return
     # verify has no auto-accept — its verdict is a terminal tool call.
 
-    # Freeze while a human is driving: skip the budget decrement / re-prompt /
-    # force-fail entirely. The acceptance check above already ran, so a real
-    # deliver still advances the task; we only suppress the autonomous nag.
-    if data.get("attached"):
+    # Freeze while a human is driving (``attached``) OR the task is sticky-paused
+    # (``paused``): skip the budget decrement / re-prompt / force-fail entirely.
+    # The acceptance check above already ran, so a real deliver still advances the
+    # task; we only suppress the autonomous nag. Unlike ``attached`` (which drops
+    # the moment the human's WS closes), ``paused`` is sticky — it keeps the
+    # supervisor out after the human walks away, until explicitly un-paused.
+    if data.get("attached") or data.get("paused"):
         return
 
     session.turn_budget -= 1
@@ -1104,3 +1162,31 @@ async def set_attached(scope: str, attached: bool) -> None:
             attached=bool(attached))
     except Exception:  # noqa: BLE001
         log.warning("set_attached failed for %s", scope, exc_info=True)
+
+
+async def set_paused(scope: str, paused: bool,
+                     task_id: str | None = None) -> None:
+    """Set a task's sticky ``paused`` flag — live placement + durable mirror.
+
+    The UI's pause toggle (keyed on the unit slug). Unlike :func:`set_attached`
+    (driven by transcript-WS presence and cleared on disconnect), ``paused`` is
+    sticky — it freezes ``on_turn_boundary`` (``attached OR paused``) and stays
+    set after the human walks away, until explicitly toggled off.
+
+    When a live placement exists for the slug, its in-memory ``paused`` flag is
+    written so the running supervisor freezes/resumes at once. The durable mirror
+    to the kernel (``orch_set_paused``) always runs (keyed on ``task_id`` — passed
+    by the UI, or read off the live row), so the flag survives a redispatch even
+    when no session is currently live. Best-effort throughout."""
+    session = ai.get_session_by_scope(scope)
+    token = getattr(session, "placement_token", None) if session else None
+    try:
+        dao = ai._get_dao()
+        row = dao.resolve_placement(token) if token else None
+        if row is not None:
+            dao.merge_instance_data(row["id"], {"paused": bool(paused)})
+            task_id = task_id or row["task_ref"]
+        if task_id:
+            await orch_client.set_paused(task_id=task_id, paused=bool(paused))
+    except Exception:  # noqa: BLE001
+        log.warning("set_paused failed for %s", scope, exc_info=True)

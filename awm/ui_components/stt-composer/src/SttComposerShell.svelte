@@ -72,7 +72,7 @@
   }
 </script>
 
-<section class="shell" data-awm-component="SttComposerShell">
+<section class="stt-shell" data-awm-component="SttComposerShell">
   <div class="tabs" role="tablist">
     <button
       type="button"
@@ -124,7 +124,7 @@
 </section>
 
 <style>
-  .shell {
+  .stt-shell {
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 8px);

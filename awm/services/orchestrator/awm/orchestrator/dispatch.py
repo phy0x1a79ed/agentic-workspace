@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Awaitable, Callable
 
 from awm import gatewayclient
@@ -36,6 +37,15 @@ from awm.orchestrator.dao import OUT_STATE, REST_MODE, OrchestratorDAO
 log = logging.getLogger("awm.orchestrator.dispatch")
 
 DispatchIntent = tuple[str, str]  # (task_id, mode); mode in REST_MODE.values()
+
+# When a placement resolves to the claude harness but no model is configured
+# (neither a per-task arg nor ``AWM_PLACEMENT_MODEL``), the claude CLI would fall
+# back to the human's *interactive* default — which can be a capable, paid model
+# at high effort (e.g. Opus / high). An unattended placement must never inherit
+# that. Pin an explicit, cheap default so the choice is deliberate, not silent.
+# Overridable per-deploy via ``AWM_PLACEMENT_MODEL`` / ``AWM_PLACEMENT_EFFORT``.
+DEFAULT_CLAUDE_PLACEMENT_MODEL = "haiku"
+DEFAULT_CLAUDE_PLACEMENT_EFFORT = "medium"
 
 # Module state. Configured once at boot via ``configure``/``start_drain_loop``.
 _place_fn: Callable[[dict], Any] = None  # type: ignore[assignment]
@@ -177,17 +187,50 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         "prereadings": prereadings,
         "mode": mode,
     }
-    # An attended node defaults to the claude harness (interactive, attachable
-    # terminal + a capable model); unattended placements stay on the agents
-    # service's own default (opencode / DSv4-free). Pure data — place_on_task
-    # reads ``harness`` when present, else picks its default. The ``attached``
-    # intent is ALSO threaded as data so the agents-side supervisor freezes
-    # (no nag / no budget burn / no force-fail) on a born-attended node — a
-    # human-driven drop-in idles politely until detached. Without this the flag
-    # is hardcoded ``False`` at birth and the supervisor runs away (P2).
+    # Harness / model / effort resolution — the single, env-driven policy for
+    # every placement (attended or not), so ``gateway/dev/.env`` is one lever.
+    #
+    # * harness: ``AWM_PLACEMENT_HARNESS`` wins; absent it, an attended (drop-in)
+    #   node defaults to claude (interactive, attachable tmux terminal) while an
+    #   unattended node is left unset so the agents side applies its own
+    #   ``opencode`` default (DSv4-free / "openzen" — cheap unattended work).
+    # * model / effort: threaded from ``AWM_PLACEMENT_MODEL`` /
+    #   ``AWM_PLACEMENT_EFFORT`` when set. A claude placement with NO configured
+    #   model is pinned to an explicit cheap default (see the module constants)
+    #   rather than inheriting the human's interactive CLI default. opencode's
+    #   ``None``-model path (→ DSv4-free) is left untouched.
+    #
+    # All three are pure data — ``place_on_task`` reads ``harness`` / ``model`` /
+    # ``effort`` when present, else picks its own default. The ``attached`` intent
+    # is ALSO threaded so the agents-side supervisor freezes (no nag / no budget
+    # burn / no force-fail) on a born-attended node — a human-driven drop-in idles
+    # politely until detached. Without it the flag is hardcoded ``False`` at birth
+    # and the supervisor runs away (P2).
+    harness = os.environ.get("AWM_PLACEMENT_HARNESS") or (
+        "claude" if task["attached"] else None)
+    model = os.environ.get("AWM_PLACEMENT_MODEL") or None
+    effort = os.environ.get("AWM_PLACEMENT_EFFORT") or None
+    if harness == "claude" and not model:
+        model = DEFAULT_CLAUDE_PLACEMENT_MODEL
+        effort = effort or DEFAULT_CLAUDE_PLACEMENT_EFFORT
+    if harness:
+        payload["harness"] = harness
+    if model:
+        payload["model"] = model
+    if effort:
+        payload["effort"] = effort
     if task["attached"]:
-        payload["harness"] = "claude"
         payload["attached"] = True
+    # The sticky human pause rides alongside ``attached`` so a respawn/redispatch
+    # re-seeds the live placement's freeze flag from the durable task row (the
+    # supervisor freezes on ``attached OR paused``). Independent of ``attached``:
+    # a button-created node is born paused even after the human detaches.
+    if task["paused"]:
+        payload["paused"] = True
+    log.info("orchestrator: placement %s mode=%s harness=%s model=%s effort=%s "
+             "attached=%s", task["id"], mode, harness or "(agents-default)",
+             model or "(harness-default)", effort or "(harness-default)",
+             bool(task["attached"]))
     # The task's attached git scopes — linked into the unit under repos/<name>
     # on every (re)dispatch (the workspace symlink is idempotent). Read from the
     # first-class task_scopes relation as the workspace ``repos`` shape.

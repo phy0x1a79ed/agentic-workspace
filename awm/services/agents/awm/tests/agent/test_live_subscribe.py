@@ -106,6 +106,57 @@ class TestRecordEvent:
 
 
 # ---------------------------------------------------------------------------
+# record_in → persists the human turn AND fans it out live (the fix)
+# ---------------------------------------------------------------------------
+
+class TestRecordIn:
+    @pytest.mark.asyncio
+    async def test_publishes_human_act_to_live_subscriber(self):
+        # The bug: a human turn was recorded but never published, so a connected
+        # chat only learned of it on reconnect. record_in must fan out live.
+        sess = _Sess()
+        q: asyncio.Queue = asyncio.Queue(maxsize=8)
+        await bus_mod.attach_live(sess.scope, q)
+        try:
+            act = transcript_mod.record_in(sess, "[from:user:op]\nhi")
+        finally:
+            await bus_mod.detach_live(sess.scope, q)
+        assert act is not None
+        ev = q.get_nowait()
+        assert ev["type"] == "act"
+        assert ev["act"]["id"] == act["id"]
+        # Human-origin marker the frontend keys the human row off of.
+        assert ev["act"]["meta"]["direction"] == "in"
+        assert ev["act"]["meta"]["status"] == "delivered"
+
+    def test_no_act_id_mints_server_uuid_and_persists(self):
+        sess = _Sess()
+        act = transcript_mod.record_in(sess, "[from:user:op]\nhi")
+        rows = transcript_mod.read_session("s")
+        assert len(rows) == 1
+        assert rows[0]["id"] == act["id"]
+        assert rows[0]["kind"] == "message"
+
+    def test_act_id_upserts_under_the_correlation_id(self):
+        # A client correlation id (the optimistic chip key) is the row id, so a
+        # re-record under the same id updates in place — one row, never two.
+        sess = _Sess()
+        first = transcript_mod.record_in(sess, "[from:user:op]\nhi", act_id="cid-1")
+        assert first["id"] == "cid-1"
+        transcript_mod.record_in(sess, "[from:user:op]\nhi (edited)", act_id="cid-1")
+        rows = transcript_mod.read_session("s")
+        assert len(rows) == 1
+        assert rows[0]["id"] == "cid-1"
+        assert rows[0]["body"] == "[from:user:op]\nhi (edited)"
+
+    def test_injection_records_as_slash(self):
+        sess = _Sess()
+        transcript_mod.record_in(sess, "/compact", injection=True)
+        rows = transcript_mod.read_session("s")
+        assert rows[0]["kind"] == "slash"
+
+
+# ---------------------------------------------------------------------------
 # Cursored backfill (ts ms + id tiebreak)
 # ---------------------------------------------------------------------------
 
