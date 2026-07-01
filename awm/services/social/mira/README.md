@@ -13,7 +13,7 @@ no UI here.
 | `awm-display` | `Xvfb :20` virtual framebuffer | — |
 | `awm-wm` | `openbox` — maps/focuses windows on `:20` | — |
 | `awm-slack` | Slack desktop (snap), CDP enabled | 9223 |
-| `awm-opera-teams` | Opera (snap): Teams web + Slack-web | 9224 |
+| `awm-opera-teams` | Opera (snap): Teams web + Slack-web + SharePoint | 9224 |
 | `awm-mira-api` | the API daemon — REST + WS, drives both Opera tabs over CDP | **172.16.0.24:7822** |
 | `awm-vnc` | `x11vnc` for the one-time login (**on-demand**, not enabled) | 5920 |
 
@@ -49,14 +49,24 @@ It binds **`172.16.0.24:7822` only** (the awm-network interface — not
     POST /v1/{platform}/send  {channel,text,thread?}
     GET  /v1/events                       WS; pushes inbound {type:"message", …}
 
+    # cloud file stores (OneDrive/SharePoint), gated by MIRA_STORAGE
+    GET  /v1/fs/{name}/ls?path=            folder children [{name,path,is_dir,size,…}]
+    GET  /v1/fs/{name}/stat?path=          one entry's metadata
+    GET  /v1/fs/{name}/get?path=           one file as {filename,mime,b64}
+    GET  /v1/fs/{name}/search?query=&limit=&root=   SharePoint search (best-effort)
+    POST /v1/fs/{name}/put  {path,b64,mime?}   create/overwrite a file
+    POST /v1/fs/{name}/rm   {path}             recycle a file/folder
+
 Messages carry an `attachments` array (`idx, filename, mime, size, url, ref`);
 `/download` re-fetches the message in-session and returns the file bytes base64-
 encoded over the REST hop (Slack `url_private` with the `d` cookie; Teams hosted
 content — SharePoint-hosted files may need separate auth and are skipped).
 
-`{platform}` is `slack` or `teams`. The daemon polls each platform on mira (the
-**inbound watcher**) and pushes new messages to all WS clients, so awm-side
-clients never poll. A conversation whose history endpoint 404s (e.g. a Teams
+`{platform}` is `slack` or `teams`; `{name}` (the `/v1/fs/…` routes) is a cloud
+file store from `MIRA_STORAGE` (currently `onedrive`). The daemon polls each
+*platform* on mira (the **inbound watcher**) and pushes new messages to all WS
+clients, so awm-side clients never poll; file stores have **no** watcher (files
+don't push) — their routes are request/response only. A conversation whose history endpoint 404s (e.g. a Teams
 *team channel*, served by a different backend than the 1:1/group chat service)
 is marked unreadable and skipped — it never stalls the poll.
 
@@ -76,6 +86,17 @@ session's own cookies/tokens — the daemon reconstructs nothing on the wire.
   `Authentication: skypetoken=<tok>` (re-bootstraps on 401/403). Graph is
   send-only here (`/me` works but chats need scopes the page's token lacks), so
   the ng.msg chat service is the substrate for list/read/send.
+* **OneDrive / SharePoint** (`storage_drivers.py`, driven on the
+  `*.sharepoint.com` tab) — same-origin calls to the SharePoint REST API with the
+  session cookie. `GetFolderByServerRelativePath(decodedurl='…')/Files`+`/Folders`
+  for `ls`, `GetFileByServerRelativePath('…')/$value` for `get` (base64 over the
+  hop), `…/Files/add(url=,overwrite=true)` for `put`, `…/recycle()` for `rm`;
+  writes carry an `X-RequestDigest` from `_api/contextinfo`. Paths are absolute
+  server-relative urls (the awm-side bucket prefixes its configured `root`); the
+  `_api` web base is derived from the managed-path prefix (`/teams/<x>`,
+  `/sites/<x>`, `/personal/<x>`) so team sites, project sites, and personal
+  OneDrive all resolve. Reachable only with a logged-in `sharepoint.com` tab
+  (SSO carries over from the Teams login in the same Opera profile).
 
 ### Wire it into `social.toml`
 
@@ -91,6 +112,12 @@ session's own cookies/tokens — the daemon reconstructs nothing on the wire.
     [account.teams]
     platform = "teams"
     source = "mira"
+
+    [bucket.onedrive-ubc]              # OneDrive/SharePoint file access (buckets)
+    kind = "onedrive"
+    source = "mira"
+    site = "https://ubcca.sharepoint.com"
+    root = "/teams/ubcMICB-gr-HallamLab/Shared Documents/Hallam_Lab_roadmaps/Tony-L_-roadmap-_"
 
 ### Verify
 
@@ -122,6 +149,8 @@ restarts/reboots (`~/snap/slack`, `~/snap/opera`).
     # point any VNC viewer at localhost:5920, then in the Opera window:
     #   - the "Microsoft Teams" tab → sign in (incl. 2FA)
     #   - an "app.slack.com" tab    → sign in to the workspace (incl. 2FA)
+    #   - the "ubcca.sharepoint.com" tab → should SSO in from the Teams login;
+    #     if it lands on a sign-in page, complete it once (OneDrive bucket)
     # openbox has no taskbar: Alt+Tab cycles windows, right-click desktop = menu.
     ssh mira 'systemctl --user stop awm-vnc'     # when done
 
@@ -153,5 +182,6 @@ Should print one JSON line (`{"token","cookie","team","url"}`). Plug into
   ToS; this is the user's own account/session at their explicit request (see
   service INSTALL.md).
 - The API daemon binds the awm-network interface only and is TLS + bearer-token
-  gated, but it can send/read as the user's Slack+Teams — treat the bearer token
-  in `~/.awm/auth.token` as the key to those accounts.
+  gated, but it can send/read as the user's Slack+Teams **and read/write/delete
+  files in the logged-in SharePoint/OneDrive** (`MIRA_STORAGE`) — treat the
+  bearer token in `~/.awm/auth.token` as the key to all of those accounts.
