@@ -42,6 +42,7 @@ HERE = Path(__file__).resolve().parent          # awm/services/mic/awm/mic
 SERVICE_DIR = HERE.parents[1]                    # awm/services/mic
 STATIC_DIR = SERVICE_DIR / "static"
 CERT_DIR = SERVICE_DIR / ".certs"
+SANS_FILE = SERVICE_DIR / ".sans"      # host-specific extra SANs (gitignored)
 
 PORT = int(os.environ.get("MIC_PORT", "12200"))
 SINK = os.environ.get("MIC_SINK", "virtmic")
@@ -125,7 +126,10 @@ def _on_start() -> None:
     except Exception:  # noqa: BLE001
         log.exception("virtmic provisioning failed; retry with mic_ensure_sink")
 
-    info = certs.ensure_certs(CERT_DIR)
+    # Include operator-declared SANs (e.g. the Windows ZeroTier IP the phone
+    # connects to) that this host can't auto-enumerate from inside WSL.
+    sans = certs.resolve_sans(san_file=SANS_FILE)
+    info = certs.ensure_certs(CERT_DIR, sans=sans)
     log.info("certs ready (SAN=%s)", info["san"])
 
     t = threading.Thread(
