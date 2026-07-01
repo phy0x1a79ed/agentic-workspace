@@ -14,7 +14,10 @@ need the remote-audio worktree on disk), while sharing the trust root.
 
 SANs are auto-enumerated from the host's non-loopback IPv4 addresses (plus
 ``127.0.0.1`` / ``localhost``); the leaf is re-minted whenever that set changes,
-so whatever ZeroTier IP the host has is covered without hand-editing.
+so whatever ZeroTier IP the host has is covered without hand-editing. Addresses
+the host can't see for itself — e.g. the Windows ZeroTier IP a phone reaches a
+WSL bridge through — are declared explicitly via ``MIC_EXTRA_SANS`` / a ``.sans``
+file and merged in by :func:`resolve_sans`.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +56,62 @@ def _enumerate_ipv4() -> list[str]:
 def default_sans() -> list[str]:
     sans = ["IP:127.0.0.1", "DNS:localhost"]
     sans += [f"IP:{ip}" for ip in _enumerate_ipv4()]
+    return sans
+
+
+def _normalize_san(tok: str) -> str | None:
+    """Coerce an operator-supplied SAN token into openssl form.
+
+    Accepts already-prefixed ``IP:x`` / ``DNS:x`` as well as a bare token,
+    which becomes ``IP:`` if it parses as an address and ``DNS:`` otherwise.
+    Returns ``None`` for empties.
+    """
+    tok = tok.strip()
+    if not tok:
+        return None
+    if tok.upper().startswith(("IP:", "DNS:")):
+        pre, val = tok.split(":", 1)
+        val = val.strip()
+        return f"{pre.upper()}:{val}" if val else None
+    try:
+        ipaddress.ip_address(tok)
+        return f"IP:{tok}"
+    except ValueError:
+        return f"DNS:{tok}"
+
+
+def extra_sans(*, env: str | None = None, san_file: str | Path | None = None) -> list[str]:
+    """Operator-declared SANs the host can't auto-enumerate — e.g. the Windows
+    ZeroTier IP a phone connects to, which is invisible from inside WSL.
+
+    Sourced from the ``MIC_EXTRA_SANS`` env var (comma/space separated) and an
+    optional host-specific ``san_file`` (one token per line, ``#`` comments),
+    both optional. Tokens may be bare (``10.147.0.5``) or prefixed
+    (``IP:10.147.0.5`` / ``DNS:mic.zt``).
+    """
+    raw: list[str] = []
+    val = env if env is not None else os.environ.get("MIC_EXTRA_SANS", "")
+    raw += re.split(r"[,\s]+", val or "")
+    if san_file:
+        p = Path(san_file)
+        if p.exists():
+            for line in p.read_text().splitlines():
+                raw += re.split(r"[,\s]+", line.split("#", 1)[0])
+    out: list[str] = []
+    for tok in raw:
+        norm = _normalize_san(tok)
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
+def resolve_sans(*, env: str | None = None, san_file: str | Path | None = None) -> list[str]:
+    """Auto-enumerated host SANs plus operator-declared extras, deduped with a
+    stable order (defaults first) so the leaf only re-mints on a real change."""
+    sans = default_sans()
+    for s in extra_sans(env=env, san_file=san_file):
+        if s not in sans:
+            sans.append(s)
     return sans
 
 

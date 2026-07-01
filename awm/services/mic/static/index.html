@@ -86,6 +86,18 @@
 
   #msg { font-family:var(--mono); font-size:.66rem; letter-spacing:.06em; color:var(--cyan); min-height:1em; text-align:center; }
   #msg.err { color:var(--air); }
+  .capanel { max-width:330px; display:flex; flex-direction:column; align-items:center; gap:9px;
+    padding:15px 18px; border:1px solid rgba(255,59,78,.42); border-radius:14px;
+    background:rgba(255,59,78,.07); text-align:center; }
+  .capanel[hidden] { display:none; }   /* author display:flex would otherwise beat the UA [hidden] rule */
+  .capanel .ca-h { margin:0; font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--air); }
+  .capanel .ca-b { margin:0; font-size:.78rem; line-height:1.5; color:var(--muted); }
+  .capanel .ca-btn { display:inline-block; margin-top:2px; padding:11px 20px; border-radius:10px;
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.12em; text-transform:uppercase;
+    text-decoration:none; color:#fff; border:1px solid var(--line2);
+    background:linear-gradient(180deg,#101a27,#0a121c); }
+  .capanel .ca-btn:active { transform:scale(.985); }
   .foot { font-family:var(--mono); font-size:.6rem; letter-spacing:.08em; color:var(--muted); text-align:center; }
   .foot a { color:var(--muted); }
   .warnbar { flex:0 0 auto; margin:0; padding:10px 14px; font-size:.72rem; text-align:center;
@@ -119,6 +131,11 @@
       <span class="sub" id="tSub">tap to stream mic</span>
     </button>
     <p id="msg">idle</p>
+    <div id="capanel" class="capanel" hidden>
+      <p class="ca-h">Secure connection blocked</p>
+      <p class="ca-b">This device doesn't trust the mic certificate yet, so the browser silently blocks the audio socket. Install it once on this device, then reload and press START again.</p>
+      <a class="ca-btn" href="/ca.crt">Install certificate</a>
+    </div>
     <p class="foot">phone mic → WSL · <a href="/ca.crt">install certificate</a></p>
   </main>
 
@@ -126,8 +143,10 @@
 const $ = id => document.getElementById(id);
 const connEl = $("conn"), connTxt = connEl.querySelector(".txt");
 const stage = $("stage"), toggle = $("toggle"), tLab = $("tLab"), tSub = $("tSub");
-const lvlRing = $("lvl"), msg = $("msg"), warn = $("warn");
+const lvlRing = $("lvl"), msg = $("msg"), warn = $("warn"), capanel = $("capanel");
 const RING = 2 * Math.PI * 52; // 326.7
+function showCaHint() { capanel.hidden = false; }
+function hideCaHint() { capanel.hidden = true; }
 
 if (!window.isSecureContext) {
   warn.hidden = false;
@@ -138,7 +157,7 @@ let ws = null, ctx = null, stream = null, node = null, src = null;
 let started = false, socketOpen = false, on = false, userStopped = true;
 let backoff = 500, reconnTimer = null, pingTimer = null;
 let peak = 0, shown = 0;
-let reachable = true;               // optimistic; flipped false only on a genuine connection failure
+let connFailed = false;             // set once a socket dies before ever opening (usually an untrusted cert)
 
 let connKey = "";
 function setConn(state, text) {
@@ -152,13 +171,15 @@ function setConn(state, text) {
 function setMsg(t, err) { msg.textContent = t; msg.classList.toggle("err", !!err); }
 
 // ── single source of truth for the connection badge ──
-//   not pressed         → green "connected" (idle; no live socket, we present as connected)
-//   pressed + reachable → blue  "streaming" (mic active, regardless of audio level)
-//   pressed + failed    → red   "offline"   (genuinely cannot reach the server)
+//   not pressed          → green  "connected"  (idle; no live socket, we present as connected)
+//   pressed, socket open → purple "streaming"  (audio is actually flowing to the server)
+//   pressed, handshaking → amber  "connecting" (socket not open yet — no false "streaming")
+//   pressed, died pre-open → red  "offline"    (socket failed before opening — usually untrusted cert)
 function applyState() {
   if (!on) return setConn("connected", "connected");
-  if (reachable) return setConn("streaming", "streaming");
-  setConn("offline", "offline");
+  if (socketOpen) return setConn("streaming", "streaming");
+  if (connFailed) return setConn("offline", "offline");
+  return setConn("connecting", "connecting");
 }
 
 // ── audio graph (acquired once, kept alive) ──
@@ -191,12 +212,14 @@ async function ensureAudio() {
 function connect() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
   clearTimeout(reconnTimer);
+  let opened = false;                             // did THIS attempt reach onopen?
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
-    socketOpen = true; backoff = 500; reachable = true;
+    opened = true; socketOpen = true; connFailed = false; backoff = 500;
     ws.send(JSON.stringify({ type: "config", sampleRate: ctx ? ctx.sampleRate : 48000, channels: 1 }));
+    hideCaHint();
     applyState();
     setMsg((ctx ? Math.round(ctx.sampleRate / 1000) : 48) + " kHz · live");
     startPing();
@@ -205,11 +228,16 @@ function connect() {
   ws.onclose = () => {
     socketOpen = false; stopPing();
     if (userStopped) { applyState(); return; }   // normal stop → green (button released)
-    reachable = false; applyState();             // unexpected drop → red until we reconnect
+    if (!opened) {                               // never handshook → almost always an untrusted cert
+      connFailed = true;                         // (browsers can't click-through a cert error for wss)
+      setMsg("secure connection blocked — install the certificate", true);
+      showCaHint();
+    }
+    applyState();                                // red if it never opened, amber "connecting" on a live drop
     reconnTimer = setTimeout(connect, backoff);
     backoff = Math.min(backoff * 2, 5000);
   };
-  ws.onerror = () => { reachable = false; applyState(); try { ws.close(); } catch {} };
+  ws.onerror = () => { try { ws.close(); } catch {} };   // onclose does the state work
 }
 function startPing() {
   stopPing();
@@ -229,16 +257,18 @@ function refresh() {
 async function start() {
   userStopped = false;
   if (!(await ensureAudio())) { userStopped = true; return; }
-  on = true; reachable = true;
-  applyState();                 // pressed → blue immediately (mic is active)
+  on = true; connFailed = false;
+  applyState();                 // pressed → amber "connecting" until the socket actually opens
   if (!socketOpen) connect();
-  setMsg("streaming…");
+  setMsg("connecting…");
   refresh();
 }
 function stop() {
   on = false; userStopped = true;
+  connFailed = false;
   setMsg("idle");
   stopPing();
+  hideCaHint();
   if (ws) { try { ws.close(); } catch {} }
   applyState();                 // released → green "connected"
   refresh();
