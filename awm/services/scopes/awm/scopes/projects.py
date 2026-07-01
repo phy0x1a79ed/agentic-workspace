@@ -11,10 +11,8 @@ import tempfile
 from pathlib import Path
 
 from awm.config import (
-    WORKSPACE_ROOT,
     PROJECTS_DIR,
     DATA_DIR,
-    SKILLS_DIR,
     GITHUB_USER,
     VAGRANT_PROJECT,
 )
@@ -24,27 +22,62 @@ from awm.scopes.models import (
     ProjectCreateRequest, ProjectCreateResponse,
     ProjectListInfo, ProjectListResponse, ProjectScopeCounts,
 )
+from awm.scopes.scopes import _scaffold_awm_dir
 from awm.scopes._validation import validate_name
-
-
-def _find_template(stem: str) -> Path | None:
-    roots = []
-    workspace_skills = WORKSPACE_ROOT / "skills"
-    if workspace_skills.exists():
-        roots.append(workspace_skills)
-    if SKILLS_DIR.exists() and SKILLS_DIR not in roots:
-        roots.append(SKILLS_DIR)
-    for root in roots:
-        for path in sorted(root.rglob("*.template")):
-            if stem in path.name:
-                return path
-    return None
 
 
 def _branch_exists(bare_dir: Path, branch: str) -> bool:
     r = _run(["git", "-C", str(bare_dir), "rev-parse", "--verify",
               f"refs/heads/{branch}"])
     return r.returncode == 0
+
+
+# git's stderr signatures for a missing/rejected credential, in priority order.
+_AUTH_SIGNATURES = (
+    "Permission denied (publickey)",
+    "could not read Username",
+    "Authentication failed",
+    "fatal: Authentication",
+    "remote: Repository not found",   # gh returns this for private repos the token can't see
+)
+
+
+def _clone_bare(url: str, bare_dir: Path) -> None:
+    """`git clone --bare` that authenticates GitHub HTTPS clones with the gh token.
+
+    A plain `git clone https://github.com/…` of a **private** repo fails with
+    "could not read Username" because git has no credential helper wired — the
+    exact `exit 128` the daemon hit. gh is already authenticated (an oauth token
+    with `repo` scope in ~/.config/gh/hosts.yml, readable by the daemon), so we
+    wire gh as a *per-command* credential helper for github.com. No ssh-agent,
+    no `.awm/env`, no global git-config mutation. On other failures, raise a
+    clear, actionable RuntimeError instead of a bare CalledProcessError.
+    """
+    cmd = ["git"]
+    if shutil.which("gh") and url.startswith("https://github.com/"):
+        # Clear any inherited helper, then set gh — the pattern `gh auth
+        # setup-git` uses, scoped to this one invocation via -c.
+        cmd += [
+            "-c", "credential.https://github.com.helper=",
+            "-c", "credential.https://github.com.helper=!gh auth git-credential",
+        ]
+    cmd += ["clone", "--bare", url, str(bare_dir)]
+
+    r = _run(cmd)
+    if r.returncode == 0:
+        return
+    stderr = (r.stderr or "").strip()
+    if any(sig in stderr for sig in _AUTH_SIGNATURES):
+        raise RuntimeError(
+            f"git clone of {url!r} failed on credentials. For a private GitHub "
+            f"repo, pass an https://github.com/… URL and make sure `gh auth "
+            f"status` shows a login with 'repo' scope (the daemon authenticates "
+            f"the clone with that gh token, read from ~/.config/gh/hosts.yml). "
+            f"For a non-GitHub or git@…:/SSH remote, the daemon instead needs an "
+            f"ssh-agent exported via SSH_AUTH_SOCK.\n"
+            f"git said: {stderr}"
+        )
+    raise RuntimeError(f"git clone of {url!r} failed (exit {r.returncode}): {stderr}")
 
 
 def _index_project(name: str) -> None:
@@ -100,7 +133,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             _run(["git", "-C", str(init_dir), "push", "origin", "main"], check=True)
 
     elif mode == "clone":
-        _run(["git", "clone", "--bare", req.clone_url, str(bare_dir)], check=True)
+        _clone_bare(req.clone_url, bare_dir)
         _run(["git", "-C", str(bare_dir), "config", "remote.origin.fetch",
               "+refs/heads/*:refs/remotes/origin/*"])
 
@@ -110,7 +143,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         _run(["gh", "repo", "fork", req.fork_url, "--clone=false"])
         repo_name = Path(req.fork_url).stem
         fork_clone_url = f"https://github.com/{GITHUB_USER}/{repo_name}.git"
-        _run(["git", "clone", "--bare", fork_clone_url, str(bare_dir)], check=True)
+        _clone_bare(fork_clone_url, bare_dir)
         _run(["git", "-C", str(bare_dir), "config", "remote.origin.fetch",
               "+refs/heads/*:refs/remotes/origin/*"])
         _run(["git", "-C", str(bare_dir), "remote", "add", "upstream", req.fork_url])
@@ -135,6 +168,14 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
             raise RuntimeError(
                 f"Failed to create worktree for {default_branch}: {r.stderr}"
             )
+
+    # Scaffold the initial default-branch worktree exactly as a scope would:
+    # .awm/ metadata + data/skills symlinks + agents DB row, so the project is
+    # immediately usable and visible to scope_search without a scope_repair.
+    _scaffold_awm_dir(
+        req.name, default_branch, worktree_dir,
+        branch=default_branch,
+    )
 
     _index_project(req.name)
 

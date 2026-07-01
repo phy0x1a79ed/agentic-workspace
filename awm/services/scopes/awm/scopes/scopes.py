@@ -516,6 +516,108 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
     return report
 
 
+def _ensure_awm_gitignored(repo_dir: Path) -> None:
+    """Make ``.awm/`` invisible to git in ``repo_dir`` without touching any
+    tracked file.
+
+    awm's own project repos gitignore ``.awm/`` already, but a freshly cloned
+    third-party repo (e.g. via ``project_create --clone``) does not — so the
+    scaffolded ``.awm/`` would show up as untracked and leave the worktree
+    "dirty". Appending ``.awm/`` to the repo's common ``info/exclude`` (shared
+    by every worktree, never committed) fixes that cleanly. No-op when git
+    already ignores ``.awm``.
+    """
+    check = run_git(["git", "-C", str(repo_dir), "check-ignore", "-q", ".awm"])
+    if check.returncode == 0:
+        return  # already ignored — tracked .gitignore or a prior exclude entry
+    cd = run_git(["git", "-C", str(repo_dir), "rev-parse", "--git-common-dir"])
+    if cd.returncode != 0:
+        return  # not a git worktree we can reason about; leave it alone
+    common = Path(cd.stdout.strip())
+    if not common.is_absolute():
+        common = (repo_dir / common).resolve()
+    info = common / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    exclude = info / "exclude"
+    prior = exclude.read_text() if exclude.exists() else ""
+    if ".awm/" in prior.split():
+        return
+    with exclude.open("a") as fh:
+        if prior and not prior.endswith("\n"):
+            fh.write("\n")
+        fh.write(".awm/\n")
+
+
+def _scaffold_awm_dir(
+    project: str,
+    scope: str,
+    repo_dir: Path,
+    *,
+    branch: str,
+    context: str | None = None,
+    is_vagrant: bool = False,
+) -> str:
+    """Scaffold a worktree's ``.awm/`` metadata + agents DB row.
+
+    Shared by :func:`create_scope` and :func:`create_project` so a project's
+    initial default-branch worktree gets the exact same treatment as any
+    scope. Idempotent: symlinks are unlink-before-relink and the agents row is
+    get-or-create (``ensure_agent``), so a repair path can safely re-run it.
+    Returns the ``context.md`` content that was written.
+    """
+    awm_dir = _get_awm_dir(repo_dir)
+    awm_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_awm_gitignored(repo_dir)
+
+    data_link = awm_dir / "data"
+    if data_link.is_symlink() or data_link.exists():
+        data_link.unlink()
+    data_target = DATA_DIR / project
+    data_target.mkdir(parents=True, exist_ok=True)
+    data_link.symlink_to(data_target)
+
+    skills_link = awm_dir / "skills"
+    if skills_link.is_symlink() or skills_link.exists():
+        skills_link.unlink()
+    skills_link.symlink_to(SKILLS_DIR)
+
+    context_content = context or _default_context(project, scope)
+    (awm_dir / "context.md").write_text(context_content)
+    (awm_dir / "history.md").write_text(_generate_history_md(project, scope))
+    (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(project, scope))
+    _write_scope_opencode_config(awm_dir)
+
+    dao = ScopesDAO()
+    with dao.transaction() as conn:
+        # Ensure the project row exists first — ensure_agent requires it, and
+        # create_project reaches here before any scope has created that row.
+        _ensure_project_row(project, conn=conn)
+        ensure_agent(
+            project, scope,
+            branch=branch,
+            worktree=str(repo_dir),
+            agent_cli="claude",
+            status="allocated",
+            is_vagrant=is_vagrant,
+            conn=conn,
+        )
+
+    # Embeddings index
+    try:
+        from awm.persistence.embeddings import upsert_embedding
+        from awm.persistence.databases import get_connection
+        text = f"{project}/{scope} {context_content[:500]}"
+        conn = get_connection("scopes")
+        try:
+            upsert_embedding(conn, "scope", f"{project}/{scope}", text[:500])
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    return context_content
+
+
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata + agents row."""
     validate_name(req.project, kind="project name")
@@ -531,7 +633,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
 
     from_branch = req.from_branch or detect_default_branch(bare_dir)
     repo_dir = PROJECTS_DIR / req.project / req.scope
-    feature_branch = f"feat/{req.scope}"
+    feature_branch = req.branch_name or f"feat/{req.scope}"
 
     dao = ScopesDAO()
     with dao.transaction() as conn:
@@ -557,51 +659,12 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     if r.returncode != 0:
         raise RuntimeError(f"Failed to create worktree: {r.stderr}")
 
-    awm_dir = _get_awm_dir(repo_dir)
-    awm_dir.mkdir(parents=True, exist_ok=True)
-
-    data_link = awm_dir / "data"
-    if data_link.is_symlink() or data_link.exists():
-        data_link.unlink()
-    data_target = DATA_DIR / req.project
-    data_target.mkdir(parents=True, exist_ok=True)
-    data_link.symlink_to(data_target)
-
-    skills_link = awm_dir / "skills"
-    if skills_link.is_symlink() or skills_link.exists():
-        skills_link.unlink()
-    skills_link.symlink_to(SKILLS_DIR)
-
-    context_content = req.context or _default_context(req.project, req.scope)
-    (awm_dir / "context.md").write_text(context_content)
-    (awm_dir / "history.md").write_text(_generate_history_md(req.project, req.scope))
-    (awm_dir / "artifacts.md").write_text(_generate_artifacts_md(req.project, req.scope))
-    _write_scope_opencode_config(awm_dir)
-
-    dao2 = ScopesDAO()
-    with dao2.transaction() as conn:
-        ensure_agent(
-            req.project, req.scope,
-            branch=feature_branch,
-            worktree=str(repo_dir),
-            agent_cli="claude",
-            status="allocated",
-            is_vagrant=(req.project == VAGRANT_PROJECT),
-            conn=conn,
-        )
-
-    # Embeddings index
-    try:
-        from awm.persistence.embeddings import upsert_embedding
-        from awm.persistence.databases import get_connection
-        text = f"{req.project}/{req.scope} {context_content[:500]}"
-        conn = get_connection("scopes")
-        try:
-            upsert_embedding(conn, "scope", f"{req.project}/{req.scope}", text[:500])
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    _scaffold_awm_dir(
+        req.project, req.scope, repo_dir,
+        branch=feature_branch,
+        context=req.context,
+        is_vagrant=(req.project == VAGRANT_PROJECT),
+    )
 
     return ScopeActionResponse(
         project=req.project,
