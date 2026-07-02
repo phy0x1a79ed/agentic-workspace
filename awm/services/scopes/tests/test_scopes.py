@@ -511,3 +511,34 @@ class TestHealScopes:
             "claude_md": None, "context_md": None,
             "opencode_config": None,
         }
+
+
+class TestArtifactsPointer:
+    """`.awm/artifacts.md` is a bounded discoverability pointer, not an index.
+
+    It is read on every session's startup ritual, so it must teach how to *find*
+    reusable outputs and stay a fixed size — never inline the (unbounded) list.
+    """
+
+    def test_pointer_teaches_discovery_not_a_list(self):
+        from awm.scopes.scopes import _generate_artifacts_md
+
+        md = _generate_artifacts_md("awm", "dev-misc")
+
+        # Discoverability: what/when/how to find and reuse sibling outputs.
+        assert "artifact_search project=awm" in md
+        assert "artifact_register project=awm scope=dev-misc" in md
+        assert "pointer, not a list" in md
+        assert "Reuse beats recompute" in md
+        # Not the old content-free stub.
+        assert "Artifact index is managed by the artifacts service" not in md
+
+    def test_pointer_is_bounded_and_lists_nothing(self):
+        from awm.scopes.scopes import _generate_artifacts_md
+
+        # Content depends only on project/scope names, never on how many
+        # artifacts exist — so the file cannot grow into a force-read index.
+        md = _generate_artifacts_md("awm", "dev-misc")
+        assert len(md) < 1500
+        # No per-artifact rows (a real index would enumerate them).
+        assert "\n- " not in md.split("**How to look**", 1)[0]
