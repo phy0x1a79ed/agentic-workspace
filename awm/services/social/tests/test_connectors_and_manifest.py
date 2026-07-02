@@ -185,7 +185,12 @@ class TestManifest:
             "social_download_attachments", "social_accounts", "social_channels",
             "social_open_dm", "social_operators", "social_operator_add",
             "social_operator_remove", "social_lookup",
+            "social_buckets", "social_bucket_ls", "social_bucket_get",
+            "social_bucket_put", "social_bucket_rm", "social_bucket_search",
         }
+        # Tool names must be globally unique (the catalog warn-and-skips dups).
+        tool_names = [f.get("tool", f["name"]) for f in fns]
+        assert len(tool_names) == len(set(tool_names))
         # Every declared function has a handler.
         for f in fns:
             assert f["name"] in HANDLERS
