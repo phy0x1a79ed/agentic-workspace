@@ -30,9 +30,58 @@ from typing import Any, Callable, Optional
 # unless the caller passes confirm=true.
 DESTRUCTIVE = {"/clear", "/quit", "/exit"}
 
+# Slash commands that open a blocking modal / picker in the TUI (a settings pane,
+# a navigable list, …). Pasted input and Enter are SWALLOWED by the modal — a
+# follow-up prompt does not escape it, and for a navigable list an Enter drills
+# deeper — so reflection cannot drive them and would leave the session frozen
+# (only a hand-typed Escape recovers). Refused outright; run these by hand.
+# Empirically verified for /status and /mcp (both trap input; Esc-only exit).
+# Best-effort curated list — extend as new modal commands appear.
+INTERACTIVE = {
+    "/mcp", "/status", "/config", "/permissions", "/agents",
+    "/hooks", "/resume", "/theme", "/login", "/logout",
+    "/bashes", "/doctor", "/statusline", "/vim",
+}
+
+# Commands that act directly WITH an argument but open a picker modal when bare
+# (e.g. `/model opus` switches immediately; `/model` alone opens the chooser).
+_MODAL_WHEN_BARE = {"/model"}
+
 # Settle beat between the paste landing and the Enter that submits it, so the
 # TUI has focused the pasted input before we press return.
 _SETTLE_S = 0.15
+
+# Longer settle between the slash command's Enter and the follow-up paste, so the
+# composer has cleared (the command is on the queue) before the follow-up lands.
+_FOLLOWUP_SETTLE_S = 0.3
+
+# A bare slash command (e.g. /compact) runs at end-of-turn and then leaves the
+# session idle with nothing to do — for an autonomous agent that is death. So a
+# self-directed slash command must be trailed by a real prompt that gives the
+# session a next turn once the command completes. This is the default when the
+# caller does not supply their own `followup`.
+DEFAULT_FOLLOWUP = "Continue with what you were doing."
+
+
+def is_slash(text: str) -> bool:
+    """True if ``text`` is a slash command (a TUI control command, not a prompt)."""
+    return text.strip().startswith("/")
+
+
+def opens_modal(text: str) -> bool:
+    """True if ``text`` opens a blocking modal/picker that traps pasted input.
+
+    Covers the curated :data:`INTERACTIVE` set plus arg-less forms in
+    :data:`_MODAL_WHEN_BARE` (``/model`` alone opens a chooser; ``/model opus``
+    acts directly).
+    """
+    parts = text.strip().split()
+    first = parts[0]
+    if first in INTERACTIVE:
+        return True
+    if first in _MODAL_WHEN_BARE and len(parts) == 1:
+        return True
+    return False
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -157,16 +206,45 @@ def _assert_pane_exists(pane: str, socket: Optional[str], runner: Runner) -> Non
 # The one primitive
 # ---------------------------------------------------------------------------
 
+def _paste_and_submit(text: str, pane: str, *, enter: bool,
+                      socket: Optional[str], runner: Runner) -> bool:
+    """Paste ``text`` into ``pane`` (bracketed) and press Enter when ``enter``.
+
+    Returns whether an Enter was sent. No Escape is ever sent, so an in-flight
+    turn is queued rather than interrupted.
+    """
+    buf = "awm-rfl-" + secrets.token_hex(4)
+    _run(_base_argv(socket) + ["load-buffer", "-b", buf, "-"],
+         runner, input=text.encode("utf-8"), capture_output=True)
+    _run(_base_argv(socket) + ["paste-buffer", "-d", "-p", "-b", buf, "-t", pane],
+         runner)
+    if enter:
+        time.sleep(_SETTLE_S)
+        _run(_base_argv(socket) + ["send-keys", "-t", pane, "Enter"], runner)
+        return True
+    return False
+
+
 def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
          delay_ms: int = 0, confirm: bool = False,
+         followup: Optional[str] = None,
          socket: Optional[str] = None,
          runner: Runner = subprocess.run) -> dict:
     """Paste ``text`` into ``pane`` and (unless ``enter=False``) submit it.
 
-    Returns a result dict. A destructive command (see :data:`DESTRUCTIVE`) with
-    ``confirm`` false is refused (``{"ok": False, "refused": True, ...}``) rather
-    than pasted. ``delay_ms`` waits before injecting; a leading ``/`` is safe
-    thanks to bracketed paste. No Escape is sent, so an in-flight turn is queued.
+    Returns a result dict. Two guards can refuse before anything is pasted
+    (``{"ok": False, "refused": True, ...}``):
+
+    * A destructive command (see :data:`DESTRUCTIVE`) with ``confirm`` false.
+    * A modal/interactive command (see :data:`opens_modal`) — these trap pasted
+      input and would freeze the session; refused outright, no override.
+
+    When a *submitted* slash command is not one of the above, a follow-up prompt
+    is enforced: a bare slash command (e.g. ``/compact``) runs at end-of-turn and
+    then leaves the session idle with nothing to do, so a trailing prompt is
+    queued behind it to give the session a next turn. ``followup`` overrides the
+    default text (:data:`DEFAULT_FOLLOWUP`). ``delay_ms`` waits before injecting;
+    a leading ``/`` is safe thanks to bracketed paste.
     """
     if not text or not text.strip():
         raise ValueError("text is required")
@@ -179,6 +257,17 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
                       f"pass confirm=true to proceed.",
             "guard": sorted(DESTRUCTIVE),
         }
+    if opens_modal(text):
+        return {
+            "ok": False,
+            "refused": True,
+            "kind": "interactive",
+            "reason": f"{first!r} opens an interactive modal/picker that "
+                      f"swallows pasted input; reflection cannot navigate it and "
+                      f"it would freeze the session (only a hand-typed Esc "
+                      f"recovers). Run it by hand.",
+            "guard": sorted(INTERACTIVE),
+        }
 
     if pane is None:
         pane = autodetect_pane(socket=socket, runner=runner)
@@ -187,15 +276,19 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
     if delay_ms and delay_ms > 0:
         time.sleep(min(delay_ms, 25_000) / 1000.0)
 
-    buf = "awm-rfl-" + secrets.token_hex(4)
-    _run(_base_argv(socket) + ["load-buffer", "-b", buf, "-"],
-         runner, input=text.encode("utf-8"), capture_output=True)
-    _run(_base_argv(socket) + ["paste-buffer", "-d", "-p", "-b", buf, "-t", pane],
-         runner)
-    submitted = False
-    if enter:
-        time.sleep(_SETTLE_S)
-        _run(_base_argv(socket) + ["send-keys", "-t", pane, "Enter"], runner)
-        submitted = True
+    submitted = _paste_and_submit(text, pane, enter=enter,
+                                  socket=socket, runner=runner)
 
-    return {"ok": True, "pane": pane, "text": text, "submitted": submitted}
+    # A submitted slash command needs a real prompt behind it or the session
+    # goes idle/dead once the command completes. Queue one (the caller's, or a
+    # generic keep-alive). Plain prompts are their own turn — no follow-up.
+    followup_sent = None
+    if submitted and is_slash(text):
+        followup_sent = (followup.strip() if followup and followup.strip()
+                         else DEFAULT_FOLLOWUP)
+        time.sleep(_FOLLOWUP_SETTLE_S)
+        _paste_and_submit(followup_sent, pane, enter=True,
+                          socket=socket, runner=runner)
+
+    return {"ok": True, "pane": pane, "text": text,
+            "submitted": submitted, "followup": followup_sent}

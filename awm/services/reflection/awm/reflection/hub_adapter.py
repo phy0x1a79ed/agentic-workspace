@@ -39,7 +39,12 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Paste a command/text into a terminal agent's own tmux pane and "
                 "submit it (no Escape, so it QUEUES behind the current turn). Use "
-                "for self-directed slash commands like /compact, /model, /clear. "
+                "for self-directed slash commands like /compact or /model opus. A "
+                "submitted slash command is auto-trailed by a follow-up prompt "
+                "(override with `followup`) so the session has a next turn once "
+                "the command finishes — a bare command would otherwise go idle. "
+                "Modal commands (/mcp, /status, /model with no arg, …) are refused "
+                "— they trap input and freeze the session. "
                 "Pass `pane` = your $TMUX_PANE (find it with `echo $TMUX_PANE`)."
             ),
             "timeout": 60,
@@ -51,6 +56,10 @@ API_MANIFEST: dict[str, Any] = {
                                 "If omitted, best-effort auto-detect of a single agent pane."},
                 {"name": "enter", "type": "boolean",
                  "description": "Press Enter to submit after pasting (default true)."},
+                {"name": "followup", "type": "string",
+                 "description": "Prompt queued after a slash command to keep the "
+                                "session alive (default 'Continue with what you "
+                                "were doing.'). Ignored for plain prompts."},
                 {"name": "delay_ms", "type": "integer",
                  "description": "Wait this many ms before injecting (default 0)."},
                 {"name": "confirm", "type": "boolean",
@@ -64,14 +73,19 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "reflection_compact",
             "description": (
                 "Compact your own conversation: injects /compact into your tmux "
-                "pane. It queues and runs the instant the current turn ends. Pass "
-                "`pane` = your $TMUX_PANE (find it with `echo $TMUX_PANE`)."
+                "pane, then a follow-up prompt so the session resumes after "
+                "compaction instead of going idle. It queues and runs the instant "
+                "the current turn ends. Pass `pane` = your $TMUX_PANE (find it "
+                "with `echo $TMUX_PANE`)."
             ),
             "timeout": 60,
             "params": [
                 {"name": "pane", "type": "string",
                  "description": "Target tmux pane id (your $TMUX_PANE). "
                                 "If omitted, best-effort auto-detect of a single agent pane."},
+                {"name": "followup", "type": "string",
+                 "description": "Prompt queued after /compact to resume work "
+                                "(default 'Continue with what you were doing.')."},
                 {"name": "delay_ms", "type": "integer",
                  "description": "Wait this many ms before injecting (default 0)."},
                 {"name": "socket", "type": "string",
@@ -105,6 +119,7 @@ def _handle_send(args: dict) -> dict:
             enter=_bool(args.get("enter"), True),
             delay_ms=_int(args.get("delay_ms"), 0),
             confirm=_bool(args.get("confirm"), False),
+            followup=args.get("followup"),
             socket=args.get("socket"),
         )
     except tmux_inject.TmuxError as exc:
@@ -117,6 +132,7 @@ def _handle_compact(args: dict) -> dict:
             "/compact",
             pane=args.get("pane"),
             delay_ms=_int(args.get("delay_ms"), 0),
+            followup=args.get("followup"),
             socket=args.get("socket"),
         )
     except tmux_inject.TmuxError as exc:
