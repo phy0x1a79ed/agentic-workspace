@@ -20,11 +20,15 @@ caller's environment — the target pane arrives as an argument (the caller's
 """
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Optional
+
+log = logging.getLogger("awm.reflection.tmux_inject")
 
 # Slash commands that irreversibly discard context / end the session. Refused
 # unless the caller passes confirm=true.
@@ -51,9 +55,28 @@ _MODAL_WHEN_BARE = {"/model"}
 # TUI has focused the pasted input before we press return.
 _SETTLE_S = 0.15
 
-# Longer settle between the slash command's Enter and the follow-up paste, so the
-# composer has cleared (the command is on the queue) before the follow-up lands.
-_FOLLOWUP_SETTLE_S = 0.3
+# --- Deferred follow-up (the fix for resume-before-compact) ---------------
+# A slash command and its resume prompt must NEVER be co-queued: `/compact` is a
+# slash command that only runs when the session goes idle, whereas the resume is
+# a regular message an *active* agent consumes immediately — so co-queuing lets
+# the agent run the resume first (on the old context) and starves `/compact` of
+# its idle slot. Instead we inject the command alone and hand the resume to a
+# detached watcher that polls the pane and injects it only once the command has
+# visibly completed (busy → idle, and for /compact the `Compacted` marker).
+_POLL_S = 2.0            # capture-pane poll cadence while awaiting completion
+_IDLE_CONFIRM_POLLS = 3  # consecutive idle samples that count as "settled" (a
+                         # no-op /compact, or any command done without a marker) —
+                         # a transient idle beat before compaction starts won't
+                         # reach this, so the resume can't fire in that gap
+_FOLLOWUP_MAX_WAIT_S = 900.0   # hard cap; inject anyway past this (resume beats hang)
+
+# TUI pane-state markers (calibrated against the interactive `claude` TUI). Order
+# of checks matters: an active turn shows the `esc to interrupt` footer even when
+# a *previous* compaction's `Compacted` line still lingers in scrollback, so busy
+# is classified before compacted to avoid firing on a stale marker.
+_COMPACTING_MARKERS = ("Compacting conversation",)
+_BUSY_MARKERS = ("esc to interrupt",)
+_COMPACTED_MARKERS = ("Compacted",)   # "Compacted (ctrl+o to see full summary)"
 
 # A bare slash command (e.g. /compact) runs at end-of-turn and then leaves the
 # session idle with nothing to do — for an autonomous agent that is death. So a
@@ -225,11 +248,103 @@ def _paste_and_submit(text: str, pane: str, *, enter: bool,
     return False
 
 
+# ---------------------------------------------------------------------------
+# Deferred follow-up: watch the pane, inject the resume only after the command
+# has visibly finished (never co-queued with it).
+# ---------------------------------------------------------------------------
+
+def capture_pane(pane: str, *, socket: Optional[str] = None,
+                 runner: Runner = subprocess.run) -> str:
+    """Return the visible text of ``pane`` (``tmux capture-pane -p``)."""
+    proc = _run(_base_argv(socket) + ["capture-pane", "-t", pane, "-p"],
+                runner, text=True)
+    return proc.stdout or ""
+
+
+def _pane_phase(snapshot: str) -> str:
+    """Classify the pane tail as ``compacting`` / ``busy`` / ``compacted`` / ``idle``.
+
+    Checked in that order deliberately: a running turn shows the ``esc to
+    interrupt`` footer, and a *stale* ``Compacted`` line from an earlier compaction
+    can still sit in scrollback — so an active turn must classify as busy, not
+    compacted, or the watcher would fire on the old marker.
+    """
+    tail = "\n".join(snapshot.splitlines()[-40:])
+    if any(m in tail for m in _COMPACTING_MARKERS):
+        return "compacting"
+    if any(m in tail for m in _BUSY_MARKERS):
+        return "busy"
+    if any(m in tail for m in _COMPACTED_MARKERS):
+        return "compacted"
+    return "idle"
+
+
+def _await_and_followup(text: str, followup: str, pane: str, *,
+                        socket: Optional[str], runner: Runner,
+                        sleep: Callable[[float], None] = time.sleep,
+                        clock: Callable[[], float] = time.monotonic) -> None:
+    """Block until the injected command has finished, then submit ``followup``.
+
+    Runs on a detached thread (a synchronous wait would deadlock — the agent's
+    turn would never end, so the queued ``/compact`` would never run). Waits for a
+    busy→idle transition; for ``/compact`` the positive signal is the ``Compacted``
+    marker appearing *after* an observed busy/compacting phase (so a stale marker
+    from a prior compaction is ignored). A ``_FOLLOWUP_MAX_WAIT_S`` cap injects the
+    resume anyway rather than strand the session on a mis-calibrated detector.
+    """
+    is_compact = text.strip().split()[0] == "/compact"
+    deadline = clock() + _FOLLOWUP_MAX_WAIT_S
+    saw_busy = False
+    idle_streak = 0
+    ready = False
+    while clock() < deadline:
+        try:
+            phase = _pane_phase(capture_pane(pane, socket=socket, runner=runner))
+        except TmuxError:
+            log.warning("reflection: pane %s vanished while awaiting completion; "
+                        "no resume injected", pane)
+            return
+        if phase in ("busy", "compacting"):
+            # The driving turn (or compaction itself) is running. Reset the idle
+            # streak so a transient idle beat before compaction can't accumulate.
+            saw_busy = True
+            idle_streak = 0
+        elif saw_busy and is_compact and phase == "compacted":
+            ready = True          # real compaction finished — resume at once
+            break
+        elif saw_busy and phase == "idle":
+            # Settled idle (a no-op /compact, or a command that leaves no marker).
+            # Require several consecutive samples so a brief gap before compaction
+            # starts does not fire the resume early.
+            idle_streak += 1
+            if idle_streak >= _IDLE_CONFIRM_POLLS:
+                ready = True
+                break
+        else:
+            # Not busy yet, or a stale `Compacted` from a prior compaction while
+            # saw_busy is still False — ignore and keep waiting.
+            idle_streak = 0
+        sleep(_POLL_S)
+    if not ready:
+        log.warning("reflection: command %r completion not observed within %ss; "
+                    "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
+    try:
+        _paste_and_submit(followup, pane, enter=True, socket=socket, runner=runner)
+    except TmuxError:
+        log.warning("reflection: pane %s gone before resume could be injected", pane)
+
+
+def _default_spawn(fn: Callable[[], None]) -> None:
+    """Run ``fn`` on a detached daemon thread (the service is long-lived)."""
+    threading.Thread(target=fn, name="reflection-followup", daemon=True).start()
+
+
 def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
          delay_ms: int = 0, confirm: bool = False,
          followup: Optional[str] = None,
          socket: Optional[str] = None,
-         runner: Runner = subprocess.run) -> dict:
+         runner: Runner = subprocess.run,
+         spawn: Callable[[Callable[[], None]], Any] = _default_spawn) -> dict:
     """Paste ``text`` into ``pane`` and (unless ``enter=False``) submit it.
 
     Returns a result dict. Two guards can refuse before anything is pasted
@@ -241,10 +356,15 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
 
     When a *submitted* slash command is not one of the above, a follow-up prompt
     is enforced: a bare slash command (e.g. ``/compact``) runs at end-of-turn and
-    then leaves the session idle with nothing to do, so a trailing prompt is
-    queued behind it to give the session a next turn. ``followup`` overrides the
-    default text (:data:`DEFAULT_FOLLOWUP`). ``delay_ms`` waits before injecting;
-    a leading ``/`` is safe thanks to bracketed paste.
+    then leaves the session idle with nothing to do, so a trailing prompt gives
+    the session a next turn. Crucially the follow-up is **deferred** — it is NOT
+    queued behind the command (that would let an active agent run the resume first,
+    on the old context, and starve ``/compact`` of its idle slot). Instead a
+    detached watcher (``spawn``) injects it only once the command has visibly
+    completed. The call returns immediately with ``followup_deferred: True``.
+    ``followup`` overrides the default text (:data:`DEFAULT_FOLLOWUP`).
+    ``delay_ms`` waits before injecting; a leading ``/`` is safe thanks to
+    bracketed paste.
     """
     if not text or not text.strip():
         raise ValueError("text is required")
@@ -279,16 +399,21 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
     submitted = _paste_and_submit(text, pane, enter=enter,
                                   socket=socket, runner=runner)
 
-    # A submitted slash command needs a real prompt behind it or the session
-    # goes idle/dead once the command completes. Queue one (the caller's, or a
-    # generic keep-alive). Plain prompts are their own turn — no follow-up.
+    # A submitted slash command needs a real prompt behind it or the session goes
+    # idle/dead once the command completes. But the resume must NOT be co-queued
+    # with the command (an active agent would run the resume first, on the old
+    # context, deferring the command). Defer it to a detached watcher that injects
+    # it only after the command has visibly finished. Plain prompts are their own
+    # turn — no follow-up.
     followup_sent = None
+    followup_deferred = False
     if submitted and is_slash(text):
         followup_sent = (followup.strip() if followup and followup.strip()
                          else DEFAULT_FOLLOWUP)
-        time.sleep(_FOLLOWUP_SETTLE_S)
-        _paste_and_submit(followup_sent, pane, enter=True,
-                          socket=socket, runner=runner)
+        followup_deferred = True
+        spawn(lambda: _await_and_followup(text, followup_sent, pane,
+                                          socket=socket, runner=runner))
 
     return {"ok": True, "pane": pane, "text": text,
-            "submitted": submitted, "followup": followup_sent}
+            "submitted": submitted, "followup": followup_sent,
+            "followup_deferred": followup_deferred}
