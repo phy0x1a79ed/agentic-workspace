@@ -34,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "orchestrator"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # The explicit node lifecycle — a TRUE state machine: every distinct position is
 # its own named state. A *rest* state means a placement is needed (no agent
@@ -109,7 +109,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent_ref       TEXT,            -- the placed agent (from place_on_task) ; NULL when none
     placement_token TEXT,            -- opaque token returned by place_on_task
     plan_ref        TEXT,            -- the staged plan artifact (delivered by a plan agent); NULL until planned
-    attached        INTEGER NOT NULL DEFAULT 0,   -- orthogonal human-attached flag (freezes auto-progress)
+    attached        INTEGER NOT NULL DEFAULT 0,   -- DURABLE human-attached flag (single source of truth; freezes auto-progress)
+    -- Steering handshake bits (the agents service is the single writer; the
+    -- orchestrator only mirrors). Detach is a two-consent handshake: the agent
+    -- sets ``steer_agent_ready`` (with the refreshed ``objective``), the user
+    -- sets ``steer_user_done``; when both agree the agents side auto-detaches
+    -- (clears attached + all three bits). ``steer_requested`` is a mid-run
+    -- "wants steering" flag (set while detached; no freeze until a human attaches).
+    steer_user_done   INTEGER NOT NULL DEFAULT 0,
+    steer_agent_ready INTEGER NOT NULL DEFAULT 0,
+    steer_requested   INTEGER NOT NULL DEFAULT 0,
+    objective         TEXT NOT NULL DEFAULT '',   -- the durable objective record (system-written; ratified at detach)
     replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-attempts left (re-plans + decomposes) before abandoned
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
@@ -189,6 +199,11 @@ CREATE INDEX IF NOT EXISTS idx_attempt_memories_task ON attempt_memories(task_id
 # (orthogonal to ``attached`` — it survives WS detach so the supervisor stays out
 # while a human owns/left the task). All three carry constant defaults, so the
 # ADD COLUMNs are direct.
+# v4→v5 (steering protocol): the durable ``attached`` becomes the authoritative
+# attach state and gains the steering-handshake columns — ``steer_user_done`` /
+# ``steer_agent_ready`` / ``steer_requested`` (int 0/1 consent + wants-steering
+# bits) and the ``objective`` record (text). All carry constant defaults, so the
+# ADD COLUMNs are direct.
 MIGRATIONS: dict[tuple[int, int], str] = {
     (1, 2): "ALTER TABLE tasks ADD COLUMN repos TEXT;\n",
     (2, 3): (
@@ -217,6 +232,12 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "ALTER TABLE tasks ADD COLUMN title TEXT NOT NULL DEFAULT '';\n"
         "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';\n"
         "ALTER TABLE tasks ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;\n"
+    ),
+    (4, 5): (
+        "ALTER TABLE tasks ADD COLUMN steer_user_done INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN steer_agent_ready INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN steer_requested INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN objective TEXT NOT NULL DEFAULT '';\n"
     ),
 }
 
@@ -257,16 +278,21 @@ class OrchestratorDAO(BaseDAO):
         *,
         state: str = "blocked",
         replan_budget: int = 2,
+        title: str = "",
         conn: sqlite3.Connection | None = None,
     ) -> str:
-        """Insert a task; return its new id (its canonical UUID key)."""
+        """Insert a task; return its new id (its canonical UUID key).
+
+        ``title`` is the optional human-facing headline (a planner supplies one
+        per decompose child; the born-attached / drop-in path leaves it empty and
+        the steering agent sets it at detach via ``set_title``)."""
         tid = new_uuid()
         now = _now()
         self.execute(
             """INSERT INTO tasks
-               (id, goal, state, replan_budget, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (tid, goal, state, replan_budget, now, now),
+               (id, goal, title, state, replan_budget, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (tid, goal, title, state, replan_budget, now, now),
             conn=conn,
         )
         return tid
@@ -307,6 +333,19 @@ class OrchestratorDAO(BaseDAO):
             "SELECT * FROM tasks WHERE id = ?", (task_id,), conn=conn
         )
 
+    def get_task_by_slug(
+        self, slug: str, *, conn: sqlite3.Connection | None = None
+    ) -> dict | None:
+        """Resolve a task by its ``workspace_slug`` (the agent's unit-slug key).
+
+        The privileged steering mirror keys by task id OR slug; a placed agent's
+        identity is its slug, so this lets a mirror resolve without the task id."""
+        return self.query_one(
+            "SELECT * FROM tasks WHERE workspace_slug = ? "
+            "ORDER BY created_at LIMIT 1",
+            (slug,), conn=conn,
+        )
+
     def list_tasks(
         self, *, conn: sqlite3.Connection | None = None
     ) -> list[dict]:
@@ -330,12 +369,14 @@ class OrchestratorDAO(BaseDAO):
 
         Allowed columns: state, mode, workspace_slug, agent_ref,
         placement_token, plan_ref, attached, replan_budget, retry_count, goal,
-        title, tags, paused.
+        title, tags, paused, steer_user_done, steer_agent_ready,
+        steer_requested, objective.
         """
         allowed = {
             "state", "mode", "workspace_slug", "agent_ref", "placement_token",
             "plan_ref", "attached", "replan_budget", "retry_count", "goal",
-            "title", "tags", "paused",
+            "title", "tags", "paused", "steer_user_done", "steer_agent_ready",
+            "steer_requested", "objective",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:

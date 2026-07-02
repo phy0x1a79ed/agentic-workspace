@@ -33,9 +33,19 @@ from collections import Counter
 from typing import Any, Callable
 
 from awm.orchestrator import dispatch, kernel
-from awm.orchestrator.dao import PLAN_CONTRACT, OrchestratorDAO, init
+from awm.orchestrator.dao import OUT_STATE, PLAN_CONTRACT, OrchestratorDAO, init
 
 log = logging.getLogger("awm.orchestrator.operations")
+
+# The fresh ``replan_budget`` a human-initiated retry (``orch_retry``) re-grants
+# — the same grant a brand-new task is born with (``dao.create_task`` default),
+# so a retried node gets a full budget model, not the leftovers of a give-up.
+FRESH_REPLAN_BUDGET = 2
+
+# The out-states (a placement is live). Lifecycle controls that require a
+# *resting* node (``orch_decompose``) reject these — a live placement must be
+# cancelled first.
+_OUT_STATES = frozenset(OUT_STATE.values())
 
 
 def _parse_tags(raw: Any) -> list[str]:
@@ -75,19 +85,59 @@ _reclaim_workspace_fn: Callable[[str], None] | None = None
 # Live-link a node's attached scopes into its workspace unit (wired to the
 # workspace service's ``workspace_link_repos``). Signature: (unit_slug, repos).
 _link_repos_fn: Callable[[str, list], None] | None = None
+# Best-effort stop of a live placement (wired to the agents service's
+# ``stop_placement`` at integration). Called by ``orch_cancel`` AFTER the task is
+# routed via the give-up path — a failure to stop must never fail the cancel (the
+# reclaim machinery collects the corpse; the closed placement row prevents
+# double-routing). Signature: (workspace_slug, task_id) -> None.
+_stop_placement_fn: Callable[[str, str | None], None] | None = None
 
 
 def configure(
     *,
     reclaim_workspace_fn: Callable[[str], None] | None = None,
     link_repos_fn: Callable[[str, list], None] | None = None,
+    stop_placement_fn: Callable[[str, str | None], None] | None = None,
 ) -> None:
     """Override the cross-service seams (tests / integration)."""
-    global _reclaim_workspace_fn, _link_repos_fn
+    global _reclaim_workspace_fn, _link_repos_fn, _stop_placement_fn
     if reclaim_workspace_fn is not None:
         _reclaim_workspace_fn = reclaim_workspace_fn
     if link_repos_fn is not None:
         _link_repos_fn = link_repos_fn
+    if stop_placement_fn is not None:
+        _stop_placement_fn = stop_placement_fn
+
+
+def _steer_fields(t: dict) -> dict:
+    """Project a task's durable steering state for a UI read.
+
+    The consent/steering bits ride the 3s DAG poll as booleans; the objective is
+    projected only as *presence* (``has_objective``) — the text itself is an
+    on-selection ``orch_task_detail`` read (the poll must stay cheap)."""
+    return {
+        "steer_user_done": bool(t["steer_user_done"]),
+        "steer_agent_ready": bool(t["steer_agent_ready"]),
+        "steer_requested": bool(t["steer_requested"]),
+        "has_objective": bool((t["objective"] or "").strip()),
+    }
+
+
+def _resolve_task_arg(dao: OrchestratorDAO, args: dict) -> dict | None:
+    """Resolve a task from a mirror's args — by ``task_id`` else workspace slug.
+
+    The steering mirrors are called by the agents service, which keys by the
+    task id (its ``task_ref``); a slug fallback (``workspace_slug`` / ``unit_slug``
+    / ``scope``) matches how a placed agent is identified by its unit slug."""
+    tid = args.get("task_id")
+    if tid:
+        task = dao.get_task(tid)
+        if task is not None:
+            return task
+    slug = args.get("workspace_slug") or args.get("unit_slug") or args.get("scope")
+    if slug:
+        return dao.get_task_by_slug(slug)
+    return None
 
 
 def _verify_agent(task: dict, agent_ref: str | None) -> None:
@@ -367,7 +417,8 @@ def orch_status(args: dict[str, Any]) -> dict[str, Any]:
              "tags": _parse_tags(t["tags"]), "state": t["state"],
              "is_root": bool(t["is_root"]), "workspace_slug": t["workspace_slug"],
              "agent_ref": t["agent_ref"], "mode": t["mode"],
-             "attached": bool(t["attached"]), "paused": bool(t["paused"])}
+             "attached": bool(t["attached"]), "paused": bool(t["paused"]),
+             **_steer_fields(t)}
             for t in tasks
         ],
     }
@@ -411,6 +462,7 @@ def orch_dag(args: dict[str, Any]) -> dict[str, Any]:
              "is_root": bool(t["is_root"]), "mode": t["mode"],
              "workspace_slug": t["workspace_slug"], "agent_ref": t["agent_ref"],
              "attached": bool(t["attached"]), "paused": bool(t["paused"]),
+             **_steer_fields(t),
              "created_at": t["created_at"], "updated_at": t["updated_at"]}
             for t in tasks
         ],
@@ -479,6 +531,185 @@ def orch_set_paused(args: dict[str, Any]) -> dict[str, Any]:
     paused = 1 if args.get("paused") else 0
     dao.update_task(task["id"], paused=paused)
     return {"ok": True, "task_id": task["id"], "paused": bool(paused)}
+
+
+def orch_task_detail(args: dict[str, Any]) -> dict[str, Any]:
+    """On-selection read for one task: the objective record text, the staged
+    plan reference (if any), and the append-only attempt memories.
+
+    Public, read-only. This is the deliberately heavier per-task read the UI
+    fires when a node is selected — kept OUT of the 3s ``orch_dag`` poll (which
+    projects only objective *presence*). The steering/consent bits are echoed for
+    convenience so a focus panel needs one read.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    memories = [
+        {"outcome": m["outcome"], "reason_type": m["reason_type"],
+         "reason_text": m["reason_text"], "payload_ref": m["payload_ref"],
+         "ts": m["ts"]}
+        for m in dao.list_attempt_memories(task["id"])
+    ]
+    return {
+        "ok": True,
+        "task_id": task["id"],
+        "goal": task["goal"],
+        "title": task["title"],
+        "state": task["state"],
+        "objective": task["objective"] or "",
+        "plan_ref": task["plan_ref"],
+        "attached": bool(task["attached"]),
+        "paused": bool(task["paused"]),
+        **_steer_fields(task),
+        "attempt_memories": memories,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Node lifecycle controls (public) — cancel / retry / decompose
+# ---------------------------------------------------------------------------
+
+
+def orch_cancel(args: dict[str, Any]) -> dict[str, Any]:
+    """Cancel a task: route it through the give-up path, then best-effort stop
+    any live placement.
+
+    Public. Rejects the root sentinel and the terminal states
+    (``completed`` / ``failed`` / ``abandoned``) with ``{ok: False, error}``.
+    Otherwise it reuses the kernel's abandon semantics (:func:`kernel.abandon`)
+    — the SAME single give-up path any abandonment takes — so downstream
+    consumers route to re-plan exactly like any other give-up (there is no new
+    state). It then best-effort stops the live placement via the agents stop
+    seam: the stop closes the placement row BEFORE killing the session, so a
+    dying agent's late fail report cannot re-route consumers a second time, and
+    a stop failure never fails the cancel (the reclaim machinery collects the
+    corpse; the closed row prevents double-routing).
+
+    Cancelling an ATTACHED task is allowed — cancel is the human's escape hatch
+    — and additionally clears the durable ``attached`` flag and the steering
+    consent/wants-steering bits so a cancelled attended node is not left
+    "attached" forever.
+
+    Returns ``{ok, task_id, state}``.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    if task["is_root"]:
+        return {"ok": False, "error": "the root task cannot be cancelled"}
+    if task["state"] in ("completed", "failed", "abandoned"):
+        return {"ok": False,
+                "error": f"task is already terminal ({task['state']})"}
+    # Capture the live placement handle BEFORE abandon clears the workspace slug.
+    workspace_slug = task["workspace_slug"]
+    dao.add_attempt_memory(task["id"], "cancelled", reason_type="cancelled",
+                           reason_text="human-initiated cancel")
+    # ONE give-up path: rest abandoned + route consumers to re-plan.
+    intents = kernel.abandon(dao, task["id"])
+    # Cancel is the escape hatch — clear the durable attach + steering bits so a
+    # cancelled attended node doesn't stay attached/steering forever.
+    dao.update_task(task["id"], attached=0, steer_user_done=0,
+                    steer_agent_ready=0, steer_requested=0)
+    dispatch.enqueue(intents)
+    # Best-effort stop of the live placement (row-close-before-kill happens on
+    # the agents side). A failure here must never fail the cancel.
+    if _stop_placement_fn is not None and workspace_slug:
+        try:
+            _stop_placement_fn(workspace_slug, task["id"])
+        except Exception as exc:  # noqa: BLE001 — stop is best-effort
+            log.warning("orchestrator: stop_placement failed on cancel of %s: "
+                        "%s", task["id"], exc)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def orch_retry(args: dict[str, Any]) -> dict[str, Any]:
+    """Retry a failed/abandoned task: reset to ``ready`` with a fresh budget.
+
+    Public. Accepts ONLY a task resting in ``failed`` or ``abandoned``
+    (everything else is ``{ok: False, error}``). Resets it to ``ready`` (so it
+    re-enters the worker legs at the PLAN leg), re-grants ``replan_budget`` per
+    the budget model (:data:`FRESH_REPLAN_BUDGET`), zeroes ``retry_count``,
+    clears the sticky ``paused`` flag, the stale durable ``attached`` flag (a
+    retried node starts detached — re-attach with one interrupt), and the stale
+    steering consent / wants-steering bits (``steer_user_done`` /
+    ``steer_agent_ready`` / ``steer_requested`` → 0), and clears the stale
+    placement + plan reference.
+    It KEEPS the ratified ``objective`` record (the human's ratified intent) and
+    KEEPS the retained ``workspace_slug`` unit (so partial work is reused). It
+    appends a human-initiated-retry attempt memory and re-enqueues dispatch so
+    the node gets placed again.
+
+    CAVEAT: retrying a node whose downstream consumers have already re-planned
+    can mint a competing producer for the same contract — a consumer that
+    abandoned this node re-decomposed and may now have another producer for the
+    same deliverable. The OR / coalescing machinery that would reconcile
+    competing producers is deferred by design; this verb does not attempt it.
+
+    Returns ``{ok, task_id, state}``.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    if task["is_root"]:
+        return {"ok": False, "error": "the root sentinel cannot be retried"}
+    if task["state"] not in ("failed", "abandoned"):
+        return {"ok": False,
+                "error": f"retry accepts only a failed or abandoned task "
+                         f"(this one is {task['state']!r})"}
+    dao.add_attempt_memory(task["id"], "retried", reason_type="human-retry",
+                           reason_text="human-initiated retry")
+    dao.update_task(
+        task["id"], state="ready",
+        replan_budget=FRESH_REPLAN_BUDGET, retry_count=0,
+        paused=0, attached=0,
+        steer_user_done=0, steer_agent_ready=0, steer_requested=0,
+        mode=None, agent_ref=None, placement_token=None, plan_ref=None)
+    dispatch.enqueue([(task["id"], "plan")])
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def orch_decompose(args: dict[str, Any]) -> dict[str, Any]:
+    """Decompose a resting non-terminal node: push it through the needs-
+    decomposition entry (→ a planner placement).
+
+    Public. Accepts any RESTING non-terminal node — one that is non-terminal
+    (not ``completed`` / ``failed`` / ``abandoned``) and has no live placement
+    (not one of the out-states ``planning`` / ``verifying_plan`` / ``active`` /
+    ``decomposing``): the resting states ``blocked`` / ``ready`` /
+    ``plan_delivered`` / ``plan_approved`` / ``decompose_pending``. Rejects the
+    root sentinel, the out-states, and the terminals.
+
+    Reuses :func:`kernel.decompose` so the decompose budget is charged on entry
+    exactly like the organic (give-up-driven) path — a node out of budget
+    abandons and routes its consumers. Returns ``{ok, task_id, state}``.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    if task["is_root"]:
+        return {"ok": False, "error": "the root task cannot be decomposed"}
+    state = task["state"]
+    if state not in kernel.NON_TERMINAL:
+        return {"ok": False, "error": f"task is terminal ({state})"}
+    if state in _OUT_STATES:
+        return {"ok": False,
+                "error": f"task has a live placement ({state}); cancel it "
+                         "before decomposing"}
+    intents = kernel.decompose(dao, task["id"])
+    dispatch.enqueue(intents)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +854,7 @@ def decompose_commit(args: dict[str, Any]) -> dict[str, Any]:
 
     Payload shape::
 
-        children   = [{"ref": "<local>", "goal": "..."}]
+        children   = [{"ref": "<local>", "goal": "...", "title": "..."}]  # title optional
         contracts  = [{"name": "...", "spec": "...", "producer": "<local ref>"}]
         edges      = [{"consumer": "<local ref>", "contract": "<name>"}]
         depends_on = ["<terminal contract name>", ...]   # optional
@@ -644,7 +875,8 @@ def decompose_commit(args: dict[str, Any]) -> dict[str, Any]:
     created: list[tuple[str, str]] = []  # (name, contract_id) for sub-DAG contracts
     with dao.transaction() as conn:
         for ch in children:
-            cid = dao.create_task(ch.get("goal", ""), state="blocked", conn=conn)
+            cid = dao.create_task(ch.get("goal", ""), state="blocked",
+                                  title=str(ch.get("title") or ""), conn=conn)
             local_to_id[str(ch["ref"])] = cid
         for c in contracts:
             producer = local_to_id.get(str(c["producer"]))
@@ -795,6 +1027,38 @@ def set_attached(args: dict[str, Any]) -> dict[str, Any]:
     attached = 1 if args.get("attached") else 0
     dao.update_task(task["id"], attached=attached)
     return {"ok": True, "task_id": task["id"], "attached": bool(attached)}
+
+
+def set_steering(args: dict[str, Any]) -> dict[str, Any]:
+    """Privileged mirror: patch a task's durable steering state.
+
+    The agents service is the SINGLE writer for the steering handshake (attach,
+    the two consent bits, the wants-steering flag, and the objective record); the
+    orchestrator only mirrors what it decides, so this op is a plain field patch —
+    exactly the fields present in ``args`` are written, everything else is left
+    untouched. Resolvable by ``task_id`` (the usual key) or workspace slug.
+
+    The bit fields (``attached`` / ``steer_user_done`` / ``steer_agent_ready`` /
+    ``steer_requested``) are coerced to 0/1; ``objective`` is stored verbatim.
+    Idempotent — re-writing the same values is a no-op transition."""
+    init()
+    dao = OrchestratorDAO()
+    task = _resolve_task_arg(dao, args)
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    patch: dict[str, Any] = {}
+    for field in ("attached", "steer_user_done", "steer_agent_ready",
+                  "steer_requested"):
+        if args.get(field) is not None:
+            patch[field] = 1 if args[field] else 0
+    if args.get("objective") is not None:
+        patch["objective"] = str(args["objective"])
+    if patch:
+        dao.update_task(task["id"], **patch)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": fresh["id"],
+            "attached": bool(fresh["attached"]), **_steer_fields(fresh)}
 
 
 def set_title(args: dict[str, Any]) -> dict[str, Any]:

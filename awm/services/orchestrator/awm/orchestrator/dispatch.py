@@ -38,14 +38,12 @@ log = logging.getLogger("awm.orchestrator.dispatch")
 
 DispatchIntent = tuple[str, str]  # (task_id, mode); mode in REST_MODE.values()
 
-# When a placement resolves to the claude harness but no model is configured
-# (neither a per-task arg nor ``AWM_PLACEMENT_MODEL``), the claude CLI would fall
-# back to the human's *interactive* default — which can be a capable, paid model
-# at high effort (e.g. Opus / high). An unattended placement must never inherit
-# that. Pin an explicit, cheap default so the choice is deliberate, not silent.
-# Overridable per-deploy via ``AWM_PLACEMENT_MODEL`` / ``AWM_PLACEMENT_EFFORT``.
-DEFAULT_CLAUDE_PLACEMENT_MODEL = "haiku"
-DEFAULT_CLAUDE_PLACEMENT_EFFORT = "medium"
+# NOTE (T5): the old ``DEFAULT_CLAUDE_PLACEMENT_MODEL`` / ``_EFFORT`` constants
+# are gone. The uniform placement default (claude / haiku / medium for EVERY
+# placement, attended or not) now lives in the agents-side driver config
+# (``awm.agents.driver_config.DriverSettings``), resolved in
+# ``place_on_task._resolve_driver``. Dispatch only threads explicit
+# ``AWM_PLACEMENT_*`` env overrides; it no longer forks on attach state.
 
 # Module state. Configured once at boot via ``configure``/``start_drain_loop``.
 _place_fn: Callable[[dict], Any] = None  # type: ignore[assignment]
@@ -153,6 +151,13 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         for e in incoming if e["payload_ref"]
     ]
     brief: dict[str, Any] = {"goal": task["goal"], "mode": mode}
+    # The ratified objective record rides the brief for EVERY mode (when set) so a
+    # re-placement inherits the intent without the user repeating it: the agents
+    # side seeds it onto the row + renders it, and (for an attended re-placement)
+    # the drop-in worker resumes steering with the record in hand. Empty until a
+    # first detach handshake commits one.
+    if (task["objective"] or "").strip():
+        brief["objective"] = task["objective"]
 
     if mode == "plan":
         # The plan leg stages the reserved "plan" deliverable, NOT the real
@@ -187,38 +192,27 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         "prereadings": prereadings,
         "mode": mode,
     }
-    # Harness / model / effort resolution — the single, env-driven policy for
-    # every placement (attended or not), so ``gateway/dev/.env`` is one lever.
-    #
-    # * harness: ``AWM_PLACEMENT_HARNESS`` wins; absent it, an attended (drop-in)
-    #   node defaults to claude (interactive, attachable tmux terminal) while an
-    #   unattended node is left unset so the agents side applies its own
-    #   ``opencode`` default (DSv4-free / "openzen" — cheap unattended work).
-    # * model / effort: threaded from ``AWM_PLACEMENT_MODEL`` /
-    #   ``AWM_PLACEMENT_EFFORT`` when set. A claude placement with NO configured
-    #   model is pinned to an explicit cheap default (see the module constants)
-    #   rather than inheriting the human's interactive CLI default. opencode's
-    #   ``None``-model path (→ DSv4-free) is left untouched.
-    #
-    # All three are pure data — ``place_on_task`` reads ``harness`` / ``model`` /
-    # ``effort`` when present, else picks its own default. The ``attached`` intent
-    # is ALSO threaded so the agents-side supervisor freezes (no nag / no budget
-    # burn / no force-fail) on a born-attended node — a human-driven drop-in idles
-    # politely until detached. Without it the flag is hardcoded ``False`` at birth
-    # and the supervisor runs away (P2).
-    harness = os.environ.get("AWM_PLACEMENT_HARNESS") or (
-        "claude" if task["attached"] else None)
+    # UNIFORM placement (T5): NO fork on attach state. Every placement —
+    # attended or detached — defaults to the same driver (claude / haiku /
+    # medium), supplied by the agents-side driver-config default in
+    # ``place_on_task._resolve_driver``. Dispatch only threads explicit ENV
+    # OVERRIDES (``AWM_PLACEMENT_*``), which win over that default; when none are
+    # set the payload omits harness/model/effort and the driver-config default
+    # applies. opencode stays available purely as an explicit override — there
+    # are no second-class detached nodes.
+    harness = os.environ.get("AWM_PLACEMENT_HARNESS") or None
     model = os.environ.get("AWM_PLACEMENT_MODEL") or None
     effort = os.environ.get("AWM_PLACEMENT_EFFORT") or None
-    if harness == "claude" and not model:
-        model = DEFAULT_CLAUDE_PLACEMENT_MODEL
-        effort = effort or DEFAULT_CLAUDE_PLACEMENT_EFFORT
     if harness:
         payload["harness"] = harness
     if model:
         payload["model"] = model
     if effort:
         payload["effort"] = effort
+    # The ``attached`` intent is threaded so the agents-side supervisor freezes
+    # (no nag / no budget burn / no force-fail) on a born-attached node — a
+    # human-driven drop-in idles politely until detached. This is orthogonal to
+    # the harness now (attach no longer picks the driver).
     if task["attached"]:
         payload["attached"] = True
     # The sticky human pause rides alongside ``attached`` so a respawn/redispatch
@@ -228,8 +222,10 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
     if task["paused"]:
         payload["paused"] = True
     log.info("orchestrator: placement %s mode=%s harness=%s model=%s effort=%s "
-             "attached=%s", task["id"], mode, harness or "(agents-default)",
-             model or "(harness-default)", effort or "(harness-default)",
+             "attached=%s", task["id"], mode,
+             harness or "(driver-config default)",
+             model or "(driver-config default)",
+             effort or "(driver-config default)",
              bool(task["attached"]))
     # The task's attached git scopes — linked into the unit under repos/<name>
     # on every (re)dispatch (the workspace symlink is idempotent). Read from the

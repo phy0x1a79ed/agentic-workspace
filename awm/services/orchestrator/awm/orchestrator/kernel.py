@@ -33,6 +33,7 @@ human.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from awm.orchestrator.dao import OUT_STATE, REST_MODE, STATES
@@ -209,14 +210,37 @@ _RETRY_REST: dict[str, tuple[str, str]] = {
 # give-up.
 _CLEAR_PLACEMENT = dict(mode=None, agent_ref=None, placement_token=None)
 
+# Steering-clearing patch applied on every TERMINAL rest (completed / failed /
+# abandoned): the steering session is over with the task, so the durable
+# attached flag and the consent / wants-steering bits clear (a stale
+# ``attached`` on a terminal row would sit in the attention strip forever).
+# ``objective`` is kept — it is the ratified intent and survives for retry.
+# Non-terminal rests (transient retry, decompose re-entry) do NOT clear:
+# an attached task that fails transiently comes back attended by design.
+_CLEAR_STEERING = dict(attached=0, steer_user_done=0, steer_agent_ready=0,
+                       steer_requested=0)
+
 
 def abandon(dao: "OrchestratorDAO", task_id: str) -> list[DispatchIntent]:
     """Give up on a task: rest it ``abandoned`` (workspace freed, placement
     cleared) and route its downstream consumers to re-plan. Root has no
     consumers, so its give-up escalates (surfaced by ``orch_status``)."""
     dao.update_task(task_id, state="abandoned", workspace_slug=None,
-                    **_CLEAR_PLACEMENT)
+                    **_CLEAR_PLACEMENT, **_CLEAR_STEERING)
     return _route_consumers(dao, task_id)
+
+
+def decompose(dao: "OrchestratorDAO", task_id: str) -> list[DispatchIntent]:
+    """Public entry into a decompose attempt (the needs-decomposition path).
+
+    The organic path reaches :func:`_enter_decompose_pending` via
+    :func:`route_failure` / :func:`_route_consumers` (a leg signalled the task is
+    too big, or a give-up cascaded to its consumers). This is the
+    human-initiated entry (``orch_decompose``) into the SAME machinery: charge
+    one ``replan_budget`` unit on entry, rest the task in ``decompose_pending``
+    (a planner is dispatched), or abandon-and-cascade when it is out of budget —
+    exactly like the organic path, so there is one decompose entry, not two."""
+    return _enter_decompose_pending(dao, task_id)
 
 
 def _enter_decompose_pending(
@@ -260,7 +284,8 @@ def _route_consumers(dao: "OrchestratorDAO", task_id: str) -> list[DispatchInten
             ):
                 continue
             if ct["is_root"]:
-                dao.update_task(consumer, state="abandoned", **_CLEAR_PLACEMENT)
+                dao.update_task(consumer, state="abandoned",
+                                **_CLEAR_PLACEMENT, **_CLEAR_STEERING)
                 continue
             out.extend(_enter_decompose_pending(dao, consumer))
     return out
@@ -307,11 +332,11 @@ def route_failure(
                             **_CLEAR_PLACEMENT)
             return [(task_id, mode)]
         dao.update_task(task_id, state="failed", retry_count=n,
-                        **_CLEAR_PLACEMENT)
+                        **_CLEAR_PLACEMENT, **_CLEAR_STEERING)
         return _route_consumers(dao, task_id)
 
     # Contract-unsatisfiable / impossible — rest in ``failed``; consumers replan.
-    dao.update_task(task_id, state="failed", **_CLEAR_PLACEMENT)
+    dao.update_task(task_id, state="failed", **_CLEAR_PLACEMENT, **_CLEAR_STEERING)
     return _route_consumers(dao, task_id)
 
 
@@ -335,7 +360,7 @@ def complete_task(dao: "OrchestratorDAO", task_id: str) -> bool:
     # finished task. Scope exclusivity is enforced over ``task_scopes`` (see
     # ``check_scope_free``), not the slug, so retaining it is safe.
     dao.update_task(task_id, state="completed", mode=None, agent_ref=None,
-                    placement_token=None)
+                    placement_token=None, **_CLEAR_STEERING)
     return True
 
 
@@ -395,6 +420,101 @@ def recover_orphans(dao: "OrchestratorDAO", live_scopes: "set[str] | None") -> N
                  rest_state, row["workspace_slug"], row["mode"])
         dao.update_task(row["id"], state=rest_state, mode=None,
                         agent_ref=None, placement_token=None)
+
+
+# ---------------------------------------------------------------------------
+# Periodic reconcile (T5) — the boot recovery pair, re-run on a ~60s sweep with
+# guards against the spawn/handoff races that don't exist at boot.
+# ---------------------------------------------------------------------------
+# Boot recovery is unconditional: a full gateway restart definitely killed every
+# out-state placement. A *periodic* sweep against a live system must not be that
+# eager — a node may be mid-spawn (its unit slug not yet reported live) or an
+# agents restart may briefly report emptiness. So the periodic path adds two
+# guards on top of the liveness check:
+#   * MIN-AGE  — only consider a row orphaned once it has sat in its out-state
+#                for at least ``min_age_s`` (protects the spawn/handoff window).
+#   * TWO-STRIKE — a row must be seen orphaned in TWO CONSECUTIVE sweeps before
+#                it is reset (protects against a transient mid-restart emptiness).
+# LIVENESS-UNKNOWN (``live_scopes is None``) is a whole-cycle no-op — never treat
+# "can't reach agents" as "everything is dead".
+
+
+def scan_orphans(
+    dao: "OrchestratorDAO", live_scopes: "set[str] | None", *,
+    min_age_s: float, now_ts: int | None = None,
+) -> "set[str] | None":
+    """The out-state task ids that look orphaned RIGHT NOW, without mutating.
+
+    A row is orphaned when its ``workspace_slug`` is not in ``live_scopes`` AND it
+    has been in its (recoverable) out-state for at least ``min_age_s`` seconds
+    (measured off ``updated_at``, which ``update_task`` bumps on every state
+    change). ``live_scopes is None`` → ``None`` (the unknown sentinel; the caller
+    skips the cycle)."""
+    if live_scopes is None:
+        return None
+    now = now_ts if now_ts is not None else int(time.time())
+    out_states = list(OUT_STATE.values())
+    placeholders = ", ".join("?" for _ in out_states)
+    orphaned: set[str] = set()
+    for row in dao.query_all(
+        f"SELECT id, state, mode, workspace_slug, updated_at FROM tasks "
+        f"WHERE state IN ({placeholders}) ORDER BY created_at",
+        tuple(out_states),
+    ):
+        if row["workspace_slug"] and row["workspace_slug"] in live_scopes:
+            continue  # placement still live
+        if _MODE_REST.get(row["mode"]) is None:
+            continue  # out-state with no recoverable mode — leave it
+        if (now - int(row["updated_at"])) < min_age_s:
+            continue  # too fresh — inside the spawn/handoff window
+        orphaned.add(row["id"])
+    return orphaned
+
+
+def recover_task(dao: "OrchestratorDAO", task_id: str) -> bool:
+    """Reset ONE out-state orphan to its resting predecessor (the mutation half
+    of :func:`recover_orphans`, applied to a single confirmed task).
+
+    Returns True iff the task was reset (still an out-state with a recoverable
+    mode). Clears the stale ``agent_ref`` / ``placement_token`` / ``mode`` and
+    keeps the retained ``workspace_slug`` so the following :func:`reconcile`
+    re-dispatches the same leg onto the retained unit."""
+    row = dao.get_task(task_id)
+    if row is None or row["state"] not in OUT_STATE.values():
+        return False
+    rest_state = _MODE_REST.get(row["mode"])
+    if rest_state is None:
+        return False
+    log.info("orchestrator: periodic recovery of orphaned task %s (%s -> %s, "
+             "slug=%s)", task_id, row["state"], rest_state, row["workspace_slug"])
+    dao.update_task(task_id, state=rest_state, mode=None,
+                    agent_ref=None, placement_token=None)
+    return True
+
+
+def periodic_recover(
+    dao: "OrchestratorDAO", live_scopes: "set[str] | None",
+    prev_orphaned: "set[str]", *, min_age_s: float, now_ts: int | None = None,
+) -> "tuple[set[str], set[str]]":
+    """One periodic orphan-recovery step (min-age + two-strike + liveness guards).
+
+    Returns ``(recovered, current)``: ``recovered`` is the set reset to resting
+    THIS step (seen orphaned in both ``prev_orphaned`` and the current scan — the
+    two-strike gate), and ``current`` is the new "prev" to carry to the next step.
+
+    LIVENESS-UNKNOWN (``live_scopes is None``): a no-op that PRESERVES the
+    two-strike memory — returns ``(set(), prev_orphaned)``. The caller skips the
+    frontier re-scan too (the whole cycle is skipped)."""
+    if live_scopes is None:
+        return set(), set(prev_orphaned)
+    current = scan_orphans(dao, live_scopes, min_age_s=min_age_s, now_ts=now_ts)
+    assert current is not None  # live_scopes is not None here
+    confirmed = current & set(prev_orphaned)
+    recovered: set[str] = set()
+    for tid in confirmed:
+        if recover_task(dao, tid):
+            recovered.add(tid)
+    return recovered, current
 
 
 def reconcile(dao: "OrchestratorDAO") -> list[DispatchIntent]:

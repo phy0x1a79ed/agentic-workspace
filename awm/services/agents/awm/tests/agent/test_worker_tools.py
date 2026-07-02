@@ -33,6 +33,7 @@ class FakeOrch:
     async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
     async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
+    async def set_steering(self, **kw): return self._rec("set_steering", kw)
     async def search_tasks(self, **kw): return {"tasks": []}
     async def search_contracts(self, **kw): return {"contracts": []}
 
