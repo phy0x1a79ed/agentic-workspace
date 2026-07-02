@@ -83,7 +83,8 @@ def _api(method: str, path: str, **kwargs) -> httpx.Response:
     """Make an API call, auto-starting the server if needed."""
     _ensure_server()
     url = f"{BASE_URL}{path}"
-    r = httpx.request(method, url, timeout=30, **kwargs)
+    kwargs.setdefault("timeout", 30)
+    r = httpx.request(method, url, **kwargs)
     return r
 
 
