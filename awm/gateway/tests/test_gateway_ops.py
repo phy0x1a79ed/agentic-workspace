@@ -139,8 +139,9 @@ def test_cli_groups_and_commands_generated():
     gw = {c.name for c in groups["gateway"].registered_commands}
     sv = {c.name for c in groups["services"].registered_commands}
     cf = {c.name for c in groups["config"].registered_commands}
-    # Generated CLI commands only (list/start stay hand-authored → not here):
-    assert {"status", "restart", "mcp-sync", "list", "deregister"} <= gw
+    # Generated CLI commands only (list/start stay hand-authored → not here;
+    # restart was hand-authored in cli.py, removed from generation):
+    assert {"status", "mcp-sync", "list", "deregister"} <= gw
     assert {"stop", "restart", "enable", "disable"} <= sv
     # config_contracts is CLI-visible; config_set is mcp+http only (its values
     # dict doesn't round-trip cleanly through a CLI option).

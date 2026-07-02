@@ -13,6 +13,9 @@ Environment=MIRA_API_HOST=172.16.0.24
 Environment=MIRA_API_PORT=7822
 Environment=MIRA_CDP_BASE=http://127.0.0.1:9224
 Environment=MIRA_PLATFORMS=slack,teams
+# Cloud file stores driven over CDP (OneDrive/SharePoint). Needs a logged-in
+# *.sharepoint.com tab in the Opera session (see awm-opera-teams.service).
+Environment=MIRA_STORAGE=onedrive
 Environment=MIRA_POLL_INTERVAL=15
 Environment=MIRA_TLS_CERT=%h/.awm/tls/cert.pem
 Environment=MIRA_TLS_KEY=%h/.awm/tls/key.pem

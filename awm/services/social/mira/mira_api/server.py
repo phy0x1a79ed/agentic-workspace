@@ -5,10 +5,17 @@ Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
 
     GET  /v1/health                      → per-platform target liveness
     GET  /v1/{platform}/identity         → who the session is logged in as
-    GET  /v1/{platform}/channels         → channels/conversations visible
+    GET  /v1/{platform}/channels[?include_dms=true]  → channels (or, with
+                                                       include_dms, all im/mpim
+                                                       conversations too)
     GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
                                                            backwards; Slack only)
+    GET  /v1/{platform}/search?query=&limit=&channel=  → native message search
+                                                        (Teams: best-effort scan)
+    GET  /v1/{platform}/download?channel=&message_id=&idx=  → one message's
+                                       attachments as [{filename,mime,b64}]
     POST /v1/{platform}/send  {channel,text,thread?}
+    POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
     GET  /v1/events                      → WS; pushes inbound {type:"message", …}
 
 Every route requires ``Authorization: Bearer <token>``. The daemon polls each
@@ -27,6 +34,7 @@ from typing import Any
 from aiohttp import web
 
 from mira_api import drivers as drivers_mod
+from mira_api import storage_drivers as storage_mod
 from mira_api.cdp import CDPPage
 
 log = logging.getLogger("mira_api.server")
@@ -56,12 +64,17 @@ class MiraAPI:
         auth_token: str,
         *,
         poll_interval: float = DEFAULT_POLL_INTERVAL_S,
+        storage: list[str] | None = None,
     ) -> None:
         self._cdp_http_base = cdp_http_base
         self._platform_names = platforms
+        self._storage_names = storage or []
         self._auth_token = auth_token
         self._poll_interval = poll_interval
         self._platforms: dict[str, Platform] = {}
+        # Cloud file stores (OneDrive/SharePoint). Like platforms each owns a CDP
+        # page + driver, but there is no inbound watcher — files don't push.
+        self._storage: dict[str, storage_mod.StorageDriver] = {}
         self._clients: set[web.WebSocketResponse] = set()
         self._watchers: list[asyncio.Task] = []
 
@@ -74,7 +87,17 @@ class MiraAPI:
         app.router.add_get("/v1/{platform}/identity", self._h_identity)
         app.router.add_get("/v1/{platform}/channels", self._h_channels)
         app.router.add_get("/v1/{platform}/messages", self._h_messages)
+        app.router.add_get("/v1/{platform}/search", self._h_search)
+        app.router.add_get("/v1/{platform}/download", self._h_download)
         app.router.add_post("/v1/{platform}/send", self._h_send)
+        app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
+        # Cloud file-store routes (OneDrive/SharePoint), one set per storage name.
+        app.router.add_get("/v1/fs/{name}/ls", self._h_fs_ls)
+        app.router.add_get("/v1/fs/{name}/stat", self._h_fs_stat)
+        app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
+        app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
+        app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
+        app.router.add_post("/v1/fs/{name}/rm", self._h_fs_rm)
         app.on_startup.append(self._on_startup)
         app.on_cleanup.append(self._on_cleanup)
         return app
@@ -89,6 +112,14 @@ class MiraAPI:
             self._platforms[name] = Platform(name, page, cls(page))
             self._watchers.append(asyncio.create_task(self._watch(name)))
             log.info("platform %s initialised (needle %r)", name, cls.target_needle)
+        for name in self._storage_names:
+            scls = storage_mod.STORAGE_REGISTRY.get(name)
+            if scls is None:
+                log.error("unknown storage %r; skipping", name)
+                continue
+            page = CDPPage(self._cdp_http_base, scls.target_needle)
+            self._storage[name] = scls(page)
+            log.info("storage %s initialised (needle %r)", name, scls.target_needle)
 
     async def _on_cleanup(self, app: web.Application) -> None:
         for t in self._watchers:
@@ -97,6 +128,8 @@ class MiraAPI:
             await ws.close()
         for p in self._platforms.values():
             await p.page.close()
+        for s in self._storage.values():
+            await s.page.close()
 
     # -- auth ---------------------------------------------------------------
 
@@ -115,15 +148,26 @@ class MiraAPI:
             raise web.HTTPNotFound(reason=f"platform {name!r} not configured")
         return p
 
+    def _storage_driver(self, request: web.Request) -> storage_mod.StorageDriver:
+        name = request.match_info["name"]
+        s = self._storage.get(name)
+        if s is None:
+            raise web.HTTPNotFound(reason=f"storage {name!r} not configured")
+        return s
+
     # -- REST handlers ------------------------------------------------------
 
     async def _h_health(self, request: web.Request) -> web.Response:
-        out: dict[str, Any] = {"ok": True, "platforms": {}}
+        out: dict[str, Any] = {"ok": True, "platforms": {}, "storage": {}}
         for name, p in self._platforms.items():
             healthy = await p.page.healthy()
             out["platforms"][name] = {
                 "target": p.page.target_url, "healthy": healthy,
                 "self_id": p.self_id, "watching": len(p.baseline)}
+        for name, s in self._storage.items():
+            healthy = await s.page.healthy()
+            out["storage"][name] = {
+                "target": s.page.target_url, "healthy": healthy}
         return web.json_response(out)
 
     async def _h_identity(self, request: web.Request) -> web.Response:
@@ -135,8 +179,31 @@ class MiraAPI:
 
     async def _h_channels(self, request: web.Request) -> web.Response:
         p = self._platform(request)
+        # ``include_dms=true`` returns the full conversation set (im/mpim too) via
+        # the driver's ``list_conversations`` — the same set the inbound watcher
+        # tails — instead of the channels-only ``list_channels``.
+        include_dms = request.query.get("include_dms", "").lower() in (
+            "1", "true", "yes")
         try:
-            return web.json_response({"channels": await p.driver.list_channels()})
+            chans = await (p.driver.list_conversations() if include_dms
+                           else p.driver.list_channels())
+            return web.json_response({"channels": chans})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_open_dm(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        user = body.get("user")
+        if not user:
+            return web.json_response({"error": "user is required"}, status=400)
+        try:
+            return web.json_response(await p.driver.open_dm(user))
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 
@@ -153,6 +220,38 @@ class MiraAPI:
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 
+    async def _h_search(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        query = request.query.get("query", "")
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+        limit = int(request.query.get("limit", "50") or 50)
+        channel = request.query.get("channel") or None
+        try:
+            msgs = await p.driver.search(query, limit, channel)
+            return web.json_response({"messages": msgs})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_download(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        channel = request.query.get("channel", "")
+        message_id = request.query.get("message_id", "")
+        if not channel or not message_id:
+            return web.json_response(
+                {"error": "channel and message_id are required"}, status=400)
+        idx_raw = request.query.get("idx")
+        idx = int(idx_raw) if idx_raw not in (None, "") else None
+        try:
+            files = await p.driver.download(channel, message_id, idx)
+            return web.json_response({"files": files})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
     async def _h_send(self, request: web.Request) -> web.Response:
         p = self._platform(request)
         try:
@@ -166,6 +265,81 @@ class MiraAPI:
         try:
             sent = await p.driver.send(channel, text, body.get("thread"))
             return web.json_response({"ok": True, **sent})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    # -- cloud file-store (fs) handlers -------------------------------------
+
+    async def _h_fs_ls(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            return web.json_response(
+                {"entries": await s.ls(request.query.get("path", "") or "")})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_stat(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response({"entry": await s.stat(path)})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_get(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response(await s.get(path))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_put(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path, b64 = body.get("path"), body.get("b64")
+        if not path or b64 is None:
+            return web.json_response(
+                {"error": "path and b64 are required"}, status=400)
+        try:
+            entry = await s.put(path, b64, body.get("mime"))
+            return web.json_response({"entry": entry})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_rm(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path = body.get("path")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            await s.rm(path)
+            return web.json_response({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_search(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        query = request.query.get("query", "")
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+        limit = int(request.query.get("limit", "50") or 50)
+        root = request.query.get("root") or None
+        try:
+            return web.json_response({"entries": await s.search(query, limit, root)})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"error": str(exc)}, status=502)
 

@@ -306,7 +306,9 @@ The server auto-starts when you run any CLI command. To run manually:
 awm gateway serve     # foreground, local-only listener on 127.0.0.1:7819
 awm gateway status    # health check (auto-starts if needed)
 awm gateway stop      # stop the server
-awm gateway restart   # restart core via systemd (transparent to MCP clients)
+awm gateway restart   # drain services, restart via systemd, wait for healthy
+                      #   (synchronous — verifies PID changed + uptime reset)
+                      #   HTTP/MCP endpoint (awm_restart) is fire-and-forget
 awm gateway refresh   # restart server to pick up source changes (dev mode)
 ```
 

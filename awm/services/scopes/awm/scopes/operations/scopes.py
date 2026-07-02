@@ -9,11 +9,16 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
         "tool": "scope_create",
-        "description": "Create a new scope (worktree + .awm/ metadata) for a project.",
+        "description": (
+            "Create a new scope (worktree + .awm/ metadata) for a project. "
+            "The new branch defaults to feat/<scope>; pass branch_name to name "
+            "it explicitly (e.g. a plain branch like 'release' or 'dev')."
+        ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "from_branch", "type": "string", "required": False},
+            {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
         ],
     },
@@ -73,6 +78,39 @@ SCOPE_MANIFEST_FUNCTIONS = [
         ],
     },
     {
+        "name": "scope_gather",
+        "tool": "scope_gather",
+        "description": (
+            "Fan-in: merge each peripheral scope's branch into a hub scope's "
+            "branch (runs in the hub worktree, which must be clean and on the "
+            "hub branch). Per-peripheral conflicts are aborted and reported; "
+            "the batch continues. Local-only — no push. strategy='merge' only."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": True},
+            {"name": "hub", "type": "string", "required": True},
+            {"name": "peripherals", "type": "array", "required": True},
+            {"name": "strategy", "type": "string", "required": False},
+        ],
+    },
+    {
+        "name": "scope_scatter",
+        "tool": "scope_scatter",
+        "description": (
+            "Fan-out: merge a hub scope's branch into each peripheral scope's "
+            "branch (each merge runs in that peripheral's worktree). A dirty or "
+            "off-branch peripheral is skipped; conflicts are aborted and "
+            "reported; the batch continues. Local-only — no push. "
+            "strategy='merge' only."
+        ),
+        "params": [
+            {"name": "project", "type": "string", "required": True},
+            {"name": "hub", "type": "string", "required": True},
+            {"name": "peripherals", "type": "array", "required": True},
+            {"name": "strategy", "type": "string", "required": False},
+        ],
+    },
+    {
         "name": "awm_refresh",
         "tool": "scope_refresh",
         "description": "Re-generate .awm/history.md and .awm/artifacts.md for a scope.",
@@ -89,6 +127,7 @@ def _handle_scope_create(args: dict) -> dict:
         project=args["project"],
         scope=args["scope"],
         from_branch=args.get("from_branch"),
+        branch_name=args.get("branch_name"),
         context=args.get("context"),
     )
     result = scopes.create_scope(req)
@@ -136,6 +175,22 @@ def _handle_scope_sync(args: dict) -> dict:
     return result.model_dump()
 
 
+def _handle_scope_gather(args: dict) -> dict:
+    result = scopes.gather_scope(
+        args["project"], args["hub"], args["peripherals"],
+        strategy=args.get("strategy", "merge"),
+    )
+    return result.model_dump()
+
+
+def _handle_scope_scatter(args: dict) -> dict:
+    result = scopes.scatter_scope(
+        args["project"], args["hub"], args["peripherals"],
+        strategy=args.get("strategy", "merge"),
+    )
+    return result.model_dump()
+
+
 def _handle_awm_refresh(args: dict) -> dict:
     return scopes.awm_refresh(args["project"], args["scope"])
 
@@ -147,5 +202,7 @@ SCOPE_HANDLERS = {
     "scope_delete": _handle_scope_delete,
     "scope_repair": _handle_scope_repair,
     "scope_sync": _handle_scope_sync,
+    "scope_gather": _handle_scope_gather,
+    "scope_scatter": _handle_scope_scatter,
     "awm_refresh": _handle_awm_refresh,
 }

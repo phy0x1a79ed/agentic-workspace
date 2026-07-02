@@ -42,6 +42,26 @@ class Account:
 
 
 @dataclass(frozen=True)
+class Attachment:
+    """A file attached to a message, normalised across connectors.
+
+    ``url`` and ``ref`` are *advisory* — a hint at where the bytes live and the
+    opaque data a connector would need to re-resolve them. They are NOT a
+    download contract: :meth:`Connector.download_attachments` re-fetches the
+    message live and pulls the bytes itself (CDN urls expire, session tokens
+    rotate), so a caller never has to round-trip ``ref``. ``size`` is the byte
+    count when the platform reports it (``0`` when unknown).
+    """
+
+    idx: int = 0
+    filename: str = ""
+    mime: str = ""
+    size: int = 0
+    url: str = ""
+    ref: dict = field(default_factory=dict, compare=False)
+
+
+@dataclass(frozen=True)
 class InboundMessage:
     """A message received from a platform, normalised across connectors.
 
@@ -59,6 +79,7 @@ class InboundMessage:
     thread_id: str = ""
     message_id: str = ""
     ts: str = ""
+    attachments: list = field(default_factory=list, compare=False)
     raw: dict = field(default_factory=dict, compare=False)
 
 
@@ -141,28 +162,81 @@ class Connector(ABC):
         ``message_id`` when the platform supplies one).
         """
 
-    async def history(
+    async def fetch(
         self, channel: str, *, limit: int = 50, before: str | None = None
     ) -> list[InboundMessage]:
-        """Fetch existing messages from ``channel`` on demand (newest batch).
+        """Fetch existing messages from ``channel`` live (newest batch).
 
         Unlike :meth:`start` — which only live-tails messages arriving *after*
-        connect — ``history`` pulls messages that already exist on the platform,
-        including ones sent before the service came up. ``before`` is an optional
-        platform cursor (message id / ts) to page backwards from. Returns
-        normalised :class:`InboundMessage` objects ordered **oldest→newest** (the
-        same order :func:`SocialDAO.list_messages` returns), so the adapter can
-        persist them straight through its dedupe path.
+        connect — ``fetch`` queries the platform directly for messages that
+        already exist, including ones sent before the service came up. ``before``
+        is an optional platform cursor (message id / ts) to page backwards from.
+        Returns normalised :class:`InboundMessage` objects ordered
+        **oldest→newest**, each with its :attr:`InboundMessage.attachments`
+        populated where the platform exposes file metadata. Nothing is persisted
+        — the platform is the source of truth.
 
-        Non-abstract: a connector whose platform can't fetch history simply leaves
-        this default, which raises and the verb surfaces a clean error.
+        Non-abstract: a connector whose platform can't fetch messages simply
+        leaves this default, which raises and the verb surfaces a clean error.
         """
         raise NotImplementedError(
-            f"{self.platform} connector does not support history fetch")
+            f"{self.platform} connector does not support fetch")
+
+    async def search(
+        self, query: str, *, limit: int = 50, channel: str | None = None
+    ) -> list[InboundMessage]:
+        """Search the platform's own message index for ``query``, live.
+
+        Runs the platform's native search (Slack ``search.messages``, Gmail
+        ``X-GM-RAW``, …) rather than a local mirror, so results reflect the
+        account's full reachable history. ``channel`` optionally scopes the
+        search to one conversation where the platform supports it. Returns
+        normalised :class:`InboundMessage` objects (attachments populated),
+        newest-first as the platform ranks them.
+
+        Non-abstract: a platform with no usable search surface (e.g. a Discord
+        *bot* token) leaves this default, which raises a clean error.
+        """
+        raise NotImplementedError(
+            f"{self.platform} connector does not support search")
+
+    async def download_attachments(
+        self, channel: str, message_id: str, *, idx: int | None = None
+    ) -> list[tuple[str, str, bytes]]:
+        """Re-fetch one message live and return its attachments' bytes.
+
+        Returns a list of ``(filename, mime, data)`` tuples — the connector
+        re-resolves the message by ``message_id`` (urls/tokens are short-lived,
+        never trusted from a prior fetch) and pulls each file in-session, so the
+        call is self-contained. ``idx`` optionally restricts to a single
+        attachment by its :attr:`Attachment.idx`. The adapter writes the bytes to
+        a temp dir; the connector itself never touches disk.
+
+        Non-abstract: a platform that can't retrieve files leaves this default,
+        which raises a clean error.
+        """
+        raise NotImplementedError(
+            f"{self.platform} connector does not support attachment download")
 
     @abstractmethod
-    async def list_channels(self) -> list[Channel]:
-        """List channels/conversations visible to this account."""
+    async def list_channels(self, *, include_dms: bool = False) -> list[Channel]:
+        """List channels/conversations visible to this account.
+
+        ``include_dms=True`` additionally enumerates direct/group DMs (their
+        ``kind`` is ``"dm"`` / ``"group"``). Connectors whose platform has no DM
+        concept (or that can't enumerate them) ignore the flag and return their
+        channel list unchanged.
+        """
+
+    async def open_dm(self, user: str) -> Channel:
+        """Resolve a platform user (by id, or by name where supported) to a DM
+        conversation and open it, returning the :class:`Channel`.
+
+        Non-abstract: a connector whose platform has no DM concept leaves this
+        default, which raises and the verb surfaces a clean error.
+        """
+        raise NotImplementedError(
+            f"{self.platform} connector does not support opening DMs")
 
     @abstractmethod
     async def identity(self) -> Identity:

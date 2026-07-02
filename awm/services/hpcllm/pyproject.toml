@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-hpcllm"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM HPC LLM serving service: on-demand LLM server lifecycles on HPC clusters via LLaMA.cpp."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+]
+
+[tool.setuptools.packages.find]
+include = ["awm.hpcllm*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "unit: pure unit tests (models, validation, registries)",
+    "integration: cross-component integration tests",
+]

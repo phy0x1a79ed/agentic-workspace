@@ -237,6 +237,41 @@ def refresh():
     typer.echo("Server refreshed.")
 
 
+@gateway_app.command()
+def restart():
+    """Drain services, restart the systemd unit, and wait for a healthy new process.
+
+    Polls the gateway's ``/status`` endpoint across the restart cycle:
+    connection-refused → new PID + fresh uptime. Stale-process and stale-
+    response false positives are rejected by verifying the PID changed and
+    uptime reset (< 5s).
+    """
+    from awm.gateway.core import _RestartTimeout, restart_core_and_wait
+
+    typer.echo("Restarting gateway (drain → restart → wait for healthy)...")
+    try:
+        result = restart_core_and_wait()
+    except _RestartTimeout as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    lines = []
+    lines.append(f"  Status:     {result.get('status')}")
+    if result.get("new_pid"):
+        old = result.get("old_pid")
+        lines.append(f"  PID:        {f'{old} → ' if old else ''}{result['new_pid']}")
+    if "drain_s" in result:
+        lines.append(f"  Drain:      {result['drain_s']}s")
+    if "boot_s" in result:
+        lines.append(f"  Boot:       {result['boot_s']}s")
+    if "total_s" in result:
+        lines.append(f"  Total:      {result['total_s']}s")
+    typer.echo("\n".join(lines))
+
+    if result.get("status") != "ok":
+        raise typer.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Register an external bundle/service and hold its WS lease (hand-authored:
 # stateful — it POSTs then holds the lease open, so it can't be a declarative

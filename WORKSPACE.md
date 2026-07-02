@@ -89,6 +89,7 @@ The domains, by family:
 - **Artifacts** (`artifact`) — register / search / get / delete / sync.
 - **Orchestrator / workspace** (`orch`, `workspace`) — DAG task control and unit provisioning.
 - **Lifecycle** (`gateway` verbs `status`/`restart`/`mcp-sync`/`list`/`deregister`, `services` verbs `list`/`start`/`stop`/…).
+- **Code navigation** (`graphify`) — an AST knowledge graph of the awm source tree. `find` (label → `file:line`), `refs` (callers/callees/importers, `direction: in|out|both`), `query` (NL BFS traversal), `path` (shortest path between two labels), `affected` (blast radius of a change), `explain`, plus `build`/`status`. **Reach for this before dispatching an Explore agent** for any "where is X / what calls or imports Y / what's the impact of changing Z" question on the awm tree — it answers structurally (most verbs in-process), not by grepping. Caveat: it indexes the **deployed/release** tree, not your uncommitted worktree changes, so use Explore for code you just wrote (and for non-awm projects, which it doesn't index).
 
 New domains/verbs appear in the listing automatically as services register — no restart, nothing to mirror here. (`describe` is a reserved verb on every domain.)
 
@@ -129,6 +130,18 @@ Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this conv
 - **`feat-gamebot`** (`:7871`) — LLM-driven web-game bots (realm/effector/agent-runner/timer services).
 
 `dev` is **not** a feature scope — it is the **release-staging / promotion** worktree (`feat → dev → release`, prod deploys) and runs the shared seeded sandbox at `:7821`.
+
+### Hubs & peripherals (scatter / gather)
+
+A **hub** scope integrates work from a set of **peripheral** feature scopes via two batch git operations exposed by the scopes service — **gather** (fan-in: merge each peripheral's `feat/<p>` into the hub branch) and **scatter** (fan-out: merge the hub branch back into each peripheral). Both are **local-only** (no push) and **stateless** — the peripheral list is passed explicitly; this table *is* the convention they read from. Drive them with the `scatter-gather` Claude Code skill, or call `scope(verb="gather"|"scatter", args={project, hub, peripherals})` directly.
+
+| Hub | Branch | Peripherals (seed — edit as the family changes) |
+|-----|--------|-------------------------------------------------|
+| `feat-dag` | `feat/feat-dag` | `svc-agents`, `svc-orchestrator`, `svc-events`, `web-stt`, `web-tts`, `web-ui` |
+| `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio` |
+| `dev` | `dev` | all promotable scopes (the `svc-*`, `web-*`, `rlm-*` set) |
+
+This is the canonical, shared copy; each hub may mirror its own row into its `.awm/context.md` (gitignored, so local-only) for a hub agent to find it without walking up here.
 
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 

@@ -72,11 +72,53 @@ class TestSearchScopes:
         assert result.scopes[0].repo_path != ""
 
 
+def _seed_bare_project(projects_dir: Path, project: str) -> Path:
+    """Create projects/<project>/.bare with one commit on `main` (real git)."""
+    seed = projects_dir / f"{project}-seed"
+    seed.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(seed), "init", "-q", "-b", "main"], check=True)
+    (seed / "README").write_text("x\n")
+    subprocess.run(["git", "-C", str(seed), "add", "README"], check=True)
+    subprocess.run(["git", "-C", str(seed), "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-q", "-m", "init"], check=True)
+    bare = projects_dir / project / ".bare"
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "--bare", "-q", str(seed), str(bare)],
+                   check=True, capture_output=True)
+    return bare
+
+
 class TestCreateScope:
     def test_create_missing_project(self, scopes_workspace):
         req = ScopeCreateRequest(project="nope", scope="s1")
         with pytest.raises(FileNotFoundError, match="not found"):
             scopes.create_scope(req)
+
+    def test_default_branch_is_feat_prefixed(self, scopes_workspace):
+        projects_dir = scopes_workspace["projects_dir"]
+        _seed_bare_project(projects_dir, "bp")
+        scopes.create_scope(ScopeCreateRequest(project="bp", scope="work"))
+        worktree = projects_dir / "bp" / "work"
+        branch = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert branch == "feat/work"
+
+    def test_branch_name_override_names_plain_branch(self, scopes_workspace):
+        """branch_name lets a scope live on a plain branch like `release`."""
+        projects_dir = scopes_workspace["projects_dir"]
+        _seed_bare_project(projects_dir, "bp2")
+        scopes.create_scope(
+            ScopeCreateRequest(project="bp2", scope="release", branch_name="release")
+        )
+        worktree = projects_dir / "bp2" / "release"
+        branch = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert branch == "release"
+        assert (worktree / ".awm" / "context.md").exists()
 
 
 class TestUpdateScope:

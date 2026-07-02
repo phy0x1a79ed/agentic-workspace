@@ -8,6 +8,7 @@ environment so the systemd unit is the single source of truth:
     MIRA_API_PORT        bind port                 (default 7822)
     MIRA_CDP_BASE        Opera CDP http base       (default http://127.0.0.1:9224)
     MIRA_PLATFORMS       comma list                (default slack,teams)
+    MIRA_STORAGE         cloud file stores         (default empty; e.g. onedrive)
     MIRA_POLL_INTERVAL   watcher seconds           (default 15)
     MIRA_TLS_CERT        cert PEM    (default ~/.awm/tls/cert.pem)
     MIRA_TLS_KEY         key PEM     (default ~/.awm/tls/key.pem)
@@ -68,17 +69,20 @@ def main() -> None:
     cdp_base = os.environ.get("MIRA_CDP_BASE", "http://127.0.0.1:9224")
     platforms = [p.strip() for p in
                  os.environ.get("MIRA_PLATFORMS", "slack,teams").split(",") if p.strip()]
+    storage = [s.strip() for s in
+               os.environ.get("MIRA_STORAGE", "").split(",") if s.strip()]
     poll = float(os.environ.get("MIRA_POLL_INTERVAL", "15"))
     token = _read_token()
 
-    api = MiraAPI(cdp_base, platforms, token, poll_interval=poll)
+    api = MiraAPI(cdp_base, platforms, token, poll_interval=poll, storage=storage)
     app = api.build_app()
     scheme = "https"
     ctx = _ssl_context()
     if ctx is None:
         scheme = "http"
-    log.info("mira-api serving %s://%s:%d (platforms=%s, cdp=%s)",
-             scheme, host, port, ",".join(platforms), cdp_base)
+    log.info("mira-api serving %s://%s:%d (platforms=%s, storage=%s, cdp=%s)",
+             scheme, host, port, ",".join(platforms),
+             ",".join(storage) or "-", cdp_base)
     web.run_app(app, host=host, port=port, ssl_context=ctx, print=None)
 
 

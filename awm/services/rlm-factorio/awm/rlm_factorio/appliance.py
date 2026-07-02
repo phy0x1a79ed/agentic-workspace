@@ -34,7 +34,8 @@ PROJECT = "rlm-factorio"            # docker compose -p <project>
 CONTAINER = "rlm-factorio-appliance"
 GAME_PORT = 12140                   # Factorio UDP (Steam-join)
 CONTROL_PORT = 12142                # supervisor HTTP control surface
-RCON_PORT = 0                       # 0 until the RCON pass lands
+RCON_PORT = 0                       # container-internal only, never published
+                                    # (the supervisor owns RCON; see supervise.py)
 SAVES_VOL = "rlm-factorio-saves"    # named volume = the sacred-saves store
 
 # appliance/ sits at the service root, beside the awm/ package dir:

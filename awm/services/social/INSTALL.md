@@ -74,6 +74,106 @@ marks your mail read). For `social_send`, `channel` is the recipient address and
 `thread` (optional) is an RFC822 `Message-ID` to reply into; a `Subject:` first
 line in the text sets the subject. UBC-webmail / WeChat later get their own path.
 
+## Reading messages, searching & attachments
+
+The service keeps **no local message store** — the external platforms are the
+source of truth, and every read queries them live. (Live receive still only
+*emits* messages arriving after connect, for subscribers like the 2fa
+`/approve` flow; it never persists.) The read surface:
+
+- **`social_fetch account= channel= [limit=] [before=]`** fetches a channel's
+  existing messages live from the platform (including ones from before the
+  service started), each with an `attachments` list (`idx`, `filename`, `mime`,
+  `size`, `url`). `before` pages backwards (Slack ts / connector cursor; Teams
+  has no usable cursor and ignores it). Nothing is stored.
+- **`social_search account= query= [channel=] [limit=]`** runs the platform's
+  **own** search live and returns matches with attachment metadata. Per platform:
+  Slack uses `search.messages` (needs a user token with `search:read` — the
+  session `xoxc` token has it; a `xoxb` bot token does not and surfaces a clean
+  error); Gmail uses IMAP `X-GM-RAW` (full Gmail query syntax: `from:`,
+  `has:attachment`, …) over *All Mail*; Teams is best-effort (no native chat
+  search, so a client-side scan of recent messages per conversation); a Discord
+  **bot** account cannot search at all — use `social_fetch`.
+- **`social_download_attachments account= channel= message_id= [idx=]`** pulls a
+  message's attachments to a **system temp dir outside the awm workspace**
+  (honoring `$TMPDIR`) and returns `{files:[{filename, mime, size, path}], dir}`.
+  It re-fetches the message live so signed/expiring urls are always fresh
+  (Discord CDN links, Slack `url_private`). `idx` optionally selects one
+  attachment. Returns paths, not bytes — large files never bloat the RPC payload
+  (the verb declares a generous 300s timeout for the download hop).
+- **`social_channels account= [include_dms=true]`** lists channels; with
+  `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
+  the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
+- **`social_open_dm account= user=`** resolves a platform user — by id, or by
+  name where the platform supports a directory lookup (Slack `users.list`) — to a
+  DM channel and opens it, returning the channel id for use with `fetch`/`send`.
+
+Slack and Teams run through the mira daemon; conversation enumeration, `open_dm`,
+`search`, and attachment `download` for those platforms live in `mira/mira_api/`
+and require the mira host to be running the updated daemon
+(`mira/install-mira.sh`). Teams attachment download is best-effort: hosted-content
+images resolve in-session, but SharePoint-hosted files may need separate auth and
+are skipped rather than erroring the whole call.
+
+## Cloud-drive buckets (Google Drive, OneDrive/SharePoint)
+
+Beyond messaging, the service can give awm full **file** access to cloud drives
+through a separate **buckets** surface (it is not a messaging connector). Each
+`[bucket.<name>]` section in `social.toml` configures one store; the verbs are
+`social_buckets` (list configured buckets) and `social_bucket_ls / get / put /
+rm / search`. Paths are POSIX-style and **relative to the bucket's `root`**
+(omit `path`, or pass `""`, for the root). Downloads land in a system temp dir
+(outside the workspace) and return paths; `put` reads a local `src` file — bytes
+never inline into the RPC.
+
+```toml
+[bucket.gdrive-phyber]          # Google Drive via an OAuth2 refresh token.
+kind = "google_drive"
+client_id = "....apps.googleusercontent.com"
+client_secret_file = "gdrive.secret"   # or inline client_secret = "..."
+refresh_token_file = "gdrive-phyber.token"   # or inline refresh_token = "..."
+# root = "<drive-folder-id>"    # optional: scope to one Drive folder (default: whole drive)
+
+[bucket.onedrive-ubc]           # UBC SharePoint, via the mira session (see below).
+kind = "onedrive"
+source = "mira"                 # OneDrive is reachable ONLY through the mira daemon
+site = "https://ubcca.sharepoint.com"
+root = "/teams/ubcMICB-gr-HallamLab/Shared Documents/Hallam_Lab_roadmaps/Tony-L_-roadmap-_"
+```
+
+**Google Drive (OAuth2).** A Google App Password (the Gmail path) cannot reach
+Drive, so a bucket needs its own OAuth2 client. One-time, in the Google Cloud
+console: create a project, enable the **Drive API**, configure the OAuth consent
+screen (add the account as a test user), and create a **Desktop app** OAuth
+client. Then run the consent helper **once per account**:
+
+    python scripts/gdrive_auth.py --client-secrets /path/to/client_secret.json --bucket-name gdrive-phyber
+
+It prints a `refresh_token` (and a ready TOML snippet). Paste the
+`client_id`/`client_secret`/`refresh_token` into the section above (secrets
+prefer `*_file` references to a gitignored file). The scope is the **full
+`drive` scope** — read, overwrite, *and delete* across the whole account — so
+treat the refresh token like a password. `social_bucket_search` matches file
+names across the whole drive (Drive query can't scope a name search to a
+sub-tree); Google-native docs are exported on `get` (Docs→pdf, Sheets→csv).
+
+**OneDrive / SharePoint (via mira).** The UBC student account can't mint an
+offline OAuth token without a Microsoft app registration + tenant admin consent,
+so this reuses the **mira** pattern (the same host that drives Teams/Slack): the
+mira daemon keeps a logged-in `*.sharepoint.com` tab in Opera and drives the
+SharePoint REST API in-page over CDP, same-origin with the session cookie. The
+bucket here is a thin client of the daemon's `/v1/fs/onedrive/…` routes. It
+requires the `[mira]` block (already configured for Teams/Slack) and the
+redeployed daemon with `MIRA_STORAGE=onedrive` plus a logged-in SharePoint tab —
+see `mira/README.md`. The `root` is the document library's **server-relative
+path** (decode `%20` etc. from the share URL). Personal OneDrive differs only by
+host (`<tenant>-my.sharepoint.com`) + root path. Writes use the SharePoint
+request digest automatically.
+
+The Google libraries (`google-api-python-client`, `google-auth`,
+`google-auth-oauthlib`) are declared deps, imported lazily — the service still
+boots without them; only `google_drive` buckets need them.
+
 ## Run
 
 You never invoke the service by hand in normal operation. The gateway discovers
