@@ -719,11 +719,17 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
         if kind == "result":
             session._partial_accum.clear()
             session._msg_accum.clear()
-            # Outer-loop turn boundary: drive the placement (decrement the hard
-            # turn budget, inject the next prompt / force-fail at 0).
-            from awm.agents import placement
+            # Outer-loop turn boundary: drive the session's supervisor —
+            # a game bot gets the gamebot driver (budget countdown →
+            # force-park), everything else the placement driver (decrement
+            # the hard turn budget, inject the next prompt / force-fail at 0).
             try:
-                await placement.on_turn_boundary(session)
+                if getattr(session, "mode", None) == "gamebot":
+                    from awm.agents import gamebot
+                    await gamebot.on_turn_boundary(session)
+                else:
+                    from awm.agents import placement
+                    await placement.on_turn_boundary(session)
             except Exception:  # noqa: BLE001
                 pass
 
