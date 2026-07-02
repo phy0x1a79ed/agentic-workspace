@@ -535,7 +535,10 @@ def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
     same path the MCP proxy uses — dropping unset (``None``) options."""
     args = {k: v for k, v in kwargs.items() if v is not None}
-    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args})
+    # Generous ceiling (not the default 30s): a service verb may declare a longer
+    # per-function timeout the catalog now honors (bulk re-embed / dedup). A fast
+    # verb still returns immediately; this only bounds a hang.
+    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args}, timeout=600)
     _render_invoke_output(r)
 
 

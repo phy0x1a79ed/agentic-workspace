@@ -128,6 +128,22 @@ _GATEWAY_OPS_BY_NAME = {
 # ---------------------------------------------------------------------------
 
 
+def _fn_on_surface(fn: dict, surface: str) -> bool:
+    """Whether a manifest function is projected onto ``surface`` ("mcp"/"cli"/"http").
+
+    Honors the documented per-function ``"surfaces"`` field (see the module
+    docstring's registration contract). A function that omits ``surfaces`` (as
+    every current service does) defaults to all three, so this is a pure no-op
+    for the existing tree; a function declaring e.g. ``["cli", "http"]`` is kept
+    off the MCP surface — the mechanism behind CLI-only write verbs. Only the
+    per-domain MCP projection consults this; ``list_tools()`` stays unfiltered so
+    the CLI generator and flat ``/invoke`` by-name dispatch keep every verb."""
+    surfaces = fn.get("surfaces")
+    if not surfaces:
+        return True
+    return surface in surfaces
+
+
 def _tool_name(rec: ServiceRecord, fn: dict) -> str:
     """MCP tool name for a service function.
 
@@ -205,6 +221,30 @@ def _find_service_fn(name: str) -> tuple[ServiceRecord | None, str | None]:
     return None, None
 
 
+def _fn_timeout(rec: ServiceRecord, internal_name: str) -> float | None:
+    """Per-function RPC timeout declared in the manifest, else ``None`` (default).
+
+    Honors the documented per-function ``"timeout"`` field on the ``/invoke``
+    dispatch path (the ``/svc/<name>/fn/<fn>`` proxy already honors it) so a
+    slow handler — a bulk re-embed / dedup pass — isn't capped at the 30s
+    ``ControlChannel.call`` default when invoked via the catalog."""
+    for fn in (rec.api or {}).get("functions", []) or []:
+        if isinstance(fn, dict) and fn.get("name") == internal_name and fn.get("timeout"):
+            return float(fn["timeout"])
+    return None
+
+
+async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) -> Any:
+    """RPC a service function over its control WS, applying its manifest timeout."""
+    ch = rpc.get_control(rec.service_id)
+    if ch is None:
+        raise RuntimeError(f"service {rec.name!r} control channel not open")
+    timeout = _fn_timeout(rec, fn)
+    if timeout is not None:
+        return await ch.call(fn, args, as_=as_, timeout=timeout)
+    return await ch.call(fn, args, as_=as_)
+
+
 # ---------------------------------------------------------------------------
 # Per-domain projection (the collapsed MCP read surface) — T1
 # ---------------------------------------------------------------------------
@@ -273,6 +313,8 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
         for fn in (rec.api or {}).get("functions", []) or []:
             if not (isinstance(fn, dict) and fn.get("name")):
                 continue
+            if not _fn_on_surface(fn, "mcp"):
+                continue  # CLI/HTTP-only verb — kept off the agent-facing MCP surface
             tname = _tool_name(rec, fn)
             domain, _, verb = tname.partition("_")
             if not verb:  # no underscore → single-verb domain named after itself
@@ -356,15 +398,19 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
             return _serialize(await _call_service(op, inner))
         return _serialize(await run_in_threadpool(_call_service, op, inner))
 
+    # Enforce the surface gate on dispatch, not just listing: a verb absent from
+    # the (surface-filtered) domain catalog is unknown here even if a matching
+    # service function exists — otherwise a CLI/HTTP-only write verb would still
+    # be reachable over MCP by naming it directly.
+    if verb not in {v["verb"] for v in catalog.get(name, [])}:
+        raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
+
     rec, fn = _find_service_fn(f"{name}_{verb}")
     if rec is None and verb == name:  # single-verb (no-underscore) domain
         rec, fn = _find_service_fn(name)
     if rec is None or fn is None:
         raise ValueError(f"Unknown verb {verb!r} for domain {name!r}")
-    ch = rpc.get_control(rec.service_id)
-    if ch is None:
-        raise RuntimeError(f"service {rec.name!r} control channel not open")
-    return _serialize(await ch.call(fn, inner, as_=as_))
+    return _serialize(await _rpc_call(rec, fn, inner, as_))
 
 
 async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
@@ -400,7 +446,4 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     rec, fn = _find_service_fn(name)
     if rec is None or fn is None:
         raise ValueError(f"Unknown tool: {name}")
-    ch = rpc.get_control(rec.service_id)
-    if ch is None:
-        raise RuntimeError(f"service {rec.name!r} control channel not open")
-    return _serialize(await ch.call(fn, args, as_=as_))
+    return _serialize(await _rpc_call(rec, fn, args, as_))
