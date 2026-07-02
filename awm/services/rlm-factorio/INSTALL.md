@@ -8,14 +8,18 @@ conda env to contain its package plus the shared component libraries it imports
 (`config`, `persistence`, `gatewayclient`), and it needs **Docker** on the host
 (the engine lifecycle is `docker compose`-driven).
 
-> **Status: lifecycle + world ops + live-control are LIVE; emitters pending.**
+> **Status: lifecycle + world ops + live-control + gameplay + emitters are LIVE.**
 > `acquire` builds/starts the appliance and waits for the engine; `world_new` /
 > `world_save` / `world_load` drive the supervisor (sacred-saves invariant —
 > only `world_save` writes a named `.zip`); `release` tears the container down
-> (the saves volume survives). `observe` / `exec_lua` / `pause` and the player-body
-> verbs (`body_spawn` / `body_move` / `body_stop`) are LIVE over RCON, backed by
-> the baked-in `game-bot-control` mod. The `factorio` emitter is declared but not
-> fired yet (the events pass — see this scope's `.awm/context.md`).
+> (the saves volume survives). `observe` / `exec_lua` / `pause`, the player-body
+> verbs (`body_spawn` / `body_move` — pathfinded — / `body_stop`), and the
+> gameplay verbs (`body_mine` / `body_craft` / `body_build` / `body_insert` /
+> `body_take` / `research` + the `recipes` / `technologies` catalog queries) are
+> LIVE over RCON, backed by the baked-in `game-bot-control` mod. The `factorio`
+> emitter fires world/body events (`world_loaded`, `world_saved`, `arrived`,
+> `path_blocked`, `died`, `error`, …); `observe_events` drains the same buffer
+> on demand.
 
 ## Install
 
@@ -126,9 +130,19 @@ lists them, alongside rlm-browser's `browser_*` verbs); CLI/HTTP stay expanded a
 
 - **lifecycle** — `acquire(game, opts?) -> {session_id}` · `release(session_id)` ·
   `reset(session_id)` · `status(session_id?)`
-- **perceive** — `observe(session_id) -> {snapshot, screenshot?}` *(stub)*
-- **act** — `world_new(session_id, seed?)` · `world_save(session_id, name, overwrite?)` ·
-  `world_load(session_id, name)` · `pause(session_id, paused)` *(stub)* ·
-  `exec_lua(session_id, code)` *(stub)*
-- **emitters** — `rlm.factorio.<event>` carrying `{session_id, kind, data}` (topic
-  `factorio`); e.g. `rlm.factorio.world_loaded`, `rlm.factorio.error`.
+- **perceive** — `observe(session_id, radius?) -> {snapshot, screenshot?}` ·
+  `observe_events(session_id) -> {events}` (drain) · `recipes(session_id, search?, limit?)` ·
+  `technologies(session_id, search?, only_unresearched?, limit?)`
+- **act: world** — `world_new(session_id, seed?)` · `world_save(session_id, name, overwrite?)` ·
+  `world_load(session_id, name)` · `pause(session_id, paused)` · `exec_lua(session_id, code)`
+- **act: body** — `body_spawn(session_id, surface?, x?, y?)` ·
+  `body_move(session_id, x, y)` (pathfinded; emits `arrived`/`path_blocked`) ·
+  `body_stop(session_id)` · `body_mine(session_id, x, y, name?, count?)` ·
+  `body_craft(session_id, recipe, count?)` · `body_build(session_id, name, x, y, direction?)` ·
+  `body_insert(session_id, x, y, name, count?, target?)` ·
+  `body_take(session_id, x, y, name, count?, target?)` ·
+  `research(session_id, name)` (cheat path, result flagged `cheated:true`)
+- **emitters** — `rlm.factorio.<event>` carrying `{session_id, kind, tick?, data}`
+  (topic `factorio`): `world_loaded` / `world_saved` / `error` from the world
+  verbs, `spawned` / `arrived` / `path_blocked` / `died` / `researched` drained
+  from the in-world buffer by a background pump.
