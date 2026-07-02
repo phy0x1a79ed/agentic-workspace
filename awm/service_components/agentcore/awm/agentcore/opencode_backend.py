@@ -161,7 +161,12 @@ class OpencodeSession(AgentSession):
         # An explicit AgentConfig.model wins; else params model_id; else default.
         self.model_id = config.model or params.get("model_id", _DEFAULT_MODEL_ID)
         self.directory = config.workdir or os.getcwd()
-        self.request_timeout = float(params.get("request_timeout", 120.0))
+        # The message POST spans the WHOLE turn (opencode returns when the
+        # model finishes — tool calls included), so this must cover a long
+        # agentic turn on a slow free model, not one HTTP round-trip. The
+        # gamebot live demo wedged at the old 120s default: the turn kept
+        # running server-side while our read gave up.
+        self.request_timeout = float(params.get("request_timeout", 900.0))
         self.startup_timeout = float(params.get("startup_timeout", 30.0))
 
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -274,9 +279,18 @@ class OpencodeSession(AgentSession):
         try:
             data = await self._post_message(text)
         except Exception as exc:  # noqa: BLE001
+            # Surface the failure AND close the turn: without a terminal
+            # `result`, downstream turn-boundary drivers (supervision budgets,
+            # continuation nudges) never fire and the session wedges silently.
+            # NOTE on timeouts: opencode keeps running the turn server-side
+            # after our read gives up — the error is about visibility, not
+            # about the turn having stopped.
             self._turn_q.put_nowait([
                 AgentEvent(kind="error", text=str(exc),
-                           data={"exception": type(exc).__name__})
+                           data={"exception": type(exc).__name__}),
+                AgentEvent(kind="result", text=None,
+                           data={"session_id": self.session_id,
+                                 "error": type(exc).__name__}),
             ])
             return
         parts = data.get("parts") or []
