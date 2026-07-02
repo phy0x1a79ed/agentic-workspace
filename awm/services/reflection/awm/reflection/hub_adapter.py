@@ -43,6 +43,8 @@ API_MANIFEST: dict[str, Any] = {
                 "submitted slash command is auto-trailed by a follow-up prompt "
                 "(override with `followup`) so the session has a next turn once "
                 "the command finishes — a bare command would otherwise go idle. "
+                "The follow-up is DEFERRED (injected after the command completes, "
+                "never queued behind it) so it can't run ahead of the command. "
                 "Modal commands (/mcp, /status, /model with no arg, …) are refused "
                 "— they trap input and freeze the session. "
                 "Pass `pane` = your $TMUX_PANE (find it with `echo $TMUX_PANE`)."
@@ -57,9 +59,9 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "enter", "type": "boolean",
                  "description": "Press Enter to submit after pasting (default true)."},
                 {"name": "followup", "type": "string",
-                 "description": "Prompt queued after a slash command to keep the "
-                                "session alive (default 'Continue with what you "
-                                "were doing.'). Ignored for plain prompts."},
+                 "description": "Prompt injected after a slash command completes to "
+                                "keep the session alive (default 'Continue with what "
+                                "you were doing.'). Ignored for plain prompts."},
                 {"name": "delay_ms", "type": "integer",
                  "description": "Wait this many ms before injecting (default 0)."},
                 {"name": "confirm", "type": "boolean",
@@ -73,10 +75,13 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "reflection_compact",
             "description": (
                 "Compact your own conversation: injects /compact into your tmux "
-                "pane, then a follow-up prompt so the session resumes after "
-                "compaction instead of going idle. It queues and runs the instant "
-                "the current turn ends. Pass `pane` = your $TMUX_PANE (find it "
-                "with `echo $TMUX_PANE`)."
+                "pane; it queues and runs the instant the current turn ends. A "
+                "resume prompt is then injected AFTER compaction completes (a "
+                "detached watcher waits for it — the resume is never queued behind "
+                "/compact, so it always lands on the freshly-compacted context) so "
+                "the session resumes instead of going idle. Returns immediately "
+                "with followup_deferred=true. Pass `pane` = your $TMUX_PANE (find "
+                "it with `echo $TMUX_PANE`)."
             ),
             "timeout": 60,
             "params": [
