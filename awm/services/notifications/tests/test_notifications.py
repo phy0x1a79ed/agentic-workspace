@@ -1,0 +1,243 @@
+"""Tests for awm.notifications — classifier, report lifecycle, dedupe, expiry.
+
+All on an isolated service DB in a temp dir (mirrors the writing pattern).
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+pytestmark = [pytest.mark.notifications]
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — isolated service DB in a temp dir
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(tmp_path, monkeypatch):
+    services_dir = tmp_path / "services"
+    services_dir.mkdir()
+    monkeypatch.setenv("AWM_WORKSPACE", str(tmp_path))
+    import awm.persistence.databases as dbmod
+    monkeypatch.setattr(dbmod, "SERVICES_DIR", services_dir, raising=False)
+    import awm.notifications.dao as daomod
+    monkeypatch.setattr(daomod, "_initialized", False)
+    daomod.init()
+    yield tmp_path
+
+
+@pytest.fixture
+def conn():
+    from awm.notifications import dao
+    c = dao.connect()
+    yield c
+    c.close()
+
+
+def _report(conn, **event):
+    """Run handle_report synchronously."""
+    import asyncio
+    from awm.notifications import service
+    return asyncio.run(service.handle_report(conn, event))
+
+
+# ---------------------------------------------------------------------------
+# Classifier
+# ---------------------------------------------------------------------------
+
+
+class TestIsQuestion:
+    def test_trailing_question_mark(self):
+        from awm.notifications.classify import is_question
+        assert is_question("Should I proceed with the migration?")
+
+    def test_question_on_last_line(self):
+        from awm.notifications.classify import is_question
+        assert is_question("Done with part one.\n\nWhich approach do you prefer?")
+
+    def test_markdown_wrapped_question(self):
+        from awm.notifications.classify import is_question
+        assert is_question("**Should I delete the old table?**")
+
+    def test_interrogative_leadin_without_mark(self):
+        from awm.notifications.classify import is_question
+        assert is_question("Let me know when the credentials are ready.")
+        assert is_question("Please confirm the deploy window.")
+
+    def test_ask_tool_use_wins(self):
+        from awm.notifications.classify import is_question
+        assert is_question("anything", tool_names=("AskUserQuestion",))
+        assert is_question(None, tool_names=("ExitPlanMode",))
+
+    def test_plain_statement_is_not_question(self):
+        from awm.notifications.classify import is_question
+        assert not is_question("All 34 tests pass. The feature is complete.")
+        assert not is_question(None)
+        assert not is_question("")
+
+    def test_mid_text_question_ending_in_statement(self):
+        from awm.notifications.classify import is_question
+        # The final line is the ask-surface; an earlier rhetorical ? isn't.
+        assert not is_question("Why did this fail? Because of X.\nFixed it; all done.")
+
+
+class TestTranscriptRead:
+    async def test_reads_last_assistant_text(self, tmp_path):
+        from awm.notifications.classify import read_last_assistant
+        p = tmp_path / "t.jsonl"
+        lines = [
+            {"type": "user", "message": {"content": [{"type": "text", "text": "hi"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "First reply."}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Should I continue?"},
+                {"type": "tool_use", "name": "AskUserQuestion"}]}},
+        ]
+        p.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+        text, tools = await read_last_assistant(str(p), retries=1)
+        assert text == "Should I continue?"
+        assert tools == ("AskUserQuestion",)
+
+    async def test_missing_file_is_none(self):
+        from awm.notifications.classify import read_last_assistant
+        text, tools = await read_last_assistant("/nope/missing.jsonl",
+                                                retries=1, delay=0.01)
+        assert text is None and tools == ()
+
+    async def test_garbled_lines_skipped(self, tmp_path):
+        from awm.notifications.classify import read_last_assistant
+        p = tmp_path / "t.jsonl"
+        p.write_text('not json\n{"type":"assistant","message":{"content":'
+                     '[{"type":"text","text":"ok done"}]}}\n{broken\n')
+        text, _ = await read_last_assistant(str(p), retries=1)
+        assert text == "ok done"
+
+
+# ---------------------------------------------------------------------------
+# Report lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestReport:
+    def test_turn_end_question_raises_immediate(self, conn, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Which port should I use?"}]}}) + "\n")
+        delta = _report(conn, harness="claude", event="turn_end",
+                        session_id="s1", cwd="/w/p", transcript_path=str(p))
+        assert delta["type"] == "raise"
+        item = delta["item"]
+        assert item["kind"] == "question"
+        assert item["notify_at"] == item["created_at"]  # no grace on questions
+
+    def test_turn_end_idle_has_grace(self, conn):
+        from awm.notifications.service import IDLE_GRACE_S
+        delta = _report(conn, harness="opencode", event="turn_end",
+                        session_id="s2", last_message="All tests pass.")
+        item = delta["item"]
+        assert item["kind"] == "idle"
+        assert item["notify_at"] == pytest.approx(
+            item["created_at"] + IDLE_GRACE_S)
+
+    def test_notification_is_question(self, conn):
+        delta = _report(conn, harness="claude", event="notification",
+                        session_id="s3",
+                        message="Claude needs your permission to use Bash")
+        assert delta["item"]["kind"] == "question"
+        assert "permission" in delta["item"]["detail"]
+
+    def test_dedupe_refreshes_not_duplicates(self, conn):
+        d1 = _report(conn, harness="opencode", event="turn_end",
+                     session_id="s4", last_message="done A")
+        d2 = _report(conn, harness="opencode", event="turn_end",
+                     session_id="s4", last_message="done B")
+        assert d1["type"] == "raise" and d2["type"] == "update"
+        assert d1["item"]["id"] == d2["item"]["id"]
+        # created_at/notify_at survive the refresh (push gate not reset)
+        assert d2["item"]["created_at"] == d1["item"]["created_at"]
+        assert "done B" in d2["item"]["snippet"]
+
+    def test_user_prompt_auto_resolves(self, conn):
+        from awm.notifications import service
+        raised = _report(conn, harness="claude", event="notification",
+                         session_id="s5", message="waiting for your input")
+        delta = _report(conn, harness="claude", event="user_prompt",
+                        session_id="s5")
+        assert delta["type"] == "resolve"
+        assert raised["item"]["id"] in delta["ids"]
+        out = service.list_items(conn)
+        open_items = [i for i in out["items"] if i["resolved_at"] is None]
+        assert not open_items
+        assert out["sessions"]["s5"]["state"] == "working"
+        resolved = [i for i in out["items"] if i["id"] == raised["item"]["id"]]
+        assert resolved[0]["resolved_by"] == "user_response"
+
+    def test_session_end_resolves(self, conn):
+        from awm.notifications import service
+        _report(conn, harness="opencode", event="turn_end",
+                session_id="s6", last_message="idle now")
+        delta = _report(conn, harness="opencode", event="session_end",
+                        session_id="s6")
+        assert delta["type"] == "resolve"
+        out = service.list_items(conn)
+        assert out["sessions"]["s6"]["state"] == "ended"
+
+    def test_error_event(self, conn):
+        delta = _report(conn, harness="opencode", event="error",
+                        session_id="s7", message="ProviderAuthError")
+        assert delta["item"]["kind"] == "error"
+
+    def test_bad_event_rejected_without_raise(self, conn):
+        assert _report(conn, harness="x", event="nonsense", session_id="s")["ok"] is False
+        assert _report(conn, harness="x", event="turn_end", session_id="")["ok"] is False
+
+    def test_question_and_idle_coexist_then_both_resolve(self, conn):
+        _report(conn, harness="claude", event="notification",
+                session_id="s8", message="permission?")
+        _report(conn, harness="opencode", event="turn_end",
+                session_id="s8", last_message="finished")
+        from awm.notifications import service
+        out = service.list_items(conn)
+        assert len([i for i in out["items"] if not i["resolved_at"]]) == 2
+        _report(conn, harness="claude", event="user_prompt", session_id="s8")
+        out = service.list_items(conn)
+        assert not [i for i in out["items"] if not i["resolved_at"]]
+
+
+# ---------------------------------------------------------------------------
+# Sweep + verbs
+# ---------------------------------------------------------------------------
+
+
+class TestSweepAndVerbs:
+    def test_stale_session_expires_on_list(self, conn):
+        from awm.notifications import service
+        _report(conn, harness="claude", event="notification",
+                session_id="s9", message="q?")
+        # Backdate the session far past the TTL.
+        conn.execute("UPDATE sessions SET last_seen = ? WHERE session_id = 's9'",
+                     (time.time() - service.STALE_TTL_S - 60,))
+        conn.commit()
+        out = service.list_items(conn)
+        row = [i for i in out["items"] if i["session_id"] == "s9"][0]
+        assert row["resolved_at"] is not None
+        assert row["resolved_by"] == "expired"
+
+    def test_mark_seen_and_resolve_and_clear(self, conn):
+        from awm.notifications import service
+        d = _report(conn, harness="claude", event="error",
+                    session_id="s10", message="boom")
+        iid = d["item"]["id"]
+        service.mark_seen(conn, iid)
+        out = service.list_items(conn)
+        assert [i for i in out["items"] if i["id"] == iid][0]["seen_at"]
+        assert service.resolve_items(conn, item_id=iid) == [iid]
+        _report(conn, harness="claude", event="error",
+                session_id="s11", message="boom2")
+        assert service.clear_all(conn)["resolved"]
+        assert service.stats(conn)["open_by_kind"] == {}
