@@ -296,6 +296,37 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "reason", "type": "string", "required": False},
             ],
         },
+        # accept: an independent verdict on the worker's CLAIMED delivery
+        # (terminal on call). The accept verifier runs the machine checks, then
+        # accepts (promote the claim → real delivery, complete) or rejects (loop
+        # back to the worker under a bounded budget).
+        {
+            "name": "accept_work",
+            "tool": "agent_accept_work",
+            "description": (
+                "Accept verifier: the worker's claimed delivery passes every "
+                "acceptance check and meets the objective. Promotes the claim "
+                "into a real delivery and completes the task. Pass evidence "
+                "describing what you ran and observed."
+            ),
+            "params": [
+                {"name": "evidence", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "reject_work",
+            "tool": "agent_reject_work",
+            "description": (
+                "Accept verifier: the worker's claimed delivery fails an "
+                "acceptance check or does not meet the objective. Loops the task "
+                "back to the worker with your reason (bounded budget). Optionally "
+                "pass a partial_ref preserving partial work."
+            ),
+            "params": [
+                {"name": "reason", "type": "string", "required": False},
+                {"name": "partial_ref", "type": "string", "required": False},
+            ],
+        },
         # planner: buffer a sub-DAG, committed when you indicate done.
         {
             "name": "add_subtask",
@@ -650,6 +681,8 @@ HANDLERS = {
     "request_steering": _relay("relay_request_steering", "request_steering"),
     "approve_plan": _relay("relay_approve_plan", "approve_plan"),
     "reject_plan": _relay("relay_reject_plan", "reject_plan"),
+    "accept_work": _relay("relay_accept_work", "accept_work"),
+    "reject_work": _relay("relay_reject_work", "reject_work"),
     "add_subtask": _relay("relay_add_subtask", "add_subtask"),
     "add_dependency": _relay("relay_add_dependency", "add_dependency"),
     "define_contract": _relay("relay_define_contract", "define_contract"),

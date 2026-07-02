@@ -42,6 +42,11 @@ log = logging.getLogger("awm.orchestrator.operations")
 # so a retried node gets a full budget model, not the leftovers of a give-up.
 FRESH_REPLAN_BUDGET = 2
 
+# The fresh ``accept_budget`` a retry re-grants — the work-rejection re-attempts
+# (``reject_work`` → worker) a node gets before a gate stalemate rests it
+# ``failed``. Reset alongside ``replan_budget`` so a retried node starts whole.
+FRESH_ACCEPT_BUDGET = 2
+
 # The out-states (a placement is live). Lifecycle controls that require a
 # *resting* node (``orch_decompose``) reject these — a live placement must be
 # cancelled first.
@@ -155,6 +160,14 @@ def _verify_agent(task: dict, agent_ref: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _task_gated(dao: OrchestratorDAO, task_id: str) -> bool:
+    """True iff the task's acceptance gate is armed — any produced contract
+    carries a non-NULL ``accept_spec``. Ungated (NULL on every produced
+    contract) ⇒ the legacy immediate-completion delivery path."""
+    return any(c["accept_spec"]
+               for c in dao.list_contracts_by_producer(task_id))
+
+
 def _has_consumers(dao: OrchestratorDAO, task_id: str) -> bool:
     """True if any task consumes a contract this task produces (it has somewhere
     downstream to route a failure)."""
@@ -182,6 +195,11 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
     depends_on = args.get("depends_on") or []
     consumer_id = args.get("consumer")
     repos = normalize_repos(args.get("repo"))
+    # Opt-in acceptance gate: an owner-supplied ``accept`` object
+    # ({objective, checks}) arms an independent execution-verified gate on every
+    # contract this task produces. Absent ⇒ NULL accept_spec ⇒ legacy path.
+    accept = args.get("accept")
+    accept_spec = json.dumps(accept) if accept else None
     if any(c.get("name") == PLAN_CONTRACT for c in produces):
         raise ValueError(f"{PLAN_CONTRACT!r} is a reserved contract name")
 
@@ -198,11 +216,12 @@ def orch_task_attach(args: dict[str, Any]) -> dict[str, Any]:
         for c in produces:
             produced_ids.append(
                 dao.create_contract(c["name"], c.get("spec", ""),
-                                    task_id, conn=conn))
+                                    task_id, accept_spec=accept_spec, conn=conn))
         if not produced_ids:
             produced_ids.append(
                 dao.create_contract(f"deliverable:{task_id[:8]}",
-                                    goal, task_id, conn=conn))
+                                    goal, task_id, accept_spec=accept_spec,
+                                    conn=conn))
 
         # This task's own prerequisites.
         for name in depends_on:
@@ -350,6 +369,9 @@ def orch_node_open(args: dict[str, Any]) -> dict[str, Any]:
     goal = str(args.get("goal", "")).strip()
     consumer_id = args.get("consumer")
     repos = normalize_repos(args.get("repo"))
+    # Opt-in acceptance gate on the synthetic deliverable (owner-supplied).
+    accept = args.get("accept")
+    accept_spec = json.dumps(accept) if accept else None
 
     dao = OrchestratorDAO()
     with dao.transaction() as conn:
@@ -362,7 +384,8 @@ def orch_node_open(args: dict[str, Any]) -> dict[str, Any]:
         # plan/verify/planner legs.
         task_id = dao.create_task(goal, state="plan_approved", conn=conn)
         cid = dao.create_contract(
-            f"deliverable:{task_id[:8]}", goal, task_id, conn=conn)
+            f"deliverable:{task_id[:8]}", goal, task_id,
+            accept_spec=accept_spec, conn=conn)
         if not kernel.check_acyclic(dao, consumer, task_id, conn=conn):
             raise ValueError("attaching upstream of the consumer would "
                              "create a cycle")
@@ -668,8 +691,8 @@ def orch_retry(args: dict[str, Any]) -> dict[str, Any]:
                            reason_text="human-initiated retry")
     dao.update_task(
         task["id"], state="ready",
-        replan_budget=FRESH_REPLAN_BUDGET, retry_count=0,
-        paused=0, attached=0,
+        replan_budget=FRESH_REPLAN_BUDGET, accept_budget=FRESH_ACCEPT_BUDGET,
+        retry_count=0, paused=0, attached=0,
         steer_user_done=0, steer_agent_ready=0, steer_requested=0,
         mode=None, agent_ref=None, placement_token=None, plan_ref=None)
     dispatch.enqueue([(task["id"], "plan")])
@@ -783,6 +806,27 @@ def deliver(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False,
                 "error": f"task does not produce contract {contract_name!r}"}
 
+    # GATED delivery (opt-in acceptance gate): a delivery is a CLAIM, not a
+    # completion. Set ``payload_ref`` only (delivered_ts stays NULL) — nothing
+    # completes and no consumer advances. When EVERY produced contract is claimed
+    # the task rests ``work_delivered`` and an independent accept verifier is
+    # dispatched; only ``accept_work`` promotes the claims to real deliveries.
+    if _task_gated(dao, task["id"]):
+        dao.set_contract_claim(contract["id"], payload_ref)
+        dao.add_attempt_memory(task["id"], "claimed", reason_type="work-claim",
+                               payload_ref=payload_ref)
+        produced = dao.list_contracts_by_producer(task["id"])
+        all_claimed = all(c["payload_ref"] is not None for c in produced)
+        if all_claimed:
+            dao.update_task(task["id"], state="work_delivered", mode=None,
+                            agent_ref=None, placement_token=None)
+            dispatch.enqueue([(task["id"], "accept")])
+        fresh = dao.get_task(task["id"])
+        return {"ok": True, "task_id": task["id"], "state": fresh["state"],
+                "delivered": contract_name, "claimed": True}
+
+    # UNGATED legacy path (unchanged): mark delivered, advance consumers, and
+    # complete the task once every produced contract is delivered.
     intents: list[tuple[str, str]] = []
     dao.mark_contract_delivered(contract["id"], payload_ref)
     dao.add_attempt_memory(task["id"], "delivered", payload_ref=payload_ref)
@@ -1006,6 +1050,101 @@ def reject_plan(args: dict[str, Any]) -> dict[str, Any]:
                         mode=None, agent_ref=None, placement_token=None,
                         plan_ref=None)
         intents = [(task["id"], "plan")]
+    dispatch.enqueue(intents)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def accept_work(args: dict[str, Any]) -> dict[str, Any]:
+    """An independent accept verifier accepts a ``verifying_work`` task's claims.
+
+    The acceptance-gate counterpart to :func:`approve_plan`, one layer later.
+    The verifier ran the ``accept_spec`` checks and they passed: promote every
+    claimed contract (payload_ref set, delivered_ts NULL) to a real delivery,
+    advance any newly-ready consumers (each starts at its PLAN leg), complete the
+    task and free its workspace. Only THIS op completes a gated task — the worker
+    cannot self-complete.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if task["state"] != "verifying_work":
+        return {"ok": False,
+                "error": f"accept_work on a {task['state']!r} task "
+                         "(expected 'verifying_work')"}
+    # The verifier relay may send its evidence under ``evidence``; accept either.
+    evidence = args.get("evidence") or args.get("reason_text") or ""
+    dao.add_attempt_memory(task["id"], "accepted", reason_type="work-accepted",
+                           reason_text=str(evidence))
+    # Promote every claim to a real delivery, then recompute consumers once (a
+    # consumer may depend on several of this task's contracts).
+    consumers: set[str] = set()
+    for c in dao.list_contracts_by_producer(task["id"]):
+        if c["delivered_ts"] is None and c["payload_ref"] is not None:
+            dao.mark_contract_delivered(c["id"], c["payload_ref"])
+        consumers.update(dao.list_consumers_of_contract(c["id"]))
+    intents: list[tuple[str, str]] = []
+    for consumer in consumers:
+        if kernel.recompute_readiness(dao, consumer):
+            intents.append((consumer, "plan"))
+
+    workspace_slug = task["workspace_slug"]
+    if kernel.complete_task(dao, task["id"]):
+        if _reclaim_workspace_fn is not None and workspace_slug:
+            try:
+                _reclaim_workspace_fn(workspace_slug)
+            except Exception as exc:  # noqa: BLE001 — reclaim is best-effort
+                log.warning("orchestrator: workspace reclaim failed: %s", exc)
+
+    dispatch.enqueue(intents)
+    fresh = dao.get_task(task["id"])
+    return {"ok": True, "task_id": task["id"], "state": fresh["state"]}
+
+
+def reject_work(args: dict[str, Any]) -> dict[str, Any]:
+    """An independent accept verifier rejects a ``verifying_work`` task's claims.
+
+    The acceptance-gate counterpart to :func:`reject_plan`, but it routes back to
+    the WORKER (not the plan leg): the plan was fine, the execution did not meet
+    the machine-checkable ``accept_spec``. Record the rejection (so the next
+    worker payload carries a ``rework_reason``), spend one ``accept_budget`` unit,
+    clear the undelivered claims, and return to ``plan_approved`` — a fresh worker
+    is dispatched to redo the work. With no accept-budget left the gate is a
+    stalemate: the task rests ``failed`` via
+    ``route_failure(contract-unsatisfiable)`` and its downstream consumers re-plan.
+    """
+    init()
+    dao = OrchestratorDAO()
+    task = dao.get_task(args["task_id"])
+    if task is None:
+        return {"ok": False, "error": "unknown task"}
+    _verify_agent(task, args.get("agent_ref"))
+    if task["state"] != "verifying_work":
+        return {"ok": False,
+                "error": f"reject_work on a {task['state']!r} task "
+                         "(expected 'verifying_work')"}
+    # The verifier relay sends the reason under ``reason``; accept either key.
+    reason_text = args.get("reason_text") or args.get("reason") or ""
+    dao.add_attempt_memory(task["id"], "failed", reason_type="work-rejected",
+                           reason_text=str(reason_text),
+                           payload_ref=args.get("partial_ref"))
+
+    budget = int(task["accept_budget"])
+    if budget <= 0:
+        # Gate stalemate — the worker cannot satisfy the contract. Rest failed
+        # and route consumers to re-plan (the SAME failure path a worker give-up
+        # takes for an unsatisfiable contract).
+        intents = kernel.route_failure(dao, task["id"], "contract-unsatisfiable")
+    else:
+        for c in dao.list_contracts_by_producer(task["id"]):
+            dao.clear_contract_claim(c["id"])
+        dao.update_task(task["id"], state="plan_approved",
+                        accept_budget=budget - 1, mode=None, agent_ref=None,
+                        placement_token=None)
+        intents = [(task["id"], "worker")]
     dispatch.enqueue(intents)
     fresh = dao.get_task(task["id"])
     return {"ok": True, "task_id": task["id"], "state": fresh["state"]}

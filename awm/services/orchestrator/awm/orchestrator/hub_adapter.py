@@ -9,7 +9,8 @@ reconnect).
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
 manifest) projects exactly five ``orch_*`` MCP tools. The privileged
 plan-mutation ops (``claim`` / ``deliver`` / ``fail`` / ``decompose_commit`` /
-``approve_plan`` / ``reject_plan`` / ``set_attached`` / ``set_steering``) and the
+``approve_plan`` / ``reject_plan`` / ``accept_work`` / ``reject_work`` /
+``set_attached`` / ``set_steering``) and the
 planner read ops
 (``search_tasks`` / ``search_contracts``) live in ``HANDLERS`` but are
 deliberately ABSENT from the manifest — so they are not MCP tools, yet remain
@@ -68,6 +69,13 @@ API_MANIFEST: dict[str, Any] = {
                      "unit: a \"project/scope\" string, a {project, scope, name?} "
                      "object, or a list of either. A scope attaches to at most "
                      "one active task.")},
+                {"name": "accept", "type": "object", "required": False,
+                 "description": (
+                     "Opt-in acceptance gate {objective, checks:[{name, cmd, "
+                     "expect_exit?, expect_output?}]}: arms an independent "
+                     "execution-verified check on the node's deliverable — the "
+                     "worker's delivery becomes a CLAIM an accept verifier must "
+                     "pass before it completes. Omit for the legacy path.")},
             ],
         },
         {
@@ -83,6 +91,13 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "produces", "type": "array", "required": False},
                 {"name": "depends_on", "type": "array", "required": False},
                 {"name": "repo", "type": "object", "required": False},
+                {"name": "accept", "type": "object", "required": False,
+                 "description": (
+                     "Opt-in acceptance gate {objective, checks:[{name, cmd, "
+                     "expect_exit?, expect_output?}]} armed on every contract "
+                     "this task produces — the worker's delivery becomes a CLAIM "
+                     "an independent accept verifier must pass before it "
+                     "completes. Omit for the legacy immediate-completion path.")},
             ],
         },
         {
@@ -245,6 +260,8 @@ HANDLERS = {
     "decompose_commit": operations.decompose_commit,
     "approve_plan": operations.approve_plan,
     "reject_plan": operations.reject_plan,
+    "accept_work": operations.accept_work,
+    "reject_work": operations.reject_work,
     "set_attached": operations.set_attached,
     "set_steering": operations.set_steering,
     "set_title": operations.set_title,

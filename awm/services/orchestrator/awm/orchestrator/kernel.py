@@ -202,6 +202,7 @@ _RETRY_REST: dict[str, tuple[str, str]] = {
     "planning": ("ready", "plan"),
     "verifying_plan": ("plan_delivered", "verify"),
     "active": ("plan_approved", "worker"),
+    "verifying_work": ("work_delivered", "accept"),
 }
 
 # Placement-clearing patch shared by every routing transition. It does NOT touch

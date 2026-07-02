@@ -122,6 +122,10 @@ def _mint_placement_token() -> str:
 
 _BUILTIN_READONLY = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite"]
 _BUILTIN_FULL = _BUILTIN_READONLY + ["Write", "Edit", "Bash", "NotebookEdit"]
+# The accept verifier's fs profile: read + RUN (Bash) so it can execute the
+# machine-checkable acceptance checks, but explicitly NO Write/Edit — it verifies
+# the worker's claimed delivery, it never fixes it.
+_BUILTIN_VERIFY_EXEC = _BUILTIN_READONLY + ["Bash"]
 
 _AGENT_DOMAIN = "mcp__awm__agent"
 
@@ -130,6 +134,7 @@ TOOL_PROFILES: dict[str, list[str]] = {
     "plan": _BUILTIN_READONLY + [_AGENT_DOMAIN],
     "planner": _BUILTIN_READONLY + [_AGENT_DOMAIN],
     "verify": [_AGENT_DOMAIN],  # no filesystem at all
+    "accept": _BUILTIN_VERIFY_EXEC + [_AGENT_DOMAIN],  # read + run, NO edit
 }
 
 # Claude Code's internal plan mode is DISABLED for every placement — the DAG's
@@ -156,6 +161,10 @@ _PLANNER_VERBS = {
     "search_tasks", "search_contracts", "indicate_done", "task_fail",
 } | _STEERING_VERBS
 _VERIFY_VERBS = {"approve_plan", "reject_plan", "task_fail"}
+# The accept verifier's terminal verdict verbs. Like verify it is verdict-only
+# (no steering, no admin, no deliverable staging) — it accepts or rejects the
+# worker's claimed delivery, or bails via task_fail.
+_ACCEPT_VERBS = {"accept_work", "reject_work", "task_fail"}
 # ``set_title`` is the label-derivation seam a steered agent uses at detach time
 # (still attach-gated in ``relay_admin``). worker gets it via ``_ADMIN_VERBS``;
 # plan/planner nodes can also be attended (attach-on-rest places the next leg
@@ -168,6 +177,7 @@ VERB_PROFILES: dict[str, set[str]] = {
     "plan": _WORKER_VERBS | _STEER_ADMIN_VERBS,
     "planner": _PLANNER_VERBS | _STEER_ADMIN_VERBS,
     "verify": set(_VERIFY_VERBS),
+    "accept": set(_ACCEPT_VERBS),
 }
 
 # task_fail is the universal escape hatch — always permitted regardless of mode.
@@ -335,10 +345,126 @@ def _finish_planner() -> str:
     )
 
 
+def _fmt_checks(checks: list) -> str:
+    """Render a spec's checks as verbatim markdown bullets (name → cmd → expect)."""
+    rendered = []
+    for c in checks or []:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name") or "(unnamed)"
+        cmd = c.get("cmd") or ""
+        exp_exit = c.get("expect_exit", 0)
+        detail = f"  - **{name}**: `{cmd}` (expect exit {exp_exit}"
+        exp_out = c.get("expect_output")
+        if exp_out:
+            detail += f", output containing {exp_out!r}"
+        detail += ")"
+        rendered.append(detail)
+    return "\n".join(rendered)
+
+
+def _finish_accept(spec: dict | None) -> str:
+    """The ``accept``-mode "how to finish": run each machine check from the
+    infra-owned ``accept_spec`` and reach a verdict — the verifier CANNOT edit or
+    fix the work, only verify it.
+
+    The verifier has READ + Bash-EXECUTE (no Write/Edit): it runs each ``cmd``,
+    compares exit/output, and calls ``accept_work`` ONLY if every check passes AND
+    the objective is met, else ``reject_work`` naming the failed check."""
+    spec = spec or {}
+    objective = str(spec.get("objective") or "").strip()
+    checks = spec.get("checks") or []
+    parts = [
+        "## How to finish (acceptance verification)\n\n"
+        "You are an **independent acceptance verifier**. The worker has CLAIMED a "
+        "delivery — nothing is accepted, and no downstream task advances, until "
+        "you verify it. You have READ and Bash-EXECUTE access **but you CANNOT "
+        "edit or fix anything** (no Write/Edit): your only job is to VERIFY the "
+        "claim, then accept or reject it.\n",
+    ]
+    if objective:
+        parts.append(
+            "### Objective — the bar the work must meet\n\n"
+            f"{objective}\n")
+    checks_md = _fmt_checks(checks)
+    if checks_md:
+        parts.append(
+            "### Acceptance checks — run EACH one via Bash\n\n"
+            f"{checks_md}\n")
+    else:
+        parts.append(
+            "### Acceptance checks\n\n(no machine checks were specified — judge "
+            "the objective directly against what the worker produced)\n")
+    parts.append(
+        "Run every check above with `Bash`. The linked repos are under "
+        "`repos/<name>` and the worker's claimed artifacts are materialized "
+        "read-only under `./inputs/`. Then reach exactly one verdict:\n\n"
+        "- **Accept** — ONLY if every check passes AND the objective is met: call "
+        "`accept_work(evidence=\"<what you ran and observed>\")`. This promotes "
+        "the claim into a real delivery and completes the task.\n"
+        "- **Reject** — if any check fails or the objective is not met: call "
+        "`reject_work(reason=\"<name the failed check(s) and what went wrong>\")`. "
+        "The worker loops back to fix it under a bounded budget.\n\n"
+        "You CANNOT edit or fix the work yourself — you only verify. If you "
+        "cannot run the checks at all, call `task_fail(reason_type, reason_text)`."
+        "\n_Your placement tools act on your own task automatically — you never "
+        "pass a token or id._\n")
+    return "\n".join(parts)
+
+
+def _acceptance_criteria_section(spec: dict | None) -> str:
+    """Worker-brief section quoting the infra-owned ``accept_spec`` verbatim.
+
+    Titled EXACTLY "## Acceptance criteria (authoritative — you may NOT change or
+    narrow these)" — an independent verifier will check the delivery against these
+    before it is accepted, and they are fixed (non-narrowable)."""
+    spec = spec or {}
+    objective = str(spec.get("objective") or "").strip()
+    checks = spec.get("checks") or []
+    parts = [
+        "## Acceptance criteria (authoritative — you may NOT change or narrow "
+        "these)\n\n"
+        "An INDEPENDENT verifier will check your delivery against the following "
+        "before it is accepted. These are fixed by the task owner — you cannot "
+        "renegotiate, weaken, or narrow them. Meet them exactly.\n",
+    ]
+    if objective:
+        parts.append(f"**Objective:** {objective}\n")
+    checks_md = _fmt_checks(checks)
+    if checks_md:
+        parts.append("Checks that will be run against your delivery:\n\n"
+                     f"{checks_md}\n")
+    return "\n".join(parts)
+
+
+def _rework_section(rework: dict | None) -> str:
+    """Worker-brief section rendered when a prior delivery was rejected.
+
+    ``rework`` is ``{reason_text, partial_ref}`` — the verifier's rejection reason
+    and (optionally) a ref to the partial work, so the re-dispatched worker knows
+    what to fix."""
+    rework = rework or {}
+    reason = str(rework.get("reason_text") or "").strip()
+    partial = rework.get("partial_ref")
+    parts = [
+        "## Rework — your previous delivery was REJECTED\n\n"
+        "A prior attempt at this task was rejected by the acceptance verifier. "
+        "Address the feedback below, then re-stage your outputs and indicate done "
+        "again.\n",
+    ]
+    if reason:
+        parts.append(f"**Rejection reason:** {reason}\n")
+    if partial:
+        parts.append(f"**Partial work ref:** {partial}\n")
+    return "\n".join(parts)
+
+
 def render_brief(*, task_id: str, mode: str, brief: str,
                  contracts_in: list, contracts_out: list,
                  prereadings: list, attached: bool = False,
-                 objective: str = "") -> str:
+                 objective: str = "",
+                 accept_spec: dict | None = None,
+                 rework_reason: dict | None = None) -> str:
     """Render a worker/plan/planner unit ``CLAUDE.md`` (the brief on disk —
     auto-loaded by the claude harness).
 
@@ -354,6 +480,9 @@ def render_brief(*, task_id: str, mode: str, brief: str,
                 "objective; you may inspect the repo but must not modify it",
         "planner": "planner: decompose this task into a sub-DAG",
         "worker": "worker: do the task and produce its outputs",
+        "accept": "accept verifier (read + execute, NO edit): independently verify "
+                  "the worker's claimed delivery against machine-checkable "
+                  "acceptance criteria — accept it or reject it, never fix it",
     }.get(mode, "worker")
 
     parts = [
@@ -379,9 +508,22 @@ def render_brief(*, task_id: str, mode: str, brief: str,
         parts.append(_finish_planner())
     elif mode == "plan":
         parts.append(_finish_plan())
+    elif mode == "accept":
+        parts.append(_finish_accept(accept_spec))
     else:
+        # worker: when the task is gated, quote the authoritative acceptance
+        # criteria verbatim, and render the rework feedback if a prior delivery
+        # was rejected — both BEFORE the mechanical how-to-finish.
+        if accept_spec:
+            parts.append(_acceptance_criteria_section(accept_spec))
+        if rework_reason:
+            parts.append(_rework_section(rework_reason))
         parts.append(_finish_worker(contracts_out))
-    parts.append(_steering_section())
+    # Steering (the attach/detach handshake) applies only to the human-steerable
+    # modes. The accept verifier (like verify) is never attended, so it gets no
+    # steering section.
+    if mode in ("worker", "plan", "planner"):
+        parts.append(_steering_section())
     parts.append(
         f"\n_When running detached you are unattended: idle turns count against a "
         f"hard {TASK_TURN_BUDGET}-turn budget (an attached or paused node is "
@@ -431,6 +573,41 @@ def _brief_goal(brief: str) -> str:
     if isinstance(data, dict):
         return str(data.get("goal") or "")
     return ""
+
+
+def _brief_accept_spec(brief: str) -> dict | None:
+    """Extract the infra-owned ``accept_spec`` from a structured (JSON) brief.
+
+    The orchestrator threads the parsed spec (``{objective, checks}``) onto the
+    brief for a gated worker AND for the accept verifier. Returns ``None`` when
+    absent (a NULL accept_spec ⇒ the legacy un-gated path)."""
+    if not brief:
+        return None
+    try:
+        data = json.loads(brief)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict):
+        spec = data.get("accept_spec")
+        if isinstance(spec, dict):
+            return spec
+    return None
+
+
+def _brief_rework_reason(brief: str) -> dict | None:
+    """Extract the ``rework_reason`` (``{reason_text, partial_ref}``) threaded onto
+    a re-dispatched worker's brief after a ``reject_work``. ``None`` when absent."""
+    if not brief:
+        return None
+    try:
+        data = json.loads(brief)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict):
+        rr = data.get("rework_reason")
+        if isinstance(rr, dict):
+            return rr
+    return None
 
 
 def _kickoff_text(*, task_id: str, mode: str) -> str:
@@ -625,6 +802,11 @@ async def place_on_task(args: dict) -> dict:
     # when non-empty) — seeded onto the row + rendered so a re-placement inherits
     # the distilled intent.
     objective = _brief_objective(brief)
+    # The infra-owned acceptance spec (gated worker + accept verifier) and the
+    # rework feedback (a re-dispatched worker after reject_work), both threaded on
+    # the brief by the orchestrator. NULL ⇒ the legacy un-gated path.
+    accept_spec = _brief_accept_spec(brief)
+    rework_reason = _brief_rework_reason(brief)
 
     context_md = ""
     if mode != "verify":
@@ -632,6 +814,7 @@ async def place_on_task(args: dict) -> dict:
             task_id=task_id, mode=mode, brief=brief,
             contracts_in=contracts_in, contracts_out=contracts_out,
             prereadings=prereadings, attached=attached, objective=objective,
+            accept_spec=accept_spec, rework_reason=rework_reason,
         )
 
     # Provision the unit FIRST — the workdir must exist before the spawn, and
@@ -1160,6 +1343,34 @@ async def relay_reject_plan(args: dict, as_: str | None = None) -> dict:
     return {"ok": True, "outcome": "rejected", "ack": ack}
 
 
+async def relay_accept_work(args: dict, as_: str | None = None) -> dict:
+    """Accept verifier tool: the claimed delivery passes (VERIFYING_WORK → done).
+
+    Promotes the worker's claim into a real delivery and completes the task. The
+    ``evidence`` (what the verifier ran and observed) is passed through; the
+    orchestrator falls back to its reason_text when omitted."""
+    row = _resolve_open_placement_for(as_)
+    ack = await orch_client.accept_work(
+        task_id=row["task_ref"], agent_ref=row["agent_ref"],
+        evidence=args.get("evidence"))
+    await _close_and_retire(row, "accepted")
+    return {"ok": True, "outcome": "accepted", "ack": ack}
+
+
+async def relay_reject_work(args: dict, as_: str | None = None) -> dict:
+    """Accept verifier tool: the claimed delivery fails (VERIFYING_WORK → re-work).
+
+    Loops the task back to the worker under a bounded budget (the worker is
+    re-placed with the rejection reason), or fails the task when the budget is
+    exhausted — the orchestrator owns that routing."""
+    row = _resolve_open_placement_for(as_)
+    ack = await orch_client.reject_work(
+        task_id=row["task_ref"], agent_ref=row["agent_ref"],
+        reason=args.get("reason"), partial_ref=args.get("partial_ref"))
+    await _close_and_retire(row, "rejected")
+    return {"ok": True, "outcome": "rejected", "ack": ack}
+
+
 # ---------------------------------------------------------------------------
 # Attach-gated admin tools (DAG restructuring; configurable registry)
 # ---------------------------------------------------------------------------
@@ -1463,6 +1674,9 @@ def _continuation_prompt(mode: str, task_id: str, remaining: int) -> str:
     if mode == "verify":
         hint = ("Reach a verdict: call `approve_plan()` or "
                 "`reject_plan(reason)`.")
+    elif mode == "accept":
+        hint = ("Run the acceptance checks, then `accept_work()` or "
+                "`reject_work(reason)`.")
     elif mode == "planner":
         hint = ("Build the sub-DAG (`add_subtask`/`add_dependency`/"
                 "`define_contract`), then `indicate_done()` to commit.")

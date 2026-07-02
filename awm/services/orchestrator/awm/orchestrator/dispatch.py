@@ -119,6 +119,20 @@ def _mint_workspace_slug(task: dict) -> str:
     return task["workspace_slug"] or f"orch-{task['id'][:8]}"
 
 
+def _task_accept_spec(dao: OrchestratorDAO, task_id: str) -> dict | None:
+    """The task's acceptance gate (the first produced contract's parsed
+    ``accept_spec``), or ``None`` when the task is ungated. A gate lives on the
+    contract, and every produced contract of a gated task carries the same spec,
+    so the first non-NULL one is authoritative."""
+    for c in dao.list_contracts_by_producer(task_id):
+        if c["accept_spec"]:
+            try:
+                return json.loads(c["accept_spec"])
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
 def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
                    unit_slug: str) -> dict:
     """Assemble the Contract-A ``place_on_task`` payload for a task.
@@ -142,7 +156,8 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
       knows why review was triggered, or ``reason="initial"`` when this is a
       fresh task's first specification (keyed off the ``created`` attempt memory).
     """
-    produced = [c["name"] for c in dao.list_contracts_by_producer(task["id"])]
+    produced_rows = dao.list_contracts_by_producer(task["id"])
+    produced = [c["name"] for c in produced_rows]
     incoming = dao.list_incoming_edges(task["id"])
     contracts_in = [e["name"] for e in incoming]
     # Delivered dependency payloads become the worker's read-only pre-readings.
@@ -150,6 +165,9 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         {"name": e["name"], "path": e["payload_ref"]}
         for e in incoming if e["payload_ref"]
     ]
+    # The opt-in acceptance gate (or None). Rides the WORKER brief (as a
+    # read-only authoritative anchor) and IS the ACCEPT verifier's contract.
+    accept_spec = _task_accept_spec(dao, task["id"])
     brief: dict[str, Any] = {"goal": task["goal"], "mode": mode}
     # The ratified objective record rides the brief for EVERY mode (when set) so a
     # re-placement inherits the intent without the user repeating it: the agents
@@ -165,6 +183,10 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         # carry the real produced names in the brief as the planning target.
         contracts_out: list[str] = []
         brief["produces"] = produced
+    elif mode == "accept":
+        # The ACCEPT verifier delivers NOTHING itself — it only runs the
+        # accept_spec checks and calls accept_work / reject_work.
+        contracts_out = []
     else:
         contracts_out = produced
 
@@ -172,6 +194,19 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         brief["plan_ref"] = task["plan_ref"]
         contracts_in = []  # the verifier is fs-less; objective rides contracts_out
         prereadings = []
+    elif mode == "accept":
+        # Independent, execution-verified acceptance: read + Bash-EXECUTE the
+        # accept_spec checks against the worker's CLAIMED artifacts (payload_ref
+        # set, delivered_ts NULL), which are materialized read-only as
+        # prereadings. The gate + the claimed target names ride the brief.
+        if accept_spec is not None:
+            brief["accept_spec"] = accept_spec
+        brief["produces"] = produced
+        contracts_in = []
+        prereadings = [
+            {"name": c["name"], "path": c["payload_ref"]}
+            for c in produced_rows if c["payload_ref"]
+        ]
     elif mode == "planner":
         mems = dao.list_attempt_memories(task["id"])
         last = mems[-1] if mems else None
@@ -180,6 +215,22 @@ def _build_payload(dao: OrchestratorDAO, task: dict, mode: str,
         elif last is not None:
             brief["review_reason"] = {
                 "reason_type": last["reason_type"],
+                "reason_text": last["reason_text"],
+                "partial_ref": last["payload_ref"],
+            }
+
+    if mode == "worker":
+        # The acceptance gate is a READ-ONLY authoritative anchor on the worker
+        # brief (the worker may not change or narrow it).
+        if accept_spec is not None:
+            brief["accept_spec"] = accept_spec
+        # A redispatch after reject_work carries WHY the work was rejected so the
+        # fresh worker reworks rather than repeats — keyed off the last attempt
+        # memory being a work-rejection.
+        mems = dao.list_attempt_memories(task["id"])
+        last = mems[-1] if mems else None
+        if last is not None and last["reason_type"] == "work-rejected":
+            brief["rework_reason"] = {
                 "reason_text": last["reason_text"],
                 "partial_ref": last["payload_ref"],
             }
