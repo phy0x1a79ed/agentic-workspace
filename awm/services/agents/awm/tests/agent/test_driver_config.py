@@ -79,8 +79,10 @@ def test_placement_default_resolution(driver_db, monkeypatch):
     monkeypatch.delenv("AWM_PLACEMENT_HARNESS", raising=False)
     monkeypatch.delenv("AWM_PLACEMENT_MODEL", raising=False)
 
-    # Untouched contract → historical default.
-    assert placement._resolve_driver({}) == ("opencode", None)
+    # Untouched contract → opencode harness with its EXPLICIT model default
+    # (blank no longer resolves to None / an ambient-inherited harness default).
+    assert placement._resolve_driver({}) == (
+        "opencode", placement.DEFAULT_OPENCODE_PLACEMENT_MODEL)
 
     # A saved value beats the literal.
     driver_db.save({"harness": "claude", "model": "haiku"})

@@ -281,6 +281,19 @@ async def create_session(*, scope: str,
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
         )
+    # Model is HARD-REQUIRED at the spawn boundary. A blank model is refused
+    # rather than silently defaulted, so a claude TUI can never omit ``--model``
+    # and inherit the operator's ambient ``ANTHROPIC_MODEL`` (see the claude
+    # backend's ``build_argv``). Callers resolve a concrete id up front —
+    # ``placement._resolve_driver`` fills a per-harness default, and a respawn
+    # carries the prior session's model — so this guard only trips a caller that
+    # bypassed resolution.
+    if not (model and model.strip()):
+        raise ValueError(
+            "create_session requires an explicit, non-empty model "
+            "(hard-required at the spawn boundary; a blank model no longer "
+            "falls back to the harness/CLI/ambient default)"
+        )
     if permission_mode not in _VALID_PERMISSION_MODES:
         raise ValueError(
             f"Invalid permission_mode {permission_mode!r}; "

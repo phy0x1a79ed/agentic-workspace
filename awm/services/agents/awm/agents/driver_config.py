@@ -34,8 +34,11 @@ class DriverSettings(BaseModel):
     model: Optional[str] = Field(
         default=None,
         description=(
-            "Model override for new placements (blank → the harness's own "
-            "default: DSv4-free for opencode, the CLI default for claude)."
+            "Model override for new placements. Blank does NOT inherit the "
+            "operator's ambient CLI/ANTHROPIC_MODEL default: placement "
+            "resolution fills a concrete per-harness default (claude → "
+            "haiku, opencode → deepseek-v4-flash-free) so every spawn "
+            "carries an explicit model (hard-required at the spawn boundary)."
         ),
     )
 
