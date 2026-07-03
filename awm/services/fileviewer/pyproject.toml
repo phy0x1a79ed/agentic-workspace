@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-fileviewer"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM fileviewer service: view a file in the browser by its absolute path — a loopback HTTP listener serves the requested file with a correct Content-Type (SVG/HTML/images/text render natively), or a small 404 not-found page. Off-hub transport, like mic."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/fileviewer/.
+[tool.setuptools.packages.find]
+include = ["awm.fileviewer*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]
