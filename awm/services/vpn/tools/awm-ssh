@@ -44,6 +44,10 @@ _awm_ssh_target() {
 target="$(_awm_ssh_target "$@")"
 host="${target##*@}"   # strip any user@ prefix
 
+# Extra ssh opts we prepend before the user's argv (command-line -o is
+# first-match-wins over ~/.ssh/config).
+extra=()
+
 case "$host" in
     *sockeye*)
         # cwl burst + ensure the UBC VPN bounce container/tunnel is up (the
@@ -52,7 +56,12 @@ case "$host" in
         ;;
     fir|fir.*)
         awm 2fa burst --device alliance >/dev/null 2>&1 || true
+        # fir carries a ProxyCommand guard in ~/.ssh/config that blocks a bare
+        # `ssh fir` with no live master (so a naive direct connect can't burn an
+        # MFA attempt toward provider lockout). This wrapper IS the sanctioned,
+        # burst-armed path, so it bypasses the guard to reach the login node.
+        extra+=(-o ProxyCommand=none)
         ;;
 esac
 
-exec ssh "$@"
+exec ssh "${extra[@]}" "$@"
