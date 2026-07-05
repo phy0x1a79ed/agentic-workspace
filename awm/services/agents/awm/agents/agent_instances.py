@@ -28,6 +28,7 @@ import json
 import os
 import re
 import signal
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -121,6 +122,15 @@ class AgentInstance:
         self.claude_slash_commands: list[str] = []
         self.context_used: int = 0
         self.context_max: Optional[int] = None
+        # Stall-watchdog clock (T5): a monotonic timestamp stamped on every
+        # harness event in ``_reader_loop`` (the single event chokepoint). Seeded
+        # at spawn so the clock starts at PLACEMENT — a slow first event never
+        # trips the watchdog. The 60s sweep fails a placement silent past
+        # ``AWM_PLACEMENT_STALL_S`` (see ``placement.stall_watchdog_loop``).
+        self.last_activity: float = time.monotonic()
+        # Auto-compact cooldown (T5): the monotonic time of the last ``/compact``
+        # injection (0.0 = never). ``placement._maybe_compact`` guards re-fire.
+        self.last_compact_at: float = 0.0
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         # Task-bounded placement: the placement IS this instance row.
         # placement_token names it, agent_ref is the stable placement identity,
@@ -490,6 +500,12 @@ def enqueue_input(session: AgentInstance, post_author: str,
         from awm.agents import agent_transcript
         framed_body = f"[from:{post_author}]\n{post_body}"
         agent_transcript.publish_inbound(session, framed_body, client_id)
+        # A new human message clears the agent's detach-readiness: new information
+        # means it must re-confirm before it can detach. No-op unless the task is
+        # attached with the readiness bit set. (Browser posts only — kickoff /
+        # supervisor turns carry no client_id and never touch the bit.)
+        from awm.agents import placement
+        placement.note_user_post(session)
     return True
 
 
@@ -660,6 +676,11 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
     from awm.agents import agent_bus
 
     async for event in event_stream:
+        # Stall-watchdog heartbeat (T5): EVERY harness event for this placed
+        # session (turn/tool/status/transcript) flows through here — this is the
+        # single chokepoint, so one stamp measures a long silent gap. A stalled
+        # placement is one that emits nothing for AWM_PLACEMENT_STALL_S.
+        session.last_activity = time.monotonic()
         data = getattr(event, "data", None) or {}
         kind = getattr(event, "kind", "status")
 
