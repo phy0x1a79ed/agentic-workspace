@@ -27,11 +27,15 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.notes import dao, notes
+from awm.notes import config, dao, notes, rooms
 
 log = logging.getLogger("awm.notes.hub_adapter")
 
 _CLI_HTTP = ["cli", "http"]
+
+# Set in ``main`` once the adapter exists, so the async collab handler can fan
+# merged edits out to a note's subscribers via the live control WS.
+ADAPTER: ServiceAdapter | None = None
 
 API_MANIFEST: dict[str, Any] = {
     "functions": [
@@ -136,7 +140,33 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Remove a custom dictation term.",
             "params": [{"name": "term", "type": "string", "required": True}],
         },
+        # ---- live collaboration (browser only; off the agent MCP surface) --
+        {
+            "name": "collab_open",
+            "tool": "notes_collab_open",
+            "surfaces": _CLI_HTTP,
+            "description": "Join a note's live room; returns {version, content}.",
+            "params": [{"name": "id", "type": "string", "required": True}],
+        },
+        {
+            "name": "collab_edit",
+            "tool": "notes_collab_edit",
+            "surfaces": _CLI_HTTP,
+            "description": "Merge a client edit into a note's live room and fan "
+                           "the merged result out to its subscribers.",
+            "params": [
+                {"name": "id", "type": "string", "required": True},
+                {"name": "base_version", "type": "integer", "required": True},
+                {"name": "content", "type": "string", "required": True},
+                {"name": "client_id", "type": "string",
+                 "description": "Sender's id, echoed in the broadcast so it can "
+                                "skip its own edit."},
+            ],
+        },
     ],
+    # A note's collaborators subscribe to the dynamic per-note topic
+    # ``note:<id>`` (see ``config.collab_topic``); dynamic topics need no
+    # manifest declaration — the hub fans out whatever the service emits.
     "emitters": [],
     "sessions": [],
 }
@@ -248,6 +278,33 @@ def _handle_vocab_remove(args: dict) -> dict:
         conn.close()
 
 
+def _handle_collab_open(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return notes.collab_open(conn, args["id"])
+    finally:
+        conn.close()
+
+
+async def _handle_collab_edit(args: dict) -> dict:
+    """Merge one client's edit, then broadcast the merged result to every
+    subscriber on the note's topic. Runs on the loop thread (async) so it can
+    ``emit`` on the live control WS; the merge itself is cheap."""
+    res = notes.collab_edit(
+        args["id"], int(args.get("base_version", 0)), args.get("content", "")
+    )
+    if res.get("changed") and ADAPTER is not None:
+        await ADAPTER.emit(
+            config.collab_topic(args["id"]),
+            {
+                "version": res["version"],
+                "content": res["content"],
+                "origin": args.get("client_id"),
+            },
+        )
+    return res
+
+
 HANDLERS = {
     "search": _handle_search,
     "get": _handle_get,
@@ -260,6 +317,8 @@ HANDLERS = {
     "purge": _handle_purge,
     "vocab_add": _handle_vocab_add,
     "vocab_remove": _handle_vocab_remove,
+    "collab_open": _handle_collab_open,
+    "collab_edit": _handle_collab_edit,
 }
 
 
@@ -275,14 +334,49 @@ def _startup() -> None:
         conn.close()
 
 
+def _flush_once() -> list[str]:
+    """Persist every dirty room. Opens its own connection so it is safe to run
+    in a worker thread (a sqlite connection is bound to its creating thread)."""
+    conn = dao.connect()
+    try:
+        return rooms.flush_all(conn)
+    finally:
+        conn.close()
+
+
+async def _flush_loop() -> None:
+    """Write dirty rooms through to disk every ``config.FLUSH_INTERVAL_S``. The
+    blocking DB/index work runs off the loop in a worker thread."""
+    while True:
+        await asyncio.sleep(config.FLUSH_INTERVAL_S)
+        try:
+            flushed = await asyncio.to_thread(_flush_once)
+            if flushed:
+                log.info("notes flush: persisted %d room(s)", len(flushed))
+        except Exception:  # noqa: BLE001 — a flush failure must not kill the loop
+            log.exception("notes periodic flush failed")
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter(
-        "notes", API_MANIFEST, HANDLERS, on_start=_startup,
-    ).run()
+    global ADAPTER
+    ADAPTER = ServiceAdapter("notes", API_MANIFEST, HANDLERS, on_start=_startup)
+    flush_task = asyncio.create_task(_flush_loop())
+    try:
+        await ADAPTER.run()
+    finally:
+        # Graceful shutdown (the gateway's in-band shutdown frame makes run()
+        # return) → drain unflushed edits so a clean stop never loses work.
+        flush_task.cancel()
+        try:
+            flushed = await asyncio.to_thread(_flush_once)
+            if flushed:
+                log.info("notes shutdown flush: persisted %d room(s)", len(flushed))
+        except Exception:  # noqa: BLE001
+            log.exception("notes shutdown flush failed")
 
 
 if __name__ == "__main__":

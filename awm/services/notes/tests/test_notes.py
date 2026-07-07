@@ -14,8 +14,17 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from awm.notes import config, db, index, notes, store
+from awm.notes import config, db, index, notes, rooms, store
 from awm.persistence.embeddings import EMBEDDINGS_DDL
+
+
+@pytest.fixture(autouse=True)
+def _clean_rooms():
+    """The room registry is a process-global; wipe it between tests so a note
+    opened in one test can't leak its live content into another."""
+    rooms._ROOMS.clear()
+    yield
+    rooms._ROOMS.clear()
 
 
 @pytest.fixture()
@@ -146,6 +155,83 @@ def test_empty_search_lists_recent(conn):
     notes.create(conn, path="b", content="2")
     res = notes.search(conn)
     assert res["count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Live collaboration rooms + lazy flush
+# ---------------------------------------------------------------------------
+
+
+def test_collab_open_snapshots_disk(conn):
+    n = notes.create(conn, path="p", content="seed body")
+    snap = notes.collab_open(conn, n["id"])
+    assert snap == {"version": 0, "content": "seed body"}
+
+
+def test_collab_edit_fast_path(conn):
+    n = notes.create(conn, path="p", content="hello")
+    res = notes.collab_edit(n["id"], 0, "hello world")
+    assert res["changed"] is True and res["version"] == 1
+    assert res["content"] == "hello world"
+    # A no-op edit against the current version doesn't bump.
+    same = notes.collab_edit(n["id"], 1, "hello world")
+    assert same["changed"] is False and same["version"] == 1
+
+
+def test_collab_edit_three_way_merge(conn):
+    """Two clients editing from the same base both survive (Google-Docs-lite)."""
+    n = notes.create(conn, path="p", content="the quick brown fox")
+    # Client A inserts at the front (base 0).
+    notes.collab_edit(n["id"], 0, "the very quick brown fox")
+    # Client B, still on base 0, appends at the end.
+    res = notes.collab_edit(n["id"], 0, "the quick brown fox jumps")
+    assert res["content"] == "the very quick brown fox jumps"
+    assert res["version"] == 2
+
+
+def test_get_prefers_live_room_over_disk(conn):
+    n = notes.create(conn, path="p", content="on disk")
+    notes.collab_edit(n["id"], 0, "in memory, not yet flushed")
+    # Disk is still the created content until a flush…
+    assert store.read(n["id"]) == "on disk"
+    # …but readers (agent/CLI/other tab) see the live room content.
+    assert notes.get(conn, n["id"])["content"] == "in memory, not yet flushed"
+
+
+def test_flush_persists_and_reindexes(conn):
+    n = notes.create(conn, path="p", content="original")
+    notes.collab_edit(n["id"], 0, "flushed keyword content")
+    flushed = rooms.flush_all(conn)
+    assert n["id"] in flushed
+    # File + FTS now reflect the in-memory edit.
+    assert store.read(n["id"]) == "flushed keyword content"
+    assert notes.search(conn, query="keyword")["count"] == 1
+    # A second flush with nothing dirty is a no-op.
+    assert rooms.flush_all(conn) == []
+
+
+def test_flush_clears_dirty_and_survives_reopen(conn):
+    n = notes.create(conn, path="p", content="a")
+    notes.collab_edit(n["id"], 0, "a b c")
+    rooms.flush_all(conn)
+    room = rooms._ROOMS[n["id"]]
+    assert room.dirty is False
+    assert room.content == "a b c"
+
+
+def test_save_reconciles_open_room(conn):
+    n = notes.create(conn, path="p", content="one")
+    rooms.open_room(n["id"])
+    notes.save(conn, n["id"], content="two")
+    # The out-of-band CLI/agent write is reflected in the live room too.
+    assert rooms.live_content(n["id"]) == "two"
+
+
+def test_trash_drops_room(conn):
+    n = notes.create(conn, path="p", content="x")
+    rooms.open_room(n["id"])
+    notes.trash(conn, n["id"])
+    assert rooms.live_content(n["id"]) is None
 
 
 def test_vocab_crud(conn):
