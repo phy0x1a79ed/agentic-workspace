@@ -3,9 +3,10 @@
   import { notesApi, type Note, type NoteMeta, type Tree } from './lib/api';
   import { buildTree } from './lib/tree';
   import { renderMarkdown } from './lib/markdown';
-  import { highlightMarkdown } from './lib/highlight';
   import { createDictation, type DictationState } from './lib/dictation';
   import { createCollab } from './lib/collab';
+  import { createNoteEditor, type NoteEditor } from './lib/editor';
+  import { createSpellchecker, type SpellController } from './lib/spellcheck';
   import { readState, writeState, readHashId, writeHashId, type TabState } from './lib/persist';
   import NoteTree from './lib/NoteTree.svelte';
   import VocabPanel from './lib/VocabPanel.svelte';
@@ -39,22 +40,22 @@
   let interim = $state('');
   let micLevel = $state(0);
 
-  let taEl = $state<HTMLTextAreaElement | null>(null);
+  let editorHost = $state<HTMLDivElement | null>(null);
   let copied = $state(false);
 
   const treeNodes = $derived(buildTree(tree.active));
   const segs = $derived(current.path.split('/').map((s) => s.trim()).filter(Boolean));
   const rendered = $derived(renderMarkdown(current.content));
-  const highlighted = $derived(highlightMarkdown(current.content));
   const words = $derived(current.content.trim() ? current.content.trim().split(/\s+/).length : 0);
 
   let dictation: ReturnType<typeof createDictation> | null = null;
   let collab: ReturnType<typeof createCollab> | null = null;
+  let editor: NoteEditor | null = null;
+  let spellcheck: SpellController | null = null;
   let createTimer: ReturnType<typeof setTimeout> | null = null;
   let pathTimer: ReturnType<typeof setTimeout> | null = null;
   let creating = false;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
-  let hlEl = $state<HTMLPreElement | null>(null);
 
   // ---- persistence -------------------------------------------------------
   //
@@ -69,6 +70,7 @@
   async function loadVocab() {
     vocab = (await notesApi.vocabList()).terms;
     dictation?.setHotwords(vocab);
+    spellcheck?.setVocab(vocab);
   }
 
   /** A local content edit (typing or dictation). Routes to create-then-join for
@@ -147,6 +149,7 @@
     collab?.leave();
     const n: Note = await notesApi.get(id);
     current = { id: n.id, path: n.path, content: n.content, file_path: n.file_path, deleted_at: n.deleted_at };
+    editor?.setDoc(n.content);   // load into the editor (remote → no local emit)
     mode = 'edit';
     results = null; query = '';
     saveState = 'synced';
@@ -159,6 +162,7 @@
     await flush();
     collab?.leave();
     current = blank();
+    editor?.setDoc('');
     mode = 'edit';
     saveState = 'new';
     setOpen(null);
@@ -167,13 +171,13 @@
 
   async function trashNote(id: string) {
     await notesApi.trash(id);
-    if (id === current.id) { collab?.leave(); current = blank(); setOpen(null); }
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); setOpen(null); }
     await loadTree();
   }
   async function restoreNote(id: string) { await notesApi.restore(id); await loadTree(); }
   async function purgeNote(id: string) {
     await notesApi.purge(id);
-    if (id === current.id) { collab?.leave(); current = blank(); setOpen(null); }
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); setOpen(null); }
     await loadTree();
   }
 
@@ -189,66 +193,31 @@
 
   // ---- editing -----------------------------------------------------------
 
-  function onBody() { onLocalEdit(); }
   function onPath() { schedulePathSave(); }
 
-  function syncScroll() {
-    if (taEl && hlEl) { hlEl.scrollTop = taEl.scrollTop; hlEl.scrollLeft = taEl.scrollLeft; }
+  /** A doc change reported BY the editor. Keep app state in step; only a genuine
+   *  user edit (`local`) persists/streams — a collab merge or note-load doesn't. */
+  function onEditorChange(text: string, local: boolean) {
+    current.content = text;
+    if (local) onLocalEdit();
   }
 
-  /** Adopt authoritative text (a merge or a peer's edit) into the editor,
-   *  keeping the caret where the user was typing. */
+  /** Adopt authoritative text (a merge or a peer's edit) into the editor as a
+   *  minimal diff; CM maps the caret through it. */
   function applyCollabText(next: string) {
-    const el = taEl;
-    if (!el || document.activeElement !== el) {
-      current.content = next;
-      saveState = 'synced';
-      return;
-    }
-    const oldText = current.content;
-    const caret = mapCaret(oldText, next, el.selectionStart ?? next.length);
-    current.content = next;
+    editor?.applyText(next);
     saveState = 'synced';
-    void tick().then(() => { if (taEl) { taEl.selectionStart = taEl.selectionEnd = caret; } syncScroll(); });
-  }
-
-  /** Map a caret offset from `oldT` onto `newT` via common prefix/suffix. */
-  function mapCaret(oldT: string, newT: string, caret: number): number {
-    let p = 0;
-    const maxP = Math.min(oldT.length, newT.length, caret);
-    while (p < maxP && oldT[p] === newT[p]) p++;
-    if (caret <= p) return caret;
-    const fromEnd = oldT.length - caret;
-    let s = 0;
-    const maxS = Math.min(fromEnd, newT.length - p);
-    while (s < maxS && oldT[oldT.length - 1 - s] === newT[newT.length - 1 - s]) s++;
-    if (fromEnd <= s) return newT.length - fromEnd;
-    return Math.min(caret, newT.length);
   }
 
   async function focusEditor() {
     await tick();
-    taEl?.focus();
+    editor?.focus();
   }
 
-  async function insertAtCaret(text: string) {
-    const el = taEl;
-    let insert = text;
-    if (!el) {
-      if (current.content && !/\s$/.test(current.content)) insert = ' ' + insert;
-      current.content += insert;
-      return;
-    }
-    const start = el.selectionStart ?? current.content.length;
-    const end = el.selectionEnd ?? start;
-    const before = current.content.slice(0, start);
-    const after = current.content.slice(end);
-    if (before && !/\s$/.test(before) && !/^\s/.test(insert)) insert = ' ' + insert;
-    current.content = before + insert + after;
-    const caret = start + insert.length;
-    await tick();
-    el.selectionStart = el.selectionEnd = caret;
-    el.focus();
+  /** Edit/Preview toggle. Re-measure CM when it's shown again after being hidden. */
+  function setMode(m: 'edit' | 'preview') {
+    mode = m;
+    if (m === 'edit') void tick().then(() => editor?.remeasure());
   }
 
   async function copyPath() {
@@ -287,7 +256,7 @@
       dictation.stop();
       return;
     }
-    mode = 'edit';
+    setMode('edit');
     dictation.setHotwords(vocab);
     await focusEditor();
     await dictation.start();
@@ -296,9 +265,24 @@
   // ---- lifecycle ---------------------------------------------------------
 
   onMount(async () => {
+    spellcheck = createSpellchecker({
+      onAddWord: async (w) => {
+        vocab = (await notesApi.vocabAdd(w)).terms;
+        dictation?.setHotwords(vocab);
+        spellcheck?.setVocab(vocab);
+      },
+    });
+    if (editorHost) {
+      editor = createNoteEditor(editorHost, {
+        doc: current.content,
+        placeholder: 'Start writing in Markdown…  ⌘ or press Dictate to speak.',
+        onChange: onEditorChange,
+        extensions: spellcheck ? [spellcheck.extension] : [],
+      });
+    }
     dictation = createDictation({
       onInterim: (t) => (interim = t),
-      onCommit: (t) => { void insertAtCaret(t).then(onLocalEdit); },
+      onCommit: (t) => editor?.insertAtCaret(t),
       onState: (s) => (dictState = s),
       onLevel: (v) => (micLevel = v),
     });
@@ -340,6 +324,8 @@
   onDestroy(() => {
     dictation?.destroy();
     collab?.leave();
+    editor?.destroy();
+    spellcheck?.destroy();
     window.removeEventListener('hashchange', onHashChange);
     if (createTimer) clearTimeout(createTimer);
     if (pathTimer) clearTimeout(pathTimer);
@@ -457,8 +443,8 @@
 
       <div class="tools">
         <div class="seg" role="group" aria-label="View mode">
-          <button class="seg-btn" class:on={mode === 'edit'} onclick={() => (mode = 'edit')}>Edit</button>
-          <button class="seg-btn" class:on={mode === 'preview'} onclick={() => (mode = 'preview')}>Preview</button>
+          <button class="seg-btn" class:on={mode === 'edit'} onclick={() => setMode('edit')}>Edit</button>
+          <button class="seg-btn" class:on={mode === 'preview'} onclick={() => setMode('preview')}>Preview</button>
         </div>
         <button
           class="mic-btn"
@@ -476,20 +462,8 @@
     </div>
 
     <div class="editor-wrap">
-      {#if mode === 'edit'}
-        <div class="edit-stack">
-          <pre class="editor-layer editor-hl markdown-hl" bind:this={hlEl} aria-hidden="true">{@html highlighted}</pre>
-          <textarea
-            class="editor-layer editor"
-            bind:this={taEl}
-            bind:value={current.content}
-            oninput={onBody}
-            onscroll={syncScroll}
-            placeholder="Start writing in Markdown…  ⌘ or press Dictate to speak."
-            spellcheck="true"
-          ></textarea>
-        </div>
-      {:else}
+      <div class="cm-host" bind:this={editorHost} style:display={mode === 'edit' ? '' : 'none'}></div>
+      {#if mode === 'preview'}
         <div class="preview markdown">
           {#if current.content.trim()}
             {@html rendered}

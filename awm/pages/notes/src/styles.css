@@ -275,56 +275,35 @@ body {
 
 .editor-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
-/* Syntax-highlight overlay: a transparent <textarea> sits pixel-for-pixel over a
-   highlighted <pre>, so the caret + editing behaviour stay native while the
-   markdown source is coloured underneath. Both layers MUST share identical
-   typography + box metrics or the text drifts out of register. */
-.edit-stack { position: relative; flex: 1 1 auto; min-height: 0; }
-.editor-layer {
-  position: absolute; inset: 0;
-  margin: 0;
-  width: 100%; height: 100%;
-  box-sizing: border-box;
-  border: 0;
-  font-family: var(--nt-mono);
-  font-size: 0.94rem;
-  line-height: 1.75;
-  letter-spacing: 0;
-  tab-size: 2;
-  padding: 1.6rem clamp(1.1rem, 6vw, 4rem);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-.editor-hl {
-  z-index: 0;
-  overflow: hidden;                 /* scroll is mirrored from the textarea */
-  background: var(--nt-surface);
-  color: var(--nt-text);
-  pointer-events: none;
-}
-.editor {
-  z-index: 1;
-  resize: none;
-  overflow-y: auto;
-  background: transparent;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  caret-color: var(--nt-text);
-  outline: none;
-}
-.editor::placeholder { color: var(--nt-faint); -webkit-text-fill-color: var(--nt-faint); }
-.editor::selection { background: var(--nt-accent-soft); }
+/* The editor is CodeMirror 6 (lib/editor.ts): it highlights markdown + fenced
+   code in place, auto-closes brackets, and continues list markup. Its own theme
+   — mapped to these --nt-* tokens — lives in editor.ts; here the mount host just
+   needs a bounded, scrollable box (CM owns the internal scroller). */
+.cm-host { flex: 1 1 auto; min-height: 0; }
+.cm-host .cm-editor { height: 100%; }
 
-/* markdown source tokens (highlight.js markdown grammar), themed via tokens */
-.markdown-hl .hljs-section { color: var(--nt-accent); font-weight: 700; }
-.markdown-hl .hljs-strong { color: var(--nt-text); font-weight: 700; }
-.markdown-hl .hljs-emphasis { color: var(--nt-text2); font-style: italic; }
-.markdown-hl .hljs-bullet { color: var(--nt-accent); }
-.markdown-hl .hljs-quote { color: var(--nt-text2); font-style: italic; }
-.markdown-hl .hljs-code { color: var(--nt-live); }
-.markdown-hl .hljs-link, .markdown-hl .hljs-string { color: var(--nt-accent); }
-.markdown-hl .hljs-symbol, .markdown-hl .hljs-attr { color: var(--nt-text2); }
+/* Spellcheck right-click menu (spellcheck.ts renders it to <body>). */
+.nt-spell-menu {
+  position: fixed; z-index: 9999;
+  min-width: 176px; max-width: 264px;
+  background: var(--nt-surface);
+  border: 1px solid var(--nt-border);
+  border-radius: 9px;
+  box-shadow: var(--nt-shadow);
+  padding: 0.28rem;
+  display: flex; flex-direction: column;
+  font-family: var(--nt-sans); font-size: 0.82rem;
+}
+.nt-spell-item {
+  text-align: left; border: 0; background: none;
+  color: var(--nt-text);
+  padding: 0.34rem 0.55rem; border-radius: 6px;
+  cursor: pointer; font: inherit;
+}
+.nt-spell-item:hover { background: var(--nt-hover); color: var(--nt-accent); }
+.nt-spell-action { color: var(--nt-text2); font-size: 0.78rem; }
+.nt-spell-empty { padding: 0.34rem 0.55rem; color: var(--nt-faint); font-style: italic; }
+.nt-spell-sep { height: 1px; background: var(--nt-border); margin: 0.28rem 0.15rem; }
 
 .preview {
   flex: 1 1 auto; overflow-y: auto;
