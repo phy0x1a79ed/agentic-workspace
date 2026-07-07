@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-notes"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM notes service: markdown notebook — uuid-file store, title-as-path tree, keyword/fuzzy/semantic search, 30-day trash, custom dictation vocabulary."
+dependencies = [
+    "awm-config",
+    "awm-persistence",
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/notes/.
+[tool.setuptools.packages.find]
+include = ["awm.notes*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real git, or network simulation; excluded from smoke",
+    "unit: pure unit tests (models, validation, registries)",
+    "notes: notes CRUD + search + trash",
+    "integration: cross-component integration tests",
+]
