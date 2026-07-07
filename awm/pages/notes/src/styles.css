@@ -274,19 +274,57 @@ body {
 .mic-btn.live .mic-glyph { color: var(--nt-on-accent); animation: nt-pulse 1s ease-in-out infinite; }
 
 .editor-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.editor {
-  flex: 1 1 auto;
-  width: 100%;
-  border: 0; resize: none;
-  background: var(--nt-surface);
-  color: var(--nt-text);
+
+/* Syntax-highlight overlay: a transparent <textarea> sits pixel-for-pixel over a
+   highlighted <pre>, so the caret + editing behaviour stay native while the
+   markdown source is coloured underneath. Both layers MUST share identical
+   typography + box metrics or the text drifts out of register. */
+.edit-stack { position: relative; flex: 1 1 auto; min-height: 0; }
+.editor-layer {
+  position: absolute; inset: 0;
+  margin: 0;
+  width: 100%; height: 100%;
+  box-sizing: border-box;
+  border: 0;
   font-family: var(--nt-mono);
   font-size: 0.94rem;
   line-height: 1.75;
+  letter-spacing: 0;
+  tab-size: 2;
   padding: 1.6rem clamp(1.1rem, 6vw, 4rem);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.editor-hl {
+  z-index: 0;
+  overflow: hidden;                 /* scroll is mirrored from the textarea */
+  background: var(--nt-surface);
+  color: var(--nt-text);
+  pointer-events: none;
+}
+.editor {
+  z-index: 1;
+  resize: none;
+  overflow-y: auto;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--nt-text);
   outline: none;
 }
-.editor::placeholder { color: var(--nt-faint); }
+.editor::placeholder { color: var(--nt-faint); -webkit-text-fill-color: var(--nt-faint); }
+.editor::selection { background: var(--nt-accent-soft); }
+
+/* markdown source tokens (highlight.js markdown grammar), themed via tokens */
+.markdown-hl .hljs-section { color: var(--nt-accent); font-weight: 700; }
+.markdown-hl .hljs-strong { color: var(--nt-text); font-weight: 700; }
+.markdown-hl .hljs-emphasis { color: var(--nt-text2); font-style: italic; }
+.markdown-hl .hljs-bullet { color: var(--nt-accent); }
+.markdown-hl .hljs-quote { color: var(--nt-text2); font-style: italic; }
+.markdown-hl .hljs-code { color: var(--nt-live); }
+.markdown-hl .hljs-link, .markdown-hl .hljs-string { color: var(--nt-accent); }
+.markdown-hl .hljs-symbol, .markdown-hl .hljs-attr { color: var(--nt-text2); }
 
 .preview {
   flex: 1 1 auto; overflow-y: auto;
@@ -345,9 +383,26 @@ body {
 .status-right { display: flex; align-items: center; gap: 0.9rem; flex: 0 0 auto; }
 .wc { color: var(--nt-faint); font-family: var(--nt-mono); }
 .save-state { font-family: var(--nt-sans); font-weight: 600; color: var(--nt-faint); }
-.save-state[data-state="saved"] { color: var(--nt-accent); }
+.save-state[data-state="synced"] { color: var(--nt-accent); }
 .save-state[data-state="saving"] { color: var(--nt-text2); }
-.save-state[data-state="unsaved"] { color: var(--nt-live); }
+.save-state[data-state="editing"] { color: var(--nt-live); }
+
+.live-pill {
+  display: inline-flex; align-items: center; gap: 0.32rem;
+  font-family: var(--nt-sans); font-weight: 600; font-size: 0.68rem;
+  color: var(--nt-accent);
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--nt-accent);
+  box-shadow: 0 0 0 0 var(--nt-accent-soft);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 var(--nt-accent-soft); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
 
 /* ---- right / vocab ---------------------------------------------------- */
 .vocab-scroll { flex: 1 1 auto; overflow-y: auto; padding: 0.5rem 0.85rem 1rem; }

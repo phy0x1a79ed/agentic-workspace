@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import config, db, index, store
+from . import config, db, index, rooms, store
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -50,7 +50,10 @@ def _row(
     if score is not None:
         out["score"] = score
     if include_content or snippet:
-        text = store.read(r["id"])
+        # Prefer the live in-memory room over the (possibly lagging) on-disk
+        # file so a reader — agent, CLI, another tab — sees unflushed edits.
+        live = rooms.live_content(r["id"])
+        text = live if live is not None else store.read(r["id"])
         if include_content:
             out["content"] = text
         if snippet:
@@ -124,6 +127,10 @@ def save(
     if chash != r["embedded_hash"]:
         _embed(conn, note_id, new_content, chash)
     conn.commit()
+    # If a live room exists (a browser has this note open), reconcile it to this
+    # out-of-band write so its collaborators and any reader stay consistent.
+    if content is not None:
+        rooms.sync_from_disk(note_id, new_content)
     return get(conn, note_id, include_content=False)
 
 
@@ -165,6 +172,7 @@ def trash(conn: sqlite3.Connection, note_id: str) -> dict[str, Any]:
         (db.now_iso(), db.now_iso(), note_id),
     )
     conn.commit()
+    rooms.drop(note_id)
     return {"trashed": note_id}
 
 
@@ -208,6 +216,28 @@ def _hard_delete(conn: sqlite3.Connection, note_id: str) -> None:
     db.fts_delete(conn, note_id)
     db.delete_note_row(conn, note_id)
     store.remove(note_id)
+    rooms.drop(note_id)
+
+
+# ---------------------------------------------------------------------------
+# Live collaboration — the in-memory room is authoritative between flushes.
+# (Broadcast/emit is the hub_adapter's job; these just own the merge + state.)
+# ---------------------------------------------------------------------------
+
+
+def collab_open(conn: sqlite3.Connection, note_id: str) -> dict[str, Any]:
+    """Join a note's room: returns the authoritative ``{version, content}`` the
+    client adopts. The room is seeded from disk on first open."""
+    r = db.get_note(conn, note_id)
+    if r is None:
+        raise ValueError(f"no such note: {note_id}")
+    return rooms.snapshot(note_id)
+
+
+def collab_edit(note_id: str, base_version: int, content: str) -> dict[str, Any]:
+    """Merge a client edit into the room. Returns the new authoritative
+    ``{version, content, changed}``; the caller fans it out to subscribers."""
+    return rooms.apply_edit(note_id, int(base_version), content)
 
 
 def _embed(conn: sqlite3.Connection, note_id: str, text: str, chash: str) -> None:

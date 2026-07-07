@@ -16,6 +16,21 @@ SOURCE_TYPE = "note"
 # How long a trashed note lingers before ``purge_expired`` hard-deletes it.
 TRASH_TTL_DAYS = 30
 
+# Live-collaboration + lazy-persist tuning.
+#   FLUSH_INTERVAL_S — how often the background flusher writes dirty in-memory
+#     rooms through to disk (file + DB + FTS + embeddings). Edits live in memory
+#     between flushes; a crash can lose at most one interval of edits — the
+#     deliberate durability/throughput trade the design calls for.
+#   SNAPSHOT_RING — how many recent per-version content snapshots each room keeps
+#     so a lagging client's ``base_version`` can be found for a 3-way merge.
+FLUSH_INTERVAL_S = 300
+SNAPSHOT_RING = 64
+
+
+def collab_topic(note_id: str) -> str:
+    """Pub/sub emit topic a note's collaborators subscribe to for live updates."""
+    return f"note:{note_id}"
+
 
 def files_dir() -> Path:
     """Directory holding the uuid-named ``.md`` files. Created on demand.

@@ -11,6 +11,7 @@ dependencies = [
     "awm-config",
     "awm-persistence",
     "awm-gatewayclient",
+    "diff-match-patch>=20230430",
 ]
 
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/notes/.
