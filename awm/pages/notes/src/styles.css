@@ -96,17 +96,73 @@ body {
 /* ---- app shell -------------------------------------------------------- */
 .app { display: flex; height: 100vh; overflow: hidden; }
 
+/* Mobile-only backdrop behind an open drawer (hidden on desktop). */
+.scrim {
+  display: none;
+  position: fixed; inset: 0; z-index: 20;
+  border: 0; padding: 0; margin: 0;
+  background: rgba(10, 14, 8, 0.42);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* ---- themed native controls ------------------------------------------- */
+/* Checkboxes/radios everywhere (search "semantic" toggle + rendered markdown
+   task-list boxes) follow the ink accent. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
+
+/* Themed scrollbars — Firefox (scrollbar-*) + WebKit/Blink (::-webkit-*). The
+   CodeMirror scroller (.cm-scroller) is themed here too since these are global. */
+.tree-scroll, .trash, .vocab-scroll, .preview, .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nt-faint) transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--nt-border);
+  border-radius: 7px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--nt-faint);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
 .left, .right {
   display: flex;
   flex-direction: column;
   background: var(--nt-panel);
   flex: 0 0 auto;
   overflow: hidden;
-  transition: width 0.18s ease, opacity 0.18s ease;
 }
 .left { width: 268px; border-right: 1px solid var(--nt-border); }
 .right { width: 304px; border-left: 1px solid var(--nt-border); }
 .left.closed, .right.closed { width: 0; opacity: 0; }
+/* Width/opacity animate only AFTER first paint — otherwise a saved-closed panel
+   would visibly open (default) then collapse (cookie) on reload. And never while
+   dragging the resizer (the drag must track the pointer instantly). */
+.app.ready .left, .app.ready .right { transition: width 0.18s ease, opacity 0.18s ease; }
+.app.resizing .left, .app.resizing .right { transition: none; }
+
+/* Drag handle on a panel's inner edge — resize + persist width. */
+.resizer {
+  flex: 0 0 auto;
+  width: 7px;
+  margin: 0 -3px;             /* overlap the border so it's easy to grab */
+  cursor: col-resize;
+  z-index: 3;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+.resizer::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: transparent; transition: background 0.12s ease;
+}
+.resizer:hover::before, .app.resizing .resizer::before { background: var(--nt-accent); }
 
 .panel-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -364,6 +420,8 @@ body {
 .save-state { font-family: var(--nt-sans); font-weight: 600; color: var(--nt-faint); }
 .save-state[data-state="synced"] { color: var(--nt-accent); }
 .save-state[data-state="saving"] { color: var(--nt-text2); }
+.save-state[data-state="savedLocal"] { color: var(--nt-text2); }
+.save-state[data-state="offline"] { color: var(--nt-live); font-weight: 700; }
 .save-state[data-state="editing"] { color: var(--nt-live); }
 
 .live-pill {
@@ -387,7 +445,9 @@ body {
 .vocab-scroll { flex: 1 1 auto; overflow-y: auto; padding: 0.5rem 0.85rem 1rem; }
 
 /* ---- rendered markdown ------------------------------------------------ */
-.markdown { color: var(--nt-text); font-family: var(--nt-serif); line-height: 1.72; max-width: 46rem; margin: 0 auto; }
+/* No narrow column cap — the preview fills its pane (matching the editor), with
+   the surrounding .preview padding providing side breathing room. */
+.markdown { color: var(--nt-text); font-family: var(--nt-serif); line-height: 1.72; max-width: none; margin: 0; }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   font-family: var(--nt-sans); line-height: 1.25; margin: 1.8em 0 0.6em; color: var(--nt-text);
@@ -426,9 +486,37 @@ body {
   * { animation: none !important; transition: none !important; }
 }
 
-/* ---- responsive: collapse panels on narrow screens -------------------- */
-@media (max-width: 860px) {
-  .left { width: 220px; }
-  .right { width: 240px; }
-  .filepath code { max-width: 32vw; }
+/* ---- responsive: overlay drawers + title reflow on phones ------------- */
+@media (max-width: 680px) {
+  /* Side panels become fixed overlay drawers so opening one no longer squeezes
+     the editor down to nothing — it slides over the content instead. The
+     !important beats the inline drag-width applied in the markup. */
+  .left, .right {
+    position: fixed; top: 0; bottom: 0; z-index: 30;
+    width: min(86vw, 340px) !important;
+    opacity: 1 !important;
+    box-shadow: var(--nt-shadow);
+  }
+  .left  { left: 0;  transform: translateX(0); }
+  .right { right: 0; transform: translateX(0); }
+  .left.closed  { transform: translateX(-100%); }
+  .right.closed { transform: translateX(100%); }
+  .app.ready .left, .app.ready .right,
+  .app.resizing .left, .app.resizing .right { transition: transform 0.22s ease; }
+  .resizer { display: none; }
+
+  /* Backdrop visible while a drawer is open — tap it to dismiss. */
+  .scrim { display: block; }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+
+  /* Topbar reflow: the title/path drops to its own full-width row so the
+     toolbar (view toggle + mic + vocab) can never crush it. */
+  .topbar { flex-wrap: wrap; row-gap: 0.45rem; column-gap: 0.5rem; padding: 0.5rem 0.7rem; }
+  .titlebox { order: 3; flex: 1 1 100%; }
+  .tools { margin-left: auto; }
+  .path-input { font-size: 0.95rem; }
+  .crumbs { display: none; }              /* reclaim vertical space on a phone */
+
+  .filepath code { max-width: 40vw; }
+  .statusbar { padding: 0.4rem 0.7rem; }
 }
