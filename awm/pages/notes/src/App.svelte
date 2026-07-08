@@ -7,7 +7,11 @@
   import { createCollab } from './lib/collab';
   import { createNoteEditor, type NoteEditor } from './lib/editor';
   import { createSpellchecker, type SpellController } from './lib/spellcheck';
-  import { readState, writeState, readHashId, writeHashId, type TabState } from './lib/persist';
+  import {
+    readState, writeState, readHashId, writeHashId, type TabState,
+    LEFT_MIN, LEFT_MAX, RIGHT_MIN, RIGHT_MAX,
+  } from './lib/persist';
+  import { writeDraft, readDraft, clearDraft, migrateBlankDraft } from './lib/draft';
   import NoteTree from './lib/NoteTree.svelte';
   import VocabPanel from './lib/VocabPanel.svelte';
 
@@ -23,12 +27,26 @@
   let tree = $state<Tree>({ active: [], trashed: [] });
   let current = $state<Open>(blank());
   let mode = $state<'edit' | 'preview'>('edit');
-  let saveState = $state<'new' | 'editing' | 'saving' | 'synced'>('new');
+  // 'new'        — blank note, nothing typed yet
+  // 'editing'    — transient, mid-keystroke
+  // 'savedLocal' — buffered to the local draft, server not yet confirmed
+  // 'saving'     — an edit is in flight to the server
+  // 'synced'     — the server has confirmed our latest text
+  // 'offline'    — a send failed; edits are safe in the local draft
+  let saveState = $state<'new' | 'editing' | 'savedLocal' | 'saving' | 'synced' | 'offline'>('new');
   let collabLive = $state(false);
 
-  let leftOpen = $state(true);
-  let rightOpen = $state(false);
-  let collapsed = $state<Set<string>>(new Set());
+  // Panel open-state + widths are read synchronously from the cookie at init
+  // (see `initial` below) so panels mount in their final state — no reload flash
+  // of the left panel opening then closing. Width transitions are suppressed
+  // until `panelsReady` flips after first paint (see onMount).
+  const initial = readState();
+  let leftOpen = $state(initial.left);
+  let rightOpen = $state(initial.right);
+  let leftW = $state(initial.leftW);
+  let rightW = $state(initial.rightW);
+  let panelsReady = $state(false);
+  let collapsed = $state<Set<string>>(new Set(initial.collapsed));
 
   let query = $state('');
   let semantic = $state(false);
@@ -74,13 +92,18 @@
   }
 
   /** A local content edit (typing or dictation). Routes to create-then-join for
-   *  a fresh note, or streams into the live room for an existing one. */
+   *  a fresh note, or streams into the live room for an existing one. Always
+   *  mirrors the text to the local draft first, so nothing is lost if the
+   *  connection breaks before the edit is confirmed synced. */
   function onLocalEdit() {
+    writeDraft(current.id, current.path, current.content);
+    const hasBody = current.content.trim().length > 0 || current.path.trim().length > 0;
     if (current.id === null) {
-      saveState = 'new';
+      saveState = hasBody ? 'savedLocal' : 'new';
       scheduleCreate();
     } else {
-      saveState = 'editing';
+      // Buffered locally; collab.onSync will advance this to saving → synced.
+      saveState = 'savedLocal';
       collab?.update(current.content);
     }
   }
@@ -99,6 +122,7 @@
     saveState = 'saving';
     try {
       const n = await notesApi.create(current.path, current.content);
+      migrateBlankDraft(n.id);          // carry the local safety copy onto the real id
       current.id = n.id;
       current.file_path = n.file_path;
       setOpen(n.id);
@@ -107,6 +131,7 @@
       // null) can't route through savePath, so persist the latest path now.
       if (current.path !== n.path) await notesApi.save(n.id, { path: current.path });
       saveState = 'synced';
+      clearDraft(current.id);   // persisted + joined — the safety copy has served
       await loadTree();
     } finally {
       creating = false;
@@ -136,7 +161,10 @@
   // ---- deep-link + tab state (URL hash + cookie) -------------------------
 
   function tabState(): TabState {
-    return { last: current.id, collapsed: [...collapsed], left: leftOpen, right: rightOpen };
+    return {
+      last: current.id, collapsed: [...collapsed],
+      left: leftOpen, right: rightOpen, leftW, rightW,
+    };
   }
   function persistTab() { writeState(tabState()); }
   function setOpen(id: string | null) { writeHashId(id); persistTab(); }
@@ -148,19 +176,25 @@
     await flush();
     collab?.leave();
     const n: Note = await notesApi.get(id);
-    current = { id: n.id, path: n.path, content: n.content, file_path: n.file_path, deleted_at: n.deleted_at };
-    editor?.setDoc(n.content);   // load into the editor (remote → no local emit)
+    // If a local draft survived a dropped connection / reload with edits the
+    // server never confirmed, restore it; collab.join pushes the diff back up.
+    const d = readDraft(id);
+    const useDraft = !!d && d.content !== n.content;
+    const content = useDraft ? d!.content : n.content;
+    current = { id: n.id, path: n.path, content, file_path: n.file_path, deleted_at: n.deleted_at };
+    editor?.setDoc(content);   // load into the editor (remote → no local emit)
     mode = 'edit';
     results = null; query = '';
-    saveState = 'synced';
+    if (useDraft) { saveState = 'savedLocal'; } else { saveState = 'synced'; clearDraft(id); }
     setOpen(n.id);
-    await collab?.join(n.id, n.content);
+    await collab?.join(n.id, content);
     await focusEditor();
   }
 
   async function newNote() {
     await flush();
     collab?.leave();
+    clearDraft(null);            // start a genuinely fresh blank note
     current = blank();
     editor?.setDoc('');
     mode = 'edit';
@@ -171,13 +205,15 @@
 
   async function trashNote(id: string) {
     await notesApi.trash(id);
-    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); setOpen(null); }
+    clearDraft(id);
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; setOpen(null); }
     await loadTree();
   }
   async function restoreNote(id: string) { await notesApi.restore(id); await loadTree(); }
   async function purgeNote(id: string) {
     await notesApi.purge(id);
-    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); setOpen(null); }
+    clearDraft(id);
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; setOpen(null); }
     await loadTree();
   }
 
@@ -188,12 +224,47 @@
     persistTab();
   }
 
-  function toggleLeft() { leftOpen = !leftOpen; persistTab(); }
-  function toggleRight() { rightOpen = !rightOpen; persistTab(); }
+  function toggleLeft() { leftOpen = !leftOpen; persistTab(); afterPanelResize(); }
+  function toggleRight() { rightOpen = !rightOpen; persistTab(); afterPanelResize(); }
+  function closePanels() { leftOpen = false; rightOpen = false; persistTab(); afterPanelResize(); }
+
+  /** The center pane changed size — let CodeMirror re-measure its viewport. */
+  function afterPanelResize() { void tick().then(() => editor?.remeasure()); }
+
+  // ---- panel resize (drag the inner edge) --------------------------------
+
+  let resizing = $state<null | 'left' | 'right'>(null);
+
+  function startResize(side: 'left' | 'right', ev: PointerEvent) {
+    ev.preventDefault();
+    resizing = side;
+    const startX = ev.clientX;
+    const startW = side === 'left' ? leftW : rightW;
+    const move = (e: PointerEvent) => {
+      const dx = e.clientX - startX;
+      if (side === 'left') {
+        leftW = Math.min(LEFT_MAX, Math.max(LEFT_MIN, startW + dx));
+      } else {
+        rightW = Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, startW - dx)); // grows leftward
+      }
+    };
+    const up = () => {
+      resizing = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      persistTab();
+      afterPanelResize();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
 
   // ---- editing -----------------------------------------------------------
 
-  function onPath() { schedulePathSave(); }
+  function onPath() {
+    writeDraft(current.id, current.path, current.content);   // mirror the title too
+    schedulePathSave();
+  }
 
   /** A doc change reported BY the editor. Keep app state in step; only a genuine
    *  user edit (`local`) persists/streams — a collab merge or note-load doesn't. */
@@ -206,7 +277,22 @@
    *  minimal diff; CM maps the caret through it. */
   function applyCollabText(next: string) {
     editor?.applyText(next);
-    saveState = 'synced';
+    current.content = next;
+    // A merge from the server is authoritative — refresh the local safety copy.
+    writeDraft(current.id, current.path, next);
+  }
+
+  /** Sync-state transitions reported by collab.ts (the fix for the status
+   *  sticking on a buffered state — a solo editor now reaches 'synced'). */
+  function onCollabSync(s: 'saving' | 'synced' | 'offline') {
+    if (s === 'synced') {
+      saveState = 'synced';
+      clearDraft(current.id);       // server has it now — drop the safety copy
+    } else if (s === 'saving') {
+      saveState = 'saving';
+    } else {
+      saveState = 'offline';
+    }
   }
 
   async function focusEditor() {
@@ -289,25 +375,36 @@
     collab = createCollab({
       onText: (t) => applyCollabText(t),
       onStatus: (live) => (collabLive = live),
+      onSync: (s) => onCollabSync(s),
     });
 
-    // Restore panel/folder state from the cookie before first paint.
-    const saved = readState();
-    leftOpen = saved.left;
-    rightOpen = saved.right;
-    collapsed = new Set(saved.collapsed);
+    // Panel open-state/widths were already read synchronously at init (no reload
+    // flash). Enable width transitions only now, after the first paint.
+    await tick();
+    panelsReady = true;
 
     try { await loadVocab(); } catch { /* service may still be booting */ }
     try { await loadTree(); } catch { /* ditto */ }
 
     // Resume: URL hash wins (deep link), else the last-open note from the cookie.
-    const wantId = readHashId() ?? saved.last;
+    const wantId = readHashId() ?? initial.last;
     const known = wantId && tree.active.some((n) => n.id === wantId);
     if (known) {
       try { await openNote(wantId!); } catch { current = blank(); }
     } else {
-      current = blank();
-      setOpen(null);
+      // No note to resume — but a blank-note draft may hold un-created work from
+      // a crash/reload; recover it so nothing typed is silently lost.
+      const bd = readDraft(null);
+      if (bd && (bd.content.trim() || bd.path.trim())) {
+        current = { ...blank(), content: bd.content, path: bd.path };
+        editor?.setDoc(bd.content);
+        saveState = 'savedLocal';
+        setOpen(null);
+        scheduleCreate();
+      } else {
+        current = blank();
+        setOpen(null);
+      }
     }
     // React to hash edits (back/forward, pasted link) while the page is open.
     window.addEventListener('hashchange', onHashChange);
@@ -334,15 +431,27 @@
 
   const saveLabel = $derived(
     saveState === 'saving' ? 'Saving…'
-    : saveState === 'editing' ? 'Editing…'
     : saveState === 'synced' ? 'Synced'
+    : saveState === 'savedLocal' ? 'Saved locally'
+    : saveState === 'offline' ? 'Offline · saved locally'
+    : saveState === 'editing' ? 'Editing…'
     : 'New note',
   );
 </script>
 
-<div class="app">
+<div class="app" class:ready={panelsReady} class:resizing={resizing !== null}
+     class:panel-open={leftOpen || rightOpen}>
+  <!-- Mobile-only backdrop: tap to dismiss an open drawer -->
+  <button
+    class="scrim"
+    class:show={leftOpen || rightOpen}
+    aria-label="Close panels"
+    tabindex="-1"
+    onclick={closePanels}
+  ></button>
+
   <!-- LEFT: notes tree + trash -->
-  <aside class="left" class:closed={!leftOpen}>
+  <aside class="left" class:closed={!leftOpen} style:width={leftOpen ? leftW + 'px' : null}>
     <div class="panel-head">
       <span class="panel-title">Notes</span>
       <button class="ghost-btn" title="New note" aria-label="New note" onclick={newNote}>+</button>
@@ -414,6 +523,16 @@
       </div>
     {/if}
   </aside>
+
+  {#if leftOpen}
+    <div
+      class="resizer resizer-left"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize notes panel"
+      onpointerdown={(e) => startResize('left', e)}
+    ></div>
+  {/if}
 
   <!-- CENTER: editor -->
   <main class="center">
@@ -503,11 +622,21 @@
     </div>
   </main>
 
+  {#if rightOpen}
+    <div
+      class="resizer resizer-right"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize vocabulary panel"
+      onpointerdown={(e) => startResize('right', e)}
+    ></div>
+  {/if}
+
   <!-- RIGHT: dictation vocabulary -->
-  <aside class="right" class:closed={!rightOpen}>
+  <aside class="right" class:closed={!rightOpen} style:width={rightOpen ? rightW + 'px' : null}>
     <div class="panel-head">
       <span class="panel-title">Vocabulary</span>
-      <button class="ghost-btn" title="Close" aria-label="Close vocabulary" onclick={() => { rightOpen = false; persistTab(); }}>×</button>
+      <button class="ghost-btn" title="Close" aria-label="Close vocabulary" onclick={() => { rightOpen = false; persistTab(); afterPanelResize(); }}>×</button>
     </div>
     <div class="vocab-scroll">
       <VocabPanel

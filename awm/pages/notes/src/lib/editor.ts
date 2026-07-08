@@ -63,6 +63,8 @@ const theme = EditorView.theme({
     fontSize: '0.94rem',
     lineHeight: '1.75',
     overflow: 'auto',
+    scrollbarWidth: 'thin',
+    scrollbarColor: 'var(--nt-faint) transparent',
   },
   '.cm-content': {
     padding: '1.6rem clamp(1.1rem, 6vw, 4rem)',
