@@ -119,13 +119,22 @@ SAMPLE_RATE = 16000
 SAMPLE_BYTES = 2  # int16 LE
 
 
-def _transcribe_segments(pcm_bytes: bytes, vad_filter: bool = False) -> list[tuple[str, float, float]]:
+def _transcribe_segments(
+    pcm_bytes: bytes,
+    vad_filter: bool = False,
+    initial_prompt: Optional[str] = None,
+) -> list[tuple[str, float, float]]:
     """Run whisper on PCM, return ``[(text, start_s, end_s), ...]``.
 
     Reuses the vendored ``awm.stt.stt`` singleton so the model is loaded
     once per process. The singleton's public ``.transcribe()`` joins and
     discards segment timestamps; we need them for splicing, so we drive
     ``model.transcribe(...)`` directly here.
+
+    ``initial_prompt`` (optional) biases decoding toward domain vocabulary — the
+    dictation caller passes a short glossary of custom terms so whisper spells
+    them right (e.g. project names). ``None`` (the default) leaves behaviour
+    exactly as before, so PTT/convo callers that pass nothing are unaffected.
     """
     from awm.stt.stt import get_transcriber
 
@@ -138,6 +147,7 @@ def _transcribe_segments(pcm_bytes: bytes, vad_filter: bool = False) -> list[tup
         language="en",
         beam_size=1,
         vad_filter=vad_filter,
+        initial_prompt=initial_prompt or None,
     )
     return [(seg.text.strip(), seg.start, seg.end) for seg in segments]
 
@@ -201,6 +211,10 @@ class SttAgent:
         # True, ``_metric`` emits high-res timing frames for each pipeline stage;
         # default False so a normal session produces none. See :meth:`_metric`.
         self.telemetry: bool = False
+        # Optional whisper decoding bias (a short glossary of custom terms) set
+        # from the start frame's ``initial_prompt``. None = default whisper
+        # behaviour. Used by the notes dictation to spell domain vocab correctly.
+        self.initial_prompt: Optional[str] = None
 
     # ---- client management ----
 
@@ -224,6 +238,7 @@ class SttAgent:
             self._silent_passes = 0
             self._last_partial = ""
             self.telemetry = False
+            self.initial_prompt = None
         self.last_active = time.monotonic()
 
     def is_idle(self, now: float) -> bool:
@@ -319,6 +334,7 @@ class SttAgent:
                     t0 = time.perf_counter()
                     segments = await loop.run_in_executor(
                         None, _transcribe_segments, tail, self.continuous,
+                        self.initial_prompt,
                     )
                     repass_ms = (time.perf_counter() - t0) * 1000
             except Exception:  # noqa: BLE001
@@ -397,6 +413,7 @@ class SttAgent:
         mode: Optional[str] = None,
         context: Optional[str] = None,
         telemetry: bool = False,
+        initial_prompt: Optional[str] = None,
     ) -> None:
         # Latest "start" wins — barge-in across clients.
         self._cancel_partial_task()
@@ -410,6 +427,7 @@ class SttAgent:
         self._last_partial = ""
         self._submitted = False
         self.telemetry = telemetry
+        self.initial_prompt = initial_prompt or None
         self.recording_client = ws
         self.last_active = time.monotonic()
         # Continuous mode runs the convo inner loop: a per-session raw-transcript
@@ -566,6 +584,7 @@ class SttAgent:
                     t0 = time.perf_counter()
                     segments = await loop.run_in_executor(
                         None, _transcribe_segments, tail, self.continuous,
+                        self.initial_prompt,
                     )
                     decode_ms = (time.perf_counter() - t0) * 1000
             except Exception:  # noqa: BLE001
@@ -848,11 +867,13 @@ async def run_stt_ws_session(websocket: WebSocket, user_as: str) -> None:
             if t == "start":
                 mode = payload.get("mode")
                 ctx = payload.get("context")
+                ip = payload.get("initial_prompt")
                 await agent.handle_start(
                     websocket,
                     mode=mode if isinstance(mode, str) else None,
                     context=ctx if isinstance(ctx, str) else None,
                     telemetry=bool(payload.get("telemetry")),
+                    initial_prompt=ip if isinstance(ip, str) else None,
                 )
             elif t == "context":
                 # Frontend still pushes a recent-chat-history buffer; it only ever

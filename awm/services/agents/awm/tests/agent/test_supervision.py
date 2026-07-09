@@ -31,6 +31,7 @@ class FakeOrch:
     async def approve_plan(self, **kw): return self._rec("approve_plan", kw)
     async def reject_plan(self, **kw): return self._rec("reject_plan", kw)
     async def set_attached(self, **kw): return self._rec("set_attached", kw)
+    async def set_steering(self, **kw): return self._rec("set_steering", kw)
     async def set_paused(self, **kw): return self._rec("set_paused", kw)
 
 
@@ -172,9 +173,10 @@ class TestAcceptance:
         await placement.on_turn_boundary(s)
         commit = next(c for c in fake_orch.calls if c[0] == "decompose_commit")
         kw = commit[1]
-        # Translated to the orchestrator-native shape.
-        assert kw["children"] == [{"ref": "a", "goal": "first"},
-                                  {"ref": "b", "goal": "second"}]
+        # Translated to the orchestrator-native shape (title defaults empty when
+        # the planner buffered none).
+        assert kw["children"] == [{"ref": "a", "goal": "first", "title": ""},
+                                  {"ref": "b", "goal": "second", "title": ""}]
         assert {"name": "cA", "spec": "A out", "producer": "a"} in kw["contracts"]
         assert kw["edges"] == [{"consumer": "b", "contract": "cA"}]
         assert _data(iid)["placement_outcome"] == "decomposed"

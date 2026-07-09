@@ -263,6 +263,14 @@ class TestCreateSessionDispatch:
             await create_session(scope="s", agent_cli="codex")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    async def test_rejects_blank_model(self, awm_workspace, blank):
+        # Model is hard-required at the spawn boundary: a blank model can no
+        # longer fall through to the harness/CLI/ambient ANTHROPIC_MODEL default.
+        with pytest.raises(ValueError, match="requires an explicit.*model"):
+            await create_session(scope="s", agent_cli="claude", model=blank)
+
+    @pytest.mark.asyncio
     async def test_opencode_config_harness_and_workdir(
         self, awm_workspace, stub_agentcore,
     ):
@@ -270,7 +278,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(scope="s", agent_cli="opencode",
-                             workdir=str(ws))
+                             model="deepseek-v4-flash-free", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "opencode"
@@ -286,7 +294,7 @@ class TestCreateSessionDispatch:
 
         await create_session(scope="s", agent_cli="claude",
                              permission_mode="bypassPermissions",
-                             workdir=str(ws))
+                             model="haiku", workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "full"
 
@@ -298,7 +306,8 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(scope="s", agent_cli="claude",
-                             permission_mode="default", workdir=str(ws))
+                             permission_mode="default", model="haiku",
+                             workdir=str(ws))
 
         assert stub_agentcore["config"].permissions == "default"
 
@@ -314,7 +323,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(scope="s", agent_cli="claude",
-                             workdir=str(ws))
+                             model="haiku", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.mcp_config is None
@@ -330,7 +339,7 @@ class TestCreateSessionDispatch:
         ws.mkdir(parents=True)
 
         await create_session(scope="s", agent_cli="claude",
-                             effort="high", workdir=str(ws))
+                             effort="high", model="haiku", workdir=str(ws))
 
         assert stub_agentcore["config"].params.get("effort") == "high"
 
@@ -347,7 +356,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            scope="s", agent_cli="claude", workdir=str(ws))
+            scope="s", agent_cli="claude", model="haiku", workdir=str(ws))
 
         cfg = stub_agentcore["config"]
         assert cfg.harness == "claude"
@@ -363,7 +372,7 @@ class TestClaudeHarness:
         ws.mkdir(parents=True)
 
         session = await create_session(
-            scope="s", agent_cli="claude", workdir=str(ws))
+            scope="s", agent_cli="claude", model="haiku", workdir=str(ws))
 
         import json
         row = ai_mod._get_dao().get_instance(session.id)
@@ -384,7 +393,7 @@ class TestClaudeHarness:
 
         # No agent_cli passed → defaults to claude (tmux) so every live agent
         # has a terminal to attach to.
-        session = await create_session(scope="s", workdir=str(ws))
+        session = await create_session(scope="s", model="haiku", workdir=str(ws))
 
         assert stub_agentcore["config"].harness == "claude"
         assert session.tmux_session == f"awm-{session.id}-s"
@@ -445,7 +454,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(scope="s", workdir=str(ws))
+        session = await create_session(scope="s", model="haiku", workdir=str(ws))
 
         ok = await ai_mod.notify_agent(session, "operator", "stop and read this")
 
@@ -461,7 +470,7 @@ class TestNotifyAgent:
     ):
         ws = awm_workspace["projects_dir"] / "p" / "s"
         ws.mkdir(parents=True)
-        session = await create_session(scope="s", workdir=str(ws))
+        session = await create_session(scope="s", model="haiku", workdir=str(ws))
 
         # The agent's own scope ref must never self-notify (mirrors the passive
         # path's _is_own_author guard).

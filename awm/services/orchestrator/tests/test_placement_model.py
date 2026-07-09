@@ -1,9 +1,13 @@
-"""Placement harness / model / effort resolution at the dispatch seam.
+"""Uniform placement model (T5) — the dispatch payload no longer forks on
+attach state.
 
-The orchestrator pins an explicit, cheap model for a claude placement so it never
-silently inherits the human's *interactive* CLI default (e.g. Opus / high). The
-env vars (``AWM_PLACEMENT_HARNESS`` / ``_MODEL`` / ``_EFFORT``) are the single
-lever for every node; opencode keeps its own ``None``-model default (DSv4-free).
+Every placement — attended or detached — defaults to the SAME driver
+(claude / haiku / medium), supplied by the agents-side driver config
+(``place_on_task._resolve_driver``), NOT by dispatch. Dispatch only threads
+explicit ``AWM_PLACEMENT_*`` env overrides; when none are set the payload omits
+harness/model/effort entirely (deferred to the driver-config default). There is
+no second-class detached node. opencode stays available purely as an explicit
+override.
 """
 
 from __future__ import annotations
@@ -21,46 +25,23 @@ def _clear_placement_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_attended_claude_pins_cheap_model(orch, monkeypatch):
-    # No env config: an attended node defaults to claude, which MUST be pinned to
-    # the explicit cheap default rather than the interactive CLI default.
+def test_attended_no_env_defers_to_driver_config(orch, monkeypatch):
+    # No env config: the payload carries NO harness/model/effort — the uniform
+    # driver-config default (claude/haiku/medium) applies agents-side. The only
+    # attach-derived field is the supervisor-freeze intent.
     _clear_placement_env(monkeypatch)
     res = orch.operations.orch_node_open({"goal": "x"})
     p = orch.placements[(res["task_id"], "worker")]
-    assert p["harness"] == "claude"
-    assert p["model"] == dispatch.DEFAULT_CLAUDE_PLACEMENT_MODEL
-    assert p["effort"] == dispatch.DEFAULT_CLAUDE_PLACEMENT_EFFORT
-    assert p["attached"] is True
-
-
-def test_opencode_harness_leaves_model_unset(orch, monkeypatch):
-    # The sandbox pins opencode → no model is forced, so the opencode backend's
-    # own DSv4-free default wins. effort is claude-only and stays absent.
-    _clear_placement_env(monkeypatch)
-    monkeypatch.setenv("AWM_PLACEMENT_HARNESS", "opencode")
-    res = orch.operations.orch_node_open({"goal": "x"})
-    p = orch.placements[(res["task_id"], "worker")]
-    assert p["harness"] == "opencode"
+    assert "harness" not in p
     assert "model" not in p
     assert "effort" not in p
+    assert p["attached"] is True   # freeze intent still threaded (orthogonal)
 
 
-def test_env_pins_override_the_default(orch, monkeypatch):
-    _clear_placement_env(monkeypatch)
-    monkeypatch.setenv("AWM_PLACEMENT_HARNESS", "claude")
-    monkeypatch.setenv("AWM_PLACEMENT_MODEL", "sonnet")
-    monkeypatch.setenv("AWM_PLACEMENT_EFFORT", "high")
-    res = orch.operations.orch_node_open({"goal": "x"})
-    p = orch.placements[(res["task_id"], "worker")]
-    assert p["harness"] == "claude"
-    assert p["model"] == "sonnet"
-    assert p["effort"] == "high"
-
-
-def test_unattended_no_env_omits_harness_and_model(orch, monkeypatch):
-    # An unattended node with no env config leaves harness/model/effort OUT of the
-    # payload, so the agents side applies its own opencode default. (Both public
-    # create ops are attended, so build the payload directly for this branch.)
+def test_no_attach_fork_detached_matches_attended(orch, monkeypatch):
+    # The whole point: a detached node's payload is driver-wise IDENTICAL to an
+    # attended one (no attached→claude / detached→opencode fork). Build a detached
+    # worker payload directly (both public create ops are attended).
     _clear_placement_env(monkeypatch)
     dao = orch.DAO()
     tid = dao.create_task("x", state="plan_approved")
@@ -68,4 +49,36 @@ def test_unattended_no_env_omits_harness_and_model(orch, monkeypatch):
     assert "harness" not in payload
     assert "model" not in payload
     assert "effort" not in payload
-    assert "attached" not in payload
+    assert "attached" not in payload   # detached — no freeze intent either
+
+
+def test_env_override_threads_through(orch, monkeypatch):
+    # Explicit env overrides still win and are threaded onto the payload (they
+    # beat the driver-config default in _resolve_driver). opencode is a valid
+    # explicit override.
+    _clear_placement_env(monkeypatch)
+    monkeypatch.setenv("AWM_PLACEMENT_HARNESS", "opencode")
+    monkeypatch.setenv("AWM_PLACEMENT_MODEL", "some-model")
+    monkeypatch.setenv("AWM_PLACEMENT_EFFORT", "high")
+    res = orch.operations.orch_node_open({"goal": "x"})
+    p = orch.placements[(res["task_id"], "worker")]
+    assert p["harness"] == "opencode"
+    assert p["model"] == "some-model"
+    assert p["effort"] == "high"
+
+
+def test_partial_env_override_only_threads_what_is_set(orch, monkeypatch):
+    # Only the set env vars ride the payload; the rest defer to the driver config.
+    _clear_placement_env(monkeypatch)
+    monkeypatch.setenv("AWM_PLACEMENT_MODEL", "sonnet")
+    res = orch.operations.orch_node_open({"goal": "x"})
+    p = orch.placements[(res["task_id"], "worker")]
+    assert "harness" not in p
+    assert p["model"] == "sonnet"
+    assert "effort" not in p
+
+
+def test_old_default_constants_are_gone(monkeypatch):
+    # The dispatch-side default constants moved to the agents driver config.
+    assert not hasattr(dispatch, "DEFAULT_CLAUDE_PLACEMENT_MODEL")
+    assert not hasattr(dispatch, "DEFAULT_CLAUDE_PLACEMENT_EFFORT")

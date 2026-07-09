@@ -22,10 +22,12 @@
    * transcript, so the human turn renders from the stream (no optimistic echo).
    * Finalized agent messages are auto-spoken.
    *
-   * Attached affordances: opening the transcript WS passively attaches the human
-   * to the placement, which gates the DAG control actions — create a node at the
-   * root (a fresh attended agent, jumped-to here) and relocate this node onto
-   * another consumer.
+   * Attach is durable + server-authoritative, NOT transport: opening the
+   * transcript WS is pure viewing and never attaches. The explicit interrupt is
+   * sending a message (or the host's attach control): `send` first invokes the
+   * host-supplied `onAttach` when the task is detached, then delivers the message
+   * on the SAME single send path (no second post). The host owns the attach RPC
+   * and the durable `attached` flag it passes back in via `attached`.
    */
   import { onDestroy, untrack } from 'svelte';
   import {
@@ -57,6 +59,14 @@
     /** Read-only: hide the composer entirely (transcript-only). Used for a
      *  finished task whose retained transcript is reviewed but not extended. */
     readonly?: boolean;
+    /** Durable attach state of the placement (server-authoritative, from the
+     *  poll). When false, the first send is an explicit interrupt: `onAttach`
+     *  runs before the message is delivered. */
+    attached?: boolean;
+    /** Host-supplied explicit-interrupt attach. Awaited before the enqueue on the
+     *  SAME single send path when the task is detached — it must NOT post; it only
+     *  sets the durable attach state (the host calls `attachTask`). */
+    onAttach?: () => void | Promise<void>;
   }
   let {
     slug: initSlug,
@@ -64,6 +74,8 @@
     offline = false,
     embedded = false,
     readonly = false,
+    attached = false,
+    onAttach,
   }: Props = $props();
 
   // --- Identity (URL ?unit=/?slug=/?task= → localStorage fallback) ----------
@@ -194,8 +206,8 @@
     // Live agent stream (backfill + push). The opening backfill frame replays
     // the transcript from the (empty) cursor — including any human turns the
     // agents service has recorded — so no separate backlog fetch is needed.
-    // Opening this WS also passively attaches the human to the placement, which
-    // is the precondition for the relocate control.
+    // Opening this WS is PURE VIEWING — it never attaches (durable attach is the
+    // single source of truth, set by the explicit-interrupt send / attach control).
     openAgentStream(s);
     status = 'live';
     rebuild();
@@ -217,6 +229,17 @@
     const t = text.trim();
     if (!t || !connected || sending) return;
     sending = true;
+    // Explicit interrupt: sending while DETACHED attaches first (one user action
+    // = attach + deliver). This wraps the SAME single send — it adds no second
+    // post path, and the enqueue below still fires exactly once. Best-effort: an
+    // attach hiccup must not swallow the message to a live agent.
+    if (!attached && onAttach) {
+      try {
+        await onAttach();
+      } catch (err) {
+        console.warn('attach-on-send failed', err);
+      }
+    }
     // Optimistic chip: render a `sending` row immediately, keyed by a client
     // correlation id. The agents service records the human turn back under the
     // SAME id and streams it live (record_in), so this chip reconciles to
