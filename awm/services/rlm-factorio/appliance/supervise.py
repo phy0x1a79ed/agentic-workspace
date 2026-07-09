@@ -362,14 +362,20 @@ class Engine:
             raise RuntimeError("engine/RCON not ready")
         return self.rcon.command(command)
 
-    def _lua_json_call(self, iface_fn, args_lua):
+    def _lua_json_call(self, iface_fn, args=None):
         """Run ``remote.call('game_bot', <fn>, <args>)`` and JSON-decode its
-        returned table. The table_to_json flavor is resolved inline (2.0 moved it
-        from ``game`` to ``helpers``) so the mod stays a pure library."""
+        returned table. ``args`` is a plain dict, carried as JSON both ways
+        (decoded Lua-side with json_to_table) so no Lua-literal encoding of
+        nested/str args is ever needed. The json/table helpers are resolved
+        inline (2.0 moved them from ``game`` to ``helpers``) so the mod stays a
+        pure library."""
+        args_json = json.dumps(args or {})
+        lua_str = args_json.replace("\\", "\\\\").replace("'", "\\'")
         lua = (
-            "local r=remote.call('game_bot','%s',%s); "
-            "rcon.print((helpers and helpers.table_to_json or game.table_to_json)(r))"
-            % (iface_fn, args_lua)
+            "local h=helpers or game; "
+            "local r=remote.call('game_bot','%s',h.json_to_table('%s') or {}); "
+            "rcon.print(h.table_to_json(r))"
+            % (iface_fn, lua_str)
         )
         out = self._rcon_cmd("/silent-command " + lua).strip()
         try:
@@ -484,8 +490,18 @@ class Engine:
 
     def op_observe(self, radius=None):
         """Full world/body snapshot via the companion mod's observe interface."""
-        args_lua = "{radius=%d}" % int(radius) if radius is not None else "{}"
-        return self._lua_json_call("observe", args_lua)
+        args = {"radius": int(radius)} if radius is not None else {}
+        return self._lua_json_call("observe", args)
+
+    def op_events(self):
+        """Drain the mod's bounded events ring buffer (return + clear happen in
+        ONE Lua call, so nothing can slip between read and reset). An empty Lua
+        table JSON-encodes as ``{}``; normalize to a list either way."""
+        res = self._lua_json_call("drain_events")
+        ev = res.get("events") or []
+        if isinstance(ev, dict):        # defensive: sparse-array encoding
+            ev = [ev[k] for k in sorted(ev, key=int)]
+        return {"events": ev}
 
     def op_exec_lua(self, code):
         """Run arbitrary Lua via /silent-command; return whatever it printed.
@@ -506,18 +522,21 @@ class Engine:
         return {"paused": out == "true"}
 
     def op_body_spawn(self, surface=None, x=0, y=0):
-        surf = surface or "nauvis"
-        args_lua = "{surface=%s,x=%s,y=%s}" % (
-            json.dumps(str(surf)), float(x), float(y),
-        )
-        return self._lua_json_call("spawn", args_lua)
+        return self._lua_json_call("spawn", {
+            "surface": str(surface or "nauvis"), "x": float(x), "y": float(y),
+        })
 
     def op_body_move(self, x, y):
-        args_lua = "{x=%s,y=%s}" % (float(x), float(y))
-        return self._lua_json_call("set_target", args_lua)
+        return self._lua_json_call("set_target", {"x": float(x), "y": float(y)})
 
     def op_body_stop(self):
-        return self._lua_json_call("stop", "{}")
+        return self._lua_json_call("stop")
+
+    def op_iface(self, iface_fn, args):
+        """Generic passthrough to a mod remote-interface function (the gameplay
+        verbs: mine/craft/build/insert/take/research + the catalog queries).
+        Validation lives mod-side, where the world state is."""
+        return self._lua_json_call(iface_fn, args)
 
     # -- boot --
 
@@ -595,6 +614,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return self._send(400, {"ok": False, "error": "missing 'name'"})
                 return self._send(200, {"ok": True, "result": ENGINE.op_load(name)})
             # ---- gameplay / perceive (RCON-backed) ----
+            if route == "/observe/events":
+                return self._send(200, {"ok": True, "result": ENGINE.op_events()})
             if route == "/observe":
                 return self._send(200, {"ok": True, "result": ENGINE.op_observe(body.get("radius"))})
             if route == "/exec-lua":
@@ -610,6 +631,20 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "result": ENGINE.op_body_move(body["x"], body["y"])})
             if route == "/body/stop":
                 return self._send(200, {"ok": True, "result": ENGINE.op_body_stop()})
+            # Gameplay verbs + catalog queries: generic mod-interface passthrough
+            # (validation is mod-side, where the world state is).
+            iface = {
+                "/body/mine": "mine",
+                "/body/craft": "craft",
+                "/body/build": "build",
+                "/body/insert": "insert",
+                "/body/take": "take",
+                "/research": "research",
+                "/observe/recipes": "recipes",
+                "/observe/technologies": "technologies",
+            }.get(route)
+            if iface:
+                return self._send(200, {"ok": True, "result": ENGINE.op_iface(iface, body)})
             return self._send(404, {"ok": False, "error": "not found"})
         except FileNotFoundError as e:
             return self._send(404, {"ok": False, "error": str(e)})

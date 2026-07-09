@@ -34,7 +34,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "orchestrator"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 # The explicit node lifecycle — a TRUE state machine: every distinct position is
 # its own named state. A *rest* state means a placement is needed (no agent
@@ -47,17 +47,27 @@ SCHEMA_VERSION = 4
 #   ready            -> planning       plan             deps met; plan the work
 #   plan_delivered   -> verifying_plan verify           plan staged; check it
 #   plan_approved    -> active         worker           plan ok; do the work
+#   work_delivered   -> verifying_work accept           work claimed; verify it
 #   decompose_pending-> decomposing    planner          expand into a sub-DAG
 #
 # ``blocked`` is a leaf waiting on its dependency contracts (not dispatchable
 # until they deliver). A worker give-up rests in ``failed``; a planner give-up
 # (budget out) rests in ``abandoned`` — both route their downstream consumers
 # into ``decompose_pending`` to re-plan. ``completed`` is terminal-ok.
+#
+# ``work_delivered`` / ``verifying_work`` are the OPT-IN acceptance gate (mirrors
+# the plan→verify leg one layer later): when a gated worker "delivers", its
+# produced contracts are CLAIMED (payload_ref set, delivered_ts NULL — nothing
+# completes) and the task rests ``work_delivered`` for an independent accept
+# verifier (``accept`` mode) to run machine-checkable checks. Only ``accept_work``
+# promotes the claim to a real delivery. A NULL ``accept_spec`` on every produced
+# contract ⇒ the task is UNGATED ⇒ the legacy immediate-completion path.
 STATES = (
     "blocked",
     "ready", "planning",
     "plan_delivered", "verifying_plan",
     "plan_approved", "active",
+    "work_delivered", "verifying_work",
     "decompose_pending", "decomposing",
     "completed", "failed", "abandoned",
 )
@@ -71,12 +81,14 @@ REST_MODE = {
     "ready": "plan",
     "plan_delivered": "verify",
     "plan_approved": "worker",
+    "work_delivered": "accept",
     "decompose_pending": "planner",
 }
 OUT_STATE = {
     "plan": "planning",
     "verify": "verifying_plan",
     "worker": "active",
+    "accept": "verifying_work",
     "planner": "decomposing",
 }
 
@@ -109,8 +121,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent_ref       TEXT,            -- the placed agent (from place_on_task) ; NULL when none
     placement_token TEXT,            -- opaque token returned by place_on_task
     plan_ref        TEXT,            -- the staged plan artifact (delivered by a plan agent); NULL until planned
-    attached        INTEGER NOT NULL DEFAULT 0,   -- orthogonal human-attached flag (freezes auto-progress)
+    attached        INTEGER NOT NULL DEFAULT 0,   -- DURABLE human-attached flag (single source of truth; freezes auto-progress)
+    -- Steering handshake bits (the agents service is the single writer; the
+    -- orchestrator only mirrors). Detach is a two-consent handshake: the agent
+    -- sets ``steer_agent_ready`` (with the refreshed ``objective``), the user
+    -- sets ``steer_user_done``; when both agree the agents side auto-detaches
+    -- (clears attached + all three bits). ``steer_requested`` is a mid-run
+    -- "wants steering" flag (set while detached; no freeze until a human attaches).
+    steer_user_done   INTEGER NOT NULL DEFAULT 0,
+    steer_agent_ready INTEGER NOT NULL DEFAULT 0,
+    steer_requested   INTEGER NOT NULL DEFAULT 0,
+    objective         TEXT NOT NULL DEFAULT '',   -- the durable objective record (system-written; ratified at detach)
     replan_budget   INTEGER NOT NULL DEFAULT 2,   -- re-attempts left (re-plans + decomposes) before abandoned
+    accept_budget   INTEGER NOT NULL DEFAULT 2,   -- work-rejection re-attempts left (reject_work → worker) before contract-unsatisfiable
     retry_count     INTEGER NOT NULL DEFAULT 0,   -- transient-error retries spent
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
@@ -126,7 +149,8 @@ CREATE TABLE IF NOT EXISTS contracts (
     name          TEXT NOT NULL,
     spec          TEXT NOT NULL DEFAULT '',
     producer_task TEXT NOT NULL REFERENCES tasks(id),
-    payload_ref   TEXT,             -- artifact ref; NULL until delivered
+    accept_spec   TEXT,             -- JSON acceptance gate {objective, checks}; NULL=ungated (legacy path)
+    payload_ref   TEXT,             -- artifact ref; NULL until delivered (a CLAIM when set + delivered_ts NULL)
     delivered_ts  INTEGER,          -- NULL until delivered
     created_at    INTEGER NOT NULL
 );
@@ -189,6 +213,16 @@ CREATE INDEX IF NOT EXISTS idx_attempt_memories_task ON attempt_memories(task_id
 # (orthogonal to ``attached`` — it survives WS detach so the supervisor stays out
 # while a human owns/left the task). All three carry constant defaults, so the
 # ADD COLUMNs are direct.
+# v4→v5 (steering protocol): the durable ``attached`` becomes the authoritative
+# attach state and gains the steering-handshake columns — ``steer_user_done`` /
+# ``steer_agent_ready`` / ``steer_requested`` (int 0/1 consent + wants-steering
+# bits) and the ``objective`` record (text). All carry constant defaults, so the
+# ADD COLUMNs are direct.
+# v5→v6 (acceptance gate): add the opt-in independent-verification columns —
+# ``contracts.accept_spec`` (JSON gate, NULL=ungated legacy path) and
+# ``tasks.accept_budget`` (work-rejection re-attempts, constant default). Both are
+# additive ADD COLUMNs (accept_spec NULL default, accept_budget constant), so old
+# rows read as ungated with a fresh budget.
 MIGRATIONS: dict[tuple[int, int], str] = {
     (1, 2): "ALTER TABLE tasks ADD COLUMN repos TEXT;\n",
     (2, 3): (
@@ -217,6 +251,16 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "ALTER TABLE tasks ADD COLUMN title TEXT NOT NULL DEFAULT '';\n"
         "ALTER TABLE tasks ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';\n"
         "ALTER TABLE tasks ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;\n"
+    ),
+    (4, 5): (
+        "ALTER TABLE tasks ADD COLUMN steer_user_done INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN steer_agent_ready INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN steer_requested INTEGER NOT NULL DEFAULT 0;\n"
+        "ALTER TABLE tasks ADD COLUMN objective TEXT NOT NULL DEFAULT '';\n"
+    ),
+    (5, 6): (
+        "ALTER TABLE contracts ADD COLUMN accept_spec TEXT;\n"
+        "ALTER TABLE tasks ADD COLUMN accept_budget INTEGER NOT NULL DEFAULT 2;\n"
     ),
 }
 
@@ -257,16 +301,21 @@ class OrchestratorDAO(BaseDAO):
         *,
         state: str = "blocked",
         replan_budget: int = 2,
+        title: str = "",
         conn: sqlite3.Connection | None = None,
     ) -> str:
-        """Insert a task; return its new id (its canonical UUID key)."""
+        """Insert a task; return its new id (its canonical UUID key).
+
+        ``title`` is the optional human-facing headline (a planner supplies one
+        per decompose child; the born-attached / drop-in path leaves it empty and
+        the steering agent sets it at detach via ``set_title``)."""
         tid = new_uuid()
         now = _now()
         self.execute(
             """INSERT INTO tasks
-               (id, goal, state, replan_budget, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (tid, goal, state, replan_budget, now, now),
+               (id, goal, title, state, replan_budget, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (tid, goal, title, state, replan_budget, now, now),
             conn=conn,
         )
         return tid
@@ -307,6 +356,19 @@ class OrchestratorDAO(BaseDAO):
             "SELECT * FROM tasks WHERE id = ?", (task_id,), conn=conn
         )
 
+    def get_task_by_slug(
+        self, slug: str, *, conn: sqlite3.Connection | None = None
+    ) -> dict | None:
+        """Resolve a task by its ``workspace_slug`` (the agent's unit-slug key).
+
+        The privileged steering mirror keys by task id OR slug; a placed agent's
+        identity is its slug, so this lets a mirror resolve without the task id."""
+        return self.query_one(
+            "SELECT * FROM tasks WHERE workspace_slug = ? "
+            "ORDER BY created_at LIMIT 1",
+            (slug,), conn=conn,
+        )
+
     def list_tasks(
         self, *, conn: sqlite3.Connection | None = None
     ) -> list[dict]:
@@ -329,13 +391,15 @@ class OrchestratorDAO(BaseDAO):
         """Patch named columns on a task; always bumps ``updated_at``.
 
         Allowed columns: state, mode, workspace_slug, agent_ref,
-        placement_token, plan_ref, attached, replan_budget, retry_count, goal,
-        title, tags, paused.
+        placement_token, plan_ref, attached, replan_budget, accept_budget,
+        retry_count, goal, title, tags, paused, steer_user_done,
+        steer_agent_ready, steer_requested, objective.
         """
         allowed = {
             "state", "mode", "workspace_slug", "agent_ref", "placement_token",
-            "plan_ref", "attached", "replan_budget", "retry_count", "goal",
-            "title", "tags", "paused",
+            "plan_ref", "attached", "replan_budget", "accept_budget",
+            "retry_count", "goal", "title", "tags", "paused", "steer_user_done",
+            "steer_agent_ready", "steer_requested", "objective",
         }
         cols = [c for c in fields if c in allowed]
         if not cols:
@@ -354,14 +418,20 @@ class OrchestratorDAO(BaseDAO):
         spec: str,
         producer_task: str,
         *,
+        accept_spec: str | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> str:
+        """Insert a contract; return its new id.
+
+        ``accept_spec`` is the opt-in acceptance gate (a JSON string) — NULL
+        (the default) leaves the contract UNGATED, so its producer takes the
+        legacy immediate-completion delivery path."""
         cid = new_uuid()
         self.execute(
             """INSERT INTO contracts
-               (id, name, spec, producer_task, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (cid, name, spec, producer_task, _now()),
+               (id, name, spec, producer_task, accept_spec, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (cid, name, spec, producer_task, accept_spec, _now()),
             conn=conn,
         )
         return cid
@@ -407,6 +477,31 @@ class OrchestratorDAO(BaseDAO):
             "UPDATE contracts SET payload_ref = ?, delivered_ts = ? "
             "WHERE id = ?",
             (payload_ref, _now(), contract_id), conn=conn,
+        )
+
+    def set_contract_claim(
+        self, contract_id: str, payload_ref: str, *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """Record a gated worker's CLAIM on a contract: set ``payload_ref`` but
+        leave ``delivered_ts`` NULL. A claim is not a delivery — nothing
+        completes and no consumer advances until ``accept_work`` promotes it via
+        :meth:`mark_contract_delivered`."""
+        self.execute(
+            "UPDATE contracts SET payload_ref = ? WHERE id = ?",
+            (payload_ref, contract_id), conn=conn,
+        )
+
+    def clear_contract_claim(
+        self, contract_id: str, *, conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """Drop a claim (undelivered ``payload_ref``) on a rejected work
+        attempt. Guarded ``WHERE delivered_ts IS NULL`` so it never un-delivers
+        an already-accepted contract."""
+        self.execute(
+            "UPDATE contracts SET payload_ref = NULL "
+            "WHERE id = ? AND delivered_ts IS NULL",
+            (contract_id,), conn=conn,
         )
 
     # -- edges (dependency DAG) ---------------------------------------------
