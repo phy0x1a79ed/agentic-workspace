@@ -146,6 +146,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
    dragging the resizer (the drag must track the pointer instantly). */
 .app.ready .left, .app.ready .right { transition: width 0.18s ease, opacity 0.18s ease; }
 .app.resizing .left, .app.resizing .right { transition: none; }
+/* While the window is being resized, snap the panels through the desktop↔mobile
+   layout swap instead of animating it — otherwise crossing the 680px breakpoint
+   with a closed panel flashes it open then slides it shut (the mobile drawer
+   transitions `transform`, which changes from the open position to off-screen at
+   the crossing). `!important` beats both the rule above and the mobile
+   `transition: transform` rule regardless of source order. */
+.app.vp-resizing .left, .app.vp-resizing .right { transition: none !important; }
 
 /* Drag handle on a panel's inner edge — resize + persist width. */
 .resizer {

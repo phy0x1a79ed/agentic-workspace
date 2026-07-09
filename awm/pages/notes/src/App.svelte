@@ -46,6 +46,11 @@
   let leftW = $state(initial.leftW);
   let rightW = $state(initial.rightW);
   let panelsReady = $state(false);
+  // Suppressed while the window is being resized (see onWinResize): the panels'
+  // desktop↔mobile layout swap must not animate, or a closed panel visibly
+  // slides open→shut as the media query flips it from width-collapse to a
+  // transform drawer. Cleared shortly after resizing settles.
+  let vpResizing = $state(false);
   let collapsed = $state<Set<string>>(new Set(initial.collapsed));
 
   let query = $state('');
@@ -74,6 +79,15 @@
   let pathTimer: ReturnType<typeof setTimeout> | null = null;
   let creating = false;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let vpTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Kill panel transitions for the duration of a window resize (plus a short
+   *  settle) so the desktop↔mobile breakpoint swap snaps instead of animating. */
+  function onWinResize() {
+    vpResizing = true;
+    if (vpTimer) clearTimeout(vpTimer);
+    vpTimer = setTimeout(() => { vpResizing = false; }, 200);
+  }
 
   // ---- persistence -------------------------------------------------------
   //
@@ -408,6 +422,7 @@
     }
     // React to hash edits (back/forward, pasted link) while the page is open.
     window.addEventListener('hashchange', onHashChange);
+    window.addEventListener('resize', onWinResize);
     await focusEditor();
   });
 
@@ -424,9 +439,11 @@
     editor?.destroy();
     spellcheck?.destroy();
     window.removeEventListener('hashchange', onHashChange);
+    window.removeEventListener('resize', onWinResize);
     if (createTimer) clearTimeout(createTimer);
     if (pathTimer) clearTimeout(pathTimer);
     if (searchTimer) clearTimeout(searchTimer);
+    if (vpTimer) clearTimeout(vpTimer);
   });
 
   const saveLabel = $derived(
@@ -440,6 +457,7 @@
 </script>
 
 <div class="app" class:ready={panelsReady} class:resizing={resizing !== null}
+     class:vp-resizing={vpResizing}
      class:panel-open={leftOpen || rightOpen}>
   <!-- Mobile-only backdrop: tap to dismiss an open drawer -->
   <button
