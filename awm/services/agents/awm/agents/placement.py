@@ -52,6 +52,17 @@ from awm.agents.agent_instances import TASK_TURN_BUDGET, TASK_WARN_REMAINING
 
 log = logging.getLogger("awm.agents.placement")
 
+# Explicit per-harness model defaults. A placement's model is HARD-REQUIRED at
+# the spawn boundary (``agent_instances.create_session`` raises on a blank model
+# so a claude TUI can never omit ``--model`` and silently inherit the operator's
+# ambient ``ANTHROPIC_MODEL``). ``_resolve_driver`` therefore resolves a blank
+# model to one of these concrete ids — keyed on the *final* harness — rather than
+# passing ``None`` through. ``claude`` matches the orchestrator's dispatch pin
+# (``DEFAULT_CLAUDE_PLACEMENT_MODEL``); ``opencode`` matches the opencode
+# backend's own free-Zen default (``AGENTCORE_OPENCODE_MODEL``).
+DEFAULT_CLAUDE_PLACEMENT_MODEL = "haiku"
+DEFAULT_OPENCODE_PLACEMENT_MODEL = "deepseek-v4-flash-free"
+
 
 # ---------------------------------------------------------------------------
 # Long-session hardening tunables (T5) — read at use so a redeploy env change
@@ -735,7 +746,7 @@ def _read_staged_plan(workspace_path: str) -> str:
     return ""
 
 
-def _resolve_driver(args: dict) -> tuple[str, str | None, str | None]:
+def _resolve_driver(args: dict) -> tuple[str, str, str | None]:
     """Resolve the ``(harness, model, effort)`` a dispatch spawns under.
 
     Precedence per field: explicit ``args`` > env override
@@ -746,6 +757,13 @@ def _resolve_driver(args: dict) -> tuple[str, str | None, str | None]:
     UI applies on the next dispatch with no restart, while explicit overrides
     still win. The old attach-state fork (attached → claude, detached → free
     opencode) is gone: EVERY placement defaults the same way.
+
+    The **model is never left blank**: once the final harness is known, a blank
+    model resolves to that harness's explicit default (see the module constants)
+    instead of ``None``. This makes the model explicit end-to-end — a claude
+    placement can never fall through to the operator's ambient ``ANTHROPIC_MODEL``
+    (the CLI default) — and upholds ``create_session``'s hard requirement that a
+    spawn always carry a concrete model.
     """
     from awm.agents.driver_config import DRIVER_CONTRACT
     driver = DRIVER_CONTRACT.load_model()
@@ -753,6 +771,9 @@ def _resolve_driver(args: dict) -> tuple[str, str | None, str | None]:
                or driver.harness)
     model = (args.get("model") or os.environ.get("AWM_PLACEMENT_MODEL")
              or driver.model)
+    if not model:
+        model = (DEFAULT_CLAUDE_PLACEMENT_MODEL if harness == "claude"
+                 else DEFAULT_OPENCODE_PLACEMENT_MODEL)
     effort = (args.get("effort") or os.environ.get("AWM_PLACEMENT_EFFORT")
               or getattr(driver, "effort", None))
     return harness, model, effort

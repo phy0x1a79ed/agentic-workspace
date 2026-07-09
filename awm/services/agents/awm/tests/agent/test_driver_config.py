@@ -92,9 +92,13 @@ def test_placement_default_resolution(driver_db, monkeypatch):
     # Untouched contract → the uniform default (no attach-state fork).
     assert placement._resolve_driver({}) == ("claude", "haiku", "medium")
 
-    # A saved value beats the field default (opencode stays available).
+    # A saved value beats the field default (opencode stays available). A
+    # blank model is never left blank: it resolves to the harness's EXPLICIT
+    # model default (blank no longer resolves to None / an ambient-inherited
+    # harness default).
     driver_db.save({"harness": "opencode", "model": None})
-    assert placement._resolve_driver({}) == ("opencode", None, "medium")
+    assert placement._resolve_driver({}) == (
+        "opencode", placement.DEFAULT_OPENCODE_PLACEMENT_MODEL, "medium")
 
     # Explicit args beat the contract.
     assert placement._resolve_driver({"harness": "claude", "model": "opus"}) == (
