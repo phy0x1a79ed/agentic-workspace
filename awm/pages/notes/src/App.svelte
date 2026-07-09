@@ -46,6 +46,25 @@
   let leftW = $state(initial.leftW);
   let rightW = $state(initial.rightW);
   let panelsReady = $state(false);
+
+  // Theme (light/dark). An explicit choice is persisted to localStorage and
+  // applied to <html data-theme> (index.html applies it pre-paint to avoid a
+  // flash); absent = follow the OS via the @media default. `theme` mirrors the
+  // effective mode for the toggle button's icon.
+  function initialTheme(): 'light' | 'dark' {
+    try {
+      const s = localStorage.getItem('notes_theme');
+      if (s === 'light' || s === 'dark') return s;
+    } catch { /* storage blocked */ }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  let theme = $state<'light' | 'dark'>(initialTheme());
+  function toggleTheme() {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem('notes_theme', theme); } catch { /* storage blocked */ }
+  }
+
   // Suppressed while the window is being resized (see onWinResize): the panels'
   // desktop↔mobile layout swap must not animate, or a closed panel visibly
   // slides open→shut as the media query flips it from width-collapse to a
@@ -603,6 +622,12 @@
           <span class="mic-label">{dictState === 'listening' ? 'Listening' : dictState === 'connecting' ? '…' : 'Dictate'}</span>
         </button>
         <button class="rail-btn" title={rightOpen ? 'Hide vocabulary' : 'Dictation vocabulary'} aria-label="Toggle vocabulary panel" class:on={rightOpen} onclick={toggleRight}>Aa</button>
+        <button
+          class="rail-btn theme-btn"
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          aria-label="Toggle color theme"
+          onclick={toggleTheme}
+        >{theme === 'dark' ? '☀' : '☾'}</button>
       </div>
     </div>
 
