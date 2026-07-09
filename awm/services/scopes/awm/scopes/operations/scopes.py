@@ -9,11 +9,16 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
         "tool": "scope_create",
-        "description": "Create a new scope (worktree + .awm/ metadata) for a project.",
+        "description": (
+            "Create a new scope (worktree + .awm/ metadata) for a project. "
+            "The new branch defaults to feat/<scope>; pass branch_name to name "
+            "it explicitly (e.g. a plain branch like 'release' or 'dev')."
+        ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "from_branch", "type": "string", "required": False},
+            {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
         ],
     },
@@ -122,6 +127,7 @@ def _handle_scope_create(args: dict) -> dict:
         project=args["project"],
         scope=args["scope"],
         from_branch=args.get("from_branch"),
+        branch_name=args.get("branch_name"),
         context=args.get("context"),
     )
     result = scopes.create_scope(req)

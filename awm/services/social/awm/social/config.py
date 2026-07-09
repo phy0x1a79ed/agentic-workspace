@@ -77,6 +77,12 @@ KNOWN_PLATFORMS = ("discord", "slack", "gmail", "teams")
 # connector exists), so an account on one of these must set ``source = "mira"``.
 MIRA_ONLY_PLATFORMS = ("teams",)
 
+# Cloud file-store backends this build knows how to drive. ``[bucket.<name>]``
+# sections validate against this. ``onedrive`` is mira-only (SharePoint is driven
+# through the logged-in mira session, exactly like ``teams``).
+KNOWN_BUCKET_KINDS = ("google_drive", "onedrive")
+MIRA_ONLY_BUCKET_KINDS = ("onedrive",)
+
 
 @dataclass(frozen=True)
 class AccountConfig:
@@ -116,6 +122,32 @@ class AccountConfig:
         if self.platform == "slack" and self.creds_cmd:
             return "user"  # mira session pull — token is xoxc-, fetched live
         return "bot"
+
+
+@dataclass(frozen=True)
+class BucketConfig:
+    """One configured cloud file store. ``name`` is the bucket id (section name).
+
+    The storage-shaped sibling of :class:`AccountConfig`. A ``google_drive``
+    bucket carries the OAuth2 triple (``client_id``/``client_secret``/
+    ``refresh_token``); a ``onedrive`` bucket is mira-routed (``source = "mira"``
+    + a SharePoint ``site`` origin) and the ``mira_*`` fields are stamped from the
+    service-level ``[mira]`` block at load time, exactly as for mira accounts.
+    ``root`` scopes the bucket to a sub-tree (a Drive folder id / a SharePoint
+    server-relative path).
+    """
+
+    name: str
+    kind: str
+    root: str = ""
+    client_id: str | None = None
+    client_secret: str | None = None
+    refresh_token: str | None = None
+    source: str | None = None
+    site: str | None = None
+    mira_url: str | None = None
+    mira_token: str | None = None
+    mira_verify_tls: bool = False
 
 
 class SocialConfigError(Exception):
@@ -316,3 +348,111 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             if source == "mira" else False,
         ))
     return accounts
+
+
+def load_buckets(path: Path | None = None) -> list[BucketConfig]:
+    """Load and validate the ``[bucket.<name>]`` sections of ``social.toml``.
+
+    Separate from :func:`load` on purpose: bucket parsing is fully isolated from
+    account parsing so a malformed ``[bucket]`` can never take down the messaging
+    accounts (and vice-versa). Returns ``[]`` when the file or the ``[bucket]``
+    table is absent. Each section names a ``kind`` (one of
+    :data:`KNOWN_BUCKET_KINDS`):
+
+        [bucket.gdrive-phyber]         # Google Drive via an OAuth2 refresh token.
+        kind = "google_drive"
+        client_id = "...apps.googleusercontent.com"
+        client_secret_file = "gdrive-phyber.secret"   # or inline client_secret
+        refresh_token_file = "gdrive-phyber.token"     # or inline refresh_token
+        # root = "<folder-id>"        # optional: scope to a Drive folder
+
+        [bucket.onedrive-ubc]          # UBC SharePoint via the mira session.
+        kind = "onedrive"
+        source = "mira"
+        site = "https://ubcca.sharepoint.com"
+        root = "/teams/.../Shared Documents/Hallam_Lab_roadmaps/Tony-L_-roadmap-_"
+    """
+    path = path if path is not None else _config_file()
+    if not path.exists():
+        return []
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SocialConfigError(f"could not parse {path}: {exc}") from exc
+
+    mira = _load_mira(data, path)
+
+    buckets_tbl = data.get("bucket")
+    if buckets_tbl is None:
+        return []
+    if not isinstance(buckets_tbl, dict):
+        raise SocialConfigError(
+            f"{path}: [bucket] must be a table of named buckets")
+
+    buckets: list[BucketConfig] = []
+    for name, section in buckets_tbl.items():
+        if not isinstance(section, dict):
+            raise SocialConfigError(f"{path}: [bucket.{name}] must be a table")
+        kind = section.get("kind")
+        if not isinstance(kind, str) or kind not in KNOWN_BUCKET_KINDS:
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}].kind must be one of "
+                f"{', '.join(KNOWN_BUCKET_KINDS)}")
+        source = section.get("source")
+        if source is not None and source != "mira":
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}].source must be \"mira\" when set")
+        if kind in MIRA_ONLY_BUCKET_KINDS and source != "mira":
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}] kind {kind!r} is only reachable via "
+                f"source = \"mira\"")
+        if source == "mira" and mira is None:
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}] uses source = \"mira\" but no [mira] "
+                f"block is configured")
+        root = section.get("root")
+        if root is not None and not isinstance(root, str):
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}].root must be a string when present")
+        site = section.get("site")
+        if site is not None and not isinstance(site, str):
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}].site must be a string when present")
+
+        client_id = None
+        client_secret = None
+        refresh_token = None
+        if kind == "google_drive":
+            client_id = section.get("client_id")
+            if not isinstance(client_id, str) or not client_id.strip():
+                raise SocialConfigError(
+                    f"{path}: [bucket.{name}].client_id is required for "
+                    f"google_drive buckets")
+            client_id = client_id.strip()
+            client_secret = _resolve_secret(
+                section.get("client_secret"), section.get("client_secret_file"),
+                path, f"[bucket.{name}].client_secret")
+            refresh_token = _resolve_secret(
+                section.get("refresh_token"), section.get("refresh_token_file"),
+                path, f"[bucket.{name}].refresh_token")
+        elif kind == "onedrive" and (not site or not site.strip()):
+            raise SocialConfigError(
+                f"{path}: [bucket.{name}].site (the SharePoint origin, e.g. "
+                f"https://ubcca.sharepoint.com) is required for onedrive buckets")
+
+        buckets.append(BucketConfig(
+            name=str(name).strip(),
+            kind=kind,
+            root=root.strip() if root else "",
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            source=source,
+            site=site.strip() if site else None,
+            mira_url=(mira or {}).get("url") if source == "mira" else None,
+            mira_token=(mira or {}).get("token") if source == "mira" else None,
+            mira_verify_tls=bool((mira or {}).get("verify_tls"))
+            if source == "mira" else False,
+        ))
+    return buckets

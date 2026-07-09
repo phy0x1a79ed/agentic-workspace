@@ -31,6 +31,10 @@ log = logging.getLogger("awm.hub.supervisor")
 
 _SERVICES_STATE_FILENAME = "services.json"
 _RECONNECT_WINDOW_S = 10.0
+# How often the runtime self-heal sweep looks for wedged services. Comfortably
+# longer than the disconnect watchdog's reconnect window so the two don't race
+# to respawn the same crash.
+_SELF_HEAL_INTERVAL_S = 45.0
 
 # Set true while the gateway is tearing down (graceful lifespan shutdown). The
 # crash-respawn watchdog checks this so it does not fight the teardown by
@@ -307,6 +311,70 @@ def _has_ready_control(sid: str | None) -> bool:
     from awm.gateway.hub import rpc as _rpc
     ch = _rpc.get_control(sid)
     return ch is not None and ch.ready.is_set()
+
+
+def pid_alive(pid: int | None) -> bool:
+    """True iff ``pid`` names a live process. ``PermissionError`` (a pid we
+    can't signal) still counts as alive; ``ProcessLookupError`` / other OS
+    errors mean dead."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+async def _self_heal_once() -> None:
+    """One self-heal sweep: re-bootstrap any journaled, enabled, non-overlay
+    service whose last-known PID is dead and which holds no ready control.
+
+    Closes the gap the disconnect watchdog leaves open. ``supervise_disconnect``
+    only fires from the control-WS *close* path, so a service that died *before*
+    ever opening its control WS — force-killed pre-handshake, or crashed during
+    register — is never retried and sits ``starting`` with a dead PID forever
+    (the wedge that needed a manual ``services restart``).
+
+    Liveness is checked against the journal's ``last_pid`` — which
+    ``_respawn_from_journal`` rewrites to the fresh PID on respawn — so a
+    just-respawned or still-handshaking (PID-alive) service is skipped and the
+    sweep cannot storm-respawn. A deliberate ``awm services stop`` drops the
+    journal entry first, so stopped services are never seen here.
+    """
+    if is_shutting_down():
+        return
+    from awm.gateway.hub import discovery as _discovery
+    for name, entry in list(load_service_journal().items()):
+        if not isinstance(entry, dict):
+            continue
+        if not _discovery.is_enabled(name):
+            continue
+        if pid_alive(entry.get("last_pid")):
+            continue
+        if _has_ready_control(entry.get("service_id")):
+            continue
+        log.warning(
+            "self-heal: service %s wedged (dead pid=%s, no ready control); "
+            "re-bootstrapping", name, entry.get("last_pid"))
+        await _respawn_from_journal(name, entry)
+
+
+async def self_heal_loop() -> None:
+    """Periodic wedged-service watchdog, started once at gateway boot.
+
+    Runs forever on ``_SELF_HEAL_INTERVAL_S``; each tick is a best-effort sweep
+    that never lets an exception kill the loop."""
+    while not is_shutting_down():
+        await asyncio.sleep(_SELF_HEAL_INTERVAL_S)
+        try:
+            await _self_heal_once()
+        except Exception:
+            log.debug("self-heal sweep failed", exc_info=True)
 
 
 async def reconcile_journaled_services() -> None:

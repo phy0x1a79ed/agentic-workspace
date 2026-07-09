@@ -37,6 +37,7 @@ class ScopeCreateRequest(BaseModel):
     project: str
     scope: str
     from_branch: str | None = None
+    branch_name: str | None = None
     context: str | None = None
 
 

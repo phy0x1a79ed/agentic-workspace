@@ -19,7 +19,7 @@ fi
 
 # 2. Install the modular tree into the env. The gateway is the composition
 # root — its install.sh installs the component libraries (config, persistence,
-# gatewayclient), every feature service (scopes/agents/artifacts/skills/discord),
+# gatewayclient), every feature service (scopes/agents/artifacts/social/...),
 # then the gateway itself (which provides the `awm` / `awm-mcp` console scripts).
 echo "Installing awm modular tree (components + feature services + gateway)..."
 AWM_ENV=awm bash "$HERE/install.sh"

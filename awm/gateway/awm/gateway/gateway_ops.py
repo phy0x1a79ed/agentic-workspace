@@ -483,8 +483,8 @@ GATEWAY_OPERATIONS: list[Operation] = [
         description="Restart the AWM core systemd unit (awm.service).",
         service_func=_op_restart,
         http_method="POST", http_path="/restart",
-        cli_group="gateway", cli_command="restart",
-        output=JsonOutput(), surfaces=_CLI,
+        cli_group="", cli_command="",
+        output=JsonOutput(), surfaces=_MCP_HTTP,
     ),
     Operation(
         name="awm_mcp_sync",

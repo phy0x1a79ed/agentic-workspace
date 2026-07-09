@@ -54,7 +54,26 @@ the downloaded certificate (Android: Settings → Security → Encryption &
 credentials → Install a certificate → CA certificate; iOS: install the profile,
 then General → About → Certificate Trust Settings → enable). The leaf rotates
 automatically (≤397-day mobile cap; re-minted when the host's IP set changes)
-without re-touching the device.
+without re-touching the device. The mic page also surfaces a one-tap **Install
+certificate** panel whenever the audio socket can't open (the usual symptom of
+an untrusted CA — browsers silently refuse to click-through a cert error for
+`wss://`, even after you accept it for the page).
+
+### SAN must include the address the phone actually dials
+
+The leaf's SAN is auto-enumerated from IPs visible **inside WSL** (`hostname -I`)
+— which does *not* include the **Windows host's ZeroTier IP** that the phone
+connects to (the bridge is port-forwarded into WSL from there). If that address
+isn't in the SAN, the phone's WebSocket fails a hostname check even with the CA
+trusted. WSL can't discover that IP itself, so declare it explicitly — either a
+gitignored `.sans` file beside the service (one token per line, `#` comments) or
+the `MIC_EXTRA_SANS` env var (comma/space separated). Bare IPs/hostnames are
+fine; `IP:` / `DNS:` prefixes are optional:
+
+    echo 10.147.20.5 > .sans        # the Windows ZeroTier IP the phone browses to
+
+The leaf re-mints on the next service start (watch the `certs ready (SAN=…)`
+log line). ZeroTier member IPs are stable, so this is a one-time step.
 
 ## Off-host reachability (ZeroTier)
 
@@ -77,6 +96,7 @@ Set `AWM_IDLE_SHUTDOWN=0` in the gateway's `$AWM_WORKSPACE/.awm/env` and restart
 |---|---|---|
 | `MIC_PORT` | `12200` | HTTPS listener port (must match the portproxy entry) |
 | `MIC_SINK` | `virtmic` | PulseAudio null-sink name |
+| `MIC_EXTRA_SANS` | (none) | extra cert SANs WSL can't self-enumerate — e.g. the Windows ZeroTier IP the phone dials; comma/space list, `IP:`/`DNS:` optional. Also read from a `.sans` file beside the service. |
 | `REMOTE_AUDIO_CA_DIR` | `~/.config/remote-audio/ca` | shared root CA location |
 
 ## Verify
