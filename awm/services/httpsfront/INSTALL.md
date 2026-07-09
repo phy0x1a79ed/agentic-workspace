@@ -84,6 +84,17 @@ explicitly and merged in:
 | `AWM_TLS_EXTRA_SANS` | — | extra cert SANs (see above) |
 | `REMOTE_AUDIO_CA_DIR` | `~/.config/remote-audio/ca` | shared root-CA location |
 
+`AWM_HTTPS_PORT` is a clean one-line port knob: set it in the workspace's
+gitignored `$AWM_WORKSPACE/.awm/env` (merged into the gateway env at startup,
+before any service spawns — see README § *Per-workspace env file*), so a port
+change is that single edit plus a `systemctl restart awm.service`, not a
+re-architecture.
+
+**On the production ZeroTier host** this is set to `AWM_HTTPS_PORT=12100` — the
+port Windows forwards into WSL over ZeroTier (a phone reaching `10.74.81.110`
+lands on 12100). So the HTTPS front is the *sole* exposure of awm on that host;
+there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
+
 ## Exposure note
 
 Fronting the gateway wholesale means the **entire unauthenticated awm surface**
