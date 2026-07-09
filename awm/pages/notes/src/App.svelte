@@ -488,10 +488,18 @@
         <button class="search-clear" aria-label="Clear search" onclick={clearSearch}>×</button>
       {/if}
     </div>
-    <label class="sem-toggle">
-      <input type="checkbox" bind:checked={semantic} onchange={onQuery} />
-      <span>semantic</span>
-    </label>
+    <button
+      type="button"
+      class="chip-toggle"
+      class:on={semantic}
+      role="switch"
+      aria-checked={semantic}
+      title="Semantic search — match by meaning, not just keywords"
+      onclick={() => { semantic = !semantic; onQuery(); }}
+    >
+      <span class="chip-dot" aria-hidden="true"></span>
+      semantic
+    </button>
 
     <div class="tree-scroll">
       {#if results !== null}
