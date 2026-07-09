@@ -24,6 +24,7 @@ from awm.gatewayclient import ServiceAdapter
 
 from awm.events import dao
 from awm.events.dao import EventsDAO
+from awm.events.funnel import Funnel
 from awm.events.scheduler import Scheduler
 
 log = logging.getLogger("awm.events.hub_adapter")
@@ -63,6 +64,14 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Fired (jittered) when a game's schedule is due; "
                            "payload {game}.",
         },
+        {
+            "topic": "agent.wake",
+            "description": (
+                "Fired when the hook funnel normalizes a wake-worthy realm "
+                "event (e.g. the body died, a realm error) into an agent "
+                "wake; payload {game, reason, source}. Debounced per game."
+            ),
+        },
     ],
     "sessions": [],
 }
@@ -87,9 +96,11 @@ async def main() -> None:
         "events", API_MANIFEST, _make_handlers(events), on_start=dao.init,
     )
     scheduler = Scheduler(adapter, dao=events)
-    # The adapter's connection loop and the cadence loop run concurrently; the
-    # scheduler emits through the adapter's live control WS (no-op while down).
-    await asyncio.gather(adapter.run(), scheduler.run())
+    funnel = Funnel(adapter)
+    # The adapter's connection loop, the cadence loop, and the hook→wake
+    # funnel run concurrently; scheduler + funnel emit through the adapter's
+    # live control WS (no-op while down).
+    await asyncio.gather(adapter.run(), scheduler.run(), funnel.run())
 
 
 if __name__ == "__main__":
