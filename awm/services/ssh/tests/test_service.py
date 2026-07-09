@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import socket
 import subprocess
 import tempfile
 import time
@@ -16,7 +18,15 @@ from awm.ssh.config import (
     lock_path,
     resolve_host,
 )
-from awm.ssh.service import SSHService
+from awm.ssh.service import ConnState, SSHService
+
+
+async def _false(_host):
+    return False
+
+
+async def _true(_host):
+    return True
 
 
 class TestConfig:
@@ -215,6 +225,189 @@ class TestCircuitBreaker:
             f.write("unrecognized prompt\n")
         reason = svc._failure_reason(cfg, marker, "base failure")
         assert "askpass deviation" in reason
+
+
+class TestStateMachine:
+    """The connect/disconnect state machine: dedup, breaker-safe timeout,
+    disconnect-during-auth deferral, and the CONNECTED liveness probe."""
+
+    async def test_concurrent_connects_dedup_to_one_attempt(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        calls = {"n": 0}
+
+        async def _one_attempt(c):
+            calls["n"] += 1
+            await asyncio.sleep(0.01)  # keep it AUTHENTICATING while peers arrive
+            return SSHService._status_dict(c, "connected")
+
+        monkeypatch.setattr(svc, "_check_master", _false)  # no existing master
+        monkeypatch.setattr(svc, "_do_connect", _one_attempt)
+
+        results = await asyncio.gather(
+            svc.connect("fir"), svc.connect("fir"), svc.connect("fir"))
+
+        assert calls["n"] == 1                              # exactly one ssh auth
+        assert all(r["status"] == "connected" for r in results)
+        assert svc._host("fir").state == ConnState.CONNECTED
+
+    async def test_attempt_timeout_trips_breaker_and_holds(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        alerts: list[str] = []
+
+        async def _hang(c, marker):        # never brings up the master
+            await asyncio.sleep(5.0)
+
+        async def _capture_alert(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _hang)
+        monkeypatch.setattr(svc, "_exit_master", _true)      # reap is a no-op here
+        monkeypatch.setattr(svc, "_alert", _capture_alert)
+
+        result = await svc.connect("fir")
+        # The internal timeout became an auth FAILURE routed through the breaker —
+        # never an outer cancel that skips it.
+        assert result["status"] == "error"
+        assert svc._read_lock(cfg) is not None
+        assert len(alerts) == 1
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
+        # And the very next automated connect is refused without any ssh work.
+        monkeypatch.setattr(svc, "_check_master", _false)
+        again = await svc.connect("fir")
+        assert again["status"] == "unavailable"
+
+    async def test_disconnect_during_auth_defers_then_disposes(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        gate = asyncio.Event()
+        completed = {"v": False}
+
+        async def _held_attempt(c):
+            await gate.wait()            # stay in AUTHENTICATING until released
+            completed["v"] = True
+            return SSHService._status_dict(c, "connected")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_do_connect", _held_attempt)
+        monkeypatch.setattr(svc, "_exit_master", _true)
+
+        ctask = asyncio.create_task(svc.connect("fir"))
+        for _ in range(200):
+            await asyncio.sleep(0.001)
+            if svc._host("fir").state == ConnState.AUTHENTICATING:
+                break
+        assert svc._host("fir").state == ConnState.AUTHENTICATING
+
+        dtask = asyncio.create_task(svc.disconnect("fir"))
+        await asyncio.sleep(0.02)
+        # The in-flight auth is NOT aborted — the disconnect only records intent.
+        assert svc._host("fir").pending_disconnect is True
+        assert not ctask.done()
+
+        gate.set()
+        cres = await ctask
+        dres = await dtask
+        assert cres["status"] == "connected"
+        assert completed["v"] is True            # attempt ran to completion
+        assert dres["status"] == "disconnected"
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
+    async def test_connected_probe_no_new_attempt_when_live(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+
+        async def _no_attempt(c):
+            raise AssertionError("must not re-authenticate a live master")
+
+        monkeypatch.setattr(svc, "_check_master", _true)
+        monkeypatch.setattr(svc, "_do_connect", _no_attempt)
+        result = await svc.connect("fir")
+        assert result["status"] == "connected"
+
+    async def test_connected_probe_reauths_when_master_dead(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+        calls = {"n": 0}
+
+        async def _reconnect(c):
+            calls["n"] += 1
+            return SSHService._status_dict(c, "connected")
+
+        monkeypatch.setattr(svc, "_check_master", _false)   # master died out-of-band
+        monkeypatch.setattr(svc, "_do_connect", _reconnect)
+        result = await svc.connect("fir")
+        assert result["status"] == "connected"
+        assert calls["n"] == 1                              # demoted → fresh auth
+        assert svc._host("fir").state == ConnState.CONNECTED
+
+
+class TestSingletonAndReconcile:
+    @pytest.fixture
+    def isolated_singleton(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "awm-ssh.singleton")
+        for mod in (ssh_config, ssh_service):
+            monkeypatch.setattr(mod, "SINGLETON_PATH", path, raising=False)
+        return path
+
+    def test_second_instance_stands_down(
+            self, isolated_singleton, monkeypatch) -> None:
+        first = SSHService()
+        first._acquire_singleton()
+        assert first._singleton_fd is not None      # holds the flock
+
+        class _Stood(Exception):
+            pass
+
+        def _fake_exit(code):
+            raise _Stood()
+
+        monkeypatch.setattr(ssh_service.os, "_exit", _fake_exit)
+        second = SSHService()
+        with pytest.raises(_Stood):
+            second._acquire_singleton()             # contended → stands down
+
+    async def test_reconcile_adopts_live_master(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+
+        async def _only_fir_up(host):
+            return host == "fir"
+
+        monkeypatch.setattr(svc, "_check_master", _only_fir_up)
+        await svc._reconcile_on_boot()
+        assert svc._host("fir").state == ConnState.CONNECTED
+        assert svc._host("sockeye").state == ConnState.DISCONNECTED
+
+    async def test_reap_removes_dead_socket_keeps_regular_files(
+            self, isolated_dirs, monkeypatch) -> None:
+        live, _locks = isolated_dirs
+        svc = SSHService()
+
+        # A real unix socket (S_ISSOCK) standing in for a stale master, plus a
+        # regular stderr file that must be left alone.
+        sockpath = live / "fir.computecanada.ca_22_phyberos"
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(sockpath))
+        stderr_file = live / "fir.connect.stderr"
+        stderr_file.write_text("some stderr")
+
+        monkeypatch.setattr(svc, "_check_socket", _false)  # socket is dead
+        try:
+            await svc._reap_orphans()
+        finally:
+            s.close()
+
+        assert not sockpath.exists()        # stale socket reaped
+        assert stderr_file.exists()         # regular file untouched
 
 
 _HOME = Path(os.path.expanduser("~"))

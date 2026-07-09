@@ -76,10 +76,13 @@ calls to the same host reuse this socket with no re-authentication.
 ### Guarded hosts (`fir`)
 
 `fir` is deliberately **not** in the shared `ControlMaster auto` block. It has
-its own block with `ControlMaster no` plus a ProxyCommand guard:
+its own block with `ControlMaster no` plus a ProxyCommand guard. List **both the
+alias and the FQDN** on the `Host` line — OpenSSH matches `Host` patterns against
+the name you *type*, so an alias-only block leaves `ssh fir.computecanada.ca`
+unguarded (it would fire a fresh Duo push with nothing stopping it):
 
 ```
-Host fir
+Host fir fir.computecanada.ca
     HostName fir.computecanada.ca
     User phyberos
     ...
@@ -89,13 +92,17 @@ Host fir
     ProxyCommand ~/.ssh/awm-ssh-guard %h %p
 ```
 
+Because `HostName` sets `%h` to `fir.computecanada.ca` for either typed name, the
+`ControlPath` resolves to one shared socket, so both names guard and multiplex
+together (verify with `ssh -G fir` vs `ssh -G fir.computecanada.ca`).
+
 OpenSSH runs a `ProxyCommand` **only when no live master exists**. So:
 
 - **Master up** (service connected) → `ssh fir` multiplexes over the socket, the
   guard never runs, zero new auth.
-- **No master** → a bare `ssh fir` hits the guard, which prints a loud "use the
-  ssh service, never direct" message to stderr and exits non-zero **before any
-  Duo push** — no MFA attempt is spent.
+- **No master** → a bare `ssh fir` (or `ssh fir.computecanada.ca`) hits the
+  guard, which prints a loud "use the ssh service, never direct" message to
+  stderr and exits non-zero **before any Duo push** — no MFA attempt is spent.
 
 The service is the sole caller allowed to create the master: its `-f -N -M`
 connect adds `-o ProxyCommand=none` for guarded hosts (command-line `-o` wins
@@ -104,7 +111,8 @@ not an OS boundary — the same Unix user can still bypass with `-o
 ProxyCommand=none` — the point is to make the naive/default `ssh fir` safe.
 
 To guard another host, set `guarded=True` on its `HostConfig` in `config.py` and
-give it an equivalent `Host` block. (VPN-bounced hosts like `sockeye*` can't take
+give it an equivalent `Host` block listing **every name it can be reached by**
+(alias and FQDN). (VPN-bounced hosts like `sockeye*` can't take
 this guard as-is — their `ProxyCommand` is the required tunnel; the circuit
 breaker still covers them at the service layer.)
 

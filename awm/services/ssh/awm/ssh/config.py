@@ -38,6 +38,12 @@ SSH_ASKPASS = os.path.expanduser("~/.ssh/awm-duo-askpass")
 # self-serve verb. Kept out of LIVE_DIR so it survives socket cleanup / self-heal.
 LOCK_DIR = os.path.expanduser("~/.ssh/awm-ssh-locks")
 
+# Process-singleton lock: exactly one svc-ssh may run at a time — two would race
+# the same account toward MFA lockout with independent in-memory state. Held via
+# an flock for the process lifetime; the OS releases it on death, so there is no
+# stale-file lockout (unlike a bare pidfile).
+SINGLETON_PATH = os.path.expanduser("~/.ssh/awm-ssh.singleton")
+
 
 def resolve_host(name: str) -> HostConfig:
     cfg = KNOWN_HOSTS.get(name)
