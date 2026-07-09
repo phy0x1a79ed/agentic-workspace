@@ -26,6 +26,7 @@ class FakeEngine:
     def __init__(self, txs_per_poll=None) -> None:
         self.approved_count = 0
         self.calls: list[tuple] = []
+        self._budget = 0
         # Optional script: a list of tx-lists returned by successive polls.
         self._script = list(txs_per_poll or [])
         self.client = types.SimpleNamespace(
@@ -35,6 +36,19 @@ class FakeEngine:
 
     def _next_poll(self):
         return self._script.pop(0) if self._script else []
+
+    # Budget API mirroring ApprovalEngine.
+    def grant(self, n):
+        self._budget += max(0, int(n))
+        return self._budget
+
+    def budget_remaining(self):
+        return self._budget
+
+    def clear_budget(self):
+        n = self._budget
+        self._budget = 0
+        return n
 
     def held_transactions(self):
         return []
@@ -57,8 +71,10 @@ class FakeEngine:
 
     def handle_transactions(self, txs):
         self.calls.append(("handle", len(txs)))
-        # Each pending tx is "auto-approved" by the fake engine.
-        self.approved_count += len(txs)
+        # Budget-driven, like the real engine: approve up to the granted budget.
+        n = min(len(txs), self._budget)
+        self.approved_count += n
+        self._budget -= n
 
 
 def inject(svc: TwoFAService, name: str, eng: FakeEngine) -> DeviceRuntime:
@@ -258,7 +274,8 @@ async def test_concurrent_same_device_burst_spawns_one_task(tmp_path):
     assert statuses.count("started") == 1
     assert statuses.count("extended") == 2
     rt = svc._devices["cwl"]
-    assert rt.expected == 3
+    # Three overlapping arms accumulate into one engine budget.
+    assert rt.engine.budget_remaining() == 3
 
     await asyncio.sleep(0.5)
     assert rt.burst_active() is False

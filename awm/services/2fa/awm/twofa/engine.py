@@ -6,17 +6,28 @@ poster (the awm verb surface replaces the Discord buttons).
 
 Policy:
 
-  * **single** lone pending login  -> auto-approve + notify
-  * **burst**  (more than ``burst_threshold`` pending at once, or anything held)
-               -> hold + notify with Approve/Deny buttons; never auto-approve
+  * an armed burst window carries an **expected-approval budget** (``grant(n)``);
+    each auto-approval consumes one. While budget remains, pending logins are
+    auto-approved oldest-first — held ones (longest-waiting) before newly-seen.
+  * pushes **beyond the budget** -> hold + notify with Approve/Deny buttons;
+    never auto-approved. A later ``grant`` retro-promotes the oldest held first.
   * **approve-all window** (opened by a control command) -> approve everything,
-               held and incoming, for ``approve_all_minutes``
+               held and incoming, for ``approve_all_minutes`` (does NOT consume
+               the counted budget).
   * duplicate pushes for the same urgid within ``dedup_seconds`` are suppressed,
     and we never answer the same urgid twice.
 
+The budget is the authorization the ssh service (or a Discord ``/approve``) arms
+the window with: N overlapping connects -> ``grant`` totals N -> N overlapping
+pushes all approve. It replaces the old ``len(txs) > threshold -> hold every
+one`` heuristic, which contradicted the armed count and held legitimate logins.
+
 The burst poll loop calls :meth:`handle_transactions` after every fetch; the
 control surface (the ``2fa_*`` verbs) calls :meth:`approve` / :meth:`deny` /
-:meth:`approve_all`. All state is guarded by a single lock.
+:meth:`approve_all`. All held/acted/budget state is guarded by a single lock.
+Note :meth:`_answer` holds that lock across the Duo HTTP reply, so event-loop
+callers must reach budget only via :meth:`grant` (run off-loop) or the lock-free
+:meth:`budget_remaining` / :meth:`clear_budget` int read/write.
 """
 
 from __future__ import annotations
@@ -34,21 +45,51 @@ log = logging.getLogger("awm.twofa.engine")
 class ApprovalEngine:
     def __init__(self, client: DuoClient, notifier: Notifier, *,
                  dedup_seconds: float = 3.0, approve_all_minutes: float = 5.0,
-                 burst_threshold: int = 1, hold_ttl_seconds: float = 120.0):
+                 hold_ttl_seconds: float = 120.0):
         self.client = client
         self.notifier = notifier
         self.dedup_seconds = dedup_seconds
         self.approve_all_seconds = approve_all_minutes * 60.0
-        self.burst_threshold = burst_threshold
         self.hold_ttl_seconds = hold_ttl_seconds
 
         self._lock = threading.Lock()
         self._held: dict[str, tuple[Transaction, float]] = {}  # urgid -> (tx, added_at)
         self._acted: dict[str, float] = {}  # urgid -> answered_at (dedup / no double-answer)
         self._approve_all_until: float = 0.0
-        # Count of successful *approvals* sent to Duo. The burst mode reads this to
-        # detect "a login was approved" and exit on first success.
+        # Remaining auto-approvals authorized by armed burst windows. grant() adds
+        # (off-loop), the budget branch of handle_transactions decrements under the
+        # lock, clear_budget() zeros it when a window ends. A plain int so
+        # budget_remaining() is a lock-free atomic read (see class docstring).
+        self._budget: int = 0
+        # Count of successful *approvals* sent to Duo. The burst loop reads this to
+        # report per-approval progress.
         self.approved_count: int = 0
+
+    # ---- budget (armed-window authorization) ------------------------------
+
+    def grant(self, n: int) -> int:
+        """Add ``n`` auto-approvals to the budget; returns the new total.
+
+        Read-modify-write, so it takes the lock — call it off the event loop
+        (``asyncio.to_thread``) since the lock can be held across a Duo reply.
+        """
+        with self._lock:
+            self._budget += max(0, int(n))
+            return self._budget
+
+    def budget_remaining(self) -> int:
+        """Remaining auto-approvals. Lock-free atomic int read (loop-safe)."""
+        return self._budget
+
+    def clear_budget(self) -> int:
+        """Zero the budget (window ended); returns what was left. Lock-free.
+
+        Only called at burst-loop teardown, when no ``handle_transactions`` is in
+        flight, so the plain read-then-store cannot race a decrement.
+        """
+        n = self._budget
+        self._budget = 0
+        return n
 
     # ---- transport entrypoint ---------------------------------------------
 
@@ -69,17 +110,22 @@ class ApprovalEngine:
                         self.notifier.notify_resolved(t, t.urgid, "approve", "approve-all window")
                 return
 
-            burst = len(txs) > self.burst_threshold or bool(self._held)
-            if burst:
-                for t in fresh:
-                    if t.urgid not in self._held:
-                        self._held[t.urgid] = (t, now)
-                        log.info("holding burst tx %s (%s)", t.urgid, t.app)
-                        self.notifier.notify_held(t)
-            else:
-                for t in fresh:
-                    if self._answer(t, "approve", by="auto (single)"):
+            # Budget-driven: approve up to the granted budget, oldest-first —
+            # already-held txs (longest-waiting) before newly-seen — and hold the
+            # overflow. A held tx approved here is a retro-promotion once a later
+            # grant frees budget. `_answer` pops it from `_held` on success.
+            ordered = sorted(
+                fresh,
+                key=lambda t: self._held[t.urgid][1] if t.urgid in self._held else now)
+            for t in ordered:
+                if self._budget > 0:
+                    if self._answer(t, "approve", by="auto (budgeted)"):
+                        self._budget -= 1
                         self.notifier.notify_single(t)
+                elif t.urgid not in self._held:
+                    self._held[t.urgid] = (t, now)
+                    log.info("holding tx %s (%s) — over budget", t.urgid, t.app)
+                    self.notifier.notify_held(t)
 
     # ---- control surface (driven by the 2fa_* verbs) ----------------------
 
