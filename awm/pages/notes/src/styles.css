@@ -26,6 +26,7 @@
   --nt-accent: #2f6b4f;
   --nt-accent-soft: rgba(47, 107, 79, 0.12);
   --nt-active-bg: rgba(47, 107, 79, 0.11);
+  --nt-select: rgba(47, 107, 79, 0.22);
   --nt-on-accent: #f8f9f4;
   --nt-live: #c2562f;
   --nt-live-soft: rgba(194, 86, 47, 0.14);
@@ -49,6 +50,9 @@
     --nt-accent: #74c096;
     --nt-accent-soft: rgba(116, 192, 150, 0.15);
     --nt-active-bg: rgba(116, 192, 150, 0.12);
+    /* Selection needs more presence on dark ink than the 0.15 accent-soft: a
+       clearer teal-green wash that stays legible under cream + accent text. */
+    --nt-select: rgba(116, 192, 150, 0.30);
     --nt-on-accent: #10120b;
     --nt-live: #ec8a5e;
     --nt-live-soft: rgba(236, 138, 94, 0.16);
@@ -69,6 +73,7 @@
   --nt-border: #d2d7c7; --nt-hover: #dde1d4;
   --nt-accent: #2f6b4f; --nt-accent-soft: rgba(47,107,79,0.12);
   --nt-active-bg: rgba(47,107,79,0.11); --nt-on-accent: #f8f9f4;
+  --nt-select: rgba(47,107,79,0.22);
   --nt-live: #c2562f; --nt-live-soft: rgba(194,86,47,0.14); --nt-danger: #b23b2e;
   --nt-input-bg: #fbfcf8; --nt-chip-bg: #eef1e8; --nt-code-bg: #e7ebdf;
 }
@@ -79,6 +84,7 @@
   --nt-border: #2c2f23; --nt-hover: #23261b;
   --nt-accent: #74c096; --nt-accent-soft: rgba(116,192,150,0.15);
   --nt-active-bg: rgba(116,192,150,0.12); --nt-on-accent: #10120b;
+  --nt-select: rgba(116,192,150,0.30);
   --nt-live: #ec8a5e; --nt-live-soft: rgba(236,138,94,0.16); --nt-danger: #e2705a;
   --nt-input-bg: #10120b; --nt-chip-bg: #20241a; --nt-code-bg: #20241a;
 }
@@ -107,9 +113,18 @@ body {
 }
 
 /* ---- themed native controls ------------------------------------------- */
-/* Checkboxes/radios everywhere (search "semantic" toggle + rendered markdown
-   task-list boxes) follow the ink accent. */
+/* Checkboxes/radios (rendered markdown task-list boxes) follow the ink accent. */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
+
+/* Text-selection highlight — an ink-green wash that fits the theme in both
+   modes (the browser default clashes, and is nearly invisible on dark ink). */
+::selection { background: var(--nt-select); }
+/* CodeMirror draws its own selection layer (.cm-selectionBackground) and ships a
+   default (#d7d4f0, an off-brand lavender that's especially wrong on dark ink).
+   Its injected StyleModule outranks the EditorView.theme rule, so override it
+   from global CSS with !important (CM's default isn't !important, so this wins). */
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground { background: var(--nt-select) !important; }
 
 /* Themed scrollbars — Firefox (scrollbar-*) + WebKit/Blink (::-webkit-*). The
    CodeMirror scroller (.cm-scroller) is themed here too since these are global. */
@@ -214,14 +229,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
   border: 0; background: none; color: var(--nt-faint);
   font-size: 1rem; cursor: pointer; line-height: 1;
 }
-.sem-toggle {
-  display: flex; align-items: center; gap: 0.35rem;
-  padding: 0.4rem 0.95rem 0.2rem;
-  font-size: 0.72rem; color: var(--nt-faint);
-  font-family: var(--nt-mono);
+/* semantic-search toggle — a chip that echoes the .rail-btn.on / .seg-btn.on
+   "active = accent" affordance instead of a naked checkbox. */
+.chip-toggle {
+  align-self: flex-start;
+  margin: 0.4rem 0.95rem 0.2rem;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--nt-border);
+  background: var(--nt-surface);
+  color: var(--nt-text2);
+  font-family: var(--nt-sans); font-size: 0.72rem; font-weight: 600;
+  padding: 0.28rem 0.65rem; border-radius: 999px;
   cursor: pointer; user-select: none;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
-.sem-toggle input { accent-color: var(--nt-accent); }
+.chip-toggle:hover { border-color: var(--nt-accent); color: var(--nt-accent); }
+.chip-toggle.on {
+  background: var(--nt-accent-soft);
+  border-color: var(--nt-accent);
+  color: var(--nt-accent);
+}
+.chip-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--nt-faint);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.chip-toggle:hover .chip-dot { background: var(--nt-accent); }
+.chip-toggle.on .chip-dot {
+  background: var(--nt-accent);
+  box-shadow: 0 0 0 3px var(--nt-accent-soft);
+}
 
 .tree-scroll { flex: 1 1 auto; overflow-y: auto; padding: 0.35rem 0.35rem 0.85rem; }
 .empty-note {

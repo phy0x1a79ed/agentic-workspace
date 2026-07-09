@@ -72,7 +72,7 @@ const theme = EditorView.theme({
   },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--nt-text)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
-    { backgroundColor: 'var(--nt-accent-soft)' },
+    { backgroundColor: 'var(--nt-select)' },
   '.cm-placeholder': { color: 'var(--nt-faint)', fontStyle: 'normal' },
   '.cm-matchingBracket': {
     backgroundColor: 'var(--nt-accent-soft)',
