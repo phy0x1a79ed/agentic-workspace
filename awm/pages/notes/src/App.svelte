@@ -72,6 +72,15 @@
   let vpResizing = $state(false);
   let collapsed = $state<Set<string>>(new Set(initial.collapsed));
 
+  // Auto-hiding chrome (mobile only): on the phone layout the document itself
+  // scrolls (see the ≤680px block in styles.css), so scrolling the note down
+  // slides the top bar + footer away (and lets the native browser bar collapse);
+  // scrolling up brings them back. Inert on desktop — the gate never sets it and
+  // the CSS that consumes it lives in the mobile media query.
+  let chromeHidden = $state(false);
+  let mobileMq: MediaQueryList | null = null;
+  let lastScrollY = 0;
+
   let query = $state('');
   let semantic = $state(false);
   let results = $state<NoteMeta[] | null>(null);
@@ -79,7 +88,6 @@
   let vocab = $state<string[]>([]);
 
   let dictState = $state<DictationState>('idle');
-  let interim = $state('');
   let micLevel = $state(0);
 
   let editorHost = $state<HTMLDivElement | null>(null);
@@ -106,6 +114,20 @@
     vpResizing = true;
     if (vpTimer) clearTimeout(vpTimer);
     vpTimer = setTimeout(() => { vpResizing = false; }, 200);
+    // Leaving the mobile layout must never strand the bars hidden.
+    if (!mobileMq?.matches && chromeHidden) chromeHidden = false;
+  }
+
+  /** Direction-aware chrome hide/reveal, driven by the document scroll on mobile.
+   *  Down past a dead-zone hides the bars; up (or near the top) reveals them. */
+  function onScroll() {
+    if (!mobileMq?.matches) { if (chromeHidden) chromeHidden = false; return; }
+    const y = window.scrollY;
+    if (y < 8) { chromeHidden = false; lastScrollY = y; return; }  // always show at top
+    const dy = y - lastScrollY;
+    if (Math.abs(dy) < 6) return;                                  // ignore jitter
+    chromeHidden = dy > 0;
+    lastScrollY = y;
   }
 
   // ---- persistence -------------------------------------------------------
@@ -400,7 +422,6 @@
       });
     }
     dictation = createDictation({
-      onInterim: (t) => (interim = t),
       onCommit: (t) => editor?.insertAtCaret(t),
       onState: (s) => (dictState = s),
       onLevel: (v) => (micLevel = v),
@@ -442,6 +463,10 @@
     // React to hash edits (back/forward, pasted link) while the page is open.
     window.addEventListener('hashchange', onHashChange);
     window.addEventListener('resize', onWinResize);
+    // Auto-hiding chrome: watch the document scroll (mobile layout only).
+    mobileMq = window.matchMedia('(max-width: 680px)');
+    lastScrollY = window.scrollY;
+    window.addEventListener('scroll', onScroll, { passive: true });
     await focusEditor();
   });
 
@@ -459,6 +484,7 @@
     spellcheck?.destroy();
     window.removeEventListener('hashchange', onHashChange);
     window.removeEventListener('resize', onWinResize);
+    window.removeEventListener('scroll', onScroll);
     if (createTimer) clearTimeout(createTimer);
     if (pathTimer) clearTimeout(pathTimer);
     if (searchTimer) clearTimeout(searchTimer);
@@ -477,6 +503,7 @@
 
 <div class="app" class:ready={panelsReady} class:resizing={resizing !== null}
      class:vp-resizing={vpResizing}
+     class:chrome-hidden={chromeHidden}
      class:panel-open={leftOpen || rightOpen}>
   <!-- Mobile-only backdrop: tap to dismiss an open drawer -->
   <button
@@ -618,7 +645,7 @@
           title={dictState === 'listening' ? 'Stop dictation' : 'Dictate'}
           aria-label={dictState === 'listening' ? 'Stop dictation' : 'Start dictation'}
         >
-          <span class="mic-glyph">●</span>
+          <span class="mic-glyph" style="--lvl: {dictState === 'listening' ? micLevel : 0}" aria-hidden="true"></span>
           <span class="mic-label">{dictState === 'listening' ? 'Listening' : dictState === 'connecting' ? '…' : 'Dictate'}</span>
         </button>
         <button class="rail-btn" title={rightOpen ? 'Hide vocabulary' : 'Dictation vocabulary'} aria-label="Toggle vocabulary panel" class:on={rightOpen} onclick={toggleRight}>Aa</button>
@@ -640,13 +667,6 @@
           {:else}
             <p class="preview-empty">Nothing to preview yet.</p>
           {/if}
-        </div>
-      {/if}
-
-      {#if dictState === 'listening'}
-        <div class="dictation-bar">
-          <span class="pulse" style="--lvl: {micLevel}"></span>
-          <span class="dictation-text">{interim || 'Listening… speak, then pause to commit a phrase.'}</span>
         </div>
       {/if}
     </div>
