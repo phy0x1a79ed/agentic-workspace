@@ -10,7 +10,8 @@ The row carries the runtime coordinates the handlers need to reach the live
 appliance: ``container_name`` / ``compose_project`` (so ``release`` tears down
 exactly what ``acquire`` brought up and a respawn can re-adopt it), the
 ``control_port`` (supervisor HTTP), ``game_port`` (Factorio UDP), and
-``rcon_port`` (0 until the RCON pass lands). ``current_world`` mirrors the
+``rcon_port`` (always 0 — RCON is container-internal, never published).
+``current_world`` mirrors the
 supervisor's notion of which named save the live ``_active`` was derived from.
 """
 

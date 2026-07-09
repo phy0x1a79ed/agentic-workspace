@@ -124,6 +124,75 @@ def test_native_describe(patched_registry):
 
 
 # ---------------------------------------------------------------------------
+# surfaces gating — a CLI/HTTP-only verb is hidden from the MCP domain surface
+# but stays on the expanded list_tools() the CLI generator reads.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def surfaced_rec():
+    """A service whose write verb is declared CLI/HTTP-only via ``surfaces``."""
+    return _rec("writing", "/svc/writing", [
+        {"name": "search", "tool": "writing_search",
+         "description": "Search the corpus.", "params": []},
+        {"name": "add", "tool": "writing_add",
+         "description": "Add a sample.", "surfaces": ["cli", "http"],
+         "params": [{"name": "text", "type": "string", "required": True}]},
+    ], "sid-writing")
+
+
+def test_cli_only_verb_absent_from_domain_surface(monkeypatch, surfaced_rec):
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
+    out = catalog._describe_domain("writing")
+    verbs = {v["verb"] for v in out["verbs"]}
+    assert "search" in verbs  # read verb projected to MCP
+    assert "add" not in verbs  # write verb hidden from MCP
+
+
+def test_cli_only_verb_present_in_expanded_list_tools(monkeypatch, surfaced_rec):
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
+    names = {t.name for t in catalog.list_tools()}
+    # both verbs stay on the expanded surface the CLI generator + flat /invoke read
+    assert {"writing_search", "writing_add"} <= names
+
+
+async def test_cli_only_verb_rejected_via_mcp_domain_dispatch(monkeypatch, surfaced_rec):
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
+    monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: _FakeChannel())
+    # an agent calling writing(verb="add") over MCP is rejected (verb not in catalog)
+    with pytest.raises(ValueError):
+        await catalog.dispatch("writing", {"verb": "add", "args": {"text": "x"}})
+
+
+async def test_manifest_timeout_threaded_to_rpc(monkeypatch):
+    rec = _rec("slow", "/svc/slow", [
+        {"name": "grind", "tool": "slow_grind",
+         "description": "Slow op.", "timeout": 300, "params": []},
+        {"name": "quick", "tool": "slow_quick",
+         "description": "Fast op.", "params": []},
+    ], "sid-slow")
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([rec]))
+    ch = _FakeChannel()
+    monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
+    # declared timeout is threaded into ch.call
+    await catalog.dispatch("slow", {"verb": "grind", "args": {}})
+    assert ch.calls[-1][3] == 300.0
+    # a verb with no timeout leaves it at the ControlChannel default (None here)
+    await catalog.dispatch("slow", {"verb": "quick", "args": {}})
+    assert ch.calls[-1][3] is None
+
+
+async def test_cli_only_verb_still_dispatches_flat_by_name(monkeypatch, surfaced_rec):
+    # the CLI's flat /invoke {name:"writing_add"} path stays functional
+    monkeypatch.setattr(catalog, "get_registry", lambda: _StubRegistry([surfaced_rec]))
+    ch = _FakeChannel()
+    monkeypatch.setattr(catalog.rpc, "get_control", lambda sid: ch)
+    raw = await catalog.dispatch("writing_add", {"text": "hello"})
+    out = json.loads(raw)
+    assert out["fn"] == "add" and out["args"] == {"text": "hello"}
+
+
+# ---------------------------------------------------------------------------
 # Duplicate verb → first-wins
 # ---------------------------------------------------------------------------
 
@@ -150,9 +219,9 @@ class _FakeChannel:
     def __init__(self):
         self.calls = []
 
-    async def call(self, fn, args, as_=None):
-        self.calls.append((fn, args, as_))
-        return {"fn": fn, "args": args, "as_": as_}
+    async def call(self, fn, args, as_=None, timeout=None):
+        self.calls.append((fn, args, as_, timeout))
+        return {"fn": fn, "args": args, "as_": as_, "timeout": timeout}
 
 
 async def test_dispatch_service_verb_resolves_internal_fn(monkeypatch, patched_registry):

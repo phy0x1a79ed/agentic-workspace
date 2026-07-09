@@ -12,10 +12,17 @@ Outcome ops (one per terminal worker action):
     decompose_commit  a planner handed back a sub-DAG (DECOMPOSING → children)
     approve_plan      a verifier approved a plan (VERIFYING_PLAN → ACTIVE)
     reject_plan       a verifier rejected a plan (VERIFYING_PLAN → re-plan)
+    accept_work       an accept verifier accepted a claimed delivery
+                      (VERIFYING_WORK → COMPLETED — claim promoted to delivery)
+    reject_work       an accept verifier rejected a claimed delivery
+                      (VERIFYING_WORK → re-work under a bounded budget)
 
 Side-channel ops:
     set_attached      mirror the orthogonal user-attached flag to the kernel so
                       it won't reclaim a task a human is driving
+    set_steering      mirror the durable steering state (attach + the three
+                      consent/steering bits + the objective record); the agents
+                      side is the single writer, the orchestrator only mirrors
     set_paused        mirror the sticky human-pause flag to the kernel (durable;
                       keeps the supervisor frozen even after the human detaches)
     search_tasks      planner read: existing tasks (so a sub-DAG can reuse nodes)
@@ -54,8 +61,17 @@ class _GatewayOrch:
     async def reject_plan(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "reject_plan", kw)
 
+    async def accept_work(self, **kw: Any) -> Any:
+        return await gatewayclient.call(ORCH_SERVICE, "accept_work", kw)
+
+    async def reject_work(self, **kw: Any) -> Any:
+        return await gatewayclient.call(ORCH_SERVICE, "reject_work", kw)
+
     async def set_attached(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "set_attached", kw)
+
+    async def set_steering(self, **kw: Any) -> Any:
+        return await gatewayclient.call(ORCH_SERVICE, "set_steering", kw)
 
     async def set_paused(self, **kw: Any) -> Any:
         return await gatewayclient.call(ORCH_SERVICE, "orch_set_paused", kw)
@@ -109,8 +125,20 @@ async def reject_plan(**kw: Any) -> Any:
     return await _IMPL.reject_plan(**kw)
 
 
+async def accept_work(**kw: Any) -> Any:
+    return await _IMPL.accept_work(**kw)
+
+
+async def reject_work(**kw: Any) -> Any:
+    return await _IMPL.reject_work(**kw)
+
+
 async def set_attached(**kw: Any) -> Any:
     return await _IMPL.set_attached(**kw)
+
+
+async def set_steering(**kw: Any) -> Any:
+    return await _IMPL.set_steering(**kw)
 
 
 async def set_paused(**kw: Any) -> Any:
