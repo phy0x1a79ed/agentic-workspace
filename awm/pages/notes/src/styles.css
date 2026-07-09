@@ -366,13 +366,25 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
   padding: 0.35rem 0.7rem; border-radius: 8px; cursor: pointer;
 }
 .mic-btn:hover { border-color: var(--nt-live); color: var(--nt-live); }
-.mic-glyph { font-size: 0.6rem; color: var(--nt-faint); }
-.mic-btn:hover .mic-glyph { color: var(--nt-live); }
+/* The dot doubles as a live VU meter: while listening its size + halo scale with
+   `--lvl` (0..1 mic RMS, set inline from micLevel). Idle it's a small faint dot. */
+.mic-glyph {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--nt-faint);
+  transition: transform 0.08s linear, box-shadow 0.08s linear, background-color 0.15s;
+}
+.mic-btn:hover .mic-glyph { background: var(--nt-live); }
 .mic-btn.connecting { color: var(--nt-live); border-color: var(--nt-live); }
+.mic-btn.connecting .mic-glyph { background: var(--nt-live); }
 .mic-btn.live {
   background: var(--nt-live); color: var(--nt-on-accent); border-color: var(--nt-live);
 }
-.mic-btn.live .mic-glyph { color: var(--nt-on-accent); animation: nt-pulse 1s ease-in-out infinite; }
+.mic-btn.live .mic-glyph {
+  background: var(--nt-on-accent);
+  transform: scale(calc(0.7 + var(--lvl, 0) * 1.7));
+  box-shadow: 0 0 0 calc(var(--lvl, 0) * 5px) color-mix(in oklab, var(--nt-on-accent) 32%, transparent);
+}
 
 .editor-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
@@ -412,29 +424,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
   padding: 1.7rem clamp(1.1rem, 6vw, 4rem);
 }
 .preview-empty { color: var(--nt-faint); font-style: italic; font-family: var(--nt-sans); }
-
-/* dictation live strip */
-.dictation-bar {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.55rem clamp(1.1rem, 6vw, 4rem);
-  background: var(--nt-live-soft);
-  border-top: 1px solid color-mix(in oklab, var(--nt-live) 40%, transparent);
-  backdrop-filter: blur(2px);
-}
-.pulse {
-  flex: 0 0 auto;
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--nt-live);
-  transform: scale(calc(0.7 + var(--lvl, 0) * 1.6));
-  box-shadow: 0 0 0 calc(var(--lvl, 0) * 8px) var(--nt-live-soft);
-  transition: transform 0.08s linear, box-shadow 0.08s linear;
-}
-.dictation-text {
-  font-family: var(--nt-serif); font-style: italic; font-size: 0.9rem;
-  color: color-mix(in oklab, var(--nt-live) 78%, var(--nt-text));
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 
 /* ---- status bar ------------------------------------------------------- */
 .statusbar {
@@ -525,8 +514,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
 .markdown th { background: var(--nt-code-bg); font-family: var(--nt-sans); }
 .markdown img { max-width: 100%; border-radius: 6px; }
 
-@keyframes nt-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
-
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
@@ -564,4 +551,40 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
 
   .filepath code { max-width: 40vw; }
   .statusbar { padding: 0.4rem 0.7rem; }
+
+  /* ---- document-level scroll + auto-hiding chrome (phones) --------------
+     On desktop the shell is locked to the viewport (`.app` height:100vh /
+     overflow:hidden) and the note scrolls inside CodeMirror's OWN scroller. A
+     mobile browser only collapses its URL/nav bar on ROOT-document scroll, so
+     here we unlock the shell and let the BODY scroll instead: CM + preview grow
+     to their content, and the top bar / footer pin to the viewport edges and
+     slide out of the way on scroll-down (App.svelte toggles .chrome-hidden). */
+  .app { height: auto; min-height: 100dvh; overflow: visible; }
+  .center { display: block; }             /* stack; the document is the scroller */
+
+  /* CodeMirror + preview: grow to content, no inner scrollbar. The !important
+     beats CM's injected StyleModule (`height:100%` / `.cm-scroller overflow:auto`
+     from editor.ts), same tactic as the .cm-selectionBackground override above. */
+  .cm-host, .cm-host .cm-editor { height: auto !important; }
+  .cm-host .cm-scroller { overflow: visible !important; }
+  .preview { overflow: visible; }
+  .editor-wrap { padding-bottom: 2.6rem; } /* keep the last lines clear of the footer */
+
+  /* Top bar pins to the top, footer to the bottom; both are opaque so scrolling
+     content passes cleanly behind them, and both slide away when .chrome-hidden
+     is set. Sticky (not fixed) reserves their flow space and behaves better with
+     the soft keyboard. env() honors notch / home-indicator insets. */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--nt-bg);
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    transition: transform 0.22s ease;
+  }
+  .statusbar {
+    position: sticky; bottom: 0; z-index: 10;
+    padding-bottom: max(0.4rem, env(safe-area-inset-bottom));
+    transition: transform 0.22s ease;
+  }
+  .app.chrome-hidden .topbar    { transform: translateY(-100%); }
+  .app.chrome-hidden .statusbar { transform: translateY(100%); }
 }
