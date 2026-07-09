@@ -326,6 +326,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
 }
 .rail-btn:hover { color: var(--nt-accent); border-color: var(--nt-accent); }
 .rail-btn.on { color: var(--nt-accent); border-color: var(--nt-accent); background: var(--nt-accent-soft); }
+.theme-btn { font-size: 1rem; line-height: 1; }
 
 .titlebox { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .path-input {
