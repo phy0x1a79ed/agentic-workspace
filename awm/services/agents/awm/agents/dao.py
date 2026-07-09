@@ -175,6 +175,23 @@ class AgentsDAO(BaseDAO):
             (scope,),
         )
 
+    def get_open_placement_by_task(self, task_ref: str) -> dict | None:
+        """Return the live placement row for ``task_ref``, or None.
+
+        The task-id counterpart to :meth:`get_open_placement_by_identity` — the
+        orchestrator's ``stop_placement`` can key by the task id when it doesn't
+        carry the unit slug. The live row is the one still holding a
+        ``placement_token`` with ``ended_at IS NULL`` (at most one per task; the
+        lifecycle runs one placement at a time on a task). ``placement_outcome``
+        (a logical close preceding process teardown) is checked by the caller."""
+        return self.query_one(
+            "SELECT * FROM agent_instances "
+            "WHERE task_ref=? AND placement_token IS NOT NULL "
+            "AND ended_at IS NULL "
+            "ORDER BY started_at DESC LIMIT 1",
+            (task_ref,),
+        )
+
     def clear_placement_token(self, instance_id: int) -> None:
         """Null a row's placement_token (used before a respawn reinserts it).
 

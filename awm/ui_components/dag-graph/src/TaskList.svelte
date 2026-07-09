@@ -82,7 +82,9 @@
                 onclick={() => onSelectTask?.(t.task_id)}
               >
                 <span class="badge"><Tag tone={STATE_META[t.state].tone}>{STATE_META[t.state].label}</Tag></span>
-                {#if t.paused}<span class="pmark" title="paused">⏸</span>{/if}
+                {#if t.attached}<span class="mk att" title="attached — you are steering">◉</span>{/if}
+                {#if t.steer_requested && !t.attached}<span class="mk want" title="wants steering">◆</span>{/if}
+                {#if t.paused}<span class="mk pau" title="paused">⏸</span>{/if}
                 <span class="goal" title={t.goal}>{t.title || t.goal || '(no goal)'}</span>
                 {#each (t.tags ?? []).slice(0, 3) as tag (tag)}
                   <span class="chip">{tag}</span>
@@ -143,7 +145,10 @@
     border-color: color-mix(in oklab, var(--atomizer) 45%, var(--border));
   }
   .badge { flex: 0 0 auto; }
-  .pmark { flex: 0 0 auto; font-size: 10px; color: var(--warn); }
+  .mk { flex: 0 0 auto; font-size: 10px; line-height: 1; }
+  .mk.att { color: var(--atomizer); }
+  .mk.want { color: var(--warn); }
+  .mk.pau { color: var(--warn); }
   .goal {
     flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

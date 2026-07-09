@@ -1,0 +1,5 @@
+# Gateway discovery profile marker (see awm/gateway/.../hub/discovery.py):
+# this service bootstraps only on a gateway whose AWM_PROFILES includes one of
+# these. Prod's deliberately-live rlm-browser is preserved by its explicit
+# enabled.json entry (`awm services enable rlm-browser`), which always wins.
+profiles = ["gamebot"]

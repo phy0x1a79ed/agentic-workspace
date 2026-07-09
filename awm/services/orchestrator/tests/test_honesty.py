@@ -17,9 +17,11 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 PUBLIC = {"orch_task_create", "orch_node_open", "orch_task_attach",
           "orch_attach_scope", "orch_detach_scope",
           "orch_status", "orch_frontier", "orch_dag",
-          "orch_set_title", "orch_set_tags", "orch_set_paused"}
+          "orch_set_title", "orch_set_tags", "orch_set_paused",
+          "orch_task_detail",
+          "orch_cancel", "orch_retry", "orch_decompose"}
 PRIVILEGED = {"claim", "deliver", "fail", "decompose_commit",
-              "approve_plan", "reject_plan", "set_attached",
+              "approve_plan", "reject_plan", "set_attached", "set_steering",
               "set_title", "set_tags"}
 
 

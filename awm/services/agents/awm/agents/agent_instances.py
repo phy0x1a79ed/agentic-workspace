@@ -28,6 +28,7 @@ import json
 import os
 import re
 import signal
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -121,6 +122,15 @@ class AgentInstance:
         self.claude_slash_commands: list[str] = []
         self.context_used: int = 0
         self.context_max: Optional[int] = None
+        # Stall-watchdog clock (T5): a monotonic timestamp stamped on every
+        # harness event in ``_reader_loop`` (the single event chokepoint). Seeded
+        # at spawn so the clock starts at PLACEMENT — a slow first event never
+        # trips the watchdog. The 60s sweep fails a placement silent past
+        # ``AWM_PLACEMENT_STALL_S`` (see ``placement.stall_watchdog_loop``).
+        self.last_activity: float = time.monotonic()
+        # Auto-compact cooldown (T5): the monotonic time of the last ``/compact``
+        # injection (0.0 = never). ``placement._maybe_compact`` guards re-fire.
+        self.last_compact_at: float = 0.0
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
         # Task-bounded placement: the placement IS this instance row.
         # placement_token names it, agent_ref is the stable placement identity,
@@ -280,6 +290,19 @@ async def create_session(*, scope: str,
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
+        )
+    # Model is HARD-REQUIRED at the spawn boundary. A blank model is refused
+    # rather than silently defaulted, so a claude TUI can never omit ``--model``
+    # and inherit the operator's ambient ``ANTHROPIC_MODEL`` (see the claude
+    # backend's ``build_argv``). Callers resolve a concrete id up front —
+    # ``placement._resolve_driver`` fills a per-harness default, and a respawn
+    # carries the prior session's model — so this guard only trips a caller that
+    # bypassed resolution.
+    if not (model and model.strip()):
+        raise ValueError(
+            "create_session requires an explicit, non-empty model "
+            "(hard-required at the spawn boundary; a blank model no longer "
+            "falls back to the harness/CLI/ambient default)"
         )
     if permission_mode not in _VALID_PERMISSION_MODES:
         raise ValueError(
@@ -490,6 +513,12 @@ def enqueue_input(session: AgentInstance, post_author: str,
         from awm.agents import agent_transcript
         framed_body = f"[from:{post_author}]\n{post_body}"
         agent_transcript.publish_inbound(session, framed_body, client_id)
+        # A new human message clears the agent's detach-readiness: new information
+        # means it must re-confirm before it can detach. No-op unless the task is
+        # attached with the readiness bit set. (Browser posts only — kickoff /
+        # supervisor turns carry no client_id and never touch the bit.)
+        from awm.agents import placement
+        placement.note_user_post(session)
     return True
 
 
@@ -660,6 +689,11 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
     from awm.agents import agent_bus
 
     async for event in event_stream:
+        # Stall-watchdog heartbeat (T5): EVERY harness event for this placed
+        # session (turn/tool/status/transcript) flows through here — this is the
+        # single chokepoint, so one stamp measures a long silent gap. A stalled
+        # placement is one that emits nothing for AWM_PLACEMENT_STALL_S.
+        session.last_activity = time.monotonic()
         data = getattr(event, "data", None) or {}
         kind = getattr(event, "kind", "status")
 
@@ -719,11 +753,17 @@ async def _reader_loop(session: AgentInstance, event_stream) -> None:
         if kind == "result":
             session._partial_accum.clear()
             session._msg_accum.clear()
-            # Outer-loop turn boundary: drive the placement (decrement the hard
-            # turn budget, inject the next prompt / force-fail at 0).
-            from awm.agents import placement
+            # Outer-loop turn boundary: drive the session's supervisor —
+            # a game bot gets the gamebot driver (budget countdown →
+            # force-park), everything else the placement driver (decrement
+            # the hard turn budget, inject the next prompt / force-fail at 0).
             try:
-                await placement.on_turn_boundary(session)
+                if getattr(session, "mode", None) == "gamebot":
+                    from awm.agents import gamebot
+                    await gamebot.on_turn_boundary(session)
+                else:
+                    from awm.agents import placement
+                    await placement.on_turn_boundary(session)
             except Exception:  # noqa: BLE001
                 pass
 

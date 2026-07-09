@@ -137,6 +137,36 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "attach",
+            "tool": "agent_attach",
+            "description": (
+                "Explicit-interrupt attach a task by its unit slug: set the "
+                "durable attached flag (the single source of truth — opening the "
+                "chat/terminal does NOT attach) and clear its wants-steering flag. "
+                "Freezes the autonomous supervisor at the next boundary. Mirrors "
+                "durably so it survives a redispatch."
+            ),
+            "params": [
+                {"name": "scope", "type": "string", "required": True},
+                {"name": "task_id", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "set_user_done",
+            "tool": "agent_set_user_done",
+            "description": (
+                "Set/clear the USER's detach-consent bit for an attached task by "
+                "its unit slug. When the agent's readiness bit is also set the "
+                "node auto-detaches (no confirmation). Rejected if the task is not "
+                "attached. There is no force-detach — the user only offers consent."
+            ),
+            "params": [
+                {"name": "scope", "type": "string", "required": True},
+                {"name": "done", "type": "boolean", "required": True},
+                {"name": "task_id", "type": "string", "required": False},
+            ],
+        },
+        {
             "name": "agent_subscribe",
             "tool": "agent_subscribe",
             "description": (
@@ -157,6 +187,43 @@ API_MANIFEST: dict[str, Any] = {
             "name": "get_slash_catalog",
             "tool": "agent_slash_catalog",
             "description": "Return the server slash-command catalog.",
+        },
+        # -- Game-bot runtime (feat-gamebot). Recurring bounded play sessions
+        # spawned autonomously off the events service's schedule.tick /
+        # agent.wake emitters (see gamebot.run_listeners) or explicitly here.
+        {
+            "name": "game_spawn",
+            "tool": "agent_game_spawn",
+            "description": (
+                "Spawn one bounded play session for a registered game (a "
+                "committed games/<game>.toml in the agents service). Dedupes: "
+                "if the game's bot is already playing this is a no-op. The "
+                "same path the schedule.tick / agent.wake consumers use."
+            ),
+            "params": [
+                {"name": "game", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "game_list",
+            "tool": "agent_game_list",
+            "description": (
+                "List the registered games (committed games/*.toml) with "
+                "their live play status."
+            ),
+        },
+        {
+            "name": "park",
+            "tool": "agent_park",
+            "description": (
+                "Game bot: end your play session cleanly. Call after saving "
+                "the world and updating journal.md. Resolves your own session "
+                "from your identity — no arguments needed (an operator may "
+                "pass an explicit scope)."
+            ),
+            "params": [
+                {"name": "scope", "type": "string", "required": False},
+            ],
         },
         {
             "name": "reconcile",
@@ -208,6 +275,43 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "partial_ref", "type": "string", "required": False},
             ],
         },
+        # steering handshake (worker/plan/planner): consent to detach, rescind,
+        # or flag mid-run that you want a human.
+        {
+            "name": "request_detach",
+            "tool": "agent_request_detach",
+            "description": (
+                "Consent to detach from your steering session, refreshing the "
+                "objective record in one act: the payload IS the record (markdown "
+                "— intent, constraints, what done looks like, non-goals). When the "
+                "user's done bit is also set the node detaches automatically and "
+                "you proceed autonomously. Only valid while attached; a new user "
+                "message afterwards clears your readiness (re-request)."
+            ),
+            "params": [
+                {"name": "objective", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "rescind_detach",
+            "tool": "agent_rescind_detach",
+            "description": (
+                "Withdraw your detach-consent bit (you are not ready after all). "
+                "Only valid while attached; the objective record is left as-is."
+            ),
+            "params": [],
+        },
+        {
+            "name": "request_steering",
+            "tool": "agent_request_steering",
+            "description": (
+                "Flag mid-run that this node wants human steering (it appears in "
+                "the attention strip). Valid while detached — it does NOT freeze "
+                "you; continue with your best judgment or park that thread until a "
+                "human attaches."
+            ),
+            "params": [],
+        },
         # verify: a verdict on the staged plan (terminal on call).
         {
             "name": "approve_plan",
@@ -229,18 +333,50 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "reason", "type": "string", "required": False},
             ],
         },
+        # accept: an independent verdict on the worker's CLAIMED delivery
+        # (terminal on call). The accept verifier runs the machine checks, then
+        # accepts (promote the claim → real delivery, complete) or rejects (loop
+        # back to the worker under a bounded budget).
+        {
+            "name": "accept_work",
+            "tool": "agent_accept_work",
+            "description": (
+                "Accept verifier: the worker's claimed delivery passes every "
+                "acceptance check and meets the objective. Promotes the claim "
+                "into a real delivery and completes the task. Pass evidence "
+                "describing what you ran and observed."
+            ),
+            "params": [
+                {"name": "evidence", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "reject_work",
+            "tool": "agent_reject_work",
+            "description": (
+                "Accept verifier: the worker's claimed delivery fails an "
+                "acceptance check or does not meet the objective. Loops the task "
+                "back to the worker with your reason (bounded budget). Optionally "
+                "pass a partial_ref preserving partial work."
+            ),
+            "params": [
+                {"name": "reason", "type": "string", "required": False},
+                {"name": "partial_ref", "type": "string", "required": False},
+            ],
+        },
         # planner: buffer a sub-DAG, committed when you indicate done.
         {
             "name": "add_subtask",
             "tool": "agent_add_subtask",
             "description": (
                 "Planner: add a subtask to the pending sub-DAG (objective + the "
-                "outputs it must produce)."
+                "outputs it must produce, and a short title for the task view)."
             ),
             "params": [
                 {"name": "id", "type": "string", "required": False},
                 {"name": "objective", "type": "string", "required": False},
                 {"name": "contracts_out", "type": "array", "required": False},
+                {"name": "title", "type": "string", "required": False},
             ],
         },
         {
@@ -370,7 +506,10 @@ async def _h_slash_command(args: dict) -> dict:
     return {"handled": handled, "result": result}
 
 
-def _h_enqueue_post(args: dict) -> dict:
+async def _h_enqueue_post(args: dict) -> dict:
+    # Async on purpose: enqueue_input's consent-clear side effect
+    # (placement.note_user_post) schedules its durable mirror on the running
+    # loop — a sync handler runs in a worker thread where there is none.
     session = ai.get_session_by_scope(args["scope"])
     if session is None:
         return {"enqueued": False, "reason": "no active session"}
@@ -385,6 +524,21 @@ async def _h_set_paused(args: dict) -> dict:
     await placement.set_paused(
         args["scope"], bool(args.get("paused")), args.get("task_id"))
     return {"ok": True, "scope": args["scope"], "paused": bool(args.get("paused"))}
+
+
+async def _h_attach(args: dict) -> dict:
+    """UI explicit-interrupt attach (by unit slug): durable attach + clear the
+    wants-steering flag; freezes the supervisor."""
+    from awm.agents import placement
+    return await placement.attach(args["scope"], args.get("task_id"))
+
+
+async def _h_set_user_done(args: dict) -> dict:
+    """UI detach-consent (by unit slug): set/clear the user's done bit; runs the
+    handshake (auto-detach when the agent is also ready)."""
+    from awm.agents import placement
+    return await placement.set_user_done(
+        args["scope"], bool(args.get("done")), args.get("task_id"))
 
 
 async def _h_notify_agent(args: dict) -> dict:
@@ -446,17 +600,12 @@ async def _transcript_session(ctx: SessionContext) -> None:
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
     await agent_bus.attach_live(scope, queue)
-    # A live transcript subscription IS the user-attached signal for a placement
-    # (orthogonal to the task's state). Attach is PASSIVE (T2): it does not freeze
-    # the autonomous supervisor — it only tells the orchestrator not to reclaim a
-    # task a human is driving. A human's message reaches the agent via agent_post
-    # → enqueue_input. No-op for a conversational scope. Best-effort — never block
-    # the stream on it.
-    try:
-        from awm.agents import placement
-        await placement.set_attached(scope, True)
-    except Exception:  # noqa: BLE001
-        pass
+    # Connecting the transcript WS is PURE VIEWING — it does NOT attach. Durable
+    # attach is the single source of truth (the ``agent_attach`` verb / an explicit
+    # interrupt sets it), so opening or closing this stream never touches the
+    # supervisor or the attach flag. A human's message reaches the agent via
+    # agent_post → enqueue_input (and THAT is the explicit interrupt that attaches,
+    # via the UI's attach call).
     bridge = await ctx.open_bridge()
     try:
         # 1) Backfill from the cursor. Track the last act so the live stream
@@ -480,11 +629,8 @@ async def _transcript_session(ctx: SessionContext) -> None:
                 break
     finally:
         await agent_bus.detach_live(scope, queue)
-        try:
-            from awm.agents import placement
-            await placement.set_attached(scope, False)
-        except Exception:  # noqa: BLE001
-            pass
+        # Disconnect is pure viewing too — never detach here (durable attach
+        # persists across a closed WS; the node stays attached + frozen).
         try:
             await bridge.close()
         except Exception:  # noqa: BLE001
@@ -494,6 +640,36 @@ async def _transcript_session(ctx: SessionContext) -> None:
 def _h_get_slash_catalog(args: dict) -> dict:
     from awm.agents.agent_slash import server_catalog
     return {"commands": server_catalog()}
+
+
+# ---------------------------------------------------------------------------
+# Game-bot verbs (feat-gamebot)
+# ---------------------------------------------------------------------------
+
+async def _h_game_spawn(args: dict) -> dict:
+    from awm.agents import gamebot
+    try:
+        return await gamebot.spawn_for_game(args["game"], source="verb")
+    except gamebot.GamebotError as exc:
+        return {"spawned": False, "error": str(exc)}
+
+
+def _h_game_list(args: dict) -> dict:
+    from awm.agents import gamebot
+    games = []
+    for game in gamebot.list_games():
+        slug = gamebot.unit_slug_for(game)
+        games.append({
+            "game": game,
+            "scope": slug,
+            "playing": ai.get_session_by_scope(slug) is not None,
+        })
+    return {"games": games}
+
+
+async def _h_park(args: dict, as_: str | None = None) -> dict:
+    from awm.agents import gamebot
+    return await gamebot.park(args, as_)
 
 
 def _h_reconcile(args: dict) -> dict:
@@ -512,6 +688,16 @@ def _h_reconcile(args: dict) -> dict:
 async def _h_place_on_task(args: dict) -> dict:
     from awm.agents import placement
     return await placement.place_on_task(args)
+
+
+async def _h_stop_placement(args: dict) -> dict:
+    """Orchestrator-called stop seam (manifest-omitted, reached via catch-all).
+
+    Best-effort stop of a live placement by unit slug and/or task id — closes
+    the placement row before killing the session so a dying agent's late report
+    can't re-route consumers again. Idempotent."""
+    from awm.agents import placement
+    return await placement.stop_placement(args)
 
 
 def _relay(fn_name: str, verb: str):
@@ -543,19 +729,31 @@ HANDLERS = {
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
     "set_paused": _h_set_paused,
+    "attach": _h_attach,
+    "set_user_done": _h_set_user_done,
     "notify_agent": _h_notify_agent,
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
-    # Task-bounded placement (manifest-omitted op reached via catch-all).
+    # Game-bot runtime (feat-gamebot).
+    "game_spawn": _h_game_spawn,
+    "game_list": _h_game_list,
+    "park": _h_park,
+    # Task-bounded placement (manifest-omitted ops reached via catch-all).
     "place_on_task": _h_place_on_task,
+    "stop_placement": _h_stop_placement,
     # Placement tools (also in the manifest, MCP-visible to placed agents under
     # the `agent` domain; verb == the internal fn name == the HANDLERS key).
     "edit_deliverable": _relay("relay_edit_deliverable", "edit_deliverable"),
     "indicate_done": _relay("relay_indicate_done", "indicate_done"),
     "task_fail": _relay("relay_task_fail", "task_fail"),
+    "request_detach": _relay("relay_request_detach", "request_detach"),
+    "rescind_detach": _relay("relay_rescind_detach", "rescind_detach"),
+    "request_steering": _relay("relay_request_steering", "request_steering"),
     "approve_plan": _relay("relay_approve_plan", "approve_plan"),
     "reject_plan": _relay("relay_reject_plan", "reject_plan"),
+    "accept_work": _relay("relay_accept_work", "accept_work"),
+    "reject_work": _relay("relay_reject_work", "reject_work"),
     "add_subtask": _relay("relay_add_subtask", "add_subtask"),
     "add_dependency": _relay("relay_add_dependency", "add_dependency"),
     "define_contract": _relay("relay_define_contract", "define_contract"),
@@ -586,12 +784,18 @@ for _op in admin_ops.ADMIN_OPS:
 HANDLERS.update(DRIVER_CONTRACT.handlers())
 
 
-def _on_start() -> None:
+async def _on_start() -> None:
     dao.init()
     # Boot cleanup only — close stale instance rows. There is no agents-side
     # resume driver: the orchestrator owns re-dispatch of resting nodes, and a
     # dead placement is reported back via orch.fail (liveness).
     ai.reconcile_on_startup()
+    # Long-session hardening (T5): start the stall watchdog — a ~60s sweep that
+    # fails any live placement silent past AWM_PLACEMENT_STALL_S (typed transient,
+    # so the orchestrator re-places it) and kills the hung session. Immune while
+    # attached or paused. Runs inside the event loop (on_start is awaited there).
+    from awm.agents import placement
+    asyncio.create_task(placement.stall_watchdog_loop())
 
 
 async def main() -> None:
@@ -599,14 +803,20 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter(
+    from awm.agents import gamebot
+    adapter = ServiceAdapter(
         "agents", API_MANIFEST, HANDLERS,
         session_handlers={
             "transcript": _transcript_session,
             "terminal": terminal_session,
         },
         on_start=_on_start,
-    ).run()
+    )
+    # The gamebot wake fabric runs as a sibling task (the events-service
+    # Scheduler pattern): never-die consumer loops over the events service's
+    # schedule.tick + agent.wake emitters → spawn_for_game. Inert (backoff
+    # retry) while no events service is on the gateway.
+    await asyncio.gather(adapter.run(), gamebot.run_listeners())
 
 
 if __name__ == "__main__":

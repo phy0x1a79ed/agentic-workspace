@@ -7,6 +7,7 @@ import type { TaskState } from '@awm/client';
 
 export type {
   TaskState, DagTask, DagContract, DagEdge, DagSnapshot,
+  TaskDetail, AttemptMemory,
 } from '@awm/client';
 
 export type TagTone = 'neutral' | 'ok' | 'warn' | 'danger' | 'atomizer' | 'mgr';
