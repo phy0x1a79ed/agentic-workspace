@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# run.sh — self-contained entry point for the fileviewer service.
+#
+# The gateway discovers this service by scanning awm/services/* for run.sh, and
+# starts (and respawns) it by executing `bash run.sh`, injecting AWM_HUB_URL /
+# AWM_SERVICE_NAME / AWM_SERVICE_ID into the environment. The adapter reads
+# those, POSTs /hub/service/register, and holds the control WS open. No auth.
+#
+# What the gateway registration buys here is supervision + a status surface,
+# NOT the file transport: the files ride a self-contained loopback HTTP listener
+# launched from on_start (see awm.fileviewer.server), exactly as `mic` serves
+# audio off-hub. The hub function channel is JSON-only, so it can't hand a
+# browser raw file bytes with a real Content-Type.
+#
+# Two launch modes, branched on the dev signal DEV_PYTHONPATH:
+#   - dev sandbox (DEV_PYTHONPATH set): run the uninstalled worktree code via
+#     `mamba run`, resolving imports through the sandbox's PYTHONPATH dist-roots
+#     — no install required.
+#   - prod (installed): source ./.runtime-env (written by install.sh) for
+#     AWM_PYTHON = the target env's absolute interpreter, so the supervisor can
+#     respawn us under systemd's minimal PATH (no `mamba`).
+set -euo pipefail
+cd "$(dirname "$0")"
+MODULE="awm.fileviewer.hub_adapter"
+
+if [ -n "${DEV_PYTHONPATH:-}" ]; then
+    exec env PYTHONPATH="$DEV_PYTHONPATH" \
+        mamba run -n "${AWM_ENV:-awm}" --no-capture-output \
+        python -m "$MODULE"
+fi
+
+[ -f ./.runtime-env ] && . ./.runtime-env
+[ -n "${AWM_ENV_BIN:-}" ] && export PATH="$AWM_ENV_BIN:$PATH"
+exec "${AWM_PYTHON:-python}" -m "$MODULE"

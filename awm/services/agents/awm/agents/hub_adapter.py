@@ -188,6 +188,43 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "agent_slash_catalog",
             "description": "Return the server slash-command catalog.",
         },
+        # -- Game-bot runtime (feat-gamebot). Recurring bounded play sessions
+        # spawned autonomously off the events service's schedule.tick /
+        # agent.wake emitters (see gamebot.run_listeners) or explicitly here.
+        {
+            "name": "game_spawn",
+            "tool": "agent_game_spawn",
+            "description": (
+                "Spawn one bounded play session for a registered game (a "
+                "committed games/<game>.toml in the agents service). Dedupes: "
+                "if the game's bot is already playing this is a no-op. The "
+                "same path the schedule.tick / agent.wake consumers use."
+            ),
+            "params": [
+                {"name": "game", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "game_list",
+            "tool": "agent_game_list",
+            "description": (
+                "List the registered games (committed games/*.toml) with "
+                "their live play status."
+            ),
+        },
+        {
+            "name": "park",
+            "tool": "agent_park",
+            "description": (
+                "Game bot: end your play session cleanly. Call after saving "
+                "the world and updating journal.md. Resolves your own session "
+                "from your identity — no arguments needed (an operator may "
+                "pass an explicit scope)."
+            ),
+            "params": [
+                {"name": "scope", "type": "string", "required": False},
+            ],
+        },
         {
             "name": "reconcile",
             "tool": "agent_reconcile",
@@ -605,6 +642,36 @@ def _h_get_slash_catalog(args: dict) -> dict:
     return {"commands": server_catalog()}
 
 
+# ---------------------------------------------------------------------------
+# Game-bot verbs (feat-gamebot)
+# ---------------------------------------------------------------------------
+
+async def _h_game_spawn(args: dict) -> dict:
+    from awm.agents import gamebot
+    try:
+        return await gamebot.spawn_for_game(args["game"], source="verb")
+    except gamebot.GamebotError as exc:
+        return {"spawned": False, "error": str(exc)}
+
+
+def _h_game_list(args: dict) -> dict:
+    from awm.agents import gamebot
+    games = []
+    for game in gamebot.list_games():
+        slug = gamebot.unit_slug_for(game)
+        games.append({
+            "game": game,
+            "scope": slug,
+            "playing": ai.get_session_by_scope(slug) is not None,
+        })
+    return {"games": games}
+
+
+async def _h_park(args: dict, as_: str | None = None) -> dict:
+    from awm.agents import gamebot
+    return await gamebot.park(args, as_)
+
+
 def _h_reconcile(args: dict) -> dict:
     ai.reconcile_on_startup()
     return {"ok": True}
@@ -668,6 +735,10 @@ HANDLERS = {
     "agent_subscribe": _h_agent_subscribe,
     "get_slash_catalog": _h_get_slash_catalog,
     "reconcile": _h_reconcile,
+    # Game-bot runtime (feat-gamebot).
+    "game_spawn": _h_game_spawn,
+    "game_list": _h_game_list,
+    "park": _h_park,
     # Task-bounded placement (manifest-omitted ops reached via catch-all).
     "place_on_task": _h_place_on_task,
     "stop_placement": _h_stop_placement,
@@ -732,14 +803,20 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter(
+    from awm.agents import gamebot
+    adapter = ServiceAdapter(
         "agents", API_MANIFEST, HANDLERS,
         session_handlers={
             "transcript": _transcript_session,
             "terminal": terminal_session,
         },
         on_start=_on_start,
-    ).run()
+    )
+    # The gamebot wake fabric runs as a sibling task (the events-service
+    # Scheduler pattern): never-die consumer loops over the events service's
+    # schedule.tick + agent.wake emitters → spawn_for_game. Inert (backoff
+    # retry) while no events service is on the gateway.
+    await asyncio.gather(adapter.run(), gamebot.run_listeners())
 
 
 if __name__ == "__main__":
