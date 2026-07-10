@@ -70,10 +70,11 @@ def naked_bundle(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _rec(prefix: str, dir_: Path, *, entry: str | None = None) -> ServiceRecord:
+def _rec(prefix: str, dir_: Path, *, entry: str | None = None,
+         deny: tuple[str, ...] = ()) -> ServiceRecord:
     return ServiceRecord(
         name="t", prefix=prefix, kind="static",
-        static_dir=str(dir_), entry=entry,
+        static_dir=str(dir_), entry=entry, deny=deny,
     )
 
 
@@ -207,6 +208,66 @@ class TestNakedBundleUnchanged:
         resp = _run(serve_static(
             _request("/c/anywhere", accept="text/html"), rec,
         ))
+        assert resp.status_code == 404
+
+
+class TestDenyMask:
+    """A per-mount ``deny`` glob list hides files: a matching path 404s exactly
+    like a missing one, matched on the *resolved* (post-symlink) path so a
+    symlink can't bypass the mask. Powers a broad mount (root ``/``) that must
+    still hide secrets."""
+
+    def test_masked_file_is_404(self, tmp_path):
+        (tmp_path / "index.html").write_text("root")
+        ssh = tmp_path / ".ssh"
+        ssh.mkdir()
+        (ssh / "id_ed25519").write_text("PRIVATE KEY")
+        rec = _rec("/files", tmp_path, deny=("**/.ssh/**",))
+        resp = _run(serve_static(_request("/files/.ssh/id_ed25519"), rec))
+        assert resp.status_code == 404
+        assert b"PRIVATE KEY" not in _read(resp)
+
+    def test_unmasked_sibling_still_served(self, tmp_path):
+        (tmp_path / "note.txt").write_text("visible\n")
+        (tmp_path / "secret.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path, deny=("**/*.pem",))
+        ok = _run(serve_static(_request("/files/note.txt"), rec))
+        assert ok.status_code == 200
+        assert _read(ok) == b"visible\n"
+        masked = _run(serve_static(_request("/files/secret.pem"), rec))
+        assert masked.status_code == 404
+
+    def test_symlink_to_masked_file_is_404(self, tmp_path):
+        # A symlink whose *name* is unmasked but which resolves to a masked
+        # file must still 404 — matching is on the resolved path.
+        (tmp_path / "index.html").write_text("root")
+        secret = tmp_path / "real.pem"
+        secret.write_text("KEY")
+        link = tmp_path / "innocent.txt"
+        try:
+            link.symlink_to(secret)
+        except OSError:
+            pytest.skip("symlinks unsupported on this platform")
+        rec = _rec("/files", tmp_path, deny=("**/*.pem",))
+        resp = _run(serve_static(_request("/files/innocent.txt"), rec))
+        assert resp.status_code == 404
+        assert b"KEY" not in _read(resp)
+
+    def test_no_deny_serves_everything(self, tmp_path):
+        # Empty deny (the default for existing mounts) → zero behaviour change.
+        (tmp_path / "secret.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path)  # deny=()
+        resp = _run(serve_static(_request("/files/secret.pem"), rec))
+        assert resp.status_code == 200
+        assert _read(resp) == b"KEY"
+
+    def test_masked_deep_path_is_404(self, tmp_path):
+        deep = tmp_path / "home" / "u" / ".aws"
+        deep.mkdir(parents=True)
+        (deep / "credentials").write_text("aws_secret")
+        rec = _rec("/files", tmp_path, deny=("**/.aws/**",))
+        resp = _run(serve_static(
+            _request("/files/home/u/.aws/credentials"), rec))
         assert resp.status_code == 404
 
 
