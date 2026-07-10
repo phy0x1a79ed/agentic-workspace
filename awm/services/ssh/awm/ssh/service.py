@@ -576,12 +576,23 @@ class SSHService:
             "AWM_SSH_ASKPASS_MARKER": marker,
         })
 
+        # Cap keyboard-interactive (Duo) to a SINGLE attempt. OpenSSH's default
+        # `NumberOfPasswordPrompts` is 3, so one `ssh` invocation will retry the
+        # kbd-interactive/Duo exchange up to THREE times before giving up — and
+        # each retry is a fresh Duo push. That silently turns one connect into up
+        # to three failed MFA attempts on a failing-auth path, so the one-strike
+        # breaker (which counts *connects*) under-counts *pushes* 3:1 and a
+        # handful of connects can still march the provider to its 10-strike
+        # lockout. Forcing =1 makes the invariant exact: one connect ⇒ at most one
+        # Duo push. (Confirmed in the wild: fir.connect.stderr showed three
+        # back-to-back kbd-interactive attempts inside a single ssh. #0317299.)
+        # Harmless for pubkey-only hosts, which never enter kbd-interactive.
+        argv = ["ssh", "-f", "-N", "-M", "-o", "NumberOfPasswordPrompts=1"]
         # A guarded host carries a ProxyCommand guard in ~/.ssh/config that
         # blocks bare `ssh <host>` when no master exists. The service is the
         # sole allowed master-creator, so it overrides the guard here.
         # (Command-line `-o` is first-match-wins over config.) Do NOT do this
         # for VPN-bounced hosts — their ProxyCommand is the required tunnel.
-        argv = ["ssh", "-f", "-N", "-M"]
         if cfg.guarded:
             argv += ["-o", "ProxyCommand=none"]
         argv.append(cfg.host)

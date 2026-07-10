@@ -418,6 +418,40 @@ class TestStateMachine:
         # And no 'status' pre-check gate remains.
         assert not any(c[1] == "status" for c in calls)
 
+    async def test_attempt_caps_kbd_interactive_to_one_push(
+            self, isolated_dirs, monkeypatch) -> None:
+        # THE lockout amplifier: OpenSSH retries kbd-interactive up to
+        # NumberOfPasswordPrompts (default 3) times per connection, each retry a
+        # fresh Duo push. The `ssh -M` argv MUST force =1 so one connect fires at
+        # most one push — otherwise the one-strike breaker under-counts pushes 3:1
+        # and a few connects still reach the 10-strike Alliance lockout (#0317299).
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        spawned: list[tuple] = []
+
+        async def _fake_call(service, verb, args=None):
+            return {"status": "ok"}
+
+        class _Proc:
+            async def wait(self):
+                return 0
+
+        async def _spawn(*a, **k):
+            spawned.append(a)
+            return _Proc()
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", _fake_call)
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_check_master", _true)
+
+        await svc._attempt_master(cfg, svc._deviation_marker(cfg))
+
+        assert len(spawned) == 1
+        argv = list(spawned[0])
+        # `-o NumberOfPasswordPrompts=1` must be present as an adjacent -o pair.
+        pairs = [f"{argv[i+1]}" for i, tok in enumerate(argv[:-1]) if tok == "-o"]
+        assert "NumberOfPasswordPrompts=1" in pairs, argv
+
     async def test_late_master_is_adopted_not_tripped(
             self, isolated_dirs, monkeypatch) -> None:
         # If the ControlMaster appears just after the poll window gives up
