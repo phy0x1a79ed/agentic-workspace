@@ -6,11 +6,11 @@
 # AWM_SERVICE_NAME / AWM_SERVICE_ID into the environment. The adapter reads
 # those, POSTs /hub/service/register, and holds the control WS open. No auth.
 #
-# What the gateway registration buys here is supervision + a status surface,
-# NOT the file transport: the files ride a self-contained loopback HTTP listener
-# launched from on_start (see awm.fileviewer.server), exactly as `mic` serves
-# audio off-hub. The hub function channel is JSON-only, so it can't hand a
-# browser raw file bytes with a real Content-Type.
+# The adapter's control WS buys supervision + the fileviewer_status verb. The
+# file bytes ride a separate kind=static mount at /files that the adapter
+# registers and holds (see awm.fileviewer.server.hold_mount): the gateway's
+# serve_static ships them and httpsfront fronts them, so links are
+# origin-relative (/files/<abs>) and reach any device, not just loopback.
 #
 # Two launch modes, branched on the dev signal DEV_PYTHONPATH:
 #   - dev sandbox (DEV_PYTHONPATH set): run the uninstalled worktree code via
