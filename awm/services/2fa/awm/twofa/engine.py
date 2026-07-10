@@ -84,8 +84,15 @@ class ApprovalEngine:
     def clear_budget(self) -> int:
         """Zero the budget (window ended); returns what was left. Lock-free.
 
-        Only called at burst-loop teardown, when no ``handle_transactions`` is in
-        flight, so the plain read-then-store cannot race a decrement.
+        Deliberately does NOT take the engine lock: it is called from the event
+        loop (``TwoFAService._run_burst`` teardown), and that lock can be held by
+        ``handle_transactions`` across a Duo HTTP reply — blocking on it here would
+        stall the whole loop. Safe without the lock because :meth:`grant` (the only
+        writer that could race a read-then-store) is called solely from
+        ``start_burst`` under the service's ``burst_lock``, and the normal teardown
+        clears under that SAME ``burst_lock`` — so grant and clear are already
+        mutually exclusive. (The abnormal cancellation-path clear runs without
+        ``burst_lock``, but only during shutdown, where a lost grant is moot.)
         """
         n = self._budget
         self._budget = 0
