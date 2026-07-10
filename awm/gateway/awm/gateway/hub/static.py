@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import html
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import Request
 from starlette.responses import (
@@ -74,6 +74,8 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
 
     if rel == "":
         index = root / "index.html"
+        if index.is_file() and _is_masked(index, root, rec.deny):
+            return PlainTextResponse("not found", status_code=404)
         served_at_root = index.is_file() or rec.entry
         # Canonical directory URL: a bare prefix (``/ui/agent``) is the
         # bundle's directory, so redirect it to the trailing-slash form
@@ -97,6 +99,12 @@ async def serve_static(request: Request, rec: ServiceRecord) -> Response:
     except OSError:
         return PlainTextResponse("not found", status_code=404)
     if not _is_within(target, root):
+        return PlainTextResponse("not found", status_code=404)
+    # Mask: a request whose resolved (post-symlink) path matches a deny glob is
+    # 404 — indistinguishable from missing — so a broad mount can hide secrets.
+    # Matched on ``target`` (already resolved), so a symlink to a masked file
+    # cannot slip past by presenting an unmasked request path.
+    if _is_masked(target, root, rec.deny):
         return PlainTextResponse("not found", status_code=404)
     if target.is_file():
         return FileResponse(target)
@@ -126,6 +134,24 @@ def _is_within(target: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
+    """True if ``target`` (already resolved) matches any ``deny`` glob, taken
+    relative to ``root``. Matching uses ``PurePosixPath.full_match`` so ``**``
+    spans path segments (``**/.ssh/**`` hides ssh keys at any depth) while ``*``
+    stays within one segment. Matching the *resolved* path is deliberate: a
+    symlink pointing at a masked file resolves to it and is caught here, so the
+    mask can't be bypassed by requesting the link's (unmasked) name."""
+    if not deny:
+        return False
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        # Outside the root — _is_within already rejects this, but be defensive.
+        return True
+    pp = PurePosixPath(rel)
+    return any(pp.full_match(g) for g in deny)
 
 
 def _render_shell(rec: ServiceRecord) -> str:
