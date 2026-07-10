@@ -29,6 +29,10 @@ async def _true(_host):
     return True
 
 
+async def _noop_alert(_text):
+    return None
+
+
 class TestConfig:
     def test_known_hosts_has_expected_entries(self) -> None:
         assert "sockeye" in KNOWN_HOSTS
@@ -156,6 +160,36 @@ class TestCircuitBreaker:
         result = await svc.connect("fir")
         assert result["status"] == "connected"
         assert svc._read_lock(cfg) is None
+
+    async def test_approve_window_is_one_shot(
+            self, isolated_dirs, monkeypatch) -> None:
+        # A single operator /approve authorises exactly ONE reconnect attempt. If
+        # that attempt fails and re-trips the breaker, the window must already be
+        # consumed — otherwise a caller retrying a persistently-failing connect
+        # would re-clear and re-fire a Duo push every iteration, an unbounded run
+        # straight to the provider lockout the breaker exists to prevent.
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "prior failure")
+        svc._handle_approve({"command": "approve", "device": cfg.twofa_device})
+        assert svc._approve_active(cfg.twofa_device)
+
+        async def _fail(c):
+            await svc._trip_breaker(c, "still broken")   # re-trips within the attempt
+            return SSHService._status_dict(c, "error", error="failed")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_do_connect", _fail)
+        monkeypatch.setattr(svc, "_alert", _noop_alert)
+
+        first = await svc.connect("fir")
+        assert first["status"] == "error"
+        # Window consumed the moment it was spent — not still open for its full
+        # duration.
+        assert not svc._approve_active(cfg.twofa_device)
+        # So the very next automated connect is refused with no ssh work.
+        again = await svc.connect("fir")
+        assert again["status"] == "unavailable"
 
     def test_handle_approve_only_matches_device_and_command(
             self, isolated_dirs) -> None:
@@ -349,6 +383,163 @@ class TestStateMachine:
         assert calls["n"] == 1                              # demoted → fresh auth
         assert svc._host("fir").state == ConnState.CONNECTED
 
+    async def test_attempt_always_arms_burst_regardless_of_active(
+            self, isolated_dirs, monkeypatch) -> None:
+        # Each connect fires exactly one Duo push, so _attempt_master must ALWAYS
+        # arm +1 on the device budget — never skip because a burst already looks
+        # 'active'. Skipping under-grants overlapping same-device connects, holding
+        # the 2nd login until it times out (the original overlapping-login bug).
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        calls: list[tuple] = []
+
+        async def _fake_call(service, verb, args=None):
+            calls.append((service, verb, args))
+            # Pretend a burst is already live — the old code would skip arming.
+            return {"status": "ok", "burst_active": True}
+
+        class _Proc:
+            async def wait(self):
+                return 0
+
+        async def _spawn(*a, **k):
+            return _Proc()
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call", _fake_call)
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+        monkeypatch.setattr(svc, "_check_master", _true)    # master appears at once
+
+        await svc._attempt_master(cfg, svc._deviation_marker(cfg))
+
+        burst_calls = [c for c in calls if c[1] == "burst"]
+        assert len(burst_calls) == 1
+        assert burst_calls[0][2]["count"] == 1
+        assert burst_calls[0][2]["device"] == "alliance"
+        # And no 'status' pre-check gate remains.
+        assert not any(c[1] == "status" for c in calls)
+
+    async def test_late_master_is_adopted_not_tripped(
+            self, isolated_dirs, monkeypatch) -> None:
+        # If the ControlMaster appears just after the poll window gives up
+        # (_AttemptFailed), _do_connect must RE-CHECK and adopt it as connected —
+        # not trip the breaker on an auth that actually succeeded late (which would
+        # waste a live connection and spuriously page the operator).
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        checks = {"n": 0}
+
+        async def _fail_to_bring_up(c, marker):
+            raise ssh_service._AttemptFailed("ControlMaster did not appear")
+
+        async def _master_late(_host):
+            checks["n"] += 1
+            return checks["n"] > 1   # False on probe_start, True on the adopt re-check
+
+        monkeypatch.setattr(svc, "_check_master", _master_late)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_to_bring_up)
+        result = await svc.connect("fir")
+        assert result["status"] == "connected"       # adopted, not errored
+        assert svc._read_lock(cfg) is None            # breaker NOT tripped
+        assert svc._host("fir").state == ConnState.CONNECTED
+
+    async def test_connect_waits_for_boot_reconcile(
+            self, isolated_dirs, monkeypatch) -> None:
+        # A connect must not start an ssh attempt until boot reconciliation (which
+        # may still be reaping sockets) has finished.
+        svc = SSHService()
+        order: list[str] = []
+
+        async def _slow_reconcile():
+            await asyncio.sleep(0.02)
+            order.append("reconcile")
+
+        svc._reconcile_task = asyncio.create_task(_slow_reconcile())
+
+        async def _attempt(c):
+            order.append("connect")
+            return SSHService._status_dict(c, "connected")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_do_connect", _attempt)
+        await svc.connect("fir")
+        assert order == ["reconcile", "connect"]
+
+    async def test_disconnect_on_disconnected_is_noop(self, isolated_dirs) -> None:
+        svc = SSHService()
+        res = await svc.disconnect("fir")            # already DISCONNECTED
+        assert res["status"] == "disconnected"
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
+    async def test_disconnect_connected_disposes(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+        monkeypatch.setattr(svc, "_exit_master", _true)   # teardown confirms gone
+        res = await svc.disconnect("fir")
+        assert res["status"] == "disconnected"
+        assert "warning" not in res
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
+    async def test_disconnect_warns_when_teardown_unconfirmed(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+        monkeypatch.setattr(svc, "_exit_master", _false)  # master may still run
+        res = await svc.disconnect("fir")
+        assert res["status"] == "disconnected"
+        assert "warning" in res                            # surfaced, not silent
+        assert svc._host("fir").state == ConnState.DISCONNECTED
+
+    async def test_do_connect_raise_does_not_strand_authenticating(
+            self, isolated_dirs, monkeypatch) -> None:
+        # An unexpected raise from _do_connect (e.g. OSError writing the lockfile)
+        # must not leave the host wedged in AUTHENTICATING forever — it must reach a
+        # terminal state and best-effort hold the host.
+        svc = SSHService()
+        cfg = resolve_host("fir")
+
+        async def _boom(_c):
+            raise RuntimeError("disk full writing lock")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_do_connect", _boom)
+        monkeypatch.setattr(svc, "_alert", _noop_alert)
+
+        res = await svc.connect("fir")
+        assert res["status"] == "error"
+        assert svc._host("fir").state == ConnState.DISCONNECTED   # NOT authenticating
+        assert svc._read_lock(cfg) is not None                    # breaker held it
+
+
+class TestStatusVerb:
+    async def test_status_reports_each_state(self, isolated_dirs) -> None:
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+        svc._host("sockeye").state = ConnState.AUTHENTICATING
+        svc._host("chamois").state = ConnState.DISPOSING
+        svc._write_lock(resolve_host("micb0"), "held")      # breaker lock → unavailable
+
+        conns = (await svc.status())["connections"]
+        assert conns["fir"]["status"] == "connected"
+        assert conns["sockeye"]["status"] == "connecting"
+        assert conns["chamois"]["status"] == "disconnecting"
+        assert conns["micb0"]["status"] == "unavailable"
+        assert conns["sockeye1"]["status"] == "disconnected"   # plain, no lock
+
+    async def test_status_is_in_memory_not_probed(
+            self, isolated_dirs, monkeypatch) -> None:
+        # status() is a cached snapshot — it must not run any ssh probe, so a
+        # CONNECTED host reads connected even if its master is actually dead.
+        svc = SSHService()
+        svc._host("fir").state = ConnState.CONNECTED
+
+        async def _boom(_host):
+            raise AssertionError("status must not probe the network")
+
+        monkeypatch.setattr(svc, "_check_master", _boom)
+        conns = (await svc.status())["connections"]
+        assert conns["fir"]["status"] == "connected"
+
 
 class TestSingletonAndReconcile:
     @pytest.fixture
@@ -408,6 +599,47 @@ class TestSingletonAndReconcile:
 
         assert not sockpath.exists()        # stale socket reaped
         assert stderr_file.exists()         # regular file untouched
+
+    async def test_reconcile_clears_stale_lock_on_adoption(
+            self, isolated_dirs, monkeypatch) -> None:
+        # Adopting a live master supersedes a leftover breaker lock — else, once
+        # that master later dies and the host demotes, the stale lock would refuse
+        # reconnection forever with no real fault behind it.
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "stale from a prior crash")
+
+        async def _only_fir_up(host):
+            return host == "fir"
+
+        monkeypatch.setattr(svc, "_check_master", _only_fir_up)
+        await svc._reconcile_on_boot()
+        assert svc._host("fir").state == ConnState.CONNECTED
+        assert svc._read_lock(cfg) is None          # stale lock cleared on adoption
+
+    async def test_reap_double_checks_before_removing_socket(
+            self, isolated_dirs, monkeypatch) -> None:
+        # A transient false-negative (a live master briefly not answering) must not
+        # get its socket reaped — reap only removes a socket that fails twice.
+        live, _locks = isolated_dirs
+        svc = SSHService()
+        sockpath = live / "fir.computecanada.ca_22_phyberos"
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(sockpath))
+        calls = {"n": 0}
+
+        async def _flaky(_path):
+            calls["n"] += 1
+            return calls["n"] > 1    # first probe fails, second says alive
+
+        monkeypatch.setattr(svc, "_check_socket", _flaky)
+        try:
+            await svc._reap_orphans()
+        finally:
+            s.close()
+
+        assert sockpath.exists()     # survived the transient false-negative
+        assert calls["n"] == 2       # it re-probed rather than reaping on one miss
 
 
 _HOME = Path(os.path.expanduser("~"))

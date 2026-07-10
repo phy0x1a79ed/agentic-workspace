@@ -29,6 +29,22 @@ _CONNECT_TIMEOUT = 120.0
 _CHECK_POLL_INTERVAL = 1.5
 _CHECK_POLL_ATTEMPTS = 40
 _DISCONNECT_POLL_ATTEMPTS = 8
+# Hard cap on a teardown (`ssh -O exit` + confirm). Bounds the otherwise-unbounded
+# `proc.communicate()` so a wedged control socket can't hang a teardown forever —
+# which, on the connect timeout path, would strand the host in AUTHENTICATING with
+# the breaker never tripping and every later connect absorbed onto a dead waiter.
+_EXIT_TIMEOUT = 15.0
+# Hard cap on a single `ssh -O check` probe. These are local control-socket probes
+# (no remote round-trip) that normally return in well under a second, but a WEDGED
+# master can make `-O check` block indefinitely. Because connect/disconnect now
+# await boot reconciliation, which runs these probes, an unbounded probe would hang
+# every verb forever — so each probe is bounded and a timeout is read as "not live".
+_CHECK_TIMEOUT = 10.0
+# Backstop: however slow boot reconciliation gets, a verb waits at most this long
+# for it before proceeding (reconcile then continues in the background). With the
+# per-probe cap above reconcile is already bounded; this only guards a pathological
+# pile-up of simultaneously-wedged probes.
+_RECONCILE_WAIT_TIMEOUT = 60.0
 
 # Discord notifications target for lockout alerts: unimatrix0#notifications.
 _ALERT_ACCOUNT = "discord-bot"
@@ -117,7 +133,7 @@ class SSHService:
         # opens the recovery window (best-effort + self-reconnecting; inert when
         # no social service is present). Mirrors the 2fa service's listener.
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._social_task = loop.create_task(self._approve_listener())
             # Rebuild per-host state from the world (adopt live masters, respect
             # breaker locks) and reap stale sockets — in the background so startup
@@ -160,6 +176,13 @@ class SSHService:
                     async with self._lock:
                         if hs.state == ConnState.DISCONNECTED:
                             hs.state = ConnState.CONNECTED
+                    # A live master is proof of a real successful auth, so it
+                    # supersedes any leftover breaker lock (mirrors the runtime
+                    # probe_start path). Without this, a host adopted CONNECTED but
+                    # still carrying a stale lockfile would, once that master later
+                    # dies and it demotes, read the stale lock and refuse to
+                    # reconnect — an unrecoverable-looking hold with no real fault.
+                    self._clear_lock(cfg)
                     log.info("ssh: reconciled %s → connected (adopted live master)",
                              name)
             await self._reap_orphans()
@@ -182,19 +205,50 @@ class SSHService:
             except OSError:
                 continue
             if not await self._check_socket(path):
+                # Double-check before reaping: a transient false-negative (a live
+                # master briefly not answering `-O check` under load) must not get
+                # its socket unlinked, which would force the next connect to re-auth
+                # — a fresh, avoidable MFA. Only reap a socket that fails twice.
+                await asyncio.sleep(0.5)
+                if await self._check_socket(path):
+                    continue
                 log.info("ssh: reaping stale control socket %s", fn)
                 self._safe_unlink(path)
 
     @staticmethod
+    async def _run_check(argv: list[str]) -> bool:
+        """Run an ``ssh -O check`` variant, bounded by ``_CHECK_TIMEOUT``. A wedged
+        control master can make ``-O check`` hang forever; since reconcile (and thus
+        the verbs that now await it) depend on these probes, we cap each one and
+        read a timeout as 'not live' (False), killing the stuck probe so it can't
+        leak. Never raises."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            log.warning("ssh: could not spawn probe %s: %s", argv, exc)
+            return False
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=_CHECK_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("ssh: probe %s wedged >%.0fs — treating as not live",
+                        argv, _CHECK_TIMEOUT)
+            try:
+                proc.kill()
+                await proc.wait()
+            except (ProcessLookupError, Exception):  # noqa: BLE001
+                pass
+            return False
+        return proc.returncode == 0
+
+    @staticmethod
     async def _check_socket(path: str) -> bool:
         """True iff a live master answers on the given control socket path."""
-        proc = await asyncio.create_subprocess_exec(
-            "ssh", "-O", "check", "-S", path, "reap-probe",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.communicate()
-        return proc.returncode == 0
+        return await SSHService._run_check(
+            ["ssh", "-O", "check", "-S", path, "reap-probe"])
 
     # -- state access -------------------------------------------------------
 
@@ -207,9 +261,31 @@ class SSHService:
 
     # -- public verbs -------------------------------------------------------
 
+    async def _await_reconcile(self) -> None:
+        """Block until boot reconciliation (master adoption + orphan reap) has
+        finished. A verb must not start an ssh attempt while ``_reap_orphans`` may
+        still be unlinking sockets — otherwise an in-flight attempt's half-open
+        socket could be reaped out from under it. Awaiting a Task here does not
+        cancel it if this verb is itself cancelled, so a slow verb can't abort the
+        shared reconcile."""
+        task = self._reconcile_task
+        if task is None or task.done():
+            return
+        try:
+            # shield: a timeout (or a cancelled verb) must not cancel the shared
+            # reconcile task — it keeps running for the next verb.
+            await asyncio.wait_for(asyncio.shield(task),
+                                   timeout=_RECONCILE_WAIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("ssh: boot reconcile still running after %.0fs — proceeding "
+                        "(it continues in the background)", _RECONCILE_WAIT_TIMEOUT)
+        except Exception:  # noqa: BLE001 — reconcile is best-effort; proceed anyway
+            pass
+
     async def connect(self, host: str) -> dict:
         cfg = resolve_host(host)
         hs = self._host(host)
+        await self._await_reconcile()
 
         while True:
             async with self._lock:
@@ -232,9 +308,19 @@ class SSHService:
                                 error=f"{cfg.host} is not available for automated "
                                       f"access right now")
                         log.info("operator approval window open for %s (device %s) "
-                                 "— clearing hold and reconnecting",
+                                 "— clearing hold and reconnecting (one-shot)",
                                  cfg.host, cfg.twofa_device)
                         self._clear_lock(cfg)
+                        # ONE-SHOT: consume the window as we spend it. Each operator
+                        # /approve authorises exactly one reconnect attempt. Without
+                        # this the window stays open for its full duration, so a
+                        # caller that retries a failing connect re-trips then
+                        # re-clears the breaker every iteration — an unbounded run of
+                        # Duo pushes straight to the provider lockout the breaker
+                        # exists to prevent. Consuming here also bounds the
+                        # device-keyed window: only the first host on a shared device
+                        # recovers per /approve, not every host sharing it.
+                        self._approve_until.pop(cfg.twofa_device, None)
                     kind = "probe_start"
 
             if kind == "attempt":
@@ -280,6 +366,7 @@ class SSHService:
     async def disconnect(self, host: str) -> dict:
         cfg = resolve_host(host)
         hs = self._host(host)
+        await self._await_reconcile()
 
         while True:
             async with self._lock:
@@ -334,7 +421,23 @@ class SSHService:
         """The single auth attempt. Always resolves via an internal outcome — a
         success or a breaker trip — never by outer cancellation, so the breaker
         can never be bypassed. Transitions the host on completion."""
-        result = await self._do_connect(cfg)
+        try:
+            result = await self._do_connect(cfg)
+        except Exception as e:  # noqa: BLE001
+            # _do_connect is contracted never to raise, but guard anyway: an
+            # unexpected raise (e.g. OSError writing the lockfile under disk/fd
+            # exhaustion, which is outside _do_connect's own try) must NEVER leave
+            # the host stranded in AUTHENTICATING — every later connect would absorb
+            # onto this dead attempt and return error forever, with the breaker
+            # never tripped. Force a terminal state and best-effort hold the host.
+            log.error("connect to %s raised unexpectedly: %s", cfg.host, e)
+            try:
+                await self._trip_breaker(cfg, f"unexpected error: {e}")
+            except Exception as e2:  # noqa: BLE001 — breaker is best-effort here
+                log.error("could not trip breaker for %s after error: %s",
+                          cfg.host, e2)
+            result = self._status_dict(cfg, "error",
+                                       error=f"connect to {cfg.host} failed")
         connected = result.get("status") == "connected"
         async with self._lock:
             hs.attempt = None
@@ -402,6 +505,19 @@ class SSHService:
             log.info("connected to %s", cfg.host)
             return self._status_dict(cfg, "connected")
         except _AttemptFailed as e:
+            # The poll window (_CHECK_POLL_ATTEMPTS * _CHECK_POLL_INTERVAL) is
+            # shorter than the wait_for cap, so a master whose auth completed late
+            # can appear just after we gave up polling — and this, not TimeoutError,
+            # is the common give-up path. Re-check once: if it's now up, ADOPT it as
+            # success. That auth already succeeded (an MFA attempt was spent and
+            # approved), so tripping the breaker on it would waste a live connection
+            # AND spuriously page the operator, while leaving a master orphaned
+            # behind a lock. Only if there is genuinely no master do we fail through.
+            if await self._check_master(cfg.host):
+                self._clear_lock(cfg)
+                log.info("connected to %s (master appeared just after poll window)",
+                         cfg.host)
+                return self._status_dict(cfg, "connected")
             reason = self._failure_reason(cfg, marker, str(e))
         except asyncio.TimeoutError:
             # Reap a possibly half-open master so the hung attempt can't linger.
@@ -431,28 +547,23 @@ class SSHService:
                      vpn_result.get("status", "ok"))
 
         if cfg.twofa_device:
-            try:
-                status = await gatewayclient.call(
-                    "2fa", "status", {"device": cfg.twofa_device})
-                burst_active = (
-                    isinstance(status, dict)
-                    and status.get("burst_active", False)
-                )
-            except Exception:
-                burst_active = False
-
-            if not burst_active:
-                await gatewayclient.call(
-                    "2fa", "burst", {
-                        "device": cfg.twofa_device,
-                        "window": 120,
-                        "count": 1,
-                    })
-                log.info("2fa burst armed for %s on device %s",
-                         cfg.host, cfg.twofa_device)
-            else:
-                log.info("2fa burst already active for device %s — reusing",
-                         cfg.twofa_device)
+            # Always arm +1: this connect is about to fire exactly ONE Duo push, so
+            # it must contribute exactly one approval to the device's budget. The
+            # 2fa start_burst verb accumulates overlapping arms (grant totals N) and
+            # reuses the single poll task, so arming unconditionally is correct and
+            # never double-spawns. Do NOT gate on an existing "burst_active": a
+            # second concurrent connect to a host sharing this device (e.g.
+            # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
+            # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
+            # breaker. That was the original overlapping-login failure.
+            await gatewayclient.call(
+                "2fa", "burst", {
+                    "device": cfg.twofa_device,
+                    "window": 120,
+                    "count": 1,
+                })
+            log.info("2fa burst armed (+1) for %s on device %s",
+                     cfg.host, cfg.twofa_device)
 
         env = os.environ.copy()
         env.update({
@@ -500,7 +611,18 @@ class SSHService:
 
     async def _exit_master(self, host: str) -> bool:
         """Tear down a host's ControlMaster (`ssh -O exit`) and confirm it's gone.
-        Returns True if the socket is gone, False if it may still be running."""
+        Returns True if the socket is gone, False if it may still be running or the
+        teardown exceeded ``_EXIT_TIMEOUT`` (bounded so a wedged socket can't hang
+        an in-progress connect/disconnect indefinitely)."""
+        try:
+            return await asyncio.wait_for(self._exit_master_inner(host),
+                                          timeout=_EXIT_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning("ssh: teardown of %s exceeded %.0fs — leaving it be",
+                        host, _EXIT_TIMEOUT)
+            return False
+
+    async def _exit_master_inner(self, host: str) -> bool:
         proc = await asyncio.create_subprocess_exec(
             "ssh", "-O", "exit", host,
             stdout=asyncio.subprocess.DEVNULL,
@@ -515,13 +637,7 @@ class SSHService:
 
     @staticmethod
     async def _check_master(host: str) -> bool:
-        proc = await asyncio.create_subprocess_exec(
-            "ssh", "-O", "check", host,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.communicate()
-        return proc.returncode == 0
+        return await SSHService._run_check(["ssh", "-O", "check", host])
 
     # -- operator approval window (Discord /approve) ------------------------
 
@@ -553,7 +669,21 @@ class SSHService:
         device = str(ev.get("device") or "").strip()
         if not device:
             return
-        self._approve_until[device] = time.monotonic() + _APPROVE_WINDOW_SECONDS
+        # Only accept a device some managed host actually uses. An unknown string
+        # (a typo, or another service's device) can never authorise an ssh recovery
+        # anyway, and storing it would leak into _approve_until forever. Mirrors the
+        # 2fa service, which validates the device before arming a burst.
+        known = {c.twofa_device for c in KNOWN_HOSTS.values() if c.twofa_device}
+        if device not in known:
+            log.warning("ssh: /approve for unknown device %r — ignoring "
+                        "(known: %s)", device, ", ".join(sorted(known)))
+            return
+        now = time.monotonic()
+        # Opportunistically drop expired windows so the dict can't grow unbounded
+        # over a long-lived process.
+        for d in [d for d, until in self._approve_until.items() if until <= now]:
+            self._approve_until.pop(d, None)
+        self._approve_until[device] = now + _APPROVE_WINDOW_SECONDS
         log.info("ssh: operator /approve → recovery window open for device %r "
                  "(%.0fs)", device, _APPROVE_WINDOW_SECONDS)
 

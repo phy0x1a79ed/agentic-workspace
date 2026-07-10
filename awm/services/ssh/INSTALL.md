@@ -38,11 +38,21 @@ operator is paged on the Discord `unimatrix0#notifications` channel.
 **Recovery is operator-gated, out of band.** There is no verb and no self-serve
 clear — deliberately, so an autonomous caller cannot lift its own hold. To
 restore access, the operator runs `/approve <device>` in Discord (the same
-command that arms a 2FA burst); while that approval window is open the service
-reconnects on its own, and a successful connect clears the hold. A successful
+command that arms a 2FA burst); the next connect during that window clears the
+hold and reconnects, and a successful connect clears the hold. A successful
 connect is also the only automatic clear.
 
-Holds are per-host (a `fir` hold does not affect `sockeye`).
+**One `/approve` authorises exactly one reconnect attempt** — the window is
+*consumed* the moment it is spent. This is deliberate: it stops a caller that
+keeps retrying a persistently-failing connect from re-clearing and re-firing an
+MFA push every iteration (an unbounded run toward the provider lockout). A
+consequence: when several hosts share a device (e.g. `sockeye`/`sockeye1` both on
+`cwl`) and all are held, a single `/approve cwl` recovers only the **first** host
+to reconnect; the siblings stay held and each need their own `/approve`.
+
+Holds are per-host (a `fir` hold does not affect `sockeye`). Note `status` reports
+a held host only as `unavailable` with no reason string — the failure reason lives
+in the lockfile and the one-shot Discord alert, not in the verb output.
 
 ## Dependencies
 
