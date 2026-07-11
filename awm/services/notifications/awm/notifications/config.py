@@ -46,7 +46,10 @@ KNOWN_COLUMNS = [
     "dispose",      # two-tap teardown control
 ]
 
-DEFAULT_HIDDEN = ["model", "last_activity"]
+# The `status` column is hidden by default: the roster already groups rows into
+# status sections (each with its own icon + count), so a per-row status cell is
+# redundant. It stays a known column so the settings page can switch it back on.
+DEFAULT_HIDDEN = ["status", "model", "last_activity"]
 
 
 class ModelRate(BaseModel):
@@ -84,6 +87,12 @@ class FleetSettings(BaseModel):
     column_order: list[str] = Field(default_factory=lambda: list(KNOWN_COLUMNS))
     hidden_columns: list[str] = Field(default_factory=lambda: list(DEFAULT_HIDDEN))
     spawn_defaults: SpawnDefaults = Field(default_factory=SpawnDefaults)
+    notifications_enabled: bool = Field(
+        default=True,
+        description="App-level gate for desktop pushes. The browser permission is "
+                    "still required; this lets the user mute pushes without "
+                    "revoking permission (which the browser won't allow anyway).",
+    )
     rates: dict[str, ModelRate] = Field(default_factory=lambda: dict(DEFAULT_RATES))
     eoot_divisor_usd_mtok: float = Field(
         default=25.0,

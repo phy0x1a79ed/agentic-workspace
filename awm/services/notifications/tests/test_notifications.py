@@ -353,3 +353,52 @@ class TestFleetRoster:
         conn.commit()
         out = service.list_fleet(conn, window_s=100)
         assert not [s for s in out["sessions"] if s["session_id"] == "f3"]
+
+    def test_list_fleet_surfaces_notifications_flag(self, conn):
+        from awm.notifications import service
+        cfg = service.list_fleet(conn)["config"]
+        assert cfg["notifications_enabled"] is True
+        assert "status" in cfg["hidden_columns"]  # redundant → hidden by default
+
+
+class TestSpawnPlaceholder:
+    """The 'spawned' fleet event: an instant 'starting' row keyed by tmux name,
+    adopted (not duplicated) once the real agent's hook fires."""
+
+    def test_spawned_plants_starting_row(self, conn):
+        from awm.notifications import service
+        d = _report(conn, harness="claude", event="spawned",
+                    session_id="fleet-x-1", tmux_session="fleet-x-1",
+                    cwd="/w/proj")
+        assert d["ok"] is True
+        row = [s for s in service.list_fleet(conn)["sessions"]
+               if s["tmux_session"] == "fleet-x-1"][0]
+        assert row["state"] == "starting"
+        assert row["attachable"] is True
+
+    def test_real_hook_adopts_placeholder_no_dupe(self, conn):
+        from awm.notifications import service
+        # placeholder (keyed by tmux name) …
+        _report(conn, harness="claude", event="spawned",
+                session_id="fleet-x-2", tmux_session="fleet-x-2", cwd="/w/proj")
+        # … then the real agent boots and reports under its real session id.
+        _report(conn, harness="claude", event="session_start",
+                session_id="real-uuid", tmux_session="fleet-x-2",
+                cwd="/w/proj", title="proj: work")
+        rows = [s for s in service.list_fleet(conn)["sessions"]
+                if s["tmux_session"] == "fleet-x-2"]
+        assert len(rows) == 1                 # placeholder adopted, not duplicated
+        assert rows[0]["session_id"] == "real-uuid"
+        assert rows[0]["state"] == "working"
+
+    def test_spawned_skips_when_real_row_already_present(self, conn):
+        from awm.notifications import service
+        # A fast boot: the real hook beats the spawn RPC.
+        _report(conn, harness="claude", event="session_start",
+                session_id="real-first", tmux_session="fleet-x-3", cwd="/w/proj")
+        _report(conn, harness="claude", event="spawned",
+                session_id="fleet-x-3", tmux_session="fleet-x-3", cwd="/w/proj")
+        rows = [s for s in service.list_fleet(conn)["sessions"]
+                if s["tmux_session"] == "fleet-x-3"]
+        assert len(rows) == 1                 # no stray 'starting' dupe
+        assert rows[0]["session_id"] == "real-first"

@@ -40,6 +40,19 @@ def _safe_name(base: str) -> str:
     return _NAME_SAFE.sub("-", base).strip("-") or "agent"
 
 
+def _default_hub_url() -> Optional[str]:
+    """This service's own hub base URL (from ``AWM_HUB_URL``), or None.
+
+    Lazily resolved so the pure-logic unit tests don't pull in the gateway
+    client; falls back to the raw env var if the import is unavailable.
+    """
+    try:
+        from awm.gatewayclient import hub_base_url
+        return hub_base_url()
+    except Exception:  # noqa: BLE001 — env fallback keeps spawn working bare
+        return os.environ.get("AWM_HUB_URL") or None
+
+
 def _unique_session_name(cwd: str, tmux_bin: str) -> str:
     """A tmux-safe, collision-free session name rooted at the dir basename."""
     base = _safe_name(os.path.basename(os.path.abspath(cwd.rstrip("/"))) or "agent")
@@ -88,12 +101,19 @@ def spawn_terminal(
     model: Optional[str] = None,
     effort: Optional[str] = None,
     permission: str = "default",
+    hub_url: Optional[str] = None,
 ) -> dict:
     """Launch an idle ``harness`` TUI in a fresh detached tmux session.
 
     Returns ``{tmux_session, cwd, harness, model, effort, command}``. Raises
     ``ValueError`` / ``FileNotFoundError`` on bad input so the overlay can show a
     clean message.
+
+    ``hub_url`` (defaulting to this service's own ``AWM_HUB_URL``) is exported
+    into the launched process, so the new agent's **global** notify hook reports
+    to whichever hub spawned it rather than the compiled-in prod default. That
+    makes the spawning fleet — a dev sandbox as much as prod — the one that sees
+    the agent appear and advance through its lifecycle.
     """
     harness = (harness or "claude").strip()
     if harness not in _SUPPORTED_HARNESSES:
@@ -123,6 +143,14 @@ def spawn_terminal(
     name = _unique_session_name(cwd, tmux_bin)
     command = build_command(harness, model, effort, permission)
 
+    # Report the new agent to the hub that spawned us (sandbox or prod), not the
+    # notify hook's compiled-in prod default. Inlined on the launch command so it
+    # scopes to this process + its children (the hook runs as a child of the TUI).
+    resolved_hub = hub_url if hub_url is not None else _default_hub_url()
+    launch = command
+    if resolved_hub:
+        launch = f"AWM_HUB_URL={shlex.quote(resolved_hub)} {command}"
+
     # Detached session at cwd, then type the launch command + Enter. Keeping the
     # command as a send-keys (not the new-session shell arg) means the pane
     # survives the TUI exiting, so a crash/quit leaves an inspectable shell.
@@ -132,7 +160,7 @@ def spawn_terminal(
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
     subprocess.run(
-        [tmux_bin, "send-keys", "-t", name, command, "Enter"],
+        [tmux_bin, "send-keys", "-t", name, launch, "Enter"],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
     return {

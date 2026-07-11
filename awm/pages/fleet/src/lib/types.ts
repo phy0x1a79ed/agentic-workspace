@@ -1,6 +1,6 @@
 /** Shared fleet types — mirror of the notifications service's list_fleet shape. */
 
-export type FleetState = 'needs-you' | 'error' | 'working' | 'idle' | 'ended';
+export type FleetState = 'needs-you' | 'error' | 'starting' | 'working' | 'idle' | 'ended';
 
 export interface OpenItem {
   id: string;
@@ -47,6 +47,8 @@ export interface FleetConfig {
     effort: string;
     scope: string;
   };
+  /** App-level gate for desktop pushes (browser permission is separate). */
+  notifications_enabled: boolean;
 }
 
 export interface FleetResponse {

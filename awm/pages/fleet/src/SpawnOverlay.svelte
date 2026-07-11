@@ -7,6 +7,7 @@
    */
   import { spawnAgent, saveSpawnDefaults, type SpawnResult } from './lib/api';
   import ScopeCombo from './ScopeCombo.svelte';
+  import FleetSheet from './FleetSheet.svelte';
   import type { FleetConfig } from './lib/types';
 
   interface Props {
@@ -49,77 +50,47 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape') onClose(); }} />
-<div class="ov-scrim" onclick={onClose} role="presentation">
-  <div class="ov-sheet" onclick={(e) => e.stopPropagation()} role="dialog"
-       aria-modal="true" tabindex="-1" aria-label="new agent">
-    <header class="ov-head">
-      <h2>New agent</h2>
-      <button class="ov-x" onclick={onClose} aria-label="close">✕</button>
-    </header>
+<FleetSheet title="New agent" onClose={onClose}>
+  <label class="fld">
+    <span class="fld-l">harness</span>
+    <select bind:value={harness}>
+      {#each HARNESSES as h (h)}<option value={h}>{h}</option>{/each}
+    </select>
+  </label>
 
+  {#if harness === 'claude'}
     <label class="fld">
-      <span class="fld-l">harness</span>
-      <select bind:value={harness}>
-        {#each HARNESSES as h (h)}<option value={h}>{h}</option>{/each}
+      <span class="fld-l">model</span>
+      <select bind:value={model}>
+        {#each CLAUDE_MODELS as m (m)}<option value={m}>{m}</option>{/each}
       </select>
     </label>
+    <label class="fld">
+      <span class="fld-l">effort</span>
+      <select bind:value={effort}>
+        {#each EFFORTS as e (e)}<option value={e}>{e}</option>{/each}
+      </select>
+    </label>
+  {:else}
+    <p class="fld-note">opencode picks its model in-app.</p>
+  {/if}
 
-    {#if harness === 'claude'}
-      <label class="fld">
-        <span class="fld-l">model</span>
-        <select bind:value={model}>
-          {#each CLAUDE_MODELS as m (m)}<option value={m}>{m}</option>{/each}
-        </select>
-      </label>
-      <label class="fld">
-        <span class="fld-l">effort</span>
-        <select bind:value={effort}>
-          {#each EFFORTS as e (e)}<option value={e}>{e}</option>{/each}
-        </select>
-      </label>
-    {:else}
-      <p class="fld-note">opencode picks its model in-app.</p>
-    {/if}
-
-    <div class="fld">
-      <span class="fld-l">scope / cwd</span>
-      <ScopeCombo bind:value={cwd} suggestions={cwdSuggestions} />
-    </div>
-
-    {#if error}<p class="ov-err">{error}</p>{/if}
-
-    <div class="ov-actions">
-      <button class="btn-ghost" onclick={onClose}>cancel</button>
-      <button class="btn-go" onclick={submit} disabled={busy}>
-        {busy ? 'launching…' : 'launch'}
-      </button>
-    </div>
+  <div class="fld">
+    <span class="fld-l">scope / cwd</span>
+    <ScopeCombo bind:value={cwd} suggestions={cwdSuggestions} />
   </div>
-</div>
+
+  {#if error}<p class="ov-err">{error}</p>{/if}
+
+  {#snippet footer()}
+    <button class="btn-ghost" onclick={onClose}>cancel</button>
+    <button class="btn-go" onclick={submit} disabled={busy}>
+      {busy ? 'launching…' : 'launch'}
+    </button>
+  {/snippet}
+</FleetSheet>
 
 <style>
-  .ov-scrim {
-    position: fixed; inset: 0; z-index: 60;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex; align-items: flex-end; justify-content: center;
-  }
-  .ov-sheet {
-    width: 100%; max-width: 480px;
-    max-height: 92vh; overflow-y: auto;
-    background: var(--surface, #141414);
-    border: 1px solid var(--border, #2a2a2a);
-    border-radius: 16px 16px 0 0;
-    padding: 16px 16px calc(16px + env(safe-area-inset-bottom, 0px));
-    display: flex; flex-direction: column; gap: 12px;
-  }
-  @media (min-width: 560px) {
-    .ov-scrim { align-items: center; }
-    .ov-sheet { border-radius: 16px; }
-  }
-  .ov-head { display: flex; align-items: center; justify-content: space-between; }
-  .ov-head h2 { font-size: 1rem; margin: 0; }
-  .ov-x { background: none; border: none; color: var(--text3, #888); font-size: 1rem; cursor: pointer; }
   .fld { display: flex; flex-direction: column; gap: 4px; }
   .fld-l { font-size: 0.72rem; color: var(--text3, #999); text-transform: uppercase; letter-spacing: 0.04em; }
   .fld-note { font-size: 0.8rem; color: var(--text3, #888); margin: 0; }
@@ -132,7 +103,6 @@
     font-size: 16px;
   }
   .ov-err { color: var(--danger, #e06c75); font-size: 0.82rem; margin: 0; }
-  .ov-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
   .btn-ghost, .btn-go {
     padding: 10px 18px; border-radius: 22px; cursor: pointer; font-size: 0.9rem;
     border: 1px solid var(--border, #333);

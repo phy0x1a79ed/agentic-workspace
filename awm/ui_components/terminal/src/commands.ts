@@ -21,4 +21,7 @@ export const COMMAND_GRID: TermCommand[] = [
   { label: '↓', bytes: '\x1b[B', hint: 'history down' },
   { label: '/compact', bytes: '/compact\r', hint: 'compact context' },
   { label: '/clear', bytes: '/clear\r', hint: 'clear context', danger: true },
+  // Stop a running sub-agent: 'x' from the task list, Ctrl-X as the interrupt.
+  { label: 'x', bytes: 'x', hint: 'stop sub-agent' },
+  { label: 'Ctrl-X', bytes: '\x18', hint: 'stop sub-agent', danger: true },
 ];

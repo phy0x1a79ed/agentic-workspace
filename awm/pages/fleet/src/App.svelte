@@ -14,7 +14,7 @@
   import { FleetTerminal } from '@awm/terminal';
   import { fetchFleet, killTmux, forgetSession, markSeen, type SpawnResult } from './lib/api';
   import {
-    visibleColumns, cellText, sectionOf, labelFor,
+    visibleColumns, cellText, sectionOf, labelFor, gridTemplate,
     SECTION_ORDER, STATE_LABEL, STATE_ICON,
   } from './lib/columns';
   import type { FleetSession, FleetConfig } from './lib/types';
@@ -30,6 +30,7 @@
   let config = $state<FleetConfig>({
     column_order: [], hidden_columns: [],
     spawn_defaults: { harness: 'claude', model: 'sonnet', effort: 'medium', scope: '' },
+    notifications_enabled: true,
   });
   let now = $state(Date.now() / 1000);
   let wsLive = $state(false);
@@ -47,6 +48,7 @@
   let disposeTimer: ReturnType<typeof setTimeout> | null = null;
 
   const columns = $derived(visibleColumns(config.column_order, config.hidden_columns));
+  const rowGrid = $derived(gridTemplate(columns));
 
   const filtered = $derived.by(() => {
     const q = search.trim().toLowerCase();
@@ -137,7 +139,7 @@
     if (notifPerm === 'granted') pushDue();
   }
   function pushDue(): void {
-    if (notifPerm !== 'granted') return;
+    if (!config.notifications_enabled || notifPerm !== 'granted') return;
     const t = Date.now() / 1000;
     for (const s of sessions) {
       for (const it of s.open_items) {
@@ -194,16 +196,32 @@
     collapsed = next;
   }
 
+  /** A client-side 'starting' row shown the instant a spawn returns, before the
+   *  backend placeholder / real hook events land. Keyed by tmux session name (so
+   *  it converges with the DB's 'spawned' row and is attachable right away). */
+  function placeholderSession(r: SpawnResult): FleetSession {
+    return {
+      session_id: r.tmux_session, harness: r.harness, cwd: r.cwd,
+      project: null, title: null, state: 'starting', tmux_session: r.tmux_session,
+      model: r.model, tok_in: 0, tok_out: 0, tok_cache_write_5m: 0,
+      tok_cache_write_1h: 0, tok_cache_read: 0, context_tokens: 0,
+      attachable: true, uptime: 0, idle_for: 0,
+      last_seen: Date.now() / 1000, eoot: null, attention: 0, open_items: [],
+    };
+  }
+
   function onSpawned(r: SpawnResult): void {
     overlay = 'none';
+    // Responsive: drop a 'starting' row in immediately so there's instant
+    // feedback; refresh() then reconciles it with the backend placeholder and,
+    // once the agent boots, its real hook-grounded row.
+    if (!sessions.some((s) => s.tmux_session === r.tmux_session)) {
+      sessions = [placeholderSession(r), ...sessions];
+    }
     void refresh();
-    // Attach the freshly-spawned session as soon as it shows in the roster.
-    const attach = (tries: number): void => {
-      const s = sessions.find((x) => x.tmux_session === r.tmux_session);
-      if (s) { openTerminal(s); return; }
-      if (tries > 0) setTimeout(() => { void refresh().then(() => attach(tries - 1)); }, 800);
-    };
-    setTimeout(() => attach(6), 800);
+    // Attach straight into the freshly-spawned session (already in the roster).
+    const s = sessions.find((x) => x.tmux_session === r.tmux_session);
+    if (s) openTerminal(s);
   }
 
   onMount(() => {
@@ -222,11 +240,8 @@
 
 <main class="fleet">
   <header class="bar mono">
-    <span class="brand">fleet<span class="cursor" aria-hidden="true">▍</span></span>
-    <span class="tallies">
-      <span class="tally n" class:zero={counts.needsYou === 0}>need:{counts.needsYou}</span>
-      <span class="tally">agents:{counts.total}</span>
-    </span>
+    <span class="brand">fleet</span>
+    <span class="tally">{counts.total} agents</span>
     <span class="spacer"></span>
     <input class="search" placeholder="filter…" bind:value={search} />
     <button class="icon" title="new agent" onclick={() => (overlay = 'spawn')}>＋</button>
@@ -234,19 +249,12 @@
     <span class="conn" class:live={wsLive}>{wsLive ? '● live' : '○ polling'}</span>
   </header>
 
-  {#if notifPerm === 'default'}
-    <button class="notif-cta" onclick={() => void enableNotifications()}>
-      Enable desktop notifications
-      <span class="sub">needs-you pings land even when this tab is backgrounded</span>
-    </button>
-  {/if}
   {#if loadError}
     <p class="load-error mono">can't reach the fleet service: {loadError} — retrying</p>
   {/if}
 
   {#if sessions.length === 0 && !loadError}
-    <div class="empty"><span class="bigcursor" aria-hidden="true">▍</span>
-      <p>No agents seen yet.</p></div>
+    <div class="empty"><p>No agents seen yet.</p></div>
   {/if}
 
   {#each grouped as [sec, rows] (sec)}
@@ -263,6 +271,7 @@
         <div class="rows">
           {#each rows as s (s.session_id)}
             <div class="row" class:attachable={s.attachable}
+                 style="grid-template-columns: {rowGrid}"
                  onclick={() => openTerminal(s)} role="button" tabindex="0"
                  onkeydown={(e) => { if (e.key === 'Enter') openTerminal(s); }}>
               {#each columns as col (col.key)}
@@ -322,9 +331,13 @@
   <ConfigOverlay
     order={config.column_order}
     hidden={config.hidden_columns}
+    notificationsEnabled={config.notifications_enabled}
+    notifPerm={notifPerm}
+    onRequestPermission={() => void enableNotifications()}
     onClose={() => (overlay = 'none')}
-    onSaved={(order, hidden) => {
-      config = { ...config, column_order: order, hidden_columns: hidden };
+    onSaved={(order, hidden, notificationsEnabled) => {
+      config = { ...config, column_order: order, hidden_columns: hidden,
+                 notifications_enabled: notificationsEnabled };
       overlay = 'none';
     }}
   />
@@ -348,11 +361,7 @@
     background: var(--bg, #0d0d0d);
   }
   .brand { color: var(--text); font-size: 14px; letter-spacing: 0.04em; }
-  .cursor { display: inline-block; margin-left: 2px; color: var(--atomizer, #4b8bff);
-    animation: blink 1.2s steps(1) infinite; }
-  .tallies { display: flex; gap: var(--space-3); }
-  .tally.n { color: var(--atomizer, #4b8bff); }
-  .tally.zero { color: var(--text3); }
+  .tally { color: var(--text3); }
   .search {
     width: 30vw; max-width: 180px;
     padding: 5px 10px; font-size: 13px;
@@ -369,18 +378,10 @@
   .conn { color: var(--text3); font-size: 11px; }
   .conn.live { color: var(--ok, #98c379); }
 
-  .notif-cta {
-    display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius-md); color: var(--text);
-    font-size: 13px; padding: var(--space-3) var(--space-4); cursor: pointer; text-align: left;
-  }
-  .notif-cta .sub { color: var(--text3); font-size: 11px; }
   .load-error { font-size: 11px; color: var(--warn, #e5c07b); }
 
   .empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-4);
     padding: 84px 0; color: var(--text2); font-size: 13px; }
-  .bigcursor { font-size: 44px; color: var(--text3); animation: breathe 3.2s ease-in-out infinite; }
 
   /* -- groups --------------------------------------------------------------- */
   .group { display: flex; flex-direction: column; }
@@ -395,36 +396,38 @@
   .group-count { color: var(--text3); }
   .group-head.state-needs-you { color: var(--atomizer, #4b8bff); }
   .group-head.state-error { color: var(--danger, #e06c75); }
+  .group-head.state-starting { color: var(--warn, #e5c07b); }
   .group-head.state-working { color: var(--ok, #98c379); }
   .chev { color: var(--text3); }
 
   .rows { display: flex; flex-direction: column; }
   .row {
-    display: flex; align-items: center; gap: var(--space-3);
+    display: grid; align-items: center; gap: var(--space-3);
     padding: 9px var(--space-2);
     border-bottom: 1px solid var(--border);
     cursor: default; font-size: 13px;
   }
   .row.attachable { cursor: pointer; }
   .row.attachable:hover { background: var(--surface, #161616); }
-  .cell { flex: 1 1 auto; min-width: 0;
+  .cell { min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .cell.numeric { flex: 0 0 auto; text-align: right; font-variant-numeric: tabular-nums;
-    color: var(--text2); font-size: 12px; min-width: 44px; }
+  .cell.numeric { text-align: right; font-variant-numeric: tabular-nums;
+    color: var(--text2); font-size: 12px; }
 
-  .status { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; min-width: 92px; }
+  .status { display: inline-flex; align-items: center; gap: 5px; }
   .status .s-dot { font-size: 9px; }
   .status.state-needs-you { color: var(--atomizer, #4b8bff); }
   .status.state-error { color: var(--danger, #e06c75); }
+  .status.state-starting { color: var(--warn, #e5c07b); }
   .status.state-working { color: var(--ok, #98c379); }
   .status.state-idle { color: var(--text2); }
   .status.state-ended { color: var(--text3); }
 
-  .term { flex: 0 0 auto; width: 28px; text-align: center; color: var(--text3); }
+  .term { text-align: center; color: var(--text3); }
   .term.on { color: var(--atomizer, #4b8bff); }
 
   .dispose {
-    flex: 0 0 auto; min-width: 30px; height: 26px; padding: 0 8px;
+    height: 26px; padding: 0 8px;
     background: none; border: 1px solid transparent; border-radius: 6px;
     color: var(--text3); cursor: pointer; font-size: 12px;
   }
@@ -435,14 +438,10 @@
   }
 
   button:focus-visible { outline: 1px solid var(--atomizer, #4b8bff); outline-offset: 2px; }
-  @keyframes blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
-  @keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
-  @media (prefers-reduced-motion: reduce) { .cursor, .bigcursor { animation: none !important; } }
 
   @media (max-width: 560px) {
     .fleet { padding: var(--space-4) var(--space-3) 48px; }
-    .cell.numeric { min-width: 36px; }
-    .status { min-width: 74px; }
+    .row { gap: var(--space-2); }
     .search { width: 24vw; }
   }
 </style>

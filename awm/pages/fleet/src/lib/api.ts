@@ -22,6 +22,11 @@ export function saveSpawnDefaults(defaults: Record<string, string>): Promise<unk
   return saveConfigContract('notifications', { spawn_defaults: defaults });
 }
 
+/** Persist the app-level desktop-notifications gate. */
+export function saveNotificationsEnabled(enabled: boolean): Promise<unknown> {
+  return saveConfigContract('notifications', { notifications_enabled: enabled });
+}
+
 export interface SpawnResult {
   tmux_session: string;
   cwd: string;

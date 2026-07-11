@@ -45,6 +45,11 @@ SNIPPET_LEN = 280
 VALID_EVENTS = {
     "turn_end", "notification", "user_prompt", "error",
     "session_start", "session_end",
+    # Producer-agnostic: emitted by the fleet spawn path the instant a new agent's
+    # tmux session is created, so the roster shows a "starting" row before the
+    # agent has booted far enough to fire its own hook. Keyed by the tmux session
+    # name (the real hook later adopts it — see handle_report).
+    "spawned",
 }
 
 
@@ -284,7 +289,34 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
     tmux_session = event.get("tmux_session") or None
     delta: dict[str, Any] = {"ok": True, "type": None}
 
-    if ev == "session_start":
+    # Adopt a spawn placeholder: a "spawned" event registers a transient row
+    # keyed by the tmux session name; once the real agent boots and fires a hook
+    # (carrying that same tmux_session under its real session_id), drop the
+    # placeholder so the two don't coexist as duplicate rows.
+    if ev != "spawned" and tmux_session:
+        conn.execute(
+            "DELETE FROM sessions WHERE tmux_session = ? AND session_id != ?"
+            " AND state = 'starting'",
+            (tmux_session, session_id),
+        )
+
+    if ev == "spawned":
+        # Only plant the placeholder if the real row for this tmux session hasn't
+        # already arrived (a fast boot can beat the spawn RPC) — else it'd dupe.
+        existing = (
+            conn.execute(
+                "SELECT 1 FROM sessions WHERE tmux_session = ? AND session_id != ?"
+                " LIMIT 1",
+                (tmux_session, session_id),
+            ).fetchone()
+            if tmux_session else None
+        )
+        if existing is None:
+            upsert_session(conn, session_id, harness, cwd=cwd, title=title,
+                           state="starting", tmux_session=tmux_session)
+        delta["type"] = "session"
+
+    elif ev == "session_start":
         upsert_session(conn, session_id, harness, cwd=cwd, title=title,
                        state="working", tmux_session=tmux_session)
         delta["type"] = "session"
@@ -439,6 +471,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
             "column_order": settings.column_order,
             "hidden_columns": settings.hidden_columns,
             "spawn_defaults": settings.spawn_defaults.model_dump(mode="json"),
+            "notifications_enabled": settings.notifications_enabled,
         },
     }
 

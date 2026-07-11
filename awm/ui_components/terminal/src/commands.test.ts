@@ -13,12 +13,15 @@ test('command grid maps labels to the expected control bytes', () => {
   assert.equal(by['↓'], '\x1b[B');
   assert.equal(by['/compact'], '/compact\r');
   assert.equal(by['/clear'], '/clear\r');
+  assert.equal(by['x'], 'x');
+  assert.equal(by['Ctrl-X'], '\x18');
 });
 
 test('destructive commands are flagged danger', () => {
   const danger = new Set(COMMAND_GRID.filter((c) => c.danger).map((c) => c.label));
   assert.ok(danger.has('Ctrl-C'));
   assert.ok(danger.has('/clear'));
+  assert.ok(danger.has('Ctrl-X'));
 });
 
 test('voiceAvailable is false without a browser window (node)', () => {

@@ -534,14 +534,30 @@ async def _h_kill_session(args: dict) -> dict:
     return _serialize_session(info)
 
 
-def _h_spawn(args: dict) -> dict:
-    return fleet_spawn.spawn_terminal(
+async def _h_spawn(args: dict) -> dict:
+    result = fleet_spawn.spawn_terminal(
         cwd=args.get("cwd") or "",
         harness=args.get("harness") or "claude",
         model=args.get("model"),
         effort=args.get("effort"),
         permission=args.get("permission") or "default",
     )
+    # Register an immediate 'starting' placeholder in the fleet roster so the new
+    # agent shows up the instant it's launched (keyed by tmux session name until
+    # its real hook fires and adopts the row). Soft-fail: a notifications hiccup
+    # must never fail the spawn — the row still arrives via the agent's own hook.
+    try:
+        from awm.gatewayclient import call as gw_call
+        await gw_call("notifications", "report", {
+            "harness": result["harness"],
+            "event": "spawned",
+            "session_id": result["tmux_session"],
+            "tmux_session": result["tmux_session"],
+            "cwd": result["cwd"],
+        }, timeout=5.0)
+    except Exception:  # noqa: BLE001 — placeholder is best-effort
+        pass
+    return result
 
 
 def _h_kill_tmux(args: dict) -> dict:

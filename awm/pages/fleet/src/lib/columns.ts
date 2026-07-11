@@ -26,14 +26,38 @@ export const COLUMN_DEFS: Record<string, ColumnDef> = {
 
 export const ALL_COLUMNS = Object.keys(COLUMN_DEFS);
 
-// Status sections, most-urgent first.
+// Fixed grid track per column so cells line up vertically across every row
+// (per-row `auto`/flex sizes to that row's own content, which is exactly why the
+// old layout didn't align). `title` takes the flexible remainder and ellipsizes.
+const COLUMN_TRACK: Record<string, string> = {
+  status: '96px',
+  title: 'minmax(0, 1fr)',
+  harness: '72px',
+  model: '92px',
+  uptime: '46px',
+  last_activity: '52px',
+  attention: '34px',
+  attachable: '30px',
+  tokens: '58px',
+  context: '52px',
+  dispose: '44px',
+};
+
+/** The `grid-template-columns` value for the current visible column set. */
+export function gridTemplate(cols: ColumnDef[]): string {
+  return cols.map((c) => COLUMN_TRACK[c.key] ?? 'auto').join(' ');
+}
+
+// Status sections, most-urgent first. `starting` sits just above `working` so a
+// freshly-spawned agent is visible immediately, then transitions down as it boots.
 export const SECTION_ORDER: FleetState[] = [
-  'needs-you', 'error', 'working', 'idle', 'ended',
+  'needs-you', 'error', 'starting', 'working', 'idle', 'ended',
 ];
 
 export const STATE_LABEL: Record<string, string> = {
   'needs-you': 'needs you',
   error: 'error',
+  starting: 'starting',
   working: 'working',
   idle: 'idle',
   ended: 'ended',
@@ -42,6 +66,7 @@ export const STATE_LABEL: Record<string, string> = {
 export const STATE_ICON: Record<string, string> = {
   'needs-you': '●',
   error: '▲',
+  starting: '◌',
   working: '▶',
   idle: '◦',
   ended: '×',
