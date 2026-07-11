@@ -402,3 +402,38 @@ class TestSpawnPlaceholder:
                 if s["tmux_session"] == "fleet-x-3"]
         assert len(rows) == 1                 # no stray 'starting' dupe
         assert rows[0]["session_id"] == "real-first"
+
+    def test_placeholder_adopted_by_cwd_when_hook_omits_tmux(self, conn):
+        from awm.notifications import service
+        # Stale deployed hooks report no tmux_session, so the real UUID row can't
+        # tmux-match the placeholder. It must still adopt by cwd + recency, and
+        # the surviving real row inherits the placeholder's tmux handle so it
+        # stays attachable (this is the machine-wide duplicate bug).
+        _report(conn, harness="claude", event="spawned",
+                session_id="fleet-x-4", tmux_session="fleet-x-4", cwd="/w/dag")
+        _report(conn, harness="claude", event="session_start",
+                session_id="real-uuid-4", tmux_session=None, cwd="/w/dag")
+        rows = [s for s in service.list_fleet(conn)["sessions"]
+                if (s["cwd"] or "") == "/w/dag"]
+        assert len(rows) == 1                       # merged, not duplicated
+        assert rows[0]["session_id"] == "real-uuid-4"
+        assert rows[0]["state"] == "working"
+        assert rows[0]["tmux_session"] == "fleet-x-4"   # inherited handle
+        assert rows[0]["attachable"] is True
+
+    def test_cwd_adoption_bounded_by_window(self, conn):
+        from awm.notifications import service
+        # A placeholder older than the adopt window is NOT swept up by an
+        # unrelated same-cwd session (bounded merge).
+        service.SPAWN_ADOPT_WINDOW_S  # sanity: constant exists
+        _report(conn, harness="claude", event="spawned",
+                session_id="fleet-x-5", tmux_session="fleet-x-5", cwd="/w/shared")
+        # Age the placeholder past the window.
+        conn.execute(
+            "UPDATE sessions SET first_seen = first_seen - ? WHERE session_id = ?",
+            (service.SPAWN_ADOPT_WINDOW_S + 60, "fleet-x-5"))
+        _report(conn, harness="claude", event="session_start",
+                session_id="unrelated-5", tmux_session=None, cwd="/w/shared")
+        rows = [s for s in service.list_fleet(conn)["sessions"]
+                if (s["cwd"] or "") == "/w/shared"]
+        assert len(rows) == 2                       # not merged (too old)

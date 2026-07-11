@@ -257,6 +257,14 @@
     <div class="empty"><p>No agents seen yet.</p></div>
   {/if}
 
+  {#if grouped.length > 0}
+    <div class="col-head mono" style="grid-template-columns: {rowGrid}">
+      {#each columns as col (col.key)}
+        <span class="ch" class:numeric={col.numeric}>{col.label}</span>
+      {/each}
+    </div>
+  {/if}
+
   {#each grouped as [sec, rows] (sec)}
     <section class="group">
       <button class="group-head mono state-{sec}" onclick={() => toggleSection(sec)}>
@@ -270,10 +278,17 @@
       {#if !collapsed.has(sec)}
         <div class="rows">
           {#each rows as s (s.session_id)}
+            <!-- role/tabindex/onclick are set together only when attachable; the
+                 linter can't see they're coupled through one ternary. -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
             <div class="row" class:attachable={s.attachable}
                  style="grid-template-columns: {rowGrid}"
-                 onclick={() => openTerminal(s)} role="button" tabindex="0"
-                 onkeydown={(e) => { if (e.key === 'Enter') openTerminal(s); }}>
+                 onclick={s.attachable ? () => openTerminal(s) : undefined}
+                 role={s.attachable ? 'button' : undefined}
+                 tabindex={s.attachable ? 0 : undefined}
+                 onkeydown={s.attachable
+                   ? (e) => { if (e.key === 'Enter') openTerminal(s); }
+                   : undefined}>
               {#each columns as col (col.key)}
                 {#if col.key === 'status'}
                   <span class="cell status state-{sectionOf(s.state)}">
@@ -399,6 +414,19 @@
   .group-head.state-starting { color: var(--warn, #e5c07b); }
   .group-head.state-working { color: var(--ok, #98c379); }
   .chev { color: var(--text3); }
+
+  /* Column header — aligned to the same grid so labels sit over their cells. */
+  .col-head {
+    display: grid; align-items: center; gap: var(--space-3);
+    padding: 2px var(--space-2) 6px;
+    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text3); border-bottom: 1px solid var(--border);
+    position: sticky; top: 44px; z-index: 3;
+    background: var(--bg, #0d0d0d);
+  }
+  .col-head .ch { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .col-head .ch.numeric { text-align: right; }
 
   .rows { display: flex; flex-direction: column; }
   .row {

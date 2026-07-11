@@ -40,6 +40,11 @@ from . import classify, config
 
 IDLE_GRACE_S = float(os.environ.get("AWM_NOTIFY_IDLE_GRACE_S", "45"))
 STALE_TTL_S = float(os.environ.get("AWM_NOTIFY_STALE_TTL_S", str(12 * 3600)))
+# How long after a spawn a real hook event may still adopt the tmux-keyed
+# "starting" placeholder by cwd, for producer hooks that don't report a
+# tmux_session (older deployed hooks). Bounded so unrelated same-cwd sessions
+# minutes apart don't get merged.
+SPAWN_ADOPT_WINDOW_S = float(os.environ.get("AWM_NOTIFY_SPAWN_ADOPT_S", "180"))
 SNIPPET_LEN = 280
 
 VALID_EVENTS = {
@@ -291,14 +296,34 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
 
     # Adopt a spawn placeholder: a "spawned" event registers a transient row
     # keyed by the tmux session name; once the real agent boots and fires a hook
-    # (carrying that same tmux_session under its real session_id), drop the
-    # placeholder so the two don't coexist as duplicate rows.
-    if ev != "spawned" and tmux_session:
-        conn.execute(
-            "DELETE FROM sessions WHERE tmux_session = ? AND session_id != ?"
-            " AND state = 'starting'",
-            (tmux_session, session_id),
-        )
+    # under its real session_id, we drop the placeholder so the two don't coexist
+    # as duplicate rows. Prefer an exact tmux match; fall back to the most recent
+    # same-cwd placeholder when the producer hook didn't report a tmux_session
+    # (older deployed hooks omit it — without this fallback the real UUID row and
+    # the tmux-keyed placeholder never merge). The surviving real row *inherits*
+    # the placeholder's tmux_session so it stays attachable after the merge.
+    if ev != "spawned":
+        ph = None
+        if tmux_session:
+            ph = conn.execute(
+                "SELECT session_id, tmux_session FROM sessions"
+                " WHERE tmux_session = ? AND session_id != ? AND state = 'starting'"
+                " ORDER BY first_seen DESC LIMIT 1",
+                (tmux_session, session_id),
+            ).fetchone()
+        if ph is None and cwd:
+            ph = conn.execute(
+                "SELECT session_id, tmux_session FROM sessions"
+                " WHERE cwd = ? AND session_id != ? AND state = 'starting'"
+                "   AND first_seen > ?"
+                " ORDER BY first_seen DESC LIMIT 1",
+                (cwd, session_id, _now() - SPAWN_ADOPT_WINDOW_S),
+            ).fetchone()
+        if ph is not None:
+            if not tmux_session and ph["tmux_session"]:
+                tmux_session = ph["tmux_session"]  # keep the attach handle
+            conn.execute(
+                "DELETE FROM sessions WHERE session_id = ?", (ph["session_id"],))
 
     if ev == "spawned":
         # Only plant the placeholder if the real row for this tmux session hasn't
