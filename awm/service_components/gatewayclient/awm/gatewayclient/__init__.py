@@ -72,6 +72,7 @@ __all__ = [
     "resolve_peer",
     "fetch_peer_cred",
     "subscribe",
+    "subscribe_peer",
     "GatewayCallError",
     "PeerError",
     "RefCache",
@@ -391,6 +392,79 @@ def call_peer_sync(
             continue
         return _parse_reply(resp, f"{service}@{peer}", fn)
     return _parse_reply(resp, f"{service}@{peer}", fn)
+
+
+async def subscribe_peer(
+    peer: str,
+    service: str,
+    topic: str,
+    *,
+    as_: str | None = None,
+) -> AsyncIterator[Any]:
+    """Async generator over a peer node's emitter topic, via its edge directly.
+
+    The cross-peer analogue of :func:`subscribe`. Resolves the peer's edge via
+    the local gateway, fetches the peer bearer over SSH, then opens a WebSocket
+    to ``{edge}/svc/{service}/emit/{topic}`` **directly on the peer edge** (never
+    relayed through a gateway), over CA-verified TLS with the bearer. Yields the
+    decoded payload per frame, byte-for-byte as :func:`subscribe` does for a
+    local topic — a consumer cannot tell a peer stream from a local one.
+
+    The peer's ``httpsfront`` edge authenticates the bearer during the WS
+    handshake, BEFORE accepting the socket, so a stale/rotated credential is
+    rejected as a handshake failure (``InvalidStatus`` 401/403), not a 401 on an
+    already-open socket. On that we re-fetch the credential once (``force=True``)
+    and reconnect, mirroring :func:`call_peer`'s 401 retry. Auth is checked only
+    at connect, so a mid-stream rotation (~12 h cadence) bites only on the next
+    reconnect; callers needing indefinite liveness wrap this in their OWN
+    reconnect loop (as the ``/approve`` consumers already do) — this keeps the
+    single-connection contract, so do NOT add an inner reconnect loop here beyond
+    the one credential-refresh retry.
+    """
+    import ssl
+    import websockets  # local import: WS isn't needed on the call() hot path
+
+    entry = resolve_peer(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_base}/svc/{service}/emit/{topic}"
+    ssl_ctx = ssl.create_default_context(cafile=_peer_ca())
+
+    conn = None
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        headers = [("Authorization", f"Bearer {bearer}")]
+        if as_ is not None:
+            headers.append(("X-Awm-As", as_))
+        try:
+            conn = await websockets.connect(
+                ws_url,
+                additional_headers=headers,
+                ssl=ssl_ctx,
+                max_size=None,
+                open_timeout=10,
+            )
+        except websockets.InvalidStatus as exc:
+            # Handshake rejected by the peer edge. 401/403 here means the bearer
+            # was stale (rotated) — force a re-fetch and reconnect once, the WS
+            # analogue of call_peer's 401 retry. Any other status, or a second
+            # rejection, propagates loudly.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if attempt == 0 and status in (401, 403):
+                continue
+            raise
+        break
+
+    async with conn:
+        async for raw in conn:
+            if isinstance(raw, (bytes, bytearray)):
+                # Non-direct emit fan-out is always JSON text; ignore binary.
+                continue
+            try:
+                yield json.loads(raw)
+            except json.JSONDecodeError:
+                yield raw
 
 
 # ---------------------------------------------------------------------------
