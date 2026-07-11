@@ -35,15 +35,13 @@
     onCancel?: (taskId: string) => void;
     /** Retry a failed/abandoned task (fresh budget, retained work). */
     onRetry?: (taskId: string) => void;
-    /** Decompose a resting non-terminal node (place a planner). */
-    onDecompose?: (taskId: string) => void;
     /** Busy-until-poll: disable the lifecycle buttons after a click. */
     lifecycleBusy?: boolean;
   }
   let {
     index, selectedTaskId = null, onSelectTask,
     onSetTitle, onSetTags, onSetPaused,
-    detail = null, onCancel, onRetry, onDecompose, lifecycleBusy = false,
+    detail = null, onCancel, onRetry, lifecycleBusy = false,
   }: Props = $props();
 
   function taskOf(id: string): DagTask | undefined {
@@ -133,15 +131,13 @@
   // invalid transition; these are affordance hints):
   //   Cancel   — any non-terminal, non-root node.
   //   Retry    — only a failed/abandoned node.
-  //   Decompose— a resting (no live placement out) non-terminal, non-root node.
+  // (Decompose is still reachable as the orch_decompose verb; the button was
+  //  removed from this panel.)
   const TERMINAL = new Set(['completed', 'failed', 'abandoned']);
   const isTerminal = $derived(!!selected && TERMINAL.has(selected.state));
   const canCancel = $derived(!!selected && !isTerminal && !selected.is_root);
   const canRetry = $derived(
     !!selected && (selected.state === 'failed' || selected.state === 'abandoned'),
-  );
-  const canDecompose = $derived(
-    !!selected && !isTerminal && !selected.is_root && !selected.mode,
   );
 
   // Inline confirm for Cancel (no browser dialog — the affordance flips in place
@@ -217,9 +213,12 @@
         />
       </div>
 
-      <!-- the goal (the starting prompt), unlabeled, as sanitized markdown -->
-      <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
-      <div class="prompt">{@html promptHtml}</div>
+      <!-- the goal (the human-authored starting prompt), labeled, as sanitized markdown -->
+      <div class="goalwrap">
+        <div class="collbl"><PanelLabel>Goal</PanelLabel><span class="hint">starting prompt</span></div>
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
+        <div class="prompt">{@html promptHtml}</div>
+      </div>
 
       <!-- the durable objective record (system-written, read-only) -->
       <div class="objwrap">
@@ -255,13 +254,6 @@
             title={canRetry ? 'retry with a fresh budget (keeps retained work)' : 'only a failed / abandoned task can be retried'}
             onclick={() => selected && onRetry?.(selected.task_id)}
           >retry</button>
-          <button
-            class="lc"
-            type="button"
-            disabled={!canDecompose || lifecycleBusy}
-            title={canDecompose ? 'break this node down (place a planner)' : 'only a resting non-terminal node can be decomposed'}
-            onclick={() => selected && onDecompose?.(selected.task_id)}
-          >decompose</button>
           {#if lifecycleBusy}<span class="hint">working…</span>{/if}
         {/if}
       </div>
@@ -284,7 +276,7 @@
                   <span class="ctr" title="contract">{r.contractName}</span>
                   {#if nt}
                     <span class="ntag"><Tag tone={STATE_META[nt.state].tone}>{STATE_META[nt.state].label}</Tag></span>
-                    <span class="ngoal" title={nt.goal}>{nt.goal || '(no goal)'}</span>
+                    <span class="ngoal" title={nt.goal}>{nt.title || nt.goal || '(no goal)'}</span>
                   {:else}
                     <span class="ngoal off">{r.taskId.slice(0, 8)}…</span>
                   {/if}
@@ -378,7 +370,7 @@
     margin: var(--space-2) 0 var(--space-1); font-size: 13px; font-weight: 600;
   }
 
-  .objwrap { display: flex; flex-direction: column; gap: var(--space-1); }
+  .goalwrap, .objwrap { display: flex; flex-direction: column; gap: var(--space-1); }
   .prompt.obj {
     background: color-mix(in oklab, var(--atomizer) 6%, var(--surface2));
     border-color: color-mix(in oklab, var(--atomizer) 30%, var(--border));
