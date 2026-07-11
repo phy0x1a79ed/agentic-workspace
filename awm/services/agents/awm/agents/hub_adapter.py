@@ -25,6 +25,7 @@ from awm.agents import agent_bus
 from awm.agents._time import iso_to_ms
 from awm.agents.agent_slash import dispatch as slash_dispatch
 from awm.agents.terminal_session import terminal_session
+from awm.agents import fleet_spawn
 from awm.agents.models import (
     AgentSessionInfo,
     AgentSessionListResponse,
@@ -68,6 +69,45 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Send SIGKILL to a session by id.",
             "params": [
                 {"name": "session_id", "type": "integer", "required": True},
+            ],
+        },
+        {
+            "name": "spawn",
+            "tool": "agent_spawn",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Launch a plain, idle interactive agent (claude/opencode) in a "
+                "fresh detached tmux session at a directory — NOT a DAG "
+                "placement. Used by the fleet page's new-agent overlay. Returns "
+                "the tmux session name (the terminal's attach handle)."
+            ),
+            "params": [
+                {"name": "cwd", "type": "string", "required": True,
+                 "description": "Directory to launch in (a scope worktree or "
+                                "any path)."},
+                {"name": "harness", "type": "string", "required": False,
+                 "description": "claude (default) | opencode."},
+                {"name": "model", "type": "string", "required": False,
+                 "description": "Model id (required for claude; opencode picks "
+                                "its own)."},
+                {"name": "effort", "type": "string", "required": False,
+                 "description": "claude reasoning effort: low/medium/high/"
+                                "xhigh/max."},
+                {"name": "permission", "type": "string", "required": False,
+                 "description": "default (default) | full "
+                                "(--dangerously-skip-permissions)."},
+            ],
+        },
+        {
+            "name": "kill_tmux",
+            "tool": "agent_kill_tmux",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Dispose an ad-hoc tmux session by name (fleet two-tap dispose "
+                "for a session with no agents-registry row)."
+            ),
+            "params": [
+                {"name": "tmux_session", "type": "string", "required": True},
             ],
         },
         {
@@ -494,6 +534,21 @@ async def _h_kill_session(args: dict) -> dict:
     return _serialize_session(info)
 
 
+def _h_spawn(args: dict) -> dict:
+    return fleet_spawn.spawn_terminal(
+        cwd=args.get("cwd") or "",
+        harness=args.get("harness") or "claude",
+        model=args.get("model"),
+        effort=args.get("effort"),
+        permission=args.get("permission") or "default",
+    )
+
+
+def _h_kill_tmux(args: dict) -> dict:
+    killed = fleet_spawn.kill_tmux_session(args.get("tmux_session") or "")
+    return {"ok": killed, "tmux_session": args.get("tmux_session")}
+
+
 def _h_tail_log(args: dict) -> dict:
     text = ai.tail_log(int(args["session_id"]), lines=int(args.get("lines") or 200))
     return {"log": text}
@@ -725,6 +780,8 @@ HANDLERS = {
     "list_sessions": _h_list_sessions,
     "stop_session": _h_stop_session,
     "kill_session": _h_kill_session,
+    "spawn": _h_spawn,
+    "kill_tmux": _h_kill_tmux,
     "tail_log": _h_tail_log,
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
