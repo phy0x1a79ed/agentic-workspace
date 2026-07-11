@@ -13,8 +13,6 @@ dependencies = [
     "awm-scopes",
     "awm-agents",
     "awm-artifacts",
-    "awm-skills",
-    "awm-discord",
     "fastapi",
     "uvicorn[standard]",
     "typer",
