@@ -7,12 +7,17 @@
    * /compact, /clear, arrows, ⇧Tab…).
    *
    * Everything the chrome sends routes through the core's imperative `send()`,
-   * so the compose box and command grid work even when raw-keystroke passthrough
-   * (`interactive`) is off — which it is by default, so a stray phone tap can't
-   * type into a live agent until the user taps the keyboard toggle.
+   * so the compose box and command grid work regardless of the raw-keystroke
+   * passthrough (`interactive`) mode.
    *
-   * Voice uses the DEVICE-native Web Speech API (not the awm stt service): it
-   * dictates into the compose box for review before the user sends.
+   * Raw passthrough is ON by default: physical keystrokes go straight to the
+   * tmux pane (the desktop-primary path). The keyboard toggle drops into a
+   * "keys off" review mode where taps/keys don't reach the agent — and in that
+   * mode the SPACEBAR is a push-to-talk that starts voice dictation.
+   *
+   * Voice uses the DEVICE-native Web Speech API (not the awm stt service). The
+   * final transcript is sent straight to the pane (reaches the agent), with the
+   * live partial shown in the compose box as feedback.
    */
   import Terminal from './Terminal.svelte';
   import type { TermStatus } from './Terminal.svelte';
@@ -33,7 +38,7 @@
     $props();
 
   let core = $state<Terminal>();
-  let interactive = $state(false);
+  let interactive = $state(true);
   let compose = $state('');
   let menuOpen = $state(false);
   let status = $state<TermStatus>('connecting');
@@ -56,11 +61,29 @@
   function toggleVoice(): void {
     if (listening) { dictation?.stop(); return; }
     dictation = startDictation({
-      onInterim: (t) => { /* live preview appended tentatively */ compose = t; },
-      onFinal: (t) => { compose = t; },
+      onInterim: (t) => { compose = t; }, // live preview only
+      onFinal: (t) => {
+        // Send the dictated turn straight to the agent, then clear the preview.
+        const text = t.trim();
+        if (text) core?.send(text + '\r');
+        compose = '';
+      },
       onEnd: () => { listening = false; dictation = null; },
     });
     listening = dictation !== null;
+  }
+
+  /** Keys-off review mode: SPACEBAR is push-to-talk. In typing mode space is a
+   *  normal keystroke and goes to the pane, so this only fires when keys are off
+   *  and focus isn't in a text field. */
+  function onWindowKey(e: KeyboardEvent): void {
+    if (interactive || !canVoice) return;
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    const el = e.target as HTMLElement | null;
+    const tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+    e.preventDefault();
+    toggleVoice();
   }
 
   const statusLabel = $derived(
@@ -69,6 +92,8 @@
     : status === 'closed' ? 'detached'
     : 'error');
 </script>
+
+<svelte:window onkeydown={onWindowKey} />
 
 <div class="fleet-term">
   <header class="ft-head">

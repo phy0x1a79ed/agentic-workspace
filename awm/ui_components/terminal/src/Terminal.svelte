@@ -32,8 +32,13 @@
   let { target, interactive = false, onStatus }: Props = $props();
 
   // Mirror `interactive` into a ref the (closure-captured) onData reads live.
+  // When raw typing is enabled, pull focus so physical keystrokes land on the
+  // pane without a click.
   const gate = { on: false };
-  $effect(() => { gate.on = interactive; });
+  $effect(() => {
+    gate.on = interactive;
+    if (interactive) { try { term?.focus(); } catch { /* ignore */ } }
+  });
 
   let host: HTMLDivElement | undefined = $state();
   let term: Terminal | null = null;
@@ -72,8 +77,15 @@
     const t = new Terminal({
       convertEol: false,
       cursorBlink: true,
-      fontFamily: 'var(--mono, ui-monospace, monospace)',
+      // xterm can't resolve CSS var() in fontFamily (it writes the string straight
+      // to the renderer), so pass a concrete monospace stack — otherwise it fell
+      // back to a mismatched default font.
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, ' +
+        '"DejaVu Sans Mono", "Liberation Mono", monospace',
       fontSize: 13,
+      // A relayed tmux/TUI pane manages its own screen; keep no client scrollback
+      // so xterm never grows a viewport scrollbar down the right edge.
+      scrollback: 0,
       theme: { background: '#101010', foreground: '#d6d6d6' },
     });
     const f = new FitAddon();
@@ -82,6 +94,13 @@
     f.fit();
     term = t;
     fit = f;
+    // Re-fit once layout has settled — the first fit can run before the flex
+    // body has its final height, which clips the top/bottom rows.
+    requestAnimationFrame(() => {
+      if (fit === f && term === t) {
+        try { f.fit(); sess?.resize(t.cols, t.rows); } catch { /* ignore */ }
+      }
+    });
 
     sess = openTerminal(tgt, { cols: t.cols, rows: t.rows }, {
       onData: (bytes) => term?.write(bytes),
@@ -92,6 +111,7 @@
 
     // Raw keystrokes → pane, but only when the caller has taken control.
     t.onData((d) => { if (gate.on) sess?.send(d); });
+    if (gate.on) { try { t.focus(); } catch { /* ignore */ } }
 
     const obs = new ResizeObserver(() => {
       if (!fit || !term) return;
@@ -144,9 +164,12 @@
   .term-host {
     flex: 1 1 auto;
     min-height: 0;
-    padding: 6px 8px;
+    padding: 4px 6px;
     overflow: hidden;
   }
+  /* A relayed TUI owns its screen; suppress xterm's own viewport scrollbar. */
+  .term-host :global(.xterm-viewport) { scrollbar-width: none; overflow-y: hidden; }
+  .term-host :global(.xterm-viewport::-webkit-scrollbar) { display: none; }
   .term-msg {
     flex: 0 0 auto;
     padding: 4px 8px;

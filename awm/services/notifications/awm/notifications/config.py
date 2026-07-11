@@ -100,8 +100,15 @@ class FleetSettings(BaseModel):
     )
     liveness_window_s: float = Field(
         default=12 * 3600.0,
-        description="Sessions last seen within this window appear in the roster "
-                    "(ended sessions still show until they age out).",
+        description="Live sessions last seen within this window appear in the "
+                    "roster.",
+    )
+    ended_window_s: float = Field(
+        default=600.0,
+        description="A finished ('ended') session drops off the roster this long "
+                    "after its last signal — much shorter than the live window so "
+                    "a just-finished agent shows briefly without a long-dead one "
+                    "lingering as a duplicate of a fresh session in the same cwd.",
     )
 
 

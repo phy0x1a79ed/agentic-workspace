@@ -354,6 +354,33 @@ class TestFleetRoster:
         out = service.list_fleet(conn, window_s=100)
         assert not [s for s in out["sessions"] if s["session_id"] == "f3"]
 
+    def test_ended_session_drops_on_short_window(self, conn):
+        """A finished session ages off far sooner than a live one, so a long-dead
+        agent doesn't linger next to a fresh session in the same cwd."""
+        from awm.notifications import service
+        from awm.notifications import config
+        ended_win = config.FLEET_CONTRACT.load_model().ended_window_s
+        # A working session and an ended one, same cwd.
+        _report(conn, harness="claude", event="session_start",
+                session_id="live", cwd="/w/shared", tmux_session="awm-live")
+        _report(conn, harness="claude", event="session_end",
+                session_id="dead", cwd="/w/shared")
+        # Age the ended one past the ended-window but well within the live window.
+        conn.execute("UPDATE sessions SET last_seen = ? WHERE session_id='dead'",
+                     (time.time() - ended_win - 60,))
+        conn.commit()
+        ids = {s["session_id"] for s in service.list_fleet(conn)["sessions"]}
+        assert "live" in ids
+        assert "dead" not in ids
+
+    def test_recently_ended_session_still_shows(self, conn):
+        """Just-finished sessions remain visible briefly."""
+        from awm.notifications import service
+        _report(conn, harness="claude", event="session_end",
+                session_id="just-done", cwd="/w/x")
+        ids = {s["session_id"] for s in service.list_fleet(conn)["sessions"]}
+        assert "just-done" in ids
+
     def test_list_fleet_surfaces_notifications_flag(self, conn):
         from awm.notifications import service
         cfg = service.list_fleet(conn)["config"]

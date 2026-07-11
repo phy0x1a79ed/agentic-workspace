@@ -456,9 +456,15 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
     now = _now()
     cutoff = now - window
 
+    # Finished sessions drop off on a much shorter clock than live ones, so a
+    # long-dead agent doesn't sit next to a fresh session in the same cwd and
+    # read as a duplicate.
+    ended_cutoff = now - settings.ended_window_s
     srows = conn.execute(
-        "SELECT * FROM sessions WHERE last_seen >= ? ORDER BY last_seen DESC",
-        (cutoff,),
+        "SELECT * FROM sessions"
+        " WHERE last_seen >= ? AND NOT (state = 'ended' AND last_seen < ?)"
+        " ORDER BY last_seen DESC",
+        (cutoff, ended_cutoff),
     ).fetchall()
 
     # Open attention items grouped by session, one query.
