@@ -73,7 +73,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "spawn",
-            "tool": "agent_spawn",
+            "tool": "agent_launch",
             "surfaces": ["cli", "http"],
             "description": (
                 "Launch a plain, idle interactive agent (claude/opencode) in a "
