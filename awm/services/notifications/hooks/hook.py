@@ -11,15 +11,17 @@ Contract (a hook must NEVER hurt the agent's turn):
 - do the POST in a *detached child* so the parent returns immediately — a
   down/slow gateway can't stall the turn;
 - do NOT read the transcript here (it lags the Stop hook — the flush race;
-  the service reads it server-side with retry);
-- scope filter: only report sessions whose cwd walk-up finds a ``.mcp.json``
-  that loads the awm MCP (awm scope worktrees are ``.mcp.json``-free — the
-  file lives at the workspace root above them, which the walk-up finds).
+  the service reads it server-side with retry).
+
+Roster is **machine-wide**: every Claude session reports, not just awm-scope
+worktrees (the fleet page shows the whole machine; non-tmux sessions still
+appear, just marked not-attachable). When ``$TMUX`` is set the hook resolves the
+enclosing tmux session name and sends it as ``tmux_session`` — the browser
+terminal's attach handle.
 
 Endpoint: ``$AWM_HUB_URL`` when set (awm-spawned agents inherit it, so they
 report to the hub that spawned them; exporting it also routes a sandbox e2e),
-else prod ``http://127.0.0.1:7819``. ``AWM_NOTIFY_DISABLE=1`` kills the hook;
-``AWM_NOTIFY_SCOPE=any`` disables the cwd filter.
+else prod ``http://127.0.0.1:7819``. ``AWM_NOTIFY_DISABLE=1`` kills the hook.
 
 Pure stdlib.
 """
@@ -41,27 +43,27 @@ _EVENT_MAP = {
 }
 
 
-def _in_awm_scope(cwd: str | None) -> bool:
-    """Walk up from cwd looking for a .mcp.json that loads the awm MCP."""
-    if os.environ.get("AWM_NOTIFY_SCOPE") == "any":
-        return True
-    if os.environ.get("AWM_HUB_URL"):
-        return True  # awm-spawned agent — always in scope
-    d = os.path.abspath(cwd or os.getcwd())
-    while True:
-        candidate = os.path.join(d, ".mcp.json")
-        if os.path.isfile(candidate):
-            try:
-                with open(candidate, "r", encoding="utf-8") as f:
-                    servers = (json.load(f) or {}).get("mcpServers") or {}
-                if any("awm" in str(k).lower() for k in servers):
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
-        parent = os.path.dirname(d)
-        if parent == d:
-            return False
-        d = parent
+def _tmux_session() -> str | None:
+    """The enclosing tmux session name, best-effort (None when not in tmux).
+
+    ``TMUX_PANE`` is set per-pane inside tmux, so ``display-message -t <pane>``
+    resolves *this* pane's session unambiguously even under a shared server.
+    Cheap + bounded; a failure just yields None (session shows not-attachable).
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    args = ["tmux", "display-message", "-p"]
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        args += ["-t", pane]
+    args += ["#S"]
+    try:
+        out = subprocess.run(
+            args, capture_output=True, text=True, timeout=2)
+        name = (out.stdout or "").strip()
+        return name or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _send(payload_json: str) -> int:
@@ -98,8 +100,6 @@ def main() -> int:
     if not event or not session_id:
         return 0
     cwd = payload.get("cwd")
-    if not _in_awm_scope(cwd):
-        return 0
 
     report = {
         "harness": "claude",
@@ -107,6 +107,9 @@ def main() -> int:
         "session_id": session_id,
         "cwd": cwd,
     }
+    tmux = _tmux_session()
+    if tmux:
+        report["tmux_session"] = tmux
     if payload.get("transcript_path"):
         report["transcript_path"] = payload["transcript_path"]
     if payload.get("message"):

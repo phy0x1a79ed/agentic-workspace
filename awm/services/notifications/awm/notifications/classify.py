@@ -127,3 +127,106 @@ async def read_last_assistant(
         if attempt < retries - 1:
             await asyncio.sleep(delay)
     return None, ()
+
+
+# ---------------------------------------------------------------------------
+# Token / context accounting (incremental, byte-offset high-water mark)
+# ---------------------------------------------------------------------------
+
+
+def _usage_of(entry: dict) -> Optional[dict]:
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return None
+    msg = entry.get("message")
+    if not isinstance(msg, dict):
+        return None
+    usage = msg.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
+def _cat_tokens(usage: dict) -> dict[str, int]:
+    """Break a ``message.usage`` into the five rate-weighted categories."""
+    cc = usage.get("cache_creation") or {}
+    cw5 = int(cc.get("ephemeral_5m_input_tokens") or 0)
+    cw1 = int(cc.get("ephemeral_1h_input_tokens") or 0)
+    total_cc = int(usage.get("cache_creation_input_tokens") or 0)
+    # If only the total is present (no breakdown), attribute it to the 5m bucket.
+    if not cw5 and not cw1 and total_cc:
+        cw5 = total_cc
+    return {
+        "tok_in": int(usage.get("input_tokens") or 0),
+        "tok_out": int(usage.get("output_tokens") or 0),
+        "tok_cache_write_5m": cw5,
+        "tok_cache_write_1h": cw1,
+        "tok_cache_read": int(usage.get("cache_read_input_tokens") or 0),
+    }
+
+
+def accumulate_usage(transcript_path: Optional[str], from_offset: int) -> Optional[dict]:
+    """Scan new transcript bytes since ``from_offset``; return usage deltas.
+
+    Claude transcripts are append-only JSONL, so summing token categories over
+    just the bytes appended since the last turn is both correct and cheap (no
+    re-scan of the whole file each turn). Returns::
+
+        {"add": {tok_in, tok_out, tok_cache_write_5m, tok_cache_write_1h,
+                 tok_cache_read},   # increments to add to the cumulative row
+         "context_tokens": int,     # last turn's live context size, or None
+         "model": str | None,       # last turn's model id
+         "new_offset": int}         # advance the high-water mark to here
+
+    ``None`` when there's nothing to read (no path / no new complete lines).
+    A file shorter than ``from_offset`` (rotated / truncated) resets to 0.
+    Never raises.
+    """
+    if not transcript_path:
+        return None
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = from_offset if 0 <= from_offset <= size else 0
+            if start >= size:
+                return None
+            f.seek(start)
+            data = f.read()
+    except OSError:
+        return None
+
+    # Only consume up to the last newline; keep any partial trailing line for
+    # the next pass (offset stays before it).
+    nl = data.rfind(b"\n")
+    if nl < 0:
+        return None
+    consumed = data[: nl + 1]
+    new_offset = start + len(consumed)
+
+    add = {"tok_in": 0, "tok_out": 0, "tok_cache_write_5m": 0,
+           "tok_cache_write_1h": 0, "tok_cache_read": 0}
+    context_tokens: Optional[int] = None
+    model: Optional[str] = None
+    for ln in consumed.decode("utf-8", errors="replace").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            entry = json.loads(ln)
+        except Exception:  # noqa: BLE001
+            continue
+        usage = _usage_of(entry)
+        if usage is None:
+            continue
+        cats = _cat_tokens(usage)
+        for k, v in cats.items():
+            add[k] += v
+        # Live context size = what was in-context for this turn.
+        context_tokens = (
+            cats["tok_in"] + cats["tok_cache_read"]
+            + int(usage.get("cache_creation_input_tokens") or 0)
+        )
+        m = (entry.get("message") or {}).get("model")
+        if m:
+            model = m
+
+    return {"add": add, "context_tokens": context_tokens,
+            "model": model, "new_offset": new_offset}

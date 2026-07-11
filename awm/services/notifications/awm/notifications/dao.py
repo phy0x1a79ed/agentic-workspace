@@ -12,10 +12,10 @@ import sqlite3
 
 from awm.persistence.databases import get_connection, init_service_db
 
-from .db import NOTIFICATIONS_DDL
+from .db import MIGRATIONS, NOTIFICATIONS_DDL
 
 SERVICE = "notifications"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _initialized = False
 
@@ -24,7 +24,10 @@ def init() -> None:
     """Idempotently create the notifications service's DB + tables."""
     global _initialized
     if not _initialized:
-        init_service_db(SERVICE, NOTIFICATIONS_DDL, schema_version=SCHEMA_VERSION)
+        init_service_db(
+            SERVICE, NOTIFICATIONS_DDL,
+            schema_version=SCHEMA_VERSION, migrations=MIGRATIONS,
+        )
         _initialized = True
 
 

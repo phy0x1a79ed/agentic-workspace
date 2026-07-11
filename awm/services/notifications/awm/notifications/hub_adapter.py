@@ -18,6 +18,7 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter
 
 from . import dao, service
+from .config import FLEET_CONTRACT
 
 log = logging.getLogger("awm.notifications")
 
@@ -58,6 +59,22 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Optional session title."},
                 {"name": "reason", "type": "string",
                  "description": "session_end reason."},
+                {"name": "tmux_session", "type": "string",
+                 "description": "tmux session name (best-effort, when $TMUX is "
+                                "set) — the browser terminal's attach handle."},
+            ],
+        },
+        {
+            "name": "list_fleet",
+            "tool": "notifications_fleet",
+            "surfaces": _CLI_HTTP,
+            "description": "The machine-wide agent roster: every recently-live "
+                           "Claude/OpenCode session with state, attach handle, "
+                           "cost (EOOT), context size, and open attention items. "
+                           "Carries column config + spawn defaults for the page.",
+            "params": [
+                {"name": "window_s", "type": "number",
+                 "description": "Liveness window override (seconds)."},
             ],
         },
         {
@@ -108,12 +125,16 @@ API_MANIFEST: dict[str, Any] = {
     "emitters": [
         {
             "topic": "feed",
-            "description": "Live board deltas: one JSON frame per raise/update/"
-                           "resolve/session event. The page treats each frame "
-                           "as a doorbell and re-fetches list.",
+            "description": "Live board/roster deltas: one JSON frame per raise/"
+                           "update/resolve/session event. The fleet page treats "
+                           "each frame as a doorbell and re-fetches list_fleet.",
         },
     ],
     "sessions": [],
+    # Opt-in config contract (fleet columns, spawn defaults, EOOT rate table).
+    # Its presence marks the service for the gateway settings aggregator;
+    # config_get/config_set are spliced into HANDLERS below.
+    "config": FLEET_CONTRACT.manifest_fragment(),
 }
 
 _adapter: ServiceAdapter | None = None
@@ -146,6 +167,16 @@ def _handle_list(args: dict) -> dict:
     conn = dao.connect()
     try:
         return service.list_items(conn, all=bool(args.get("all")))
+    finally:
+        conn.close()
+
+
+def _handle_list_fleet(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        w = args.get("window_s")
+        return service.list_fleet(
+            conn, window_s=float(w) if w is not None else None)
     finally:
         conn.close()
 
@@ -193,11 +224,16 @@ def _handle_stats(args: dict) -> dict:
 HANDLERS = {
     "report": _handle_report,
     "list": _handle_list,
+    "list_fleet": _handle_list_fleet,
     "mark_seen": _handle_mark_seen,
     "resolve": _handle_resolve,
     "clear": _handle_clear,
     "stats": _handle_stats,
 }
+
+# Config contract handlers (config_get/config_set), reached by the gateway
+# settings aggregator via the manifest ``config`` block above.
+HANDLERS.update(FLEET_CONTRACT.handlers())
 
 
 async def main() -> None:

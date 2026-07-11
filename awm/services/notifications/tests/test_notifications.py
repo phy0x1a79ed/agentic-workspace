@@ -124,7 +124,10 @@ class TestTranscriptRead:
 
 
 class TestReport:
-    def test_turn_end_question_raises_immediate(self, conn, tmp_path):
+    def test_turn_end_is_always_idle_with_grace(self, conn, tmp_path):
+        # Regrounded: turn_end is plain idle regardless of message content —
+        # no NLP question fork. A blocked turn resurfaces via Notification.
+        from awm.notifications.service import IDLE_GRACE_S
         p = tmp_path / "t.jsonl"
         p.write_text(json.dumps({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Which port should I use?"}]}}) + "\n")
@@ -132,8 +135,8 @@ class TestReport:
                         session_id="s1", cwd="/w/p", transcript_path=str(p))
         assert delta["type"] == "raise"
         item = delta["item"]
-        assert item["kind"] == "question"
-        assert item["notify_at"] == item["created_at"]  # no grace on questions
+        assert item["kind"] == "idle"
+        assert item["notify_at"] == pytest.approx(item["created_at"] + IDLE_GRACE_S)
 
     def test_turn_end_idle_has_grace(self, conn):
         from awm.notifications.service import IDLE_GRACE_S
@@ -144,11 +147,11 @@ class TestReport:
         assert item["notify_at"] == pytest.approx(
             item["created_at"] + IDLE_GRACE_S)
 
-    def test_notification_is_question(self, conn):
+    def test_notification_is_needs_you(self, conn):
         delta = _report(conn, harness="claude", event="notification",
                         session_id="s3",
                         message="Claude needs your permission to use Bash")
-        assert delta["item"]["kind"] == "question"
+        assert delta["item"]["kind"] == "needs-you"
         assert "permission" in delta["item"]["detail"]
 
     def test_dedupe_refreshes_not_duplicates(self, conn):
@@ -196,7 +199,7 @@ class TestReport:
         assert _report(conn, harness="x", event="nonsense", session_id="s")["ok"] is False
         assert _report(conn, harness="x", event="turn_end", session_id="")["ok"] is False
 
-    def test_question_and_idle_coexist_then_both_resolve(self, conn):
+    def test_needs_you_and_idle_coexist_then_both_resolve(self, conn):
         _report(conn, harness="claude", event="notification",
                 session_id="s8", message="permission?")
         _report(conn, harness="opencode", event="turn_end",
@@ -241,3 +244,112 @@ class TestSweepAndVerbs:
                 session_id="s11", message="boom2")
         assert service.clear_all(conn)["resolved"]
         assert service.stats(conn)["open_by_kind"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Token / context accounting + EOOT
+# ---------------------------------------------------------------------------
+
+
+def _assistant(model, **usage):
+    return json.dumps({"type": "assistant", "message": {
+        "model": model, "content": [{"type": "text", "text": "ok"}],
+        "usage": usage}}) + "\n"
+
+
+class TestUsageAccounting:
+    def test_accumulate_categories_and_context(self, tmp_path):
+        from awm.notifications.classify import accumulate_usage
+        p = tmp_path / "t.jsonl"
+        p.write_text(
+            _assistant("claude-sonnet-5", input_tokens=100, output_tokens=50,
+                       cache_read_input_tokens=2000,
+                       cache_creation_input_tokens=300)
+            + _assistant("claude-sonnet-5", input_tokens=10, output_tokens=5,
+                         cache_read_input_tokens=4000,
+                         cache_creation={"ephemeral_5m_input_tokens": 40,
+                                         "ephemeral_1h_input_tokens": 60},
+                         cache_creation_input_tokens=100))
+        u = accumulate_usage(str(p), 0)
+        assert u["add"]["tok_out"] == 55
+        assert u["add"]["tok_cache_read"] == 6000
+        # first line had only the total (→ 5m bucket), second split 40/60
+        assert u["add"]["tok_cache_write_5m"] == 340
+        assert u["add"]["tok_cache_write_1h"] == 60
+        # context = last turn's in + cache_read + cache_creation total
+        assert u["context_tokens"] == 10 + 4000 + 100
+        assert u["model"] == "claude-sonnet-5"
+        assert u["new_offset"] == p.stat().st_size
+
+    def test_incremental_offset_only_reads_new(self, tmp_path):
+        from awm.notifications.classify import accumulate_usage
+        p = tmp_path / "t.jsonl"
+        p.write_text(_assistant("claude-haiku-4-5", input_tokens=1, output_tokens=1))
+        first = accumulate_usage(str(p), 0)
+        with open(p, "a") as f:
+            f.write(_assistant("claude-haiku-4-5", input_tokens=2, output_tokens=9))
+        second = accumulate_usage(str(p), first["new_offset"])
+        assert second["add"]["tok_out"] == 9  # only the appended line
+        assert first["new_offset"] < second["new_offset"]
+
+    def test_partial_trailing_line_not_consumed(self, tmp_path):
+        from awm.notifications.classify import accumulate_usage
+        p = tmp_path / "t.jsonl"
+        # A complete line + a partial (no newline) line.
+        p.write_text(_assistant("claude-opus-4-8", input_tokens=1, output_tokens=1)
+                     + '{"type":"assistant","message":{"model":"x"')
+        u = accumulate_usage(str(p), 0)
+        assert u["add"]["tok_out"] == 1
+        # offset stops at the newline, leaving the partial for next time
+        assert u["new_offset"] < p.stat().st_size
+
+    def test_eoot_math_and_unknown_model(self):
+        from awm.notifications.config import eoot, DEFAULT_RATES
+        # sonnet: 2/10/2.5/4/0.2, divisor 25
+        v = eoot(100, 50, 300, 0, 2000, model="claude-sonnet-5",
+                 rates=DEFAULT_RATES, divisor=25.0)
+        assert v == pytest.approx((200 + 500 + 750 + 0 + 400) / 25)
+        # unknown model → None (can't price → UI shows a dash)
+        assert eoot(1, 1, 0, 0, 0, model="gpt-x", rates=DEFAULT_RATES,
+                    divisor=25.0) is None
+
+
+class TestFleetRoster:
+    def test_list_fleet_shape_and_metrics(self, conn, tmp_path):
+        from awm.notifications import service
+        p = tmp_path / "t.jsonl"
+        p.write_text(_assistant("claude-sonnet-5", input_tokens=100,
+                                 output_tokens=50, cache_read_input_tokens=2000,
+                                 cache_creation_input_tokens=300))
+        _report(conn, harness="claude", event="session_start",
+                session_id="f1", cwd="/w/proj", tmux_session="awm-f1")
+        _report(conn, harness="claude", event="turn_end",
+                session_id="f1", cwd="/w/proj", transcript_path=str(p))
+        out = service.list_fleet(conn)
+        row = [s for s in out["sessions"] if s["session_id"] == "f1"][0]
+        assert row["attachable"] is True
+        assert row["tmux_session"] == "awm-f1"
+        assert row["state"] == "idle"
+        assert row["context_tokens"] == 2400
+        assert row["eoot"] == pytest.approx(74.0)
+        assert row["attention"] == 1  # the idle item
+        assert "column_order" in out["config"]
+
+    def test_non_tmux_session_not_attachable(self, conn):
+        from awm.notifications import service
+        _report(conn, harness="opencode", event="turn_end",
+                session_id="f2", last_message="done")
+        row = [s for s in service.list_fleet(conn)["sessions"]
+               if s["session_id"] == "f2"][0]
+        assert row["attachable"] is False
+        assert row["tmux_session"] is None
+
+    def test_liveness_window_excludes_old(self, conn):
+        from awm.notifications import service
+        _report(conn, harness="claude", event="turn_end",
+                session_id="f3", last_message="done")
+        conn.execute("UPDATE sessions SET last_seen = ? WHERE session_id='f3'",
+                     (time.time() - 10_000,))
+        conn.commit()
+        out = service.list_fleet(conn, window_s=100)
+        assert not [s for s in out["sessions"] if s["session_id"] == "f3"]
