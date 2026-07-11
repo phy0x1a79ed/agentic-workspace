@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -291,20 +292,21 @@ def build_app(upstream: str, ca_path: str) -> Starlette:
         WebSocketRoute("/{path:path}", _ws_proxy),
         Route("/{path:path}", _http_proxy, methods=_ALL_METHODS),
     ]
-    app = Starlette(routes=routes)
+    # Lifespan (Starlette 1.3+ removed the @app.on_event decorator): own the
+    # shared upstream httpx client for the server's lifetime.
+    @asynccontextmanager
+    async def _lifespan(app_: Starlette):
+        app_.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+        try:
+            yield
+        finally:
+            await app_.state.client.aclose()
+
+    app = Starlette(routes=routes, lifespan=_lifespan)
     app.state.http_up = http_up
     app.state.ws_up = ws_up
     app.state.ca_path = ca_path
     app.state.gate = AuthGate()
-
-    @app.on_event("startup")
-    async def _startup() -> None:  # noqa: D401
-        app.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:  # noqa: D401
-        await app.state.client.aclose()
-
     return app
 
 
