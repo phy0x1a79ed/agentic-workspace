@@ -44,6 +44,11 @@ from .notify import NULL_NOTIFIER
 
 log = logging.getLogger("awm.twofa.service")
 
+# Singleton re-homing selector (federation). 2fa is canonical on one node; on
+# that node social is co-located so this is unset and social calls stay local.
+# A node that borrows social exports AWM_SOCIAL_PEER=<peer>. Read fresh per use.
+_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+
 
 def _tx_view(tx: Transaction) -> dict[str, Any]:
     return {"urgid": tx.urgid, "app": tx.app, "details": tx.details}
@@ -171,7 +176,9 @@ class TwoFAService:
         backoff = 2.0
         while True:
             try:
-                async for ev in gatewayclient.subscribe("social", "command"):
+                async for ev in gatewayclient.subscribe_maybe_peer(
+                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+                        "social", "command"):
                     backoff = 2.0  # connected and receiving
                     await self._handle_social_command(ev)
             except asyncio.CancelledError:
@@ -217,7 +224,8 @@ class TwoFAService:
             return
         try:
             from awm import gatewayclient
-            await gatewayclient.call(
+            await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
                 "social", "send",
                 {"account": account, "channel": str(channel), "text": text})
         except Exception as exc:  # noqa: BLE001 — confirmation is non-critical

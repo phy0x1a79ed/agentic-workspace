@@ -41,6 +41,12 @@ PEER_CRED_FILE = SERVICES_DIR / "auth" / "peer_cred.current"
 _HOUR = 3600.0
 _DAY = 86400.0
 
+# Singleton re-homing selector (federation). auth runs on every node (each mints
+# its own creds), but social is a singleton: a node without a local social
+# exports AWM_SOCIAL_PEER=<peer> so the daily password push routes to
+# social@<peer>. Unset/empty ⇒ local. Read fresh per push.
+_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+
 
 def _settings() -> Any:
     """Current config values (defaults merged with stored overrides)."""
@@ -64,11 +70,13 @@ async def _push_password_to_discord(login_password: str, expires_at: float) -> N
     )
     try:
         from awm import gatewayclient
-        await gatewayclient.call("social", "send", {
-            "account": s.discord_account,
-            "channel": s.discord_channel,
-            "text": text,
-        })
+        await gatewayclient.call_maybe_peer(
+            gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+            "social", "send", {
+                "account": s.discord_account,
+                "channel": s.discord_channel,
+                "text": text,
+            })
         log.info("auth: pushed login password to Discord %s#%s",
                  s.discord_account, s.discord_channel)
     except Exception as exc:  # noqa: BLE001 — push is best-effort

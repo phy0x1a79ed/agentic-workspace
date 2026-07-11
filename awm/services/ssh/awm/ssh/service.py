@@ -50,6 +50,14 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 _ALERT_ACCOUNT = "discord-bot"
 _ALERT_CHANNEL = "1522674357762261112"
 
+# Singleton re-homing selectors (federation). When 2fa / social run as canonical
+# singletons on a peer node, this node borrows them by exporting these to the
+# peer's name (e.g. AWM_TWOFA_PEER=mira, AWM_SOCIAL_PEER=mira). Unset/empty ⇒ the
+# service is local and every call stays on this gateway. Read fresh per use via
+# gatewayclient.peer_env so a reconnect picks up a change without a restart.
+_TWOFA_PEER_ENV = "AWM_TWOFA_PEER"
+_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+
 # How long after a Discord /approve the operator-approval window stays open for
 # a device. A locked host may re-connect only while this window is open. Kept
 # ≥ the 2fa social burst window so the auto-approver is still armed for the
@@ -556,14 +564,17 @@ class SSHService:
             # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
             # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
             # breaker. That was the original overlapping-login failure.
-            await gatewayclient.call(
+            await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_TWOFA_PEER_ENV),
                 "2fa", "burst", {
                     "device": cfg.twofa_device,
                     "window": 120,
                     "count": 1,
                 })
-            log.info("2fa burst armed (+1) for %s on device %s",
-                     cfg.host, cfg.twofa_device)
+            log.info("2fa burst armed (+1) for %s on device %s%s",
+                     cfg.host, cfg.twofa_device,
+                     f" via 2fa@{gatewayclient.peer_env(_TWOFA_PEER_ENV)}"
+                     if gatewayclient.peer_env(_TWOFA_PEER_ENV) else "")
 
         env = os.environ.copy()
         env.update({
@@ -645,7 +656,8 @@ class SSHService:
         """Open a recovery window when the operator runs a Discord /approve.
 
         Subscribes to the social service's ``command`` emit (the same stream the
-        2fa service arms bursts from). Owns its own reconnect/backoff; inert when
+        2fa service arms bursts from) — local, or a peer's social@<peer> stream
+        when AWM_SOCIAL_PEER is set. Owns its own reconnect/backoff; inert when
         no social service is present. This is the ONLY thing that lifts a breaker
         hold — there is no verb, so an agent cannot clear its own lock.
         """
@@ -653,7 +665,9 @@ class SSHService:
         backoff = 2.0
         while True:
             try:
-                async for ev in gatewayclient.subscribe("social", "command"):
+                async for ev in gatewayclient.subscribe_maybe_peer(
+                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+                        "social", "command"):
                     backoff = 2.0
                     self._handle_approve(ev)
             except asyncio.CancelledError:
@@ -773,11 +787,13 @@ class SSHService:
     async def _alert(self, text: str) -> None:
         """Post to Discord unimatrix0#notifications. Never raises into connect."""
         try:
-            await gatewayclient.call("social", "send", {
-                "account": _ALERT_ACCOUNT,
-                "channel": _ALERT_CHANNEL,
-                "text": text,
-            })
+            await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+                "social", "send", {
+                    "account": _ALERT_ACCOUNT,
+                    "channel": _ALERT_CHANNEL,
+                    "text": text,
+                })
         except Exception as e:
             log.error("failed to post lock alert to Discord: %s", e)
 

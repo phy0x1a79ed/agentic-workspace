@@ -232,3 +232,71 @@ def test_second_auth_rejection_propagates(monkeypatch):
     with pytest.raises(InvalidStatus):
         asyncio.run(_collect(gc.subscribe_peer("mira", "social", "command")))
     assert len(tries) == 2           # tried twice (force-refetch), then gave up
+
+
+# ---------------------------------------------------------------------------
+# Local-or-peer selectors — the single branch point
+# ---------------------------------------------------------------------------
+
+
+def test_peer_env(monkeypatch):
+    monkeypatch.delenv("AWM_SOCIAL_PEER", raising=False)
+    assert gc.peer_env("AWM_SOCIAL_PEER") is None       # unset -> local
+    monkeypatch.setenv("AWM_SOCIAL_PEER", "   ")
+    assert gc.peer_env("AWM_SOCIAL_PEER") is None       # blank -> local
+    monkeypatch.setenv("AWM_SOCIAL_PEER", " mira ")
+    assert gc.peer_env("AWM_SOCIAL_PEER") == "mira"     # set (trimmed) -> peer
+
+
+def test_call_maybe_peer_routes(monkeypatch):
+    """Falsy peer -> local call(); a peer name -> call_peer() to that peer."""
+    calls = []
+
+    async def fake_call(*a, **k):
+        calls.append(("local", a, k))
+        return "L"
+
+    async def fake_call_peer(*a, **k):
+        calls.append(("peer", a, k))
+        return "P"
+
+    monkeypatch.setattr(gc, "call", fake_call)
+    monkeypatch.setattr(gc, "call_peer", fake_call_peer)
+
+    async def _local():
+        return await gc.call_maybe_peer(None, "social", "send", {"x": 1})
+
+    async def _peer():
+        return await gc.call_maybe_peer("mira", "social", "send", {"x": 1})
+
+    assert asyncio.run(_local()) == "L"
+    assert calls[-1][0] == "local"
+    assert calls[-1][1] == ("social", "send", {"x": 1})  # no peer arg prepended
+
+    assert asyncio.run(_peer()) == "P"
+    assert calls[-1][0] == "peer"
+    assert calls[-1][1] == ("mira", "social", "send", {"x": 1})  # peer first
+
+
+def test_subscribe_maybe_peer_routes(monkeypatch):
+    """Falsy peer -> subscribe(); a peer name -> subscribe_peer()."""
+    routed = []
+
+    async def fake_subscribe(service, topic, *, as_=None):
+        routed.append(("local", service, topic))
+        yield {"ok": "local"}
+
+    async def fake_subscribe_peer(peer, service, topic, *, as_=None):
+        routed.append(("peer", peer, service, topic))
+        yield {"ok": "peer"}
+
+    monkeypatch.setattr(gc, "subscribe", fake_subscribe)
+    monkeypatch.setattr(gc, "subscribe_peer", fake_subscribe_peer)
+
+    local = asyncio.run(_collect(gc.subscribe_maybe_peer(None, "social", "command")))
+    assert local == [{"ok": "local"}]
+    assert routed[-1] == ("local", "social", "command")
+
+    peer = asyncio.run(_collect(gc.subscribe_maybe_peer("mira", "social", "command")))
+    assert peer == [{"ok": "peer"}]
+    assert routed[-1] == ("peer", "mira", "social", "command")

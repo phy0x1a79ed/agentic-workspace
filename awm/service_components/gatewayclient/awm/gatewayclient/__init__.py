@@ -73,6 +73,9 @@ __all__ = [
     "fetch_peer_cred",
     "subscribe",
     "subscribe_peer",
+    "peer_env",
+    "call_maybe_peer",
+    "subscribe_maybe_peer",
     "GatewayCallError",
     "PeerError",
     "RefCache",
@@ -465,6 +468,70 @@ async def subscribe_peer(
                 yield json.loads(raw)
             except json.JSONDecodeError:
                 yield raw
+
+
+# ---------------------------------------------------------------------------
+# Local-or-peer selectors — a SINGLE branch point so a service that consumes a
+# singleton (e.g. ssh→2fa, ssh/2fa/auth→social) routes to the local service or a
+# peer node's edge based on ONE piece of config, and can never half-route (a
+# wrong flag can't send the burst locally but the reply to a peer, or vice
+# versa). The singleton's home is node-level, not per-call: on the node that
+# OWNS the singleton the selector is empty and every call stays local; on a node
+# that borrows it, the selector names the peer and every call goes there.
+# ---------------------------------------------------------------------------
+
+
+def peer_env(var: str) -> str | None:
+    """Read a peer-selector env var; empty/unset → ``None`` (local).
+
+    The convention for singleton re-homing: a node borrowing a singleton exports
+    e.g. ``AWM_SOCIAL_PEER=mira`` / ``AWM_TWOFA_PEER=mira``; the node that owns
+    the singleton leaves it unset so calls stay local. Read fresh each time so a
+    reconnect loop picks up a change without a restart.
+    """
+    v = (os.environ.get(var) or "").strip()
+    return v or None
+
+
+async def call_maybe_peer(
+    peer: str | None,
+    service: str,
+    fn: str,
+    args: dict | None = None,
+    *,
+    as_: str | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """:func:`call` when ``peer`` is falsy, else :func:`call_peer` to that peer.
+
+    The one branch that decides local-vs-peer for a singleton consumer; callers
+    pass the selector (typically :func:`peer_env`) so the decision lives here,
+    not scattered across call sites.
+    """
+    if peer:
+        return await call_peer(peer, service, fn, args, as_=as_, timeout=timeout)
+    return await call(service, fn, args, as_=as_, timeout=timeout)
+
+
+async def subscribe_maybe_peer(
+    peer: str | None,
+    service: str,
+    topic: str,
+    *,
+    as_: str | None = None,
+) -> AsyncIterator[Any]:
+    """:func:`subscribe` when ``peer`` is falsy, else :func:`subscribe_peer`.
+
+    The streaming twin of :func:`call_maybe_peer`. Yields identically either way
+    (both decode paths are byte-for-byte the same), so a consumer's event
+    handling is oblivious to whether the stream is local or from a peer.
+    """
+    if peer:
+        gen = subscribe_peer(peer, service, topic, as_=as_)
+    else:
+        gen = subscribe(service, topic, as_=as_)
+    async for item in gen:
+        yield item
 
 
 # ---------------------------------------------------------------------------
