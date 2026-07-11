@@ -51,19 +51,29 @@ cross-service references only.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
 
 from awm.gatewayclient.adapter import ServiceAdapter, SessionContext
 
+log = logging.getLogger("awm.gatewayclient")
+
 __all__ = [
     "call",
     "call_sync",
+    "call_peer",
+    "call_peer_sync",
+    "resolve_peer",
+    "fetch_peer_cred",
     "subscribe",
     "GatewayCallError",
+    "PeerError",
     "RefCache",
     "hub_base_url",
     "ServiceAdapter",
@@ -221,6 +231,169 @@ async def subscribe(
 
 
 # ---------------------------------------------------------------------------
+# Cross-peer calls — reach ANOTHER node's service edge directly (never relayed
+# through a gateway). The local gateway is asked only to RESOLVE the peer's
+# address; the call then goes straight to the peer's httpsfront edge, over
+# CA-verified TLS, authenticated with a bearer fetched over SSH.
+# ---------------------------------------------------------------------------
+
+
+class PeerError(Exception):
+    """A cross-peer call could not be set up (unknown peer, no CA, ssh-fetch
+    failed). Distinct from :class:`GatewayCallError`, which is an HTTP non-2xx
+    from a reachable edge."""
+
+
+# Short-TTL caches so the resolve + ssh-fetch don't run on every call. Keyed by
+# peer name / ssh alias; monotonic expiry. Positive-only.
+_PEER_ADDR_TTL = 60.0
+_PEER_CRED_TTL = 300.0
+_peer_addr_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_peer_cred_cache: dict[str, tuple[float, str]] = {}
+
+
+def _peer_ca() -> str:
+    """Path to the CA that signs peer edge certs (the shared remote-audio root).
+
+    Never fall back to ``verify=False`` — a bearer sent over an unverified TLS
+    connection could be captured by a MITM. If the CA is absent we raise, so the
+    failure is loud rather than silently insecure.
+    """
+    env = os.environ.get("AWM_PEER_CA")
+    if env:
+        return env
+    ca_dir = os.environ.get("REMOTE_AUDIO_CA_DIR")
+    if ca_dir:
+        return str(Path(ca_dir) / "ca.pem")
+    base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    return str(Path(base) / "remote-audio" / "ca" / "ca.pem")
+
+
+def resolve_peer(name: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    """Resolve a peer name to its ``{edge_url, ssh_alias, ...}`` entry by asking
+    THIS node's gateway (``GET /peers/{name}``). Cached briefly. Raises
+    :class:`PeerError` if the peer is unknown."""
+    now = time.monotonic()
+    hit = _peer_addr_cache.get(name)
+    if hit and hit[0] > now:
+        return hit[1]
+    url = f"{hub_base_url()}/peers/{name}"
+    try:
+        with httpx.Client(timeout=timeout) as cli:
+            resp = cli.get(url)
+    except httpx.HTTPError as exc:
+        raise PeerError(f"could not reach local gateway to resolve peer {name!r}: {exc}") from exc
+    if resp.status_code == 404:
+        raise PeerError(f"unknown peer: {name}")
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise PeerError(f"resolve peer {name!r} failed: HTTP {resp.status_code}: {resp.text}")
+    entry = (resp.json() or {}).get("peer") or {}
+    if not entry.get("edge_url"):
+        raise PeerError(f"peer {name!r} has no edge_url")
+    _peer_addr_cache[name] = (now + _PEER_ADDR_TTL, entry)
+    return entry
+
+
+def fetch_peer_cred(ssh_alias: str, *, force: bool = False,
+                    timeout: float = 15.0) -> str:
+    """Fetch a peer's current credential via SSH: ``ssh <alias> 'cat "$AWM_PEER_CRED"'``.
+
+    SSH host-key + authorized_keys ARE the mutual auth — there is no token
+    exchange to attack. Single-quoted so ``$AWM_PEER_CRED`` expands on the peer.
+    Cached; pass ``force=True`` to bypass the cache (used on a 401 to pick up a
+    rotated credential). Raises :class:`PeerError` on any ssh failure.
+    """
+    now = time.monotonic()
+    if not force:
+        hit = _peer_cred_cache.get(ssh_alias)
+        if hit and hit[0] > now:
+            return hit[1]
+    try:
+        out = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", ssh_alias, 'cat "$AWM_PEER_CRED"'],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PeerError(f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
+    if out.returncode != 0:
+        raise PeerError(
+            f"ssh fetch of peer cred from {ssh_alias!r} exited {out.returncode}: "
+            f"{out.stderr.strip()[:200]}")
+    cred = out.stdout.strip()
+    if not cred:
+        raise PeerError(f"peer cred from {ssh_alias!r} is empty ($AWM_PEER_CRED unset?)")
+    _peer_cred_cache[ssh_alias] = (now + _PEER_CRED_TTL, cred)
+    return cred
+
+
+def _peer_headers(bearer: str, as_: str | None) -> dict[str, str]:
+    h = {"Content-Type": "application/json", "Authorization": f"Bearer {bearer}"}
+    if as_ is not None:
+        h["X-Awm-As"] = as_
+    return h
+
+
+async def call_peer(
+    peer: str,
+    service: str,
+    fn: str,
+    args: dict | None = None,
+    *,
+    as_: str | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """Call ``fn`` on ``service`` running on peer node ``peer`` and return the
+    JSON result.
+
+    Resolves the peer's edge via the local gateway, fetches the peer bearer over
+    SSH, then POSTs ``{edge}/svc/{service}/fn/{fn}`` **directly to the peer edge**
+    over CA-verified TLS — no bytes traverse the local gateway. On a 401 the
+    credential is re-fetched once (it may have rotated) and the call retried.
+    """
+    entry = resolve_peer(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    url = f"{edge}/svc/{service}/fn/{fn}"
+    ca = _peer_ca()
+    body = json.dumps(args or {})
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
+            resp = await cli.post(url, content=body,
+                                  headers=_peer_headers(bearer, as_))
+        if resp.status_code == 401 and attempt == 0:
+            continue  # credential likely rotated — force a re-fetch and retry
+        return _parse_reply(resp, f"{service}@{peer}", fn)
+    return _parse_reply(resp, f"{service}@{peer}", fn)
+
+
+def call_peer_sync(
+    peer: str,
+    service: str,
+    fn: str,
+    args: dict | None = None,
+    *,
+    as_: str | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """Synchronous variant of :func:`call_peer`."""
+    entry = resolve_peer(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    url = f"{edge}/svc/{service}/fn/{fn}"
+    ca = _peer_ca()
+    body = json.dumps(args or {})
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        with httpx.Client(timeout=timeout, verify=ca) as cli:
+            resp = cli.post(url, content=body, headers=_peer_headers(bearer, as_))
+        if resp.status_code == 401 and attempt == 0:
+            continue
+        return _parse_reply(resp, f"{service}@{peer}", fn)
+    return _parse_reply(resp, f"{service}@{peer}", fn)
+
+
+# ---------------------------------------------------------------------------
 # RefCache — validate-by-calling, positive-only, short TTL
 # ---------------------------------------------------------------------------
 
@@ -264,11 +437,13 @@ class RefCache:
     def __init__(self, ttl: float = 60.0) -> None:
         self.ttl = ttl
         # key -> (expires_monotonic, result)
-        self._store: dict[tuple[str, str, frozenset], tuple[float, Any]] = {}
+        self._store: dict[tuple[str | None, str, str, frozenset], tuple[float, Any]] = {}
 
-    def _key(self, service: str, fn: str,
-             args: dict | None) -> tuple[str, str, frozenset]:
-        return (service, fn, _freeze_args(args))
+    def _key(self, service: str, fn: str, args: dict | None,
+             peer: str | None = None) -> tuple[str | None, str, str, frozenset]:
+        # ``peer`` is part of the key so a local ref (``2fa``) and a peer ref
+        # (``2fa@mira``) never collide.
+        return (peer, service, fn, _freeze_args(args))
 
     async def validate(
         self,
@@ -277,14 +452,16 @@ class RefCache:
         args: dict | None = None,
         *,
         as_: str | None = None,
+        peer: str | None = None,
     ) -> Any:
         """Return a cached positive result within TTL, else call and cache.
 
         A falsy/``None`` RPC result means "not found"; it is returned to the
         caller but NOT cached, so the next ``validate`` re-calls the owning
-        service. Any truthy result is cached for ``ttl`` seconds.
+        service. Any truthy result is cached for ``ttl`` seconds. When ``peer``
+        is given the validating call goes to that peer node's edge.
         """
-        key = self._key(service, fn, args)
+        key = self._key(service, fn, args, peer)
         now = time.monotonic()
         hit = self._store.get(key)
         if hit is not None:
@@ -294,7 +471,10 @@ class RefCache:
             # Expired — drop and fall through to a fresh call.
             self._store.pop(key, None)
 
-        result = await call(service, fn, args, as_=as_)
+        if peer is not None:
+            result = await call_peer(peer, service, fn, args, as_=as_)
+        else:
+            result = await call(service, fn, args, as_=as_)
         if result:  # positive-only: don't cache None / {} / falsy "not found"
             self._store[key] = (now + self.ttl, result)
         return result
@@ -304,6 +484,8 @@ class RefCache:
         service: str | None = None,
         fn: str | None = None,
         args: dict | None = None,
+        *,
+        peer: str | None = None,
     ) -> None:
         """Drop cached entries.
 
@@ -311,16 +493,17 @@ class RefCache:
         * ``invalidate(service)`` — clear every entry for that service.
         * ``invalidate(service, fn)`` — clear every entry for that
           ``(service, fn)``.
-        * ``invalidate(service, fn, args)`` — clear the one exact entry.
+        * ``invalidate(service, fn, args)`` — clear the one exact entry
+          (pass ``peer=`` to target a peer ref).
         """
         if service is None:
             self._store.clear()
             return
         if fn is not None and args is not None:
-            self._store.pop(self._key(service, fn, args), None)
+            self._store.pop(self._key(service, fn, args, peer), None)
             return
         for key in list(self._store):
-            k_service, k_fn, _ = key
+            k_peer, k_service, k_fn, _ = key
             if k_service != service:
                 continue
             if fn is not None and k_fn != fn:

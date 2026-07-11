@@ -350,6 +350,66 @@ async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Peer directory — the federation address book. The gateway is a resolver, never
+# a relay: these ops manage a name→(edge URL, ssh alias) book; a cross-peer call
+# resolves the address here then talks to the peer's edge directly.
+# ---------------------------------------------------------------------------
+
+
+class PeerJoinRequest(BaseModel):
+    """Body for ``peer join`` — record a peer node in the address book."""
+
+    name: str
+    edge_url: str
+    ssh_alias: str | None = None
+
+
+def _op_peer_join(req: PeerJoinRequest) -> dict[str, Any]:
+    """Record (or update) a peer: name → HTTPS edge URL + ssh alias.
+
+    Local to this node's book. Run it on both nodes to make the relationship
+    mutual (each side records the other) — the gateway never syncs peers.
+    """
+    from awm.gateway import peers
+
+    try:
+        return {"peer": peers.add(req.name, req.edge_url, req.ssh_alias)}
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _op_peer_list() -> dict[str, Any]:
+    """List every recorded peer (name, edge URL, ssh alias)."""
+    from awm.gateway import peers
+
+    return {"peers": peers.list_all()}
+
+
+def _op_peer_resolve(name: str) -> dict[str, Any]:
+    """Resolve one peer name to its edge URL + ssh alias. 404 if unknown.
+
+    Pure directory lookup — it returns an address and never proxies. Callers use
+    the address to reach the peer's edge directly.
+    """
+    from awm.gateway import peers
+
+    entry = peers.resolve(name)
+    if entry is None:
+        raise FileNotFoundError(f"unknown peer: {name}")
+    return {"peer": entry}
+
+
+def _op_peer_forget(name: str) -> dict[str, Any]:
+    """Remove a peer from this node's book."""
+    from awm.gateway import peers
+
+    entry = peers.remove(name)
+    if entry is None:
+        raise FileNotFoundError(f"unknown peer: {name}")
+    return {"forgot": entry}
+
+
+# ---------------------------------------------------------------------------
 # Config contracts — aggregate every opted-in service contract + the gateway's
 # own global slot into one settings surface; route writes back to the owner.
 # ---------------------------------------------------------------------------
@@ -586,6 +646,60 @@ GATEWAY_OPERATIONS: list[Operation] = [
             cli_name="--dry-run",
             description="List the orphaned hub_adapters without killing them.",
         )],
+        surfaces=_CLI,
+    ),
+    # --- peer directory (federation address book) -------------------------
+    Operation(
+        name="peer_join",
+        description="Record a peer node (name → HTTPS edge URL + ssh alias) in "
+                    "this node's address book. Run on both nodes for a mutual link.",
+        service_func=_op_peer_join,
+        http_method="POST", http_path="/peers",
+        cli_group="peer", cli_command="join",
+        output=JsonOutput(),
+        request_model=PeerJoinRequest,
+        params=[
+            Param(name="name", type="string", required=True, cli_type="argument",
+                  description="Peer node name (single token; how it is addressed "
+                              "in <svc>@<peer>)."),
+            Param(name="edge_url", type="string", required=True, cli_type="argument",
+                  description="Peer HTTPS edge URL (bare host:port → https://)."),
+            Param(name="ssh_alias", type="string", required=False, cli_type="option",
+                  description="ssh host for the $AWM_PEER_CRED fetch (default: name)."),
+        ],
+        surfaces=_CLI,
+    ),
+    Operation(
+        name="peer_list",
+        description="List recorded peers (name, edge URL, ssh alias).",
+        service_func=_op_peer_list,
+        http_method="GET", http_path="/peers",
+        cli_group="peer", cli_command="list",
+        output=JsonOutput(), surfaces=_CLI,
+    ),
+    Operation(
+        name="peer_resolve",
+        description="Resolve a peer name to its edge URL + ssh alias (directory "
+                    "lookup only; never proxies).",
+        service_func=_op_peer_resolve,
+        http_method="GET", http_path="/peers/{name}",
+        cli_group="peer", cli_command="resolve",
+        output=JsonOutput(),
+        params=[Param(name="name", type="string", required=True,
+                      location="path", cli_type="argument",
+                      description="Peer node name to resolve.")],
+        surfaces=_CLI,
+    ),
+    Operation(
+        name="peer_forget",
+        description="Remove a peer from this node's address book.",
+        service_func=_op_peer_forget,
+        http_method="DELETE", http_path="/peers/{name}",
+        cli_group="peer", cli_command="forget",
+        output=JsonOutput(),
+        params=[Param(name="name", type="string", required=True,
+                      location="path", cli_type="argument",
+                      description="Peer node name to forget.")],
         surfaces=_CLI,
     ),
     # --- config contracts (settings page) ---------------------------------

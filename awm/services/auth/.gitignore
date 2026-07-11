@@ -1,0 +1,5 @@
+# install.sh sidecar (absolute interpreter path; host-specific)
+.runtime-env
+# per-service SQLite DB lives under $AWM_DIR/services/auth/, not here.
+*.egg-info/
+__pycache__/
