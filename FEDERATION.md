@@ -133,8 +133,50 @@ mutual (nothing is synced). `edge_url` may be bare `host:port` (coerced to
   CA-verified TLS. `RefCache` keys include the peer so `2fa` and `2fa@mira` never
   collide.
 
-**v1 scope is fn-only** (request/reply). Live sessions, emitters, and bridges
-stay node-local.
+## Cross-peer streaming
+
+`gatewayclient.subscribe_peer(peer, service, topic)` is the streaming twin of
+`call_peer` — the cross-peer analogue of `subscribe`. It opens
+`wss://<edge>/svc/<service>/emit/<topic>` **directly on the peer edge** over
+CA-verified TLS with the peer bearer, and yields decoded frames **byte-for-byte
+identically** to the local `subscribe`, so a consumer cannot tell a peer stream
+from a local one. The peer's `httpsfront` edge authenticates the bearer during
+the WS handshake (before `accept()`), so a rotated credential surfaces as a
+handshake rejection (`InvalidStatus` 401/403); `subscribe_peer` force-refetches
+the credential once and reconnects — the WS analogue of `call_peer`'s 401 retry.
+No gateway or edge change was needed: the emit route and the edge's catch-all
+peer-bearer WS guard already serve and authenticate this path.
+
+Auth is checked only at connect, so a mid-stream rotation (~12 h cadence) bites
+only on the next reconnect. Consumers that need indefinite liveness wrap
+`subscribe_peer` in their own reconnect loop (as the `/approve` listeners do) —
+`subscribe_peer` itself keeps single-connection semantics plus the one
+credential-refresh retry.
+
+### Selecting local-or-peer — one branch, node-level config
+
+A service that consumes a singleton (`ssh`→`2fa`, `ssh`/`2fa`/`auth`→`social`)
+must route to the local service **or** a peer's edge from a single decision, so
+it can never half-route. The selectors live in `gatewayclient`:
+
+- `peer_env(var)` reads an env var; empty/unset → local.
+- `call_maybe_peer(peer, service, fn, args)` — local `call` when `peer` is
+  falsy, else `call_peer`.
+- `subscribe_maybe_peer(peer, service, topic)` — local `subscribe` when falsy,
+  else `subscribe_peer`.
+
+The singleton's home is **node-level**: the node that OWNS the singleton leaves
+the selector unset (all calls stay local); a node that BORROWS it exports the
+selector to the owner's peer name. The env-var convention:
+
+- `AWM_TWOFA_PEER=<peer>` — `ssh` arms its Duo burst on `2fa@<peer>`.
+- `AWM_SOCIAL_PEER=<peer>` — `ssh`/`2fa`/`auth` send Discord messages and
+  subscribe to the `/approve` command stream on `social@<peer>`.
+
+So on **mira** (which owns both `2fa` and `social`) these are unset and
+everything is local; on **capella** they are set to `mira`. This is node-level
+env, deliberately not a per-host field: the same service code runs on every
+node, and a hard-coded `2fa@mira` on the owning node would make it call itself.
 
 ## TLS
 
@@ -148,8 +190,9 @@ insecure.
 ## Singletons vs per-node services
 
 - **Singletons** (front a single external resource): `2fa` and `social`/the mira
-  daemon are **canonical on mira** (always-on). Only `ssh` consumes 2FA, and it
-  reaches `2fa@mira` via **per-service config** (no general auto-resolve).
+  daemon are **canonical on mira** (always-on). Consumers reach them via the
+  node-level env selectors above (`AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER`), not a
+  general auto-resolve — a borrowing node opts in explicitly.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
 
