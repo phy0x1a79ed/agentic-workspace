@@ -17,6 +17,7 @@ export {
   openTerminal,
   type TerminalSession,
   type TerminalHandlers,
+  type TerminalTarget,
   type ScopePost,
   type FetchOpts,
   type PostOpts,
