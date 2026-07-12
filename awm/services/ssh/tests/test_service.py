@@ -250,6 +250,51 @@ class TestCircuitBreaker:
         await svc._trip_breaker(cfg, "boom")  # must not raise
         assert svc._read_lock(cfg) is not None
 
+    async def test_notify_test_surfaces_result_and_writes_no_lockfile(
+            self, isolated_dirs, monkeypatch) -> None:
+        # The self-test fires the real social send, RETURNS its result (does not
+        # swallow), carries a clearly-test message, and mutates no breaker state.
+        _, locks = isolated_dirs
+        svc = SSHService()
+        captured: list[str] = []
+
+        async def _capture_send(text):
+            captured.append(text)
+            return {"ok": True, "id": "msg-123"}
+
+        monkeypatch.setattr(svc, "_send_social", _capture_send)
+        out = await svc.notify_test("[selftest]")
+
+        assert out["sent"] is True
+        assert out["result"] == {"ok": True, "id": "msg-123"}
+        assert out["channel"] == ssh_service._ALERT_CHANNEL
+        assert len(captured) == 1
+        # Unmistakably a test, and no /approve reflex bait for a fake device.
+        assert "self-test" in captured[0].lower()
+        assert "/approve" not in captured[0]
+        assert "not a real lock" in captured[0].lower()
+        # No lockfile / breaker state written.
+        assert os.listdir(locks) == []
+
+    async def test_notify_test_raises_on_failure(
+            self, isolated_dirs, monkeypatch) -> None:
+        # Unlike _alert, the self-test must FAIL LOUDLY — a broken notify wire is
+        # exactly what it exists to surface.
+        svc = SSHService()
+
+        async def _explode(_text):
+            raise RuntimeError("social down")
+
+        monkeypatch.setattr(svc, "_send_social", _explode)
+        with pytest.raises(RuntimeError, match="social down"):
+            await svc.notify_test()
+
+    async def test_notify_test_verb_registered(self) -> None:
+        from awm.ssh import hub_adapter
+        assert "notify_test" in hub_adapter.HANDLERS
+        verbs = [f["name"] for f in hub_adapter.API_MANIFEST["functions"]]
+        assert "notify_test" in verbs
+
     def test_failure_reason_includes_askpass_deviation(
             self, isolated_dirs) -> None:
         svc = SSHService()
@@ -393,7 +438,8 @@ class TestStateMachine:
         cfg = resolve_host("fir")
         calls: list[tuple] = []
 
-        async def _fake_call(service, verb, args=None):
+        async def _fake_call(service, verb, args=None, **_kw):
+            # **_kw absorbs the as_/timeout kwargs call_maybe_peer now forwards.
             calls.append((service, verb, args))
             # Pretend a burst is already live — the old code would skip arming.
             return {"status": "ok", "burst_active": True}

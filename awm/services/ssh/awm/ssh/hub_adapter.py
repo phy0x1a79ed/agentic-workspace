@@ -62,6 +62,22 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
         },
+        {
+            "name": "notify_test",
+            "tool": "ssh_notify_test",
+            "description": (
+                "Fire the Discord lock-alert wire on demand to confirm the ssh "
+                "service can reach the operator BEFORE a real lockout depends on "
+                "it. Sends through the exact social→Discord path a real breaker "
+                "trip uses (same peer selector, edge, bearer, channel) but writes "
+                "NO lockfile and mutates no state, and surfaces the send result "
+                "instead of swallowing — so a broken notify wire fails loudly. The "
+                "message is clearly a test and requests no /approve action."
+            ),
+            "params": [
+                {"name": "host", "type": "string", "required": False},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -72,6 +88,7 @@ HANDLERS = {
     "connect": lambda args: svc.connect(args["host"]),
     "disconnect": lambda args: svc.disconnect(args["host"]),
     "status": lambda _args: svc.status(),
+    "notify_test": lambda args: svc.notify_test(args.get("host", "[selftest]")),
 }
 
 
