@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# run.sh — self-contained entry point for the fileviewer service.
+# run.sh — self-contained entry point for the httpsfront service (whole-gateway
+# HTTPS front).
 #
 # The gateway discovers this service by scanning awm/services/* for run.sh, and
 # starts (and respawns) it by executing `bash run.sh`, injecting AWM_HUB_URL /
 # AWM_SERVICE_NAME / AWM_SERVICE_ID into the environment. The adapter reads
 # those, POSTs /hub/service/register, and holds the control WS open. No auth.
-#
-# The adapter's control WS buys supervision + the fileviewer_status verb. The
-# file bytes ride a separate kind=static mount at /files that the adapter
-# registers and holds (see awm.fileviewer.server.hold_mount): the gateway's
-# serve_static ships them and httpsfront fronts them, so links are
-# origin-relative (/files/<abs>) and reach any device, not just loopback.
 #
 # Two launch modes, branched on the dev signal DEV_PYTHONPATH:
 #   - dev sandbox (DEV_PYTHONPATH set): run the uninstalled worktree code via
@@ -21,7 +16,7 @@
 #     respawn us under systemd's minimal PATH (no `mamba`).
 set -euo pipefail
 cd "$(dirname "$0")"
-MODULE="awm.fileviewer.hub_adapter"
+MODULE="awm.httpsfront.hub_adapter"
 
 if [ -n "${DEV_PYTHONPATH:-}" ]; then
     exec env PYTHONPATH="$DEV_PYTHONPATH" \

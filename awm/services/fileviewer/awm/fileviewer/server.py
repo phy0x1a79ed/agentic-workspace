@@ -1,61 +1,103 @@
-"""The loopback file-serving HTTP listener (pure stdlib, no pip deps).
+"""Register fileviewer's bytes as a gateway ``kind=static`` mount and hold its lease.
 
-Point a browser at ``http://127.0.0.1:<port>/?path=/abs/path/thing.svg`` and it
-gets that file's bytes with a correct ``Content-Type``, so the browser picks the
-right native renderer: SVG draws, HTML renders, PNG/JPEG display as images,
-``.py``/``.md``/``.json``/``.log`` show inline as readable text. A missing,
-directory, or unreadable path returns an HTTP 404 with a small styled not-found
-page (never a stack trace, never a JSON blob).
+fileviewer no longer runs its own HTTP listener. Instead it registers a
+``kind=static`` mount at ``/files`` on the gateway (root ``FILEVIEWER_MOUNT_ROOT``,
+default ``/``) and holds that mount's WS lease for the life of the process. The
+gateway's ``serve_static`` ships each file's bytes with a correct ``Content-Type``,
+and ``httpsfront`` fronts the whole gateway — so a figure links as an
+origin-relative ``/files/<abs-path>`` that renders for any device that can open
+the notes page, not just a browser on the server's own loopback. That is the
+whole point of the change: the old ``http://127.0.0.1:12210/?path=…`` links were
+loopback-only and never reachable through the HTTPS front.
 
-Why off-hub: the awm hub function channel is JSON-only — a handler's return
-value is always JSON-serialized — so it can't hand a browser raw bytes with a
-real ``Content-Type``. So this rides its own listener, exactly as ``mic`` serves
-audio off-hub; the hub registration only supervises the process and exposes a
-``status`` verb.
+**Mask.** The mount exposes the entire filesystem under the root, so a denylist
+(a per-mount ``deny`` glob list, enforced gateway-side in ``serve_static`` on the
+*resolved* path) hides secrets — ssh keys, TLS private keys, the gateway auth
+token, ``.env`` files, ``.certs`` — and hides the mask override file itself. A
+masked path 404s exactly like a missing one; matching is on the symlink-resolved
+path, so a symlink to a secret can't slip past.
 
-Bound ``127.0.0.1:<port>`` only — a local viewer, no remote exposure. Any
-absolute path the awm user can read is viewable (no workspace-root restriction,
-per design); single-file only, so relative ``src``/``href`` inside an HTML/SVG
-document won't resolve.
+Two records, two leases: the ``ServiceAdapter`` (``kind=service`` at
+``/svc/fileviewer``) gives supervision + the ``fileviewer_status`` verb; this
+module owns the separate ``kind=static`` mount and its lease. The control WS does
+not cover the mount, so ``hold_mount`` runs its own register + hold-lease +
+reconnect loop — it must survive the gateway bouncing (records are in-memory) or
+the mount silently vanishes after a gateway restart.
+
+Pure-ish stdlib plus ``httpx`` / ``websockets`` (already deps of the adapter).
 """
 
 from __future__ import annotations
 
-import html
+import asyncio
 import logging
-import mimetypes
+import os
+import ssl
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+
+import httpx
+import websockets
 
 log = logging.getLogger("awm.fileviewer.server")
 
-# Cap the sniff read when deciding text-vs-binary for an unknown extension.
-_SNIFF_BYTES = 8192
+# Where the mount lives on the origin, and what filesystem root it exposes. The
+# root defaults to "/" — literally "all files" — with the mask as the safety
+# layer. Narrow it by setting FILEVIEWER_MOUNT_ROOT to bound the blast radius.
+SERVICE_NAME = os.environ.get("AWM_SERVICE_NAME", "fileviewer")
+MOUNT_PREFIX = os.environ.get("FILEVIEWER_MOUNT_PREFIX", "/files")
+MOUNT_ROOT = os.environ.get("FILEVIEWER_MOUNT_ROOT", "/")
+
+# Default mask: gitignore-style globs, matched by the gateway with
+# PurePosixPath.full_match against the resolved path relative to MOUNT_ROOT, so
+# ``**`` spans directories. Denylist-shaped and best-effort — a new secret type
+# in an unlisted location is exposed until added here (or via FILEVIEWER_MASK_FILE).
+DEFAULT_MASK: tuple[str, ...] = (
+    # ssh + gpg private material
+    "**/.ssh/**", "**/.ssh",
+    "**/.gnupg/**", "**/.gnupg",
+    "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
+    "**/*_rsa", "**/*_dsa", "**/*_ecdsa", "**/*_ed25519",
+    # TLS / crypto keys + certs-with-keys
+    "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx",
+    "**/.certs/**", "**/.certs",
+    # tokens + credentials
+    "**/*.token", "**/auth.token",
+    "**/.aws/**", "**/.aws",
+    "**/.netrc", "**/.pgpass",
+    "**/credentials", "**/credentials.json",
+    "**/secrets/**", "**/*.secret",
+    # dotenv
+    "**/.env", "**/.env.*",
+    # git internals (may hold remote tokens in config)
+    "**/.git/**",
+)
 
 
 class _State:
-    """Live listener status, read by the ``fileviewer_status`` verb."""
+    """Live mount status, read by the ``fileviewer_status`` verb (never raises)."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.bind: str | None = None
-        self.port: int | None = None
-        self.serving = False
-        self.requests = 0
+        self.prefix: str | None = None
+        self.root: str | None = None
+        self.deny: tuple[str, ...] = ()
+        self.mounted = False
+        self.service_id: str | None = None
 
     def snapshot(self) -> dict:
         with self.lock:
+            prefix, root = self.prefix, self.root
             return {
-                "bind": self.bind,
-                "port": self.port,
-                "serving": self.serving,
-                "requests": self.requests,
+                "mounted": self.mounted,
+                "prefix": prefix,
+                "root": root,
+                "deny_globs": len(self.deny),
+                "service_id": self.service_id,
+                # Origin-relative shape — no host/port. The notes page resolves
+                # it against whatever host is serving the UI.
                 "url_shape": (
-                    f"http://{self.bind}:{self.port}/?path=/abs/path/to/file"
-                    if self.bind and self.port
-                    else None
+                    f"{prefix}/<absolute-path-under-{root}>" if prefix else None
                 ),
             }
 
@@ -64,155 +106,96 @@ STATE = _State()
 
 
 def status() -> dict:
-    """Snapshot of the listener for the status verb (never raises)."""
+    """Snapshot of the mount for the status verb (never raises)."""
     return STATE.snapshot()
 
 
-def _looks_textual(sample: bytes) -> bool:
-    """Heuristic: is this byte sample human-readable text? A NUL byte means
-    binary; otherwise require it to decode as UTF-8. Used only when the
-    extension gives us no MIME type, so a ``.py``/``.md``/``.log``/dotfile
-    displays inline instead of prompting a download."""
-    if b"\x00" in sample:
-        return False
-    try:
-        sample.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
-
-
-def _content_type(path: Path, sample: bytes) -> str:
-    """Pick a Content-Type. Trust ``mimetypes`` when it knows the extension;
-    for text/* ensure a charset so browsers render inline. When it doesn't
-    know (many code files), sniff: textual → ``text/plain; charset=utf-8`` so
-    it displays; genuine binary → ``application/octet-stream``."""
-    guessed, _ = mimetypes.guess_type(path.name)
-    if guessed:
-        if guessed.startswith("text/") and "charset" not in guessed:
-            return f"{guessed}; charset=utf-8"
-        return guessed
-    if _looks_textual(sample):
-        return "text/plain; charset=utf-8"
-    return "application/octet-stream"
-
-
-_NOT_FOUND_TMPL = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Not found — fileviewer</title>
-<style>
-  :root {{ color-scheme: light dark; }}
-  body {{ margin:0; min-height:100vh; display:grid; place-items:center;
-         font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-         background:#0d1117; color:#c9d1d9; }}
-  @media (prefers-color-scheme: light) {{ body {{ background:#f6f8fa; color:#1f2328; }} }}
-  .card {{ max-width:640px; padding:2rem 2.5rem; text-align:center; }}
-  h1 {{ font-size:3rem; margin:0 0 .25rem; letter-spacing:-.02em; }}
-  p {{ margin:.4rem 0; opacity:.8; }}
-  code {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-          background:rgba(128,128,128,.18); padding:.15em .4em; border-radius:5px;
-          word-break:break-all; }}
-</style></head>
-<body><div class="card">
-  <h1>404</h1>
-  <p>{reason}</p>
-  <p><code>{path}</code></p>
-</div></body></html>
-"""
-
-
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, *a):  # silence stdlib access logging
-        pass
-
-    def do_GET(self) -> None:
-        with STATE.lock:
-            STATE.requests += 1
-        qs = parse_qs(urlsplit(self.path).query)
-        raw = (qs.get("path") or [""])[0]
-        if not raw:
-            return self._not_found(
-                "", "No file path given. Use ?path=/absolute/path/to/file."
-            )
-
+def load_mask() -> tuple[str, ...]:
+    """DEFAULT_MASK plus any globs from FILEVIEWER_MASK_FILE (gitignore-style:
+    one glob per line, ``#`` comments and blanks ignored). If that file sits
+    under the mount root, its own path is appended so the mask hides itself."""
+    globs = list(DEFAULT_MASK)
+    mf = os.environ.get("FILEVIEWER_MASK_FILE")
+    if mf:
+        p = Path(mf).expanduser()
         try:
-            resolved = Path(raw).expanduser().resolve()
-        except (OSError, RuntimeError, ValueError):
-            return self._not_found(raw, "That path could not be resolved.")
-
-        if not resolved.is_absolute():
-            return self._not_found(raw, "The path must be absolute.")
-        if resolved.is_dir():
-            return self._not_found(
-                raw, "That path is a directory — only single files are viewable."
-            )
-        if not resolved.is_file():
-            return self._not_found(raw, "No file exists at that path.")
-
-        try:
-            body = resolved.read_bytes()
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    globs.append(line)
         except OSError:
-            return self._not_found(raw, "That file could not be read.")
-
-        ctype = _content_type(resolved, body[:_SNIFF_BYTES])
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    do_HEAD = do_GET
-
-    def _not_found(self, attempted: str, reason: str) -> None:
-        page = _NOT_FOUND_TMPL.format(
-            reason=html.escape(reason),
-            path=html.escape(attempted or "(no path)"),
-        ).encode("utf-8")
-        self.send_response(404)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(page)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(page)
+            log.warning("mask file %s unreadable; using default mask only", mf)
+        # Self-hide: never serve the mask file through the mount it configures.
+        globs.append(f"**/{p.name}")
+        try:
+            rel = p.resolve().relative_to(Path(MOUNT_ROOT).resolve()).as_posix()
+            globs.append(rel)
+        except (ValueError, OSError):
+            pass
+    # De-dupe, preserve order.
+    return tuple(dict.fromkeys(globs))
 
 
-def serve(*, port: int, bind: str = "127.0.0.1") -> None:
-    """Bind ``bind:port`` and serve forever (blocks).
+def _ssl_ctx() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # loopback, self-signed gateway cert
+    return ctx
 
-    Designed to run in a daemon thread launched from the hub adapter's
-    ``on_start``. ``ThreadingHTTPServer`` sets ``allow_reuse_address`` so a
-    gateway respawn rebinds the port cleanly. Binds loopback by default — a
-    local viewer, no remote reach.
-    """
-    # Register a few code/text extensions stdlib's mimetypes may not know, so
-    # they get a proper text/* type rather than falling to the sniff path.
-    for ext, ct in (
-        (".md", "text/markdown"),
-        (".toml", "text/plain"),
-        (".log", "text/plain"),
-        (".ts", "text/plain"),
-        (".tsx", "text/plain"),
-        (".jsx", "text/plain"),
-        (".rs", "text/plain"),
-        (".yml", "text/plain"),
-        (".yaml", "text/plain"),
-    ):
-        mimetypes.add_type(ct, ext)
 
+async def hold_mount() -> None:
+    """Register the ``kind=static`` mount and hold its lease forever.
+
+    Registers ``{name, prefix:/files, static:{dir:<root>, deny:<mask>}}`` on the
+    hub, then holds the returned ``/hub/lease/{id}`` WS open. On any drop —
+    network hiccup or a gateway restart that wipes the in-memory registry — it
+    re-registers (idempotent: same name+prefix replaces in place, minting a fresh
+    id) and re-holds, with capped exponential backoff. Meant to be launched as a
+    background task from the adapter's ``on_start`` (it runs in the adapter's
+    event loop and never returns)."""
+    hub_url = os.environ.get("AWM_HUB_URL", "").rstrip("/")
+    if not hub_url:
+        log.error("AWM_HUB_URL not set; fileviewer mount cannot register")
+        return
+    ws_base = hub_url.replace("https://", "wss://").replace("http://", "ws://")
+    ssl_ctx = _ssl_ctx() if ws_base.startswith("wss://") else None
+
+    mask = load_mask()
     with STATE.lock:
-        STATE.bind = bind
-        STATE.port = port
-        STATE.serving = True
+        STATE.prefix, STATE.root, STATE.deny = MOUNT_PREFIX, MOUNT_ROOT, mask
 
-    srv = ThreadingHTTPServer((bind, port), Handler)
-    log.info("fileviewer listening on http://%s:%d/?path=…", bind, port)
-    try:
-        srv.serve_forever()
-    finally:
-        with STATE.lock:
-            STATE.serving = False
+    backoff = 1.0
+    while True:
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=15) as cli:
+                r = await cli.post(f"{hub_url}/hub/register", json={
+                    "name": SERVICE_NAME,
+                    "prefix": MOUNT_PREFIX,
+                    "static": {"dir": MOUNT_ROOT, "deny": list(mask)},
+                })
+                r.raise_for_status()
+            body = r.json()
+            sid = body["service_id"]
+            lease_path = body["lease_ws_path"]
+            log.info("fileviewer mount up: %s → %s (id=%s, %d deny globs)",
+                     MOUNT_PREFIX, MOUNT_ROOT, sid, len(mask))
+            with STATE.lock:
+                STATE.mounted, STATE.service_id = True, sid
+            backoff = 1.0
+            async with websockets.connect(
+                f"{ws_base}{lease_path}",
+                ssl=ssl_ctx, max_size=None, open_timeout=10,
+            ) as ws:
+                # First frame is {"type":"ready",...}; then just hold the socket
+                # open (iterating drains frames and returns when the hub closes).
+                async for _ in ws:
+                    pass
+            log.info("fileviewer mount lease closed; re-registering")
+        except Exception as exc:  # noqa: BLE001 — stay up across any transient fault
+            log.warning("fileviewer mount lost (%s); re-registering in %.1fs",
+                        exc, backoff)
+        finally:
+            with STATE.lock:
+                STATE.mounted = False
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 30.0)
