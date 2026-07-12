@@ -9,6 +9,7 @@ import os
 import stat
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from awm import gatewayclient
 from awm.ssh.config import (
@@ -795,18 +796,50 @@ class SSHService:
             f"Discord. While that window is open the service will reconnect on "
             f"its own.")
 
+    async def _send_social(self, text: str) -> Any:
+        """Post ``text`` to Discord unimatrix0#notifications and RETURN the social
+        send result. Touches no lockfile. The one federated notify wire, shared by
+        the swallowing lock alert (:meth:`_alert`) and the result-surfacing
+        self-test (:meth:`notify_test`) so both exercise the identical path."""
+        return await gatewayclient.call_maybe_peer(
+            gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+            "social", "send", {
+                "account": _ALERT_ACCOUNT,
+                "channel": _ALERT_CHANNEL,
+                "text": text,
+            })
+
     async def _alert(self, text: str) -> None:
         """Post to Discord unimatrix0#notifications. Never raises into connect."""
         try:
-            await gatewayclient.call_maybe_peer(
-                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                "social", "send", {
-                    "account": _ALERT_ACCOUNT,
-                    "channel": _ALERT_CHANNEL,
-                    "text": text,
-                })
+            await self._send_social(text)
         except Exception as e:
             log.error("failed to post lock alert to Discord: %s", e)
+
+    async def notify_test(self, host: str = "[selftest]") -> dict:
+        """Fire the Discord lock-alert wire on demand so the operator can confirm
+        the ssh service can actually reach them BEFORE a real lockout depends on it.
+
+        Sends through the EXACT :meth:`_send_social` path a real breaker trip uses
+        (same peer selector, edge, bearer, account + channel), but writes NO
+        lockfile and does NOT mutate breaker state, and — unlike :meth:`_alert` —
+        does NOT swallow: the send result is surfaced so a broken notify wire fails
+        loudly (that failure IS the signal). The message is unmistakably a test and
+        carries no ``/approve`` instruction, so it can't train a reflex to clear a
+        device."""
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        text = (
+            f"🧪 awm-ssh notify self-test for **{host}** — the Discord alert wire "
+            f"is working. No action needed; this is NOT a real lock."
+        )
+        result = await self._send_social(text)  # surfaces on failure — no try/except
+        return {
+            "sent": True,
+            "peer": peer or "local",
+            "account": _ALERT_ACCOUNT,
+            "channel": _ALERT_CHANNEL,
+            "result": result,
+        }
 
     @staticmethod
     def _status_dict(cfg: HostConfig, status: str, *,
