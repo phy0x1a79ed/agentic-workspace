@@ -55,6 +55,10 @@ class ServiceRecord:
     entry: str | None = None                        # auto-shell entry (static only)
     css: tuple[str, ...] = ()                       # auto-shell stylesheets (static only)
     mount_id: str = "app"                           # auto-shell mount node id (static only)
+    deny: tuple[str, ...] = ()                       # mask globs (static only): a
+    #   request whose resolved path (relative to static_dir, post-symlink) matches
+    #   any glob 404s as if missing. Lets a broad mount (e.g. root "/") hide
+    #   secrets. Matched with PurePosixPath.full_match, so ``**`` spans segments.
 
     # Service-only metadata. ``api`` carries the manifest the service sent
     # in its `ready` frame (functions/emitters/sessions). The control WS
@@ -129,6 +133,7 @@ class Registry:
         entry: str | None = None,
         css: tuple[str, ...] = (),
         mount_id: str = "app",
+        deny: tuple[str, ...] = (),
     ) -> ServiceRecord:
         prefix = _normalize_prefix(prefix)
         async with self._lock:
@@ -141,6 +146,7 @@ class Registry:
                 entry=entry,
                 css=tuple(css),
                 mount_id=mount_id,
+                deny=tuple(deny),
             )
             self._install_base(rec)
             return rec

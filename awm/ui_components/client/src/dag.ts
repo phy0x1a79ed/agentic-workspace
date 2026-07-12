@@ -51,12 +51,73 @@ export interface DagTask {
   mode: string | null;
   workspace_slug: string | null;
   agent_ref: string | null;
-  /** Human-attached flag (orthogonal to lifecycle; tied to live chat presence). */
+  /**
+   * Durable, server-authoritative human-attach flag (orthogonal to lifecycle).
+   * NOT tied to any open WS — connecting a chat/terminal is pure viewing; an
+   * explicit interrupt (send a message, or the attach control) sets this. It
+   * survives disconnect and redispatch. Changes from BOTH sides (the user
+   * attaches; the mutual-detach handshake clears it), so the UI must treat it
+   * as authoritative — never fold it into the optimistic edit overlay.
+   */
   attached?: boolean;
   /** Sticky pause: freezes the autonomous supervisor; survives chat disconnect. */
   paused?: boolean;
+  /**
+   * The USER's detach-consent bit. Set from the UI while attached; when the
+   * agent's readiness bit also lands the node auto-detaches (no confirmation).
+   * Server-authoritative — busy-until-poll, never optimistic.
+   */
+  steer_user_done?: boolean;
+  /**
+   * The AGENT's detach-readiness bit (it believes it understands and has
+   * refreshed the objective record). A new user message clears it.
+   */
+  steer_agent_ready?: boolean;
+  /**
+   * The agent flagged mid-run that it wants human steering (surfaced in the
+   * attention strip). Does not freeze the agent until a human attaches.
+   */
+  steer_requested?: boolean;
+  /** Whether a durable objective record has been written (text is off the poll). */
+  has_objective?: boolean;
   created_at: number;
   updated_at: number;
+}
+
+/**
+ * One append-only attempt memory for a task — the record of a prior placement's
+ * outcome (why it gave up / what it delivered), surfaced in the focus panel.
+ */
+export interface AttemptMemory {
+  outcome: string;
+  reason_type: string | null;
+  reason_text: string | null;
+  payload_ref: string | null;
+  ts: number;
+}
+
+/**
+ * The on-selection heavier read for one task (`orch_task_detail`): the durable
+ * objective record TEXT (kept off the 3s poll, which projects only
+ * `has_objective`), the staged plan reference, the consent/steering bits, and
+ * the append-only attempt memories.
+ */
+export interface TaskDetail {
+  ok: boolean;
+  error?: string;
+  task_id: string;
+  goal: string;
+  title: string;
+  state: TaskState;
+  objective: string;
+  plan_ref: string | null;
+  attached: boolean;
+  paused: boolean;
+  steer_user_done: boolean;
+  steer_agent_ready: boolean;
+  steer_requested: boolean;
+  has_objective: boolean;
+  attempt_memories: AttemptMemory[];
 }
 
 export interface DagContract {
@@ -190,4 +251,83 @@ export function relocateSelf(
     headers: { 'X-Awm-As': slug },
     body: newConsumerTask ? { new_consumer_task: newConsumerTask } : {},
   });
+}
+
+// ---------------------------------------------------------------------------
+// Steering protocol — durable attach + mutual-detach consent (agents service)
+// ---------------------------------------------------------------------------
+
+/**
+ * Explicit-interrupt ATTACH by unit slug. This is the one user action that turns
+ * viewing into steering: it sets the durable `attached` flag (the single source
+ * of truth — opening a chat/terminal does NOT attach) and clears any
+ * wants-steering flag, freezing the autonomous supervisor at the next boundary.
+ * Routes through the agents service (same by-slug shape as `setPaused`); pass
+ * `taskId` so the durable mirror lands even when no placement is live yet
+ * (attach-on-rest — the backend places the next leg attended).
+ */
+export function attachTask(
+  slug: string,
+  taskId?: string,
+): Promise<{ ok?: boolean; [k: string]: unknown }> {
+  return svc('agents').fn('attach', {
+    scope: slug,
+    ...(taskId ? { task_id: taskId } : {}),
+  });
+}
+
+/**
+ * Set/clear the USER's detach-consent bit by unit slug. When the agent's
+ * readiness bit is also set the node auto-detaches (no confirmation dialog — the
+ * transition just fires and the poll reflects it). Rejected by the backend if
+ * the task is not attached. There is no force-detach — this only offers consent.
+ */
+export function setUserDone(
+  slug: string,
+  done: boolean,
+  taskId?: string,
+): Promise<{ ok?: boolean; [k: string]: unknown }> {
+  return svc('agents').fn('set_user_done', {
+    scope: slug,
+    done,
+    ...(taskId ? { task_id: taskId } : {}),
+  });
+}
+
+/** Fetch the heavier on-selection detail for one task (objective text, plan
+ *  ref, consent bits, attempt memories). Public read — no identity header. */
+export function fetchTaskDetail(taskId: string): Promise<TaskDetail> {
+  return svc('orchestrator').fn<TaskDetail>('orch_task_detail', { task_id: taskId });
+}
+
+// ---------------------------------------------------------------------------
+// Node lifecycle controls (orchestrator public verbs — T4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancel a non-terminal, non-root task (abandon semantics; consumers route to
+ * re-plan). Best-effort kills the live placement. Returns `{ok}` or
+ * `{ok:false, error}`.
+ */
+export function cancelTask(
+  taskId: string,
+): Promise<{ ok?: boolean; error?: string; [k: string]: unknown }> {
+  return svc('orchestrator').fn('orch_cancel', { task_id: taskId });
+}
+
+/**
+ * Retry a failed/abandoned task: reset to ready with a fresh budget, keep the
+ * retained unit, clear stale consent bits, re-enqueue.
+ */
+export function retryTask(
+  taskId: string,
+): Promise<{ ok?: boolean; error?: string; [k: string]: unknown }> {
+  return svc('orchestrator').fn('orch_retry', { task_id: taskId });
+}
+
+/** Push a resting non-terminal node through the planner (decomposition). */
+export function decomposeTask(
+  taskId: string,
+): Promise<{ ok?: boolean; error?: string; [k: string]: unknown }> {
+  return svc('orchestrator').fn('orch_decompose', { task_id: taskId });
 }

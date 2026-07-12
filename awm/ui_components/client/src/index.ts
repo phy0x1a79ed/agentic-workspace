@@ -33,6 +33,12 @@ export {
   setTitle,
   setTags,
   setPaused,
+  attachTask,
+  setUserDone,
+  fetchTaskDetail,
+  cancelTask,
+  retryTask,
+  decomposeTask,
   type OpenNodeResult,
   type CreateTaskResult,
   type TaskState,
@@ -40,6 +46,8 @@ export {
   type DagContract,
   type DagEdge,
   type DagSnapshot,
+  type TaskDetail,
+  type AttemptMemory,
 } from './dag';
 export {
   fetchConfigContracts,

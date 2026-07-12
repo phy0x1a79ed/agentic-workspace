@@ -38,10 +38,17 @@ class TestRegistryDerivation:
         worker_verbs = placement.VERB_PROFILES["worker"]
         for name in admin_ops.ADMIN_TOOL_NAMES:
             assert name in worker_verbs
-        # plan/verify/planner do NOT get the admin verbs.
+        # plan/verify/planner do NOT get the DAG-RESTRUCTURING admin verbs.
+        # plan & planner DO carry the ``set_title`` label seam — steering-time
+        # label derivation happens on any attended node (attach-on-rest can
+        # attend a plan/planner leg) — while verify stays verdict-only.
+        restructuring = [n for n in admin_ops.ADMIN_TOOL_NAMES if n != "set_title"]
         for mode in ("plan", "verify", "planner"):
             assert not any(n in placement.VERB_PROFILES[mode]
-                           for n in admin_ops.ADMIN_TOOL_NAMES)
+                           for n in restructuring)
+        assert "set_title" in placement.VERB_PROFILES["plan"]
+        assert "set_title" in placement.VERB_PROFILES["planner"]
+        assert "set_title" not in placement.VERB_PROFILES["verify"]
         # Every mode's allowed_tools is just the one agent-domain tool (+ fs).
         for mode in ("worker", "plan", "planner", "verify"):
             assert "mcp__awm__agent" in placement.TOOL_PROFILES[mode]

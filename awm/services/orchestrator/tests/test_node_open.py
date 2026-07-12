@@ -4,7 +4,8 @@ worker on it directly, skipping the plan → verify → planner legs.
 The drop-in counterpart to ``orch_task_create`` (which dispatches a planner to
 specify the task first). A node opened this way is born ``plan_approved`` so the
 dispatch machinery places a WORKER immediately; it is human-``attached`` (so its
-placement payload carries the claude harness); its synthetic deliverable hangs
+placement payload carries the supervisor-freeze intent — the harness is NOT
+forked on attach under the T5 uniform model); its synthetic deliverable hangs
 the node upstream of root; and an optional ``repo`` rides the placement payload
 as the workspace ``repos`` link.
 """
@@ -28,9 +29,11 @@ def test_open_places_attended_worker_directly(orch):
     assert (tid, "planner") not in orch.placements
     assert task["state"] == "active"
     assert task["mode"] == "worker"
-    # Attended, with the worker on the claude harness (interactive terminal).
+    # Attended → the supervisor-freeze intent is threaded. The harness is NOT
+    # forked on attach (T5 uniform model): the payload omits it and the
+    # agents-side driver-config default (claude) applies uniformly.
     assert bool(task["attached"]) is True
-    assert orch.placements[(tid, "worker")]["harness"] == "claude"
+    assert "harness" not in orch.placements[(tid, "worker")]
 
     # The handles the contract promises are returned (slug is the attach key).
     assert res["workspace_slug"] == task["workspace_slug"]

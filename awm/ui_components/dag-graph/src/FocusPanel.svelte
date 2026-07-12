@@ -10,9 +10,10 @@
   import DOMPurify from 'dompurify';
   import { Tag, PanelLabel } from '@awm/primitives';
   import { STATE_META } from './types';
-  import type { DagTask } from './types';
+  import type { DagTask, TaskDetail } from './types';
   import type { DagIndex, NeighborRef } from './graph-index';
   import { upstream, downstream } from './graph-index';
+  import SteeringChip from './SteeringChip.svelte';
 
   interface Props {
     index: DagIndex;
@@ -24,10 +25,25 @@
     onSetTags?: (taskId: string, tags: string[]) => void;
     /** Toggle the task's sticky pause (by unit slug; task_id for the durable mirror). */
     onSetPaused?: (slug: string, paused: boolean, taskId: string) => void;
+    /**
+     * The on-selection heavier read for the SELECTED task (objective text, plan
+     * ref, attempt memories). The page owns the fetch (dag-graph stays
+     * presentational) and hands it down; null while it loads or for no selection.
+     */
+    detail?: TaskDetail | null;
+    /** Cancel a non-terminal, non-root task (consumers re-plan). */
+    onCancel?: (taskId: string) => void;
+    /** Retry a failed/abandoned task (fresh budget, retained work). */
+    onRetry?: (taskId: string) => void;
+    /** Decompose a resting non-terminal node (place a planner). */
+    onDecompose?: (taskId: string) => void;
+    /** Busy-until-poll: disable the lifecycle buttons after a click. */
+    lifecycleBusy?: boolean;
   }
   let {
     index, selectedTaskId = null, onSelectTask,
     onSetTitle, onSetTags, onSetPaused,
+    detail = null, onCancel, onRetry, onDecompose, lifecycleBusy = false,
   }: Props = $props();
 
   function taskOf(id: string): DagTask | undefined {
@@ -100,6 +116,47 @@
     if (!src) return '<em>(no goal)</em>';
     return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
   });
+
+  // The durable OBJECTIVE record — system-written, never hand-edited — rendered
+  // read-only as sanitized markdown (same treatment as the goal). The detail is
+  // fetched per-selection by the page; `detail` may lag the selection by a beat.
+  const detailForSelected = $derived(
+    detail && selected && detail.task_id === selected.task_id ? detail : null,
+  );
+  const objectiveHtml = $derived.by<string>(() => {
+    const src = detailForSelected?.objective?.trim();
+    if (!src) return '';
+    return DOMPurify.sanitize(marked.parse(src, { async: false }) as string);
+  });
+
+  // Lifecycle button enablement (the backend is authoritative and rejects an
+  // invalid transition; these are affordance hints):
+  //   Cancel   — any non-terminal, non-root node.
+  //   Retry    — only a failed/abandoned node.
+  //   Decompose— a resting (no live placement out) non-terminal, non-root node.
+  const TERMINAL = new Set(['completed', 'failed', 'abandoned']);
+  const isTerminal = $derived(!!selected && TERMINAL.has(selected.state));
+  const canCancel = $derived(!!selected && !isTerminal && !selected.is_root);
+  const canRetry = $derived(
+    !!selected && (selected.state === 'failed' || selected.state === 'abandoned'),
+  );
+  const canDecompose = $derived(
+    !!selected && !isTerminal && !selected.is_root && !selected.mode,
+  );
+
+  // Inline confirm for Cancel (no browser dialog — the affordance flips in place
+  // and states the downstream cost). Reset whenever the selection changes.
+  let confirmingCancel = $state(false);
+  $effect(() => {
+    // Touch the selection so the confirm resets when the user moves on.
+    void selectedTaskId;
+    confirmingCancel = false;
+  });
+  function doCancel() {
+    if (!selected) return;
+    onCancel?.(selected.task_id);
+    confirmingCancel = false;
+  }
 </script>
 
 {#if !selected}
@@ -114,8 +171,9 @@
         <input
           class="title"
           type="text"
-          placeholder="untitled task"
-          aria-label="task title"
+          placeholder="auto-titled — optional override"
+          aria-label="task title (auto-derived; optional human override)"
+          title="Auto-derived from the objective record. Editing it is an optional human override — you never have to set it."
           bind:value={titleDraft}
           onblur={commitTitle}
           onkeydown={onTitleKey}
@@ -131,13 +189,13 @@
         {/if}
       </div>
 
-      <!-- agent info line: who is on it + attention state -->
+      <!-- agent info line: who is on it + steering / attention state -->
       <div class="agentline">
         {#if selected.mode}<span class="mode">{selected.mode}</span>{/if}
         {#if selected.agent_ref || selected.workspace_slug}
           <span class="meta" title="placed agent / unit slug">{selected.agent_ref ?? selected.workspace_slug}</span>
         {/if}
-        {#if selected.attached}<span class="flag att" title="a human is connected">attached</span>{/if}
+        <SteeringChip task={selected} />
         {#if selected.paused}<span class="flag pau" title="supervisor frozen">paused</span>{/if}
       </div>
 
@@ -159,9 +217,54 @@
         />
       </div>
 
-      <!-- the goal, unlabeled, as sanitized markdown -->
+      <!-- the goal (the starting prompt), unlabeled, as sanitized markdown -->
       <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
       <div class="prompt">{@html promptHtml}</div>
+
+      <!-- the durable objective record (system-written, read-only) -->
+      <div class="objwrap">
+        <div class="collbl"><PanelLabel>Objective</PanelLabel><span class="hint">system-written · read-only</span></div>
+        {#if objectiveHtml}
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
+          <div class="prompt obj">{@html objectiveHtml}</div>
+        {:else if selected.has_objective && !detailForSelected}
+          <p class="none">loading…</p>
+        {:else}
+          <p class="none">no objective record yet — attach and steer the task to distill one.</p>
+        {/if}
+      </div>
+
+      <!-- lifecycle controls: cancel / retry / decompose (busy-until-poll) -->
+      <div class="lifecycle">
+        {#if confirmingCancel}
+          <span class="confirmcopy" role="alert">Cancel this task? Its downstream consumers will re-plan.</span>
+          <button class="lc danger" type="button" disabled={lifecycleBusy} onclick={doCancel}>confirm cancel</button>
+          <button class="lc" type="button" onclick={() => (confirmingCancel = false)}>keep</button>
+        {:else}
+          <button
+            class="lc"
+            type="button"
+            disabled={!canCancel || lifecycleBusy}
+            title={canCancel ? 'cancel this task (consumers re-plan)' : 'only a non-terminal, non-root task can be cancelled'}
+            onclick={() => (confirmingCancel = true)}
+          >cancel</button>
+          <button
+            class="lc"
+            type="button"
+            disabled={!canRetry || lifecycleBusy}
+            title={canRetry ? 'retry with a fresh budget (keeps retained work)' : 'only a failed / abandoned task can be retried'}
+            onclick={() => selected && onRetry?.(selected.task_id)}
+          >retry</button>
+          <button
+            class="lc"
+            type="button"
+            disabled={!canDecompose || lifecycleBusy}
+            title={canDecompose ? 'break this node down (place a planner)' : 'only a resting non-terminal node can be decomposed'}
+            onclick={() => selected && onDecompose?.(selected.task_id)}
+          >decompose</button>
+          {#if lifecycleBusy}<span class="hint">working…</span>{/if}
+        {/if}
+      </div>
     </header>
 
     {#snippet side(title: string, hint: string, refs: NeighborRef[])}
@@ -235,7 +338,6 @@
     font-family: var(--mono); font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
     border-radius: var(--radius-md); padding: 0 var(--space-2);
   }
-  .flag.att { color: var(--ok); background: color-mix(in oklab, var(--ok) 14%, transparent); }
   .flag.pau { color: var(--warn); background: color-mix(in oklab, var(--warn) 14%, transparent); }
 
   .tags { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
@@ -275,6 +377,28 @@
   .prompt :global(h1), .prompt :global(h2), .prompt :global(h3) {
     margin: var(--space-2) 0 var(--space-1); font-size: 13px; font-weight: 600;
   }
+
+  .objwrap { display: flex; flex-direction: column; gap: var(--space-1); }
+  .prompt.obj {
+    background: color-mix(in oklab, var(--atomizer) 6%, var(--surface2));
+    border-color: color-mix(in oklab, var(--atomizer) 30%, var(--border));
+  }
+
+  .lifecycle {
+    display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+    padding-top: var(--space-1);
+  }
+  .lc {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-md); color: var(--text2); cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.5px;
+    text-transform: uppercase; padding: var(--space-1) var(--space-2);
+  }
+  .lc:hover:not(:disabled) { color: var(--text); border-color: var(--atomizer); }
+  .lc:disabled { opacity: 0.4; cursor: default; }
+  .lc.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 50%, var(--border)); }
+  .lc.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 14%, transparent); }
+  .confirmcopy { font-size: 11px; color: var(--warn); }
 
   .cols { display: flex; gap: var(--space-4); align-items: flex-start; }
   .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }

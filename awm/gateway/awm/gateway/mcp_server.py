@@ -27,6 +27,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -62,7 +63,19 @@ async def list_tools() -> list[Tool]:
     ``/tools``).
     """
     data = await _request_with_retry("GET", "/tools", params={"view": "domains"})
-    return [Tool.model_validate(t) for t in data["tools"]]
+    tools = [Tool.model_validate(t) for t in data["tools"]]
+    # Client-side federation: merge each registered peer's collapsed catalog,
+    # namespaced ``<domain>@<peer>``, by reading the peer's edge DIRECTLY (never
+    # relayed through this gateway). Best-effort — a down/unreachable peer simply
+    # contributes no tools and never blocks the local surface.
+    peers = await _list_peers()
+    if peers:
+        results = await asyncio.gather(
+            *(_peer_tools(p) for p in peers), return_exceptions=True)
+        for r in results:
+            if isinstance(r, list):
+                tools.extend(r)
+    return tools
 
 
 @server.call_tool()
@@ -73,10 +86,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # core can resolve the call to that placement (the agents B-op tools
         # need no model-supplied token). Read at call time, not import time, so a
         # reused proxy always reflects its own env. Absent for normal sessions.
-        headers = None
         as_ = os.environ.get("AWM_AS")
-        if as_:
-            headers = {"X-Awm-As": as_}
+        # A ``<domain>@<peer>`` tool name routes to that peer's edge directly.
+        if "@" in name:
+            base, _, peer_name = name.rpartition("@")
+            data = await _peer_invoke(peer_name, base, arguments, as_)
+            return [TextContent(type="text", text=data["result"])]
+        headers = {"X-Awm-As": as_} if as_ else None
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers,
@@ -137,6 +153,76 @@ async def _request_with_retry(
                     first_attempt = False
                 await asyncio.sleep(0.3)
     raise RuntimeError(f"awm daemon unreachable after {max_wait}s: {last_err}")
+
+
+# ---------------------------------------------------------------------------
+# Cross-peer federation (client-side, no relay)
+# ---------------------------------------------------------------------------
+
+async def _list_peers() -> list[dict[str, Any]]:
+    """The local gateway's peer book. Empty on any error (federation optional)."""
+    try:
+        data = await _request_with_retry("GET", "/peers", max_wait=3.0)
+        return data.get("peers", [])
+    except Exception:  # noqa: BLE001 — no peers / gateway hiccup → no peer tools
+        return []
+
+
+async def _peer_tools(peer: dict[str, Any]) -> list[Tool]:
+    """Fetch one peer's collapsed catalog from its edge, namespaced ``@<peer>``.
+
+    Reads the peer's httpsfront edge directly over CA-verified TLS with a bearer
+    fetched over SSH. Best-effort: returns ``[]`` for an unreachable peer.
+    """
+    from awm import gatewayclient
+
+    name = peer["name"]
+    edge = peer["edge_url"].rstrip("/")
+    alias = peer.get("ssh_alias") or name
+    try:
+        bearer = await asyncio.to_thread(gatewayclient.fetch_peer_cred, alias)
+        ca = gatewayclient._peer_ca()
+        async with httpx.AsyncClient(timeout=10.0, verify=ca) as cli:
+            r = await cli.get(f"{edge}/tools", params={"view": "domains"},
+                              headers={"Authorization": f"Bearer {bearer}"})
+            r.raise_for_status()
+        out: list[Tool] = []
+        for t in (r.json() or {}).get("tools", []):
+            t["name"] = f'{t["name"]}@{name}'
+            out.append(Tool.model_validate(t))
+        return out
+    except Exception as exc:  # noqa: BLE001 — peer down / no cred / bad TLS
+        # Stderr only (stdout is the MCP stdio channel); never raise.
+        print(f"awm-mcp: peer {name!r} tools unavailable: {exc}", file=sys.stderr)
+        return []
+
+
+async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
+                       as_: str | None) -> dict[str, Any]:
+    """Invoke ``base_name`` on ``peer_name``'s edge directly. Re-fetches the
+    credential once on a 401 (it may have rotated)."""
+    from awm import gatewayclient
+
+    entry = await asyncio.to_thread(gatewayclient.resolve_peer, peer_name)
+    edge = entry["edge_url"].rstrip("/")
+    alias = entry.get("ssh_alias") or peer_name
+    ca = gatewayclient._peer_ca()
+    resp = None
+    for attempt in (0, 1):
+        bearer = await asyncio.to_thread(
+            lambda: gatewayclient.fetch_peer_cred(alias, force=(attempt == 1)))
+        headers = {"Authorization": f"Bearer {bearer}"}
+        if as_:
+            headers["X-Awm-As"] = as_
+        async with httpx.AsyncClient(timeout=60.0, verify=ca) as cli:
+            resp = await cli.post(f"{edge}/invoke",
+                                  json={"name": base_name, "args": arguments},
+                                  headers=headers)
+        if resp.status_code == 401 and attempt == 0:
+            continue
+        break
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _ensure_core_running() -> None:

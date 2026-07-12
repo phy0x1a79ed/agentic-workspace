@@ -121,6 +121,11 @@ case "$RESP_BODY" in
     *unknown\ session*) ok "observe rejects bad session ($RESP_CODE): $RESP_BODY" ;;
     *) bad "observe did not reject bad session ($RESP_CODE): $RESP_BODY" ;;
 esac
+invoke body_mine '{"session_id":"nope","x":0,"y":0}' || true
+case "$RESP_BODY" in
+    *unknown\ session*) ok "body_mine routes + rejects bad session" ;;
+    *) bad "body_mine did not route ($RESP_CODE): $RESP_BODY" ;;
+esac
 
 if [ "$MODE" != "--docker" ]; then
     say "no-Docker smoke complete (pass --docker for the live lifecycle)"
@@ -193,6 +198,121 @@ if [ "$(jget "$RESP_BODY" snapshot.body)" = "True" ]; then
     ok "body persisted across save/load -> $RESP_BODY"
 else
     bad "body lost across save/load ($RESP_CODE): $RESP_BODY"
+fi
+
+# --- events inbox (emitter pump + observe_events, consume-once) -----------
+say "events inbox (observe_events)"
+invoke observe_events "{\"session_id\":\"$SID\"}" || true
+kinds="$(printf '%s' "$RESP_BODY" | python3 -c \
+    'import sys,json; print(" ".join(e.get("kind","") for e in json.load(sys.stdin).get("events",[])))' \
+    2>/dev/null)"
+for want in spawned arrived world_saved world_loaded; do
+    case " $kinds " in
+        *" $want "*) ok "inbox saw $want" ;;
+        *) bad "inbox missing $want (kinds: $kinds)" ;;
+    esac
+done
+invoke observe_events "{\"session_id\":\"$SID\"}" || true
+n2="$(printf '%s' "$RESP_BODY" | python3 -c \
+    'import sys,json; print(len(json.load(sys.stdin).get("events",[])))' 2>/dev/null)"
+[ "$n2" = "0" ] && ok "second drain empty (consume-once)" \
+    || bad "second drain not empty: $RESP_BODY"
+
+# --- gameplay: mine -> craft -> build -> insert/take -> research -----------
+say "gameplay: locate stone, pathfind to it, mine it"
+FIND='local s=game.surfaces.nauvis; local r=s.find_entities_filtered{position={0,0}, radius=250, name="stone", limit=1}[1]; rcon.print(r and (r.position.x .. " " .. r.position.y) or "none")'
+invoke exec_lua "$(python3 -c \
+    'import json,sys; print(json.dumps({"session_id": sys.argv[1], "code": sys.argv[2]}))' \
+    "$SID" "$FIND")" || true
+STONE="$(jget "$RESP_BODY" output)"
+SX=""; SY=""
+if [ -n "$STONE" ] && [ "$STONE" != "none" ]; then
+    SX="${STONE%% *}"; SY="${STONE##* }"
+    ok "stone at ($SX,$SY)"
+else
+    bad "no stone within 250 tiles ($RESP_CODE): $RESP_BODY"
+fi
+
+if [ -n "$SX" ]; then
+    invoke body_move "{\"session_id\":\"$SID\",\"x\":$SX,\"y\":$SY}" \
+        && ok "body_move -> pathfinding toward stone" \
+        || bad "body_move failed ($RESP_CODE): $RESP_BODY"
+    # Motion state clears (target gone, walking false) on arrival OR give-up;
+    # the distance check below tells the two apart.
+    arrived=0
+    for _ in $(seq 1 120); do
+        invoke observe "{\"session_id\":\"$SID\"}" || true
+        tgt="$(jget "$RESP_BODY" snapshot.target.x)"
+        w="$(jget "$RESP_BODY" snapshot.walking)"
+        if [ -z "$tgt" ] && [ "$w" = "False" ]; then arrived=1; break; fi
+        sleep 1
+    done
+    PX="$(jget "$RESP_BODY" snapshot.position.x)"
+    PY="$(jget "$RESP_BODY" snapshot.position.y)"
+    if [ "$arrived" = 1 ] && python3 -c \
+        "import sys; dx=float('$PX')-($SX); dy=float('$PY')-($SY); sys.exit(0 if dx*dx+dy*dy <= 9.0 else 1)" \
+        2>/dev/null; then
+        ok "pathfinded to stone (pos $PX,$PY)"
+    else
+        bad "did not converge on stone (arrived=$arrived pos=$PX,$PY goal=$SX,$SY)"
+    fi
+
+    invoke body_mine "{\"session_id\":\"$SID\",\"x\":$SX,\"y\":$SY,\"count\":7}" || true
+    got="$(jget "$RESP_BODY" mined.stone)"
+    if [ -n "$got" ] && [ "$got" -ge 5 ] 2>/dev/null; then
+        ok "mined $got stone -> $RESP_BODY"
+    else
+        bad "mine did not yield >=5 stone ($RESP_CODE): $RESP_BODY"
+    fi
+
+    say "craft a stone furnace (engine-native handcraft)"
+    invoke body_craft "{\"session_id\":\"$SID\",\"recipe\":\"stone-furnace\"}" || true
+    [ "$(jget "$RESP_BODY" queued)" = "1" ] && ok "craft queued" \
+        || bad "craft not queued ($RESP_CODE): $RESP_BODY"
+    crafted=0
+    for _ in $(seq 1 30); do
+        invoke observe "{\"session_id\":\"$SID\"}" || true
+        inv="$(jget "$RESP_BODY" snapshot.inventory.stone-furnace)"
+        if [ -n "$inv" ] && [ "$inv" -ge 1 ] 2>/dev/null; then crafted=1; break; fi
+        sleep 1
+    done
+    [ "$crafted" = 1 ] && ok "stone-furnace landed in inventory" \
+        || bad "stone-furnace never appeared in inventory: $RESP_BODY"
+
+    say "build the furnace, insert/take stone through it"
+    BX=""; BY=""
+    for off in "3 0" "0 3" "-3 0" "0 -3"; do
+        ox="${off%% *}"; oy="${off##* }"
+        TX="$(python3 -c "print(float('$PX')+($ox))")"
+        TY="$(python3 -c "print(float('$PY')+($oy))")"
+        if invoke body_build "{\"session_id\":\"$SID\",\"name\":\"stone-furnace\",\"x\":$TX,\"y\":$TY}"; then
+            BX="$TX"; BY="$TY"; break
+        fi
+    done
+    [ -n "$BX" ] && ok "built stone-furnace at ($BX,$BY) -> $RESP_BODY" \
+        || bad "could not place stone-furnace anywhere adjacent ($RESP_CODE): $RESP_BODY"
+
+    if [ -n "$BX" ]; then
+        invoke body_mine "{\"session_id\":\"$SID\",\"x\":$SX,\"y\":$SY,\"count\":2}" || true
+        invoke body_insert "{\"session_id\":\"$SID\",\"x\":$BX,\"y\":$BY,\"name\":\"stone\",\"count\":1}" || true
+        [ "$(jget "$RESP_BODY" inserted)" = "1" ] && ok "inserted 1 stone into furnace" \
+            || bad "insert failed ($RESP_CODE): $RESP_BODY"
+        invoke body_take "{\"session_id\":\"$SID\",\"x\":$BX,\"y\":$BY,\"name\":\"stone\"}" || true
+        [ "$(jget "$RESP_BODY" taken)" = "1" ] && ok "took the stone back" \
+            || bad "take failed ($RESP_CODE): $RESP_BODY"
+    fi
+
+    say "research (cheat path) + catalog queries"
+    invoke research "{\"session_id\":\"$SID\",\"name\":\"steam-power\"}" || true
+    [ "$(jget "$RESP_BODY" cheated)" = "True" ] && ok "research steam-power flagged cheated" \
+        || bad "research failed ($RESP_CODE): $RESP_BODY"
+    invoke technologies "{\"session_id\":\"$SID\",\"search\":\"steam-power\"}" || true
+    [ "$(jget "$RESP_BODY" technologies.0.researched)" = "True" ] \
+        && ok "technologies shows steam-power researched" \
+        || bad "technologies query wrong ($RESP_CODE): $RESP_BODY"
+    invoke recipes "{\"session_id\":\"$SID\",\"search\":\"furnace\",\"limit\":5}" || true
+    [ -n "$(jget "$RESP_BODY" recipes.0.name)" ] && ok "recipes query returns entries" \
+        || bad "recipes query empty ($RESP_CODE): $RESP_BODY"
 fi
 
 invoke release "{\"session_id\":\"$SID\"}" \
