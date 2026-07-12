@@ -1,0 +1,5 @@
+# Gateway discovery profile marker (see awm/gateway/.../hub/discovery.py):
+# this service bootstraps only on a gateway whose AWM_PROFILES includes one of
+# these (an explicit `awm services enable` still overrides). Keeps the Factorio
+# appliance from docker-booting on dev/prod when the folder merges.
+profiles = ["gamebot"]

@@ -25,6 +25,13 @@ projects/
 # the DAG-node analog of projects/).
 tasks/
 
+# One-off sandboxes (bioinformatics run outputs, etc.) and pre-collapse layout
+# leftovers — never tracked. Both were untracked-but-unignored, so a `git add -A`
+# would have pushed them (packages/ is superseded by awm/pages/ + awm/services/;
+# the packages/**/dist/ rule below is now subsumed by this).
+scratch/
+packages/
+
 # SvelteKit static build output — registered with the hub via
 # `awm hub register --dir build/`, not committed.
 build/

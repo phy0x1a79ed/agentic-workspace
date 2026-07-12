@@ -9,7 +9,9 @@ reconnect).
 public ops, so the gateway catalog (``catalog.list_tools``, which iterates the
 manifest) projects exactly five ``orch_*`` MCP tools. The privileged
 plan-mutation ops (``claim`` / ``deliver`` / ``fail`` / ``decompose_commit`` /
-``approve_plan`` / ``reject_plan`` / ``set_attached``) and the planner read ops
+``approve_plan`` / ``reject_plan`` / ``accept_work`` / ``reject_work`` /
+``set_attached`` / ``set_steering``) and the
+planner read ops
 (``search_tasks`` / ``search_contracts``) live in ``HANDLERS`` but are
 deliberately ABSENT from the manifest — so they are not MCP tools, yet remain
 reachable by the agents harness through the gateway's catch-all
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from awm import gatewayclient
@@ -66,6 +69,13 @@ API_MANIFEST: dict[str, Any] = {
                      "unit: a \"project/scope\" string, a {project, scope, name?} "
                      "object, or a list of either. A scope attaches to at most "
                      "one active task.")},
+                {"name": "accept", "type": "object", "required": False,
+                 "description": (
+                     "Opt-in acceptance gate {objective, checks:[{name, cmd, "
+                     "expect_exit?, expect_output?}]}: arms an independent "
+                     "execution-verified check on the node's deliverable — the "
+                     "worker's delivery becomes a CLAIM an accept verifier must "
+                     "pass before it completes. Omit for the legacy path.")},
             ],
         },
         {
@@ -81,6 +91,13 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "produces", "type": "array", "required": False},
                 {"name": "depends_on", "type": "array", "required": False},
                 {"name": "repo", "type": "object", "required": False},
+                {"name": "accept", "type": "object", "required": False,
+                 "description": (
+                     "Opt-in acceptance gate {objective, checks:[{name, cmd, "
+                     "expect_exit?, expect_output?}]} armed on every contract "
+                     "this task produces — the worker's delivery becomes a CLAIM "
+                     "an independent accept verifier must pass before it "
+                     "completes. Omit for the legacy immediate-completion path.")},
             ],
         },
         {
@@ -158,6 +175,56 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "paused", "type": "boolean", "required": True},
             ],
         },
+        {
+            "name": "orch_task_detail",
+            "tool": "orch_task_detail",
+            "description": "On-selection read for one task: the objective record "
+                           "text, the staged plan reference (if any), the attempt "
+                           "memories, and the steering/consent bits. Heavier than "
+                           "the DAG poll — fire it when a node is selected.",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "orch_cancel",
+            "tool": "orch_cancel",
+            "description": "Cancel a task: route it through the give-up path so "
+                           "downstream consumers re-plan (one give-up path), and "
+                           "best-effort stop any live placement. Rejects the root "
+                           "and terminal tasks. Cancelling an attached task is the "
+                           "human's escape hatch and clears its attach/steering "
+                           "state.",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "orch_retry",
+            "tool": "orch_retry",
+            "description": "Retry a failed or abandoned task: reset it to ready "
+                           "with a fresh replan budget, clear the sticky pause and "
+                           "stale steering bits (keeping the objective record and "
+                           "the retained workspace unit), and re-dispatch. Rejects "
+                           "any non-failed/abandoned task. NOTE: retrying a node "
+                           "whose consumers already re-planned can mint a competing "
+                           "producer (OR/coalescing is deferred).",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "orch_decompose",
+            "tool": "orch_decompose",
+            "description": "Decompose a resting non-terminal node: push it through "
+                           "the needs-decomposition entry (a planner expands it "
+                           "into a sub-DAG), charging the decompose budget like the "
+                           "organic path. Rejects the root, out-states (a placement "
+                           "is live), and terminals.",
+            "params": [
+                {"name": "task_id", "type": "string", "required": True},
+            ],
+        },
     ],
     "emitters": [],
     "sessions": [],
@@ -182,6 +249,10 @@ HANDLERS = {
     "orch_set_title": operations.orch_set_title,
     "orch_set_tags": operations.orch_set_tags,
     "orch_set_paused": operations.orch_set_paused,
+    "orch_task_detail": operations.orch_task_detail,
+    "orch_cancel": operations.orch_cancel,
+    "orch_retry": operations.orch_retry,
+    "orch_decompose": operations.orch_decompose,
     # privileged (manifest-OMITTED — agents harness only)
     "claim": operations.claim,
     "deliver": operations.deliver,
@@ -189,7 +260,10 @@ HANDLERS = {
     "decompose_commit": operations.decompose_commit,
     "approve_plan": operations.approve_plan,
     "reject_plan": operations.reject_plan,
+    "accept_work": operations.accept_work,
+    "reject_work": operations.reject_work,
     "set_attached": operations.set_attached,
+    "set_steering": operations.set_steering,
     "set_title": operations.set_title,
     "set_tags": operations.set_tags,
     # attached-only admin ops (DAG restructuring) — manifest-omitted; reached
@@ -220,6 +294,19 @@ def _link_repos(unit_slug: str, repos: list) -> None:
     ``workspace_link_repos``; the attach/detach ops wrap it best-effort."""
     gatewayclient.call_sync("workspace", "workspace_link_repos",
                             {"unit_slug": unit_slug, "repos": repos})
+
+
+def _stop_placement(workspace_slug: str, task_id: str | None) -> None:
+    """Best-effort stop of a live placement (the cancel stop seam).
+
+    A synchronous gateway call to the agents service's manifest-omitted
+    ``stop_placement`` (reached via the catch-all ``/svc/agents/fn/<op>``
+    dispatch). The agents side closes the placement row BEFORE killing the
+    session, so a dying agent's late fail can't re-route consumers again;
+    ``operations.orch_cancel`` wraps this best-effort so a stop failure never
+    fails the cancel."""
+    gatewayclient.call_sync("agents", "stop_placement",
+                            {"scope": workspace_slug, "task_id": task_id})
 
 
 # Non-terminal agent-session statuses — a scope reporting any of these still has
@@ -258,12 +345,77 @@ async def _live_scopes() -> "set[str] | None":
     return None
 
 
+# Periodic reconcile (T5) tunables — env-overridable for live drills.
+_RECONCILE_SWEEP_S = 60.0
+_ORPHAN_MIN_AGE_S = 120.0
+
+
+def _sweep_interval_s() -> float:
+    try:
+        return float(os.environ.get("AWM_RECONCILE_SWEEP_S") or _RECONCILE_SWEEP_S)
+    except (TypeError, ValueError):
+        return _RECONCILE_SWEEP_S
+
+
+def _orphan_min_age_s() -> float:
+    try:
+        return float(os.environ.get("AWM_ORPHAN_MIN_AGE_S") or _ORPHAN_MIN_AGE_S)
+    except (TypeError, ValueError):
+        return _ORPHAN_MIN_AGE_S
+
+
+async def _reconcile_sweep_once(state: dict) -> None:
+    """One periodic reconcile pass: recover orphaned placements (min-age +
+    two-strike guarded, against agents liveness), then re-scan the frontier.
+
+    ``state`` carries the two-strike memory (``prev_orphaned``) across sweeps.
+    LIVENESS-UNKNOWN (agents unreachable → ``_live_scopes`` returns ``None``):
+    the whole cycle is skipped — no orphan recovery AND no frontier re-scan —
+    so a transport blip is never read as "everything is dead"."""
+    db = OrchestratorDAO()
+    live = await _live_scopes()
+    recovered, current = kernel.periodic_recover(
+        db, live, state.get("prev_orphaned", set()),
+        min_age_s=_orphan_min_age_s())
+    state["prev_orphaned"] = current
+    if live is None:
+        log.warning("orchestrator: agents liveness unknown; skipping reconcile "
+                    "sweep cycle (orphan recovery + frontier re-scan)")
+        return
+    if recovered:
+        log.info("orchestrator: periodic sweep recovered %d orphaned placement(s)",
+                 len(recovered))
+    # Frontier re-scan (every sweep, unguarded): re-enqueue every resting node —
+    # including the just-recovered ones. Cheap + idempotent: dispatch dedups an
+    # in-flight intent, and ``_prepare`` re-checks the rest-state, so a node whose
+    # placement is already live is skipped.
+    dispatch.enqueue(kernel.reconcile(db))
+
+
+async def _reconcile_sweep_loop() -> None:
+    """Background task: re-run the boot recovery pair on a ~60s sweep so lost or
+    dead work is re-driven without a restart. Started from :func:`_on_start`."""
+    state: dict = {"prev_orphaned": set()}
+    log.info("orchestrator: periodic reconcile started (sweep=%ss, min_age=%ss)",
+             int(_sweep_interval_s()), int(_orphan_min_age_s()))
+    while True:
+        try:
+            await asyncio.sleep(_sweep_interval_s())
+            await _reconcile_sweep_once(state)
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 — never let the loop die
+            log.exception("orchestrator: reconcile sweep failed")
+
+
 async def _on_start() -> None:
     """Stand up the DB, wire the reclaim seam, start the dispatch drain loop,
-    recover orphaned placements, then re-dispatch the resting frontier."""
+    recover orphaned placements, re-dispatch the resting frontier, then start the
+    periodic reconcile sweep."""
     dao.init()
     operations.configure(reclaim_workspace_fn=_reclaim_workspace,
-                         link_repos_fn=_link_repos)
+                         link_repos_fn=_link_repos,
+                         stop_placement_fn=_stop_placement)
     dispatch.start_drain_loop()
     # Boot recovery: a full gateway restart bounces the agents service too, which
     # closes every open instance — so out-state placements may be dead with no
@@ -274,6 +426,10 @@ async def _on_start() -> None:
     # ...then the reconcile sweep re-dispatches the resting frontier — including
     # the just-recovered nodes — onto their retained workspace units.
     dispatch.enqueue(kernel.reconcile(db))
+    # Long-session hardening (T5): the boot recovery pair also runs periodically,
+    # so lost/dead work is re-driven within one ~60s sweep (guarded by min-age +
+    # two-strike + liveness-unknown). Runs inside the event loop.
+    asyncio.create_task(_reconcile_sweep_loop())
 
 
 async def main() -> None:

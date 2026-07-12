@@ -17,9 +17,23 @@ RCON: the supervisor runs an in-container RCON client against the engine, and th
 baked-in ``game-bot-control`` mod owns a script-controlled character body. The
 body verbs ``body_spawn`` / ``body_move`` / ``body_stop`` drive that character
 (one-shot move + poll ``observe`` to watch it converge); the body persists across
-save/load because it lives in the mod's ``storage``. The ``factorio`` emitter is
-declared but not fired yet — events land with a later pass (the mod already keeps
-a bounded events ring buffer for it).
+save/load because it lives in the mod's ``storage``.
+
+The gameplay verbs ``body_mine`` / ``body_craft`` / ``body_build`` /
+``body_insert`` / ``body_take`` act through the same mod interface (all
+reach-gated — the body must walk within reach first). ``research`` unlocks a
+technology via the cheat path (flagged ``cheated: true`` — script-crafted items
+never fire trigger-tech counters, so there is no legit path yet). ``recipes`` /
+``technologies`` are bounded catalog queries for planning what to craft next.
+
+The ``factorio`` emitter is LIVE: world verbs fire ``world_loaded`` /
+``world_saved`` / ``error`` directly, and a background pump drains the mod's
+bounded events ring buffer (``spawned`` / ``arrived`` / ``died`` / ...) on a
+short interval and re-emits each entry as ``{session_id, kind, tick, data}`` on
+the topic — projected up-stack as ``rlm.factorio.<kind>``. Every fired event is
+also accumulated in a per-session service-side inbox so a *polling* consumer
+never races the pump: ``observe_events`` returns everything since its last call
+(consume-once), while the emitter stays the live stream.
 
 Single-session for now: ``acquire`` is idempotent (at most one live appliance;
 a second acquire returns the existing session, erroring on a game mismatch). The
@@ -34,6 +48,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import threading
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
@@ -104,12 +120,27 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Observe a session: returns {snapshot, screenshot} of the live "
                 "world over RCON. The snapshot carries tick, paused, and (if a "
-                "body is spawned) its position/health/inventory plus a capped "
-                "nearby-entity summary. screenshot is null (not captured)."
+                "body is spawned) its position/health/reach/inventory, the "
+                "crafting queue, and a capped nearby-entity summary (resources "
+                "include amount). screenshot is null (not captured)."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
                 {"name": "radius", "type": "integer", "required": False},
+            ],
+        },
+        {
+            "name": "observe_events",
+            "tool": "rlm_factorio_observe_events",
+            "description": (
+                "Drain the session's pending events: returns {events: [{kind, "
+                "tick?, data}, ...]} accumulated since the last call, then "
+                "clears them (consume-once inbox — world events like arrived/"
+                "path_blocked/died/world_saved land here AND stream live on "
+                "the 'factorio' emitter)."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
             ],
         },
         # ---- act: world lifecycle (sacred saves) ----
@@ -200,8 +231,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "body_move",
             "tool": "rlm_factorio_body_move",
             "description": (
-                "Set the body's walk target and return immediately (one-shot). "
-                "Poll observe to watch it converge then stop. Spawn first."
+                "Walk the body to (x,y) via engine pathfinding (routes around "
+                "obstacles) and return immediately. Poll observe or watch the "
+                "emitter for 'arrived' / 'path_blocked'. Spawn first."
             ),
             "params": [
                 {"name": "session_id", "type": "string", "required": True},
@@ -217,20 +249,224 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "session_id", "type": "string", "required": True},
             ],
         },
+        # ---- act: gameplay (RCON + game-bot-control mod; all reach-gated) ----
+        {
+            "name": "body_mine",
+            "tool": "rlm_factorio_body_mine",
+            "description": (
+                "Mine the resource/tree/rock nearest (x,y) into the body's "
+                "inventory (must be within reach — walk there first). For ore "
+                "patches, count = units to extract (default 1); returns "
+                "{mined: {item: n}, remaining}."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+                {"name": "name", "type": "string", "required": False},
+                {"name": "count", "type": "integer", "required": False},
+            ],
+        },
+        {
+            "name": "body_craft",
+            "tool": "rlm_factorio_body_craft",
+            "description": (
+                "Queue a handcraft on the body (engine-native: consumes "
+                "ingredients, ticks down, yields into inventory). Returns "
+                "{queued}; watch progress via observe's crafting list."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "recipe", "type": "string", "required": True},
+                {"name": "count", "type": "integer", "required": False},
+            ],
+        },
+        {
+            "name": "body_build",
+            "tool": "rlm_factorio_body_build",
+            "description": (
+                "Place an item from the body's inventory as an entity at (x,y) "
+                "(within reach, collision-checked; the item is consumed only on "
+                "success). direction: north/east/south/west (default north)."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "name", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+                {"name": "direction", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "body_insert",
+            "tool": "rlm_factorio_body_insert",
+            "description": (
+                "Move items from the body's inventory into the entity at (x,y) "
+                "(within reach). The engine routes to the right slot — coal "
+                "into a furnace lands in fuel, ore in the smelt slot. Optional "
+                "target narrows by entity name. Returns {inserted, target}."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+                {"name": "name", "type": "string", "required": True},
+                {"name": "count", "type": "integer", "required": False},
+                {"name": "target", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "body_take",
+            "tool": "rlm_factorio_body_take",
+            "description": (
+                "Take items from the entity at (x,y) into the body's inventory "
+                "(within reach; e.g. plates out of a furnace). Default count = "
+                "all available. Returns {taken, from}."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "x", "type": "number", "required": True},
+                {"name": "y", "type": "number", "required": True},
+                {"name": "name", "type": "string", "required": True},
+                {"name": "count", "type": "integer", "required": False},
+                {"name": "target", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "research",
+            "tool": "rlm_factorio_research",
+            "description": (
+                "Unlock a technology directly (CHEAT path — script-crafted "
+                "items never fire trigger-tech counters and no lab chain "
+                "exists, so this flips the flag and marks the result "
+                "cheated:true). Prerequisites are NOT auto-unlocked."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "name", "type": "string", "required": True},
+            ],
+        },
+        # ---- perceive: catalog queries ----
+        {
+            "name": "recipes",
+            "tool": "rlm_factorio_recipes",
+            "description": (
+                "List the force's unlocked recipes ({name, ingredients, "
+                "products}). Bounded: pass search (substring) and/or limit "
+                "(default 40); truncated:true means narrow the search."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "search", "type": "string", "required": False},
+                {"name": "limit", "type": "integer", "required": False},
+            ],
+        },
+        {
+            "name": "technologies",
+            "tool": "rlm_factorio_technologies",
+            "description": (
+                "List technologies ({name, researched, prerequisites}). "
+                "Bounded like recipes; only_unresearched=true filters to the "
+                "remaining tree."
+            ),
+            "params": [
+                {"name": "session_id", "type": "string", "required": True},
+                {"name": "search", "type": "string", "required": False},
+                {"name": "only_unresearched", "type": "boolean", "required": False},
+                {"name": "limit", "type": "integer", "required": False},
+            ],
+        },
     ],
     "emitters": [
         {
             "topic": "factorio",
             "description": (
                 "Fires on a realm-side world event. Payload {session_id, kind, "
-                "data} where kind is e.g. 'world_loaded', 'world_saved' or "
-                "'error' — projected as rlm.factorio.<kind>. Not fired yet in "
-                "this slice (emitters land with the events pass)."
+                "tick?, data} — projected as rlm.factorio.<kind>. Kinds: "
+                "'world_loaded'/'world_saved'/'error' (fired by the world "
+                "verbs) plus the mod's in-world events ('spawned', 'arrived', "
+                "'died', ...) drained by a background pump."
             ),
         },
     ],
     "sessions": [],
 }
+
+# ---- emit plumbing ---------------------------------------------------------
+#
+# Handlers run sync in worker threads (ServiceAdapter dispatches via
+# asyncio.to_thread), so firing the emitter means hopping back onto the
+# adapter's loop. main() binds these globals before serving.
+
+_ADAPTER: ServiceAdapter | None = None
+_LOOP: asyncio.AbstractEventLoop | None = None
+
+# How often the background pump drains the mod's ring buffer per ready session.
+EVENTS_POLL_S = float(os.environ.get("AWM_FACTORIO_EVENTS_POLL_S", "2.0"))
+
+
+# Per-session consume-once inbox: every fired event lands here too, so a
+# polling consumer (observe_events) never races the pump for the world buffer.
+# Best-effort telemetry — a service respawn starts it empty.
+_EVENTS_LOCK = threading.Lock()
+_EVENT_BUF: dict[str, list[dict]] = {}
+_EVENT_BUF_CAP = 256
+
+
+def _fire(session_id: str, kind: str, data: dict | None = None,
+          tick: int | None = None) -> None:
+    """Fire one event: append to the session's inbox and emit on the 'factorio'
+    topic (threadsafe, best-effort — emit is live signalling, never durable
+    delivery). Callable from sync handlers and pump threads alike."""
+    event: dict[str, Any] = {"kind": kind, "data": data or {}}
+    if tick is not None:
+        event["tick"] = tick
+    with _EVENTS_LOCK:
+        buf = _EVENT_BUF.setdefault(session_id, [])
+        buf.append(event)
+        del buf[:-_EVENT_BUF_CAP]
+    adapter, loop = _ADAPTER, _LOOP
+    if adapter is None or loop is None or loop.is_closed():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            adapter.emit("factorio", {"session_id": session_id, **event}), loop)
+    except Exception:  # noqa: BLE001 — never let telemetry break the verb
+        log.debug("emit %s dropped", kind, exc_info=True)
+
+
+def _drain_events(row: dict) -> list[dict]:
+    """Drain the appliance's ring buffer; [] when the engine/RCON isn't ready
+    (a re-exec window, or the container just came up) — the pump retries."""
+    try:
+        result = appliance.control_post(row, "/observe/events", {}, timeout=10.0)
+    except Exception:  # noqa: BLE001
+        return []
+    events = result.get("events") or []
+    return events if isinstance(events, list) else []
+
+
+def _collect_and_fire(row: dict) -> None:
+    """Move everything in the appliance's ring buffer into the inbox + emitter.
+    Sync — the pump calls it via to_thread; observe_events calls it directly."""
+    for ev in _drain_events(row):
+        _fire(row["session_id"], ev.get("kind") or "event",
+              ev.get("data") or {}, tick=ev.get("tick"))
+
+
+async def _events_pump(adapter: ServiceAdapter) -> None:
+    """Drain each ready session's ring buffer into the inbox + 'factorio' topic,
+    forever. Runs beside adapter.run(); all blocking I/O is offloaded."""
+    while True:
+        try:
+            rows = await asyncio.to_thread(
+                lambda: [r for r in dao.FactorioDAO().live_sessions()
+                         if r["status"] == "ready"])
+            for row in rows:
+                await asyncio.to_thread(_collect_and_fire, row)
+        except Exception:  # noqa: BLE001 — keep pumping across transient faults
+            log.debug("events pump iteration failed", exc_info=True)
+        await asyncio.sleep(EVENTS_POLL_S)
 
 def _require_session(session_id: str) -> dict:
     """Look up a session or raise — used by act/perceive verbs."""
@@ -297,8 +533,9 @@ def _release(args: dict) -> dict:
 def _reset(args: dict) -> dict:
     sid = args["session_id"]
     row = _require_session(sid)
-    result = appliance.control_post(row, "/new", {})
+    result = _world_op(sid, row, "reset", "/new", {})
     dao.FactorioDAO().set_runtime(sid, status="ready", current_world=None)
+    _fire(sid, "world_loaded", {"world": None})
     return {"session_id": sid, "status": "ready", "result": result}
 
 
@@ -320,26 +557,43 @@ def _status(args: dict) -> dict:
 
 # ---- act: world lifecycle ------------------------------------------------
 
+def _world_op(sid: str, row: dict, op: str, path: str, body: dict) -> dict:
+    """Run one supervisor world op, firing an 'error' event on failure (the
+    exception still propagates so the caller sees the failure too)."""
+    try:
+        return appliance.control_post(row, path, body)
+    except Exception as e:
+        _fire(sid, "error", {"op": op, "error": str(e)})
+        raise
+
+
 def _world_new(args: dict) -> dict:
-    row = _require_session(args["session_id"])
+    sid = args["session_id"]
+    row = _require_session(sid)
     body = {"seed": args["seed"]} if args.get("seed") is not None else {}
-    result = appliance.control_post(row, "/new", body)
-    dao.FactorioDAO().set_runtime(args["session_id"], current_world=None)
+    result = _world_op(sid, row, "world_new", "/new", body)
+    dao.FactorioDAO().set_runtime(sid, current_world=None)
+    _fire(sid, "world_loaded", {"world": None, "seed": args.get("seed")})
     return result
 
 
 def _world_save(args: dict) -> dict:
-    row = _require_session(args["session_id"])
+    sid = args["session_id"]
+    row = _require_session(sid)
     body = {"name": args["name"], "overwrite": bool(args.get("overwrite", False))}
-    result = appliance.control_post(row, "/save", body)
-    dao.FactorioDAO().set_runtime(args["session_id"], current_world=result.get("saved"))
+    result = _world_op(sid, row, "world_save", "/save", body)
+    dao.FactorioDAO().set_runtime(sid, current_world=result.get("saved"))
+    _fire(sid, "world_saved", {"name": result.get("saved"),
+                               "replaced": result.get("replaced")})
     return result
 
 
 def _world_load(args: dict) -> dict:
-    row = _require_session(args["session_id"])
-    result = appliance.control_post(row, "/load", {"name": args["name"]})
-    dao.FactorioDAO().set_runtime(args["session_id"], current_world=result.get("world"))
+    sid = args["session_id"]
+    row = _require_session(sid)
+    result = _world_op(sid, row, "world_load", "/load", {"name": args["name"]})
+    dao.FactorioDAO().set_runtime(sid, current_world=result.get("world"))
+    _fire(sid, "world_loaded", {"world": result.get("world")})
     return result
 
 
@@ -355,6 +609,15 @@ def _observe(args: dict) -> dict:
     body = {"radius": args["radius"]} if args.get("radius") is not None else {}
     snapshot = appliance.control_post(row, "/observe", body)
     return {"snapshot": snapshot, "screenshot": None}
+
+
+def _observe_events(args: dict) -> dict:
+    sid = args["session_id"]
+    row = _require_session(sid)
+    _collect_and_fire(row)          # freshness: drain the world buffer now too
+    with _EVENTS_LOCK:
+        events = _EVENT_BUF.pop(sid, [])
+    return {"events": events}
 
 
 def _pause(args: dict) -> dict:
@@ -383,12 +646,34 @@ def _body_stop(args: dict) -> dict:
     return appliance.control_post(row, "/body/stop", {})
 
 
+def _passthrough(path: str, *keys: str):
+    """Handler factory for the gameplay/catalog verbs: forward the named args
+    (when present) to a supervisor route; validation is mod-side."""
+    def handler(args: dict) -> dict:
+        row = _require_session(args["session_id"])
+        body = {k: args[k] for k in keys if args.get(k) is not None}
+        return appliance.control_post(row, path, body)
+    return handler
+
+
+_body_mine = _passthrough("/body/mine", "x", "y", "name", "count")
+_body_craft = _passthrough("/body/craft", "recipe", "count")
+_body_build = _passthrough("/body/build", "name", "x", "y", "direction")
+_body_insert = _passthrough("/body/insert", "x", "y", "name", "count", "target")
+_body_take = _passthrough("/body/take", "x", "y", "name", "count", "target")
+_research = _passthrough("/research", "name")
+_recipes = _passthrough("/observe/recipes", "search", "limit")
+_technologies = _passthrough(
+    "/observe/technologies", "search", "only_unresearched", "limit")
+
+
 HANDLERS = {
     "acquire": _acquire,
     "release": _release,
     "reset": _reset,
     "status": _status,
     "observe": _observe,
+    "observe_events": _observe_events,
     "world_new": _world_new,
     "world_save": _world_save,
     "world_load": _world_load,
@@ -397,6 +682,14 @@ HANDLERS = {
     "body_spawn": _body_spawn,
     "body_move": _body_move,
     "body_stop": _body_stop,
+    "body_mine": _body_mine,
+    "body_craft": _body_craft,
+    "body_build": _body_build,
+    "body_insert": _body_insert,
+    "body_take": _body_take,
+    "research": _research,
+    "recipes": _recipes,
+    "technologies": _technologies,
 }
 
 
@@ -423,9 +716,17 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter(
+    global _ADAPTER, _LOOP
+    adapter = ServiceAdapter(
         "rlm-factorio", API_MANIFEST, HANDLERS, on_start=_on_start,
-    ).run()
+    )
+    _ADAPTER = adapter
+    _LOOP = asyncio.get_running_loop()
+    pump = asyncio.create_task(_events_pump(adapter))
+    try:
+        await adapter.run()
+    finally:
+        pump.cancel()
 
 
 if __name__ == "__main__":

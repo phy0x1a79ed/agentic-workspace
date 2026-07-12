@@ -74,6 +74,29 @@ def test_needs_decomposition_routes_to_decomposing_and_dispatches_planner(orch):
     assert payload["mode"] == "planner"
 
 
+def test_decompose_children_receive_titles(orch):
+    """A planner-supplied per-child ``title`` lands on the created child rows;
+    an omitted title defaults to empty (the steering agent can set it later)."""
+    res = _attach(orch)
+    tid = res["task_id"]
+    dao = orch.DAO()
+    _to_decomposing(orch, tid)
+    planner_ref = dao.get_task(tid)["agent_ref"]
+
+    dc = orch.operations.decompose_commit({
+        "task_id": tid, "agent_ref": planner_ref,
+        "children": [{"ref": "A", "goal": "part A", "title": "Do part A"},
+                     {"ref": "B", "goal": "part B"}],  # no title
+        "contracts": [{"name": "cA", "spec": "A out", "producer": "A"},
+                      {"name": "cB", "spec": "B out", "producer": "B"}],
+        "edges": [{"consumer": "B", "contract": "cA"}],
+    })
+    assert dc["ok"] is True
+    by_goal = {dao.get_task(c)["goal"]: dao.get_task(c) for c in dc["children"]}
+    assert by_goal["part A"]["title"] == "Do part A"
+    assert by_goal["part B"]["title"] == ""
+
+
 def test_decompose_creates_subdag_and_task_depends_on_it(orch):
     res = _attach(orch)
     tid = res["task_id"]

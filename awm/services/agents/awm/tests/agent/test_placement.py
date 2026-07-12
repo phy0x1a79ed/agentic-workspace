@@ -218,3 +218,117 @@ class TestModeProfiles:
     async def test_unknown_mode_rejected(self, agents_env, stub_core):
         with pytest.raises(ValueError):
             await _place(agents_env, mode="bogus")
+
+
+class TestPlanModeDisabled:
+    """CC internal plan mode is disabled for placed agents — the plan-mode tools
+    ride ``--disallowedTools`` for EVERY placement mode (the DAG plan stage is the
+    only plan mode)."""
+
+    @pytest.mark.parametrize("mode,slug", [
+        ("worker", "leaf-w"), ("plan", "leaf-p"),
+        ("planner", "leaf-pl"), ("verify", "leaf-v"),
+    ])
+    async def test_spawn_denies_plan_mode_tools(self, agents_env, stub_core,
+                                                mode, slug):
+        await _place(agents_env, mode=mode, unit_slug=slug)
+        cfg = stub_core["opened"][0]
+        for t in ("EnterPlanMode", "ExitPlanMode"):
+            assert t in (cfg.disallowed_tools or [])
+        # And they are never quietly present in the allow-whitelist either.
+        for t in ("EnterPlanMode", "ExitPlanMode"):
+            assert t not in (cfg.allowed_tools or [])
+
+
+class TestPlanBrief:
+    """The plan-mode brief adopts the Claude-Code planning-prompt structure and
+    quotes the ratified objective record verbatim."""
+
+    def _brief(self, **over):
+        args = dict(task_id="T-9", mode="plan", brief="build a widget",
+                    contracts_in=[], contracts_out=["plan"], prereadings=[],
+                    attached=False, objective="")
+        args.update(over)
+        return placement.render_brief(**args)
+
+    def test_plan_brief_has_cc_planning_sections(self):
+        brief = self._brief()
+        for header in ("Context", "Objective record", "Goals",
+                       "Acceptance criteria", "Task breakdown",
+                       "Approach per task", "Gotchas:"):
+            assert header in brief
+
+    def test_plan_brief_keeps_mechanical_contract(self):
+        # The reserved "plan" deliverable contract shape is unchanged.
+        brief = self._brief()
+        assert 'edit_deliverable(contract="plan"' in brief
+        assert "indicate_done()" in brief
+
+    def test_plan_brief_quotes_objective_verbatim(self):
+        rec = "## Intent\nShip the thing.\n## Non-goals\nNo refactors."
+        brief = self._brief(objective=rec)
+        assert rec in brief
+
+    def test_plan_brief_instructs_label_derivation(self):
+        # Steering section teaches set_title at detach for label auto-derivation.
+        brief = self._brief(objective="do X")
+        assert "set_title(" in brief
+
+
+class TestVerifyAgainstObjective:
+    async def _place_verify(self, agents_env, stub_core, brief,
+                            plan_body="THE PLAN"):
+        unit = (agents_env["awm_dir"] / "services" / "workspace" / "units"
+                / "leaf-v")
+        plan_dir = unit / "deliverable" / "plan"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        (plan_dir / "payload").write_text(plan_body)
+        await _place(agents_env, mode="verify", unit_slug="leaf-v", brief=brief)
+        await asyncio.sleep(0.05)
+        return "\n".join(stub_core["session"].sent)
+
+    async def test_verify_kickoff_carries_objective_record_verbatim(
+            self, agents_env, stub_core):
+        rec = "Ship OAuth2. Non-goals: no UI rewrite."
+        brief = json.dumps({"goal": "auth work", "objective": rec,
+                            "mode": "verify"})
+        sent = await self._place_verify(agents_env, stub_core, brief)
+        assert rec in sent
+        assert "objective record (ratified)" in sent
+        # judged against the objective, flags scope creep + missing coverage
+        assert "scope creep" in sent.lower()
+
+    async def test_verify_falls_back_to_goal_when_no_objective(
+            self, agents_env, stub_core):
+        brief = json.dumps({"goal": "ship the goal text", "mode": "verify"})
+        sent = await self._place_verify(agents_env, stub_core, brief)
+        assert "ship the goal text" in sent
+        assert "no objective record was ratified" in sent
+
+
+class TestChildTitles:
+    """Planner-buffered subtasks carry an optional title through to the
+    decompose_commit child shape."""
+
+    def test_translate_carries_title(self):
+        subtasks = [
+            {"id": "A", "objective": "do A", "contracts_out": ["cA"],
+             "title": "Do part A"},
+            {"id": "B", "objective": "do B", "contracts_out": ["cB"],
+             "title": ""},
+        ]
+        deps = [{"from": "A", "to": "B", "contract": "cA"}]
+        payload, err = placement._translate_subdag(subtasks, deps, [])
+        assert err is None
+        by_ref = {c["ref"]: c for c in payload["children"]}
+        assert by_ref["A"]["title"] == "Do part A"
+        assert by_ref["B"]["title"] == ""
+
+    async def test_add_subtask_buffers_title(self, agents_env, stub_core):
+        await _place(agents_env, mode="planner", unit_slug="leaf-pl")
+        await placement.relay_add_subtask(
+            {"id": "A", "objective": "do A", "title": "Do part A"},
+            as_="leaf-pl")
+        row = AgentsDAO().get_open_placement_by_identity("leaf-pl")
+        g = json.loads(row["data"])["graph"]
+        assert g["subtasks"][0]["title"] == "Do part A"

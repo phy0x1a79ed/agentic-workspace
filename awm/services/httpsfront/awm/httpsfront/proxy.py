@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -32,9 +33,12 @@ import websockets
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
+
+from awm.httpsfront import pages
+from awm.httpsfront.auth import COOKIE_NAME, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
@@ -65,8 +69,90 @@ def _resp_headers(resp: httpx.Response) -> list[tuple[str, str]]:
     return [(k, v) for k, v in resp.headers.multi_items() if k.lower() not in _HOP]
 
 
+def _wants_html(request: Request) -> bool:
+    return "text/html" in (request.headers.get("accept") or "")
+
+
+def _set_session_cookie(resp: Response, token: str, max_age: int) -> None:
+    resp.set_cookie(
+        COOKIE_NAME, token, max_age=max_age, path="/",
+        httponly=True, secure=True, samesite="lax",
+    )
+
+
+async def _authenticate(request: Request) -> tuple[bool, str | None]:
+    """(ok, refreshed_cookie_token_or_None) for the current request."""
+    gate: AuthGate = request.app.state.gate
+    return await gate.authenticate(
+        cookie=request.cookies.get(COOKIE_NAME),
+        bearer=bearer_of(request.headers.get("authorization")),
+    )
+
+
+def _deny(request: Request) -> Response:
+    """Login page for a browser GET, else 401 (API / peer)."""
+    if request.method == "GET" and _wants_html(request):
+        return HTMLResponse(pages.login_page(), status_code=200)
+    return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+
+async def _login(request: Request) -> Response:
+    """``POST /__auth/login`` — validate the password via the auth service and,
+    on success, set the session cookie."""
+    gate: AuthGate = request.app.state.gate
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001 — accept form encoding as a fallback
+        form = await request.form()
+        data = {"password": form.get("password", "")}
+    token = await gate.verify_password(str((data or {}).get("password") or ""))
+    if not token:
+        return JSONResponse({"ok": False}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    _set_session_cookie(resp, token, int(await gate.session_ttl_seconds()))
+    return resp
+
+
+async def _logout(request: Request) -> Response:
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE_NAME, path="/")
+    return resp
+
+
+async def _whoami(request: Request) -> Response:
+    ok, _ = await _authenticate(request)
+    if ok:
+        return JSONResponse({"user": "operator"})
+    return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+
+async def _root(request: Request) -> Response:
+    """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
+    pulled from the gateway registry."""
+    ok, refreshed = await _authenticate(request)
+    if not ok:
+        return _deny(request)
+    app = request.app
+    services: list = []
+    try:
+        client: httpx.AsyncClient = app.state.client
+        r = await client.get(app.state.http_up + "/hub/services")
+        if r.status_code == 200:
+            services = (r.json() or {}).get("services", [])
+    except Exception as exc:  # noqa: BLE001 — degrade to an empty index
+        log.debug("landing: could not fetch registry: %s", exc)
+    resp = HTMLResponse(pages.landing_page(services))
+    if refreshed:
+        _set_session_cookie(resp, refreshed,
+                            int(await app.state.gate.session_ttl_seconds()))
+    return resp
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
+    ok, refreshed = await _authenticate(request)
+    if not ok:
+        return _deny(request)
     client: httpx.AsyncClient = app.state.client
     url = app.state.http_up + request.url.path
     if request.url.query:
@@ -79,12 +165,16 @@ async def _http_proxy(request: Request) -> Response:
         resp = await client.send(upstream_req, stream=True)
     except httpx.ConnectError:
         return Response("upstream gateway unreachable", status_code=502)
-    return StreamingResponse(
+    out = StreamingResponse(
         resp.aiter_raw(),
         status_code=resp.status_code,
         headers=dict(_resp_headers(resp)),
         background=BackgroundTask(resp.aclose),
     )
+    if refreshed:
+        _set_session_cookie(out, refreshed,
+                            int(await app.state.gate.session_ttl_seconds()))
+    return out
 
 
 async def _ca(request: Request) -> Response:
@@ -111,6 +201,19 @@ async def _ws_proxy(ws: WebSocket) -> None:
     if ws.url.query:
         path += "?" + ws.url.query
     up_url = app.state.ws_up + path
+
+    # Edge auth: Starlette HTTP handling never sees a WS scope, so the guard is
+    # enforced here, before accept(). A browser sends the session cookie on the
+    # WS handshake (same-origin); a peer/client sends a bearer. No cookie
+    # refresh on a WS (it is not an HTTP response).
+    gate: AuthGate = app.state.gate
+    ok, _ = await gate.authenticate(
+        cookie=ws.cookies.get(COOKIE_NAME),
+        bearer=bearer_of(ws.headers.get("authorization")),
+    )
+    if not ok:
+        await ws.close(code=1008)  # policy violation
+        return
 
     # Forward cookies / identity so the gateway sees the real caller.
     fwd = {}
@@ -176,24 +279,34 @@ def build_app(upstream: str, ca_path: str) -> Starlette:
     ws_up = "ws" + http_up[len("http"):]
 
     routes = [
+        # Public (no auth): CA download so a device can install the root once.
         Route("/ca.crt", _ca, methods=["GET"]),
         Route("/ca.pem", _ca, methods=["GET"]),
+        # Auth endpoints — handled by the edge itself, never proxied.
+        Route("/__auth/login", _login, methods=["POST"]),
+        Route("/__auth/logout", _logout, methods=["POST", "GET"]),
+        Route("/__auth/whoami", _whoami, methods=["GET"]),
+        # Authenticated landing page (dynamic index of /ui/* pages).
+        Route("/", _root, methods=["GET"]),
+        # Everything else is auth-gated inside the handler, then proxied.
         WebSocketRoute("/{path:path}", _ws_proxy),
         Route("/{path:path}", _http_proxy, methods=_ALL_METHODS),
     ]
-    app = Starlette(routes=routes)
+    # Lifespan (Starlette 1.3+ removed the @app.on_event decorator): own the
+    # shared upstream httpx client for the server's lifetime.
+    @asynccontextmanager
+    async def _lifespan(app_: Starlette):
+        app_.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
+        try:
+            yield
+        finally:
+            await app_.state.client.aclose()
+
+    app = Starlette(routes=routes, lifespan=_lifespan)
     app.state.http_up = http_up
     app.state.ws_up = ws_up
     app.state.ca_path = ca_path
-
-    @app.on_event("startup")
-    async def _startup() -> None:  # noqa: D401
-        app.state.client = httpx.AsyncClient(timeout=None, follow_redirects=False)
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:  # noqa: D401
-        await app.state.client.aclose()
-
+    app.state.gate = AuthGate()
     return app
 
 
