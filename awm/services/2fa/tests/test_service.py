@@ -26,6 +26,7 @@ class FakeEngine:
     def __init__(self, txs_per_poll=None) -> None:
         self.approved_count = 0
         self.calls: list[tuple] = []
+        self._budget = 0
         # Optional script: a list of tx-lists returned by successive polls.
         self._script = list(txs_per_poll or [])
         self.client = types.SimpleNamespace(
@@ -35,6 +36,19 @@ class FakeEngine:
 
     def _next_poll(self):
         return self._script.pop(0) if self._script else []
+
+    # Budget API mirroring ApprovalEngine.
+    def grant(self, n):
+        self._budget += max(0, int(n))
+        return self._budget
+
+    def budget_remaining(self):
+        return self._budget
+
+    def clear_budget(self):
+        n = self._budget
+        self._budget = 0
+        return n
 
     def held_transactions(self):
         return []
@@ -57,8 +71,10 @@ class FakeEngine:
 
     def handle_transactions(self, txs):
         self.calls.append(("handle", len(txs)))
-        # Each pending tx is "auto-approved" by the fake engine.
-        self.approved_count += len(txs)
+        # Budget-driven, like the real engine: approve up to the granted budget.
+        n = min(len(txs), self._budget)
+        self.approved_count += n
+        self._budget -= n
 
 
 def inject(svc: TwoFAService, name: str, eng: FakeEngine) -> DeviceRuntime:
@@ -258,7 +274,65 @@ async def test_concurrent_same_device_burst_spawns_one_task(tmp_path):
     assert statuses.count("started") == 1
     assert statuses.count("extended") == 2
     rt = svc._devices["cwl"]
-    assert rt.expected == 3
+    # Three overlapping arms accumulate into one engine budget.
+    assert rt.engine.budget_remaining() == 3
 
     await asyncio.sleep(0.5)
     assert rt.burst_active() is False
+
+
+@pytest.mark.smoke
+async def test_rearm_after_teardown_spawns_fresh_task(tmp_path):
+    """After a window fully tears down (task cleared), a new start_burst must
+    spawn a FRESH task ('started', not 'extended') and honour its budget. Guards
+    the was_active→live-check fix: a dead task must not be treated as active,
+    which would strand the new grant with no poll loop (the original bug)."""
+    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
+                 burst_window_seconds=0.1, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    inject(svc, "cwl", FakeEngine())  # no txs → runs to the deadline, then tears down
+
+    r1 = await svc.start_burst("cwl", count=1)
+    assert r1["status"] == "started"
+    rt = svc._devices["cwl"]
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not rt.burst_active():
+            break
+    assert rt.burst_active() is False
+    assert rt.burst_task is None                 # teardown detached the task
+    assert rt.engine.budget_remaining() == 0     # and cleared leftover budget
+
+    # Fresh arm after teardown → a NEW task, budget honoured (not stranded).
+    r2 = await svc.start_burst("cwl", count=2)
+    assert r2["status"] == "started"
+    assert r2["expected"] == 2
+    assert rt.burst_active() is True
+    assert rt.engine.budget_remaining() == 2
+    await asyncio.sleep(0.25)
+    assert rt.burst_active() is False
+
+
+@pytest.mark.smoke
+async def test_rearm_during_exit_is_not_stranded(tmp_path):
+    """The teardown/re-arm race: a start_burst that lands as the poll loop is
+    exiting (budget just hit 0) must keep a live task that observes the new grant,
+    never a cleared budget with no poller. Driven deterministically by exhausting
+    the budget on the first poll, then re-arming immediately."""
+    cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")},
+                 burst_window_seconds=5.0, burst_interval_seconds=0.02)
+    svc = TwoFAService(cfg)
+    from awm.twofa.duo import Transaction
+    # First poll surfaces one tx the engine approves → budget 1→0, loop heads to
+    # its exit/coordination check.
+    eng = FakeEngine(txs_per_poll=[[Transaction(urgid="a", raw={})]])
+    inject(svc, "cwl", eng)
+
+    await svc.start_burst("cwl", count=1)
+    rt = svc._devices["cwl"]
+    # Re-arm right away, while the (long-window) task is still alive around its
+    # exit check. It must stay the same single task and carry the new budget.
+    r2 = await svc.start_burst("cwl", count=1)
+    assert r2["status"] == "extended"
+    assert rt.burst_active() is True
+    assert rt.engine.budget_remaining() >= 1  # new grant retained, not cleared

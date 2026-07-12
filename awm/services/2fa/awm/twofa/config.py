@@ -21,7 +21,6 @@ Env overrides (all optional):
 
   AWM_2FA_DEDUP_SECONDS        engine dedup window           (default 3.0)
   AWM_2FA_APPROVE_ALL_MINUTES  approve-all window length     (default 5.0)
-  AWM_2FA_BURST_THRESHOLD      >N pending in a fetch = burst (default 1)
   AWM_2FA_HOLD_TTL_SECONDS     drop a held tx after          (default 120.0)
   AWM_2FA_BURST_WINDOW         burst poll window seconds     (default 60.0)
   AWM_2FA_BURST_INTERVAL       burst poll interval seconds   (default 1.0)
@@ -171,7 +170,6 @@ class Config:
     dedup_seconds: float = field(default_factory=lambda: _env_float("AWM_2FA_DEDUP_SECONDS", 3.0))
     approve_all_minutes: float = field(
         default_factory=lambda: _env_float("AWM_2FA_APPROVE_ALL_MINUTES", 5.0))
-    burst_threshold: int = field(default_factory=lambda: _env_int("AWM_2FA_BURST_THRESHOLD", 1))
     hold_ttl_seconds: float = field(
         default_factory=lambda: _env_float("AWM_2FA_HOLD_TTL_SECONDS", 120.0))
 
