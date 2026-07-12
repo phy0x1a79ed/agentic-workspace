@@ -1,22 +1,51 @@
 # Installing the `fileviewer` service
 
-A Python feature service in the `awm.fileviewer` namespace. Point a URL at any
-file's absolute path and the browser renders it natively:
+A Python feature service in the `awm.fileviewer` namespace. It exposes files on
+the gateway origin as an **origin-relative** URL:
 
-    http://127.0.0.1:12210/?path=/home/tony/foo.svg
+    /files/home/tony/foo.svg          →  https://<host>:12100/files/home/tony/foo.svg
 
-SVG draws, HTML renders, PNG/JPEG display as images, `.py`/`.md`/`.json`/`.log`
-show inline as readable text — each served with a correct `Content-Type` so the
-browser picks the right renderer. A path that doesn't exist, is a directory, or
-can't be read returns an HTTP 404 with a small styled not-found page (not a
-stack trace, not a JSON blob).
+PNG/JPEG display as images, SVG draws, HTML renders, `.py`/`.md`/`.json` show
+inline — each served by the gateway with a `Content-Type` from `mimetypes`, so
+the browser picks the right renderer. A path that doesn't exist, resolves outside
+the mount root, or is **masked** (see below) returns a plain `404`.
 
-Unlike most services, the file bytes do **not** ride the awm hub: the hub
-function channel is JSON-only (a handler's return value is always
-JSON-serialized), so it can't hand a browser raw bytes with a real
-`Content-Type`. So the listener runs its own loopback HTTP server on a fixed
-port (default **12210**), and the gateway registration provides supervision + a
-`fileviewer_status` surface only — exactly the `mic` pattern.
+## How it works — a masked gateway static mount
+
+fileviewer does **not** run its own HTTP listener. Instead it registers a
+`kind=static` **mount** at the `/files` prefix on the gateway (root
+`FILEVIEWER_MOUNT_ROOT`, default `/`) and holds that mount's WS lease for the life
+of the process. The gateway's `serve_static` ships the bytes and `httpsfront`
+fronts the whole gateway — so a `/files/<abs-path>` link is:
+
+- **origin-relative** — no host, no port, no `?path=` query. It resolves against
+  whatever host is serving the page, so it renders on **any** device that can
+  reach the gateway (a phone, another laptop), not just the server's own
+  loopback. (The old loopback-only `http://127.0.0.1:12210/?path=…` listener is
+  retired — it was never reachable through the HTTPS front.)
+- **served the standard awm way** — no bespoke side-channel, no httpsfront route.
+
+Two registrations, one process: the `ServiceAdapter` control WS (`kind=service`
+at `/svc/fileviewer`) buys **supervision + the `fileviewer_status` verb**; the
+separate `kind=static` mount is what serves the bytes and runs its own
+register/hold-lease/reconnect loop (records are in-memory, so it must survive a
+gateway restart or the mount vanishes).
+
+### The mask (hiding secrets)
+
+Because the mount exposes the whole filesystem under the root, a **denylist**
+hides secrets. It is a per-mount `deny` glob list enforced gateway-side in
+`serve_static`, matched with `PurePosixPath.full_match` (so `**` spans
+directories) against the **symlink-resolved** path — a symlink to a secret can't
+slip past. A masked path 404s exactly like a missing one. The default mask covers
+ssh/gpg keys, `*.pem`/`*.key`/`*.p12`, `.certs`, tokens (`auth.token`, `*.token`,
+`.aws`, `.netrc`, `credentials`), `.env*`, and `.git`. Extend it per-host with
+`FILEVIEWER_MASK_FILE` (gitignore-style, one glob per line); that file is added
+to the mask so it **hides itself**.
+
+The mask is best-effort and denylist-shaped: a new secret type in an unlisted
+location is exposed until added. Root `/` maximizes what a mask gap can leak;
+narrow `FILEVIEWER_MOUNT_ROOT` to bound the blast radius.
 
 ## Install
 
@@ -26,7 +55,7 @@ port (default **12210**), and the gateway registration provides supervision + a
 `gatewayclient`) and this service into the `awm` env (override with
 `AWM_ENV=<name>`) and writes a gitignored `.runtime-env` sidecar baking
 `AWM_PYTHON` = the env's absolute interpreter, so the gateway can respawn the
-service under systemd's minimal PATH (where `mamba` is not present).
+service under a minimal PATH (where `mamba` is not present).
 
 ## Python dependencies
 
@@ -34,34 +63,39 @@ service under systemd's minimal PATH (where `mamba` is not present).
 |---|---|
 | `awm-config`, `awm-gatewayclient` | component libs (ServiceAdapter register/control loop) |
 
-The listener itself is **pure stdlib** — `http.server`, `mimetypes`, `pathlib`.
-There is no database, so no `awm-persistence`.
+The mount-holder uses `httpx` + `websockets` (already deps of the adapter) to
+register and hold the lease. There is no database, so no `awm-persistence`.
 
 ## Env overrides
 
 | Var | Default | Effect |
 |---|---|---|
-| `FILEVIEWER_PORT` | `12210` | loopback HTTP listener port |
-| `FILEVIEWER_BIND` | `127.0.0.1` | bind address (loopback only by design) |
+| `FILEVIEWER_MOUNT_PREFIX` | `/files` | origin path the mount claims |
+| `FILEVIEWER_MOUNT_ROOT` | `/` | filesystem root the mount exposes |
+| `FILEVIEWER_MASK_FILE` | *(none)* | extra deny globs (gitignore-style); self-hidden |
 
 ## Scope & caveats
 
-- **Any absolute path the awm user can read is viewable** — there is no
-  workspace-root restriction, by design. The listener binds `127.0.0.1` only
-  (no remote reach), matching awm's loopback-and-unauthenticated posture, but it
-  is a broader read surface than the JSON services. An allowed-roots env gate is
-  trivial to add later if ever wanted.
-- **Single-file only.** No directory listing, and relative `src`/`href` assets
-  referenced *inside* an HTML/SVG document won't resolve — a self-contained
-  file (the SVG/HTML case) views perfectly; a multi-file site shows only its
-  entry document.
+- **All files under the root are exposed** except the mask — by design (the mount
+  is for viewing arbitrary figures/files). It rides the HTTPS front, so unlike
+  the old loopback listener it is reachable on the LAN/ZeroTier SAN IPs. The mask
+  is the safety layer; keep it current, or narrow the root.
+- **Directory URLs** serve an `index.html` if present, else 404 — there is no
+  directory listing (the old single-file viewer had none either).
+- **Content-type** comes from `mimetypes` (extension-based). Unknown code
+  extensions may download rather than render inline — irrelevant for the PNG
+  figures this serves.
 
 ## Verify
 
-    awm services list                                        # fileviewer → running
-    awm fileviewer status                                   # bind/port/serving/requests
-    curl -i "http://127.0.0.1:12210/?path=/tmp/probe.svg"    # 200 + image/svg+xml
-    curl -i "http://127.0.0.1:12210/?path=/does/not/exist"   # 404 + not-found page
+    awm services list                       # fileviewer → running
+    awm fileviewer status                   # mounted/prefix/root/deny_globs
+    # a real file through the front:
+    curl -sk -o /dev/null -w '%{content_type} %{http_code}\n' \
+      "https://127.0.0.1:12100/files/<abs-path>.png"          # image/png 200
+    # a masked secret:
+    curl -sk -o /dev/null -w '%{http_code}\n' \
+      "https://127.0.0.1:12100/files/home/tony/.ssh/id_ed25519" # 404
 
-Then open the SVG/HTML URL in a real browser to confirm it *renders*, not just
-transfers.
+Then open a figure URL in a real browser (ideally from another device) to confirm
+it *renders*, not just transfers.
