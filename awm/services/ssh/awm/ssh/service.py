@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import secrets
 import stat
 import time
 from dataclasses import dataclass
@@ -58,6 +59,13 @@ _ALERT_CHANNEL = "1522674357762261112"
 # gatewayclient.peer_env so a reconnect picks up a change without a restart.
 _TWOFA_PEER_ENV = "AWM_TWOFA_PEER"
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+# Connection-slot arbiter selector (federation). For a lockout-sensitive host,
+# EXACTLY ONE attempt may be in flight across the whole fleet — the per-node
+# breaker isn't enough once several nodes drive the same account. So a gated
+# connect first acquires a slot from the single arbiter (ssh@<peer>). Set to the
+# arbiter node's name (e.g. AWM_SSH_SLOT_PEER=mira) on every borrowing node; the
+# node that OWNS the arbiter leaves it unset and acquires its slot in-process.
+_SLOT_PEER_ENV = "AWM_SSH_SLOT_PEER"
 
 # How long after a Discord /approve the operator-approval window stays open for
 # a device. A locked host may re-connect only while this window is open. Kept
@@ -124,6 +132,14 @@ class SSHService:
         # Discord /approve on that device) is considered active. Recovery from a
         # tripped breaker happens ONLY inside such a window; there is no verb.
         self._approve_until: dict[str, float] = {}
+        # Slot arbiter (federation): host -> lease_id of the ONE in-flight attempt
+        # holding this host's slot fleet-wide. Guards the LEASED state of the
+        # SlotArbiter DFA (IDLE/LEASED/LOCKED); LOCKED is the on-disk lockfile
+        # (authoritative, central on the arbiter node), IDLE is the absence of
+        # both. Populated only on the node that owns the arbiter (or in-process
+        # for that node's own gated attempts). See _slot_acquire / _slot_release.
+        self._leased: dict[str, str] = {}
+        self._arbiter_lock = asyncio.Lock()
         self._social_task: asyncio.Task | None = None
         self._reconcile_task: asyncio.Task | None = None
         # Held open for the process lifetime once acquired, so the flock stays
@@ -503,9 +519,183 @@ class SSHService:
     # -- the actual ssh work ------------------------------------------------
 
     async def _do_connect(self, cfg: HostConfig) -> dict:
+        """Route the single attempt. A lockout-sensitive host (one with a 2FA
+        device) goes through the fleet-global slot arbiter — a live-WS lease to
+        ``ssh@<AWM_SSH_SLOT_PEER>``, or the in-process arbiter when this node owns
+        the slot (selector unset). Every other host keeps the per-node
+        local-breaker path unchanged. Never raises."""
+        if cfg.twofa_device:
+            return await self._connect_through_arbiter(cfg)
+        return await self._do_connect_attempt(cfg, gated=False)
+
+    # -- slot arbiter: fleet-global single-attempt gate ---------------------
+
+    async def _connect_through_arbiter(self, cfg: HostConfig) -> dict:
+        """Acquire the host's fleet-wide slot, run the one attempt while holding
+        it, then report the verdict. Local when we own the arbiter, else a live-WS
+        lease to the arbiter peer. Fails CLOSED — an unreachable arbiter refuses
+        the connect (no VPN/2FA/ssh, no MFA spent)."""
+        slot_peer = gatewayclient.peer_env(_SLOT_PEER_ENV)
+        if not slot_peer:
+            return await self._connect_via_local_arbiter(cfg)
+        return await self._connect_via_arbiter_peer(cfg, slot_peer)
+
+    async def _connect_via_local_arbiter(self, cfg: HostConfig) -> dict:
+        """This node owns the arbiter: acquire in-process, hold across the attempt
+        (the attempt task's liveness IS the hold), release with the verdict."""
+        status, token = await self._slot_acquire(cfg.host)
+        if status != "granted":
+            return self._status_dict(
+                cfg, "unavailable",
+                error=f"{cfg.host} is not available for automated access right now")
+        ok = False
+        reason = ""
+        try:
+            result = await self._do_connect_attempt(cfg, gated=True)
+            ok = result.get("status") == "connected"
+            reason = result.pop("_lock_reason", "")
+            return result
+        finally:
+            await self._slot_release(cfg.host, token, ok=ok, reason=reason)
+
+    async def _connect_via_arbiter_peer(self, cfg: HostConfig,
+                                        slot_peer: str) -> dict:
+        """Acquire a slot from the arbiter peer over a CA-verified, peer-bearer
+        WS lease; the open socket IS the lease. Hold it across the attempt, then
+        send the verdict (a clean release) — a drop mid-attempt trips the arbiter
+        LOCKED on its own."""
+        try:
+            lease = await gatewayclient.acquire_lease_maybe_peer(
+                slot_peer, "ssh", cfg.host)
+        except Exception as e:  # noqa: BLE001 — arbiter unreachable → FAIL CLOSED
+            log.error("connection arbiter %s unreachable for %s: %s",
+                      slot_peer, cfg.host, e)
+            return self._status_dict(
+                cfg, "unavailable",
+                error=f"{cfg.host} is not available for automated access right now")
+        async with lease:
+            if not lease.granted:
+                log.info("slot arbiter %s refused %s: %s (%s)",
+                         slot_peer, cfg.host, lease.status, lease.reason)
+                return self._status_dict(
+                    cfg, "unavailable",
+                    error=f"{cfg.host} is not available for automated access right now")
+            result = await self._do_connect_attempt(cfg, gated=True)
+            ok = result.get("status") == "connected"
+            reason = result.pop("_lock_reason", "")
+            await lease.verdict(ok=ok, reason=reason)
+            return result
+
+    async def _slot_acquire(self, host: str) -> tuple[str, str | None]:
+        """Arbiter ``open`` transition. Atomically grant at most one in-flight
+        lease per host: returns ``("granted", lease_id)`` from IDLE,
+        ``("busy", None)`` from LEASED, ``("locked", reason)`` from LOCKED — unless
+        an operator approval window is open, which clears the hold and grants
+        (mirroring the one-shot window consumption in :meth:`connect`)."""
+        cfg = resolve_host(host)
+        async with self._arbiter_lock:
+            if host in self._leased:
+                return ("busy", None)
+            if self._read_lock(cfg) is not None:
+                if not self._approve_active(cfg.twofa_device):
+                    return ("locked", "held after a prior failed connect")
+                # Approval window open → clear + consume one-shot (see connect()).
+                self._clear_lock(cfg)
+                self._approve_until.pop(cfg.twofa_device, None)
+            token = secrets.token_urlsafe(8)
+            self._leased[host] = token
+            return ("granted", token)
+
+    async def _slot_release(self, host: str, lease_id: str | None, *,
+                            ok: bool, reason: str = "") -> None:
+        """Arbiter ``verdict_ok`` / ``verdict_fail`` / ``drop`` transition.
+        ``ok`` frees the slot (→ IDLE, clearing any lock); otherwise → LOCKED
+        (persist the lockfile) and page the operator — the arbiter is the SOLE
+        notifier on a LOCKED transition, so the requester's attempt stays silent.
+        Idempotent by ``lease_id``: a duplicate or stale release is a no-op."""
+        cfg = resolve_host(host)
+        do_alert = False
+        async with self._arbiter_lock:
+            if lease_id is not None and self._leased.get(host) != lease_id:
+                return  # superseded / already released — ignore
+            self._leased.pop(host, None)
+            if ok:
+                self._clear_lock(cfg)
+                return
+            self._write_lock(cfg, reason or "attempt failed (slot arbiter)")
+            do_alert = True
+        if do_alert:
+            log.error("BREAKER TRIPPED (arbiter) — holding %s: %s", host, reason)
+            await self._alert(self._lock_alert_text(cfg, reason))
+
+    async def _lease_session(self, ctx: Any) -> None:
+        """Direct-session handler (the arbiter side of a WS lease). The OPEN bridge
+        socket IS the lease: grant or refuse on the first frame, then hold until
+        the requester reports a ``verdict`` or the socket drops. Drop without a
+        verdict is treated as a failed attempt (LOCKED) — the ZooKeeper-ephemeral
+        semantics that make a dead holder free (or trip) its slot at once."""
+        host = (ctx.init or {}).get("host", "")
+        bridge = await ctx.open_bridge()
+        token: str | None = None
+        try:
+            try:
+                resolve_host(host)
+            except ValueError:
+                await bridge.send(json.dumps(
+                    {"lease": "error", "reason": f"unknown host {host!r}"}))
+                return
+            status, detail = await self._slot_acquire(host)
+            frame = ({"lease": "granted"} if status == "granted"
+                     else {"lease": status, "reason": detail or status})
+            await bridge.send(json.dumps(frame))
+            if status != "granted":
+                return
+            token = detail
+            verdict: str | None = None
+            vreason = ""
+            try:
+                async for raw in bridge:
+                    if isinstance(raw, (bytes, bytearray)):
+                        continue
+                    try:
+                        msg = json.loads(raw) or {}
+                    except json.JSONDecodeError:
+                        continue
+                    v = msg.get("verdict")
+                    if v in ("ok", "fail"):
+                        verdict = v
+                        vreason = msg.get("reason") or ""
+                        break
+            except Exception:  # noqa: BLE001 — socket dropped mid-hold
+                pass
+            if verdict == "ok":
+                await self._slot_release(host, token, ok=True)
+            else:
+                reason = (vreason or "requester reported connect failure"
+                          if verdict == "fail"
+                          else "requester dropped the lease without a verdict")
+                await self._slot_release(host, token, ok=False, reason=reason)
+            token = None
+        finally:
+            if token is not None:
+                # Aborted after grant without a clean release — trip closed (safe).
+                await self._slot_release(host, token, ok=False,
+                                         reason="lease handler aborted")
+            try:
+                await bridge.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _do_connect_attempt(self, cfg: HostConfig, *,
+                                  gated: bool = False) -> dict:
         """Bring up the ControlMaster (vpn + 2fa + ssh + poll), bounded by an
         INTERNAL timeout. Any failure — including the timeout — trips the breaker
-        and returns an error dict; success returns a connected dict. Never raises."""
+        and returns an error dict; success returns a connected dict. Never raises.
+
+        When ``gated`` the slot arbiter owns the breaker: a failure returns an
+        error dict WITHOUT tripping the local breaker or alerting, stashing the
+        reason under ``_lock_reason`` so the caller can pass it up as the lease
+        verdict — the arbiter records LOCKED and pages the operator exactly once."""
         marker = self._deviation_marker(cfg)
         self._safe_unlink(marker)
         try:
@@ -536,10 +726,16 @@ class SSHService:
         except Exception as e:  # noqa: BLE001
             log.error("connect to %s failed: %s", cfg.host, e)
             reason = self._failure_reason(cfg, marker, str(e))
-        await self._trip_breaker(cfg, reason)
         # Neutral to the caller — the detailed reason goes to the lock + the
         # operator Discord alert, not to the agent.
-        return self._status_dict(cfg, "error", error=f"connect to {cfg.host} failed")
+        result = self._status_dict(cfg, "error", error=f"connect to {cfg.host} failed")
+        if not gated:
+            await self._trip_breaker(cfg, reason)
+        else:
+            # The slot arbiter owns LOCKED + the alert (via the lease verdict);
+            # surface the reason so the caller can hand it up.
+            result["_lock_reason"] = reason
+        return result
 
     async def _attempt_master(self, cfg: HostConfig, marker: str) -> None:
         """Orchestrate vpn + 2fa + ssh and poll for the ControlMaster socket.
@@ -782,12 +978,11 @@ class SSHService:
         picked = notable or lines[-3:]
         return " | ".join(picked[-3:])
 
-    async def _trip_breaker(self, cfg: HostConfig, reason: str) -> None:
-        """Hold the host after a failed connect and page the operator. Threshold=1."""
-        self._write_lock(cfg, reason)
-        log.error("BREAKER TRIPPED — holding %s: %s", cfg.host, reason)
+    def _lock_alert_text(self, cfg: HostConfig, reason: str) -> str:
+        """The operator lockout page. Shared by the per-node breaker trip and the
+        slot arbiter's LOCKED transition so both read identically."""
         device = cfg.twofa_device or "your device"
-        await self._alert(
+        return (
             f"🔒 awm-ssh held **{cfg.host}** after a failed connect — further "
             f"automated connects are refused so they can't burn an MFA attempt "
             f"toward provider lockout.\n"
@@ -795,6 +990,12 @@ class SSHService:
             f"To recover once you've checked it out: run `/approve {device}` in "
             f"Discord. While that window is open the service will reconnect on "
             f"its own.")
+
+    async def _trip_breaker(self, cfg: HostConfig, reason: str) -> None:
+        """Hold the host after a failed connect and page the operator. Threshold=1."""
+        self._write_lock(cfg, reason)
+        log.error("BREAKER TRIPPED — holding %s: %s", cfg.host, reason)
+        await self._alert(self._lock_alert_text(cfg, reason))
 
     async def _send_social(self, text: str) -> Any:
         """Post ``text`` to Discord unimatrix0#notifications and RETURN the social

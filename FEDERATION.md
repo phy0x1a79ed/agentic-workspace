@@ -172,11 +172,68 @@ selector to the owner's peer name. The env-var convention:
 - `AWM_TWOFA_PEER=<peer>` — `ssh` arms its Duo burst on `2fa@<peer>`.
 - `AWM_SOCIAL_PEER=<peer>` — `ssh`/`2fa`/`auth` send Discord messages and
   subscribe to the `/approve` command stream on `social@<peer>`.
+- `AWM_SSH_SLOT_PEER=<peer>` — `ssh` acquires a connection slot from the slot
+  arbiter `ssh@<peer>` before a lockout-sensitive connect (see below).
 
-So on **mira** (which owns both `2fa` and `social`) these are unset and
-everything is local; on **capella** they are set to `mira`. This is node-level
-env, deliberately not a per-host field: the same service code runs on every
-node, and a hard-coded `2fa@mira` on the owning node would make it call itself.
+So on **mira** (which owns both `2fa` and `social` and is the slot arbiter) these
+are unset and everything is local; on **capella** they are set to `mira`. This is
+node-level env, deliberately not a per-host field: the same service code runs on
+every node, and a hard-coded `2fa@mira` on the owning node would make it call
+itself.
+
+## Connection-slot arbiter — fleet-global single-attempt for ssh
+
+The ssh circuit breaker enforces "exactly one attempt, then hold until an
+operator clears it" so a lockout-sensitive host (fir: 10 failed Duo → Alliance
+lockout) can't be marched to lockout by retries. That rule was **per node** (a
+local lockfile + a per-host process singleton). Once several nodes drive the same
+account through `2fa@mira`, the fleet's real attempt budget is N× what any one
+node thinks — two nodes can each fire an attempt at fir. So the budget must be
+**fleet-global**.
+
+One node — `ssh@mira` — is the **slot arbiter**. For a host with a 2FA device, a
+connect first acquires that host's slot from the arbiter; the arbiter grants at
+most one in-flight attempt fleet-wide and, after a failure, refuses all attempts
+until an operator clears it. Non-2FA hosts keep the per-node local-breaker path.
+
+**The lease is a connection, not a timer.** The requester opens a **direct-session
+WS** to `ssh@<arbiter>` and the OPEN socket *is* the lease (ZooKeeper-ephemeral /
+etcd-keepalive style): held for exactly as long as the connection is alive, so a
+live socket is proof of work in progress and a dead requester frees (or trips) its
+slot the instant its socket drops. This reuses the gateway's existing
+direct-session mechanism (the same `agents`/`tts`/`stt` PTY/audio bridges use) and
+the edge's catch-all peer-bearer WS proxy — **no gateway or edge change**. The
+client helpers `acquire_lease` / `acquire_lease_peer` / `acquire_lease_maybe_peer`
+are the direct-session analogue of `call_peer` / `subscribe_peer`.
+
+**Arbiter DFA (per host).** States `IDLE` / `LEASED` / `LOCKED`; `LOCKED` persists
+to the arbiter node's lockfile (authoritative, central), `LEASED` is ephemeral
+(dies with its socket). Because the reject-at-handshake path isn't available
+(`session.opened` is sent before the handler runs), grant/deny rides as the
+**first application frame** on the bridge (`{"lease":"granted"|"busy"|"locked"}`),
+and drop = the bridge EOFs.
+
+| state ↓ / input → | `open` | `verdict_ok` | `verdict_fail` | `drop` | `clear` (`/approve`) |
+|---|---|---|---|---|---|
+| IDLE   | → LEASED / grant | → IDLE | → IDLE | → IDLE | → IDLE |
+| LEASED | → LEASED / busy | → IDLE | → **LOCKED** (+alert) | → **LOCKED** (+alert) | → IDLE |
+| LOCKED | → LOCKED / deny | → LOCKED | → LOCKED | → LOCKED | → **IDLE** |
+
+`LEASED --verdict_fail/drop--> LOCKED` is the whole point: a failed or dropped
+attempt trips a global breaker. `LOCKED`'s only exit is an operator `/approve`
+window (reusing the existing `_approve_until` one-shot). The arbiter is the **sole
+notifier** on a LOCKED transition, so a requester's own attempt stays silent —
+no double-paging. It fails **closed**: an unreachable arbiter refuses the connect
+(no VPN/2FA/ssh, no MFA spent), which is the correct bias — you can't approve a
+Duo whose approver you can't reach either.
+
+**Client FSM (one attempt):** `open lease` → GRANT → hold while running
+VPN+burst+ssh → master up → `verdict ok` → free; connect fail → `verdict fail`
+(+reason) → LOCKED; REJECT / arbiter unreachable → refuse; **hold socket drops →
+stop** (the socket is the single source of truth for both sides). Implemented in
+`SSHService._slot_acquire` / `_slot_release` / `_lease_session` (arbiter) and
+`_connect_through_arbiter` (requester); the ssh manifest declares
+`sessions: [{"kind":"lease","transport":"direct"}]`.
 
 ## TLS
 

@@ -50,6 +50,7 @@ cross-service references only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -76,6 +77,10 @@ __all__ = [
     "peer_env",
     "call_maybe_peer",
     "subscribe_maybe_peer",
+    "acquire_lease",
+    "acquire_lease_peer",
+    "acquire_lease_maybe_peer",
+    "Lease",
     "GatewayCallError",
     "PeerError",
     "RefCache",
@@ -532,6 +537,208 @@ async def subscribe_maybe_peer(
         gen = subscribe(service, topic, as_=as_)
     async for item in gen:
         yield item
+
+
+# ---------------------------------------------------------------------------
+# Direct-session leases — hold a service slot for as long as a WS stays open.
+# The open socket IS the lease (ZooKeeper-ephemeral / etcd-keepalive style): the
+# holder keeps it open for the guarded work, then reports a verdict; a drop is
+# observed by the owning service at once. The two-step open mirrors the browser
+# direct-session handshake (POST /svc/<svc>/session/<kind> → open the ws_path)
+# and, for a peer, goes straight to the peer edge over CA-verified TLS with the
+# peer bearer — the session analogue of call_peer / subscribe_peer.
+# ---------------------------------------------------------------------------
+
+
+class Lease:
+    """A held direct-session slot. The OPEN WebSocket is the lease: hold it for
+    the duration of the guarded work, then :meth:`verdict` (clean release) or let
+    it close/drop — the owning service treats an unreported drop as a failure.
+
+    Use as an async context manager so any exit path still drops the socket::
+
+        async with await acquire_lease_maybe_peer(peer, "ssh", host) as lease:
+            if not lease.granted:
+                ...  # busy / locked / error — do not proceed
+            else:
+                ...  # do the guarded work while holding the slot
+                await lease.verdict(ok=success)
+    """
+
+    def __init__(self, ws: Any, status: str, reason: str | None) -> None:
+        self._ws = ws
+        # "granted" | "busy" | "locked" | "error" — the owning service's first frame.
+        self.status = status
+        self.reason = reason
+        self._closed = False
+
+    @property
+    def granted(self) -> bool:
+        return self.status == "granted"
+
+    async def verdict(self, *, ok: bool, reason: str = "") -> None:
+        """Report the outcome on the held socket, then close (a clean release)."""
+        if self._closed:
+            return
+        try:
+            await self._ws.send(json.dumps(
+                {"verdict": "ok" if ok else "fail", "reason": reason}))
+        except Exception:  # noqa: BLE001 — socket already gone counts as a drop
+            pass
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Drop the socket without a verdict (the owning service sees a drop)."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def __aenter__(self) -> "Lease":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.aclose()
+
+
+def _lease_ws_path(resp: httpx.Response, where: str) -> str:
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise GatewayCallError(resp.status_code, resp.text,
+                               service=where, fn="session")
+    ws_path = (resp.json() or {}).get("ws_path")
+    if not ws_path:
+        raise GatewayCallError(resp.status_code,
+                               "session open returned no ws_path",
+                               service=where, fn="session")
+    return ws_path
+
+
+async def _read_grant(ws: Any) -> Lease:
+    """Read the owning service's first frame — its grant/deny — into a Lease."""
+    try:
+        raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise PeerError(f"lease grant not received: {exc}") from exc
+    try:
+        frame = json.loads(raw) if isinstance(raw, str) else {}
+    except json.JSONDecodeError:
+        frame = {}
+    return Lease(ws, frame.get("lease") or "error", frame.get("reason"))
+
+
+async def acquire_lease(
+    service: str,
+    host: str,
+    *,
+    kind: str = "lease",
+    as_: str | None = None,
+    timeout: float = 10.0,
+) -> Lease:
+    """Open a direct-session lease on a LOCAL service and read the grant frame.
+
+    POSTs ``{hub}/svc/{service}/session/{kind}`` with ``{"host": host}`` to
+    allocate the session, then opens the returned ``ws_path`` and reads the first
+    frame (the owning service's grant/deny). The caller holds the :class:`Lease`
+    for the guarded work and reports a verdict.
+    """
+    import websockets
+
+    base = hub_base_url()
+    body = json.dumps({"host": host})
+    async with httpx.AsyncClient(timeout=timeout) as cli:
+        resp = await cli.post(f"{base}/svc/{service}/session/{kind}",
+                              content=body, headers=_headers(as_))
+    ws_path = _lease_ws_path(resp, service)
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    extra = [("X-Awm-As", as_)] if as_ is not None else None
+    ws = await websockets.connect(f"{ws_base}{ws_path}",
+                                  additional_headers=extra,
+                                  max_size=None, open_timeout=10)
+    return await _read_grant(ws)
+
+
+async def acquire_lease_peer(
+    peer: str,
+    service: str,
+    host: str,
+    *,
+    kind: str = "lease",
+    as_: str | None = None,
+    timeout: float = 10.0,
+) -> Lease:
+    """:func:`acquire_lease` against a PEER node's service, via its edge directly.
+
+    The direct-session analogue of :func:`call_peer` / :func:`subscribe_peer`:
+    resolve the peer edge, fetch the bearer over SSH, POST the session open and
+    open the lease WS **on the peer edge** over CA-verified TLS with the bearer.
+    One credential-refresh retry on a stale-bearer rejection (401/403), mirroring
+    :func:`call_peer`.
+    """
+    import ssl
+
+    import websockets
+
+    entry = resolve_peer(peer)
+    edge = entry["edge_url"].rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
+    ca = _peer_ca()
+    ssl_ctx = ssl.create_default_context(cafile=ca)
+    body = json.dumps({"host": host})
+    where = f"{service}@{peer}"
+
+    ws = None
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
+            resp = await cli.post(f"{edge}/svc/{service}/session/{kind}",
+                                  content=body, headers=_peer_headers(bearer, as_))
+        if resp.status_code == 401 and attempt == 0:
+            continue  # credential likely rotated — re-fetch and retry
+        ws_path = _lease_ws_path(resp, where)
+        headers = [("Authorization", f"Bearer {bearer}")]
+        if as_ is not None:
+            headers.append(("X-Awm-As", as_))
+        try:
+            ws = await websockets.connect(
+                f"{ws_base}{ws_path}", additional_headers=headers,
+                ssl=ssl_ctx, max_size=None, open_timeout=10)
+        except websockets.InvalidStatus as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if attempt == 0 and status in (401, 403):
+                continue
+            raise
+        break
+    if ws is None:
+        raise PeerError(f"could not open lease WS on {where}")
+    return await _read_grant(ws)
+
+
+async def acquire_lease_maybe_peer(
+    peer: str | None,
+    service: str,
+    host: str,
+    *,
+    kind: str = "lease",
+    as_: str | None = None,
+    timeout: float = 10.0,
+) -> Lease:
+    """:func:`acquire_lease` when ``peer`` is falsy, else :func:`acquire_lease_peer`.
+
+    The direct-session twin of :func:`call_maybe_peer`: one branch decides
+    local-vs-peer for a slot-arbiter consumer, so the decision lives here.
+    """
+    if peer:
+        return await acquire_lease_peer(peer, service, host,
+                                        kind=kind, as_=as_, timeout=timeout)
+    return await acquire_lease(service, host, kind=kind, as_=as_, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
