@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-dev"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM dev service: owns `awm dev` lifecycle and self-shadows onto prod."
+dependencies = [
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/dev/.
+[tool.setuptools.packages.find]
+include = ["awm.dev*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

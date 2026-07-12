@@ -21,6 +21,16 @@ NAME.md
 # Workspace runtime directories (not tracked)
 data/
 projects/
+# Per-task workspace units (workspace service execution sandboxes — gitignored,
+# the DAG-node analog of projects/).
+tasks/
+
+# One-off sandboxes (bioinformatics run outputs, etc.) and pre-collapse layout
+# leftovers — never tracked. Both were untracked-but-unignored, so a `git add -A`
+# would have pushed them (packages/ is superseded by awm/pages/ + awm/services/;
+# the packages/**/dist/ rule below is now subsumed by this).
+scratch/
+packages/
 
 # SvelteKit static build output — registered with the hub via
 # `awm hub register --dir build/`, not committed.
@@ -33,6 +43,9 @@ frontend/node_modules/
 # untracked copy can't block dev's next FF — see session #334.
 node_modules/
 packages/**/dist/
+# Post-collapse layout: pages build to awm/pages/<name>/dist/ (registered with
+# the hub via `awm packages sync`, not committed).
+awm/pages/*/dist/
 
 # Python
 __pycache__/
@@ -60,3 +73,5 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+secrets

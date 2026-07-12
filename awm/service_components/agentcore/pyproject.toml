@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-agentcore"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM agentcore: a leaf harness layer that talks to a claude/opencode subprocess and yields normalized AgentEvents, in live or one-shot mode, by config. Pure imported source; no console scripts, no install.sh; NO awm.config or gateway imports."
+dependencies = [
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/agentcore/.
+[tool.setuptools.packages.find]
+include = ["awm.agentcore*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "live: spawns a real claude/opencode CLI subprocess (slow, network)",
+]

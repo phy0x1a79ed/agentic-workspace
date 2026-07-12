@@ -8,7 +8,7 @@
   let { tone = 'neutral', children }: Props = $props();
 </script>
 
-<span class="tag t-{tone}">{@render children?.()}</span>
+<span class="tag t-{tone}" data-awm-component="Tag">{@render children?.()}</span>
 
 <style>
   .tag {

@@ -17,6 +17,20 @@ case for either origin.
 Enable/disable state lives in ``<AWM_DIR>/services/enabled.json`` (``{name:
 bool}``, absent ⇒ enabled). It is kept apart from the ephemeral PID journal so a
 disabled service stays down across a gateway restart.
+
+Profiles (the gate that keeps effort-specific services off dev/prod): a service
+folder may ship a committed ``service.toml`` with ``profiles = ["gamebot"]`` —
+the list of gateway profiles that want it. The running gateway's active
+profiles come from the ``AWM_PROFILES`` env (comma list; a composition sandbox
+sets it in its gitignored dev ``.env``, prod sets none). Resolution precedence:
+
+1. an explicit ``enabled.json`` entry always wins (both true and false — the
+   operator's word, e.g. prod's deliberately-live rlm-browser);
+2. else a marked service is enabled iff its profiles intersect the active set;
+3. else (no marker — every pre-existing service) enabled.
+
+A corrupt marker reads as marked-but-unmatched (disabled + logged), never
+fail-open.
 """
 
 from __future__ import annotations
@@ -24,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,14 +80,24 @@ def services_root() -> Path:
     if env := os.environ.get("AWM_SERVICES_DIR"):
         return Path(env).resolve()
     import awm.gateway
-    here = Path(awm.gateway.__file__).resolve()
-    for parent in here.parents:
+    # ``awm.gateway`` resolves as a regular package (``__file__`` points at its
+    # ``__init__.py``) under a plain install, but as a PEP 420 *namespace*
+    # package (``__file__`` is ``None``; ``__path__`` lists the dirs) when a
+    # worktree shadow puts ``awm.gateway`` on more than one root via PYTHONPATH
+    # — the intentional nested ``awm/gateway/awm/gateway`` layout. ``Path(None)``
+    # raised ``TypeError`` in the namespace case and wedged discovery wholesale.
+    # Anchor on the package directory either way.
+    if awm.gateway.__file__ is not None:
+        pkg_dir = Path(awm.gateway.__file__).resolve().parent
+    else:
+        pkg_dir = Path(next(iter(awm.gateway.__path__))).resolve()
+    for parent in pkg_dir.parents:
         cand = parent / "services"
         if parent.name == "awm" and cand.is_dir():
             return cand
-    # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway/__init__.py
-    # → parents[3] == <root>/awm.
-    return here.parents[3] / "services"
+    # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway
+    # → parents[2] == <root>/awm.
+    return pkg_dir.parents[2] / "services"
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +125,59 @@ def load_enabled() -> dict[str, bool]:
     return {k: bool(v) for k, v in data.items()}
 
 
+# ---------------------------------------------------------------------------
+# Profile gate (committed service.toml marker × AWM_PROFILES env)
+# ---------------------------------------------------------------------------
+
+PROFILE_MARKER = "service.toml"
+
+
+def active_profiles() -> set[str]:
+    """The running gateway's profile set, from the ``AWM_PROFILES`` env
+    (comma list; unset ⇒ empty ⇒ only unmarked/core services bootstrap)."""
+    raw = os.environ.get("AWM_PROFILES") or ""
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def _read_profiles(folder: Path) -> list[str] | None:
+    """The service's committed profile marker: the ``profiles`` list from
+    ``service.toml``. ``None`` = no marker (core, enabled everywhere). A
+    corrupt/malformed marker returns ``[]`` — marked-but-unmatched (disabled),
+    never fail-open."""
+    path = folder / PROFILE_MARKER
+    if not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        log.warning("could not parse %s: %s — treating as profile-gated off",
+                    path, exc)
+        return []
+    profiles = data.get("profiles")
+    if not isinstance(profiles, list):
+        log.warning("%s has no valid 'profiles' list — treating as "
+                    "profile-gated off", path)
+        return []
+    return [str(p).strip() for p in profiles if str(p).strip()]
+
+
+def _resolve_enabled(name: str, folder: Path,
+                     enabled_map: dict[str, bool]) -> bool:
+    """Fold the explicit enable flag and the profile gate into one verdict
+    (precedence: explicit ``enabled.json`` entry > profile intersection >
+    enabled)."""
+    if name in enabled_map:
+        return enabled_map[name]
+    profiles = _read_profiles(folder)
+    if profiles is None:
+        return True
+    return bool(set(profiles) & active_profiles())
+
+
 def is_enabled(name: str) -> bool:
-    """A service is enabled unless explicitly disabled in ``enabled.json``."""
-    return load_enabled().get(name, True)
+    """A service is enabled unless explicitly disabled in ``enabled.json`` or
+    held out by an unmatched profile marker (see the module doc)."""
+    return _resolve_enabled(name, services_root() / name, load_enabled())
 
 
 def set_enabled(name: str, enabled: bool) -> None:
@@ -140,7 +215,7 @@ def discover_services() -> list[ServiceSpec]:
         specs.append(ServiceSpec(
             name=entry.name,
             cwd=str(entry),
-            enabled=enabled_map.get(entry.name, True),
+            enabled=_resolve_enabled(entry.name, entry, enabled_map),
         ))
     return specs
 

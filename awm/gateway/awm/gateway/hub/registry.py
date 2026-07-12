@@ -55,6 +55,10 @@ class ServiceRecord:
     entry: str | None = None                        # auto-shell entry (static only)
     css: tuple[str, ...] = ()                       # auto-shell stylesheets (static only)
     mount_id: str = "app"                           # auto-shell mount node id (static only)
+    deny: tuple[str, ...] = ()                       # mask globs (static only): a
+    #   request whose resolved path (relative to static_dir, post-symlink) matches
+    #   any glob 404s as if missing. Lets a broad mount (e.g. root "/") hide
+    #   secrets. Matched with PurePosixPath.full_match, so ``**`` spans segments.
 
     # Service-only metadata. ``api`` carries the manifest the service sent
     # in its `ready` frame (functions/emitters/sessions). The control WS
@@ -76,6 +80,10 @@ class ServiceRecord:
     # the base for its prefix. Eviction pops overlays but never collapses
     # the base on shadow lifecycle.
     is_overlay: bool = False
+    # Human-facing "who" label for an overlay (e.g. "stt-shadow @ web-stt"),
+    # set by `awm dev shadow`. Used as the evictor identity when this overlay
+    # takes over a prefix and evicts the incumbent(s).
+    origin: str = ""
 
 
 class PrefixConflict(Exception):
@@ -125,6 +133,7 @@ class Registry:
         entry: str | None = None,
         css: tuple[str, ...] = (),
         mount_id: str = "app",
+        deny: tuple[str, ...] = (),
     ) -> ServiceRecord:
         prefix = _normalize_prefix(prefix)
         async with self._lock:
@@ -137,6 +146,7 @@ class Registry:
                 entry=entry,
                 css=tuple(css),
                 mount_id=mount_id,
+                deny=tuple(deny),
             )
             self._install_base(rec)
             return rec
@@ -205,14 +215,21 @@ class Registry:
     # Shadow overlays
     # ------------------------------------------------------------------
 
-    async def push_shadow(self, rec: ServiceRecord) -> ServiceRecord:
-        """Push ``rec`` as an overlay on its prefix.
+    async def replace_overlays(
+        self, rec: ServiceRecord
+    ) -> tuple[ServiceRecord, list[ServiceRecord]]:
+        """Make ``rec`` the *sole* overlay on its prefix: last connect wins.
 
-        Requires that a base record already exist for that prefix. The
-        overlay is pushed LIFO and becomes the active record returned by
-        ``longest_match``. On eviction (lease close) the overlay is popped
-        and traffic falls back to whatever is now topmost (the next-most-
-        recent overlay if any, or the base).
+        Requires that a base record already exist for that prefix. Any
+        overlays currently above the base are popped (evicted) and returned,
+        and ``rec`` is pushed as the single overlay — so ``longest_match``
+        resolves to ``rec``. The base (``stack[0]``) is never touched; when
+        ``rec``'s own lease later closes, traffic falls straight back to it.
+
+        Returns ``(rec, evicted)``. The caller is responsible for notifying
+        each evicted overlay (its WS handler still holds a live lease until
+        signalled). The evicted records are already removed from the registry,
+        so each one's own ``lm.hold`` eviction is a harmless no-op.
         """
         prefix = _normalize_prefix(rec.prefix)
         rec.prefix = prefix
@@ -223,18 +240,35 @@ class Registry:
                 raise NoBaseToShadow(
                     f"no base registered for prefix {prefix!r}; cannot shadow"
                 )
-            key = (rec.kind, rec.name)
-            if key in self._by_name:
+            # The new overlay may share a name with an outgoing overlay (e.g.
+            # two worktrees both auto-name `stt-shadow`); that's fine, the
+            # incumbent is evicted below. It may NOT collide with the base —
+            # `_by_name` is (kind, name)-keyed and the base owns that slot.
+            if rec.name == stack[0].name and rec.kind == stack[0].kind:
                 raise PrefixConflict(
-                    f"name {rec.name!r} already in use for kind {rec.kind!r}; pick a unique shadow name"
+                    f"shadow name {rec.name!r} collides with the base for "
+                    f"kind {rec.kind!r}; pick a unique shadow name"
                 )
+            evicted = stack[1:]
+            for ev in evicted:
+                self._by_name.pop((ev.kind, ev.name), None)
+            del stack[1:]
             stack.append(rec)
-            self._by_name[key] = rec
+            self._by_name[(rec.kind, rec.name)] = rec
             log.info(
-                "pushed shadow %s on %s (depth=%d)",
-                rec.name, prefix, len(stack) - 1,
+                "shadow %s took over %s (evicted %d overlay(s))",
+                rec.name, prefix, len(evicted),
             )
-            return rec
+        # Teardown callbacks run outside the lock (mirrors ``evict_by_id``).
+        # Overlays registered via shadow have no teardown today; this is
+        # defensive in case one is ever attached.
+        for ev in evicted:
+            if ev.teardown is not None:
+                try:
+                    await ev.teardown()
+                except Exception:
+                    log.exception("teardown failed for %s", ev.name)
+        return rec, evicted
 
     # ------------------------------------------------------------------
     # Eviction

@@ -17,6 +17,7 @@
   let { content, side = 'top', delay = 250, trigger }: Props = $props();
 </script>
 
+<div style="display:contents" data-awm-component="Tooltip">
 <T.Provider delayDuration={delay}>
   <T.Root>
     <T.Trigger>
@@ -29,6 +30,7 @@
     </T.Content>
   </T.Root>
 </T.Provider>
+</div>
 
 <style>
   .ttip {

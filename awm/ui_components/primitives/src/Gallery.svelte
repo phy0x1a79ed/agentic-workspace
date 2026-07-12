@@ -39,6 +39,15 @@
   ];
   const missing = foundNames.filter((n) => !renderers.includes(n));
 
+  // `flat` lets a host page (the components-gallery) fold this showcase under
+  // its own single TOC: it renders just the cards (+ the missing-renderer
+  // banner) and drops the internal nav/grid shell. Default is the standalone
+  // two-column gallery, unchanged.
+  interface Props {
+    flat?: boolean;
+  }
+  let { flat = false }: Props = $props();
+
   let inputValue = $state('');
   let sectionOpen = $state(true);
   let selectValue = $state('alpha');
@@ -46,25 +55,16 @@
   let sliderFloat = $state(1.0);
 </script>
 
-<div class="shell">
-  <nav class="toc">
-    <PanelLabel>primitives</PanelLabel>
-    <span class="count mono">{foundNames.length} components</span>
-    <ul class="jumps mono">
-      {#each renderers as r}
-        <li><a href="#p-{r}">{r}</a></li>
-      {/each}
-    </ul>
-  </nav>
+{#snippet banner()}
+  {#if missing.length}
+    <aside class="missing mono">
+      missing renderer for: {missing.join(', ')} — add a card in
+      gallery/Gallery.svelte.
+    </aside>
+  {/if}
+{/snippet}
 
-  <main class="page">
-    {#if missing.length}
-      <aside class="missing mono">
-        missing renderer for: {missing.join(', ')} — add a card in
-        gallery/Gallery.svelte.
-      </aside>
-    {/if}
-
+{#snippet cards()}
     <section class="list">
     <article class="card" id="p-Button">
       <h2 class="name mono">Button</h2>
@@ -186,5 +186,26 @@
       </div>
     </article>
     </section>
-  </main>
-</div>
+{/snippet}
+
+{#if flat}
+  {@render banner()}
+  {@render cards()}
+{:else}
+  <div class="shell">
+    <nav class="toc">
+      <PanelLabel>primitives</PanelLabel>
+      <span class="count mono">{foundNames.length} components</span>
+      <ul class="jumps mono">
+        {#each renderers as r}
+          <li><a href="#p-{r}">{r}</a></li>
+        {/each}
+      </ul>
+    </nav>
+
+    <main class="page">
+      {@render banner()}
+      {@render cards()}
+    </main>
+  </div>
+{/if}

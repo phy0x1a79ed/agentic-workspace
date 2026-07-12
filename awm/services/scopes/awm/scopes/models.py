@@ -1,9 +1,9 @@
 """Pydantic request/response models owned by the scopes service.
 
-Covers projects, scopes, rooms (membership/posts), messaging, and session
-logs — everything the scopes service exposes over its API surface. Live
+Covers projects, scopes, and the scope channel (posts/subscribers) —
+everything the scopes service exposes over its API surface. Live
 agent-runtime state (pid/status/model/context) lives with the agents
-service, even when surfaced through a room view.
+service, even when surfaced through a scope-channel view.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ class ScopeCreateRequest(BaseModel):
     project: str
     scope: str
     from_branch: str | None = None
+    branch_name: str | None = None
     context: str | None = None
 
 
@@ -49,6 +50,22 @@ class ScopeUpdateRequest(BaseModel):
 class ScopeSyncRequest(BaseModel):
     strategy: str = Field(default="merge", pattern="^(merge|rebase)$")
     from_branch: str | None = None
+
+
+class ScatterGatherResponse(BaseModel):
+    """Result of a batch fan-in (gather) or fan-out (scatter) merge.
+
+    ``results`` is one dict per peripheral, each
+    ``{scope, branch, result, detail}`` where ``result`` ∈
+    ``merged | up_to_date | conflict | skipped | error``. ``summary`` counts
+    the results by outcome.
+    """
+    project: str
+    hub: str
+    hub_branch: str
+    direction: str          # 'gather' (peripherals→hub) | 'scatter' (hub→peripherals)
+    results: list[dict]
+    summary: dict
 
 
 class ScopeInfo(BaseModel):

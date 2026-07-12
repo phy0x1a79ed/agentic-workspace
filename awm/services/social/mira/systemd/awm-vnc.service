@@ -1,0 +1,17 @@
+[Unit]
+Description=AWM one-time login VNC (x11vnc on :20, localhost only) on mira
+Documentation=awm/services/social/mira/README.md
+After=awm-display.service
+Requires=awm-display.service
+
+[Service]
+Environment=DISPLAY=:20
+# The user manager inherits WAYLAND_DISPLAY from tony's idle GNOME session;
+# x11vnc (and Chromium) would pick Wayland and ignore our Xvfb. Force X11.
+UnsetEnvironment=WAYLAND_DISPLAY
+# Started ON DEMAND for the one-time interactive Slack/Teams sign-in, then stopped.
+# -localhost: only reachable through an ssh tunnel (never exposed on the LAN).
+# Deliberately NOT enabled (no [Install]) — `systemctl --user start awm-vnc`.
+ExecStart=/usr/bin/x11vnc -display :20 -localhost -rfbport 5920 -nopw -forever -shared
+Restart=on-failure
+RestartSec=2

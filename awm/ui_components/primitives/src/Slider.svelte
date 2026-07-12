@@ -41,7 +41,7 @@
   }
 </script>
 
-<div class="slider" class:disabled>
+<div class="slider" class:disabled data-awm-component="Slider">
   <input
     type="range"
     class="range"

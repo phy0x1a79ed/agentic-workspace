@@ -28,17 +28,32 @@ cd "$WS"
 COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"
 
 # dist name -> "<source-root-dir>::<test-dir>"
+# agentcore is a leaf component (no service folder) — it has its own source
+# root + tests/ like the feature dists; it ships in the same per-dist runner.
 declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
+  [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
+  [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
+  [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
+  [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
-  [skills]="$WS/awm/services/skills::$WS/awm/services/skills/tests"
-  [discord]="$WS/awm/services/discord::$WS/awm/services/discord/tests"
+  [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
+  [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
+  [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
+  [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
+  [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
+  [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
+  [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
+  [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
+  [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
+  [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
+  [notes]="$WS/awm/services/notes::$WS/awm/services/notes/tests"
 )
 
 # Stable run order.
-ORDER=(gateway scopes agents artifacts skills discord)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events social 2fa rlm-browser orchestrator graphify stt tts fileviewer notes)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

@@ -1,27 +1,22 @@
 """Agent instance management — tracked, addressable (modular v1).
 
 An AgentInstance owns one ``claude`` or ``opencode`` subprocess attached to a
-single ``(project, scope)``. Its job is the *agent runtime*: serialize inputs
-into stdin, parse stdout, and post rendered text/tool events to the agent's
-**scope channel**.
+single ``scope`` (the globally-unique workspace-unit slug). Its job is the
+*agent runtime*: serialize inputs into stdin, parse stdout, and record rendered
+text/tool events to the agent's transcript.
 
-Subscribe to agents, message scopes
------------------------------------
+Subscribe to agents
+-------------------
 Raw agent acts (the full structured stdout event stream) belong to the *agent*
 and stay local in ``agents.db`` (``agent_transcript``) — you subscribe to an
-*agent* for those. The agent's rendered, human-facing output is also posted to
-its *scope channel* (``scope_post`` on the scopes service) — a scope IS the
-channel, addressed by ``(project, scope)``; there are no rooms.
+*agent* for those, keyed on its ``scope`` (the unit slug).
 
 Modular changes from the monolith
 ----------------------------------
-- **Identity** is resolved via gatewayclient calls to the ``scopes`` service.
-  No uuid ``agent_id``; ``(project, scope)`` is the natural key throughout.
+- **Identity** is the ``scope`` (unit slug) ALONE — globally unique, no uuid
+  ``agent_id`` and no project namespace.
 - **Persistence** goes through ``AgentsDAO`` → ``agents.db``; no shared
   ``state.db``.
-- **Channel output** is cross-service: ``scope_post`` on the ``scopes``
-  service. The scope's channel exists with the scope (``ensureScope``), so
-  there is nothing to create or auto-close.
 - **Raw act writes** go to the ``agent_transcript`` table in ``agents.db``
   via ``agent_transcript.record_*`` (which uses AgentsDAO).
 """
@@ -31,22 +26,41 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
+import time
 from pathlib import Path
 from typing import Optional
 
 from awm import config
-from awm.config import PROJECTS_DIR
 from awm.agents import dao as _dao_module
 from awm.agents.dao import AgentsDAO
-from awm.agents._time import now_ms, ms_to_iso, iso_to_ms, SYSTEM_REF
-from awm.agents._path import resolve_bin
+from awm.agents._time import now_ms, ms_to_iso
 from awm.agents.models import AgentSessionInfo
-import awm.gatewayclient as gatewayclient
+
+from awm.agentcore import AgentConfig, open_agent
+from awm.agentcore.session import AgentSession as _CoreSession
 
 
 _SUPPORTED_CLIS = {"claude", "opencode"}
 _INPUT_QUEUE_SIZE = 128
+
+
+def _normalize_cli(value: object) -> str:
+    """Map a persisted/legacy ``agent_cli`` onto a current one.
+
+    ``claude-tmux`` was folded into ``claude`` when tmux became the only claude
+    backend — a row minted under the old name still reads back as ``claude``."""
+    cli = str(value) if value else "claude"
+    return "claude" if cli == "claude-tmux" else cli
+
+# Supervision (T4): a task-bound worker gets a hard turn budget — every turn
+# boundary decrements it, with NO extension and NO refill. The final stretch
+# escalates to a warning so the worker checkpoints + self-fails gracefully.
+# These live here (not placement.py) because AgentInstance.__init__ seeds the
+# per-session counter; placement.py reads them back for the driver.
+TASK_TURN_BUDGET = 100
+TASK_WARN_REMAINING = 15
 
 # Module-level DAO instance (initialized after dao.init() is called).
 _dao: AgentsDAO | None = None
@@ -59,10 +73,6 @@ def _get_dao() -> AgentsDAO:
     return _dao
 
 
-def _scope_key(project: str, scope: str) -> str:
-    return f"{project}/{scope}"
-
-
 # ---------------------------------------------------------------------------
 # AgentInstance
 # ---------------------------------------------------------------------------
@@ -70,27 +80,31 @@ def _scope_key(project: str, scope: str) -> str:
 class AgentInstance:
     """In-memory handle for a running CLI subprocess.
 
-    ``id`` is the ``agent_instances.id`` (per-spawn integer). ``project`` and
-    ``scope`` are the natural key — no ``agent_id`` uuid is stored.
+    ``id`` is the ``agent_instances.id`` (per-spawn integer). ``scope`` (the
+    globally-unique unit slug) is the natural key — no ``agent_id`` uuid is
+    stored.
+
+    The subprocess + stream parsing are owned by an agentcore
+    :class:`AgentSession` (``agent_session``); this class keeps the supervisor
+    concerns (registry, transcript, attach, resume, slash/compact). The
+    ``proc`` property surfaces the agentcore session's underlying process so the
+    existing stop/kill/slash/pid paths keep working unchanged.
     """
 
     def __init__(
         self,
         *,
         id: int,
-        project: str,
         scope: str,
         agent_cli: str,
         log_path: Path,
-        proc: asyncio.subprocess.Process,
+        agent_session: _CoreSession,
     ):
         self.id = id
-        self.project = project
         self.scope = scope
-        self.scope_key = _scope_key(project, scope)
         self.agent_cli = agent_cli
         self.log_path = log_path
-        self.proc = proc
+        self.agent_session = agent_session
         self.status: str = "running"
         self.started_at_ms: int = now_ms()
         self.exited_at_ms: Optional[int] = None
@@ -108,8 +122,47 @@ class AgentInstance:
         self.claude_slash_commands: list[str] = []
         self.context_used: int = 0
         self.context_max: Optional[int] = None
+        # Stall-watchdog clock (T5): a monotonic timestamp stamped on every
+        # harness event in ``_reader_loop`` (the single event chokepoint). Seeded
+        # at spawn so the clock starts at PLACEMENT — a slow first event never
+        # trips the watchdog. The 60s sweep fails a placement silent past
+        # ``AWM_PLACEMENT_STALL_S`` (see ``placement.stall_watchdog_loop``).
+        self.last_activity: float = time.monotonic()
+        # Auto-compact cooldown (T5): the monotonic time of the last ``/compact``
+        # injection (0.0 = never). ``placement._maybe_compact`` guards re-fire.
+        self.last_compact_at: float = 0.0
         self.respawn_lock: asyncio.Lock = asyncio.Lock()
-        self.compacting: bool = False
+        # Task-bounded placement: the placement IS this instance row.
+        # placement_token names it, agent_ref is the stable placement identity,
+        # task_ref binds it to the task. (Overwritten in create_session.)
+        self.mode: str = "worker"
+        self.task_ref: Optional[str] = None
+        self.agent_ref: Optional[str] = None
+        self.placement_token: Optional[str] = None
+        # Placement workdir (the workspace unit path) + the per-mode tool
+        # profile; both carried across respawn. Default-empty for conversational.
+        self.workdir: Optional[str] = None
+        self.allowed_tools: Optional[list[str]] = None
+        # tmux session name for a claude agent (human-attachable); None for
+        # opencode (no tmux session).
+        self.tmux_session: Optional[str] = None
+        # Supervision: a hard turn budget that decrements every turn boundary,
+        # no extension, no refill (only meaningful when mode != conversational).
+        self.turn_budget: int = TASK_TURN_BUDGET
+        # Idempotent streaming: message_id → accumulated text. Partials stream
+        # live-only (bus, no persist); the finalized message is upserted as one
+        # durable row keyed by message_id. Both reset per turn (on `result`) so
+        # a long-lived session doesn't leak ids.
+        self._partial_accum: dict[str, str] = {}
+        self._msg_accum: dict[str, str] = {}
+
+    @property
+    def proc(self):
+        """The agentcore session's underlying subprocess (``_proc``).
+
+        Surfaced so the supervisor's stop/kill/slash/pid code keeps reaching
+        the real process without knowing about agentcore internals."""
+        return getattr(self.agent_session, "_proc", None)
 
     @property
     def claude_session_id(self) -> Optional[str]:
@@ -120,13 +173,10 @@ class AgentInstance:
         self.cli_session_id = value
 
 
-# In-memory registries keyed on scope_key (project/scope) and instance id.
+# In-memory registries keyed on scope (the unit slug) and instance id.
 _registry_by_id: dict[int, AgentInstance] = {}
 _by_scope: dict[str, AgentInstance] = {}
 _registry_lock = asyncio.Lock()
-
-# Resume wake schedule — scope_key → unix-ms.
-_resume_schedule: dict[str, int] = {}
 
 
 class ScopeBusyError(Exception):
@@ -135,58 +185,6 @@ class ScopeBusyError(Exception):
 
 class NoSessionError(Exception):
     """No agent instance exists for the requested scope."""
-
-
-# ---------------------------------------------------------------------------
-# Identity helpers (scopes RPC)
-# ---------------------------------------------------------------------------
-
-_ref_cache = gatewayclient.RefCache(ttl=120.0)
-
-
-async def _ensure_scope_exists(project: str, scope: str,
-                                agent_cli: str,
-                                worktree: Path,
-                                as_: str | None = None) -> None:
-    """Ensure project + scope exist in the scopes service.
-
-    Calls ensureProject then ensureScope via gatewayclient. Does not return
-    an agent_id — the natural key (project, scope) is the identity.
-    """
-    bare = PROJECTS_DIR / project / ".bare"
-    await gatewayclient.call(
-        "scopes", "ensureProject",
-        {"project": project, "repo_path": str(bare)},
-        as_=as_,
-    )
-    await gatewayclient.call(
-        "scopes", "ensureScope",
-        {
-            "project": project, "scope": scope,
-            "branch": f"feat/{scope}",
-            "worktree": str(worktree),
-            "agent_cli": agent_cli,
-            "status": "active",
-        },
-        as_=as_,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Scope channel output (a scope IS the channel; post the agent's rendered
-# output to its own scope channel via the scopes service)
-# ---------------------------------------------------------------------------
-
-async def _post_to_scope(*, project: str, scope: str, author: str,
-                         body: str, kind: str) -> None:
-    """Post one rendered agent event to the agent's scope channel."""
-    try:
-        await gatewayclient.call('scopes', 'scope_post', {
-            'project': project, 'scope': scope,
-            'author': author, 'body': body, 'kind': kind,
-        })
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -199,55 +197,112 @@ _VALID_PERMISSION_MODES = (
 _VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
-def _build_claude_argv(
-    *, permission_mode: str, model: Optional[str], effort: Optional[str],
-    resume_session_id: Optional[str],
-) -> list[str]:
-    argv = [
-        resolve_bin("claude"), "--print", "--verbose",
-        "--input-format=stream-json", "--output-format=stream-json",
-        "--include-partial-messages",
-        f"--permission-mode={permission_mode}",
-    ]
-    if model:
-        argv.extend(["--model", model])
+# ---------------------------------------------------------------------------
+# agentcore config builder
+# ---------------------------------------------------------------------------
+
+def _tmux_session_name(instance_id: int, scope: str) -> str:
+    """Deterministic, tmux-safe session name for a ``claude`` agent.
+
+    ``awm-<instance_id>-<scope>`` with anything outside ``[A-Za-z0-9_-]``
+    collapsed to ``-`` (tmux treats ``.`` / ``:`` specially in target names).
+    Predictable from ``agent_list`` so a human knows what to ``tmux attach``."""
+    safe_scope = re.sub(r"[^A-Za-z0-9_-]", "-", scope)
+    return f"awm-{instance_id}-{safe_scope}"
+
+
+def _build_core_config(
+    *, agent_cli: str, permission_mode: str, model: Optional[str],
+    effort: Optional[str], resume_session_id: Optional[str],
+    workspace_dir: Path,
+    allowed_tools: Optional[list[str]] = None,
+    disallowed_tools: Optional[list[str]] = None,
+    placement_as: Optional[str] = None,
+    tmux_session_name: Optional[str] = None,
+) -> AgentConfig:
+    """Map the agents-service spawn args onto an agentcore :class:`AgentConfig`.
+
+    ``permission_mode == 'bypassPermissions'`` → full-open (``permissions='full'``);
+    everything else maps to ``permissions='default'`` (the harness's own
+    default). ``effort`` rides ``params`` (claude). ``allowed_tools`` /
+    ``disallowed_tools`` are the per-placement tool profile (a task-bound worker
+    is full-open on permissions but its tools — fs built-ins + which worker MCP
+    tools — are scoped by the allowlist; a conversational session passes neither
+    and is unrestricted).
+
+    MCP setup is **harness-owned**: we don't write any config file here. We
+    thread the hub's canonical workspace + port (so the harness can synthesize
+    the ``awm`` MCP server pointing back at THIS hub) and, for a placement,
+    ``placement_as`` (the agent's identity — the unit slug → the synthesized
+    server's ``AWM_AS`` → ``X-Awm-As`` → the B-op tools resolve to its own task
+    without a model-supplied token). ``placement_as=None`` carries no identity."""
+    permissions = "full" if permission_mode == "bypassPermissions" else "default"
+    params: dict = {}
     if effort:
-        argv.extend(["--effort", effort])
-    if resume_session_id:
-        argv.extend(["--resume", resume_session_id])
-    spawn_mcp = config.AWM_DIR / "spawn-mcp.json"
-    if spawn_mcp.exists():
-        argv.extend(["--strict-mcp-config", "--mcp-config", str(spawn_mcp)])
-    return argv
-
-
-def _build_opencode_argv(
-    *, workspace_dir: Path, permission_mode: str, model: Optional[str],
-) -> list[str]:
-    argv = [resolve_bin("opencode"), "run", "--format", "json",
-            "--dir", str(workspace_dir)]
-    if permission_mode == "bypassPermissions":
-        argv.append("--dangerously-skip-permissions")
-    if model:
-        argv.extend(["--model", model])
-    return argv
+        params["effort"] = effort
+    return AgentConfig(
+        harness=agent_cli,
+        mode="live",
+        model=model,
+        params=params,
+        permissions=permissions,
+        workdir=str(workspace_dir),
+        resume_id=resume_session_id,
+        awm_workspace=str(config.canonical_workspace()),
+        awm_port=str(config.PORT),
+        placement_as=placement_as,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
+        tmux_session_name=tmux_session_name,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Public API: create / lookup
 # ---------------------------------------------------------------------------
 
-async def create_session(*, project: str, scope: str,
+async def create_session(*, scope: str,
                          agent_cli: str = "claude",
                          permission_mode: str = "default",
                          model: Optional[str] = None,
                          effort: Optional[str] = None,
                          resume_session_id: Optional[str] = None,
-                         fresh: bool = False) -> AgentInstance:
-    """Spawn a CLI subprocess and register it."""
+                         fresh: bool = False,
+                         mode: str = "worker",
+                         task_ref: Optional[str] = None,
+                         agent_ref: Optional[str] = None,
+                         placement_token: Optional[str] = None,
+                         workdir: Optional[str] = None,
+                         allowed_tools: Optional[list[str]] = None,
+                         disallowed_tools: Optional[list[str]] = None,
+                         ) -> AgentInstance:
+    """Spawn a CLI subprocess for a placement and register it.
+
+    Every session is a task-bounded **placement**: it runs in a workspace UNIT
+    (``workdir``, required — provisioned by the workspace service), NEVER a git
+    scope, and never touches the scopes service. ``scope`` (the globally-unique
+    unit slug) is the natural key. There is no conversational mode: a human
+    attaches via the transcript WS and pushes text via ``agent_post`` (direct
+    enqueue). ``mode`` is the placement mode (worker/plan/planner/verify) and
+    ``allowed_tools`` / ``disallowed_tools`` carry its tool profile. The DAO
+    insert records the placement row and the supervision driver owns the
+    lifecycle."""
     if agent_cli not in _SUPPORTED_CLIS:
         raise ValueError(
             f"Unknown agent CLI '{agent_cli}'. Supported: {sorted(_SUPPORTED_CLIS)}"
+        )
+    # Model is HARD-REQUIRED at the spawn boundary. A blank model is refused
+    # rather than silently defaulted, so a claude TUI can never omit ``--model``
+    # and inherit the operator's ambient ``ANTHROPIC_MODEL`` (see the claude
+    # backend's ``build_argv``). Callers resolve a concrete id up front —
+    # ``placement._resolve_driver`` fills a per-harness default, and a respawn
+    # carries the prior session's model — so this guard only trips a caller that
+    # bypassed resolution.
+    if not (model and model.strip()):
+        raise ValueError(
+            "create_session requires an explicit, non-empty model "
+            "(hard-required at the spawn boundary; a blank model no longer "
+            "falls back to the harness/CLI/ambient default)"
         )
     if permission_mode not in _VALID_PERMISSION_MODES:
         raise ValueError(
@@ -258,11 +313,16 @@ async def create_session(*, project: str, scope: str,
         raise ValueError(
             f"Invalid effort {effort!r}; choices: {list(_VALID_EFFORTS)}"
         )
+    if not workdir:
+        raise ValueError(
+            "a placement requires a workdir (the workspace unit path)")
 
-    key = _scope_key(project, scope)
-    workspace_dir = PROJECTS_DIR / project / scope
+    key = scope
+    # The workdir is the workspace UNIT (provisioned by the workspace service),
+    # not a git scope under PROJECTS_DIR.
+    workspace_dir = Path(workdir)
     if not workspace_dir.exists():
-        raise FileNotFoundError(f"Scope workspace not found at {workspace_dir}")
+        raise FileNotFoundError(f"Workspace dir not found at {workspace_dir}")
     awm_dir = workspace_dir / ".awm"
     awm_dir.mkdir(parents=True, exist_ok=True)
     log_path = awm_dir / "session.log"
@@ -271,98 +331,102 @@ async def create_session(*, project: str, scope: str,
         if key in _by_scope:
             raise ScopeBusyError(
                 f"scope {key} already has an active session "
-                f"(pid={_by_scope[key].proc.pid})"
+                f"(pid={_by_scope[key].proc.pid if _by_scope[key].proc else '?'})"
             )
-
-        # Ensure project + scope exist in the scopes service.
-        try:
-            await _ensure_scope_exists(
-                project=project, scope=scope,
-                agent_cli=agent_cli, worktree=workspace_dir,
-            )
-        except gatewayclient.GatewayCallError as exc:
-            raise RuntimeError(
-                f"Failed to ensure scope {project}/{scope} via scopes RPC: {exc}"
-            ) from exc
 
         dao = _get_dao()
         # Resume id recovery.
         if resume_session_id is None and not fresh:
-            resume_session_id = dao.get_latest_cli_session_id(project, scope)
+            resume_session_id = dao.get_latest_cli_session_id(scope)
 
-        instance_id = dao.open_instance(
-            project=project, scope=scope,
+        instance_id = dao.open_task_instance(
+            scope=scope,
             log_path=str(log_path),
             cli_session_id=resume_session_id,
             started_at=now_ms(),
+            mode=mode,
+            task_ref=task_ref,
+            agent_ref=agent_ref,
+            placement_token=placement_token,
         )
 
-        # A scope IS the channel — it exists once the scope does (ensured
-        # above); no separate room to provision.
+        # Build the agentcore config and drive an AgentSession. The subprocess
+        # + stream parsing live in agentcore now; we keep only the supervisor.
+        # MCP setup is harness-owned: the placement passes its identity (the
+        # unit slug) so the harness synthesizes an awm server with AWM_AS, and
+        # its B-op tools resolve to its own task without a token.
+        placement_as = scope
+        # A claude agent runs in tmux and gets a deterministic session name
+        # (human-attachable); opencode has no tmux session.
+        tmux_name = (
+            _tmux_session_name(instance_id, scope)
+            if agent_cli == "claude" else None
+        )
+        core_config = _build_core_config(
+            agent_cli=agent_cli, permission_mode=permission_mode,
+            model=model, effort=effort, resume_session_id=resume_session_id,
+            workspace_dir=workspace_dir,
+            allowed_tools=allowed_tools, disallowed_tools=disallowed_tools,
+            placement_as=placement_as,
+            tmux_session_name=tmux_name,
+        )
+        agent_session = open_agent(core_config)
 
-        # Spawn the subprocess.
-        spawn_env: dict[str, str] | None = None
-        if agent_cli == "opencode":
-            argv = _build_opencode_argv(
-                workspace_dir=workspace_dir,
-                permission_mode=permission_mode, model=model,
-            )
-            scope_opencode_cfg = awm_dir / "mcp-opencode.json"
-            workspace_opencode_cfg = config.AWM_DIR / "mcp-opencode.json"
-            opencode_cfg = (
-                scope_opencode_cfg if scope_opencode_cfg.exists()
-                else workspace_opencode_cfg
-            )
-            if opencode_cfg.exists():
-                spawn_env = {**os.environ, "OPENCODE_CONFIG": str(opencode_cfg)}
-        else:
-            argv = _build_claude_argv(
-                permission_mode=permission_mode, model=model, effort=effort,
-                resume_session_id=resume_session_id,
-            )
-        log_fp = open(log_path, "ab")
+        # Subscribe BEFORE the first send so the claude init `status` event and
+        # any early acts are captured (the pump-drained-past-us race).
+        event_stream = agent_session.subscribe()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(workspace_dir),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=log_fp,
-                start_new_session=True,
-                env=spawn_env,
-            )
+            await agent_session.start()
         except FileNotFoundError as exc:
-            log_fp.close()
             dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
                                intent_override="failed_to_spawn")
             raise RuntimeError(f"{agent_cli} binary not on PATH: {exc}") from exc
-        finally:
-            log_fp.close()
+        except Exception as exc:  # noqa: BLE001
+            dao.close_instance(instance_id, ended_at=now_ms(), exit_code=-1,
+                               intent_override="failed_to_spawn")
+            raise RuntimeError(
+                f"failed to start {agent_cli} for {key}: {exc}") from exc
 
         session = AgentInstance(
             id=instance_id,
-            project=project,
             scope=scope,
             agent_cli=agent_cli,
             log_path=log_path,
-            proc=proc,
+            agent_session=agent_session,
         )
         session.permission_mode = permission_mode
         session.model = model
         session.effort = effort
         session.cli_session_id = resume_session_id
+        session.mode = mode
+        session.task_ref = task_ref
+        session.agent_ref = agent_ref
+        session.placement_token = placement_token
+        session.workdir = str(workspace_dir)
+        session.allowed_tools = allowed_tools
+        session.tmux_session = tmux_name
+        # Persist agent_cli (not a column) so lists/hydration report the harness
+        # correctly, plus the tmux session name for human attach.
+        data_patch: dict = {"agent_cli": agent_cli}
+        if tmux_name:
+            data_patch["tmux_session"] = tmux_name
+        dao.merge_instance_data(instance_id, data_patch)
         _registry_by_id[instance_id] = session
         _by_scope[key] = session
 
-    session.reader_task = asyncio.create_task(_reader_loop(session))
+    session.reader_task = asyncio.create_task(_reader_loop(session, event_stream))
     session.waiter_task = asyncio.create_task(_waiter_loop(session))
     session.input_pump_task = asyncio.create_task(_input_pump(session))
+    # No scope-channel delivery loop: a human attaches via the transcript WS and
+    # pushes text via agent_post (direct enqueue) — every node is a placement.
     try:
         await asyncio.wait_for(session.stdin_ready.wait(), timeout=10.0)
     except asyncio.TimeoutError:
+        # Tear down through the seam so a proc-less harness (tmux) is cleaned
+        # up too rather than leaking a detached session.
         try:
-            session.proc.kill()
-        except ProcessLookupError:
+            await session.agent_session.close()
+        except Exception:  # noqa: BLE001
             pass
         async with _registry_lock:
             _by_scope.pop(key, None)
@@ -375,8 +439,8 @@ async def create_session(*, project: str, scope: str,
     return session
 
 
-def get_session_by_scope(project: str, scope: str) -> AgentInstance | None:
-    return _by_scope.get(_scope_key(project, scope))
+def get_session_by_scope(scope: str) -> AgentInstance | None:
+    return _by_scope.get(scope)
 
 
 def get_session(session_id: int) -> AgentInstance | None:
@@ -388,48 +452,116 @@ def get_session(session_id: int) -> AgentInstance | None:
 # ---------------------------------------------------------------------------
 
 async def _input_pump(session: AgentInstance) -> None:
+    """Drain the input queue into the agentcore session, one user turn each.
+
+    The ``[from:author]`` framing (multi-party attribution) is preserved — it
+    is the body the agent sees and what we record as the inbound transcript
+    entry. ``enqueue_input`` stays the only path into this queue."""
     session.stdin_ready.set()
-    if (session.proc is None or session.proc.stdin is None
-            or session.proc.stdin.is_closing()):
-        return
     while True:
         try:
-            post_author, post_body = await session.input_queue.get()
+            post_author, post_body, client_id = await session.input_queue.get()
         except asyncio.CancelledError:
             return
-        if session.proc is None or session.proc.stdin is None:
-            return
-        if session.proc.stdin.is_closing():
-            return
         framed_body = f"[from:{post_author}]\n{post_body}"
-        payload = {
-            "type": "user",
-            "message": {"role": "user", "content": framed_body},
-        }
-        line = (json.dumps(payload) + "\n").encode("utf-8")
         try:
-            session.proc.stdin.write(line)
-            await session.proc.stdin.drain()
+            await session.agent_session.send(framed_body)
         except (ConnectionResetError, BrokenPipeError):
             return
+        except RuntimeError:
+            # Session stdin not available (closing / not started) — stop pumping.
+            return
+        except Exception:  # noqa: BLE001
+            return
+        # The turn has begun (this send is the single chokepoint for human AND
+        # autonomous/supervisor turns) — publish the transient "working" presence
+        # act so the chat shows the agent acting from turn-start, before its first
+        # token. The frontend clears it on the turn's first real content / result.
+        from awm.agents import agent_transcript
+        agent_transcript.publish_working(session)
         try:
             with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
                 fp.write(f"STDIN {framed_body!r}\n")
         except OSError:
             pass
-        # record_in signature: (session, body, *, injection=False)
-        from awm.agents import agent_transcript
-        agent_transcript.record_in(session, framed_body, injection=False)
+        # record_in upserts under the client correlation id (when supplied) so
+        # the browser's optimistic chip reconciles in place, stamps the row
+        # `delivered`, and publishes it live (the human turn streams back).
+        agent_transcript.record_in(
+            session, framed_body, injection=False, act_id=client_id)
 
 
 def enqueue_input(session: AgentInstance, post_author: str,
-                  post_body: str) -> bool:
-    """Enqueue a scope-channel post for the agent's stdin pump."""
+                  post_body: str, client_id: str | None = None) -> bool:
+    """Enqueue a scope-channel post for the agent's stdin pump.
+
+    This is the PASSIVE input channel: the post is queued and the agent consumes
+    it between turns (turn-aligned). For a mid-turn forced-interrupt, see
+    :func:`notify_agent`. ``client_id`` is an optional browser correlation id
+    threaded to ``record_in`` so an optimistic chip reconciles to the recorded
+    row in place; internal callers (kickoff/supervisor) omit it."""
     try:
-        session.input_queue.put_nowait((post_author, post_body))
-        return True
+        session.input_queue.put_nowait((post_author, post_body, client_id))
     except asyncio.QueueFull:
         return False
+    # Browser-originated post (carries a client_id): publish the human turn to
+    # the live bus NOW, so a connected chat sees it immediately instead of only
+    # when the agent next takes a turn (the slow-read bug). ``record_in`` later
+    # upserts the same id; the two fold to one row. Internal callers (kickoff /
+    # supervisor) omit client_id and so never publish a spurious human turn.
+    if client_id:
+        from awm.agents import agent_transcript
+        framed_body = f"[from:{post_author}]\n{post_body}"
+        agent_transcript.publish_inbound(session, framed_body, client_id)
+        # A new human message clears the agent's detach-readiness: new information
+        # means it must re-confirm before it can detach. No-op unless the task is
+        # attached with the readiness bit set. (Browser posts only — kickoff /
+        # supervisor turns carry no client_id and never touch the bit.)
+        from awm.agents import placement
+        placement.note_user_post(session)
+    return True
+
+
+async def notify_agent(session: AgentInstance, author: str, body: str) -> bool:
+    """FORCED-INTERRUPT notification: preempt the agent's current turn.
+
+    The third input channel (with passive ``enqueue_input`` and the human's
+    direct terminal keystrokes): an operator or another agent forces a message
+    in mid-turn via the harness :meth:`AgentSession.interrupt` seam — the tmux
+    harness sends ESC to cancel the in-flight turn, then pastes ``body``; a
+    headless harness falls back to a plain ``send``. The agent's OWN posts are
+    filtered (never self-notify), mirroring the passive path. Recorded to the
+    transcript as an injection. Returns False when filtered or the harness
+    rejects the interrupt."""
+    if _is_own_author(session, author):
+        return False
+    framed = f"[notify:{author}]\n{body}"
+    try:
+        await session.agent_session.interrupt(framed)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
+            fp.write(f"STDIN(notify) {framed!r}\n")
+    except OSError:
+        pass
+    from awm.agents import agent_transcript
+    agent_transcript.record_in(session, framed, injection=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Own-author filter (don't deliver an agent's own output back to itself)
+# ---------------------------------------------------------------------------
+
+def _is_own_author(session: AgentInstance, author: str) -> bool:
+    """True if `author` is this agent's own scope ref (don't self-deliver)."""
+    if not author:
+        return False
+    a = author
+    if a.startswith(("agent:", "scope:")):
+        a = a.split(":", 1)[1]
+    return a == session.scope
 
 
 # ---------------------------------------------------------------------------
@@ -505,52 +637,135 @@ def _extract_renderable(parsed: dict) -> list[tuple[str, str]]:
     return out
 
 
-async def _reader_loop(session: AgentInstance) -> None:
+def _update_usage_from_data(session: "AgentInstance", data: dict | None) -> None:
+    """Update context_used from an event's ``data['usage']`` block."""
+    if not isinstance(data, dict):
+        return
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+    try:
+        inp = usage.get("input_tokens") or 0
+        cache_read = usage.get("cache_read_input_tokens") or 0
+        cache_create = usage.get("cache_creation_input_tokens") or 0
+        total = int(inp) + int(cache_read) + int(cache_create)
+        if total > 0:
+            session.context_used = total
+    except (TypeError, ValueError):
+        return
+
+
+def _message_id_for(event, data: dict) -> str:
+    """The stable per-turn bubble key for a message/partial event.
+
+    Prefer the harness ``message_id`` (claude stamps it; one bubble per
+    assistant message). A backend that can't supply one (opencode) degrades to
+    the event's own id — each act its own bubble: degraded, never wrong."""
+    mid = data.get("message_id") if isinstance(data, dict) else None
+    return mid if isinstance(mid, str) and mid else getattr(event, "id", "")
+
+
+async def _reader_loop(session: AgentInstance, event_stream) -> None:
+    """Consume agentcore :class:`AgentEvent`s: persist + fan out live.
+
+    **Idempotent streaming.** A streamed reply is one logical message keyed by
+    its harness ``message_id``:
+
+    - ``partial`` events stream **live-only** — text is accumulated and a
+      growing-bubble act is published over the bus, but nothing is persisted
+      (this kills the durable-row flood + write amplification).
+    - the finalized ``message`` event(s) **upsert** one durable row keyed by
+      ``message_id`` (accumulating across a turn's text blocks).
+    - ``result`` is still persisted (for its ``usage``/``session_id`` meta) but
+      hidden downstream, and marks the turn boundary that resets the
+      accumulators. ``status`` / ``tool_use`` / ``tool_result`` are unchanged.
+
+    The agent's output is **not** posted back to its scope channel (transcript
+    only) — deliberate agent messages (debrief) stay an explicit ``scope_post``
+    elsewhere. The ``status`` (init) event carries the resolved harness session
+    id (for resume) + slash commands + model; ``result``/``status`` carry usage.
+    """
     from awm.agents import agent_transcript
-    assert session.proc is not None and session.proc.stdout is not None
-    stdout = session.proc.stdout
-    while True:
-        line = await stdout.readline()
-        if not line:
-            return
-        text = line.decode("utf-8", errors="replace").rstrip("\n")
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            try:
-                with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
-                    fp.write(f"STDOUT(raw) {text}\n")
-            except OSError:
-                pass
-            agent_transcript.record_raw_out(session, text)
-            continue
+    from awm.agents import agent_bus
 
-        agent_transcript.record_out(session, parsed)
+    async for event in event_stream:
+        # Stall-watchdog heartbeat (T5): EVERY harness event for this placed
+        # session (turn/tool/status/transcript) flows through here — this is the
+        # single chokepoint, so one stamp measures a long silent gap. A stalled
+        # placement is one that emits nothing for AWM_PLACEMENT_STALL_S.
+        session.last_activity = time.monotonic()
+        data = getattr(event, "data", None) or {}
+        kind = getattr(event, "kind", "status")
 
-        if parsed.get("type") == "system" and parsed.get("subtype") == "init":
-            sid = parsed.get("session_id")
+        # Lifecycle metadata off the status(init) event.
+        if kind == "status" and data.get("subtype") == "init":
+            sid = data.get("session_id")
             if isinstance(sid, str) and sid != session.cli_session_id:
                 session.cli_session_id = sid
                 _get_dao().update_instance_cli_session_id(session.id, sid)
-            cmds = parsed.get("slash_commands")
+            cmds = data.get("slash_commands")
             if isinstance(cmds, list):
-                session.claude_slash_commands = [c for c in cmds if isinstance(c, str)]
-            init_model = parsed.get("model") or session.model
+                session.claude_slash_commands = [
+                    c for c in cmds if isinstance(c, str)
+                ]
+            init_model = data.get("model") or session.model
             session.context_max = _lookup_context_max(init_model)
 
-        _update_usage_from_event(session, parsed)
+        _update_usage_from_data(session, data)
 
-        events = _extract_renderable(parsed)
-        if not events:
+        if kind == "partial":
+            # Live-only: accumulate + publish a growing bubble; never persist.
+            mid = _message_id_for(event, data)
+            piece = getattr(event, "text", None) or ""
+            acc = session._partial_accum.get(mid, "") + piece
+            session._partial_accum[mid] = acc
+            agent_bus.publish_act(session.scope, {
+                "id": getattr(event, "id", mid),
+                "kind": "partial",
+                "body": acc,
+                "meta": {"message_id": mid, "data": data},
+                "ts": now_ms(),
+            })
             continue
 
-        # Post the agent's rendered output to its own scope channel.
-        author_ref = f"agent:{session.project}/{session.scope}"
-        for kind, body in events:
-            await _post_to_scope(
-                project=session.project, scope=session.scope,
-                author=author_ref, body=body, kind=kind,
-            )
+        if kind == "message":
+            # Finalize: upsert the one durable row keyed by message_id,
+            # accumulating across a turn's text blocks.
+            mid = _message_id_for(event, data)
+            text = getattr(event, "text", None) or ""
+            prior = session._msg_accum.get(mid)
+            acc = f"{prior}\n{text}" if prior else text
+            session._msg_accum[mid] = acc
+            session._partial_accum.pop(mid, None)
+            act = agent_transcript.upsert_message_act(
+                session, mid, acc, data, now_ms())
+            if act is not None:
+                agent_bus.publish_act(session.scope, act)
+            continue
+
+        # Persist the act (with its uuid) and fan it out to live subscribers.
+        act = agent_transcript.record_event(session, event)
+        if act is not None:
+            agent_bus.publish_act(session.scope, act)
+
+        # The terminal `result` closes the turn — reset the accumulators so a
+        # long-lived session doesn't accrete per-turn message ids.
+        if kind == "result":
+            session._partial_accum.clear()
+            session._msg_accum.clear()
+            # Outer-loop turn boundary: drive the session's supervisor —
+            # a game bot gets the gamebot driver (budget countdown →
+            # force-park), everything else the placement driver (decrement
+            # the hard turn budget, inject the next prompt / force-fail at 0).
+            try:
+                if getattr(session, "mode", None) == "gamebot":
+                    from awm.agents import gamebot
+                    await gamebot.on_turn_boundary(session)
+                else:
+                    from awm.agents import placement
+                    await placement.on_turn_boundary(session)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -558,25 +773,39 @@ async def _reader_loop(session: AgentInstance) -> None:
 # ---------------------------------------------------------------------------
 
 async def _waiter_loop(session: AgentInstance) -> None:
-    assert session.proc is not None
-    exit_code = await session.proc.wait()
-    session.exit_code = exit_code
+    # Harness-agnostic liveness: subprocess backends await their child; the
+    # tmux backend polls its detached session. Both surface through wait().
+    try:
+        exit_code = await session.agent_session.wait()
+    except NotImplementedError:
+        return
+    session.exit_code = exit_code if exit_code is not None else 0
     session.exited_at_ms = now_ms()
     final = "killed" if session.status == "killed" else "exited"
     session.status = final
 
-    _get_dao().close_instance(session.id, ended_at=now_ms(), exit_code=exit_code)
+    _get_dao().close_instance(session.id, ended_at=now_ms(),
+                              exit_code=session.exit_code)
+
+    # Liveness: a placement subprocess that died without a terminal outcome must
+    # not strand its task in ACTIVE — force-fail it so the orchestrator can
+    # re-place. A clean terminal or an intentional stop/respawn no-ops inside.
+    from awm.agents import placement
+    try:
+        await placement.reclaim_if_dead(session)
+    except Exception:  # noqa: BLE001
+        pass
 
     if session.input_pump_task is not None:
         session.input_pump_task.cancel()
 
     async with _registry_lock:
-        if _by_scope.get(session.scope_key) is session:
-            _by_scope.pop(session.scope_key, None)
+        if _by_scope.get(session.scope) is session:
+            _by_scope.pop(session.scope, None)
         _registry_by_id.pop(session.id, None)
 
-    # A scope IS the channel and outlives any single session — there are no
-    # rooms to auto-close. The scope's channel + transcript persist.
+    # The scope outlives any single session — there is nothing to auto-close.
+    # The scope's transcript persists.
 
 
 # ---------------------------------------------------------------------------
@@ -586,15 +815,15 @@ async def _waiter_loop(session: AgentInstance) -> None:
 def _info_for_instance_row(row: dict) -> AgentSessionInfo:
     return AgentSessionInfo(
         id=row["id"],
-        project=row["project"],
         scope=row["scope"],
         pid=row.get("pid") or 0,
         status=row.get("render_status") or "exited",
-        agent_cli=row.get("agent_cli") or "claude",
+        agent_cli=_normalize_cli(row.get("agent_cli")),
         started_at=ms_to_iso(row["started_at"]) or "",
         exited_at=ms_to_iso(row.get("ended_at")),
         exit_code=row.get("exit_code"),
         attached=False,
+        tmux_session=row.get("tmux_session"),
     )
 
 
@@ -615,7 +844,8 @@ def _render_status(row: dict) -> str:
 
 def _hydrate_instance_row(row: dict) -> dict:
     instance_handle = _registry_by_id.get(row["id"])
-    pid = instance_handle.proc.pid if instance_handle else 0
+    pid = (instance_handle.proc.pid
+           if instance_handle and instance_handle.proc else 0)
     try:
         data = json.loads(row.get("data") or "{}")
     except (TypeError, ValueError):
@@ -624,8 +854,10 @@ def _hydrate_instance_row(row: dict) -> dict:
     out["pid"] = pid
     out["exit_code"] = data.get("exit_code")
     out["render_status"] = _render_status(out)
-    # agent_cli: not in agents.db; default to "claude" (or recover from data)
-    out.setdefault("agent_cli", data.get("agent_cli") or "claude")
+    # agent_cli: not in agents.db; recover from data, default "claude", and
+    # fold the legacy "claude-tmux" name onto "claude".
+    out["agent_cli"] = _normalize_cli(out.get("agent_cli") or data.get("agent_cli"))
+    out["tmux_session"] = data.get("tmux_session")
     return out
 
 
@@ -647,9 +879,11 @@ async def stop_session(session_id: int) -> AgentSessionInfo:
     if session is None:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "stopping"
+    # Tear down through the harness seam (subprocess terminate / tmux
+    # kill-session) so the waiter loop observes the exit and deregisters.
     try:
-        session.proc.terminate()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 
@@ -666,8 +900,8 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
         return _info_for_instance_row(_row_for_instance(session_id) or row)
     session.status = "killed"
     try:
-        session.proc.kill()
-    except ProcessLookupError:
+        await session.agent_session.close()
+    except Exception:  # noqa: BLE001
         pass
     return _info_for_instance_row(_row_for_instance(session_id) or row)
 
@@ -677,7 +911,7 @@ async def kill_session(session_id: int) -> AgentSessionInfo:
 # ---------------------------------------------------------------------------
 
 async def respawn_session(
-    scope_key: str, *,
+    scope: str, *,
     force: bool = False,
     permission_mode: Optional[str] = None,
     model: Optional[str] = None,
@@ -685,9 +919,9 @@ async def respawn_session(
     agent_cli: Optional[str] = None,
     clear_history: bool = False,
 ) -> AgentInstance:
-    current = _by_scope.get(scope_key)
+    current = _by_scope.get(scope)
     if current is None:
-        raise NoSessionError(f"no active session for {scope_key}")
+        raise NoSessionError(f"no active session for {scope}")
 
     async with current.respawn_lock:
         new_mode = permission_mode if permission_mode is not None else current.permission_mode
@@ -695,47 +929,67 @@ async def respawn_session(
         new_effort = effort if effort is not None else current.effort
         new_cli = agent_cli if agent_cli is not None else current.agent_cli
         resume_sid = None if clear_history else current.cli_session_id
-        project, scope = current.project, current.scope
+        scope = current.scope
+
+        # Carry the placement forward across respawn so the orchestrator keeps
+        # seeing the same agent + task. The placement_token is stable, so the
+        # OLD row must release it before the new row reinserts it (the partial
+        # unique index forbids two rows holding the same token).
+        task_mode = current.mode
+        task_ref = current.task_ref
+        agent_ref = current.agent_ref
+        placement_token = current.placement_token
+        task_workdir = current.workdir
+        task_allowed_tools = current.allowed_tools
+        if placement_token is not None:
+            _get_dao().clear_placement_token(current.id)
 
         if force:
             await kill_session(current.id)
         else:
             await stop_session(current.id)
         for _ in range(60):
-            if _by_scope.get(scope_key) is None:
+            if _by_scope.get(scope) is None:
                 break
             await asyncio.sleep(0.05)
         else:
             await kill_session(current.id)
             for _ in range(40):
-                if _by_scope.get(scope_key) is None:
+                if _by_scope.get(scope) is None:
                     break
                 await asyncio.sleep(0.05)
 
     return await create_session(
-        project=project, scope=scope,
+        scope=scope,
         agent_cli=new_cli,
         permission_mode=new_mode, model=new_model, effort=new_effort,
         resume_session_id=resume_sid,
         fresh=clear_history,
+        mode=task_mode,
+        task_ref=task_ref,
+        agent_ref=agent_ref,
+        placement_token=placement_token,
+        workdir=task_workdir,
+        allowed_tools=task_allowed_tools,
     )
 
 
 async def send_slash(scope_key: str, body: str) -> None:
+    """Forward a raw line into the agent's interactive TUI.
+
+    Pasted verbatim (NO ``[from:author]`` framing) so a leading-slash line runs
+    as claude's native slash command (``/compact``, ``/clear``, plugin commands,
+    …). Unframed and immediate, the native-passthrough successor to the old
+    headless stdin write. Recorded to the transcript as an injection."""
     session = _by_scope.get(scope_key)
     if session is None:
         raise NoSessionError(f"no active session for {scope_key}")
-    if session.proc is None or session.proc.stdin is None:
-        raise NoSessionError(f"session for {scope_key} has no stdin")
-    if session.proc.stdin.is_closing():
-        raise NoSessionError(f"session for {scope_key} stdin is closing")
-    payload = {
-        "type": "user",
-        "message": {"role": "user", "content": body},
-    }
-    line = (json.dumps(payload) + "\n").encode("utf-8")
-    session.proc.stdin.write(line)
-    await session.proc.stdin.drain()
+    try:
+        await session.agent_session.send(body)
+    except Exception as exc:  # noqa: BLE001
+        raise NoSessionError(
+            f"session for {scope_key} cannot accept input: {exc}"
+        ) from exc
     try:
         with session.stdin_frames_log.open("a", encoding="utf-8") as fp:
             fp.write(f"STDIN(slash) {body!r}\n")
@@ -746,99 +1000,16 @@ async def send_slash(scope_key: str, body: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Compact
-# ---------------------------------------------------------------------------
-
-_COMPACT_PROMPT = (
-    "Please summarize our entire conversation so far in a single message, "
-    "optimized to be a primer for a fresh agent that needs to continue this "
-    "work. Include: current task, key decisions, files touched, open "
-    "questions, and the next action you were about to take. Reply with ONLY "
-    "the summary, no preamble."
-)
-
-COMPACT_TIMEOUT_S = 180.0
-COMPACT_MIN_SUMMARY_CHARS = 50
-
-
-async def compact_session(scope_key: str) -> str:
-    from awm.agents import agent_transcript
-    session = _by_scope.get(scope_key)
-    if session is None:
-        raise NoSessionError(f"no active session for {scope_key}")
-    if session.agent_cli != "claude":
-        return (
-            f"/compact gated for agent_cli={session.agent_cli!r}; "
-            "opencode bridging is a separate plan"
-        )
-    if session.compacting:
-        return f"/compact already in flight for {scope_key}"
-    if agent_transcript.has_unmatched_tool_use(session.project, session.scope):
-        return (
-            f"compact refused: tool call in flight on {scope_key}; "
-            "wait for completion or /kill first"
-        )
-
-    session.compacting = True
-    prior_instance_id = session.id
-    queue = agent_transcript.subscribe_assistant_turns(prior_instance_id)
-    summary: str = ""
-    try:
-        try:
-            await send_slash(scope_key, _COMPACT_PROMPT)
-        except NoSessionError as exc:
-            return f"compact failed: {exc}"
-
-        try:
-            summary = await asyncio.wait_for(queue.get(), timeout=COMPACT_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            summary = agent_transcript.read_recent_assistant_text(session.project, session.scope)
-        if not summary or len(summary) < COMPACT_MIN_SUMMARY_CHARS:
-            return (
-                f"compact failed: no usable summary captured "
-                f"(got {len(summary)} chars); session untouched"
-            )
-
-        _get_dao().set_instance_intent(prior_instance_id, "compacted")
-
-        try:
-            new_session = await respawn_session(scope_key, clear_history=True)
-        except Exception as exc:  # noqa: BLE001
-            return (
-                f"compact respawn failed: {exc}; previous-session summary "
-                f"available via agent transcript (len {len(summary)})"
-            )
-
-        primer = f"[system: previous-session-summary]\n{summary}"
-        try:
-            await send_slash(scope_key, primer)
-        except NoSessionError as exc:
-            return (
-                f"compact primer injection failed: {exc}; session "
-                f"summary still available via transcript"
-            )
-
-        # Audit notice — room broadcast stubbed.
-        return (
-            f"compacted {scope_key}: prior instance {prior_instance_id} "
-            f"summarized → new instance {new_session.id} primed"
-        )
-    finally:
-        agent_transcript.unsubscribe_assistant_turns(prior_instance_id, queue)
-        session.compacting = False
-
-
-# ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
 
-def list_sessions(project: str | None = None, scope: str | None = None,
+def list_sessions(scope: str | None = None,
                   status: str | None = None,
                   limit: int | None = None) -> list[AgentSessionInfo]:
     # DAO returns rows newest-first (ORDER BY id DESC). The optional `limit`
     # caps to the most recent N — applied AFTER the Python-side status filter,
     # so a status filter never undercounts the cap.
-    rows = _get_dao().list_instances(project=project, scope=scope)
+    rows = _get_dao().list_instances(scope=scope)
     out: list[AgentSessionInfo] = []
     for r in rows:
         hydrated = _hydrate_instance_row(r)
@@ -862,175 +1033,17 @@ def tail_log(session_id: int, lines: int = 200) -> str:
     return "".join(data[-lines:])
 
 
-def scrub_resume_queue_for_scope(project: str, scope: str) -> int:
-    """Clear in-memory resume schedule for a scope. No-op if not scheduled."""
-    key = _scope_key(project, scope)
-    return 1 if _resume_schedule.pop(key, None) is not None else 0
-
-
 # ---------------------------------------------------------------------------
 # Reconciliation on startup
 # ---------------------------------------------------------------------------
 
 def reconcile_on_startup() -> None:
-    """Close open agent_instances rows and seed resume schedule."""
-    dao = _get_dao()
-    dao.close_all_open_instances(now_ms())
+    """Close any agent_instances rows left open by a prior run.
 
-    # Retire vagrant agents: STUB — vagrant status lives in scopes DB.
-    # The scopes service handles this in its own reconcile.
-
-    # Schedule resume for scopes that were recently active (had an open row).
-    # In v1 we don't have a separate agents.status column — rely on scopes RPC
-    # for true status. Seed resume for any scope that had an open instance row.
-    recently_open = dao.get_active_scopes()  # returns scopes with cli_session_id
-    for r in recently_open:
-        scope_key = _scope_key(r["project"], r["scope"])
-        _resume_schedule[scope_key] = now_ms()
+    A placement whose subprocess is gone after a restart is NOT auto-resumed by
+    this service — the orchestrator owns re-dispatch (its boot reconcile
+    re-places resting nodes; an out-state node's liveness is reported back via
+    ``orch.fail``). So boot is a pure cleanup: close stale rows, nothing more."""
+    _get_dao().close_all_open_instances(now_ms())
 
 
-# ---------------------------------------------------------------------------
-# Auto-resume driver
-# ---------------------------------------------------------------------------
-
-RESUME_HEALTH_WINDOW_S = 15.0
-MAX_REPLAY_POSTS = 200
-MAX_CONCURRENT_RESUMES = 3
-RESUME_DRIVER_POLL_S = 5.0
-RESUME_MAX_ATTEMPTS = 3
-
-_resume_attempts: dict[str, int] = {}
-_resume_driver_task: asyncio.Task | None = None
-
-
-def _due_resume_scope_keys() -> list[str]:
-    now = now_ms()
-    return [key for key, when in list(_resume_schedule.items()) if when <= now]
-
-
-def _reschedule_resume(scope_key: str, delay_ms: int) -> None:
-    _resume_schedule[scope_key] = now_ms() + delay_ms
-
-
-def _drop_resume(scope_key: str) -> None:
-    _resume_schedule.pop(scope_key, None)
-    _resume_attempts.pop(scope_key, None)
-
-
-async def respawn_after_restart(project: str, scope: str, *,
-                                cli_session_id: str | None = None,
-                                primer_text: str | None = None
-                                ) -> AgentInstance:
-    """Spawn a fresh AgentInstance for a scope whose previous handle is gone."""
-    scope_key = _scope_key(project, scope)
-    if _by_scope.get(scope_key) is not None:
-        return _by_scope[scope_key]
-    if primer_text:
-        session = await create_session(
-            project=project, scope=scope,
-            agent_cli="claude",
-            permission_mode="bypassPermissions",
-            resume_session_id=None,
-            fresh=True,
-        )
-        await send_slash(scope_key, primer_text)
-        return session
-    return await create_session(
-        project=project, scope=scope,
-        agent_cli="claude",
-        permission_mode="bypassPermissions",
-        resume_session_id=cli_session_id,
-        fresh=False,
-    )
-
-
-async def _watch_resume_health(session: AgentInstance) -> bool:
-    try:
-        await asyncio.wait_for(
-            session.proc.wait(), timeout=RESUME_HEALTH_WINDOW_S
-        )
-    except asyncio.TimeoutError:
-        return True
-    return (session.exit_code or 0) == 0
-
-
-async def _drive_one_resume(scope_key: str, semaphore: asyncio.Semaphore) -> None:
-    async with semaphore:
-        attempts = _resume_attempts.get(scope_key, 0) + 1
-        _resume_attempts[scope_key] = attempts
-        if "/" not in scope_key:
-            _drop_resume(scope_key)
-            return
-        project, scope = scope_key.split("/", 1)
-        row = _get_dao().get_latest_instance_for_scope(project, scope)
-        if row is None:
-            _drop_resume(scope_key)
-            return
-        cli_session_id = row.get("cli_session_id")
-        if attempts > RESUME_MAX_ATTEMPTS:
-            cli_session_id = None
-
-        try:
-            session = await respawn_after_restart(
-                project, scope, cli_session_id=cli_session_id)
-        except Exception:  # noqa: BLE001
-            if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(scope_key)
-                return
-            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
-            return
-
-        healthy = await _watch_resume_health(session)
-        if not healthy:
-            if attempts >= RESUME_MAX_ATTEMPTS:
-                _drop_resume(scope_key)
-                return
-            _reschedule_resume(scope_key, int(min(60_000 * (2 ** attempts), 600_000)))
-            return
-
-        _drop_resume(scope_key)
-
-
-async def _drive_resume_queue() -> None:
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_RESUMES)
-    while True:
-        due = _due_resume_scope_keys()
-        if due:
-            tasks = [
-                asyncio.create_task(_drive_one_resume(key, semaphore))
-                for key in due
-            ]
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(RESUME_DRIVER_POLL_S)
-
-
-def start_resume_driver() -> asyncio.Task:
-    global _resume_driver_task
-    if _resume_driver_task is not None and not _resume_driver_task.done():
-        return _resume_driver_task
-    _resume_driver_task = asyncio.create_task(_drive_resume_queue())
-    return _resume_driver_task
-
-
-# ---------------------------------------------------------------------------
-# Rooms-service dispatcher wiring — NO-OP in modular mode
-# ---------------------------------------------------------------------------
-
-def _dispatch_local_post(scope_key: str, post_author: str,
-                         post_body: str) -> None:
-    """Forward a scope-channel post to the in-memory session's input queue."""
-    session = _by_scope.get(scope_key)
-    if session is None:
-        return
-    enqueue_input(session, post_author, post_body)
-
-
-def install_room_dispatchers() -> None:
-    """No-op in modular mode.
-
-    In the monolith, this wired rooms_svc callbacks. In the modular world,
-    room posts arrive via gatewayclient RPC (the scopes service routes them
-    here via the agent's registered RPC handler). The hub_adapter wires
-    those handlers on startup.
-    """
-    pass

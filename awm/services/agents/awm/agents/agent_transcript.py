@@ -1,8 +1,9 @@
 """Per-agent structured transcript — writes to agents.db agent_transcript table.
 
 Modular change from the monolith: transcript writes go to the agents service's
-own DB (agent_transcript table) rather than being forwarded to rooms_svc.post_transcript.
-The compact subscriber and assistant-turn notifier remain in-memory only.
+own DB (agent_transcript table) rather than being forwarded to a separate
+transcript store. The compact subscriber and assistant-turn notifier remain
+in-memory only.
 """
 from __future__ import annotations
 
@@ -117,7 +118,7 @@ def record_out(session, parsed: dict) -> None:
     meta = {"event": parsed, "_event_repr": body_json}
     try:
         _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind=kind, body=text_body, meta=meta, ts=now_ms(),
         )
     except Exception:  # noqa: BLE001
@@ -126,27 +127,177 @@ def record_out(session, parsed: dict) -> None:
         _broadcast_assistant_turn(session.id, _extract_assistant_text(parsed))
 
 
+def _act_from_row(row: dict) -> dict:
+    """Shape one transcript row into the live/backfill wire act.
+
+    ``{id, kind, body, meta, ts}`` — ``id`` is the ``agent_transcript`` uuid
+    (the de-dupe key the browser matches the live overlap against)."""
+    try:
+        meta = json.loads(row.get("meta") or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "body": row.get("body") or "",
+        "meta": meta,
+        "ts": row["ts"],
+    }
+
+
+def record_event(session, event) -> dict | None:
+    """Persist one agentcore :class:`AgentEvent` and return its wire act.
+
+    This is the agentcore-era write path (``record_out`` persisted raw
+    stream-json; this persists the already-normalized event). The event's
+    ``kind`` is stored verbatim (message / partial / tool_use / tool_result /
+    status / result / error); ``body`` is the human-renderable text; ``meta``
+    carries the structured payload plus the agentcore event id and ts. Returns
+    the wire act (``{id, kind, body, meta, ts}``) the bus publishes, or None on
+    a persistence failure.
+    """
+    ts = now_ms()
+    meta = {
+        "event_id": getattr(event, "id", None),
+        "event_ts": getattr(event, "ts", None),
+        "data": getattr(event, "data", None),
+    }
+    body = getattr(event, "text", None) or ""
+    kind = getattr(event, "kind", "status")
+    try:
+        row_id = _get_dao().insert_transcript(
+            scope=session.scope,
+            kind=kind, body=body, meta=meta, ts=ts,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if kind == "message" and body:
+        _broadcast_assistant_turn(session.id, body)
+    return {"id": row_id, "kind": kind, "body": body, "meta": meta, "ts": ts}
+
+
+def upsert_message_act(session, message_id: str, body: str,
+                       data: dict | None, ts: int) -> dict | None:
+    """Upsert the one durable row for a streamed assistant message.
+
+    The agent's streamed reply is persisted as a SINGLE row keyed by its
+    harness ``message_id`` (not one row per partial): the partials stream
+    live-only over the bus, and the finalized text is upserted here. ``meta``
+    carries ``message_id`` at top level so the frontend's ``coalesceKey`` folds
+    the live partial bubble and this finalized row into one chat row. Returns
+    the wire act (``{id, kind, body, meta, ts}``) the bus publishes, or None on
+    a persistence failure.
+    """
+    meta = {"message_id": message_id, "data": data}
+    try:
+        _get_dao().upsert_transcript(
+            id=message_id, scope=session.scope,
+            kind="message", body=body, meta=meta, ts=ts,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if body:
+        _broadcast_assistant_turn(session.id, body)
+    return {"id": message_id, "kind": "message", "body": body,
+            "meta": meta, "ts": ts}
+
+
 def record_raw_out(session, line: str) -> None:
     """Persist a non-JSON stdout line as kind='system'."""
     try:
         _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
+            scope=session.scope,
             kind="system", body=line, meta={"raw": True}, ts=now_ms(),
         )
     except Exception:  # noqa: BLE001
         pass
 
 
-def record_in(session, body: str, *, injection: bool = False) -> None:
-    """Persist a framed stdin write."""
+def record_in(session, body: str, *, injection: bool = False,
+              act_id: str | None = None) -> dict | None:
+    """Persist a framed stdin write and fan it out to live subscribers.
+
+    The human's own input is recorded back into the SAME transcript so the chat
+    renders the human turn from the stream (no optimistic echo on the wire).
+    Like every agent-OUTPUT path (``record_event`` / ``upsert_message_act``),
+    this must ALSO publish to the live act bus — otherwise a connected chat only
+    learns of the human turn on a reconnect/backfill, which never happens in a
+    normal session (the original bug).
+
+    ``act_id`` is an optional client correlation id: when given the row is
+    UPSERTED under it, so an optimistic ``sending`` chip the browser folded
+    under the same id reconciles in place (one row, never two); when absent a
+    server uuid is minted. ``meta.status`` is stamped ``"delivered"`` (the stdin
+    write is confirmed by the time we get here). Returns the wire act
+    (``{id, kind, body, meta, ts}``) the bus published, or None on a persistence
+    failure.
+    """
     kind = "slash" if injection else "message"
+    ts = now_ms()
+    meta = {"direction": "in", "injection": injection, "status": "delivered"}
     try:
-        _get_dao().insert_transcript(
-            project=session.project, scope=session.scope,
-            kind=kind, body=body,
-            meta={"direction": "in", "injection": injection},
-            ts=now_ms(),
-        )
+        if act_id:
+            row_id = _get_dao().upsert_transcript(
+                id=act_id, scope=session.scope,
+                kind=kind, body=body, meta=meta, ts=ts,
+            )
+        else:
+            row_id = _get_dao().insert_transcript(
+                scope=session.scope,
+                kind=kind, body=body, meta=meta, ts=ts,
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    act = {"id": row_id, "kind": kind, "body": body, "meta": meta, "ts": ts}
+    # Lazy import: agent_bus imports only asyncio, so no import cycle.
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+    return act
+
+
+WORKING_ACT_PREFIX = "working:"
+
+
+def publish_inbound(session, framed_body: str, act_id: str) -> None:
+    """Publish a human turn to the live bus IMMEDIATELY (bus-only, not persisted).
+
+    The responsiveness fix: today the human turn only reaches a connected chat
+    inside ``_input_pump`` → :func:`record_in`, which is turn-aligned (it lands
+    when the agent next takes a turn). Publishing here, at ``enqueue`` time, makes
+    the human turn appear at once — ``record_in`` later upserts the SAME ``act_id``
+    so the two fold to one durable row (the browser's optimistic chip reconciles
+    by id). ``meta.status = "delivered"`` flips the optimistic ``sending`` chip to
+    received promptly."""
+    if not act_id:
+        return
+    act = {"id": act_id, "kind": "message", "body": framed_body,
+           "meta": {"direction": "in", "injection": False, "status": "delivered"},
+           "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def publish_working(session) -> None:
+    """Publish a TRANSIENT "agent working" presence act (bus-only, not persisted).
+
+    Emitted at each turn START (the ``_input_pump`` ``send`` chokepoint), so the
+    chat shows the agent is acting from the instant a turn begins — covering a
+    human-initiated turn AND the supervisor's autonomous continuation (both reach
+    the agent through ``send``). A stable per-scope id means a fresh working act
+    REPLACES the prior one rather than stacking. The frontend clears it on the
+    turn's first real content (partial / message) or on ``result``."""
+    act = {"id": f"{WORKING_ACT_PREFIX}{session.scope}", "kind": "status",
+           "body": "", "meta": {"phase": "working", "direction": "out",
+                                "transient": True}, "ts": now_ms()}
+    try:
+        from awm.agents import agent_bus
+        agent_bus.publish_act(session.scope, act)
     except Exception:  # noqa: BLE001
         pass
 
@@ -166,15 +317,28 @@ def _decode_event(row: dict) -> dict:
     return {}
 
 
-def read_session(project: str, scope: str) -> list[dict]:
-    """All transcript rows for (project, scope), ordered by ts."""
-    return _get_dao().read_transcript(project, scope)
+def read_session(scope: str) -> list[dict]:
+    """All transcript rows for ``scope``, ordered by ts."""
+    return _get_dao().read_transcript(scope)
 
 
-def has_unmatched_tool_use(project: str, scope: str) -> bool:
+def read_acts_after(scope: str, *,
+                    after_ts: int | None = None,
+                    after_id: str | None = None,
+                    limit: int | None = None) -> list[dict]:
+    """Backfill acts after a monotonic cursor, in live wire shape.
+
+    Each act is ``{id, kind, body, meta, ts}`` ordered by (ts, id). ``after_ts``
+    None replays the whole transcript (connect with no cursor)."""
+    rows = _get_dao().read_transcript_after(
+        scope, after_ts=after_ts, after_id=after_id, limit=limit)
+    return [_act_from_row(r) for r in rows]
+
+
+def has_unmatched_tool_use(scope: str) -> bool:
     """True if the most recent assistant message contains an unmatched tool_use."""
     row = _get_dao().get_last_transcript_row(
-        project, scope, kinds=["message", "tool_result"])
+        scope, kinds=["message", "tool_result"])
     if row is None:
         return False
     event = _decode_event(row)
@@ -188,9 +352,9 @@ def has_unmatched_tool_use(project: str, scope: str) -> bool:
     )
 
 
-def read_recent_assistant_text(project: str, scope: str) -> str:
+def read_recent_assistant_text(scope: str) -> str:
     """Concatenate the text portion of the most recent end-of-turn assistant event."""
-    row = _get_dao().get_last_transcript_row(project, scope, kinds=["message"])
+    row = _get_dao().get_last_transcript_row(scope, kinds=["message"])
     if row is None:
         return ""
     event = _decode_event(row)

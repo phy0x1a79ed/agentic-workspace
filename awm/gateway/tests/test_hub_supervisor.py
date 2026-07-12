@@ -57,16 +57,16 @@ class TestJournalRoundTrip:
 
     def test_update_entry_merges_patch(self):
         supervisor.update_service_journal_entry(
-            "ptt", {"service_id": "xyz", "start_cmd": ["go"]},
+            "stt", {"service_id": "xyz", "start_cmd": ["go"]},
         )
         supervisor.update_service_journal_entry(
-            "ptt", {"last_pid": 4242},
+            "stt", {"last_pid": 4242},
         )
         state = supervisor.load_service_journal()
-        assert state["ptt"]["service_id"] == "xyz"
-        assert state["ptt"]["start_cmd"] == ["go"]
-        assert state["ptt"]["last_pid"] == 4242
-        assert state["ptt"]["name"] == "ptt"
+        assert state["stt"]["service_id"] == "xyz"
+        assert state["stt"]["start_cmd"] == ["go"]
+        assert state["stt"]["last_pid"] == 4242
+        assert state["stt"]["name"] == "stt"
 
     def test_remove_entry(self):
         supervisor.update_service_journal_entry("a", {"x": 1})
@@ -102,6 +102,24 @@ class TestKillPidGroup:
         # (no such pgrp) or no-op completion. Either way: no exception.
         supervisor.kill_pid_group(proc.pid)
 
+    def test_reaps_killed_child_no_zombie(self):
+        """Killing a service child must REAP it — no ``<defunct>`` zombie left.
+
+        Mirrors how the gateway spawns services: a Popen in its own session
+        whose handle is discarded, so only ``kill_pid_group`` can reap it.
+        Regression for prod zombies left by ``awm services stop/restart``."""
+        proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        pid = proc.pid
+        supervisor.kill_pid_group(pid, grace_s=2.0)
+        # Fully reaped → not our child anymore: waitpid raises ChildProcessError
+        # (a lingering zombie would instead return (pid, status)).
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
+        # …and the pid is gone from the table entirely.
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        proc.returncode = -signal.SIGKILL  # mark handled so Popen.__del__ is quiet
+
 
 # ---------------------------------------------------------------------------
 # reconcile_journaled_services — happy path (reconnect within window)
@@ -126,9 +144,9 @@ class TestReconcileHappyPath:
         monkeypatch.setattr(supervisor, "kill_pid_group", kill)
 
         sid = "svc-reconnected"
-        supervisor.update_service_journal_entry("ptt", {
+        supervisor.update_service_journal_entry("stt", {
             "service_id": sid,
-            "prefix": "/svc/ptt",
+            "prefix": "/svc/stt",
             "last_pid": 9999,
             "start_cmd": ["start.sh"],
             "cwd": "/tmp",
@@ -148,7 +166,7 @@ class TestReconcileHappyPath:
         kill.assert_not_called()
         # Registry was rehydrated with the journaled service_id.
         from awm.gateway.hub.registry import get_registry
-        rec = get_registry().get_by_name("service", "ptt")
+        rec = get_registry().get_by_name("service", "stt")
         assert rec is not None
         assert rec.service_id == sid
 

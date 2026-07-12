@@ -22,6 +22,7 @@ import logging
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
+from awm.scopes import channel
 from awm.scopes import dao
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -221,7 +222,17 @@ API_MANIFEST: dict[str, Any] = {
         + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
         + PROJECT_MANIFEST_FUNCTIONS
     ),
-    "emitters": [],
+    "emitters": [
+        {
+            "topic": "posts",
+            "description": (
+                "Fires once per new scope-channel post. Payload "
+                "{project, scope, post}; subscribers filter by (project, "
+                "scope). The agents service subscribes to feed human messages "
+                "into a live agent's stdin (a live subscription, not a poll)."
+            ),
+        },
+    ],
     "sessions": [],
 }
 
@@ -250,9 +261,18 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter(
+    adapter = ServiceAdapter(
         "scopes", API_MANIFEST, HANDLERS, on_start=dao.init,
-    ).run()
+    )
+    # Wire the `posts` emitter: `channel.post()` runs in a worker thread, so the
+    # registered callable hands the async emit to this event loop thread-safely.
+    loop = asyncio.get_running_loop()
+
+    def _emit_posts(payload: dict[str, Any]) -> None:
+        asyncio.run_coroutine_threadsafe(adapter.emit("posts", payload), loop)
+
+    channel.set_emitter(_emit_posts)
+    await adapter.run()
 
 
 if __name__ == "__main__":

@@ -2,7 +2,13 @@
 
 A Python feature service in the `awm.agents` namespace. It needs the `awm`
 conda env to contain its package plus the shared component libraries it imports
-(`config`, `persistence`, `gatewayclient`).
+(`config`, `persistence`, `gatewayclient`, and `agentcore` — the harness layer
+that owns the `claude`/`opencode` subprocess + stream parsing). `install.sh`
+editable-installs `agentcore` before this service so its dep resolves.
+
+Live operation also needs the harness CLI(s) on PATH: `claude` for the default
+harness, `opencode` for `agent_cli=opencode` scopes (agentcore searches
+`~/.local/bin` / `~/.opencode/bin` / linuxbrew in addition to PATH).
 
 ## Install
 

@@ -25,6 +25,7 @@
 
 <button
   class="btn k-{kind} s-{size}"
+  data-awm-component="Button"
   {type}
   {disabled}
   {onclick}

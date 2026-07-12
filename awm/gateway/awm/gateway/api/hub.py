@@ -38,7 +38,7 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
 
 from fastapi import (
-    APIRouter, HTTPException, Request, WebSocket, status,
+    APIRouter, HTTPException, WebSocket, status,
 )
 from pydantic import BaseModel, Field, model_validator
 
@@ -47,14 +47,32 @@ from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.gateway.hub.supervisor import (
-    remove_service_journal_entry,
-    update_service_journal_entry,
-)
+from awm.gateway.hub.supervisor import update_service_journal_entry
 
 log = logging.getLogger("awm.api.hub")
 
 router = APIRouter(prefix="/hub", tags=["hub"])
+
+# WS close code for "a newer shadow took over this prefix" — a peer of the
+# existing 4409 (lease already held) / 4404 (unknown service). The evicted
+# client (service adapter or `awm dev shadow` page lease) maps this code to a
+# clean stand-down carrying the who/why reason, not a reconnect bounce.
+_EVICTED_BY_SHADOW = 4410
+
+
+def _close_reason(text: str) -> str:
+    """Clamp to the 123-byte WS close-frame reason limit (by encoded bytes,
+    not characters — a char slice can still overflow and `websockets` raises)."""
+    return text.encode("utf-8")[:123].decode("utf-8", errors="ignore")
+
+
+def _notify_evicted(evicted: list[ServiceRecord], evictor: str) -> None:
+    """Stage a who/why notice on each evicted overlay's lease so its WS handler
+    closes with code 4410 + ``evicted by {evictor}: a newer shadow connected``.
+    The records are already out of the registry; this just wakes their handlers."""
+    lm = get_lease_manager()
+    for ev in evicted:
+        lm.signal_evicted(ev.service_id, "a newer shadow connected", evictor)
 
 
 # ============================================================================
@@ -67,6 +85,13 @@ class StaticSpec(BaseModel):
     entry: str | None = Field(None)
     css: list[str] = Field(default_factory=list)
     mount_id: str = Field("app")
+    deny: list[str] = Field(
+        default_factory=list,
+        description="Mask globs. A request whose resolved path (relative to "
+                    "`dir`, post-symlink) matches any glob 404s as if missing. "
+                    "Matched with PurePosixPath.full_match, so `**` spans "
+                    "segments. Lets a broad mount (e.g. root '/') hide secrets.",
+    )
 
 
 class PageSpec(BaseModel):
@@ -126,6 +151,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                 entry=req.static.entry,
                 css=tuple(req.static.css),
                 mount_id=req.static.mount_id,
+                deny=tuple(req.static.deny),
             )
         else:
             assert req.page is not None
@@ -150,6 +176,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                 entry=rec.entry,
                 css=list(rec.css),
                 mount_id=rec.mount_id,
+                deny=list(rec.deny),
             )
             if rec.kind == "static" else None
         ),
@@ -189,7 +216,14 @@ class ServiceRegisterRequest(BaseModel):
                                       "(via AWM_SERVICE_OVERLAY=1). Requires a "
                                       "base to already exist; the overlay's own "
                                       "control WS is its lease — closing it pops "
-                                      "the overlay and the base resumes.")
+                                      "the overlay and the base resumes. A new "
+                                      "overlay evicts any incumbent overlay on "
+                                      "the prefix (last connect wins).")
+    origin: str | None = Field(None,
+                               description="Human 'who' label for an overlay "
+                                           "(e.g. 'stt-shadow @ web-stt'), used "
+                                           "as the evictor identity in the notice "
+                                           "sent to an overlay this one evicts.")
 
 
 class ServiceRegisterResponse(BaseModel):
@@ -198,6 +232,13 @@ class ServiceRegisterResponse(BaseModel):
     prefix: str
     control_ws_path: str
     bridge_ws_base: str
+    canonical_workspace: str = Field(
+        "",
+        description="The hub's canonical workspace root. A service learns where "
+                    "agents/data actually live FROM the hub on register, rather "
+                    "than assuming it from its own AWM_WORKSPACE env. A shadow "
+                    "overlay keeps its DBs on an isolated local root but points "
+                    "real work here; a native service's local root == this.")
 
 
 @router.post("/service/register", response_model=ServiceRegisterResponse)
@@ -210,6 +251,8 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
             # own control WS as the lease; there is no separate overlay
             # registration to keep in sync (the split-brain `awm dev shadow`
             # used to create). Requires a base for the prefix to already exist.
+            # Last connect wins: this overlay evicts any incumbent overlay(s)
+            # on the prefix, then notifies each with a who/why close.
             rec = ServiceRecord(
                 name=req.name,
                 prefix=prefix,
@@ -218,9 +261,25 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
                 cwd=req.cwd or "",
                 backend_pid=req.pid,
                 backend_status="starting",
+                origin=req.origin or req.name,
             )
-            rec = await registry.push_shadow(rec)
+            rec, evicted = await registry.replace_overlays(rec)
+            _notify_evicted(evicted, rec.origin or rec.name)
         else:
+            # Duplicate-instance guard (T3): if a record for this name already
+            # exists AND its control-WS lease is currently held, a live
+            # instance is connected — turn the newcomer away with 409 so it
+            # stands down (the adapter raises GiveUp and exits 0) and the
+            # incumbent's service_id + lease are left untouched. A record whose
+            # lease is NOT held is dead (or a benign reconcile placeholder), so
+            # we fall through to the existing replace-in-place takeover.
+            existing = registry.get_by_name("service", req.name)
+            if existing is not None and get_lease_manager().is_held(
+                    existing.service_id):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"service {req.name!r} already has a live instance connected",
+                )
             rec = await registry.register_service(
                 req.name, prefix,
                 pid=req.pid,
@@ -251,12 +310,16 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
 
     log.info("registered service %s prefix=%s pid=%s id=%s",
              rec.name, rec.prefix, rec.backend_pid, rec.service_id)
+    # Report the hub's own canonical workspace so the service can resolve where
+    # agents/data live without assuming it from its (possibly isolated) env.
+    from awm import config as _config
     return ServiceRegisterResponse(
         service_id=rec.service_id,
         name=rec.name,
         prefix=rec.prefix,
         control_ws_path=f"/hub/service/control/{rec.service_id}",
         bridge_ws_base=f"/hub/service/bridge/{rec.service_id}",
+        canonical_workspace=str(_config.WORKSPACE_ROOT),
     )
 
 
@@ -323,7 +386,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                 except json.JSONDecodeError:
                     log.warning("invalid JSON on service control WS %s", service_id)
                     continue
-                _route_inbound(ch, rec, env)
+                _route_inbound(ch, service_id, env)
         except Exception:
             return
         finally:
@@ -338,6 +401,17 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
         except LeaseAlreadyHeld:
             await websocket.close(code=4409, reason="lease already held")
             return
+        # hold returned: either the client closed, or a newer shadow evicted us.
+        notice = lm.take_eviction(service_id)
+        if notice is not None:
+            reason, evictor = notice
+            try:
+                await websocket.close(
+                    code=_EVICTED_BY_SHADOW,
+                    reason=_close_reason(f"evicted by {evictor}: {reason}"),
+                )
+            except Exception:
+                pass
     finally:
         rec.backend_status = "down"
         if not rec.is_overlay:
@@ -349,15 +423,40 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
             await websocket.close()
         except Exception:
             pass
+        # Runtime crash-respawn watchdog (T5): the service's control WS just
+        # dropped and the lease was released (eviction ran inside lm.hold).
+        # If this wasn't a deliberate stop, a gateway teardown, or an overlay,
+        # give the service the reconnect window to come back, else respawn it.
+        # The journal-entry check (a deliberate `awm services stop` drops the
+        # entry *before* killing) and the shutting-down flag keep this from
+        # resurrecting something that is supposed to stay down.
+        try:
+            from awm.gateway.hub import discovery, supervisor
+            if (not supervisor.is_shutting_down()
+                    and not rec.is_overlay
+                    and supervisor.load_service_journal().get(rec.name)
+                    and discovery.is_enabled(rec.name)):
+                asyncio.create_task(supervisor.supervise_disconnect(rec.name))
+        except Exception:
+            log.debug("disconnect watchdog hook skipped for %s",
+                      rec.name, exc_info=True)
 
 
-def _route_inbound(ch: "rpc.ControlChannel", rec: ServiceRecord,
+def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
                    env: dict[str, Any]) -> None:
     kind = env.get("kind")
     if kind == "ready":
         ch.set_api(env.get("api") or {})
-        rec.api = ch.api
-        rec.backend_status = "ready"
+        # Re-look-up the record fresh by service_id rather than trusting a record
+        # captured at WS-accept time: a concurrent reconcile / disconnect-respawn
+        # may have replaced the registry record for this service_id in the
+        # interim, and flipping a stale (already-evicted) record to ``ready``
+        # would leave the live one stuck ``starting`` with an empty ``api``.
+        registry = get_registry()
+        rec = registry.get_by_id(service_id)
+        if rec is not None:
+            rec.api = ch.api
+            rec.backend_status = "ready"
     elif kind == "reply":
         ch.handle_reply(env)
     elif kind == "emit":
@@ -430,11 +529,17 @@ async def service_bridge(websocket: WebSocket, service_id: str,
 
 class ShadowRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1,
-                      description="Unique shadow name (must NOT collide with "
-                                  "the base or any other overlay).")
+                      description="Shadow name (must NOT collide with the base; "
+                                  "may reuse an incumbent overlay's name — the "
+                                  "incumbent is evicted, last connect wins).")
     prefix: str = Field(..., min_length=1,
                         description="Prefix to shadow; a base must already "
                                     "exist for this prefix.")
+    origin: str | None = Field(None,
+                               description="Human 'who' label for this overlay "
+                                           "(e.g. 'shadow:stt:web-stt'), used as "
+                                           "the evictor identity in the notice "
+                                           "sent to an overlay this one evicts.")
     page: dict = Field(...,
                        description="Page shadow: {dir: <absolute path>}. Service "
                                    "overlays no longer use this endpoint — a "
@@ -469,9 +574,11 @@ async def shadow_register(req: ShadowRegisterRequest) -> ShadowRegisterResponse:
         rec = ServiceRecord(
             name=req.name, prefix=req.prefix, kind="page",
             static_dir=str(page_dir),
+            origin=req.origin or req.name,
         )
         rec.backend_status = "ready"
-        rec = await registry.push_shadow(rec)
+        rec, evicted = await registry.replace_overlays(rec)
+        _notify_evicted(evicted, rec.origin or rec.name)
         return ShadowRegisterResponse(
             service_id=rec.service_id, name=rec.name, prefix=rec.prefix,
             kind=rec.kind, lease_ws_path=f"/hub/lease/{rec.service_id}",
@@ -534,6 +641,17 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
         except LeaseAlreadyHeld:
             await websocket.close(code=4409, reason="lease already held")
             return
+        # hold returned: either the client closed, or a newer shadow evicted us.
+        notice = lm.take_eviction(service_id)
+        if notice is not None:
+            reason, evictor = notice
+            try:
+                await websocket.close(
+                    code=_EVICTED_BY_SHADOW,
+                    reason=_close_reason(f"evicted by {evictor}: {reason}"),
+                )
+            except Exception:
+                pass
     finally:
         reader_task.cancel()
         try:
@@ -542,125 +660,12 @@ async def lease(websocket: WebSocket, service_id: str) -> None:
             pass
 
 
-@router.get("/services")
-async def list_services() -> dict[str, Any]:
-    registry = get_registry()
-    lm = get_lease_manager()
-    out = []
-    for rec in await registry.list():
-        entry: dict[str, Any] = {
-            "name": rec.name,
-            "prefix": rec.prefix,
-            "kind": rec.kind,
-            "service_id": rec.service_id,
-            "lease_held": lm.is_held(rec.service_id),
-            "is_overlay": rec.is_overlay,
-            "backend_status": rec.backend_status,
-            "backend_pid": rec.backend_pid,
-        }
-        if rec.kind == "url":
-            entry["url"] = rec.url
-        elif rec.kind in ("static", "page"):
-            entry["dir"] = rec.static_dir
-        elif rec.kind == "service":
-            entry["api"] = rec.api
-        out.append(entry)
-    return {"services": out}
-
-
-@router.delete("/services/{name}")
-async def deregister(name: str, request: Request, kind: str | None = None) -> dict[str, Any]:
-    registry = get_registry()
-    from awm.gateway.hub.registry import PrefixConflict
-    try:
-        rec = await registry.evict_by_name(name, kind=kind)
-    except PrefixConflict as e:
-        raise HTTPException(409, str(e))
-    if rec is None:
-        raise HTTPException(404, f"unknown service: {name}")
-    log.info("deregistered service %s (id=%s)", name, rec.service_id)
-    return {"evicted": {
-        "name": rec.name,
-        "prefix": rec.prefix,
-        "kind": rec.kind,
-        "service_id": rec.service_id,
-    }}
-
-
 # ============================================================================
-# Feature-service lifecycle — the `awm services` control surface.
-#
-# The running gateway is authoritative: it owns the discovery root, the
-# enable-state file, the PID journal, and the registry. So `awm services`
-# routes everything here rather than re-deriving locally (which would resolve
-# the wrong tree under a dev-sandbox shadow). One spawn path
-# (supervisor.spawn_and_journal, shared with first-boot bootstrap); one stop
-# path (evict + kill pid group + drop journal) so reconcile never resurrects a
-# stopped service.
+# Hub list / deregister and the feature-service lifecycle (`awm services …`)
+# moved onto the declarative generation system — see
+# ``awm.gateway.gateway_ops.GATEWAY_OPERATIONS``. Their HTTP routes
+# (GET /hub/services, DELETE /hub/services/{name}, GET /hub/services/discovered,
+# POST /hub/services/{name}/{start,stop,restart,enable,disable}) are generated
+# in ``server.py`` via ``register_fastapi_routes`` from the same Operations that
+# drive the MCP tools + CLI commands. Do not re-add hand-rolled duplicates here.
 # ============================================================================
-
-
-@router.get("/services/discovered")
-async def list_discovered_services() -> dict[str, Any]:
-    """Discovery ⋈ enable-state ⋈ live registration — the `awm services list`
-    view."""
-    from awm.gateway.hub import discovery
-    registry = get_registry()
-    out = []
-    for spec in discovery.discover_services():
-        rec = registry.get_by_name("service", spec.name)
-        out.append({
-            "name": spec.name,
-            "enabled": spec.enabled,
-            "running": rec is not None,
-            "status": rec.backend_status if rec is not None else "stopped",
-            "pid": rec.backend_pid if rec is not None else None,
-        })
-    return {"services": out}
-
-
-@router.post("/services/{name}/start")
-async def start_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery, supervisor
-    registry = get_registry()
-    if registry.get_by_name("service", name) is not None:
-        return {"name": name, "started": False, "reason": "already-running"}
-    spec = discovery.discover_service(name)
-    if spec is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND,
-                            f"no service folder {name!r} with a run.sh")
-    pid = supervisor.spawn_and_journal(name, list(spec.start_cmd), spec.cwd)
-    return {"name": name, "started": True, "pid": pid}
-
-
-@router.post("/services/{name}/stop")
-async def stop_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import supervisor
-    registry = get_registry()
-    entry = supervisor.load_service_journal().get(name) or {}
-    rec = registry.get_by_name("service", name)
-    pid = (rec.backend_pid if rec is not None else None) or entry.get("last_pid")
-    if rec is not None:
-        try:
-            await registry.evict_by_name(name, kind="service")
-        except PrefixConflict as exc:
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc))
-    if pid:
-        await asyncio.get_event_loop().run_in_executor(
-            None, supervisor.kill_pid_group, pid)
-    supervisor.remove_service_journal_entry(name)
-    return {"name": name, "stopped": True, "killed_pid": pid}
-
-
-@router.post("/services/{name}/enable")
-async def enable_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery
-    discovery.set_enabled(name, True)
-    return {"name": name, "enabled": True, "start": await start_service(name)}
-
-
-@router.post("/services/{name}/disable")
-async def disable_service(name: str) -> dict[str, Any]:
-    from awm.gateway.hub import discovery
-    discovery.set_enabled(name, False)
-    return {"name": name, "enabled": False, "stop": await stop_service(name)}

@@ -1,43 +1,45 @@
 <script lang="ts">
+  /**
+   * TTS dev page — a TTS-engine config tester, now mounted on the standardized
+   * <Chat> composite (from @awm/chat) so it shares the same transcript + text
+   * input as the agent / stt pages. The tts scope owns + iterates the history
+   * and TTS-playback sub-components; this page exercises them by injecting a
+   * data source: `posts` (the spoken utterances) + `onSend` (synthesize the
+   * typed text with the current engine/params and play it). The tts-specific UI
+   * (engine config, presets) rides the Chat `header` slot; the live round-trip
+   * controls (volume, status, cancel) ride the `aside` slot.
+   */
+  import { Chat, type Post } from '@awm/chat';
+  import { Slider } from '@awm/primitives';
   import TtsConfig from '$lib/components/TtsConfig.svelte';
-  import TtsHistory from '$lib/components/TtsHistory.svelte';
-  import TtsPresets from '$lib/components/TtsPresets.svelte';
-  import { TtsCall, type EngineRegistry } from '$lib/api/tts';
+  import { TtsCall } from '$lib/api/tts';
   import { persistedState } from '$lib/persistedState.svelte';
   import type { CallStatus } from '$lib/status';
   import { onDestroy } from 'svelte';
 
-  interface Bubble { id: string; text: string; }
-  let bubbles = $state<Bubble[]>([]);
+  // Spoken utterances as transcript posts (the shared <TtsHistory> shape). The
+  // `user:tts` author makes each row replayable via the history's speaker button.
+  let posts = $state<Post[]>([]);
   let nextId = 0;
 
-  // Composer state lifted here so TtsPresets and TtsConfig share the
-  // same source of truth; presets writes into it on "load".
+  // Engine selection state, shared with the config cards (a preset writes here).
   let selected = $state<string>('');
   let params = $state<Record<string, unknown>>({});
-  let engines = $state<EngineRegistry | null>(null);
 
   let call: TtsCall | null = null;
   let activeEngine: string | null = null;
   let activeParams: Record<string, unknown> = {};
 
-  // Playback gain, 0 = mute, 1 = unity. Backed by the stripe-local
-  // state service so the slider position survives a page reload.
-  // The $effect re-runs on every vol.value change and pushes the new
-  // gain into the live TtsCall's GainNode for live updates.
-  //
-  // Read vol.value unconditionally before the optional chain — `call?.…(arg)`
-  // skips arg evaluation when call is nullish, so on first run (call=null)
-  // vol.value wouldn't be touched and Svelte wouldn't register it as a dep.
-  // The effect would then never re-fire when the slider moves.
+  // Playback gain, persisted so the slider survives reload. Read vol.value
+  // unconditionally before the optional chain so Svelte registers the dep on
+  // first run (when call is null and `call?.setVolume(v)` would skip the arg).
   const vol = persistedState<number>('volume', 1.0);
   $effect(() => {
     const v = vol.value;
     call?.setVolume(v);
   });
 
-  // Round-trip status of the most-recent speak/replay call. The composer
-  // renders this as a sent/delay pill.
+  // Round-trip status of the most recent speak/replay, rendered as a pill.
   let status = $state<CallStatus>({ kind: 'idle' });
   let tickHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -95,27 +97,31 @@
     }
   }
 
-  async function handleSpeak(text: string, engine: string, params: Record<string, unknown>) {
-    const id = `b${nextId++}`;
-    bubbles = [...bubbles, { id, text }];
-    await timed(async () => {
-      const c = await ensureCall(engine, params);
-      c.setVolume(vol.value);
-      await c.play(text);
-    });
-  }
-
-  // Symmetric with handleSpeak: a bubble's speak button is just "speak
-  // this text" against the current engine/params, so it must go through
-  // ensureCall (which opens/reconfigures as needed). Without this it
-  // silently no-ops whenever `call` is null — first-load, after cancel,
-  // or after a reconfigure path that left the call in an off-state.
-  async function handleReplay(text: string) {
-    if (!selected) return;
+  // <Chat> calls this once per turn (the send-once gate lives in Chat). Echo the
+  // text as a transcript row, then synthesize + play it on the current engine.
+  async function onSend(text: string) {
+    const t = text.trim();
+    if (!t) return;
+    if (!selected) {
+      status = { kind: 'error', message: 'select an engine first' };
+      return;
+    }
+    posts = [...posts, { id: `b${nextId++}`, author: 'user:tts', body: t, ts: new Date().toISOString() }];
     await timed(async () => {
       const c = await ensureCall(selected, params);
       c.setVolume(vol.value);
-      await c.play(text);
+      await c.play(t);
+    });
+  }
+
+  // A history row's replay button: speak that row's text on the current engine.
+  async function onReplay(post: Post) {
+    const t = (post.body ?? '').trim();
+    if (!t || !selected) return;
+    await timed(async () => {
+      const c = await ensureCall(selected, params);
+      c.setVolume(vol.value);
+      await c.play(t);
     });
   }
 
@@ -147,6 +153,14 @@
       activeParams = { ...params };
     }
   }
+
+  function fmtMs(ms: number): string {
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    return `${(ms / 1000).toFixed(2)} s`;
+  }
+  const elapsedMs = $derived(
+    status.kind === 'sending' ? Math.max(0, status.tick - status.startedAt) : 0,
+  );
 </script>
 
 <main>
@@ -155,30 +169,62 @@
     <span class="sub">text → audio · live engine config</span>
   </header>
 
-  <section class="history">
-    <TtsHistory {bubbles} {status} onspeak={handleReplay} oncancel={handleCancel} />
-  </section>
+  <div class="chat-host">
+    <Chat {posts} {onSend} {onReplay}>
+      {#snippet header()}
+        <TtsConfig
+          bind:selected
+          bind:params
+          onengine={handleEngineChange}
+          onpresetload={handlePresetLoad}
+        />
+      {/snippet}
 
-  <section class="composer">
-    <TtsConfig
-      {status}
-      bind:selected
-      bind:params
-      bind:engines
-      volume={vol.value}
-      onvolume={(v) => (vol.value = v)}
-      onspeak={handleSpeak}
-      onengine={handleEngineChange}
-      oncancel={handleCancel}
-    />
-    <TtsPresets currentEngine={selected} currentParams={params} onload={handlePresetLoad} />
-  </section>
+      {#snippet aside()}
+        <div class="tts-bar">
+          <label class="vol" title="output volume">
+            <span class="vol-icon" aria-hidden="true"
+              >{vol.value === 0 ? 'x' : vol.value < 0.5 ? '▁' : vol.value < 0.9 ? '▄' : '█'}</span
+            >
+            <Slider
+              value={vol.value}
+              min={0}
+              max={1}
+              step={0.01}
+              precision={2}
+              onchange={(v) => (vol.value = v)}
+            />
+          </label>
+
+          {#if status.kind === 'sending'}
+            <button class="cancel mono" type="button" onclick={handleCancel}>cancel</button>
+          {/if}
+
+          <div class="status" aria-live="polite">
+            {#if status.kind === 'sending'}
+              <span class="dot dot-sending" aria-hidden="true"></span>
+              <span class="status-text mono">sent · {fmtMs(elapsedMs)}</span>
+            {:else if status.kind === 'done'}
+              <span class="dot dot-done" aria-hidden="true"></span>
+              <span class="status-text mono">audio in {fmtMs(status.latencyMs)}</span>
+            {:else if status.kind === 'cancelled'}
+              <span class="dot dot-cancelled" aria-hidden="true"></span>
+              <span class="status-text mono">cancelled</span>
+            {:else if status.kind === 'error'}
+              <span class="dot dot-err" aria-hidden="true"></span>
+              <span class="status-text status-err mono">{status.message}</span>
+            {/if}
+          </div>
+        </div>
+      {/snippet}
+    </Chat>
+  </div>
 </main>
 
 <style>
   main {
-    display: grid;
-    grid-template-rows: auto 1fr auto;
+    display: flex;
+    flex-direction: column;
     height: 100dvh;
     padding: var(--space-5);
     gap: var(--space-4);
@@ -186,7 +232,7 @@
     margin: 0 auto;
     box-sizing: border-box;
   }
-  .top { display: flex; align-items: baseline; gap: var(--space-4); }
+  .top { display: flex; align-items: baseline; gap: var(--space-4); flex: 0 0 auto; }
   h1 {
     font-family: var(--mono);
     font-size: 15px;
@@ -201,6 +247,45 @@
     color: var(--text3);
     letter-spacing: 1px;
   }
-  .history { min-height: 0; display: flex; }
-  .composer { flex-shrink: 0; }
+  .chat-host { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+  .tts-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    flex-wrap: wrap;
+  }
+  .vol { display: inline-flex; align-items: center; gap: 6px; min-width: 120px; max-width: 180px; }
+  .vol-icon { font-size: 14px; line-height: 1; user-select: none; }
+  .cancel {
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    color: var(--text2, #bbb);
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  .cancel:hover { color: var(--text, #ddd); border-color: var(--danger, #f55); }
+  .status { display: inline-flex; align-items: center; gap: var(--space-2); margin-left: auto; min-height: 16px; }
+  .status-text { font-size: 10px; letter-spacing: 0.4px; color: var(--text2); }
+  .status-err { color: var(--danger); }
+  .mono { font-family: var(--mono); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-sending {
+    background: var(--atomizer);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--atomizer) 60%, transparent);
+    animation: pulse 1100ms var(--ease-mech, ease) infinite;
+  }
+  .dot-done { background: var(--ok, #5fb872); opacity: 0.85; }
+  .dot-cancelled { background: var(--text3); opacity: 0.85; }
+  .dot-err { background: var(--danger); }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   color-mix(in oklab, var(--atomizer) 55%, transparent); }
+    70%  { box-shadow: 0 0 0 6px color-mix(in oklab, var(--atomizer)  0%, transparent); }
+    100% { box-shadow: 0 0 0 0   color-mix(in oklab, var(--atomizer)  0%, transparent); }
+  }
 </style>

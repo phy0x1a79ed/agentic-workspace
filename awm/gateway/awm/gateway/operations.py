@@ -120,6 +120,8 @@ def _extract_path_params(path: str) -> set[str]:
 def _py_type(p: Param):
     if p.type == "integer":
         return int
+    if p.type == "boolean":
+        return bool
     if p.type == "array":
         return list[str]
     return str
@@ -217,13 +219,37 @@ def register_fastapi_routes(
         )
 
 
+async def _await_if_needed(result: Any) -> Any:
+    """Resolve a handler result that may be a coroutine. Lets a single
+    ``service_func`` be sync (the native lifecycle ops) or async (the hub /
+    services ops that drive the async registry) without the caller caring."""
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 def _make_fastapi_handler(op: Operation):
-    if op.http_method == "POST" and op.request_model:
+    """Build a FastAPI route handler for ``op``.
+
+    Always ``async`` so an async ``service_func`` (the registry-touching hub /
+    services handlers) can be awaited; a sync one returns immediately. Covers:
+
+    * **POST/PUT/PATCH with a ``request_model``** — body-parsed.
+    * **GET / DELETE / POST with path + query params and no body** — the
+      ``services/{name}/start`` and ``deregister`` shapes; the signature is
+      synthesized via ``exec`` so FastAPI's introspection extracts path vs
+      query correctly, method-agnostically.
+
+    Exception → HTTP: ``FileNotFoundError`` → 404, ``FileExistsError`` → 409,
+    ``RuntimeError`` / ``ValueError`` → 400 (matching the catalog ``/invoke``
+    translation, so a handler raises the same plain exceptions on every
+    surface)."""
+    if op.http_method in ("POST", "PUT", "PATCH") and op.request_model:
         svc = op.service_func
 
-        def post_handler(req):
+        async def body_handler(req):
             try:
-                return svc(req)
+                return await _await_if_needed(svc(req))
             except FileNotFoundError as e:
                 raise HTTPException(404, str(e))
             except FileExistsError as e:
@@ -231,10 +257,11 @@ def _make_fastapi_handler(op: Operation):
             except (RuntimeError, ValueError) as e:
                 raise HTTPException(400, str(e))
 
-        post_handler.__annotations__ = {"req": op.request_model}
-        return post_handler
+        body_handler.__annotations__ = {"req": op.request_model}
+        return body_handler
 
-    # GET — build function dynamically for FastAPI signature inspection
+    # Path/query params, no body — build the signature dynamically so FastAPI
+    # can inspect it. Works for GET, DELETE, and POST-without-a-body alike.
     path_params = _extract_path_params(op.http_path)
     sig_parts = []
     for p in op.params:
@@ -251,11 +278,13 @@ def _make_fastapi_handler(op: Operation):
     sig = ", ".join(sig_parts)
 
     code = (
-        f"def handler({sig}):\n"
+        f"async def handler({sig}):\n"
         f"    try:\n"
-        f"        return _call({param_dict})\n"
+        f"        return await _resolve(_call({param_dict}))\n"
         f"    except FileNotFoundError as e:\n"
         f"        raise HTTPException(404, str(e))\n"
+        f"    except FileExistsError as e:\n"
+        f"        raise HTTPException(409, str(e))\n"
         f"    except (RuntimeError, ValueError) as e:\n"
         f"        raise HTTPException(400, str(e))\n"
     )
@@ -268,6 +297,7 @@ def _make_fastapi_handler(op: Operation):
         "HTTPException": HTTPException,
         "Optional": Optional,
         "_call": call,
+        "_resolve": _await_if_needed,
     }
     exec(code, ns)  # noqa: S102
     return ns["handler"]
@@ -345,23 +375,27 @@ def _make_cli_handler(op: Operation, api_func: Callable) -> Callable:
 
 
 def _cli_dispatch(op: Operation, api_func: Callable, kwargs: dict) -> None:
-    """Execute a CLI command via the HTTP API and render output."""
-    path_params = _extract_path_params(op.http_path)
+    """Execute a CLI command via the HTTP API and render output.
 
-    if op.http_method == "POST":
-        payload = {k: v for k, v in kwargs.items() if v is not None}
-        r = api_func("POST", op.http_path, json=payload)
+    Path params are substituted into the URL for every method (so
+    ``services stop <name>`` → ``POST /hub/services/<name>/stop`` works); the
+    rest go in the JSON body for body-methods and the query string otherwise."""
+    path_params = _extract_path_params(op.http_path)
+    url = op.http_path
+    rest: dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        if k in path_params:
+            url = url.replace(f"{{{k}}}", str(v))
+        else:
+            rest[k] = v
+
+    if op.http_method in ("POST", "PUT", "PATCH"):
+        r = api_func(op.http_method, url, json=rest)
     else:
-        url = op.http_path
-        query: dict[str, Any] = {}
-        for k, v in kwargs.items():
-            if v is None:
-                continue
-            if k in path_params:
-                url = url.replace(f"{{{k}}}", str(v))
-            else:
-                query[k] = v
-        r = api_func("GET", url, params=query)
+        # GET / DELETE — no body; non-path params ride the query string.
+        r = api_func(op.http_method, url, params=rest)
 
     _render_output(op, r)
 
@@ -410,3 +444,163 @@ def _render_output(op: Operation, response) -> None:
         typer.echo("---")
         if op.output.body_field:
             typer.echo(str(data.get(op.output.body_field, "")))
+
+
+# ---------------------------------------------------------------------------
+# Service-tool CLI generation (live catalog → CLI, the MCP surface's twin)
+# ---------------------------------------------------------------------------
+# The gateway control plane above generates its CLI from the static
+# GATEWAY_OPERATIONS registry. Feature-service tools, by contrast, have no
+# per-function HTTP route — they are dispatched by name through ``POST /invoke``
+# exactly like the MCP surface. This generator mirrors that surface onto the
+# CLI: it consumes a live ``GET /tools`` snapshot (the same list MCP reads) and
+# emits one ``awm <domain> <verb>`` command per tool, so the CLI tracks
+# registered services with no static list to keep in sync.
+
+
+def _json_schema_py_type(prop: dict):
+    """Map a JSON-Schema ``type`` string (from an MCP ``inputSchema``) to a
+    Python type for Typer introspection. Unknown / missing → ``str``."""
+    t = prop.get("type")
+    if t == "integer":
+        return int
+    if t == "number":
+        return float
+    if t == "boolean":
+        return bool
+    if t == "array":
+        return list[str]
+    return str
+
+
+def _schema_param_to_signature(
+    name: str, prop: dict, required: bool
+) -> inspect.Parameter:
+    """Build one ``inspect.Parameter`` from a JSON-Schema property entry.
+
+    The CLI-surface analogue of ``_make_cli_handler``'s per-``Param`` loop, but
+    sourced from an MCP ``inputSchema`` instead of an ``Operation.params`` list.
+    Every field is an ``--flag`` option; arrays accept repeated values; a
+    non-required field is ``Optional`` with the schema default (or ``None``)."""
+    base = _json_schema_py_type(prop)
+    flag = f"--{name.replace('_', '-')}"
+    help_text = prop.get("description", "")
+
+    if prop.get("type") == "array":
+        ann = Annotated[Optional[list[str]], typer.Option(flag, help=help_text)]
+        default = prop.get("default")
+    elif required:
+        ann = Annotated[base, typer.Option(flag, help=help_text)]
+        default = inspect.Parameter.empty
+    else:
+        ann = Annotated[Optional[base], typer.Option(flag, help=help_text)]
+        default = prop.get("default")
+
+    return inspect.Parameter(
+        name,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        default=default,
+        annotation=ann,
+    )
+
+
+def _make_service_cli_handler(tool: dict, api_func: Callable) -> Callable:
+    """Create a Typer handler for one service tool that dispatches via
+    ``POST /invoke`` and renders the result."""
+    tool_name = tool["name"]
+    schema = tool.get("inputSchema") or {}
+    props: dict = schema.get("properties", {}) or {}
+    required = set(schema.get("required", []) or [])
+
+    def handler(**kwargs):
+        _invoke_dispatch(tool_name, api_func, kwargs)
+
+    # A tool's inputSchema lists params in manifest/display order, which is free
+    # to put a required field last (scope_post deliberately puts `body` last so a
+    # serialization bleed has no trailing param to corrupt). But an
+    # inspect.Signature forbids a no-default parameter after a defaulted one, so
+    # build params then stable-sort required-before-optional. Every field is a
+    # --flag Option and dispatch is by **kwargs, so reordering is invisible to
+    # the CLI surface. See memory awm_cli_signature_param_order.
+    sig_params = [
+        _schema_param_to_signature(n, p, n in required) for n, p in props.items()
+    ]
+    sig_params.sort(key=lambda pm: pm.default is not inspect.Parameter.empty)
+    handler.__signature__ = inspect.Signature(sig_params)  # type: ignore[attr-defined]
+    handler.__doc__ = tool.get("description", "")
+    return handler
+
+
+def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
+    """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
+    same path the MCP proxy uses — dropping unset (``None``) options."""
+    args = {k: v for k, v in kwargs.items() if v is not None}
+    # Generous ceiling (not the default 30s): a service verb may declare a longer
+    # per-function timeout the catalog now honors (bulk re-embed / dedup). A fast
+    # verb still returns immediately; this only bounds a hang.
+    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args}, timeout=600)
+    _render_invoke_output(r)
+
+
+def _render_invoke_output(response) -> None:
+    """Render an ``/invoke`` response. Errors (status ≥ 400, incl. the
+    structured ``{error_class, error}`` detail) go to stderr + exit 1; a success
+    payload's ``result`` is pretty-printed (JSON if it parses, else raw)."""
+    if response.status_code >= 400:
+        typer.echo(f"Error ({response.status_code}): {response.text}", err=True)
+        raise typer.Exit(1)
+
+    data = response.json()
+    result = data.get("result", data) if isinstance(data, dict) else data
+    if isinstance(result, str):
+        try:
+            typer.echo(json.dumps(json.loads(result), indent=2))
+        except (json.JSONDecodeError, ValueError):
+            typer.echo(result)
+    else:
+        typer.echo(json.dumps(result, indent=2))
+
+
+def register_service_cli_commands(
+    parent_app,
+    tools: list[dict],
+    api_func: Callable,
+    *,
+    exclude_names: set[str],
+) -> dict[str, typer.Typer]:
+    """Generate ``awm <domain> <verb>`` CLI groups from a live ``GET /tools``
+    snapshot, mirroring the MCP surface. Returns ``{group_name: Typer}``.
+
+    ``tools`` is the MCP Tool list (each a dict with ``name``, ``description``,
+    ``inputSchema``). A tool is grouped by its ``<domain>_<verb>`` name (split
+    on the FIRST underscore: ``scope_create`` → group ``scope`` / command
+    ``create``; remaining underscores in the verb become hyphens). Tools whose
+    name is in ``exclude_names`` (the gateway control-plane ops, already wired
+    from GATEWAY_OPERATIONS) are skipped, as are names with no underscore and
+    any domain colliding with a group already attached to ``parent_app``."""
+    reserved = {g.name for g in getattr(parent_app, "registered_groups", [])}
+
+    groups: dict[str, list[dict]] = {}
+    for tool in tools:
+        name = tool.get("name", "")
+        if not name or name in exclude_names or "_" not in name:
+            continue
+        domain = name.split("_", 1)[0]
+        if domain in reserved:
+            continue
+        groups.setdefault(domain, []).append(tool)
+
+    result: dict[str, typer.Typer] = {}
+    for group_name, group_tools in sorted(groups.items()):
+        group = typer.Typer(
+            help=f"{group_name.title()} operations (mirrors the live MCP/catalog surface)",
+            no_args_is_help=True,
+        )
+        for tool in group_tools:
+            command = tool["name"].split("_", 1)[1].replace("_", "-")
+            handler = _make_service_cli_handler(tool, api_func)
+            group.command(name=command, help=tool.get("description", ""))(handler)
+        parent_app.add_typer(group, name=group_name)
+        result[group_name] = group
+
+    return result

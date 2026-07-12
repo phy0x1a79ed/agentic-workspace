@@ -1,10 +1,11 @@
-"""Tests for the MCP-config export framework + claude_spawn/opencode backends.
+"""Tests for the MCP-config export framework + the opencode backend.
 
 The framework reads canonical workspace ``.mcp.json`` and fans it out to
-backend-specific config files. ``claude_spawn`` rewrites the ``awm`` entry
-from live env vars so dev/prod isolation survives; ``opencode`` translates
-the schema. These tests cover the framework's plumbing (register dedup,
-report shape, exporter isolation) and each backend's invariants.
+backend-specific config files. ``opencode`` translates the schema for the
+per-scope workspace orientation config. (Spawned agents' own MCP config is
+harness-owned now — synthesized in agentcore at spawn, not exported here.)
+These tests cover the framework's plumbing (register dedup, report shape,
+exporter isolation) and the opencode backend's invariants.
 """
 
 from __future__ import annotations
@@ -20,10 +21,8 @@ from pathlib import Path
 
 import pytest
 
-import awm.gateway.exports.backends.claude_spawn as claude_spawn_mod
 import awm.gateway.exports.backends.opencode as opencode_mod
 from awm.gateway.exports import mcp as mcp_mod
-from awm.gateway.exports.backends.claude_spawn import ClaudeSpawnExporter
 from awm.gateway.exports.backends.opencode import OpencodeExporter
 from awm.gateway.exports.mcp import EXPORTERS, register, sync_mcp_configs
 
@@ -133,94 +132,6 @@ class TestSyncFramework:
             sync_mcp_configs(tmp_path)
         assert out.exists()
         assert not out.with_suffix(out.suffix + ".tmp").exists()
-
-
-class TestClaudeSpawnExporter:
-    """Exercise ClaudeSpawnExporter against the AWM_DIR binding it captured
-    at import time. The test patches that binding (not the config module's)."""
-
-    def test_path_is_awm_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
-        path, _ = ClaudeSpawnExporter().export({"mcpServers": {}})
-        assert path == tmp_path / "spawn-mcp.json"
-
-    def test_mirrors_canonical_servers(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
-        monkeypatch.setattr(claude_spawn_mod.shutil, "which",
-                            lambda name: None)
-        canonical = {
-            "mcpServers": {
-                "chrome-devtools": {"command": "npx", "args": ["x"]},
-                "ollama": {"command": "npx", "args": ["y"], "env": {"K": "V"}},
-            }
-        }
-        _, content = ClaudeSpawnExporter().export(canonical)
-        out = json.loads(content)
-        # All canonical servers carried over verbatim.
-        assert out["mcpServers"]["chrome-devtools"] == {"command": "npx", "args": ["x"]}
-        assert out["mcpServers"]["ollama"] == {"command": "npx", "args": ["y"], "env": {"K": "V"}}
-        # No awm entry injected when the binary isn't on PATH.
-        assert "awm" not in out["mcpServers"]
-
-    def test_injects_awm_proxy_when_binary_present(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
-        monkeypatch.setattr(claude_spawn_mod.shutil, "which",
-                            lambda name: "/fake/bin/awm-mcp" if name == "awm-mcp" else None)
-        monkeypatch.setenv("AWM_WORKSPACE", "/the/ws")
-        monkeypatch.setenv("AWM_PORT", "12100")
-
-        _, content = ClaudeSpawnExporter().export({"mcpServers": {}})
-        out = json.loads(content)
-        awm_entry = out["mcpServers"]["awm"]
-        assert awm_entry["command"] == "/fake/bin/awm-mcp"
-        assert awm_entry["args"] == []
-        assert awm_entry["env"] == {
-            "AWM_WORKSPACE": "/the/ws",
-            "AWM_PORT": "12100",
-        }
-
-    def test_overrides_stale_awm_entry(self, tmp_path, monkeypatch):
-        """Canonical .mcp.json may carry a stale awm entry. Live env vars
-        win — and pre-existing env keys are preserved when the live env
-        doesn't override them."""
-        monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
-        monkeypatch.setattr(claude_spawn_mod.shutil, "which",
-                            lambda name: "/fake/bin/awm-mcp")
-        monkeypatch.setenv("AWM_PORT", "7820")
-        monkeypatch.delenv("AWM_WORKSPACE", raising=False)
-        canonical = {
-            "mcpServers": {
-                "awm": {
-                    "command": "/old/awm-mcp",
-                    "args": ["--legacy"],
-                    "env": {
-                        "AWM_PORT": "9999",
-                        "EXTRA": "kept",
-                    },
-                }
-            }
-        }
-        _, content = ClaudeSpawnExporter().export(canonical)
-        out = json.loads(content)
-        awm_entry = out["mcpServers"]["awm"]
-        # Command replaced with the live binary path.
-        assert awm_entry["command"] == "/fake/bin/awm-mcp"
-        assert awm_entry["args"] == []
-        # Live env wins; unrelated existing keys preserved; AWM_WORKSPACE
-        # never set so not added.
-        assert awm_entry["env"] == {
-            "AWM_PORT": "7820",
-            "EXTRA": "kept",
-        }
-
-    def test_returns_valid_json(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_spawn_mod, "AWM_DIR", tmp_path)
-        monkeypatch.setattr(claude_spawn_mod.shutil, "which",
-                            lambda _: None)
-        _, content = ClaudeSpawnExporter().export({"mcpServers": {}})
-        # Must parse and end with newline so atomic writers don't truncate.
-        assert content.endswith("\n")
-        assert json.loads(content) == {"mcpServers": {}}
 
 
 class TestOpencodeExporter:

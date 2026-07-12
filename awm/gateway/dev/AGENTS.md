@@ -25,10 +25,16 @@ run side-by-side:
 
 | Scope worktree | uvicorn |
 |---|---|
-| `projects/awm/dev/` (`dev` branch — **integration**) | `7821` |
+| `projects/awm/dev/` (`dev` branch — **release staging**) | `7821` |
 | `projects/awm/web-ui/` (`feat/web-ui`) | `7831` |
 | `projects/awm/web-backend/` (`feat/web-backend`) | `7841` |
+| `projects/awm/feat-dag/` (composition — pinned via `.env`) | `7861` |
+| `projects/awm/feat-gamebot/` (composition — pinned via `.env`) | `7871` |
 | any other scope (fallback) | `7851` |
+
+The `feat-dag` / `feat-gamebot` rows aren't in the dirname `case` — they pin
+their port via the gitignored `.env` below (the documented override), so the
+tracked `case` block never has to change.
 
 **The uvicorn port IS the service-hub origin for this sandbox.** `AGENTS.md`
 § "Service Hub" documents the hub at `:7819` (the production default — the
@@ -108,13 +114,12 @@ The harness talks to the loopback port directly; no token, no cookie.
 
 The web UI is composed of per-page stripes under `../packages/pages/<name>/`
 (Svelte 5 + Vite), each registered with the hub as `kind=page` and served at
-`/ui/<name>/`. The active pages are `agent`, `tts`, `ptt`, and
-`primitives-gallery`.
+`/ui/<name>/`. The active pages are `agent`, `tts`, `stt`, and
+`components-gallery`.
 
-`./run.sh start` runs `awm packages gen` + `npm run build --workspaces` +
-`awm packages sync` automatically — pages are built into `dist/` and
-registered as the hub comes up. See the root `README.md` § *Developing a
-package* for the authoring workflow.
+`./run.sh start` builds the pages (`npm run build --workspaces`) into `dist/`
+as the hub comes up. See the root `README.md` § *Developing a package* for the
+authoring workflow.
 
 ## Don't use this directory as an agent CWD
 

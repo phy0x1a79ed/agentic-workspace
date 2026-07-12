@@ -1,0 +1,23 @@
+# Game-bot registry entry: factorio (see awm/agents/gamebot.py).
+# Driver: opencode on the free Zen DeepSeek v4 (model omitted → the opencode
+# backend's own default, deepseek-v4-flash-free). NOTE: opencode ignores the
+# tool allowlist — the gamebot tool profile is enforced only under
+# harness = "claude" (guardrail-not-boundary on the loopback bus).
+
+realm = "rlm-factorio"
+harness = "opencode"
+turn_budget = 40
+
+goal = """
+Build up an automated factory in Factorio, one sitting at a time.
+
+Near-term ladder (pick up wherever the journal says you are):
+1. Establish the basics: mine coal/iron/stone by hand, craft a stone furnace,
+   smelt iron plates.
+2. Automate mining: burner mining drills on iron + coal, furnace lines.
+3. Expand: more plates, gears, belts; keep the drills fueled.
+
+Work through the realm verbs (observe/move/mine/craft/build...). If a verb you
+need is missing, note it in the journal and do what is possible instead —
+never resort to exec_lua.
+"""

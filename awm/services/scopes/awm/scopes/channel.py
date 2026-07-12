@@ -129,11 +129,39 @@ def _channel_key(project: str, scope: str) -> str:
     return f"{project}/{scope}"
 
 
-def _row_to_post(row) -> ScopePost:
+def _coerce_meta(raw) -> dict:
+    """Decode/normalize a ``meta`` value into a dict, defensively.
+
+    ``meta`` is stored as ``json.dumps(meta)``, so the read path gets a JSON
+    string back. A well-behaved post stores a dict; but a harness that hands
+    ``meta`` in as a JSON *string* gets it double-encoded, so ``json.loads``
+    yields a ``str``. Recover that exact case with one more parse; anything that
+    still isn't a dict becomes ``{}`` so a single malformed row can't crash a
+    project-wide render or fail pydantic validation on ``ScopePost.meta``.
+
+    Also used on the write path, where ``raw`` may already be a dict (the
+    normal case, returned as-is) or a JSON string from a misbehaving harness.
+    """
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
     try:
-        meta = json.loads(row["meta"]) if row["meta"] else {}
+        value = json.loads(raw)
     except (TypeError, ValueError):
-        meta = {}
+        return {}
+    if isinstance(value, str):  # double-encoded: a JSON string holding JSON
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _row_to_post(row) -> ScopePost:
+    meta = _coerce_meta(row["meta"])
     return ScopePost(
         id=row["id"], project=row["owner_project"], scope=row["owner_scope"],
         author=_author_to_display(row["author"]), kind=row["kind"],
@@ -204,6 +232,26 @@ def set_delivery_sink(fn) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cross-service emitter (the `posts` pub/sub topic the agents service subs to)
+# ---------------------------------------------------------------------------
+
+_emitter = None  # Callable[[dict], None] | None
+
+
+def set_emitter(fn) -> None:
+    """Register a fire-and-forget emitter called on every new post.
+
+    The scopes service declares a ``posts`` emitter; on start the hub adapter
+    sets this to a thread-safe scheduler that ``emit``s ``{project, scope,
+    post}`` over the gateway. The agents service subscribes to it to feed human
+    messages into a live agent's stdin (a live subscription, not a poll).
+    ``post()`` runs in a worker thread, so the registered callable must hand
+    the coroutine to the service's event loop itself."""
+    global _emitter
+    _emitter = fn
+
+
+# ---------------------------------------------------------------------------
 # Embeddings (degrade gracefully)
 # ---------------------------------------------------------------------------
 
@@ -232,7 +280,7 @@ def post(project: str, scope: str, *, author: str, body: str,
     and (if registered) the agent-delivery sink."""
     now = now_ms()
     pid = str(_uuid.uuid4())
-    meta = meta or {}
+    meta = _coerce_meta(meta)
     dao = ScopesDAO()
     with dao.transaction() as conn:
         author_ref = _author_to_stored(author, conn=conn)
@@ -247,6 +295,14 @@ def post(project: str, scope: str, *, author: str, body: str,
     post_obj = _row_to_post(row)
 
     _broadcast(project, scope, {"type": "post", "post": post_obj.to_dict()})
+    # One post → one cross-service `emit` on the `posts` topic (fan-out to all
+    # subscribers; each filters by its own (project, scope)).
+    if _emitter is not None:
+        try:
+            _emitter({"project": project, "scope": scope,
+                      "post": post_obj.to_dict()})
+        except Exception:
+            pass
     if _delivery_sink is not None and not (to_scope and to_scope != f"{project}/{scope}"):
         try:
             _delivery_sink(project, scope, post_obj)

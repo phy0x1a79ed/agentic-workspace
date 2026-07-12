@@ -84,7 +84,7 @@
   });
 </script>
 
-<div class="sel" bind:this={root}>
+<div class="sel" bind:this={root} data-awm-component="Select">
   <button
     type="button"
     class="trigger mono"

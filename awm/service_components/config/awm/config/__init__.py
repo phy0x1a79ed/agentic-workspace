@@ -31,6 +31,42 @@ def find_workspace_root() -> Path:
 WORKSPACE_ROOT = find_workspace_root()
 
 # ---------------------------------------------------------------------------
+# Canonical workspace (hub-provided on register)
+# ---------------------------------------------------------------------------
+# WORKSPACE_ROOT (above) is THIS process's *local* root — where its own ``.awm``
+# DBs live. For a normal (native) service the local root IS the canonical
+# workspace, so the two coincide and nothing changes. A shadow overlay is the
+# exception: it runs with an ISOLATED local root (so its per-service DBs never
+# collide with the idle base it shadows — the agents boot-reconcile closes every
+# open instance row), yet its placed agents must still operate in the REAL
+# workspace. The hub therefore reports its canonical workspace to every service
+# on register (``ServiceRegisterResponse.canonical_workspace``); the gatewayclient
+# adapter calls :func:`set_canonical_workspace` with it. A service that resolves
+# where agents work (the agents service's spawned MCP env, etc.) reads
+# :func:`canonical_workspace`; its DB paths stay on the local ``WORKSPACE_ROOT``.
+# Until a register handshake binds it, canonical defaults to the local root, so
+# tests and never-registered processes are unaffected.
+_CANONICAL_WORKSPACE: Path = WORKSPACE_ROOT
+
+
+def set_canonical_workspace(path: "str | Path | None") -> None:
+    """Late-bind the canonical workspace the hub reported on register.
+
+    Idempotent and tolerant of an empty value (leaves the current canonical in
+    place). Distinct from ``WORKSPACE_ROOT`` on purpose — mutating that would
+    repoint this process's own DBs and reintroduce the overlay↔base collision.
+    """
+    global _CANONICAL_WORKSPACE
+    if path:
+        _CANONICAL_WORKSPACE = Path(path).resolve()
+
+
+def canonical_workspace() -> Path:
+    """The canonical workspace (hub-provided on register), else the local root."""
+    return _CANONICAL_WORKSPACE
+
+
+# ---------------------------------------------------------------------------
 # Derived paths
 # ---------------------------------------------------------------------------
 
@@ -41,9 +77,20 @@ LOG_FILE = AWM_DIR / "awm.log"
 ENV_FILE = AWM_DIR / "env"
 
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
+# Per-task workspace units (the DAG-node execution sandbox the workspace service
+# provisions) live at this top-level dir — the node-side analog of PROJECTS_DIR.
+# Gitignored; one subdir per unit slug.
+TASKS_DIR = WORKSPACE_ROOT / "tasks"
 DATA_DIR = WORKSPACE_ROOT / "data"
 SERVICES_DIR = AWM_DIR / "services"
-SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+
+# The skills catalog is a plain top-level dir of reference ``.md`` files
+# (``<workspace_root>/skills/``) — the scopes service symlinks ``.awm/skills`` to
+# it and reads its ``*.template`` files. The skills *service* (the
+# ``skill_search`` / ``skill_get`` MCP tools + embeddings search) is retired; the
+# files are read-only reference now, owned by no service.
+SKILLS_DIR = WORKSPACE_ROOT / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 

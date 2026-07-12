@@ -19,7 +19,7 @@ fi
 
 # 2. Install the modular tree into the env. The gateway is the composition
 # root — its install.sh installs the component libraries (config, persistence,
-# gatewayclient), every feature service (scopes/agents/artifacts/skills/discord),
+# gatewayclient), every feature service (scopes/agents/artifacts/social/...),
 # then the gateway itself (which provides the `awm` / `awm-mcp` console scripts).
 echo "Installing awm modular tree (components + feature services + gateway)..."
 AWM_ENV=awm bash "$HERE/install.sh"
@@ -27,9 +27,9 @@ AWM_ENV=awm bash "$HERE/install.sh"
 # 3. Create .awm/ runtime directory at the workspace/clone root
 mkdir -p "$WORKSPACE_ROOT/.awm"
 
-# 4. Initialize the database
-echo "Initializing database..."
-mamba run -n awm python -m awm init
+# 4. Initialize the workspace runtime layout
+echo "Initializing workspace..."
+mamba run -n awm python -m awm.gateway gateway init
 
 # 5. Create shell wrappers at ~/.local/bin/{awm,awm-mcp}
 mkdir -p "$HOME/.local/bin"

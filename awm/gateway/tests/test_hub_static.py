@@ -24,7 +24,7 @@ from awm.gateway.hub.registry import ServiceRecord
 from awm.gateway.hub.static import serve_static
 
 
-def _request(path: str, *, accept: str | None = None) -> Request:
+def _request(path: str, *, accept: str | None = None, query: str = "") -> Request:
     headers: list[tuple[bytes, bytes]] = []
     if accept is not None:
         headers.append((b"accept", accept.encode()))
@@ -33,7 +33,7 @@ def _request(path: str, *, accept: str | None = None) -> Request:
         "method": "GET",
         "path": path,
         "raw_path": path.encode(),
-        "query_string": b"",
+        "query_string": query.encode(),
         "headers": headers,
     }
     return Request(scope)
@@ -70,10 +70,11 @@ def naked_bundle(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _rec(prefix: str, dir_: Path, *, entry: str | None = None) -> ServiceRecord:
+def _rec(prefix: str, dir_: Path, *, entry: str | None = None,
+         deny: tuple[str, ...] = ()) -> ServiceRecord:
     return ServiceRecord(
         name="t", prefix=prefix, kind="static",
-        static_dir=str(dir_), entry=entry,
+        static_dir=str(dir_), entry=entry, deny=deny,
     )
 
 
@@ -210,6 +211,66 @@ class TestNakedBundleUnchanged:
         assert resp.status_code == 404
 
 
+class TestDenyMask:
+    """A per-mount ``deny`` glob list hides files: a matching path 404s exactly
+    like a missing one, matched on the *resolved* (post-symlink) path so a
+    symlink can't bypass the mask. Powers a broad mount (root ``/``) that must
+    still hide secrets."""
+
+    def test_masked_file_is_404(self, tmp_path):
+        (tmp_path / "index.html").write_text("root")
+        ssh = tmp_path / ".ssh"
+        ssh.mkdir()
+        (ssh / "id_ed25519").write_text("PRIVATE KEY")
+        rec = _rec("/files", tmp_path, deny=("**/.ssh/**",))
+        resp = _run(serve_static(_request("/files/.ssh/id_ed25519"), rec))
+        assert resp.status_code == 404
+        assert b"PRIVATE KEY" not in _read(resp)
+
+    def test_unmasked_sibling_still_served(self, tmp_path):
+        (tmp_path / "note.txt").write_text("visible\n")
+        (tmp_path / "secret.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path, deny=("**/*.pem",))
+        ok = _run(serve_static(_request("/files/note.txt"), rec))
+        assert ok.status_code == 200
+        assert _read(ok) == b"visible\n"
+        masked = _run(serve_static(_request("/files/secret.pem"), rec))
+        assert masked.status_code == 404
+
+    def test_symlink_to_masked_file_is_404(self, tmp_path):
+        # A symlink whose *name* is unmasked but which resolves to a masked
+        # file must still 404 — matching is on the resolved path.
+        (tmp_path / "index.html").write_text("root")
+        secret = tmp_path / "real.pem"
+        secret.write_text("KEY")
+        link = tmp_path / "innocent.txt"
+        try:
+            link.symlink_to(secret)
+        except OSError:
+            pytest.skip("symlinks unsupported on this platform")
+        rec = _rec("/files", tmp_path, deny=("**/*.pem",))
+        resp = _run(serve_static(_request("/files/innocent.txt"), rec))
+        assert resp.status_code == 404
+        assert b"KEY" not in _read(resp)
+
+    def test_no_deny_serves_everything(self, tmp_path):
+        # Empty deny (the default for existing mounts) → zero behaviour change.
+        (tmp_path / "secret.pem").write_text("KEY")
+        rec = _rec("/files", tmp_path)  # deny=()
+        resp = _run(serve_static(_request("/files/secret.pem"), rec))
+        assert resp.status_code == 200
+        assert _read(resp) == b"KEY"
+
+    def test_masked_deep_path_is_404(self, tmp_path):
+        deep = tmp_path / "home" / "u" / ".aws"
+        deep.mkdir(parents=True)
+        (deep / "credentials").write_text("aws_secret")
+        rec = _rec("/files", tmp_path, deny=("**/.aws/**",))
+        resp = _run(serve_static(
+            _request("/files/home/u/.aws/credentials"), rec))
+        assert resp.status_code == 404
+
+
 class TestTraversalContainment:
     def test_traversal_above_root_is_404(self, spa_bundle, tmp_path):
         (tmp_path.parent / "secret.txt").write_text("nope")
@@ -217,3 +278,51 @@ class TestTraversalContainment:
         resp = _run(serve_static(_request("/app/../secret"), rec))
         assert resp.status_code == 404
         assert b"nope" not in _read(resp)
+
+
+class TestPrefixRootTrailingSlashRedirect:
+    """A bare prefix (``/app``) is the bundle's directory: redirect it to the
+    canonical ``/app/`` so the bundle's relative ``./assets/...`` refs resolve
+    against the bundle, not its parent. nginx/Apache/GitHub-Pages do the same.
+    Only the prefix root redirects; sub-paths stay byte-serves.
+    """
+
+    def test_bare_prefix_redirects_to_trailing_slash(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/app/"
+
+    def test_redirect_preserves_query_string(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app", query="x=1&y=2"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/app/?x=1&y=2"
+
+    def test_trailing_slash_serves_index_not_redirect(self, spa_bundle):
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app/"), rec))
+        assert resp.status_code == 200
+        assert b"root shell" in _read(resp)
+
+    def test_naked_bundle_bare_prefix_redirects(self, naked_bundle):
+        # No index.html but an ``entry`` → still served at the root, so the
+        # bare prefix redirects to the slash form (then the auto-shell serves).
+        rec = _rec("/c", naked_bundle, entry="main.js")
+        resp = _run(serve_static(_request("/c"), rec))
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/c/"
+
+    def test_bare_prefix_no_index_no_entry_is_404_not_redirect(self, naked_bundle):
+        # Nothing to serve at the root → 404, never a redirect to a dead URL.
+        rec = _rec("/c", naked_bundle)  # no entry, no index.html
+        resp = _run(serve_static(_request("/c"), rec))
+        assert resp.status_code == 404
+
+    def test_subpath_directory_does_not_redirect(self, spa_bundle):
+        # /app/focus is a sub-directory with its own index.html — the contract
+        # serves it in place (no redirect); only the prefix ROOT redirects.
+        rec = _rec("/app", spa_bundle)
+        resp = _run(serve_static(_request("/app/focus"), rec))
+        assert resp.status_code == 200
+        assert b"focus shell" in _read(resp)
