@@ -11,15 +11,17 @@ calls always run off the event loop (sync verbs run in the adapter's worker
 thread; the async burst loop uses ``asyncio.to_thread``), so the control WS is
 never stalled.
 
-Burst model — a per-device *expected-approval counter* plus a deadline that
-overlapping bursts extend:
+Burst model — a per-device *expected-approval budget* (held in the engine) plus a
+deadline that overlapping bursts extend:
 
-  * ``start_burst(device, count=1)`` adds ``count`` to ``rt.expected`` and pushes
+  * ``start_burst(device, count=1)`` calls ``engine.grant(count)`` and pushes
     ``rt.burst_deadline`` to ``max(old, now+window)``; the first call spawns one
-    poll task, later overlapping calls just bump the counter/deadline.
-  * the poll loop runs while ``now < deadline`` **and** ``expected > 0``,
-    auto-approving lone pushes and ticking ``expected`` down by each approval,
-    ending early once every expected approval has landed.
+    poll task, later overlapping calls just add budget / extend the deadline.
+  * the poll loop runs while ``now < deadline`` **and** ``engine.budget_remaining()
+    > 0``; the engine approves pending pushes up to the budget (oldest-first) and
+    decrements as it does, so N overlapping connects approve N overlapping pushes.
+    Teardown calls ``engine.clear_budget()`` so leftover authorization never
+    outlives the window.
 
 Held state is in-memory and lost on respawn (hold-TTL is 120s by default), so
 ``2fa_approve <urgid> device=<name>`` only resolves a login still held in the
@@ -42,6 +44,11 @@ from .notify import NULL_NOTIFIER
 
 log = logging.getLogger("awm.twofa.service")
 
+# Singleton re-homing selector (federation). 2fa is canonical on one node; on
+# that node social is co-located so this is unset and social calls stay local.
+# A node that borrows social exports AWM_SOCIAL_PEER=<peer>. Read fresh per use.
+_SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+
 
 def _tx_view(tx: Transaction) -> dict[str, Any]:
     return {"urgid": tx.urgid, "app": tx.app, "details": tx.details}
@@ -59,9 +66,10 @@ class DeviceRuntime:
     load_error: str | None = None
     build_lock: threading.Lock = field(default_factory=threading.Lock)
     burst_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # Burst state (event-loop only). deadline==0.0 means idle.
+    # Burst state (event-loop only). deadline==0.0 means idle. The expected-
+    # approval budget lives in the engine (ApprovalEngine.grant/budget_remaining),
+    # so the decision and the counter share one lock.
     burst_deadline: float = 0.0
-    expected: int = 0
     burst_task: asyncio.Task | None = None
     last_burst: dict[str, Any] | None = None
     # Optional async callable(str) the burst posts progress to (per-approval +
@@ -141,7 +149,6 @@ class TwoFAService:
                     client, NULL_NOTIFIER,
                     dedup_seconds=self.cfg.dedup_seconds,
                     approve_all_minutes=self.cfg.approve_all_minutes,
-                    burst_threshold=self.cfg.burst_threshold,
                     hold_ttl_seconds=self.cfg.hold_ttl_seconds,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -169,7 +176,9 @@ class TwoFAService:
         backoff = 2.0
         while True:
             try:
-                async for ev in gatewayclient.subscribe("social", "command"):
+                async for ev in gatewayclient.subscribe_maybe_peer(
+                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+                        "social", "command"):
                     backoff = 2.0  # connected and receiving
                     await self._handle_social_command(ev)
             except asyncio.CancelledError:
@@ -215,7 +224,8 @@ class TwoFAService:
             return
         try:
             from awm import gatewayclient
-            await gatewayclient.call(
+            await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
                 "social", "send",
                 {"account": account, "channel": str(channel), "text": text})
         except Exception as exc:  # noqa: BLE001 — confirmation is non-critical
@@ -276,7 +286,7 @@ class TwoFAService:
             "enrolled": rt.enrolled,
             "host": None,
             "burst_active": rt.burst_active(),
-            "expected": rt.expected,
+            "expected": 0,
             "burst_remaining_seconds": _remaining(rt),
             "held": [],
             "held_count": 0,
@@ -294,6 +304,7 @@ class TwoFAService:
         held = engine.held_transactions()
         out.update(
             host=rt.client.host if rt.client else None,
+            expected=engine.budget_remaining(),
             held=[_tx_view(t) for t in held],
             held_count=len(held),
             approve_all_remaining_seconds=round(engine.approve_all_remaining(), 1),
@@ -394,17 +405,26 @@ class TwoFAService:
 
         async with rt.burst_lock:
             engine = await asyncio.to_thread(self._load_engine, rt)
-            was_active = rt.burst_active()
-            rt.expected += count
+            # grant() is a read-modify-write under the engine lock (which can be
+            # held across a Duo reply), so run it off the event loop.
+            budget = await asyncio.to_thread(engine.grant, count)
             rt.burst_deadline = max(rt.burst_deadline, time.monotonic() + window)
             if notify is not None:
                 rt.burst_notify = notify
-            if not was_active:
+            # Decide started-vs-extended by whether a *live* task exists — checked
+            # here under burst_lock (after the awaits), NOT sampled before them.
+            # _run_burst does its teardown under this same lock and re-checks for a
+            # re-arm, so: if a live task exists it is guaranteed to observe this
+            # grant/deadline (it will re-loop rather than tear down); if the prior
+            # task already tore down (task None/done) we spawn a fresh one. This
+            # closes the was_active TOCTOU that could strand a grant with no poller.
+            live = rt.burst_task is not None and not rt.burst_task.done()
+            if not live:
                 rt.burst_task = asyncio.create_task(self._run_burst(rt, engine, interval))
         return {
-            "status": "extended" if was_active else "started",
+            "status": "extended" if live else "started",
             "device": rt.name,
-            "expected": rt.expected,
+            "expected": budget,
             "interval": interval,
             "burst_remaining_seconds": _remaining(rt),
         }
@@ -414,53 +434,88 @@ class TwoFAService:
         start_approved = engine.approved_count
         last_seen = start_approved
         notify = rt.burst_notify  # captured: the target that armed this window
-        log.info("2fa burst[%s]: interval %.1fs, expected %d, window %.0fs",
-                 rt.name, interval, rt.expected, _remaining(rt))
+        log.info("2fa burst[%s]: interval %.1fs, budget %d, window %.0fs",
+                 rt.name, interval, engine.budget_remaining(), _remaining(rt))
+        approved = 0
+        final_notify = notify
+        torn_down = False
         try:
-            while time.monotonic() < rt.burst_deadline and rt.expected > 0:
+            # Outer loop: the poll loop runs until deadline/budget, then a
+            # teardown-or-continue decision made ATOMICALLY under burst_lock. If a
+            # concurrent start_burst re-armed the window (extended the deadline or
+            # added budget) during our exit, we resume polling instead of tearing
+            # down — so a grant made while we were exiting is never stranded.
+            while True:
                 try:
-                    txs = await asyncio.to_thread(engine.client.get_transactions)
-                    if txs:
-                        log.info("2fa burst[%s]: %d pending transaction(s)",
-                                 rt.name, len(txs))
-                    await asyncio.to_thread(engine.handle_transactions, txs)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("2fa burst[%s]: get_transactions failed: %s",
-                                rt.name, exc)
-                # Any approval on this engine (auto or a concurrent manual one)
-                # counts against the expected total.
-                now_approved = engine.approved_count
-                delta = now_approved - last_seen
-                if delta > 0:
-                    rt.expected = max(0, rt.expected - delta)
-                    last_seen = now_approved
-                    if notify is not None:
-                        total = now_approved - start_approved
-                        await self._safe_notify(
-                            notify,
-                            f"✅ Duo login approved on `{rt.name}` "
-                            f"({total} this window)")
-                if rt.expected <= 0:
+                    while (time.monotonic() < rt.burst_deadline
+                           and engine.budget_remaining() > 0):
+                        try:
+                            txs = await asyncio.to_thread(engine.client.get_transactions)
+                            if txs:
+                                log.info("2fa burst[%s]: %d pending transaction(s)",
+                                         rt.name, len(txs))
+                            await asyncio.to_thread(engine.handle_transactions, txs)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("2fa burst[%s]: get_transactions failed: %s",
+                                        rt.name, exc)
+                        # The engine owns the budget and decrements it as it
+                        # approves; here we only surface per-approval progress (auto
+                        # or a concurrent manual approval both bump approved_count).
+                        now_approved = engine.approved_count
+                        delta = now_approved - last_seen
+                        if delta > 0:
+                            last_seen = now_approved
+                            notify = rt.burst_notify  # re-read: a re-arm may reset it
+                            if notify is not None:
+                                total = now_approved - start_approved
+                                await self._safe_notify(
+                                    notify,
+                                    f"✅ Duo login approved on `{rt.name}` "
+                                    f"({total} this window)")
+                        if engine.budget_remaining() <= 0:
+                            break
+                        await asyncio.sleep(interval)
+                except Exception as exc:  # noqa: BLE001 — never exit without teardown
+                    log.warning("2fa burst[%s]: poll loop error: %s", rt.name, exc)
+
+                async with rt.burst_lock:
+                    if (time.monotonic() < rt.burst_deadline
+                            and engine.budget_remaining() > 0):
+                        # Re-armed while we were exiting — keep going.
+                        notify = rt.burst_notify
+                        continue
+                    # Genuinely done. Tear down atomically WHILE holding burst_lock,
+                    # so a concurrent start_burst cannot grant into a window we are
+                    # closing (it will instead see no live task and spawn a fresh
+                    # one). clear_budget() zeros any leftover authorization so a
+                    # stray push outside a window can't be auto-approved later.
+                    approved = engine.approved_count - start_approved
+                    remaining = engine.clear_budget()
+                    rt.last_burst = {"approved": approved,
+                                     "expected_remaining": remaining}
+                    rt.burst_deadline = 0.0
+                    rt.burst_task = None
+                    rt.burst_notify = None
+                    final_notify = notify
+                    torn_down = True
                     break
-                await asyncio.sleep(interval)
         finally:
-            # Atomic cleanup (no await) so it's consistent vs. a concurrent
-            # start_burst that re-armed the window mid-loop.
-            approved = engine.approved_count - start_approved
-            rt.last_burst = {"approved": approved,
-                             "expected_remaining": max(0, rt.expected)}
-            rt.expected = 0
-            rt.burst_deadline = 0.0
-            rt.burst_task = None
-            rt.burst_notify = None
-            log.info("2fa burst[%s]: window ended; approved %d login(s)",
-                     rt.name, approved)
-            if notify is not None:
-                # Fire-and-forget so cleanup stays await-free (and consistent vs.
-                # a concurrent re-arm). Summarises the window outcome.
-                summary = (f"⌛ Approval window ended on `{rt.name}` — "
-                           f"approved {approved} login(s)")
-                asyncio.create_task(self._safe_notify(notify, summary))
+            if not torn_down:
+                # Abnormal exit (e.g. cancellation). Clear budget and detach so no
+                # authorization outlives the window and a re-arm can spawn afresh.
+                approved = engine.approved_count - start_approved
+                engine.clear_budget()
+                rt.burst_deadline = 0.0
+                if rt.burst_task is asyncio.current_task():
+                    rt.burst_task = None
+                rt.burst_notify = None
+        log.info("2fa burst[%s]: window ended; approved %d login(s)",
+                 rt.name, approved)
+        if final_notify is not None:
+            # Fire-and-forget so the summary can't stall a concurrent re-arm.
+            summary = (f"⌛ Approval window ended on `{rt.name}` — "
+                       f"approved {approved} login(s)")
+            asyncio.create_task(self._safe_notify(final_notify, summary))
 
     @staticmethod
     async def _safe_notify(notify: Any, text: str) -> None:

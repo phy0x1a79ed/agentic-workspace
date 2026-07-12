@@ -85,6 +85,13 @@ class StaticSpec(BaseModel):
     entry: str | None = Field(None)
     css: list[str] = Field(default_factory=list)
     mount_id: str = Field("app")
+    deny: list[str] = Field(
+        default_factory=list,
+        description="Mask globs. A request whose resolved path (relative to "
+                    "`dir`, post-symlink) matches any glob 404s as if missing. "
+                    "Matched with PurePosixPath.full_match, so `**` spans "
+                    "segments. Lets a broad mount (e.g. root '/') hide secrets.",
+    )
 
 
 class PageSpec(BaseModel):
@@ -144,6 +151,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                 entry=req.static.entry,
                 css=tuple(req.static.css),
                 mount_id=req.static.mount_id,
+                deny=tuple(req.static.deny),
             )
         else:
             assert req.page is not None
@@ -168,6 +176,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
                 entry=rec.entry,
                 css=list(rec.css),
                 mount_id=rec.mount_id,
+                deny=list(rec.deny),
             )
             if rec.kind == "static" else None
         ),
