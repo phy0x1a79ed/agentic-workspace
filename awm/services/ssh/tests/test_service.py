@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -250,6 +251,51 @@ class TestCircuitBreaker:
         await svc._trip_breaker(cfg, "boom")  # must not raise
         assert svc._read_lock(cfg) is not None
 
+    async def test_notify_test_surfaces_result_and_writes_no_lockfile(
+            self, isolated_dirs, monkeypatch) -> None:
+        # The self-test fires the real social send, RETURNS its result (does not
+        # swallow), carries a clearly-test message, and mutates no breaker state.
+        _, locks = isolated_dirs
+        svc = SSHService()
+        captured: list[str] = []
+
+        async def _capture_send(text):
+            captured.append(text)
+            return {"ok": True, "id": "msg-123"}
+
+        monkeypatch.setattr(svc, "_send_social", _capture_send)
+        out = await svc.notify_test("[selftest]")
+
+        assert out["sent"] is True
+        assert out["result"] == {"ok": True, "id": "msg-123"}
+        assert out["channel"] == ssh_service._ALERT_CHANNEL
+        assert len(captured) == 1
+        # Unmistakably a test, and no /approve reflex bait for a fake device.
+        assert "self-test" in captured[0].lower()
+        assert "/approve" not in captured[0]
+        assert "not a real lock" in captured[0].lower()
+        # No lockfile / breaker state written.
+        assert os.listdir(locks) == []
+
+    async def test_notify_test_raises_on_failure(
+            self, isolated_dirs, monkeypatch) -> None:
+        # Unlike _alert, the self-test must FAIL LOUDLY — a broken notify wire is
+        # exactly what it exists to surface.
+        svc = SSHService()
+
+        async def _explode(_text):
+            raise RuntimeError("social down")
+
+        monkeypatch.setattr(svc, "_send_social", _explode)
+        with pytest.raises(RuntimeError, match="social down"):
+            await svc.notify_test()
+
+    async def test_notify_test_verb_registered(self) -> None:
+        from awm.ssh import hub_adapter
+        assert "notify_test" in hub_adapter.HANDLERS
+        verbs = [f["name"] for f in hub_adapter.API_MANIFEST["functions"]]
+        assert "notify_test" in verbs
+
     def test_failure_reason_includes_askpass_deviation(
             self, isolated_dirs) -> None:
         svc = SSHService()
@@ -393,7 +439,8 @@ class TestStateMachine:
         cfg = resolve_host("fir")
         calls: list[tuple] = []
 
-        async def _fake_call(service, verb, args=None):
+        async def _fake_call(service, verb, args=None, **_kw):
+            # **_kw absorbs the as_/timeout kwargs call_maybe_peer now forwards.
             calls.append((service, verb, args))
             # Pretend a burst is already live — the old code would skip arming.
             return {"status": "ok", "burst_active": True}
@@ -690,3 +737,228 @@ class TestGuardScripts:
         assert r.returncode != 0
         assert r.stdout.strip() == ""
         assert marker.exists()
+
+
+class _FakeBridge:
+    """Stand-in for the direct-session bridge websocket a lease handler holds.
+
+    ``client_frames`` are the frames the requester "sends" (e.g. a verdict); when
+    they run out the async-for ends — modelling a socket close (a drop if no
+    verdict was seen)."""
+
+    def __init__(self, client_frames):
+        self.sent = []                      # frames the handler sent to the client
+        self._frames = list(client_frames)
+        self.closed = False
+
+    async def send(self, raw):
+        self.sent.append(raw)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._frames:
+            return self._frames.pop(0)
+        raise StopAsyncIteration
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeCtx:
+    def __init__(self, host, bridge):
+        self.init = {"host": host}
+        self._bridge = bridge
+
+    async def open_bridge(self):
+        return self._bridge
+
+
+class TestSlotArbiter:
+    """The fleet-global single-attempt gate: the _slot_acquire/_slot_release DFA
+    and the _lease_session direct-session handler."""
+
+    async def test_acquire_grants_from_idle_then_busy(self, isolated_dirs) -> None:
+        svc = SSHService()
+        status, token = await svc._slot_acquire("fir")
+        assert status == "granted" and token
+        # LEASED: a second acquire for the same host is refused BUSY.
+        status2, token2 = await svc._slot_acquire("fir")
+        assert status2 == "busy" and token2 is None
+
+    async def test_release_ok_frees_slot(self, isolated_dirs) -> None:
+        svc = SSHService()
+        _, token = await svc._slot_acquire("fir")
+        await svc._slot_release("fir", token, ok=True)
+        assert svc._read_lock(resolve_host("fir")) is None
+        assert "fir" not in svc._leased
+        status, _ = await svc._slot_acquire("fir")     # IDLE again → granted
+        assert status == "granted"
+
+    async def test_release_fail_locks_and_alerts(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        _, token = await svc._slot_acquire("fir")
+        await svc._slot_release("fir", token, ok=False, reason="master never came up")
+
+        assert svc._read_lock(resolve_host("fir")) is not None   # LOCKED persisted
+        assert len(alerts) == 1 and "fir" in alerts[0]           # arbiter is notifier
+        assert "/approve" in alerts[0]
+        assert "master never came up" in alerts[0]
+        # LOCKED: a later acquire is DENIED (no approval window).
+        status, _ = await svc._slot_acquire("fir")
+        assert status == "locked"
+
+    async def test_release_idempotent_by_lease_id(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        _, token = await svc._slot_acquire("fir")
+        await svc._slot_release("fir", token, ok=False, reason="boom")
+        # A stale/duplicate release with the now-consumed token must be a no-op:
+        # it can neither clear the lock nor double-page.
+        await svc._slot_release("fir", token, ok=True)
+        assert svc._read_lock(resolve_host("fir")) is not None
+        assert len(alerts) == 1
+
+    async def test_approve_window_clears_and_grants_one_shot(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+
+        async def _capture(text):
+            pass
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        cfg = resolve_host("fir")
+        _, token = await svc._slot_acquire("fir")
+        await svc._slot_release("fir", token, ok=False, reason="boom")
+        assert svc._read_lock(cfg) is not None
+
+        # Operator /approve opens the window → next acquire clears + grants.
+        svc._handle_approve({"command": "approve", "device": cfg.twofa_device})
+        status, token2 = await svc._slot_acquire("fir")
+        assert status == "granted" and token2
+        assert svc._read_lock(cfg) is None
+
+        # One-shot consumed: a fresh failure re-locks and is NOT auto-cleared.
+        await svc._slot_release("fir", token2, ok=False, reason="boom2")
+        status3, _ = await svc._slot_acquire("fir")
+        assert status3 == "locked"
+
+    async def test_lease_session_grant_then_verdict_ok(self, isolated_dirs) -> None:
+        svc = SSHService()
+        bridge = _FakeBridge(['{"verdict":"ok","reason":""}'])
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert json.loads(bridge.sent[0]) == {"lease": "granted"}
+        assert bridge.closed
+        assert svc._read_lock(resolve_host("fir")) is None       # freed
+        assert "fir" not in svc._leased
+
+    async def test_lease_session_verdict_fail_locks(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        bridge = _FakeBridge(['{"verdict":"fail","reason":"master never came up"}'])
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert json.loads(bridge.sent[0]) == {"lease": "granted"}
+        assert svc._read_lock(resolve_host("fir")) is not None
+        assert len(alerts) == 1 and "master never came up" in alerts[0]
+
+    async def test_lease_session_drop_without_verdict_locks(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        bridge = _FakeBridge([])                       # client drops, no verdict
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert json.loads(bridge.sent[0]) == {"lease": "granted"}
+        assert svc._read_lock(resolve_host("fir")) is not None    # drop → LOCKED
+        assert len(alerts) == 1
+
+    async def test_lease_session_busy_when_already_leased(
+            self, isolated_dirs) -> None:
+        svc = SSHService()
+        await svc._slot_acquire("fir")                 # pre-hold the slot
+        bridge = _FakeBridge([])
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert json.loads(bridge.sent[0])["lease"] == "busy"
+        assert bridge.closed
+
+    async def test_lease_session_unknown_host(self, isolated_dirs) -> None:
+        svc = SSHService()
+        bridge = _FakeBridge([])
+        await svc._lease_session(_FakeCtx("nope", bridge))
+        assert json.loads(bridge.sent[0])["lease"] == "error"
+
+    async def test_gated_attempt_does_not_trip_local_breaker(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        tripped: list[str] = []
+
+        async def _trip(c, r):
+            tripped.append(r)
+
+        async def _fail_attempt(c, marker):
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(svc, "_trip_breaker", _trip)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
+        result = await svc._do_connect_attempt(cfg, gated=True)
+
+        assert result["status"] == "error"
+        assert result.get("_lock_reason")             # reason surfaced for the verdict
+        assert tripped == []                          # arbiter owns LOCKED, not this
+        assert svc._read_lock(cfg) is None            # gated writes no local lock
+
+    async def test_do_connect_routes_2fa_host_through_gated_arbiter(
+            self, isolated_dirs, monkeypatch) -> None:
+        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)  # local arbiter
+        svc = SSHService()
+        seen = {}
+
+        async def _fake_attempt(cfg, gated=False):
+            seen["gated"] = gated
+            return svc._status_dict(cfg, "connected")
+
+        monkeypatch.setattr(svc, "_do_connect_attempt", _fake_attempt)
+        result = await svc._do_connect(resolve_host("fir"))
+        assert result["status"] == "connected"
+        assert seen["gated"] is True                  # gated arbiter path
+        assert "fir" not in svc._leased               # released after success
+
+    async def test_do_connect_non_2fa_host_stays_local(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        seen = {}
+
+        async def _fake_attempt(cfg, gated=False):
+            seen["gated"] = gated
+            return svc._status_dict(cfg, "connected")
+
+        monkeypatch.setattr(svc, "_do_connect_attempt", _fake_attempt)
+        result = await svc._do_connect(resolve_host("chamois"))  # no twofa_device
+        assert result["status"] == "connected"
+        assert seen["gated"] is False                 # ungated per-node local path

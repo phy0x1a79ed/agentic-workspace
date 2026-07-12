@@ -62,9 +62,29 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [],
         },
+        {
+            "name": "notify_test",
+            "tool": "ssh_notify_test",
+            "description": (
+                "Fire the Discord lock-alert wire on demand to confirm the ssh "
+                "service can reach the operator BEFORE a real lockout depends on "
+                "it. Sends through the exact social→Discord path a real breaker "
+                "trip uses (same peer selector, edge, bearer, channel) but writes "
+                "NO lockfile and mutates no state, and surfaces the send result "
+                "instead of swallowing — so a broken notify wire fails loudly. The "
+                "message is clearly a test and requests no /approve action."
+            ),
+            "params": [
+                {"name": "host", "type": "string", "required": False},
+            ],
+        },
     ],
     "emitters": [],
-    "sessions": [],
+    # Direct-session slot lease: a requester (this node or a peer) holds an open
+    # WS for the duration of one connect attempt; the OPEN socket IS the lease.
+    # This node is the fleet's slot arbiter for lockout-sensitive hosts. See
+    # SSHService._lease_session and FEDERATION.md (SlotArbiter DFA).
+    "sessions": [{"kind": "lease", "transport": "direct"}],
 }
 
 
@@ -72,6 +92,7 @@ HANDLERS = {
     "connect": lambda args: svc.connect(args["host"]),
     "disconnect": lambda args: svc.disconnect(args["host"]),
     "status": lambda _args: svc.status(),
+    "notify_test": lambda args: svc.notify_test(args.get("host", "[selftest]")),
 }
 
 
@@ -81,7 +102,9 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     await ServiceAdapter(
-        "ssh", API_MANIFEST, HANDLERS, on_start=svc.init,
+        "ssh", API_MANIFEST, HANDLERS,
+        session_handlers={"lease": svc._lease_session},
+        on_start=svc.init,
     ).run()
 
 
