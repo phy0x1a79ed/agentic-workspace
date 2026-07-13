@@ -22,7 +22,7 @@
  */
 
 const HUB = (process.env.AWM_HUB_URL || "http://127.0.0.1:7819").replace(/\/+$/, "");
-const ENDPOINT = `${HUB}/svc/notifications/fn/report`;
+const ENDPOINT = `${HUB}/svc/agents/fn/report`;
 
 /** @type {import("@opencode-ai/plugin").Plugin} */
 export const AwmNotify = async ({ client, directory }) => {

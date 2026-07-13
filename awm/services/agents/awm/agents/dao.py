@@ -13,10 +13,10 @@ import uuid
 from datetime import datetime, timezone
 
 from awm.persistence.dao import BaseDAO
-from awm.persistence.databases import init_service_db
+from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "agents"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS agent_instances (
@@ -55,6 +55,49 @@ CREATE TABLE IF NOT EXISTS agent_transcript (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts
     ON agent_transcript(scope, ts);
+""" + """
+-- Fleet observe plane (absorbed from the retired notifications service). The
+-- machine-wide roster of every hook-reporting Claude/OpenCode session +
+-- attention items. Prefixed ``fleet_`` to stay distinct from the DAG tables
+-- above in this same DB. See roster.py / fleet_config.py / accounting.py.
+CREATE TABLE IF NOT EXISTS fleet_sessions (
+    session_id        TEXT PRIMARY KEY,
+    harness           TEXT NOT NULL,
+    cwd               TEXT,
+    project           TEXT,
+    title             TEXT,
+    state             TEXT NOT NULL DEFAULT 'working',
+    tmux_session      TEXT,
+    model             TEXT,
+    tok_in            INTEGER NOT NULL DEFAULT 0,
+    tok_out           INTEGER NOT NULL DEFAULT 0,
+    tok_cache_write_5m INTEGER NOT NULL DEFAULT 0,
+    tok_cache_write_1h INTEGER NOT NULL DEFAULT 0,
+    tok_cache_read    INTEGER NOT NULL DEFAULT 0,
+    context_tokens    INTEGER NOT NULL DEFAULT 0,
+    transcript_offset INTEGER NOT NULL DEFAULT 0,
+    first_seen        REAL NOT NULL,
+    last_seen         REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fleet_notifications (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    kind        TEXT NOT NULL,          -- needs-you | idle | error
+    title       TEXT NOT NULL,
+    detail      TEXT,
+    snippet     TEXT,
+    created_at  REAL NOT NULL,
+    notify_at   REAL NOT NULL,
+    seen_at     REAL,
+    resolved_at REAL,
+    resolved_by TEXT                    -- user_response | session_end | page | expired | cleared
+);
+
+CREATE INDEX IF NOT EXISTS idx_fleet_notifications_session
+    ON fleet_notifications(session_id);
+CREATE INDEX IF NOT EXISTS idx_fleet_notifications_open
+    ON fleet_notifications(session_id, kind) WHERE resolved_at IS NULL;
 """
 
 # v1→v2: additive task-bounded placement columns + their indexes.
@@ -88,6 +131,47 @@ MIGRATIONS: dict[tuple[int, int], str] = {
         "CREATE INDEX IF NOT EXISTS idx_agent_transcript_scope_ts "
         "ON agent_transcript(scope, ts);\n"
     ),
+    # v3→v4: absorb the notifications observe plane. Additive — stand up the
+    # fleet roster + attention tables on the agents DB (idempotent CREATE IF NOT
+    # EXISTS, so a DB that already got them via the fresh-DB DDL path no-ops).
+    (3, 4): (
+        "CREATE TABLE IF NOT EXISTS fleet_sessions (\n"
+        "    session_id        TEXT PRIMARY KEY,\n"
+        "    harness           TEXT NOT NULL,\n"
+        "    cwd               TEXT,\n"
+        "    project           TEXT,\n"
+        "    title             TEXT,\n"
+        "    state             TEXT NOT NULL DEFAULT 'working',\n"
+        "    tmux_session      TEXT,\n"
+        "    model             TEXT,\n"
+        "    tok_in            INTEGER NOT NULL DEFAULT 0,\n"
+        "    tok_out           INTEGER NOT NULL DEFAULT 0,\n"
+        "    tok_cache_write_5m INTEGER NOT NULL DEFAULT 0,\n"
+        "    tok_cache_write_1h INTEGER NOT NULL DEFAULT 0,\n"
+        "    tok_cache_read    INTEGER NOT NULL DEFAULT 0,\n"
+        "    context_tokens    INTEGER NOT NULL DEFAULT 0,\n"
+        "    transcript_offset INTEGER NOT NULL DEFAULT 0,\n"
+        "    first_seen        REAL NOT NULL,\n"
+        "    last_seen         REAL NOT NULL\n"
+        ");\n"
+        "CREATE TABLE IF NOT EXISTS fleet_notifications (\n"
+        "    id          TEXT PRIMARY KEY,\n"
+        "    session_id  TEXT NOT NULL,\n"
+        "    kind        TEXT NOT NULL,\n"
+        "    title       TEXT NOT NULL,\n"
+        "    detail      TEXT,\n"
+        "    snippet     TEXT,\n"
+        "    created_at  REAL NOT NULL,\n"
+        "    notify_at   REAL NOT NULL,\n"
+        "    seen_at     REAL,\n"
+        "    resolved_at REAL,\n"
+        "    resolved_by TEXT\n"
+        ");\n"
+        "CREATE INDEX IF NOT EXISTS idx_fleet_notifications_session "
+        "ON fleet_notifications(session_id);\n"
+        "CREATE INDEX IF NOT EXISTS idx_fleet_notifications_open "
+        "ON fleet_notifications(session_id, kind) WHERE resolved_at IS NULL;\n"
+    ),
 }
 
 _initialized = False
@@ -99,6 +183,15 @@ def init() -> None:
         init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
                         migrations=MIGRATIONS)
         _initialized = True
+
+
+def connect() -> sqlite3.Connection:
+    """A fresh raw connection to the agents DB (WAL, Row factory).
+
+    Used by the roster (observe plane), which is written as sync functions over
+    a bare ``sqlite3.Connection`` (the notifications-service idiom) rather than
+    the ``AgentsDAO`` object the DAG path uses."""
+    return get_connection(SERVICE)
 
 
 class AgentsDAO(BaseDAO):

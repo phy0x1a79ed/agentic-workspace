@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Code → awm-notifications producer hook.
+"""Claude Code → awm-agents fleet-roster producer hook.
 
 Registered globally (``~/.claude/settings.json`` ``hooks``) for ``Stop``,
 ``Notification``, ``UserPromptSubmit``, ``SessionStart``, ``SessionEnd``.
@@ -70,7 +70,7 @@ def _send(payload_json: str) -> int:
     """Child mode: POST the payload, swallow every error."""
     hub = (os.environ.get("AWM_HUB_URL") or "http://127.0.0.1:7819").rstrip("/")
     req = urllib.request.Request(
-        f"{hub}/svc/notifications/fn/report",
+        f"{hub}/svc/agents/fn/report",
         data=payload_json.encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",

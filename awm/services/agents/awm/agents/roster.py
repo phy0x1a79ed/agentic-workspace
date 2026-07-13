@@ -1,31 +1,35 @@
-"""Notifications service business logic.
+"""Fleet roster + attention board (absorbed observe plane).
 
-The one write path is :func:`handle_report` — producers (the global Claude
-Code hook, the global OpenCode plugin) POST normalized events:
+Ported from the retired notifications service. The one write path is
+:func:`handle_report` — harness-level producers (the global Claude Code hook,
+the global OpenCode plugin) POST normalized events:
 
     {harness, event, session_id, cwd?, transcript_path?, message?,
-     last_message?, title?, reason?}
+     last_message?, title?, reason?, tmux_session?}
 
 with ``event`` one of ``turn_end`` / ``notification`` / ``user_prompt`` /
-``error`` / ``session_start`` / ``session_end``. Each event upserts the
-session row and raises / refreshes / resolves attention items:
+``error`` / ``session_start`` / ``session_end`` / ``spawned``. Each event
+upserts the roster row (``fleet_sessions``) and raises / refreshes / resolves
+attention items (``fleet_notifications``):
 
 - ``notification`` (Claude ``Notification`` hook: permission request or
-  waiting-for-input; OC ``permission.updated``) → **question**, immediately.
-  The highest-signal "blocked on you" source; ``message`` becomes the detail.
-- ``turn_end`` (Claude ``Stop``; OC ``session.idle``) → **question** if the
-  final assistant message reads as one (see ``classify``), else **idle** with
-  a grace-delayed ``notify_at`` so actively-driven sessions never desktop-ping
-  every turn.
+  waiting-for-input; OC ``permission.updated``) → **needs-you**, immediately.
+- ``turn_end`` (Claude ``Stop``; OC ``session.idle``) → **idle** with a
+  grace-delayed ``notify_at``, plus a token/context accounting fold.
 - ``error`` → **error**, immediately.
-- ``user_prompt`` (the user responded to that agent) → auto-resolve all its
-  open items; state back to ``working``. This is what keeps the board honest.
-- ``session_start`` / ``session_end`` → lifecycle upsert; a normal end
-  resolves the session's open items.
+- ``user_prompt`` (the user responded) → auto-resolve all its open items;
+  state back to ``working``.
+- ``session_start`` / ``session_end`` → lifecycle upsert.
+- ``spawned`` → a transient ``starting`` placeholder keyed by tmux name, which
+  the real hook adopts when the agent boots.
 
 Reads run a lazy expiry sweep: a hard-killed harness never sends
 ``session_end``, so open items whose session went silent past the TTL are
-auto-resolved as ``expired`` on the next ``list``.
+auto-resolved as ``expired`` on the next read.
+
+Tables live in ``agents.db`` (the agents service owns them) — prefixed
+``fleet_`` to stay distinct from the DAG ``agent_instances`` / ``agent_transcript``
+tables in the same DB.
 """
 
 from __future__ import annotations
@@ -36,7 +40,8 @@ import time
 import uuid
 from typing import Any, Optional
 
-from . import classify, config
+from . import accounting
+from .fleet_config import FLEET_CONTRACT
 
 IDLE_GRACE_S = float(os.environ.get("AWM_NOTIFY_IDLE_GRACE_S", "45"))
 STALE_TTL_S = float(os.environ.get("AWM_NOTIFY_STALE_TTL_S", str(12 * 3600)))
@@ -98,10 +103,10 @@ def upsert_session(
 ) -> None:
     now = _now()
     cur = conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id = ?", (session_id,))
+        "SELECT session_id FROM fleet_sessions WHERE session_id = ?", (session_id,))
     if cur.fetchone() is None:
         conn.execute(
-            "INSERT INTO sessions (session_id, harness, cwd, project, title,"
+            "INSERT INTO fleet_sessions (session_id, harness, cwd, project, title,"
             " state, tmux_session, first_seen, last_seen)"
             " VALUES (?,?,?,?,?,?,?,?,?)",
             (session_id, harness, cwd, _project_label(cwd), title,
@@ -124,7 +129,7 @@ def upsert_session(
             vals.append(tmux_session)
         vals.append(session_id)
         conn.execute(
-            f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?", vals)
+            f"UPDATE fleet_sessions SET {', '.join(sets)} WHERE session_id = ?", vals)
     conn.commit()
 
 
@@ -166,13 +171,13 @@ def add_usage(
         vals.append(usage["model"])
     vals.append(session_id)
     conn.execute(
-        f"UPDATE sessions SET {', '.join(sets)} WHERE session_id = ?", vals)
+        f"UPDATE fleet_sessions SET {', '.join(sets)} WHERE session_id = ?", vals)
     conn.commit()
 
 
 def _session_offset(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
-        "SELECT transcript_offset FROM sessions WHERE session_id = ?",
+        "SELECT transcript_offset FROM fleet_sessions WHERE session_id = ?",
         (session_id,)).fetchone()
     return int(row["transcript_offset"]) if row else 0
 
@@ -195,14 +200,14 @@ def raise_item(
     """
     now = _now()
     cur = conn.execute(
-        "SELECT * FROM notifications WHERE session_id = ? AND kind = ?"
+        "SELECT * FROM fleet_notifications WHERE session_id = ? AND kind = ?"
         " AND resolved_at IS NULL",
         (session_id, kind),
     )
     existing = cur.fetchone()
     if existing is not None:
         conn.execute(
-            "UPDATE notifications SET title = ?, detail = ?, snippet = ?"
+            "UPDATE fleet_notifications SET title = ?, detail = ?, snippet = ?"
             " WHERE id = ?",
             (title, detail if detail is not None else existing["detail"],
              snippet if snippet is not None else existing["snippet"],
@@ -210,16 +215,16 @@ def raise_item(
         )
         conn.commit()
         cur = conn.execute(
-            "SELECT * FROM notifications WHERE id = ?", (existing["id"],))
+            "SELECT * FROM fleet_notifications WHERE id = ?", (existing["id"],))
         return _row(cur.fetchone()), False
     item_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO notifications (id, session_id, kind, title, detail,"
+        "INSERT INTO fleet_notifications (id, session_id, kind, title, detail,"
         " snippet, created_at, notify_at) VALUES (?,?,?,?,?,?,?,?)",
         (item_id, session_id, kind, title, detail, snippet, now, now + grace),
     )
     conn.commit()
-    cur = conn.execute("SELECT * FROM notifications WHERE id = ?", (item_id,))
+    cur = conn.execute("SELECT * FROM fleet_notifications WHERE id = ?", (item_id,))
     return _row(cur.fetchone()), True
 
 
@@ -234,11 +239,11 @@ def resolve_items(
     now = _now()
     if item_id:
         cur = conn.execute(
-            "SELECT id FROM notifications WHERE id = ? AND resolved_at IS NULL",
+            "SELECT id FROM fleet_notifications WHERE id = ? AND resolved_at IS NULL",
             (item_id,))
     elif session_id:
         cur = conn.execute(
-            "SELECT id FROM notifications WHERE session_id = ?"
+            "SELECT id FROM fleet_notifications WHERE session_id = ?"
             " AND resolved_at IS NULL", (session_id,))
     else:
         return []
@@ -246,7 +251,7 @@ def resolve_items(
     if ids:
         qs = ",".join("?" * len(ids))
         conn.execute(
-            f"UPDATE notifications SET resolved_at = ?, resolved_by = ?"
+            f"UPDATE fleet_notifications SET resolved_at = ?, resolved_by = ?"
             f" WHERE id IN ({qs})", [now, by, *ids])
         conn.commit()
     return ids
@@ -257,7 +262,7 @@ def sweep_stale(conn: sqlite3.Connection, ttl: float = STALE_TTL_S) -> list[str]
     ever arrives from a hard-killed harness)."""
     cutoff = _now() - ttl
     cur = conn.execute(
-        "SELECT n.id FROM notifications n JOIN sessions s"
+        "SELECT n.id FROM fleet_notifications n JOIN fleet_sessions s"
         " ON s.session_id = n.session_id"
         " WHERE n.resolved_at IS NULL AND s.last_seen < ?",
         (cutoff,),
@@ -266,7 +271,7 @@ def sweep_stale(conn: sqlite3.Connection, ttl: float = STALE_TTL_S) -> list[str]
     if ids:
         qs = ",".join("?" * len(ids))
         conn.execute(
-            f"UPDATE notifications SET resolved_at = ?, resolved_by = 'expired'"
+            f"UPDATE fleet_notifications SET resolved_at = ?, resolved_by = 'expired'"
             f" WHERE id IN ({qs})", [_now(), *ids])
         conn.commit()
     return ids
@@ -306,14 +311,14 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
         ph = None
         if tmux_session:
             ph = conn.execute(
-                "SELECT session_id, tmux_session FROM sessions"
+                "SELECT session_id, tmux_session FROM fleet_sessions"
                 " WHERE tmux_session = ? AND session_id != ? AND state = 'starting'"
                 " ORDER BY first_seen DESC LIMIT 1",
                 (tmux_session, session_id),
             ).fetchone()
         if ph is None and cwd:
             ph = conn.execute(
-                "SELECT session_id, tmux_session FROM sessions"
+                "SELECT session_id, tmux_session FROM fleet_sessions"
                 " WHERE cwd = ? AND session_id != ? AND state = 'starting'"
                 "   AND first_seen > ?"
                 " ORDER BY first_seen DESC LIMIT 1",
@@ -323,14 +328,14 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
             if not tmux_session and ph["tmux_session"]:
                 tmux_session = ph["tmux_session"]  # keep the attach handle
             conn.execute(
-                "DELETE FROM sessions WHERE session_id = ?", (ph["session_id"],))
+                "DELETE FROM fleet_sessions WHERE session_id = ?", (ph["session_id"],))
 
     if ev == "spawned":
         # Only plant the placeholder if the real row for this tmux session hasn't
         # already arrived (a fast boot can beat the spawn RPC) — else it'd dupe.
         existing = (
             conn.execute(
-                "SELECT 1 FROM sessions WHERE tmux_session = ? AND session_id != ?"
+                "SELECT 1 FROM fleet_sessions WHERE tmux_session = ? AND session_id != ?"
                 " LIMIT 1",
                 (tmux_session, session_id),
             ).fetchone()
@@ -388,7 +393,7 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
         # needs-you via the Notification hook.
         last = event.get("last_message")
         if last is None and event.get("transcript_path"):
-            last, _tools = await classify.read_last_assistant(
+            last, _tools = await accounting.read_last_assistant(
                 event["transcript_path"])
         upsert_session(conn, session_id, harness, cwd=cwd, state="idle",
                        tmux_session=tmux_session)
@@ -396,7 +401,7 @@ async def handle_report(conn: sqlite3.Connection, event: dict[str, Any]) -> dict
         tpath = event.get("transcript_path")
         if tpath:
             try:
-                usage = classify.accumulate_usage(
+                usage = accounting.accumulate_usage(
                     tpath, _session_offset(conn, session_id))
             except Exception:  # noqa: BLE001 — accounting must never break a report
                 usage = None
@@ -421,11 +426,11 @@ def list_items(conn: sqlite3.Connection, *, all: bool = False) -> dict[str, Any]
     sweep_stale(conn)
     if all:
         cur = conn.execute(
-            "SELECT * FROM notifications ORDER BY created_at DESC LIMIT 500")
+            "SELECT * FROM fleet_notifications ORDER BY created_at DESC LIMIT 500")
     else:
         # Open items, plus the recently-resolved hour for a "recent" strip.
         cur = conn.execute(
-            "SELECT * FROM notifications WHERE resolved_at IS NULL"
+            "SELECT * FROM fleet_notifications WHERE resolved_at IS NULL"
             " OR resolved_at > ? ORDER BY created_at DESC LIMIT 200",
             (_now() - 3600,),
         )
@@ -435,7 +440,7 @@ def list_items(conn: sqlite3.Connection, *, all: bool = False) -> dict[str, Any]
     if sids:
         qs = ",".join("?" * len(sids))
         cur = conn.execute(
-            f"SELECT * FROM sessions WHERE session_id IN ({qs})", list(sids))
+            f"SELECT * FROM fleet_sessions WHERE session_id IN ({qs})", list(sids))
         sessions = {r["session_id"]: _row(r) for r in cur.fetchall()}
     return {"items": items, "sessions": sessions, "now": _now()}
 
@@ -449,7 +454,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
     page's first paint needs a single fetch.
     """
     sweep_stale(conn)
-    settings = config.FLEET_CONTRACT.load_model()
+    settings = FLEET_CONTRACT.load_model()
     rates = settings.rates
     divisor = settings.eoot_divisor_usd_mtok
     window = window_s if window_s is not None else settings.liveness_window_s
@@ -461,7 +466,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
     # read as a duplicate.
     ended_cutoff = now - settings.ended_window_s
     srows = conn.execute(
-        "SELECT * FROM sessions"
+        "SELECT * FROM fleet_sessions"
         " WHERE last_seen >= ? AND NOT (state = 'ended' AND last_seen < ?)"
         " ORDER BY last_seen DESC",
         (cutoff, ended_cutoff),
@@ -470,7 +475,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
     # Open attention items grouped by session, one query.
     open_by_session: dict[str, list[dict[str, Any]]] = {}
     for r in conn.execute(
-        "SELECT * FROM notifications WHERE resolved_at IS NULL"
+        "SELECT * FROM fleet_notifications WHERE resolved_at IS NULL"
         " ORDER BY created_at DESC"
     ).fetchall():
         open_by_session.setdefault(r["session_id"], []).append(_row(r))
@@ -479,7 +484,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
     for r in srows:
         d = _row(r)
         items = open_by_session.get(d["session_id"], [])
-        eq = config.eoot(
+        eq = accounting.eoot(
             d.get("tok_in") or 0, d.get("tok_out") or 0,
             d.get("tok_cache_write_5m") or 0, d.get("tok_cache_write_1h") or 0,
             d.get("tok_cache_read") or 0,
@@ -509,7 +514,7 @@ def list_fleet(conn: sqlite3.Connection, *, window_s: Optional[float] = None) ->
 
 def mark_seen(conn: sqlite3.Connection, item_id: str) -> dict[str, Any]:
     conn.execute(
-        "UPDATE notifications SET seen_at = ? WHERE id = ? AND seen_at IS NULL",
+        "UPDATE fleet_notifications SET seen_at = ? WHERE id = ? AND seen_at IS NULL",
         (_now(), item_id))
     conn.commit()
     return {"ok": True, "id": item_id}
@@ -517,12 +522,12 @@ def mark_seen(conn: sqlite3.Connection, item_id: str) -> dict[str, Any]:
 
 def clear_all(conn: sqlite3.Connection) -> dict[str, Any]:
     cur = conn.execute(
-        "SELECT id FROM notifications WHERE resolved_at IS NULL")
+        "SELECT id FROM fleet_notifications WHERE resolved_at IS NULL")
     ids = [r["id"] for r in cur.fetchall()]
     if ids:
         qs = ",".join("?" * len(ids))
         conn.execute(
-            f"UPDATE notifications SET resolved_at = ?, resolved_by = 'cleared'"
+            f"UPDATE fleet_notifications SET resolved_at = ?, resolved_by = 'cleared'"
             f" WHERE id IN ({qs})", [_now(), *ids])
         conn.commit()
     return {"ok": True, "resolved": ids}
@@ -531,13 +536,13 @@ def clear_all(conn: sqlite3.Connection) -> dict[str, Any]:
 def stats(conn: sqlite3.Connection) -> dict[str, Any]:
     open_by_kind = {
         r["kind"]: r["n"] for r in conn.execute(
-            "SELECT kind, COUNT(*) AS n FROM notifications"
+            "SELECT kind, COUNT(*) AS n FROM fleet_notifications"
             " WHERE resolved_at IS NULL GROUP BY kind")
     }
     sess = {
         r["state"]: r["n"] for r in conn.execute(
-            "SELECT state, COUNT(*) AS n FROM sessions GROUP BY state")
+            "SELECT state, COUNT(*) AS n FROM fleet_sessions GROUP BY state")
     }
-    total = conn.execute("SELECT COUNT(*) AS n FROM notifications").fetchone()["n"]
+    total = conn.execute("SELECT COUNT(*) AS n FROM fleet_notifications").fetchone()["n"]
     return {"open_by_kind": open_by_kind, "sessions_by_state": sess,
             "total_items": total}

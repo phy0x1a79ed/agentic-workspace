@@ -5,9 +5,10 @@
    * attachable one, plus spawn + dispose. Subsumes the attention board: the
    * needs-you set still drives desktop push.
    *
-   * Data flow (mirrors the notifications board): one list_fleet fetch is the
-   * source of truth; the notifications `feed` WS is a doorbell that debounce-
-   * refetches; a slow reconcile poll backstops (60s live / 15s down).
+   * Data flow: one list_fleet fetch is the source of truth; the agents service's
+   * `feed` WS is a doorbell that debounce-refetches; a slow reconcile poll
+   * backstops (60s live / 15s down). The agents service is the sole FleetView
+   * backend (roster + accounting + feed + spawn + attach + kill).
    */
   import { onDestroy, onMount } from 'svelte';
   import { svc, toWsUrl } from '@awm/client';
@@ -21,7 +22,7 @@
   import SpawnOverlay from './SpawnOverlay.svelte';
   import ConfigOverlay from './ConfigOverlay.svelte';
 
-  const NOTIF = svc('notifications');
+  const AGENTS = svc('agents');
   const LIVE_RECONCILE_MS = 60_000;
   const DOWN_POLL_MS = 15_000;
   const TICK_MS = 5_000;
@@ -117,7 +118,7 @@
   function connectFeed(): void {
     if (closed) return;
     try {
-      ws = new WebSocket(toWsUrl(NOTIF.url('/emit/feed')));
+      ws = new WebSocket(toWsUrl(AGENTS.url('/emit/feed')));
     } catch { scheduleReconnect(); return; }
     ws.addEventListener('open', () => { wsLive = true; wsBackoff = 1_000; refreshSoon(); });
     ws.addEventListener('message', () => refreshSoon());

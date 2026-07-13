@@ -26,12 +26,27 @@ from awm.agents._time import iso_to_ms
 from awm.agents.agent_slash import dispatch as slash_dispatch
 from awm.agents.terminal_session import terminal_session
 from awm.agents import fleet_spawn
+from awm.agents import scope_spawn
+from awm.agents import roster
+from awm.agents.fleet_config import FLEET_CONTRACT
 from awm.agents.models import (
     AgentSessionInfo,
     AgentSessionListResponse,
 )
 
 log = logging.getLogger("awm.agents.hub_adapter")
+
+# Set in main(); used by _emit_feed to push roster deltas on the ``feed`` emitter
+# the fleet page subscribes to at /svc/agents/emit/feed.
+_adapter: ServiceAdapter | None = None
+
+
+async def _emit_feed(payload: dict[str, Any]) -> None:
+    if _adapter is not None and payload.get("type"):
+        try:
+            await _adapter.emit("feed", payload)
+        except Exception:  # noqa: BLE001 — emit is best-effort signalling
+            log.debug("feed emit failed", exc_info=True)
 
 
 def _serialize_session(s: AgentSessionInfo) -> dict:
@@ -108,6 +123,180 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [
                 {"name": "tmux_session", "type": "string", "required": True},
+            ],
+        },
+        # -- Scope agent (the second, scope-based implementation). Launch an
+        # interactive agent in a real git-scope worktree (resolve-or-provision),
+        # NOT a DAG placement. Shares the tmux-spawn + roster + terminal leaves.
+        {
+            "name": "spawn_scoped",
+            "tool": "agent_launch_scoped",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "Launch an idle interactive agent (claude/opencode) in an awm "
+                "scope's worktree (projects/<project>/<scope>/), provisioning the "
+                "scope first if it doesn't exist. The agent lands with the scope's "
+                ".awm/context.md + workspace MCP. Returns the tmux session name "
+                "(the terminal's attach handle) plus {project, scope}."
+            ),
+            "params": [
+                {"name": "project", "type": "string", "required": True,
+                 "description": "awm project the scope lives under."},
+                {"name": "scope", "type": "string", "required": True,
+                 "description": "Scope (worktree) name; created if absent."},
+                {"name": "model", "type": "string", "required": False,
+                 "description": "Model id (required for claude)."},
+                {"name": "effort", "type": "string", "required": False,
+                 "description": "claude reasoning effort: low/medium/high/"
+                                "xhigh/max."},
+                {"name": "harness", "type": "string", "required": False,
+                 "description": "claude (default) | opencode."},
+                {"name": "permission", "type": "string", "required": False,
+                 "description": "default (default) | full."},
+                {"name": "context", "type": "string", "required": False,
+                 "description": "Seed .awm/context.md when provisioning a new "
+                                "scope (ignored if the scope already exists)."},
+            ],
+        },
+        {
+            "name": "list_scopes",
+            "tool": "agent_list_scopes",
+            "surfaces": ["cli", "http"],
+            "description": (
+                "List awm scopes for the spawn picker: {scopes:[{project, scope, "
+                "worktree, status, branch}]}. Passthrough to the scopes service."
+            ),
+            "params": [
+                {"name": "project", "type": "string", "required": False,
+                 "description": "Filter to one project."},
+                {"name": "query", "type": "string", "required": False,
+                 "description": "Fuzzy filter on scope name/metadata."},
+                {"name": "status", "type": "string", "required": False,
+                 "description": "Scope status filter (default: active)."},
+                {"name": "limit", "type": "integer", "required": False},
+            ],
+        },
+        # -- Fleet observe plane (absorbed from the retired notifications
+        # service). Deliberately cli+http, NOT MCP: a placed DAG agent must not
+        # be able to forge roster events or snoop the attention board. The
+        # global Claude Code hook POSTs `report` fire-and-forget.
+        {
+            "name": "report",
+            "tool": "agent_report",
+            "surfaces": ["cli", "http"],
+            "timeout": 30,
+            "description": (
+                "Ingest one normalized harness lifecycle event (from the global "
+                "Claude Code hook / OpenCode plugin): turn_end, notification, "
+                "user_prompt, error, session_start, session_end, spawned. Upserts "
+                "the fleet roster row, classifies into needs-you/idle/error "
+                "attention items, auto-resolves on user_prompt, folds token/EOOT "
+                "usage on turn_end, and pushes a delta on the feed emitter."
+            ),
+            "params": [
+                {"name": "harness", "type": "string", "required": True,
+                 "description": "claude | opencode"},
+                {"name": "event", "type": "string", "required": True,
+                 "description": "turn_end | notification | user_prompt | error"
+                                " | session_start | session_end | spawned"},
+                {"name": "session_id", "type": "string", "required": True,
+                 "description": "Harness session id (stable per session)."},
+                {"name": "cwd", "type": "string",
+                 "description": "Session working directory."},
+                {"name": "transcript_path", "type": "string",
+                 "description": "Claude transcript JSONL path (turn_end; read "
+                                "server-side with retry)."},
+                {"name": "message", "type": "string",
+                 "description": "Harness notification/error message."},
+                {"name": "last_message", "type": "string",
+                 "description": "Final assistant message inline (OpenCode)."},
+                {"name": "title", "type": "string",
+                 "description": "Optional session title."},
+                {"name": "reason", "type": "string",
+                 "description": "session_end reason."},
+                {"name": "tmux_session", "type": "string",
+                 "description": "tmux session name (best-effort, when $TMUX is "
+                                "set) — the browser terminal's attach handle."},
+            ],
+        },
+        {
+            "name": "list_fleet",
+            "tool": "agent_fleet",
+            "surfaces": ["cli", "http"],
+            "description": "The machine-wide agent roster: every recently-live "
+                           "Claude/OpenCode session with state, attach handle, "
+                           "cost (EOOT), context size, and open attention items. "
+                           "Carries fleet column config + spawn defaults.",
+            "params": [
+                {"name": "window_s", "type": "number",
+                 "description": "Liveness window override (seconds)."},
+            ],
+        },
+        {
+            "name": "list_attention",
+            "tool": "agent_attention",
+            "surfaces": ["cli", "http"],
+            "description": "Open attention items (+ the recently-resolved hour)"
+                           " with their session rows. Runs the lazy stale-sweep.",
+            "params": [
+                {"name": "all", "type": "boolean",
+                 "description": "Include resolved history (last 500)."},
+            ],
+        },
+        {
+            "name": "mark_seen",
+            "tool": "agent_mark_seen",
+            "surfaces": ["cli", "http"],
+            "description": "Stamp an attention item as seen (page pushed it).",
+            "params": [
+                {"name": "id", "type": "string", "required": True},
+            ],
+        },
+        {
+            "name": "resolve",
+            "tool": "agent_resolve",
+            "surfaces": ["cli", "http"],
+            "description": "Resolve one attention item by id, or every open item "
+                           "for a session.",
+            "params": [
+                {"name": "id", "type": "string"},
+                {"name": "session_id", "type": "string"},
+            ],
+        },
+        {
+            "name": "clear",
+            "tool": "agent_clear",
+            "surfaces": ["cli", "http"],
+            "description": "Resolve every open attention item (board reset).",
+            "params": [],
+        },
+        {
+            "name": "fleet_stats",
+            "tool": "agent_fleet_stats",
+            "surfaces": ["cli", "http"],
+            "description": "Open-item counts by kind + session counts by state.",
+            "params": [],
+        },
+        # Fleet config read/write. The agents `config_get`/`config_set` slot is
+        # already owned by the driver contract, so the fleet contract is reached
+        # by these dedicated verbs (values also ride inline in list_fleet).
+        {
+            "name": "get_fleet_config",
+            "tool": "agent_get_fleet_config",
+            "surfaces": ["cli", "http"],
+            "description": "The fleet-view config contract (columns, spawn "
+                           "defaults, EOOT rate table) + its live values.",
+            "params": [],
+        },
+        {
+            "name": "save_fleet_config",
+            "tool": "agent_save_fleet_config",
+            "surfaces": ["cli", "http"],
+            "description": "Persist a partial patch of the fleet-view config "
+                           "(merged + validated). Echoes the saved contract.",
+            "params": [
+                {"name": "values", "type": "object", "required": True,
+                 "description": "Partial FleetSettings patch to merge."},
             ],
         },
         {
@@ -460,7 +649,15 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
     ],
-    "emitters": [],
+    "emitters": [
+        {
+            "topic": "feed",
+            "description": "Live fleet roster/board deltas: one JSON frame per "
+                           "raise/update/resolve/session event. The fleet page "
+                           "treats each frame as a doorbell and re-fetches "
+                           "list_fleet.",
+        },
+    ],
     # Opt-in config contract (the default-driver settings). Its presence is the
     # marker the gateway `config` aggregator keys off; the title + schema let
     # discovery skip an extra RPC. config_get/config_set are in HANDLERS but NOT
@@ -544,17 +741,18 @@ async def _h_spawn(args: dict) -> dict:
     )
     # Register an immediate 'starting' placeholder in the fleet roster so the new
     # agent shows up the instant it's launched (keyed by tmux session name until
-    # its real hook fires and adopts the row). Soft-fail: a notifications hiccup
-    # must never fail the spawn — the row still arrives via the agent's own hook.
+    # its real hook fires and adopts the row). The roster is now in-process (this
+    # same service), so report locally instead of an RPC to the retired
+    # notifications service. Soft-fail: a roster hiccup must never fail the spawn
+    # — the row still arrives via the agent's own hook.
     try:
-        from awm.gatewayclient import call as gw_call
-        await gw_call("notifications", "report", {
+        await _handle_report({
             "harness": result["harness"],
             "event": "spawned",
             "session_id": result["tmux_session"],
             "tmux_session": result["tmux_session"],
             "cwd": result["cwd"],
-        }, timeout=5.0)
+        })
     except Exception:  # noqa: BLE001 — placeholder is best-effort
         pass
     return result
@@ -563,6 +761,125 @@ async def _h_spawn(args: dict) -> dict:
 def _h_kill_tmux(args: dict) -> dict:
     killed = fleet_spawn.kill_tmux_session(args.get("tmux_session") or "")
     return {"ok": killed, "tmux_session": args.get("tmux_session")}
+
+
+async def _h_spawn_scoped(args: dict) -> dict:
+    """Scope agent launch: resolve-or-provision the worktree, then spawn + roster.
+
+    Mirrors _h_spawn's best-effort 'starting' placeholder — the row still
+    arrives via the agent's own hook if the local report hiccups."""
+    result = await scope_spawn.spawn_scoped(
+        project=args.get("project") or "",
+        scope=args.get("scope") or "",
+        model=args.get("model"),
+        effort=args.get("effort"),
+        harness=args.get("harness") or "claude",
+        permission=args.get("permission") or "default",
+        context=args.get("context"),
+    )
+    try:
+        await _handle_report({
+            "harness": result["harness"],
+            "event": "spawned",
+            "session_id": result["tmux_session"],
+            "tmux_session": result["tmux_session"],
+            "cwd": result["cwd"],
+            "title": f"{result['project']}/{result['scope']}",
+        })
+    except Exception:  # noqa: BLE001 — placeholder is best-effort
+        pass
+    return result
+
+
+async def _h_list_scopes(args: dict) -> dict:
+    return await scope_spawn.list_scopes(
+        project=args.get("project"),
+        query=args.get("query"),
+        status=args.get("status") or "active",
+        limit=int(args.get("limit") or 100),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fleet observe-plane handlers (roster + attention board). Each opens a fresh
+# connection to the agents DB (roster funcs are sync over a bare connection).
+# ---------------------------------------------------------------------------
+
+
+async def _handle_report(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        delta = await roster.handle_report(conn, args or {})
+    finally:
+        conn.close()
+    await _emit_feed(delta)
+    return delta
+
+
+def _h_list_fleet(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        w = args.get("window_s")
+        return roster.list_fleet(
+            conn, window_s=float(w) if w is not None else None)
+    finally:
+        conn.close()
+
+
+def _h_list_attention(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return roster.list_items(conn, all=bool(args.get("all")))
+    finally:
+        conn.close()
+
+
+def _h_mark_seen(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return roster.mark_seen(conn, args["id"])
+    finally:
+        conn.close()
+
+
+async def _h_resolve(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        ids = roster.resolve_items(
+            conn, item_id=args.get("id"), session_id=args.get("session_id"),
+            by="page")
+    finally:
+        conn.close()
+    delta = {"ok": True, "type": "resolve" if ids else None, "ids": ids}
+    await _emit_feed(delta)
+    return delta
+
+
+async def _h_clear(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        out = roster.clear_all(conn)
+    finally:
+        conn.close()
+    if out.get("resolved"):
+        await _emit_feed({"type": "resolve", "ids": out["resolved"]})
+    return out
+
+
+def _h_fleet_stats(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return roster.stats(conn)
+    finally:
+        conn.close()
+
+
+def _h_get_fleet_config(args: dict) -> dict:
+    return FLEET_CONTRACT.get(args)
+
+
+def _h_save_fleet_config(args: dict) -> dict:
+    return FLEET_CONTRACT.set(args)
 
 
 def _h_tail_log(args: dict) -> dict:
@@ -798,6 +1115,19 @@ HANDLERS = {
     "kill_session": _h_kill_session,
     "spawn": _h_spawn,
     "kill_tmux": _h_kill_tmux,
+    # Scope agent (second implementation; cli+http).
+    "spawn_scoped": _h_spawn_scoped,
+    "list_scopes": _h_list_scopes,
+    # Fleet observe plane (absorbed from notifications; cli+http, not MCP).
+    "report": _handle_report,
+    "list_fleet": _h_list_fleet,
+    "list_attention": _h_list_attention,
+    "mark_seen": _h_mark_seen,
+    "resolve": _h_resolve,
+    "clear": _h_clear,
+    "fleet_stats": _h_fleet_stats,
+    "get_fleet_config": _h_get_fleet_config,
+    "save_fleet_config": _h_save_fleet_config,
     "tail_log": _h_tail_log,
     "slash_command": _h_slash_command,
     "enqueue_post": _h_enqueue_post,
@@ -872,6 +1202,7 @@ async def _on_start() -> None:
 
 
 async def main() -> None:
+    global _adapter
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -885,6 +1216,7 @@ async def main() -> None:
         },
         on_start=_on_start,
     )
+    _adapter = adapter
     # The gamebot wake fabric runs as a sibling task (the events-service
     # Scheduler pattern): never-die consumer loops over the events service's
     # schedule.tick + agent.wake emitters → spawn_for_game. Inert (backoff

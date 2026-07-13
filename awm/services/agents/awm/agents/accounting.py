@@ -1,16 +1,21 @@
-"""Question-vs-idle classification for turn-end events.
+"""Transcript accounting for the fleet roster (absorbed from notifications).
 
-A turn end ("the agent stopped working") needs attention either way, but a
-turn whose final assistant message is a question / request for input is a
-stronger signal than one that simply finished. Nothing upstream distinguishes
-the two — the Claude ``Stop`` hook and OpenCode's ``session.idle`` fire on
-every turn end — so this module classifies from the last assistant message.
+Two concerns, both pure functions over a Claude transcript JSONL:
 
-For Claude the producer hook sends ``transcript_path`` (it must NOT read the
-transcript itself: the transcript JSONL is known to lag the Stop hook — the
-flush race — and a hook that lingers stalls the turn). ``read_last_assistant``
-does the read server-side with a short retry to ride out that race. OpenCode's
-plugin passes ``last_message`` inline via its client SDK, so no file read.
+- **Last-message read** (``read_last_assistant`` / ``is_question``) — the
+  server-side read of a Stop-hook's transcript, with a short retry to ride out
+  the transcript-flush race (the JSONL lags the Stop hook). ``is_question`` is a
+  retained heuristic util; the roster's status is grounded purely in hook
+  signals and does not fork on it.
+- **Token / EOOT accounting** (``accumulate_usage`` + ``eoot``) —
+  ``accumulate_usage`` folds only the transcript bytes appended since the last
+  turn into the five rate-weighted token categories (append-only JSONL, so a
+  byte-offset high-water mark is both correct and cheap). ``eoot`` prices a
+  session's cumulative tokens as Equivalent Opus-4.8 Output Tokens from a
+  configurable rate table: ``EOOT = Σ(tokens_cat × rate_cat) ÷ divisor``.
+
+These are shared leaves: both the roster (fleet observe plane) and any future
+transcript consumer feed off them. No service/DB state here.
 """
 
 from __future__ import annotations
@@ -20,6 +25,12 @@ import json
 import os
 import re
 from typing import Optional
+
+from pydantic import BaseModel
+
+# ---------------------------------------------------------------------------
+# Last assistant message read + question heuristic
+# ---------------------------------------------------------------------------
 
 # Tool names whose use in the final message means "the agent is asking the
 # user something" regardless of the message text.
@@ -230,3 +241,63 @@ def accumulate_usage(transcript_path: Optional[str], from_offset: int) -> Option
 
     return {"add": add, "context_tokens": context_tokens,
             "model": model, "new_offset": new_offset}
+
+
+# ---------------------------------------------------------------------------
+# EOOT pricing (Equivalent Opus-4.8 Output Tokens)
+# ---------------------------------------------------------------------------
+
+
+class ModelRate(BaseModel):
+    """USD per million tokens, by category (OpenRouter basis)."""
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_write_5m: float = 0.0
+    cache_write_1h: float = 0.0
+    cache_read: float = 0.0
+
+
+# Substring-keyed: a transcript model id ("claude-opus-4-8[1m]") is matched to a
+# rate by the first key that appears in its lowercased form.
+DEFAULT_RATES: dict[str, ModelRate] = {
+    "opus":   ModelRate(input=5,  output=25, cache_write_5m=6.25,  cache_write_1h=10, cache_read=0.50),
+    "sonnet": ModelRate(input=2,  output=10, cache_write_5m=2.50,  cache_write_1h=4,  cache_read=0.20),
+    "fable":  ModelRate(input=10, output=50, cache_write_5m=12.50, cache_write_1h=20, cache_read=1.00),
+    "haiku":  ModelRate(input=1,  output=5,  cache_write_5m=1.25,  cache_write_1h=2,  cache_read=0.10),
+}
+
+
+def rate_for_model(rates: dict[str, ModelRate], model: Optional[str]) -> Optional[ModelRate]:
+    """Match a transcript model id to a rate by substring; None if unknown."""
+    if not model:
+        return None
+    m = model.lower()
+    for key, rate in rates.items():
+        if key.lower() in m:
+            return rate
+    return None
+
+
+def eoot(
+    tok_in: int, tok_out: int, tok_cw5: int, tok_cw1: int, tok_cr: int,
+    *, model: Optional[str], rates: dict[str, ModelRate], divisor: float,
+) -> Optional[float]:
+    """Equivalent Opus-output tokens for a session's cumulative usage.
+
+    ``EOOT = Σ(tokens_cat × rate_cat) ÷ divisor`` — token units cancel to
+    "Opus-4.8 output tokens" (both rates and divisor are $/MTok). Returns None
+    when the model is unknown (can't price it) so the UI can show a dash rather
+    than a misleading zero.
+    """
+    rate = rate_for_model(rates, model)
+    if rate is None or divisor <= 0:
+        return None
+    cost_num = (
+        tok_in * rate.input
+        + tok_out * rate.output
+        + tok_cw5 * rate.cache_write_5m
+        + tok_cw1 * rate.cache_write_1h
+        + tok_cr * rate.cache_read
+    )
+    return cost_num / divisor
