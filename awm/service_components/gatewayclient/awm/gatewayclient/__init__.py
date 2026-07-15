@@ -72,6 +72,7 @@ __all__ = [
     "call_peer_sync",
     "resolve_peer",
     "fetch_peer_cred",
+    "fetch_peer_cred_async",
     "subscribe",
     "subscribe_peer",
     "peer_env",
@@ -260,6 +261,27 @@ _PEER_CRED_TTL = 300.0
 _peer_addr_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _peer_cred_cache: dict[str, tuple[float, str]] = {}
 
+# Cred-fetch resilience. The fetch is a plain `ssh <alias> cat` — idempotent and
+# side-effect-free on the peer, and it never touches a lockout-sensitive host or
+# spends an MFA attempt. Retrying it is therefore FREE of lockout risk, which is
+# what makes a bounded retry safe here but not on the ssh attempt it guards.
+#
+# ConnectTimeout matters more than it looks: peer aliases inherit
+# `connecttimeout none` from ssh's defaults, so a blackholed route (WSL2 NAT
+# churn when a docker network comes up, say) hangs for the FULL subprocess
+# timeout rather than failing fast. Capping the TCP connect turns a 15 s stall
+# into a ~5 s one and lets the retries actually run inside a sane budget.
+_PEER_CRED_ATTEMPTS = 3
+_PEER_CRED_BACKOFF = 0.5      # seconds before retry 2; doubled for each retry after
+_PEER_CRED_CONNECT_TIMEOUT = 5  # ssh -o ConnectTimeout=<n>
+
+
+class _TransientCredError(PeerError):
+    """A cred fetch that failed in a way a retry could plausibly fix (ssh could
+    not reach the peer). Never raised for a definitive answer — a peer that
+    replies "no such variable" is misconfigured, not flaky, so retrying it just
+    burns the caller's fail-closed budget."""
+
 
 def _peer_ca() -> str:
     """Path to the CA that signs peer edge certs (the shared remote-audio root).
@@ -303,6 +325,39 @@ def resolve_peer(name: str, *, timeout: float = 10.0) -> dict[str, Any]:
     return entry
 
 
+def _fetch_peer_cred_once(ssh_alias: str, timeout: float) -> str:
+    """One ``ssh <alias> 'cat "$AWM_PEER_CRED"'``. Raises
+    :class:`_TransientCredError` when ssh could not reach the peer (exit 255 is
+    ssh's own "connection failed", as distinct from the remote command's status),
+    plain :class:`PeerError` when the peer answered definitively."""
+    try:
+        out = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes",
+             "-o", f"ConnectTimeout={_PEER_CRED_CONNECT_TIMEOUT}",
+             ssh_alias, 'cat "$AWM_PEER_CRED"'],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _TransientCredError(
+            f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
+    except OSError as exc:
+        # Could not even spawn ssh — a local defect, not peer flakiness.
+        raise PeerError(
+            f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
+    if out.returncode == 255:
+        raise _TransientCredError(
+            f"ssh fetch of peer cred from {ssh_alias!r} exited 255: "
+            f"{out.stderr.strip()[:200]}")
+    if out.returncode != 0:
+        raise PeerError(
+            f"ssh fetch of peer cred from {ssh_alias!r} exited {out.returncode}: "
+            f"{out.stderr.strip()[:200]}")
+    cred = out.stdout.strip()
+    if not cred:
+        raise PeerError(f"peer cred from {ssh_alias!r} is empty ($AWM_PEER_CRED unset?)")
+    return cred
+
+
 def fetch_peer_cred(ssh_alias: str, *, force: bool = False,
                     timeout: float = 15.0) -> str:
     """Fetch a peer's current credential via SSH: ``ssh <alias> 'cat "$AWM_PEER_CRED"'``.
@@ -311,28 +366,68 @@ def fetch_peer_cred(ssh_alias: str, *, force: bool = False,
     exchange to attack. Single-quoted so ``$AWM_PEER_CRED`` expands on the peer.
     Cached; pass ``force=True`` to bypass the cache (used on a 401 to pick up a
     rotated credential). Raises :class:`PeerError` on any ssh failure.
+
+    Retries a transient ssh failure up to ``_PEER_CRED_ATTEMPTS`` times with
+    exponential backoff, so a momentary route blip does not fail a caller that
+    fails CLOSED on this (the ssh service's slot arbiter refuses a connect
+    outright when it cannot reach the arbiter peer). Retrying is safe precisely
+    because this fetch spends nothing — see the constants above. A definitive
+    error (bad exit, empty cred) raises at once without retrying.
+
+    ``timeout`` is the TOTAL budget across every attempt, not per-attempt: the
+    retries have to fit inside the caller's original deadline, or adding them
+    would multiply the worst case (3 x 15 s) and leave a fail-closed caller
+    hanging far longer than before. Attempts stop once the budget is spent.
+
+    BLOCKING — this shells out to ssh. Async callers must use
+    :func:`fetch_peer_cred_async`, which runs it off the event loop.
     """
     now = time.monotonic()
     if not force:
         hit = _peer_cred_cache.get(ssh_alias)
         if hit and hit[0] > now:
             return hit[1]
-    try:
-        out = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", ssh_alias, 'cat "$AWM_PEER_CRED"'],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PeerError(f"ssh fetch of peer cred from {ssh_alias!r} failed: {exc}") from exc
-    if out.returncode != 0:
-        raise PeerError(
-            f"ssh fetch of peer cred from {ssh_alias!r} exited {out.returncode}: "
-            f"{out.stderr.strip()[:200]}")
-    cred = out.stdout.strip()
-    if not cred:
-        raise PeerError(f"peer cred from {ssh_alias!r} is empty ($AWM_PEER_CRED unset?)")
-    _peer_cred_cache[ssh_alias] = (now + _PEER_CRED_TTL, cred)
-    return cred
+    deadline = now + timeout
+    last: Exception | None = None
+    for attempt in range(_PEER_CRED_ATTEMPTS):
+        if attempt:
+            backoff = _PEER_CRED_BACKOFF * (2 ** (attempt - 1))
+            if time.monotonic() + backoff >= deadline:
+                break
+            time.sleep(backoff)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            cred = _fetch_peer_cred_once(ssh_alias, remaining)
+        except _TransientCredError as exc:
+            last = exc
+            log.warning("peer cred fetch from %r failed (attempt %d/%d): %s",
+                        ssh_alias, attempt + 1, _PEER_CRED_ATTEMPTS, exc)
+            continue
+        # Cache against the clock AFTER the ssh round-trip: `now` predates the
+        # retries, and honouring it would shorten the TTL by the time we spent
+        # failing (a slow fetch would cache a cred that expires early).
+        _peer_cred_cache[ssh_alias] = (time.monotonic() + _PEER_CRED_TTL, cred)
+        return cred
+    raise PeerError(
+        f"ssh fetch of peer cred from {ssh_alias!r} failed within {timeout:.0f}s: "
+        f"{last}") from last
+
+
+async def fetch_peer_cred_async(ssh_alias: str, *, force: bool = False,
+                                timeout: float = 15.0) -> str:
+    """:func:`fetch_peer_cred` off the event loop.
+
+    The sync fetch shells out to ssh and can block for seconds (a blackholed
+    route burns ConnectTimeout, then the retries back off). Calling it directly
+    from a coroutine stalls the WHOLE service — for the ssh service that means
+    reconcile, status, and every other host's connect freeze behind one slow
+    peer. Resolve the module global at call time so tests that monkeypatch
+    ``fetch_peer_cred`` still take effect.
+    """
+    return await asyncio.to_thread(fetch_peer_cred, ssh_alias,
+                                   force=force, timeout=timeout)
 
 
 def _peer_headers(bearer: str, as_: str | None) -> dict[str, str]:
@@ -366,7 +461,7 @@ async def call_peer(
     ca = _peer_ca()
     body = json.dumps(args or {})
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
             resp = await cli.post(url, content=body,
                                   headers=_peer_headers(bearer, as_))
@@ -441,7 +536,7 @@ async def subscribe_peer(
 
     conn = None
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         headers = [("Authorization", f"Bearer {bearer}")]
         if as_ is not None:
             headers.append(("X-Awm-As", as_))
@@ -696,7 +791,7 @@ async def acquire_lease_peer(
 
     ws = None
     for attempt in (0, 1):
-        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        bearer = await fetch_peer_cred_async(ssh_alias, force=(attempt == 1))
         async with httpx.AsyncClient(timeout=timeout, verify=ca) as cli:
             resp = await cli.post(f"{edge}/svc/{service}/session/{kind}",
                                   content=body, headers=_peer_headers(bearer, as_))
