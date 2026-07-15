@@ -85,6 +85,48 @@ _NOTABLE_STDERR = (
     "Connection timed out",
     "Could not resolve hostname",
     "Operation timed out",
+    "kex_exchange_identification",
+    "Exceeded MaxStartups",
+)
+
+# --- pre-auth vs auth failure classification -------------------------------
+#
+# The breaker exists for ONE reason: bound the MFA attempts spent toward provider
+# lockout (fir re-locks at 10 failed Duo). A connect that dies BEFORE the auth
+# phase spends nothing, so holding the host for it — and making the operator run
+# `/approve` to clear it — is a false positive. Seen live 2026-07-15: both fir
+# login nodes answered `Exceeded MaxStartups` (sshd's pre-auth connection cap),
+# ssh died at `kex_exchange_identification`, zero Duo pushes fired, and the
+# arbiter still locked fir fleet-wide.
+#
+# Classification is deliberately ASYMMETRIC, because the two mistakes are not
+# equally bad:
+#   * calling an AUTH failure "pre-auth"  -> we keep retrying and burn the MFA
+#     budget toward a real lockout. CATASTROPHIC.
+#   * calling a PRE-AUTH failure "auth"   -> a spurious hold + an /approve. Mild;
+#     it is exactly today's behaviour.
+# So: only these unambiguous markers count as pre-auth, and ANY auth-phase marker
+# (below) VETOES the classification. Silence is not evidence — an empty stderr is
+# treated as an auth failure, i.e. we hold.
+_PREAUTH_STDERR = (
+    "kex_exchange_identification",   # died during key exchange — before auth
+    "Exceeded MaxStartups",          # sshd's pre-auth connection cap
+    "Connection refused",            # no TCP listener
+    "Could not resolve hostname",    # never left this host
+    "No route to host",
+    "Network is unreachable",
+)
+
+# Any of these means the auth phase was reached, so an MFA attempt may have been
+# spent. Vetoes _PREAUTH_STDERR even if a pre-auth marker also appears (e.g. a
+# retry inside one ssh invocation that failed auth, then lost the connection).
+_AUTH_PHASE_STDERR = (
+    "Permission denied",
+    "Too many authentication failures",
+    "Authentication failed",
+    "locked",
+    "MFA",
+    "Duo",
 )
 
 
@@ -552,11 +594,25 @@ class SSHService:
         reason = ""
         try:
             result = await self._do_connect_attempt(cfg, gated=True)
-            ok = result.get("status") == "connected"
+            ok = self._verdict_ok(result)
             reason = result.pop("_lock_reason", "")
             return result
         finally:
             await self._slot_release(cfg.host, token, ok=ok, reason=reason)
+
+    @staticmethod
+    def _verdict_ok(result: dict) -> bool:
+        """The lease verdict answers "was the lockout budget spent?", NOT "did the
+        connect succeed" — the slot exists solely to bound MFA attempts fleet-wide.
+
+        So a connect that died before the auth phase reports ``ok``: it spent
+        nothing, the account is not at risk, and the slot should simply be freed
+        rather than held (which would cost the operator an /approve for a failure
+        that was never their account's fault). Popping ``_preauth`` here keeps it
+        off the dict the agent sees.
+        """
+        preauth = result.pop("_preauth", False)
+        return result.get("status") == "connected" or bool(preauth)
 
     async def _connect_via_arbiter_peer(self, cfg: HostConfig,
                                         slot_peer: str) -> dict:
@@ -581,7 +637,7 @@ class SSHService:
                     cfg, "unavailable",
                     error=f"{cfg.host} is not available for automated access right now")
             result = await self._do_connect_attempt(cfg, gated=True)
-            ok = result.get("status") == "connected"
+            ok = self._verdict_ok(result)
             reason = result.pop("_lock_reason", "")
             await lease.verdict(ok=ok, reason=reason)
             return result
@@ -695,7 +751,11 @@ class SSHService:
         When ``gated`` the slot arbiter owns the breaker: a failure returns an
         error dict WITHOUT tripping the local breaker or alerting, stashing the
         reason under ``_lock_reason`` so the caller can pass it up as the lease
-        verdict — the arbiter records LOCKED and pages the operator exactly once."""
+        verdict — the arbiter records LOCKED and pages the operator exactly once.
+
+        A failure that died BEFORE the auth phase spent no MFA attempt, so it does
+        not trip the breaker at all (and sets ``_preauth`` for the gated caller to
+        release the slot without a hold). See :meth:`_is_preauth_failure`."""
         marker = self._deviation_marker(cfg)
         self._safe_unlink(marker)
         try:
@@ -726,15 +786,30 @@ class SSHService:
         except Exception as e:  # noqa: BLE001
             log.error("connect to %s failed: %s", cfg.host, e)
             reason = self._failure_reason(cfg, marker, str(e))
-        # Neutral to the caller — the detailed reason goes to the lock + the
-        # operator Discord alert, not to the agent.
-        result = self._status_dict(cfg, "error", error=f"connect to {cfg.host} failed")
+        preauth = self._is_preauth_failure(cfg, marker)
+        if preauth:
+            # Nothing was spent, so there is nothing to protect: no hold, no page.
+            # Tell the caller it is safe to retry — unlike a held host, this needs
+            # no /approve, and the host is simply refusing connections right now.
+            log.warning("pre-auth failure on %s (no MFA attempt spent, breaker "
+                        "NOT tripped): %s", cfg.host, reason)
+            result = self._status_dict(
+                cfg, "error",
+                error=(f"{cfg.host} refused the connection before authentication "
+                       f"— no MFA attempt was spent, safe to retry later"))
+        else:
+            # Neutral to the caller — the detailed reason goes to the lock + the
+            # operator Discord alert, not to the agent.
+            result = self._status_dict(
+                cfg, "error", error=f"connect to {cfg.host} failed")
         if not gated:
-            await self._trip_breaker(cfg, reason)
+            if not preauth:
+                await self._trip_breaker(cfg, reason)
         else:
             # The slot arbiter owns LOCKED + the alert (via the lease verdict);
             # surface the reason so the caller can hand it up.
             result["_lock_reason"] = reason
+            result["_preauth"] = preauth
         return result
 
     async def _attempt_master(self, cfg: HostConfig, marker: str) -> None:
@@ -942,6 +1017,29 @@ class SSHService:
 
     def _clear_lock(self, cfg: HostConfig) -> None:
         self._safe_unlink(lock_path(cfg))
+
+    def _is_preauth_failure(self, cfg: HostConfig, marker: str) -> bool:
+        """Did this attempt die before the auth phase — i.e. spend no MFA?
+
+        Reads the captured ssh stderr rather than the folded reason string so the
+        askpass-deviation note and our own timeout text can't be mistaken for ssh
+        output. Conservative by construction (see _PREAUTH_STDERR): an auth-phase
+        marker vetoes, an askpass deviation vetoes (the Duo prompt was reached, so
+        a push may have fired), and no evidence at all -> False (hold the host).
+        """
+        if os.path.exists(marker):
+            return False  # reached the Duo prompt — assume an attempt was spent
+        try:
+            with open(stderr_path(cfg), "r", encoding="utf-8",
+                      errors="replace") as f:
+                blob = f.read()
+        except FileNotFoundError:
+            return False  # no evidence — hold, don't guess
+        if not blob.strip():
+            return False
+        if any(s.lower() in blob.lower() for s in _AUTH_PHASE_STDERR):
+            return False  # auth was reached — the veto
+        return any(s.lower() in blob.lower() for s in _PREAUTH_STDERR)
 
     def _failure_reason(self, cfg: HostConfig, marker: str, base: str) -> str:
         parts = [base]
