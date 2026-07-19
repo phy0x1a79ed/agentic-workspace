@@ -25,16 +25,44 @@ from awm.gateway.hub import supervisor
 
 
 @pytest.fixture(autouse=True)
-def _isolate_state(awm_workspace):
+def _isolate_state(awm_workspace, tmp_path, monkeypatch):
     """Each test starts with: clean rpc channel table, clean registry,
     AWM_DIR pointing at the per-test workspace (so the journal file lands
-    in tmp_path), and a tiny reconnect window."""
+    in tmp_path), and a tiny reconnect window.
+
+    ``AWM_SERVICES_DIR`` / ``AWM_PAGES_DIR`` are pinned at empty temp dirs so
+    the journal-based tests see *no* discoverable service (their identity comes
+    purely from the journal — the pre-L2 fallback path). Tests that exercise the
+    L2 discovery-wins behaviour set ``AWM_SERVICES_DIR`` to a populated tree of
+    their own (a later ``setenv`` wins)."""
     from awm.gateway.hub import registry as reg_mod
+    (tmp_path / "_empty_services").mkdir()
+    (tmp_path / "_empty_pages").mkdir()
+    monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path / "_empty_services"))
+    monkeypatch.setenv("AWM_PAGES_DIR", str(tmp_path / "_empty_pages"))
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
     yield
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
+
+
+def _make_service_folder(root, name, cwd_marker=True):
+    """Create a discoverable service folder (``<root>/<name>/run.sh``)."""
+    folder = root / name
+    folder.mkdir(parents=True)
+    (folder / "run.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    return folder
+
+
+def _make_built_page(root, name, prefix=None):
+    """Create a discoverable, servable page bundle (``<root>/<name>/dist/``)."""
+    pkg = root / name
+    (pkg / "dist").mkdir(parents=True)
+    (pkg / "dist" / "index.html").write_text("<html>built</html>", encoding="utf-8")
+    if prefix is not None:
+        (pkg / "prefix.txt").write_text(prefix, encoding="utf-8")
+    return pkg
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +299,161 @@ class TestReconcileRespawn:
         kill.assert_not_called()
         spawn.assert_called_once()
         assert spawn.call_args.args[0] == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# L2: filesystem-derived identity — discovery wins over the journal
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIdentity:
+    def test_discovery_overrides_journal_cwd_and_cmd(self, tmp_path, monkeypatch):
+        """A journaled service whose entry names a *wrong* cwd (the prod
+        feat-federation contamination) respawns from the DISCOVERED cwd/cmd."""
+        svc_root = tmp_path / "svcs"
+        folder = _make_service_folder(svc_root, "tts")
+        monkeypatch.setenv("AWM_SERVICES_DIR", str(svc_root))
+
+        entry = {
+            "service_id": "svc-x",
+            "start_cmd": ["stale.sh", "--wrong"],
+            "cwd": "/some/feat-federation/worktree/awm/services/tts",
+        }
+        cmd, cwd = supervisor._resolve_identity("tts", entry)
+        assert cmd == ["bash", "run.sh"]
+        assert cwd == str(folder)
+
+    def test_non_discoverable_falls_back_to_journal(self, tmp_path, monkeypatch):
+        """An external (over-the-wire) registration with no folder here keeps
+        its journaled identity."""
+        monkeypatch.setenv("AWM_SERVICES_DIR", str(tmp_path / "empty"))
+        (tmp_path / "empty").mkdir()
+        entry = {"start_cmd": ["remote.sh"], "cwd": "/remote/cwd"}
+        cmd, cwd = supervisor._resolve_identity("external", entry)
+        assert cmd == ["remote.sh"]
+        assert cwd == "/remote/cwd"
+
+    def test_discoverable_empty_start_cmd_still_respawns(self, tmp_path, monkeypatch):
+        """The silent-death bug: a discoverable service whose journal
+        ``start_cmd`` was clobbered to empty still respawns (from discovery),
+        instead of being skipped."""
+        monkeypatch.setattr(supervisor, "_RECONNECT_WINDOW_S", 0.2)
+        svc_root = tmp_path / "svcs"
+        folder = _make_service_folder(svc_root, "stt")
+        monkeypatch.setenv("AWM_SERVICES_DIR", str(svc_root))
+
+        spawned = []
+        monkeypatch.setattr(supervisor, "spawn_service",
+                            lambda name, cmd, cwd, env: spawned.append((name, cmd, cwd)) or 4242)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+
+        supervisor.update_service_journal_entry("stt", {
+            "service_id": "svc-stt",
+            "prefix": "/svc/stt",
+            "last_pid": 111,
+            # start_cmd clobbered to empty by a bad self-register.
+            "start_cmd": [],
+            "cwd": "",
+        })
+
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.reconcile_journaled_services())
+
+        assert len(spawned) == 1
+        name, cmd, cwd = spawned[0]
+        assert name == "stt"
+        assert cmd == ["bash", "run.sh"]
+        assert cwd == str(folder)
+
+    def test_respawn_rewrites_journal_to_discovered_identity(self, tmp_path, monkeypatch):
+        """Self-heal: after respawn, the journal entry is corrected to the
+        discovered cwd/start_cmd — retiring the manual ``rm services.json``."""
+        monkeypatch.setattr(supervisor, "_RECONNECT_WINDOW_S", 0.2)
+        svc_root = tmp_path / "svcs"
+        folder = _make_service_folder(svc_root, "agents")
+        monkeypatch.setenv("AWM_SERVICES_DIR", str(svc_root))
+        monkeypatch.setattr(supervisor, "spawn_service",
+                            lambda name, cmd, cwd, env: 5151)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+
+        supervisor.update_service_journal_entry("agents", {
+            "service_id": "svc-a",
+            "prefix": "/svc/agents",
+            "last_pid": 222,
+            "start_cmd": ["stale.sh"],
+            "cwd": "/wrong/tree",
+        })
+
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.reconcile_journaled_services())
+
+        state = supervisor.load_service_journal()
+        assert state["agents"]["last_pid"] == 5151
+        assert state["agents"]["start_cmd"] == ["bash", "run.sh"]
+        assert state["agents"]["cwd"] == str(folder)
+
+
+# ---------------------------------------------------------------------------
+# L1: pages discovered + re-derived on every boot
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapPages:
+    def test_pages_registered_from_filesystem(self, tmp_path, monkeypatch):
+        pages_root = tmp_path / "pages"
+        _make_built_page(pages_root, "fleet")
+        _make_built_page(pages_root, "notes", prefix="/ui/notes")
+        _make_built_page(pages_root, "sourceonly")  # has dist → servable
+        # A page with no dist is skipped.
+        (pages_root / "unbuilt").mkdir()
+        monkeypatch.setenv("AWM_PAGES_DIR", str(pages_root))
+
+        from awm.gateway.hub.registry import get_registry
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.bootstrap_discovered_pages())
+        reg = get_registry()
+        assert reg.longest_match("/ui/fleet") is not None
+        assert reg.longest_match("/ui/notes") is not None
+        assert reg.get_by_name("page", "unbuilt") is None
+
+    def test_pages_survive_simulated_restart(self, tmp_path, monkeypatch):
+        """The core L1 guarantee: a page base is in-RAM only, but a *second*
+        boot (fresh registry) re-derives it from disk — so /ui/<name> survives
+        a gateway restart with no manual re-register."""
+        pages_root = tmp_path / "pages"
+        _make_built_page(pages_root, "fleet")
+        monkeypatch.setenv("AWM_PAGES_DIR", str(pages_root))
+
+        from awm.gateway.hub import registry as reg_mod
+
+        # Boot 1
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.bootstrap_discovered_pages())
+        assert reg_mod.get_registry().longest_match("/ui/fleet") is not None
+
+        # Simulate a restart: the in-RAM registry is wiped.
+        reg_mod._singleton = reg_mod.Registry()
+        assert reg_mod.get_registry().longest_match("/ui/fleet") is None
+
+        # Boot 2 — the page comes back on its own, no HTTP POST.
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.bootstrap_discovered_pages())
+        assert reg_mod.get_registry().longest_match("/ui/fleet") is not None
+
+    def test_prefix_conflict_skips_not_aborts(self, tmp_path, monkeypatch):
+        """A page whose prefix is already owned by a different name is logged
+        and skipped; the rest of the loop still registers."""
+        pages_root = tmp_path / "pages"
+        _make_built_page(pages_root, "aaa", prefix="/ui/shared")
+        _make_built_page(pages_root, "bbb", prefix="/ui/shared")  # collides
+        _make_built_page(pages_root, "ccc")  # independent
+        monkeypatch.setenv("AWM_PAGES_DIR", str(pages_root))
+
+        from awm.gateway.hub.registry import get_registry
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.bootstrap_discovered_pages())
+        reg = get_registry()
+        # First (sorted) wins the shared prefix; the collider is skipped.
+        assert reg.longest_match("/ui/shared").name == "aaa"
+        # The independent page still registered despite the collision.
+        assert reg.longest_match("/ui/ccc") is not None
