@@ -35,6 +35,7 @@ import logging
 import os
 import pty
 import struct
+import subprocess
 import termios
 from typing import Optional, Tuple
 
@@ -50,12 +51,37 @@ _DEFAULT_ROWS = 32
 _READ_CHUNK = 65536
 
 
+def _tmux_has_session(name: str) -> bool:
+    """True if a tmux session called ``name`` currently exists."""
+    try:
+        return subprocess.run(
+            ["tmux", "has-session", "-t", f"={name}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=3,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _resolve_tmux_session(init: dict) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve the live agent for ``init`` → its tmux session name.
+    """Resolve the terminal target for ``init`` → a tmux session name.
+
+    Three identity forms, in priority order:
+
+    - ``{tmux_session}`` — an **ad-hoc** attach by name (any machine-wide tmux
+      session the fleet roster surfaced, not necessarily an agents-registry
+      agent). Verified to exist; registry-agnostic.
+    - ``{session_id}`` / ``{scope}`` — resolve a live *registry* agent and use
+      its recorded ``tmux_session``.
 
     Returns ``(tmux_session, None)`` on success or ``(None, error_message)``
-    when the identity is missing, no live session exists, or the agent is not
-    a claude agent (so it has no tmux pane to attach — e.g. opencode)."""
+    when the identity is missing, the session/agent doesn't exist, or the agent
+    is not a claude agent (so it has no tmux pane to attach — e.g. opencode)."""
+    name = init.get("tmux_session")
+    if name:
+        if not _tmux_has_session(str(name)):
+            return None, f"no tmux session named {name!r}"
+        return str(name), None
     sid = init.get("session_id")
     if sid is not None:
         try:
