@@ -229,6 +229,28 @@ def spawn_and_journal(name: str, start_cmd: list[str], cwd: str,
     return new_pid
 
 
+def _resolve_identity(name: str, entry: dict) -> tuple[list[str], str]:
+    """The ``(start_cmd, cwd)`` to (re)launch a journaled service with.
+
+    **Filesystem discovery wins.** If ``name`` is a real service folder under
+    *this* gateway's ``services_root()``, its discovered ``start_cmd`` / ``cwd``
+    are authoritative — a stale or clobbered journal (wrong worktree from a
+    cross-tree contamination, or an empty ``start_cmd`` from a bad self-register)
+    can never send the service to the wrong tree or silently strand it. Only a
+    *non-discoverable* registration — an external service that registered over
+    the wire with no folder here — falls back to the journal entry.
+
+    This mirrors the existing precedent that already re-derives ``hub_url`` from
+    live config instead of trusting the journal field (see
+    ``_respawn_from_journal``).
+    """
+    from awm.gateway.hub import discovery as _discovery
+    spec = _discovery.discover_service(name)
+    if spec is not None:
+        return list(spec.start_cmd), spec.cwd
+    return list(entry.get("start_cmd") or []), entry.get("cwd") or ""
+
+
 async def _reregister_record(name: str, entry: dict):
     """Re-create the registry record for a journaled service so its control-WS
     reconnect (carrying the journaled ``service_id``) is accepted.
@@ -238,17 +260,22 @@ async def _reregister_record(name: str, entry: dict):
     ``registry.register_service`` directly, bypassing the endpoint's
     duplicate-instance guard (T3) — that guard is for *new* instances, not for
     rehydrating a record we already own.
+
+    Identity (``start_cmd`` / ``cwd``) comes from ``_resolve_identity`` so the
+    record carries the *discovered* values for a discoverable service, not
+    whatever a contaminated journal recorded.
     """
     from awm.gateway.hub.registry import get_registry
     registry = get_registry()
     sid = entry.get("service_id")
     prefix = entry.get("prefix") or f"/svc/{name}"
+    start_cmd, cwd = _resolve_identity(name, entry)
     try:
         rec = await registry.register_service(
             name, prefix,
             pid=entry.get("last_pid"),
-            start_cmd=list(entry.get("start_cmd") or []),
-            cwd=entry.get("cwd") or "",
+            start_cmd=list(start_cmd),
+            cwd=cwd,
         )
         # Restore the journaled service_id so the service hits the same control
         # URL it had before the restart. registry.get_by_id reads service_id off
@@ -270,13 +297,22 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
     The caller is responsible for the higher-level gating (reconnected? enabled?
     still journaled?); this only does the kill-and-spawn, including the
     no-``start_cmd`` guard.
+
+    Identity is resolved through ``_resolve_identity`` (discovery wins), so a
+    discoverable service always respawns from *this* tree even if the journal
+    names a wrong ``cwd`` or an empty ``start_cmd``; the resolved identity is
+    written back into the journal, so a contaminated entry self-corrects on the
+    first respawn (this is what retires the manual ``rm services.json``). Only a
+    non-discoverable external registration can still hit the no-``start_cmd``
+    guard.
     """
     sid = entry.get("service_id")
     last_pid = entry.get("last_pid")
-    start_cmd = entry.get("start_cmd") or []
+    start_cmd, cwd = _resolve_identity(name, entry)
     if not start_cmd:
         log.warning(
-            "service %s did not reconnect and has no start_cmd; leaving", name)
+            "service %s did not reconnect and has no start_cmd "
+            "(not discoverable); leaving", name)
         return
     if last_pid:
         log.info("service %s silent; killing stale pid=%d", name, last_pid)
@@ -292,14 +328,20 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
         new_pid = spawn_service(
             name,
             start_cmd,
-            entry.get("cwd") or "",
+            cwd,
             {
                 "AWM_HUB_URL": hub_url,
                 "AWM_SERVICE_NAME": name,
                 "AWM_SERVICE_ID": sid or "",
             },
         )
-        update_service_journal_entry(name, {"last_pid": new_pid})
+        # Write back the resolved identity (not just the PID) so a stale/wrong
+        # journal entry self-heals to the tree the gateway actually launched.
+        update_service_journal_entry(name, {
+            "last_pid": new_pid,
+            "start_cmd": list(start_cmd),
+            "cwd": cwd,
+        })
     except (OSError, ValueError) as exc:
         log.error("respawn failed for service %s: %s", name, exc)
 
@@ -490,3 +532,32 @@ async def bootstrap_discovered_services() -> None:
             log.error("bootstrap spawn failed for %s: %s", spec.name, exc)
             continue
         log.info("bootstrap: spawned %s pid=%d", spec.name, new_pid)
+
+
+async def bootstrap_discovered_pages() -> None:
+    """Boot-time page bootstrap: register every discovered page bundle
+    (``awm/pages/<name>`` with a built ``dist/``) as a ``/ui/<name>`` base.
+
+    Pages are static and hold no control WS, so there is nothing to journal or
+    reconcile — a page base is pure in-RAM routing state that a restart drops.
+    Unlike a service, a page can never re-register itself, so re-deriving it
+    from the filesystem on every boot is the *only* thing that keeps ``/ui/...``
+    pages alive across a ``systemctl restart``.
+
+    Idempotent: ``register_page`` replaces a same-name base in place, so a
+    re-run is harmless. A prefix already owned by a *different* name is logged
+    and skipped — one bad page never aborts the loop.
+    """
+    from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import PrefixConflict, get_registry
+
+    registry = get_registry()
+    for spec in discovery.discover_pages():
+        try:
+            await registry.register_page(spec.name, spec.prefix, spec.dist_dir)
+        except PrefixConflict as exc:
+            log.warning("bootstrap page %s: %s; skipping", spec.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            log.error("bootstrap page %s failed: %s", spec.name, exc)
+        else:
+            log.info("bootstrap: page %s → %s", spec.name, spec.prefix)

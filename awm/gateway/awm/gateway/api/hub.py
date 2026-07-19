@@ -47,7 +47,7 @@ from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.gateway.hub.supervisor import update_service_journal_entry
+from awm.gateway.hub.supervisor import _resolve_identity, update_service_journal_entry
 
 log = logging.getLogger("awm.api.hub")
 
@@ -298,12 +298,21 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
     # Overlays are ephemeral — they are never journaled (reconcile must not
     # respawn them; they belong to a live `awm dev shadow` process).
     if not rec.is_overlay:
+        # Journal identity that matches what a respawn will actually use: for a
+        # discoverable service, discovery is authoritative, so a self-register
+        # from a wrong worktree can never re-contaminate the journal's cwd. Only
+        # a non-discoverable external registration records its self-reported
+        # start_cmd/cwd (defense-in-depth complementing _resolve_identity's
+        # respawn-side win).
+        j_start, j_cwd = _resolve_identity(rec.name, {
+            "start_cmd": list(rec.start_cmd), "cwd": rec.cwd,
+        })
         update_service_journal_entry(rec.name, {
             "service_id": rec.service_id,
             "prefix": rec.prefix,
             "last_pid": rec.backend_pid,
-            "start_cmd": list(rec.start_cmd),
-            "cwd": rec.cwd,
+            "start_cmd": list(j_start),
+            "cwd": j_cwd,
             "last_register": _now_iso(),
             "control_ws_open": False,
         })
