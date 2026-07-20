@@ -127,18 +127,54 @@ def sink_names() -> list[str]:
     return [ln.split("\t")[1] for ln in r.stdout.splitlines() if "\t" in ln]
 
 
-def systemd_managed() -> bool:
-    """True when PulseAudio is under systemd (unit or socket activation).
+_UNITS = ("pulseaudio.service", "pulseaudio.socket")
 
-    Matters because a systemd-managed daemon must be restarted through
-    ``systemctl``: a bare ``pulseaudio -k`` would just be socket-reactivated
-    with the old config still loaded.
+
+def _unit_prop(unit: str, prop: str) -> str:
+    """One property of a user unit, or "" if systemd can't be reached."""
+    r = _run(["systemctl", "--user", "show", "-p", prop, "--value", unit])
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def systemd_managed() -> bool:
+    """True when this host has a systemd user unit for PulseAudio.
+
+    Deliberately asks whether the unit *exists* (``LoadState=loaded``), not
+    whether it is currently up. It decides **how** to start the daemon, and a
+    host whose unit is merely stopped — or failed — still needs the
+    ``systemctl`` path: a bare ``pulseaudio --start`` there would race the
+    socket unit for ``$XDG_RUNTIME_DIR/pulse/native`` and lose.
     """
-    for unit in ("pulseaudio.service", "pulseaudio.socket"):
-        r = _run(["systemctl", "--user", "is-active", unit])
-        if r.stdout.strip() in ("active", "activating"):
-            return True
-    return False
+    return _unit_prop("pulseaudio.service", "LoadState") == "loaded"
+
+
+def unit_state() -> str:
+    """Current ActiveState of ``pulseaudio.service`` (``""`` if not systemd)."""
+    return _unit_prop("pulseaudio.service", "ActiveState")
+
+
+def _units_failed() -> bool:
+    return any(_unit_prop(u, "ActiveState") == "failed" for u in _UNITS)
+
+
+def _clear_failed_units() -> None:
+    """Recover PulseAudio's units from ``failed``.
+
+    systemd gives up after a few rapid restarts ("start request repeated too
+    quickly") and parks both units in ``failed``, where socket activation no
+    longer fires — so nothing brings PulseAudio back and every recorder on the
+    host reads a dead source. Observed for real: a stale standalone daemon
+    holding the socket makes the unit-launched one exit 1 in a loop until it
+    trips the rate limit.
+
+    Kill any standalone daemon squatting the socket first — otherwise the
+    reset just re-enters the same loop — then clear the failure so
+    ``systemctl start`` is honoured again.
+    """
+    log.warning("pulseaudio units are failed; clearing and restarting")
+    _run(["pkill", "-x", "pulseaudio"])
+    time.sleep(0.5)
+    _run(["systemctl", "--user", "reset-failed", *_UNITS])
 
 
 # -- layer 1 + 2: cooperative durability via PulseAudio's own config --------
@@ -266,6 +302,8 @@ def start_pulse() -> bool:
         return True
     log.info("pulseaudio unreachable; starting it")
     if systemd_managed():
+        if _units_failed():
+            _clear_failed_units()
         _run(["systemctl", "--user", "start", "pulseaudio.service"])
     else:
         _run(["pulseaudio", "--start", "--exit-idle-time=-1"])
@@ -282,6 +320,8 @@ def restart_pulse() -> bool:
     """
     log.info("restarting pulseaudio to apply new config")
     if systemd_managed():
+        if _units_failed():
+            _clear_failed_units()
         _run(["systemctl", "--user", "restart", "pulseaudio.service"])
     else:
         _run(["pulseaudio", "-k"])
@@ -384,6 +424,7 @@ def status(sink: str = DEFAULT_SINK) -> dict:
         "sink": sink,
         "pulseaudio_reachable": reachable,
         "systemd_managed": systemd_managed(),
+        "pulseaudio_unit_state": unit_state() or None,
         "sink_present": sink in names,
         "default_source": src,
         "default_source_ok": src == f"{sink}.monitor",
