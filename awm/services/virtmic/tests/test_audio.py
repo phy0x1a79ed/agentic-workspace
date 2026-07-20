@@ -33,6 +33,10 @@ class FakePulse:
         self.calls: list[list[str]] = []
         #: set by the test to make the daemon come back on start/restart
         self.starts_ok = True
+        #: systemd's ActiveState for the units. When "failed", `systemctl
+        #: start` is refused until something calls `reset-failed` — the real
+        #: state a rapid restart loop lands in.
+        self.unit_state = "active"
 
     def _cp(self, rc=0, out=""):
         return subprocess.CompletedProcess([], returncode=rc, stdout=out, stderr="")
@@ -42,16 +46,33 @@ class FakePulse:
         prog = cmd[0]
 
         if prog == "systemctl":
-            unit = cmd[-1]
-            if cmd[2] == "is-active":
-                active = self.systemd and unit == "pulseaudio.socket"
-                return self._cp(0 if active else 3, "active\n" if active else "inactive\n")
-            if cmd[2] in ("start", "restart"):
+            if not self.systemd:
+                return self._cp(1, "")
+            verb = cmd[2]
+            if verb == "show":
+                prop = cmd[4]
+                if prop == "LoadState":
+                    return self._cp(0, "loaded\n")
+                if prop == "ActiveState":
+                    return self._cp(0, self.unit_state + "\n")
+                return self._cp(0, "\n")
+            if verb == "reset-failed":
+                self.unit_state = "inactive"
+                return self._cp(0)
+            if verb in ("start", "restart"):
+                # systemd refuses to start a unit parked in `failed`.
+                if self.unit_state == "failed":
+                    return self._cp(1, "", )
                 self.running = self.starts_ok
+                self.unit_state = "active" if self.running else "failed"
                 # A real restart reloads default.pa, which rebuilds the sink.
                 if self.running and "virtmic" not in self.sinks:
                     self.sinks.append("virtmic")
                 return self._cp(0)
+            return self._cp(0)
+
+        if prog == "pkill":
+            self.running = False
             return self._cp(0)
 
         if prog == "pulseaudio":
@@ -275,6 +296,70 @@ def test_heal_timestamp_only_advances_on_an_actual_repair(home, pulse):
     audio.ensure_once("virtmic")               # real repair
     assert audio.state()["last_heal_ts"] >= healed_at
     assert audio.state()["heals"] == 2
+
+
+@pytest.mark.smoke
+def test_recovers_from_failed_systemd_units(home, pulse):
+    """Regression, hit for real during the deploy verification.
+
+    A stale standalone daemon squatting the socket makes the unit-launched
+    PulseAudio exit 1 in a loop until systemd gives up ("start request
+    repeated too quickly") and parks both units in `failed`. Socket activation
+    then stops firing, so nothing brings PulseAudio back and every recorder on
+    the host reads a dead source — and the first version of this service sat
+    there reporting `pulseaudio unreachable` forever, needing a human to run
+    `systemctl --user reset-failed`. It must clear that itself.
+    """
+    audio.ensure_once("virtmic")
+
+    pulse.running = False
+    pulse.unit_state = "failed"
+    pulse.sinks = []
+
+    res = audio.ensure_once("virtmic")
+
+    assert any(c[:3] == ["systemctl", "--user", "reset-failed"] for c in pulse.calls), \
+        "must clear the failed unit rather than retrying into the same wall"
+    assert res["sink_present"] is True
+    assert res["default_source"] == "virtmic.monitor"
+
+
+@pytest.mark.smoke
+def test_stale_standalone_daemon_is_killed_before_reset(home, pulse):
+    """The reset alone is not enough — if a standalone daemon still holds
+    $XDG_RUNTIME_DIR/pulse/native the unit just fails again. Kill it first."""
+    audio.ensure_once("virtmic")
+    pulse.running = False
+    pulse.unit_state = "failed"
+
+    audio.ensure_once("virtmic")
+
+    kill = next(i for i, c in enumerate(pulse.calls) if c[0] == "pkill")
+    reset = next(i for i, c in enumerate(pulse.calls) if c[:3] == ["systemctl", "--user", "reset-failed"])
+    assert kill < reset, "must kill the socket squatter before clearing the failure"
+
+
+@pytest.mark.smoke
+def test_systemd_managed_is_about_the_unit_existing_not_being_up(home, pulse):
+    """A stopped or failed unit still means systemd owns PulseAudio — taking
+    the bare `pulseaudio --start` path there races the socket unit and loses."""
+    pulse.unit_state = "inactive"
+    assert audio.systemd_managed() is True
+    pulse.unit_state = "failed"
+    assert audio.systemd_managed() is True
+
+    pulse.systemd = False
+    assert audio.systemd_managed() is False
+
+
+@pytest.mark.smoke
+def test_non_systemd_host_uses_the_bare_daemon(home, pulse):
+    pulse.systemd = False
+    pulse.running = False
+    audio.ensure_once("virtmic")
+    assert any(c[0] == "pulseaudio" for c in pulse.calls)
+    assert not any(c[0] == "systemctl" and c[2] in ("start", "restart")
+                   for c in pulse.calls)
 
 
 @pytest.mark.smoke
