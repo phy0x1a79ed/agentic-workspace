@@ -1,4 +1,4 @@
-"""The off-host HTTPS mic bridge (pure stdlib, no pip deps).
+"""The off-host HTTPS mic bridge (stdlib transport; one lazy gatewayclient call).
 
 A stripped port of remote-audio's ``server.py``: serves the mic page and
 accepts the browser mic as s16le PCM over a hand-rolled WebSocket, piping each
@@ -200,9 +200,29 @@ class Handler(BaseHTTPRequestHandler):
                     STATE._pacat = None
             log.info("ws closed")
 
+    def _ensure_sink(self) -> None:
+        """Ask virtmic to guarantee the sink exists, right before we feed it.
+
+        This is where the mic → virtmic dependency is made explicit instead of
+        temporal. The gateway guarantees no start order between services, so
+        provisioning at boot would race; ensuring here means the sink is
+        present at the moment audio actually needs it. We're on the WS handler
+        thread, never the event loop, so the blocking `call_sync` is correct.
+
+        Best-effort: if virtmic is unreachable we still start `pacat`, because
+        the sink may well already exist and refusing audio outright would be a
+        worse failure than a possibly-dead one.
+        """
+        try:
+            from awm import gatewayclient
+            gatewayclient.call_sync("virtmic", "ensure", timeout=30.0)
+        except Exception as e:  # noqa: BLE001
+            log.warning("virtmic ensure failed (%s); starting pacat anyway", e)
+
     def _start_stream(self, rate: int, ch: int) -> subprocess.Popen:
         """Start a pacat for this stream, terminating any prior one first so
         only one phone ever feeds the sink."""
+        self._ensure_sink()
         with STATE.lock:
             if STATE._pacat is not None:
                 try:

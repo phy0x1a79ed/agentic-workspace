@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-virtmic"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM virtmic service: owns PulseAudio and the `virtmic` null-sink that is WSL's default capture source. Three durability layers (exit-idle-time config, a default.pa sink declaration, and a reconcile loop) keep the virtual microphone alive across daemon restarts."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/virtmic/.
+[tool.setuptools.packages.find]
+include = ["awm.virtmic*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]

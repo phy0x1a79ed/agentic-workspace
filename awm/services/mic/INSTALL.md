@@ -10,7 +10,15 @@ Unlike most services, the audio + page do **not** ride the awm hub: the gateway
 binds loopback-only plain HTTP, and `getUserMedia` needs a secure context
 (HTTPS off-localhost). So the bridge runs its own off-host HTTPS listener on a
 fixed port (default **12200**), and the gateway registration provides
-supervision + a `mic_status` / `mic_ensure_sink` surface only.
+supervision + a `mic_status` surface only.
+
+**mic does not own the audio plumbing.** PulseAudio and the `virtmic` null-sink
+belong to the [`virtmic`](../virtmic/INSTALL.md) service, which keeps them alive
+across daemon restarts. mic is a consumer: it pipes PCM in with `pacat` and
+calls `virtmic_ensure` immediately before starting a stream (the gateway
+guarantees no start order between services, so the dependency is explicit rather
+than temporal). `mic_ensure_sink` still exists as a deprecated alias that
+forwards to `virtmic_ensure`.
 
 ## Install
 
@@ -28,20 +36,21 @@ service under systemd's minimal PATH (where `mamba` is not present).
 |---|---|
 | `awm-config`, `awm-gatewayclient` | component libs (ServiceAdapter register/control loop) |
 
-The bridge itself is **pure stdlib** — no `whisper`/`numpy`/`httpx` of its own.
+The bridge transport is **pure stdlib** — no `whisper`/`numpy` of its own; the
+only non-stdlib call is the lazy `gatewayclient.call_sync("virtmic", "ensure")`
+made just before a stream starts.
 
 ## System dependencies (NOT pip-installable)
 
 | Tool | Package | Why |
 |---|---|---|
-| `pactl`, `pacat` | `pulseaudio-utils` | provision the `virtmic` null-sink; pipe browser PCM into it |
-| `pulseaudio` | `pulseaudio` | the userspace audio daemon (no WSLg / Windows audio needed) |
+| `pacat` | `pulseaudio-utils` | pipe browser PCM into the `virtmic` sink (the sink itself is provisioned by the `virtmic` service) |
 | `openssl` | `openssl` | mint the local root CA + leaf server cert for HTTPS |
 | `hostname` | `hostname` / coreutils | enumerate the host IPs baked into the cert SAN |
 
     sudo apt-get install -y pulseaudio pulseaudio-utils openssl
 
-All four live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
+They live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 
 ## TLS — reuses the remote-audio CA
 
