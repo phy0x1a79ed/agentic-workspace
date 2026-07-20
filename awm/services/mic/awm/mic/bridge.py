@@ -20,6 +20,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import ssl
 import struct
 import subprocess
@@ -219,6 +220,23 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             log.warning("virtmic ensure failed (%s); starting pacat anyway", e)
 
+    @staticmethod
+    def _pacat_env() -> dict:
+        """The environment `pacat` needs to find the user's PulseAudio socket.
+
+        The gateway respawns services under systemd's minimal environment, which
+        has no ``XDG_RUNTIME_DIR`` — and without it libpulse cannot locate
+        ``$XDG_RUNTIME_DIR/pulse/native`` and fails with "Connection refused"
+        even when the daemon is perfectly healthy. That mismatch is invisible
+        from `virtmic_status`, which reports on *its own* repaired environment.
+
+        This is about mic's subprocess environment, not about owning the audio
+        plumbing, so it stays here rather than moving to virtmic.
+        """
+        env = dict(os.environ)
+        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        return env
+
     def _start_stream(self, rate: int, ch: int) -> subprocess.Popen:
         """Start a pacat for this stream, terminating any prior one first so
         only one phone ever feeds the sink."""
@@ -235,7 +253,8 @@ class Handler(BaseHTTPRequestHandler):
                 "--client-name=awm-mic", "--stream-name=browser-mic",
                 "--latency-msec=40",
             ]
-            pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     env=self._pacat_env())
             STATE._pacat = pacat
             return pacat
 
