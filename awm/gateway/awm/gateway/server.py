@@ -297,12 +297,17 @@ async def lifespan(app: FastAPI):
     # only after reconcile's window + respawns have settled — no double-spawn.
     async def _bring_up_services() -> None:
         from awm.gateway.hub.supervisor import (
+            bootstrap_discovered_pages,
             bootstrap_discovered_services,
             reconcile_journaled_services,
             self_heal_loop,
         )
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
+        # 2b. Register discovered page bundles (/ui/<name>). Pages hold no
+        #     control WS and are never journaled, so this filesystem re-derive
+        #     is what brings them back after a restart.
+        await bootstrap_discovered_pages()
         # 3. Periodic self-heal: re-bootstrap any service later found wedged
         #    (dead PID, no ready control) without waiting for a gateway restart
         #    — covers crashes that bypass the control-WS disconnect watchdog.

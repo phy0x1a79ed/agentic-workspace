@@ -227,3 +227,99 @@ def discover_service(name: str) -> ServiceSpec | None:
         if spec.name == name:
             return spec
     return None
+
+
+# ---------------------------------------------------------------------------
+# Pages root resolution + discovery
+# ---------------------------------------------------------------------------
+
+def pages_root() -> Path:
+    """Resolve the pages tree — the sibling of the services tree.
+
+    Anchored to the gateway's own on-disk location exactly like
+    ``services_root`` (not cwd / workspace), so the running gateway serves the
+    pages that live in *its* worktree. ``AWM_PAGES_DIR`` overrides it (tests
+    point this at a temp tree). The same PEP 420 namespace-package guard applies
+    — ``__file__`` is ``None`` under a worktree PYTHONPATH shadow, where
+    ``Path(None)`` would raise and wedge page discovery wholesale.
+    """
+    if env := os.environ.get("AWM_PAGES_DIR"):
+        return Path(env).resolve()
+    import awm.gateway
+    if awm.gateway.__file__ is not None:
+        pkg_dir = Path(awm.gateway.__file__).resolve().parent
+    else:
+        pkg_dir = Path(next(iter(awm.gateway.__path__))).resolve()
+    for parent in pkg_dir.parents:
+        cand = parent / "pages"
+        if parent.name == "awm" and cand.is_dir():
+            return cand
+    # Fall back to the fixed nesting: <root>/awm/gateway/awm/gateway
+    # → parents[2] == <root>/awm.
+    return pkg_dir.parents[2] / "pages"
+
+
+def read_prefix_txt(pkg_dir: Path, default: str) -> str:
+    """A page's optional ``prefix.txt`` override (normalized to lead with
+    ``/``), else ``default``.
+
+    Shared by the CLI shadow path and boot discovery so both derive a page's
+    ``/ui/...`` mount identically.
+    """
+    f = pkg_dir / "prefix.txt"
+    if f.is_file():
+        text = f.read_text(encoding="utf-8").strip()
+        if text:
+            return text if text.startswith("/") else "/" + text
+    return default
+
+
+@dataclass(frozen=True)
+class PageSpec:
+    """A discovered page bundle: a ``awm/pages/<name>`` folder with a built
+    ``dist/``.
+
+    ``prefix`` is the ``/ui/...`` mount and ``dist_dir`` the servable static
+    root — exactly the two arguments ``registry.register_page`` needs.
+    """
+
+    name: str
+    prefix: str
+    dist_dir: str
+
+
+def discover_pages() -> list[PageSpec]:
+    """Scan the pages root for bundles with a built ``dist/``.
+
+    A page is *servable* iff its ``dist/`` exists — source-only pages (no
+    ``dist/`` yet, or a page still mid-build) are skipped. This mirrors how
+    ``build.sh`` keys on ``index.html`` for *buildable*: a page can be
+    buildable-but-not-yet-servable, which is the correct skip here. Returned
+    sorted by name.
+    """
+    root = pages_root()
+    if not root.is_dir():
+        log.warning("pages root %s does not exist", root)
+        return []
+    specs: list[PageSpec] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith((".", "_")):
+            continue
+        dist = entry / "dist"
+        if not dist.is_dir():
+            continue
+        specs.append(PageSpec(
+            name=entry.name,
+            prefix=read_prefix_txt(entry, f"/ui/{entry.name}"),
+            dist_dir=str(dist),
+        ))
+    return specs
+
+
+def discover_page(name: str) -> PageSpec | None:
+    """Return the spec for one page bundle, or ``None`` if it has no built
+    ``dist/``."""
+    for spec in discover_pages():
+        if spec.name == name:
+            return spec
+    return None

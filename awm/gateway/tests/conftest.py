@@ -30,6 +30,19 @@ def awm_workspace(tmp_path, monkeypatch):
     data_dir = workspace / "data"
     data_dir.mkdir()
 
+    # Isolate filesystem discovery: without these, ``discovery.services_root()``
+    # / ``pages_root()`` resolve to the REAL running worktree, so any
+    # TestClient-driven lifespan bootstraps the live services (spawning real
+    # subprocesses) and auto-registers the live pages — polluting "empty
+    # registry" assertions and slowing every hub test. Point both at empty dirs;
+    # tests that exercise discovery set their own (a later setenv wins).
+    empty_services = tmp_path / "empty_services"
+    empty_services.mkdir()
+    empty_pages = tmp_path / "empty_pages"
+    empty_pages.mkdir()
+    monkeypatch.setenv("AWM_SERVICES_DIR", str(empty_services))
+    monkeypatch.setenv("AWM_PAGES_DIR", str(empty_pages))
+
     import awm.config as cfg
     monkeypatch.setattr(cfg, "WORKSPACE_ROOT", workspace)
     monkeypatch.setattr(cfg, "AWM_DIR", awm_dir)
