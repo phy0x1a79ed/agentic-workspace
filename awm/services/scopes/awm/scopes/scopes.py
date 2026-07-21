@@ -585,12 +585,23 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
 
     report: list[dict] = []
     for row in rows:
-        worktree = Path(row["worktree"])
-        if not worktree.exists():
+        # Legacy rows carry two shapes that a bare Path() turns into a live
+        # hazard: an empty string, which becomes Path('.') and therefore
+        # *exists* — so an existence check alone waves it through and heal then
+        # operates on the process's current directory — and a workspace-
+        # relative path, which resolves against wherever the operator happened
+        # to be standing. Anchor the relative form on the workspace root and
+        # reject anything that still isn't a real directory.
+        raw = (row["worktree"] or "").strip()
+        worktree = Path(raw)
+        if raw and not worktree.is_absolute():
+            worktree = PROJECTS_DIR.parent / worktree
+        if not raw or not worktree.is_dir():
             report.append({
                 "project": row["project"], "scope": row["scope"],
-                "worktree": str(worktree), "ok": False,
-                "error": "worktree missing",
+                "worktree": raw, "ok": False,
+                "error": ("worktree not recorded" if not raw
+                          else f"worktree missing: {worktree}"),
             })
             continue
         try:
@@ -1167,8 +1178,20 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
 # ---------------------------------------------------------------------------
 
 def _scope_worktree(project: str, scope: str) -> Path:
+    """The scope's worktree, as an absolute path.
+
+    Same legacy-row hazard as ``heal_scopes``: an empty ``worktree`` column
+    becomes ``Path('.')`` and would silently point every data operation at the
+    process's current directory. Fall back to the conventional location instead,
+    and anchor a relative row on the workspace root.
+    """
+    default = PROJECTS_DIR / project / scope
     rec = agent_record_for_scope(project, scope, active_only=False)
-    return Path(rec["worktree"]) if rec else PROJECTS_DIR / project / scope
+    raw = ((rec["worktree"] if rec else "") or "").strip()
+    if not raw:
+        return default
+    worktree = Path(raw)
+    return worktree if worktree.is_absolute() else PROJECTS_DIR.parent / worktree
 
 
 def data_snapshot(project: str, scope: str, message: str | None = None) -> dict:

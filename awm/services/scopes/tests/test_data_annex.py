@@ -319,3 +319,33 @@ class TestAnnexLifecycle:
         assert st["ahead_of_canonical"] == 1
         assert st["behind_canonical"] == 0
         assert st["dirty"] is False
+
+
+class TestRelativePathRefusal:
+    """The clone runs with ``cwd=<canonical repo>`` and hands ``dest`` to git,
+    so a relative ``.awm`` path resolves *inside* the project's own data
+    directory. That shipped once: it left a stray clone at
+    ``data/<project>/.awm/data`` which the next conversion then pinned in
+    VENDORED.tsv as a third-party checkout of the repo itself.
+    """
+
+    def test_relative_awm_dir_is_refused(self, tmp_path, monkeypatch):
+        from awm import config as cfg
+        monkeypatch.setattr(cfg, "DATA_DIR", tmp_path / "data")
+        canonical = tmp_path / "data" / "proj"
+        canonical.mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        report = da.provision_scope_data("proj", "s1", Path(".awm"))
+
+        assert report["mode"] == "unknown"
+        assert "relative" in report["detail"]
+        # The canonical directory must be untouched — no stray clone, no .awm.
+        assert list(canonical.iterdir()) == []
+
+    def test_scan_vendored_ignores_awm_metadata(self, tmp_path):
+        repo = tmp_path / "data"
+        (repo / ".awm" / "data").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo / ".awm" / "data")], check=True)
+
+        assert da.scan_vendored(repo) == []

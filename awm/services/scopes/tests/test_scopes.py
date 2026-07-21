@@ -458,7 +458,48 @@ class TestHealScopes:
         report = heal_scopes()
         assert len(report) == 1
         assert report[0]["ok"] is False
-        assert report[0]["error"] == "worktree missing"
+        assert report[0]["error"].startswith("worktree missing")
+        assert bogus in report[0]["error"]
+
+    def test_skips_scope_with_no_recorded_worktree(self, scopes_workspace,
+                                                   seeded_scopes,
+                                                   scopes_dao_conn):
+        """An empty worktree column must never be healed against the cwd.
+
+        ``Path("")`` is ``Path(".")``, which *exists*, so an existence check
+        alone waves the row through and heal then operates on whatever
+        directory the process happens to be standing in. In production this
+        repointed a live scope's ``.awm/data`` symlink and left a stray clone
+        inside the project's canonical data directory.
+        """
+        scopes_dao_conn.execute("UPDATE agents SET worktree='' WHERE scope='scope-1'")
+        scopes_dao_conn.commit()
+        before = sorted(p.name for p in Path.cwd().iterdir())
+
+        report = heal_scopes()
+
+        assert len(report) == 1
+        assert report[0]["ok"] is False
+        assert report[0]["error"] == "worktree not recorded"
+        assert sorted(p.name for p in Path.cwd().iterdir()) == before
+
+    def test_anchors_relative_worktree_on_the_workspace(self, scopes_workspace,
+                                                        seeded_scopes,
+                                                        scopes_dao_conn):
+        """A workspace-relative row resolves against the workspace, not the cwd."""
+        from awm.config import PROJECTS_DIR
+        wt = PROJECTS_DIR / "proj-a" / "rel-scope"
+        wt.mkdir(parents=True)
+        rel = str(wt.relative_to(PROJECTS_DIR.parent))
+        assert not Path(rel).is_absolute()
+        scopes_dao_conn.execute(
+            "UPDATE agents SET worktree=? WHERE scope='scope-1'", (rel,))
+        scopes_dao_conn.commit()
+
+        report = heal_scopes()
+
+        assert len(report) == 1
+        assert report[0]["ok"] is True, report[0]
 
     def test_filters_by_project(self, scopes_workspace, seeded_scopes,
                                  scopes_dao_conn, tmp_path):
