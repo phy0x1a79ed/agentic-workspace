@@ -1,0 +1,445 @@
+"""Service-level orchestration: the store, the checkouts, and the live tabs.
+
+Everything below the verbs lives here. Two responsibilities the lower layers
+deliberately do not have:
+
+**Landing against a live tab.** :meth:`Service.merge` cannot simply write: a
+browser tab autosaving every couple of seconds moves the diagram's tip
+continuously, so a naive "refuse while behind" loop would let an actively
+editing person starve an agent forever. The fix is the order the design called
+for from the start — tell live tabs to flush and hold, confirm the tip has not
+moved, land, release, push the result back. The hold is sub-second and the
+tabs cooperate, so the agent always gets a turn.
+
+**Image references.** Cells point at ordinary files through fileviewer's
+``/files/<abs-path>`` mount instead of carrying embedded data. That keeps a
+re-rendered figure live in the diagram without a re-import, but it means a
+reference can break silently: fileviewer's mask is a denylist and a masked path
+404s exactly like a missing one, so a cell whose image sits somewhere the mask
+covers renders blank with no error anywhere. :meth:`Service.check` is what
+turns that into a report.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from . import ops, store as store_mod, xmlmodel
+from .checkout import Behind, Checkouts, Conflicted
+from .store import Store
+
+log = logging.getLogger("awm.drawio.service")
+
+#: How long :meth:`Service.merge` waits for live tabs to acknowledge a flush.
+#: Long enough for a tab to serialize a multi-megabyte document and POST it,
+#: short enough that a dead tab cannot stall an agent.
+FLUSH_TIMEOUT_S = 4.0
+
+#: How long the write lease keeps tabs from autosaving while a merge lands.
+#: Tabs stay editable throughout; only the *save* is deferred.
+LEASE_SECONDS = 10.0
+
+#: Image references we can check: fileviewer mount paths, which is the shape
+#: this service tells agents to use — ``style="…;image=/files/abs/path.svg;"``.
+#: ``/files`` is followed directly by the absolute path, so the capture keeps
+#: its leading slash. The terminator set includes ``;`` because that is what
+#: separates drawio style segments, and ``"`` / ``'`` / ``)`` because the same
+#: reference also appears inside attribute values and CSS ``url()``.
+_FILES_REF = re.compile(r"/files(/[^\s;\"')<>]+)")
+
+
+class Lease:
+    """A short exclusive window in which only the merging caller may write.
+
+    Held for at most :data:`LEASE_SECONDS` so that a crashed merge cannot wedge
+    a diagram permanently — the expiry is the safety net, not the mechanism.
+    """
+
+    def __init__(self) -> None:
+        self.holder: str | None = None
+        self.expires: float = 0.0
+
+    def held(self) -> bool:
+        return self.holder is not None and time.time() < self.expires
+
+    def acquire(self, holder: str) -> bool:
+        if self.held():
+            return False
+        self.holder, self.expires = holder, time.time() + LEASE_SECONDS
+        return True
+
+    def release(self, holder: str) -> None:
+        if self.holder == holder:
+            self.holder, self.expires = None, 0.0
+
+
+class Service:
+    """The verb surface. Sync throughout except :meth:`merge`, which coordinates
+    with live browser tabs and therefore has to await them."""
+
+    def __init__(self, store: Store, checkouts: Checkouts,
+                 emit: Callable[[str, Any], Awaitable[None]] | None = None):
+        self.store = store
+        self.checkouts = checkouts
+        self._emit = emit
+        self._leases: dict[str, Lease] = {}
+        # save -> {tab_id: last_seen}. Populated by the editor session layer.
+        self.live_tabs: dict[str, dict[str, float]] = {}
+        self._flush_acks: dict[str, set[str]] = {}
+
+    # --- diagram surface ---------------------------------------------------
+
+    def list(self) -> dict:
+        diagrams = self.store.list()
+        open_checkouts: dict[str, list] = {}
+        for handle in self.checkouts.list():
+            open_checkouts.setdefault(handle.save, []).append(handle.as_dict())
+        for diagram in diagrams:
+            diagram["checkouts"] = open_checkouts.get(diagram["save"], [])
+            diagram["editors"] = len(self.live_tabs.get(diagram["save"], {}))
+        return {"diagrams": diagrams, "count": len(diagrams)}
+
+    def info(self, save: str) -> dict:
+        info = self.store.info(save)
+        info["checkouts"] = [h.as_dict() for h in self.checkouts.list(save)]
+        info["editors"] = len(self.live_tabs.get(info["save"], {}))
+        info["url"] = self.url(save)["url"]
+        return info
+
+    def create(self, save: str, author: str) -> dict:
+        result = self.store.create(save, author=author)
+        result["url"] = self.url(result["save"])["url"]
+        return result
+
+    def import_file(self, save: str, source: str, author: str) -> dict:
+        result = self.store.import_file(save, source, author=author)
+        result["url"] = self.url(result["save"])["url"]
+        return result
+
+    def read(self, save: str | None = None, rev: str | None = None,
+             handle: str | None = None) -> dict:
+        """The canonical XML of a live diagram, an old revision, or a checkout.
+
+        One verb covers all three so the editor loads a checkout exactly the
+        way it loads a live diagram — the browser never needs to know which it
+        is looking at, and never needs a second transport to fetch bytes.
+        """
+        if handle:
+            state = self.checkouts.status(handle)
+            return {"save": state["save"], "handle": handle,
+                    "rev": state["content_rev"],
+                    "xml": self.checkouts.file_path(handle).read_text(
+                        encoding="utf-8")}
+        if not save:
+            raise ValueError("read needs either a diagram path or a checkout handle")
+        path = store_mod.normalize_save_path(save)
+        # Always report which revision these bytes are, so a reader that saves
+        # them back can be checked against it.
+        return {"save": path, "rev": rev or self.store.head_rev(path),
+                "xml": self.store.read(save, rev=rev)}
+
+    def cells(self, save: str, page: str | None = None,
+              label: str | None = None, id_contains: str | None = None) -> dict:
+        """Inspect a diagram's cells without reading megabytes of XML."""
+        from . import dwg
+
+        doc = dwg.Doc(Path(self.store.abs_path(save)),
+                      xmlmodel.parse(self.store.read(save)))
+        if label or id_contains:
+            hits = doc.find(label=label, id_contains=id_contains)
+        else:
+            hits = []
+            for candidate in doc.pages():
+                if page and candidate.name != page:
+                    continue
+                for cell in candidate.cells():
+                    hits.append({
+                        "id": cell.get("id"), "page": candidate.name,
+                        "kind": dwg.cell_kind(cell), "value": cell.get("value", ""),
+                    })
+        return {"save": store_mod.normalize_save_path(save), "cells": hits,
+                "count": len(hits)}
+
+    def history(self, save: str, limit: int = 50) -> dict:
+        return {"save": store_mod.normalize_save_path(save),
+                "revisions": [r.as_dict() for r in self.store.history(save, limit)]}
+
+    def diff(self, save: str, a: str, b: str | None = None) -> dict:
+        return {"save": store_mod.normalize_save_path(save), "a": a, "b": b,
+                "diff": self.store.diff(save, a, b)}
+
+    def restore(self, save: str, rev: str, author: str) -> dict:
+        return self.store.restore(save, rev, author=author)
+
+    def remove(self, save: str, author: str) -> dict:
+        return self.store.remove(save, author=author)
+
+    def url(self, save: str, handle: str | None = None) -> dict:
+        """The editor URL for a diagram, or for a checkout of one.
+
+        Origin-relative on purpose: the gateway is fronted by ``httpsfront``, so
+        a relative link opens from a phone on the LAN exactly as it does from
+        the host, and never bakes in a loopback address the way the prototype
+        did.
+        """
+        if handle:
+            self.checkouts.status(handle)  # raises if unknown
+            return {"url": f"/ui/drawio/edit/?checkout={handle}", "handle": handle}
+        path = store_mod.normalize_save_path(save)
+        return {"url": f"/ui/drawio/edit/?save={path}", "save": path}
+
+    # --- checkout surface --------------------------------------------------
+
+    def checkout(self, save: str, author: str) -> dict:
+        handle = self.checkouts.checkout(save, author=author)
+        return {
+            "handle": handle.id,
+            "save": handle.save,
+            "base_rev": handle.base_rev,
+            "path": str(self.checkouts.file_path(handle.id)),
+            "url": self.url(handle.save, handle=handle.id)["url"],
+            "note": "edit via `drawio edit`, or by hand at `path`; then merge",
+        }
+
+    def edit(self, handle: str, operations: list[dict]) -> dict:
+        """Apply operations to a checkout. All-or-nothing."""
+        state = self.checkouts.status(handle)
+        if state["conflict_markers"]:
+            raise Conflicted(
+                f"checkout {handle} has {state['conflict_markers']} unresolved "
+                f"conflict(s); edit {state['path']} and call resolve first"
+            )
+        result = ops.apply(self.checkouts.file_path(handle), operations)
+        result["handle"] = handle
+        result["save"] = state["save"]
+        return result
+
+    def path(self, handle: str) -> dict:
+        state = self.checkouts.status(handle)
+        return {"handle": handle, "save": state["save"], "path": state["path"]}
+
+    def status(self, handle: str) -> dict:
+        return self.checkouts.status(handle)
+
+    def update(self, handle: str) -> dict:
+        result = self.checkouts.update(handle)
+        if result.get("conflicts"):
+            result["how_to_resolve"] = (
+                "Open the file at `path`, remove the <<<<<<< / ======= / >>>>>>> "
+                "markers keeping the content you want, then call `drawio resolve`. "
+                "`merge` refuses while markers remain."
+            )
+        return result
+
+    def resolve(self, handle: str) -> dict:
+        return self.checkouts.resolve(handle)
+
+    def discard(self, handle: str) -> dict:
+        return self.checkouts.discard(handle)
+
+    async def merge(self, handle: str, label: str | None = None,
+                    keep: bool = False) -> dict:
+        """Land a checkout, coordinating with any live editor tabs.
+
+        Ordering, which is the whole point: flush the tabs → confirm the tip
+        did not move → land → release → push the result back. Without the
+        flush, an in-flight autosave carrying a *pre-merge* snapshot could land
+        immediately after and silently revert everything.
+        """
+        state = self.checkouts.status(handle)
+        save = state["save"]
+        lease = self._leases.setdefault(save, Lease())
+
+        if not lease.acquire(handle):
+            raise Conflicted(f"{save} is being merged by another caller; retry")
+        try:
+            await self._flush_live_tabs(save)
+            try:
+                return self.checkouts.merge(handle, label=label, keep=keep)
+            except Behind:
+                # The tabs flushed work we had not seen. Fold it in and retry
+                # once — still inside the lease, so nothing can move underneath
+                # us. A conflict here surfaces to the agent exactly as it would
+                # from an explicit `update`.
+                result = self.checkouts.update(handle)
+                if result.get("conflicts"):
+                    raise Conflicted(
+                        f"{save} changed while merging and the changes conflict "
+                        f"({result['conflicts']}); resolve at {state['path']}, "
+                        "then merge again"
+                    ) from None
+                return self.checkouts.merge(handle, label=label, keep=keep)
+        finally:
+            lease.release(handle)
+            await self._push_to_live_tabs(save)
+
+    # --- live tab coordination --------------------------------------------
+
+    def lease_held(self, save: str) -> bool:
+        """Whether a merge currently owns the write lease for this diagram.
+
+        The editor session layer consults this before accepting an autosave;
+        a tab told to hold keeps its edits in memory and retries.
+        """
+        lease = self._leases.get(save)
+        return bool(lease and lease.held())
+
+    def note_tab(self, save: str, tab_id: str) -> None:
+        self.live_tabs.setdefault(save, {})[tab_id] = time.time()
+
+    def drop_tab(self, save: str, tab_id: str) -> None:
+        self.live_tabs.get(save, {}).pop(tab_id, None)
+
+    def note_flush_ack(self, save: str, tab_id: str) -> None:
+        self._flush_acks.setdefault(save, set()).add(tab_id)
+
+    async def _flush_live_tabs(self, save: str) -> None:
+        """Ask every open tab to save now, and wait for acknowledgement.
+
+        Best-effort by design: a tab that has gone away without closing its
+        socket must not be able to block a merge, so this returns on timeout
+        rather than raising. The tip check inside
+        :meth:`awm.drawio.checkout.Checkouts.merge` is the real guard — the
+        flush only shrinks the window it has to guard against.
+        """
+        tabs = set(self.live_tabs.get(save, {}))
+        if not tabs or self._emit is None:
+            return
+        self._flush_acks[save] = set()
+        await self._emit(f"drawio:{save}", {"type": "flush", "reason": "merge"})
+
+        deadline = time.time() + FLUSH_TIMEOUT_S
+        while time.time() < deadline:
+            if tabs <= self._flush_acks.get(save, set()):
+                return
+            await asyncio.sleep(0.05)
+        missing = tabs - self._flush_acks.get(save, set())
+        log.warning("merge on %s: %d tab(s) did not acknowledge flush: %s",
+                    save, len(missing), ", ".join(sorted(missing)))
+
+    async def _push_to_live_tabs(self, save: str) -> None:
+        """Tell tabs the diagram moved so they reload without a manual refresh."""
+        if self._emit is None or not self.live_tabs.get(save):
+            return
+        await self._emit(f"drawio:{save}", {
+            "type": "push", "rev": self.store.head_rev(save),
+        })
+
+    # --- browser saves -----------------------------------------------------
+
+    def save_from_editor(self, save: str, xml: str, base_rev: str | None,
+                         tab_id: str = "tab", handle: str | None = None) -> dict:
+        """Accept (or reject) an autosave from a browser tab.
+
+        A save carries the revision the tab was showing. If the diagram has
+        moved on since, the save is **rejected** rather than applied — this is
+        the fix for the failure that cost the most work in the prototype, where
+        a tab left open across a scripted rebuild autosaved its stale in-memory
+        model back over the new file and took one page from 47 cells to 2. The
+        tab reconciles and retries; it does not get to overwrite blind.
+
+        A tab open on a *checkout* gets the same protection, keyed on the
+        working copy's content hash rather than a commit sha — an agent running
+        ``edit`` against a checkout somebody has open in the browser is the same
+        race in miniature, and deserves the same refusal.
+        """
+        if handle:
+            return self._save_to_checkout(handle, xml, base_rev, tab_id)
+
+        path = store_mod.normalize_save_path(save)
+        self.note_tab(path, tab_id)
+
+        if self.lease_held(path):
+            return {"save": path, "accepted": False, "reason": "lease",
+                    "retry_after": 1.0,
+                    "note": "a merge is landing; hold your edits and retry"}
+
+        live_rev = self.store.head_rev(path)
+        if base_rev and live_rev and base_rev != live_rev:
+            return {"save": path, "accepted": False, "reason": "stale",
+                    "rev": live_rev,
+                    "note": "the diagram moved since you loaded it; reconcile "
+                            "against the current revision and retry"}
+
+        result = self.store.write(path, xml, author=f"editor:{tab_id}")
+        result["accepted"] = True
+        return result
+
+    def _save_to_checkout(self, handle: str, xml: str, base_rev: str | None,
+                          tab_id: str) -> dict:
+        state = self.checkouts.status(handle)
+        if base_rev and base_rev != state["content_rev"]:
+            return {"handle": handle, "save": state["save"], "accepted": False,
+                    "reason": "stale", "rev": state["content_rev"],
+                    "note": "this checkout changed since you loaded it "
+                            "(an agent edited it); reload to see the current "
+                            "working copy"}
+        canonical = xmlmodel.normalize(xml)
+        path = self.checkouts.file_path(handle)
+        changed = path.read_text(encoding="utf-8") != canonical
+        if changed:
+            path.write_text(canonical, encoding="utf-8")
+        return {"handle": handle, "save": state["save"], "accepted": True,
+                "changed": changed, "rev": self.checkouts.content_rev(handle)}
+
+    # --- image references --------------------------------------------------
+
+    def check(self, save: str) -> dict:
+        """Report every image reference that will not render.
+
+        A ``/files/…`` reference resolves through fileviewer's mount, whose mask
+        is a denylist that 404s exactly like a missing file. So "the path exists"
+        is not enough — a figure stored under a masked directory is invisible in
+        the browser and blank in an export, with nothing logged anywhere. Both
+        cases are reported here, separately, because the fixes differ: one is a
+        missing render, the other a file in the wrong place.
+        """
+        text = self.store.read(save)
+        problems, checked = [], []
+        for match in _FILES_REF.finditer(text):
+            target = Path(match.group(1))
+            checked.append(str(target))
+            if not target.exists():
+                problems.append({"path": str(target), "problem": "missing",
+                                 "fix": "render the image, or repoint the cell"})
+            elif _masked(target):
+                problems.append({
+                    "path": str(target), "problem": "masked",
+                    "fix": "fileviewer hides this path, so it 404s like a missing "
+                           "file; move the image outside the mask",
+                })
+        return {
+            "save": store_mod.normalize_save_path(save),
+            "references": len(checked),
+            "problems": problems,
+            "ok": not problems,
+        }
+
+
+def _masked(path: Path) -> bool:
+    """Whether fileviewer's mask hides this path (so it would 404).
+
+    Imported lazily and tolerantly: fileviewer is a sibling dist, and a
+    ``check`` that crashes because a neighbour is unavailable is worse than one
+    that reports only what it can verify.
+    """
+    try:
+        from awm.fileviewer.server import load_mask
+        import fnmatch
+
+        resolved = path.resolve().as_posix()
+        hidden = False
+        for glob in load_mask():
+            negate = glob.startswith("!")
+            pattern = glob[1:] if negate else glob
+            if fnmatch.fnmatch(resolved, pattern) or fnmatch.fnmatch(
+                    resolved, "/" + pattern.lstrip("/")):
+                hidden = not negate  # last match wins, gitignore-style
+        return hidden
+    except Exception:  # noqa: BLE001
+        return False
