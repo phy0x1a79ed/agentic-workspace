@@ -73,13 +73,26 @@ def survey(project: str) -> dict:
     }
 
 
-def active_scopes(project: str) -> list[str]:
-    from awm.scopes.dao import ScopesDAO
-    rows = ScopesDAO().query_all(
-        "SELECT a.scope FROM agents a JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.status='active'",
-        (project,),
-    )
+def active_scopes(project: str) -> list[str] | None:
+    """Scopes of ``project`` currently running a job, or None if we couldn't ask.
+
+    None and ``[]`` mean very different things and the caller must not conflate
+    them. Conversion rewrites the tree into read-only symlinks underneath any
+    running job, so "no active scopes" is a safety precondition — and an
+    unreachable or unseeded database proves nothing. Returning None makes the
+    caller refuse rather than read an error as an all-clear.
+    """
+    import sqlite3
+    try:
+        from awm.scopes.dao import ScopesDAO
+        rows = ScopesDAO().query_all(
+            "SELECT a.scope FROM agents a JOIN projects p ON p.id = a.project_id "
+            "WHERE p.name=? AND a.status='active'",
+            (project,),
+        )
+    except (sqlite3.Error, OSError) as exc:
+        print(f"  cannot read the scopes database: {exc}")
+        return None
     return [r["scope"] for r in rows]
 
 
@@ -132,12 +145,20 @@ def verify(project: str) -> int:
     else:
         print(f"  ok: no secret/.env path in {len(tracked):,} tracked files")
 
-    from awm.scopes.dao import ScopesDAO
-    rows = ScopesDAO().query_all(
-        "SELECT a.scope, a.worktree FROM agents a JOIN projects p ON p.id = a.project_id "
-        "WHERE p.name=? AND a.status IN ('allocated','active')",
-        (project,),
-    )
+    import sqlite3
+    try:
+        from awm.scopes.dao import ScopesDAO
+        rows = ScopesDAO().query_all(
+            "SELECT a.scope, a.worktree FROM agents a JOIN projects p ON p.id = a.project_id "
+            "WHERE p.name=? AND a.status IN ('allocated','active')",
+            (project,),
+        )
+    except (sqlite3.Error, OSError) as exc:
+        # The canonical-repo checks above already ran and are the ones that
+        # matter; not being able to enumerate scopes is worth saying out loud
+        # but is not itself a conversion failure.
+        print(f"  skipped scope check: {exc}")
+        return problems
     for r in rows:
         st = scopes_mod.data_status(project, r["scope"])
         mode = st.get("mode")
@@ -159,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="skip conversion; just give existing scopes their clones")
     ap.add_argument("--force-broken", action="store_true",
                     help="convert even with broken symlinks present")
+    ap.add_argument("--force-active", action="store_true",
+                    help="convert even when scopes are active, or when the "
+                         "scopes database could not be read to check")
     args = ap.parse_args(argv)
     project = args.project
 
@@ -173,7 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     report_survey(project, s)
 
     busy = active_scopes(project)
-    if busy:
+    if busy is None:
+        print("\n  ACTIVE SCOPES: UNKNOWN — could not read the scopes database.")
+        print("  That is not an all-clear: conversion rewrites the tree into")
+        print("  read-only symlinks and would break a running job. Pass")
+        print("  --force-active only if you know nothing is running.")
+    elif busy:
         print(f"\n  ACTIVE SCOPES: {busy}")
         print("  Conversion rewrites the tree into read-only symlinks and would")
         print("  break a running job. Retire them or wait for the freeze window.")
@@ -188,8 +217,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\nrefusing: {len(s['broken_symlinks'])} broken symlink(s). "
                   f"Resolve them, or pass --force-broken.", file=sys.stderr)
             return 1
-        if busy:
-            print("\nrefusing: active scopes (see above).", file=sys.stderr)
+        if (busy is None or busy) and not args.force_active:
+            why = ("could not verify that no scope is active"
+                   if busy is None else "active scopes (see above)")
+            print(f"\nrefusing: {why}.", file=sys.stderr)
             return 1
         print("\n=== convert ===")
         rep = da.init_project_data(project)
@@ -198,10 +229,18 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     print("\n=== heal scopes ===")
-    from awm.scopes.scopes import heal_scopes
-    for r in heal_scopes(project=project):
+    import sqlite3
+    try:
+        from awm.scopes.scopes import heal_scopes
+        healed = heal_scopes(project=project)
+    except (sqlite3.Error, OSError) as exc:
+        print(f"  skipped: {exc}")
+        healed = []
+    for r in healed:
         action = (r.get("actions") or {}).get("data")
         print(f"  {r['scope']:24s} {'ok' if r['ok'] else 'FAIL'}  data={action}")
+    if not healed:
+        print("  (no scopes to heal)")
 
     print()
     problems = verify(project)
