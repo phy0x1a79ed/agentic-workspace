@@ -103,73 +103,86 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **`AWM_WORKSPACE` + `AWM_HUB_URL` attach to a sandbox, not prod.** Without them, the CLI hits global discovery and may target prod `:7819`. The dev starter exports both for its children; if you shell out separately, export them yourself. To check which hub a running process was set up against: `tr '\0' '\n' </proc/<pid>/environ | grep -E 'AWM_WORKSPACE|AWM_HUB_URL'`.
 - **Never run two gateways on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are how dev parallelism works.
 
-## Project data layer (`awm.scopes.data_annex`)
+## Project data layer (`awm.scopes.data_dvc`)
 
 `.awm/data` used to be one line in `_scaffold_awm_dir`: a symlink to
-`data/<project>/`, shared by every scope. It is now produced by
-`data_annex.provision_scope_data`, which returns either that same symlink or a
-**git-annex clone** — the *only* entry point, deliberately, so there is one
-place that decides.
+`data/<project>/`, shared by every scope. Then it was a git-annex clone on a
+per-scope data branch. It is now neither — data is a **tracked folder in the
+project repo**, `<repo>/data/`, pinned by `.dvc` files that live beside the code
+that produced them. `data_dvc.provision_scope_data` is the *only* entry point,
+deliberately, so there is one place that decides.
 
-Design facts worth knowing before you touch it:
+The shape, and why:
 
-- **The opt-in is the canonical repo's existence.** `is_annex_project(p)` is
-  "is `data/<p>` a git-annex repo?" There is no config table and no flag to
-  keep in sync; `project_data_init` flips a project by converting the directory.
-  `AWM_DATA_ANNEX=0` is the global kill switch.
-- **A clone, not a submodule.** A submodule inside a *secondary* git worktree
-  makes git write a relative `core.worktree` that git-annex resolves from a
-  different base — every annex command then dies with
-  `changeWorkingDirectory: does not exist`. A plain clone has an ordinary
-  `.git` and is immune. `projects/annex-poc/` preserves the reproduction.
-- **The canonical repo keeps a working tree** on `main`, and promotion pushes
-  into it with `receive.denyCurrentBranch=updateInstead`. That is what keeps
-  every existing absolute path into `data/<project>/` resolving — including the
-  TTS model lookup and scadc's ~171 absolute symlinks.
-- **Merges use plain `git merge`, never `git annex sync`.** git-annex only
-  auto-resolves conflicting content into `file.variant-<key>` under its own
-  merge machinery; under plain merge a conflict is an ordinary unmerged path.
-  Keeping both sides must stay an explicit decision. `publish_data` therefore
-  does fetch → `git annex merge` → explicit push by hand rather than calling
-  sync.
-- **The location log rides the `git-annex` branch and is never rolled back.**
-  Pushing only the data branch leaves peers seeing *0 copies* for content that
-  is physically present. And reverting the log *is* the data-loss operation —
-  it produces that same symptom while the bytes sit on disk. The transaction
-  boundary in `merge_data` is the data branch ref, nothing else.
-- **git-annex is not on the daemon's PATH.** `annex_bin()` resolves it
-  (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
-  on PATH for *every* git call, since git-annex's own hooks re-invoke
-  `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
-- **A worktree path from the DB is never trusted literally.** Legacy `agents`
-  rows carry an empty `worktree`, and some a workspace-relative one. `Path("")`
-  is `Path(".")` — which *exists*, so an existence check accepts it and the
-  caller then operates on the process's cwd. Both go through
-  `scopes._resolve_worktree` (empty → the conventional `projects/<p>/<s>`,
-  relative → anchored on the workspace root), and `provision_scope_data`
-  **refuses** a relative `.awm` rather than normalising it: the clone runs with
-  `cwd=<canonical repo>` and hands `dest` to git, so a relative dest resolves
-  *inside* the project's own data directory. There is no correct anchor to
-  normalise against, only a wrong one. "The path exists" is not proof the path
-  is meaningful — check where it came from.
-- **Teardown is the dangerous direction.** `_cleanup_worktree` calls
-  `prepare_teardown` first, which publishes, refuses when content would be lost,
-  and chmods the tree writable (annex marks objects *and their parent dirs*
-  read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
-  collides with the next `worktree add`). `create_scope` pre-cleans through the
-  same path, so creation can now refuse where it previously steamrolled.
+```
+projects/<project>/<scope>/data/<chunk>       the files (links into the cache)
+projects/<project>/<scope>/data/<chunk>.dvc   the pin — TRACKED, ~110 bytes
+<workspace>/data/.dvc_cache/                  the bytes, once, for everyone
+```
 
-**Converting a project.** `awm/gateway/scripts/data-rollout.sh` is the operator
-front end (`--check` / `--tier=` / `--only=` / `--rollback`), wrapping
-`python -m awm.scopes.scripts.migrate_data <project>` per project. Two ordering
-rules it enforces. **Deploy before converting** — a converted project under old
-code still symlinks `.awm/data` into what is now an annex working tree, giving a
-scope real data with no isolation and read-only large files; the reverse order
-is harmless. And **sweep broken symlinks first** — after conversion every
-annexed file *is* a symlink, so pre-existing rot becomes permanently
-indistinguishable from "content not fetched yet". Some projects are badly rotted
-(spanish-lakes 629 of 629 symlinks broken, cyanoverse 456 of 458), so the
-converter refuses until they are resolved.
+- **A commit is a consistent snapshot of code and data.** That is the entire
+  point. There is no data branch, no data history, no promote verb: a code
+  commit *is* the data commit and a code merge *is* the promote. The scope-
+  created-off-a-parent bug that motivated this is fixed by construction — the
+  base branch threaded into `worktree add` carries the pins with it.
+- **The opt-in is the checkout.** `is_dvc_repo` asks whether `.dvc/config` is
+  present, and `.dvc/config` is tracked — so the answer travels with the branch
+  and a pre-conversion branch correctly reports False. No config table to sync.
+  `AWM_DATA_DVC=0` is the global kill switch.
+- **The cache path is absolute, in the untracked `.dvc/config.local`.** A
+  relative path in the tracked config is correct only at `projects/<p>/<s>/`
+  depth; anywhere else `dvc add` **silently builds a second cache** rather than
+  erroring. DVC gitignores `/config.local` itself, so this is the tool's own
+  intended home for a machine-specific setting.
+- **Mounting is local; pinning is committed.** `.awm/data-mounts` (gitignored)
+  lists which chunks materialise here. Everything the branch pins stays pinned,
+  hashed and backed up regardless — a figure scope can pin a 30 GB archive it
+  never reads. This is not optional polish: a bare `dvc checkout` materialises
+  **every** pin (DVC has no "pinned but not materialised" flag), so without the
+  list the first merge in any scope drags in every cold chunk the project has.
+- **Hooks are written by hand into the common git dir.** `dvc install` builds
+  its path as `<root>/.git/hooks`, and in a secondary worktree `.git` is a file
+  — every awm scope is a secondary worktree, so it dies with `Not a directory`.
+  It ships no `post-merge` anyway. Both `post-merge` **and `post-commit`** are
+  needed: a *conflicted* merge is resolved with `git commit` and fires no
+  post-merge hook, which is exactly when a human has just hand-edited a pin.
+- **A failing checkout cannot fail the merge, and it deletes first.** git
+  ignores a hook's exit status, and `dvc checkout` removes the files it is
+  replacing before discovering it cannot install the new ones. So the hook
+  leaves `.awm/data-checkout-failed`, which `data_status` and provisioning both
+  surface until it clears. Do not "simplify" this away.
+- **Never chmod a materialised file.** It is a hardlink to the cache object, so
+  `chmod +w` unprotects content every other scope, every other project and every
+  historical commit reads through. `chmod_dirs_writable` touches directories
+  only — and that is all teardown ever needed, since DVC (unlike annex) leaves
+  directories writable.
+- **A gitignore rule covering `data/` makes the whole scheme a silent no-op.**
+  `dvc add` writes the pin, `git add -A` skips it, `git status` is clean, and
+  the commit records no data. scadc, awm and avarice all carry such a rule.
+  `pin_would_be_ignored` probes with `git check-ignore` and provisioning refuses.
+- **`.awm/data` survives as a compat symlink** to `../data`, because ~125 scadc
+  files and the WORKSPACE.md contract still name it. Repointing them is optional
+  cleanup, not a blocking migration step.
+- **Unconverted projects are untouched.** 186 scopes across 25 projects keep the
+  legacy shared symlink, and a machine without dvc degrades to it rather than
+  failing scope creation.
+
+**The one sharp edge is `dvc gc`.** The cache is shared across *all* projects,
+so a `--workspace` collection run from one worktree deletes objects another
+worktree's checkout depends on. Already-materialised files survive (the link
+keeps the inode alive), so it fails silently at the next fresh checkout rather
+than loudly at the time. The safe default is `--all-commits`, **not**
+`--all-branches` — the latter keeps only branch tips and would drop content
+referenced by historical commits, breaking the consistent-snapshot property
+that is the whole point. Never expose a bare `gc`.
+
+**Converting a project.** Stage content by hardlinking existing annex objects
+into a plain tree (`ln $(readlink -f f) <dest>`), then `dvc add`. The workspace
+file, the cache object and the original annex object end up sharing one inode,
+so the migration copies **nothing** and leaves the annex store intact as a
+fallback. Do the relocation and the chunking in one pass: the state DB is keyed
+on path, so moving a file afterwards forces a full re-hash.
+
 
 ## Frontend component system
 

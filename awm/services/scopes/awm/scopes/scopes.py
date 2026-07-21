@@ -1240,6 +1240,23 @@ def data_status(project: str, scope: str) -> dict:
     return data_dvc.data_status(project, scope, _scope_worktree(project, scope))
 
 
+def data_gc(projects: list[str], dry_run: bool = True,
+            keep: str = "all-commits") -> dict:
+    """Reclaim cache objects no listed project references. Dry by default.
+
+    Deliberately takes a *list* of projects and has no "just this one" mode: the
+    cache is shared workspace-wide, so collecting against an incomplete set is
+    how you delete another project's data. See ``data_dvc.collect_garbage``.
+    """
+    repos: list[Path] = []
+    for proj in projects:
+        validate_name(proj, kind="project name")
+        for wt in sorted((PROJECTS_DIR / proj).glob("*")):
+            if wt.is_dir() and data_dvc.is_dvc_repo(wt):
+                repos.append(wt)
+    return data_dvc.collect_garbage(repos, dry_run=dry_run, keep=keep)
+
+
 def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:
     """Choose which chunks this scope materialises on disk.
 

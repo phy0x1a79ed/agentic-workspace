@@ -339,61 +339,66 @@ live on your host) to pick up changes.
 
 ## Project data — versioning and concurrency
 
-Project data lives at `<workspace>/data/<project>/` and every scope reaches it
-at `.awm/data/`. Both of those paths are permanent; what changed is what sits
-behind them.
+Converting a project's data to **DVC** gives it the model code already has from
+git: a commit is a consistent snapshot of code *and* the data it was built
+against, a branch is an instance of that, and merging a branch brings its data
+with it. One lever, not two.
 
-By default `.awm/data` is a symlink and every scope in a project writes the same
-files — no history, no isolation, and two scopes writing the same path destroy
-each other's work. Converting a project's data to **git-annex** gives it the
-same model code already has from worktrees:
-
-```bash
-awm project data-init <project> --dry-run   # preview: file count, vendored checkouts found
-awm project data-init <project>             # convert (refuses while any scope is active)
-awm scope heal --project <project>          # give existing scopes their clones
+```
+projects/<project>/<scope>/data/<chunk>       the files
+projects/<project>/<scope>/data/<chunk>.dvc   the pin — tracked, ~110 bytes
+<workspace>/data/.dvc_cache/                  the bytes, once, for everyone
 ```
 
-After conversion each scope's `.awm/data` is a clone on its own branch
-`scope/<scope>`, and `<workspace>/data/<project>/` stays a normal checked-out
-working tree on `main` — so every absolute path and symlink that pointed there
-still resolves.
+By default a project is *not* converted: `.awm/data` is a symlink to
+`<workspace>/data/<project>/` and every scope writes the same files — no
+history, no isolation, and two scopes writing one path destroy each other's
+work. Conversion is per-project and consists of `dvc init` in the repo plus
+`dvc add` on whatever you want tracked; there is no awm verb for it, because
+there is nothing awm-specific to do.
 
 ```bash
-awm scope data-status  <project> <scope>    # mode, branch, revision, drift, dirt
-awm scope data-snapshot <project> <scope>   # commit what this scope wrote
-awm scope data-promote  <project> <scope>   # publish into the project's canonical branch
-awm scope gather <project> <hub> --peripherals a --peripherals b --data
+awm scope data-status <project> <scope>    # the pinning commit, its chunks, what is on disk
+awm scope data-mount  <project> <scope> --chunks data/pipeline/model
+awm scope heal --project <project>         # wire up merge driver + hooks, materialise pins
 ```
 
-`data-promote` is all-or-nothing. It snapshots, publishes content and the
-location log, reconciles against the canonical branch, then **fast-forwards**
-it — so two scopes promoting at once produce one winner and one clean
-rejection, never a clobber. A content conflict is reported as a conflict and
-rolls back to the exact pre-merge revision; nothing is auto-merged into
-`file.variant-<key>` behind your back.
+Day to day there is no data command at all — you use git:
+
+```bash
+dvc add data/results          # hash it into the shared cache, write data/results.dvc
+git add data/results.dvc && git commit    # ...alongside the code that produced it
+git merge feat/sibling        # brings their pins AND checks the files out for you
+```
 
 Operational notes:
 
-- **Storage.** Content is hardlinked from the canonical store, so N scopes
-  holding the same dataset cost one copy. This requires `data/` and `projects/`
-  on the same filesystem; if they aren't, git-annex silently falls back to real
-  copies.
-- **Read-only files.** Anything above ~100 KB becomes a symlink into the content
-  store and is not writable in place. Small text stays an ordinary git file.
-- **Secrets are excluded, never annexed.** `secrets/` paths, `.env*`,
-  `.credentials.json` and `.nextflow/secrets` are gitignored in the canonical
-  repo, so they are never committed and never reach the off-site mirror. They
-  stay on local disk untouched.
-- **Vendored git checkouts are pinned, not annexed.** Conversion finds nested
-  repos, excludes their trees, and records URL + commit in `VENDORED.tsv`.
-- **git-annex is optional.** It is resolved from `AWM_ANNEX_BIN`, then PATH,
-  then the known mamba envs. When it isn't found every path degrades to the
-  legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
-  globally.
-- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
-  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
-  are content-addressed and never mutated in place.
+- **Storage.** Content is hardlinked from the shared cache, so N scopes holding
+  the same dataset cost one copy. Requires the cache and `projects/` on one
+  filesystem; otherwise DVC falls back to symlinks (still one copy) or copies.
+- **Read-only files.** A materialised file is a hardlink to the cache object.
+  Editing it in place would corrupt that object for every other scope, so DVC
+  marks it read-only. Write a new file, or `dvc unprotect <path>` first.
+- **Mounting vs pinning.** `.awm/data-mounts` lists which chunks materialise in
+  a given scope. Everything the branch pins stays pinned, hashed and backed up
+  regardless — so a scope can carry a 30 GB archive it never puts on disk.
+- **Secrets are excluded, never hashed.** `secrets/` paths, `.env*`,
+  `.credentials.json` and `.nextflow/secrets` are in `.dvcignore`, so they never
+  enter the cache and never reach the off-site mirror. They stay on local disk.
+- **Nested git checkouts are pinned, not hashed.** You never hash a tree of git
+  repos as data — record URL + commit in `VENDORED.tsv` and re-clone on demand.
+- **dvc is optional.** It is resolved from `AWM_DVC_BIN`, then PATH, then the
+  known mamba envs. When it isn't found every path degrades to the legacy shared
+  symlink rather than failing. `AWM_DATA_DVC=0` forces that globally.
+- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors `data/` —
+  including `.dvc_cache` — to Globus nightly. Safe as a dumb mirror because
+  cache objects are content-addressed and never mutated in place.
+- **`dvc gc` is the one sharp edge.** The cache is shared across every project,
+  so collection from one worktree can delete objects another depends on. The
+  safe revision set is `--all-commits`; `--all-branches` keeps only branch tips
+  and would drop content that historical commits still reference. Note DVC's
+  `--dry` prints "Removed N objects", so its output cannot tell you whether it
+  actually deleted anything.
 
 ## Destructive operations
 

@@ -763,6 +763,61 @@ def _head_rev(repo: Path) -> str:
     return (r.stdout or "").strip() if r.returncode == 0 else ""
 
 
+def collect_garbage(repos: list[Path], *, dry_run: bool = True,
+                    keep: str = "all-commits") -> dict:
+    """Reclaim cache objects no listed repository references. **Guarded.**
+
+    This is the only operation in the workspace that can destroy data, and it is
+    wrapped rather than exposed because every one of its defaults is wrong here.
+
+    * The cache is shared by **every** project, so a collection that does not
+      name all of them treats the others' content as garbage. Hence ``repos`` is
+      required and plural, and DVC is told about each with ``-p``.
+    * The safe revision set is ``--all-commits``, **not** ``--all-branches``.
+      The latter keeps only branch *tips*, which would delete content referenced
+      by historical commits — silently breaking the consistent-snapshot property
+      that is the entire point of this layer. ``--workspace`` is worse still.
+    * It fails **late and quietly**. Files already materialised survive, because
+      the workspace hardlink keeps the inode alive; the loss only surfaces at
+      the next fresh checkout, in some other scope, possibly weeks later.
+    * ``dvc gc --dry`` prints "**Removed** N objects" rather than "would
+      remove", so its output cannot be used to tell a dry run from a real one.
+      The ``dry_run`` flag in the returned report is the only trustworthy
+      statement of which one happened, which is why it is always reported.
+
+    Defaults to a dry run on purpose: the caller must ask for deletion.
+    """
+    if not dvc_available():
+        return {"result": "unavailable", "detail": "dvc not found"}
+    if not repos:
+        return {"result": "refused", "detail":
+                "no repositories given — collecting against an incomplete set "
+                "treats every other project's content as garbage"}
+    if keep not in ("all-commits", "all-tags"):
+        return {"result": "refused", "detail":
+                f"keep={keep!r} refused. Only 'all-commits' (and 'all-tags') "
+                f"preserve content referenced by historical commits; "
+                f"'all-branches' keeps branch tips ONLY and 'workspace' keeps "
+                f"just what is checked out right now."}
+
+    args = ["gc", f"--{keep}", "-f"]
+    for r in repos:
+        args += ["-p", str(r)]
+    if dry_run:
+        args.append("--dry")
+    out = _dvc(repos[0], *args, timeout=None)
+    return {
+        "result": "ok" if out.returncode == 0 else "error",
+        # Stated explicitly because DVC's own output does NOT distinguish these.
+        "dry_run": dry_run,
+        "deleted_anything": (not dry_run) and out.returncode == 0,
+        "keep": keep,
+        "repos": [str(r) for r in repos],
+        "cache": str(cache_dir()),
+        "output": _out(out)[-2000:],
+    }
+
+
 def data_status(project: str, scope: str, worktree: Path) -> dict:
     """Describe a scope's data view: mode, the commit that pins it, and drift.
 

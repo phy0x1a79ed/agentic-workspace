@@ -170,6 +170,25 @@ SCOPE_MANIFEST_FUNCTIONS = [
         ],
     },
     {
+        "name": "data_gc",
+        "tool": "data_gc",
+        "description": (
+            "Reclaim shared-cache space by deleting objects no listed project "
+            "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
+            "The cache is shared workspace-wide, so you must list EVERY project "
+            "whose data must survive; anything omitted is treated as garbage. "
+            "keep defaults to 'all-commits', which preserves content referenced "
+            "by historical commits; 'all-branches' would keep only branch tips "
+            "and is refused. Note dvc's own output says 'Removed N objects' "
+            "even for a dry run — trust the dry_run field in the reply."
+        ),
+        "params": [
+            {"name": "projects", "type": "array", "required": True},
+            {"name": "dry_run", "type": "boolean", "required": False},
+            {"name": "keep", "type": "string", "required": False},
+        ],
+    },
+    {
         "name": "awm_refresh",
         "tool": "scope_refresh",
         "description": "Re-generate .awm/history.md and .awm/artifacts.md for a scope.",
@@ -234,6 +253,14 @@ def _handle_scope_data_status(args: dict) -> dict:
     return scopes.data_status(args["project"], args["scope"])
 
 
+def _handle_data_gc(args: dict) -> dict:
+    return scopes.data_gc(
+        args["projects"],
+        dry_run=bool(args.get("dry_run", True)),
+        keep=args.get("keep", "all-commits"),
+    )
+
+
 def _handle_scope_data_mount(args: dict) -> dict:
     return scopes.data_mount(args["project"], args["scope"], args.get("chunks"))
 
@@ -282,6 +309,7 @@ SCOPE_HANDLERS = {
     "scope_repair": _handle_scope_repair,
     "scope_data_status": _handle_scope_data_status,
     "scope_data_mount": _handle_scope_data_mount,
+    "data_gc": _handle_data_gc,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,

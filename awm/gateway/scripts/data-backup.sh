@@ -2,10 +2,16 @@
 # Nightly off-site mirror of <workspace>/data/ via Globus.
 #
 # WHY A DUMB MIRROR IS SAFE
-# git-annex object files are named by their own SHA256 and are never mutated in
-# place — the content store is append-only and content-addressed. A partial or
-# concurrent transfer can therefore only leave the mirror LAGGING, never
-# corrupted, and the far side needs no annex awareness at all.
+# DVC cache objects are named by their own hash and are never mutated in place —
+# the store is append-only and content-addressed. A partial or concurrent
+# transfer can therefore only leave the mirror LAGGING, never corrupted, and the
+# far side needs no DVC awareness at all.
+#
+# WHAT IS ACTUALLY BEING BACKED UP
+# `<workspace>/data/.dvc_cache/` is the store: every byte of every chunk any
+# project pins, for every commit. Lose it and every `.dvc` pin in every repo
+# becomes a hash pointing at nothing. The per-project directories alongside it
+# are the not-yet-converted projects, which are still plain files.
 #
 # WHAT IT DOES NOT CARRY
 # Secrets are gitignored in each canonical data repo, but they are still on
@@ -55,13 +61,17 @@ EXCLUDES=(
   --exclude '*.pem'
   --exclude 'id_rsa*'
 )
-# NEVER add `--exclude .git` here. Globus filters match on NAME, not path, so it
-# would prune the canonical data repo's own `.git` — which holds the annex
-# content store and the entire history. That is the single most important thing
-# in this mirror; the working tree above it is just symlinks into it. (The
-# tempting reason to add it — skipping vendored third-party checkouts — is not
-# worth it: those are already pinned in VENDORED.tsv and are re-clonable, and no
-# name-based filter can tell them apart from the repo we must keep.)
+# NEVER add `--exclude .git` here, and never exclude `.dvc_cache`. Globus filters
+# match on NAME, not path, so a `.git` exclude would prune any not-yet-converted
+# project's canonical data repo along with its entire history. (The tempting
+# reason to add it — skipping vendored third-party checkouts — is not worth it:
+# those are already pinned in VENDORED.tsv and are re-clonable, and no name-based
+# filter can tell them apart from a repo we must keep.)
+#
+# The DVC cache is the one thing in this mirror that cannot be reconstructed
+# from anywhere else. A `.dvc` pin is a hash; the bytes it names exist only in
+# the cache and, for now, in the retired git-annex stores. Once those are gone
+# this mirror is the only copy.
 
 if [ "$DRY" = "1" ]; then
   echo "would transfer: $SRC_EP:$SRC_PATH -> $DST_EP:$DST_PATH"
