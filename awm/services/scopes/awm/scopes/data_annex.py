@@ -91,6 +91,12 @@ secrets/
 **/.credentials.json
 **/.nextflow/secrets/
 
+# --- awm's own metadata ----------------------------------------------------
+# `.awm` is scope metadata, never data. It has no business in a data repo, and
+# if one ever appears it must not be annexed or pinned as a vendored checkout.
+.awm/
+**/.awm/
+
 # --- machine-local noise ---------------------------------------------------
 .DS_Store
 __pycache__/
@@ -331,6 +337,11 @@ def scan_vendored(repo: Path) -> list[tuple[str, str, str]]:
     found: list[tuple[str, str, str]] = []
     for root, dirs, _files in os.walk(repo):
         rootp = Path(root)
+        # `.awm` is scope metadata, not data. A clone that lands in here is a
+        # bug upstream, not a third-party checkout to pin — pinning it would
+        # record the data repo as its own vendored dependency.
+        if ".awm" in dirs:
+            dirs.remove(".awm")
         if ".git" in dirs:
             if rootp != repo:
                 rel = rootp.relative_to(repo)
@@ -471,6 +482,22 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     ``.awm/data`` that is a real directory but not our clone is left alone and
     reported, rather than silently deleted.
     """
+    if not awm_dir.is_absolute():
+        # A relative awm_dir is always a caller bug, but it fails destructively
+        # rather than merely wrongly, so it is refused here rather than
+        # normalised. The clone below runs with cwd=<canonical repo> and passes
+        # dest through to git, so a relative dest resolves INSIDE the project's
+        # own data directory — leaving a stray clone there that the next
+        # conversion then mistakes for a vendored third-party checkout.
+        return {
+            "mode": "unknown",
+            "path": str(awm_dir / "data"),
+            "detail": (
+                f"refusing a relative .awm path ({awm_dir}): it would resolve "
+                f"against the wrong directory. Pass an absolute worktree path."
+            ),
+        }
+
     dest = awm_dir / "data"
     canonical = canonical_repo(project)
 
