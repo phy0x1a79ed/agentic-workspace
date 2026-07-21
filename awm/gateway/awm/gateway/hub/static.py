@@ -137,12 +137,20 @@ def _is_within(target: Path, root: Path) -> bool:
 
 
 def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
-    """True if ``target`` (already resolved) matches any ``deny`` glob, taken
-    relative to ``root``. Matching uses ``PurePosixPath.full_match`` so ``**``
-    spans path segments (``**/.ssh/**`` hides ssh keys at any depth) while ``*``
-    stays within one segment. Matching the *resolved* path is deliberate: a
-    symlink pointing at a masked file resolves to it and is caught here, so the
-    mask can't be bypassed by requesting the link's (unmasked) name."""
+    """True if ``target`` (already resolved) is hidden by the ``deny`` globs,
+    taken relative to ``root``. Matching uses ``PurePosixPath.full_match`` so
+    ``**`` spans path segments (``**/.ssh/**`` hides ssh keys at any depth)
+    while ``*`` stays within one segment. Matching the *resolved* path is
+    deliberate: a symlink pointing at a masked file resolves to it and is caught
+    here, so the mask can't be bypassed by requesting the link's (unmasked) name.
+
+    Semantics are gitignore's: a leading ``!`` negates (re-exposes), and **the
+    last matching glob wins**. That gives a broad deny an escape hatch — the
+    canonical case is a content-addressed store living inside an otherwise
+    masked directory (``**/.git/**`` then ``!**/.git/annex/objects/**``, so a
+    git-annex symlink resolves to servable bytes) — while any secret-shaped glob
+    listed *after* the negation still re-masks. Order is therefore meaningful;
+    keep secret patterns last."""
     if not deny:
         return False
     try:
@@ -151,7 +159,13 @@ def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
         # Outside the root — _is_within already rejects this, but be defensive.
         return True
     pp = PurePosixPath(rel)
-    return any(pp.full_match(g) for g in deny)
+    masked = False
+    for glob in deny:
+        negated = glob.startswith("!")
+        pattern = glob[1:] if negated else glob
+        if pattern and pp.full_match(pattern):
+            masked = not negated
+    return masked
 
 
 def _render_shell(rec: ServiceRecord) -> str:

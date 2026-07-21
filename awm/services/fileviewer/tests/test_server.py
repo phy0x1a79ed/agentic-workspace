@@ -29,6 +29,23 @@ def test_default_mask_covers_the_usual_secrets():
 
 
 @pytest.mark.smoke
+def test_default_mask_unmasks_the_annex_object_store():
+    # Every large file under a scope's annex-mode .awm/data is a symlink into
+    # .git/annex/objects/, and the gateway matches the *resolved* path — so
+    # without this negation the whole data tree 404s.
+    m = server.DEFAULT_MASK
+    assert "!**/.git/annex/objects/**" in m
+    # Ordering is load-bearing: last match wins, so the negation must come
+    # after **/.git/** (else .git stays fully masked) and before every
+    # secret-shaped glob (else an annexed *.pem would be exposed).
+    neg = m.index("!**/.git/annex/objects/**")
+    assert m.index("**/.git/**") < neg
+    for secret in ("**/*.pem", "**/*.key", "**/.env", "**/*.token",
+                   "**/.ssh/**", "**/secrets/**"):
+        assert m.index(secret) > neg, f"{secret!r} must follow the negation"
+
+
+@pytest.mark.smoke
 def test_load_mask_defaults_only_when_no_override(monkeypatch):
     monkeypatch.delenv("FILEVIEWER_MASK_FILE", raising=False)
     assert server.load_mask() == tuple(dict.fromkeys(server.DEFAULT_MASK))
