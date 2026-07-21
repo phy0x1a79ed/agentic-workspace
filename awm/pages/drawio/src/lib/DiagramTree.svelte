@@ -22,7 +22,7 @@
   let { nodes, selected, depth = 0, onselect, onopen, onopencheckout }: Props = $props();
 </script>
 
-<ul style:--depth={depth}>
+<ul class:nested={depth > 0}>
   {#each nodes as node (node.path)}
     <li>
       {#if node.diagram}
@@ -75,11 +75,11 @@
 </ul>
 
 <style>
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0 0 0 calc(var(--depth, 0) > 0 ? 0.9rem : 0);
-  }
+  /* The component recurses, so each level only needs one step of indent —
+     nesting compounds it. (This was a calc() with a ternary, which is not
+     valid CSS: the declaration was dropped and nothing indented at all.) */
+  ul { list-style: none; margin: 0; padding: 0; }
+  ul.nested { padding-left: 0.9rem; }
   li { margin: 0; }
 
   .folder {
