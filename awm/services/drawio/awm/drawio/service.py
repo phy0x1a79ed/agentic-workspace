@@ -266,6 +266,25 @@ class Service:
         result["save"] = state["save"]
         return result
 
+    def externalize(self, handle: str, roots: list[str]) -> dict:
+        """Rewrite a checkout's embedded images as ``/files/…`` references.
+
+        Goes through a checkout like any other edit, so the change lands via
+        the normal merge contract and is reviewable in the editor first —
+        which matters, because this touches every image cell in the document.
+        """
+        from . import externalize as ext
+
+        state = self.checkouts.status(handle)
+        path = self.checkouts.file_path(handle)
+        rewritten, report = ext.externalize(path.read_text(encoding="utf-8"), roots)
+        if report["converted"]:
+            path.write_text(xmlmodel.normalize(rewritten), encoding="utf-8")
+        report["handle"] = handle
+        report["save"] = state["save"]
+        report["path"] = str(path)
+        return report
+
     def path(self, handle: str) -> dict:
         state = self.checkouts.status(handle)
         return {"handle": handle, "save": state["save"], "path": state["path"]}
