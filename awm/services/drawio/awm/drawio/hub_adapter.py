@@ -37,7 +37,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.drawio import mount, store as store_mod
+from awm.drawio import export, mount, store as store_mod
 from awm.drawio.checkout import Checkouts
 from awm.drawio.service import Service
 from awm.drawio.store import Store
@@ -174,6 +174,32 @@ API_MANIFEST: dict[str, Any] = {
             ),
             "params": [{"name": "save", "type": "string", "required": True}],
             "timeout": 60,
+        },
+        {
+            "name": "export",
+            "tool": "drawio_export",
+            "description": (
+                "Render a diagram to PDF/PNG/JPG/SVG. Image references are "
+                "inlined server-side, so the output is self-contained and needs "
+                "no network to display. Refuses if any reference is broken — a "
+                "figure with a silently blank cell looks finished, so nobody "
+                "goes looking for what is missing. Pass allow_broken to override."
+            ),
+            "params": [
+                {"name": "save", "type": "string"},
+                {"name": "format", "type": "string",
+                 "description": "pdf (default), png, jpg, or svg."},
+                {"name": "out", "type": "string",
+                 "description": "Output path (default: the service's exports dir)."},
+                {"name": "page", "type": "integer",
+                 "description": "Render only this page index."},
+                {"name": "scale", "type": "number", "description": "Default 1.0."},
+                {"name": "handle", "type": "string",
+                 "description": "Render a checkout's working copy instead."},
+                {"name": "allow_broken", "type": "boolean",
+                 "description": "Export even with unresolvable image references."},
+            ],
+            "timeout": 300,
         },
         {
             "name": "url",
@@ -398,6 +424,10 @@ HANDLERS: dict[str, Any] = {
     "restore": lambda a, as_=None: _svc().restore(a["save"], a["rev"],
                                                   author=_author(as_)),
     "check": lambda a: _svc().check(a["save"]),
+    "export": lambda a: _svc().export(
+        a.get("save"), fmt=a.get("format") or "pdf", out=a.get("out"),
+        page=a.get("page"), scale=float(a.get("scale") or 1.0),
+        allow_broken=bool(a.get("allow_broken")), handle=a.get("handle")),
     "url": lambda a: _svc().url(a.get("save"), handle=a.get("handle")),
     "remove": lambda a, as_=None: _svc().remove(a["save"], author=_author(as_)),
 
@@ -450,6 +480,7 @@ def _status_service() -> dict:
         "editor_tabs": {save: len(tabs)
                         for save, tabs in service.live_tabs.items() if tabs},
         "app_mount": mount.status(),
+        "export_container": export.container_state(),
     }
 
 
