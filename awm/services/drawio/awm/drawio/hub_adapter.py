@@ -258,6 +258,25 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 120,
         },
         {
+            "name": "externalize",
+            "tool": "drawio_externalize",
+            "description": (
+                "Rewrite a checkout's embedded image payloads "
+                "(image=data:...) as /files/... filesystem references, so a "
+                "re-rendered figure reaches the diagram on reload instead of "
+                "needing a re-import. Matching is by exact content hash, never "
+                "by filename — a name-based guess could silently swap one "
+                "structure for another in a published figure. Anything "
+                "unmatched is left embedded and reported."
+            ),
+            "params": [
+                {"name": "handle", "type": "string", "required": True},
+                {"name": "roots", "type": "array", "required": True,
+                 "description": "Directories to search for the source images."},
+            ],
+            "timeout": 300,
+        },
+        {
             "name": "path",
             "tool": "drawio_path",
             "description": (
@@ -433,6 +452,7 @@ HANDLERS: dict[str, Any] = {
 
     "checkout": lambda a, as_=None: _svc().checkout(a["save"], author=_author(as_)),
     "edit": lambda a: _svc().edit(a["handle"], a["ops"]),
+    "externalize": lambda a: _svc().externalize(a["handle"], a["roots"]),
     "path": lambda a: _svc().path(a["handle"]),
     "status": lambda a: _svc().status(a["handle"]),
     "update": lambda a: _svc().update(a["handle"]),
