@@ -54,9 +54,14 @@ EXCLUDES=(
   --exclude '.credentials.json'
   --exclude '*.pem'
   --exclude 'id_rsa*'
-  # Vendored third-party checkouts are pinned in VENDORED.tsv and re-clonable.
-  --exclude '.git'
 )
+# NEVER add `--exclude .git` here. Globus filters match on NAME, not path, so it
+# would prune the canonical data repo's own `.git` — which holds the annex
+# content store and the entire history. That is the single most important thing
+# in this mirror; the working tree above it is just symlinks into it. (The
+# tempting reason to add it — skipping vendored third-party checkouts — is not
+# worth it: those are already pinned in VENDORED.tsv and are re-clonable, and no
+# name-based filter can tell them apart from the repo we must keep.)
 
 if [ "$DRY" = "1" ]; then
   echo "would transfer: $SRC_EP:$SRC_PATH -> $DST_EP:$DST_PATH"
