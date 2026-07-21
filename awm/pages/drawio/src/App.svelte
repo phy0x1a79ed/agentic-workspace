@@ -137,17 +137,19 @@
 
   <div class="split">
     <section class="tree">
-      {#if diagrams.length === 0}
-        <p class="empty">No diagrams yet.</p>
-      {:else}
-        <DiagramTree
-          nodes={tree}
-          {selected}
-          onselect={select}
-          onopen={open}
-          onopencheckout={openCheckout}
-        />
-      {/if}
+      <div class="tree-scroll">
+        {#if diagrams.length === 0}
+          <p class="empty">No diagrams yet.</p>
+        {:else}
+          <DiagramTree
+            nodes={tree}
+            {selected}
+            onselect={select}
+            onopen={open}
+            onopencheckout={openCheckout}
+          />
+        {/if}
+      </div>
 
       <form class="create" onsubmit={(e) => { e.preventDefault(); onCreate(); }}>
         <input
@@ -232,14 +234,20 @@
 </main>
 
 <style>
+  /* The shell is locked to the viewport and the two panels scroll inside it.
+     Letting the document scroll instead would move the header off-screen while
+     the tree — the thing you are actually scrolling — stays put. */
   main {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
     padding: 1.5rem;
-    font-family: system-ui, sans-serif;
-    color: var(--text, #ddd);
-    background: var(--bg, #111);
-    min-height: 100vh;
+    font-family: var(--sans);
+    color: var(--text);
+    background: var(--bg);
   }
-  header { margin-bottom: 1rem; }
+  header { flex: 0 0 auto; margin-bottom: 1rem; }
   h1 {
     font-size: 1.2rem;
     letter-spacing: 0.05em;
@@ -259,18 +267,35 @@
   .split {
     display: grid;
     grid-template-columns: minmax(18rem, 26rem) 1fr;
+    /* An explicit row that fills the remaining height — an implicit row sizes to
+       its content, which would leave the panels short and hand the scroll back
+       to the document. minmax(0,…) lets them shrink below their content. */
+    grid-template-rows: minmax(0, 1fr);
     gap: 1.5rem;
-    align-items: start;
-  }
-  @media (max-width: 46rem) {
-    .split { grid-template-columns: 1fr; }
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   section {
-    border: 1px solid var(--border, #333);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 0.75rem;
-    background: var(--surface, #161616);
+    background: var(--surface);
+  }
+
+  /* The tree scrolls; the create form stays pinned to the bottom of the panel. */
+  .tree-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .detail { overflow-y: auto; }
+
+  /* One column on a phone — and there the document scrolls, because a locked
+     viewport with two stacked panels gives each one a uselessly short window. */
+  @media (max-width: 46rem) {
+    main { height: auto; min-height: 100dvh; overflow: visible; }
+    .split { grid-template-columns: 1fr; grid-template-rows: none; }
+    section, .tree-scroll, .detail { overflow: visible; }
   }
 
   .empty { color: var(--text3, #888); font-size: 0.85rem; margin: 0.5rem 0; }
@@ -278,6 +303,7 @@
   code { font-family: var(--mono, monospace); font-size: 0.9em; }
 
   .error {
+    flex: 0 0 auto;
     border: 1px solid #a8552f;
     background: #2a1a12;
     color: #d68b5f;
@@ -300,7 +326,7 @@
   button:hover:not(:disabled) { background: var(--surface3, #2a2a2a); color: var(--text, #ddd); }
   button:disabled { opacity: 0.5; cursor: default; }
 
-  .create { display: flex; gap: 0.4rem; margin-top: 0.9rem; }
+  .create { flex: 0 0 auto; display: flex; gap: 0.4rem; margin-top: 0.9rem; }
   .create input {
     flex: 1 1 auto;
     min-width: 0;
