@@ -49,6 +49,15 @@ def index_files(roots: list[str | Path],
     mapping is deterministic across runs — otherwise re-running a migration
     could point the same cell at a different (identical) file and produce a
     diff that means nothing.
+
+    That makes **root order the caller's precedence control**, and it matters
+    more than it looks. An archive directory usually holds byte-identical
+    copies of what the renderer currently emits, so a reference into it
+    resolves and renders correctly — and the mistake is invisible until someone
+    re-renders and the figure does not change. Passing the live render
+    directory ahead of (or instead of) any archive is how you avoid that;
+    passing one parent directory sweeps up its archive subdirectories, whose
+    names may well sort first.
     """
     index: dict[str, Path] = {}
     for root in roots:
