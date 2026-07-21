@@ -225,22 +225,27 @@ class Checkouts:
         ours = self.file_path(handle_id)
         base = ours.with_suffix(".base")
         theirs = ours.with_suffix(".live")
-        base.write_text(
-            self.store.read(handle.save, rev=handle.base_rev)
-            if handle.base_rev else "", encoding="utf-8",
-        )
-        theirs.write_text(self.store.read(handle.save), encoding="utf-8")
+        try:
+            base.write_text(
+                self.store.read(handle.save, rev=handle.base_rev)
+                if handle.base_rev else "", encoding="utf-8",
+            )
+            theirs.write_text(self.store.read(handle.save), encoding="utf-8")
 
-        # merge-file predates every git version question this workspace has;
-        # it needs no index, no worktree, and cannot leave MERGE_HEAD behind.
-        proc = subprocess.run(
-            ["git", "merge-file",
-             "-L", f"checkout {handle.id}", "-L", "common base", "-L", "live",
-             str(ours), str(base), str(theirs)],
-            capture_output=True, text=True,
-        )
-        base.unlink(missing_ok=True)
-        theirs.unlink(missing_ok=True)
+            # merge-file predates every git version question this workspace
+            # has; it needs no index, no worktree, and cannot leave MERGE_HEAD
+            # behind.
+            proc = subprocess.run(
+                ["git", "merge-file",
+                 "-L", f"checkout {handle.id}", "-L", "common base", "-L", "live",
+                 str(ours), str(base), str(theirs)],
+                capture_output=True, text=True,
+            )
+        finally:
+            # Always: a stray .base/.live left by a failed update would be read
+            # as part of the checkout by anything that globs the directory.
+            base.unlink(missing_ok=True)
+            theirs.unlink(missing_ok=True)
         if proc.returncode < 0:
             raise CheckoutError(f"merge failed: {proc.stderr.strip()}")
 
