@@ -224,6 +224,35 @@ class TestOneLever:
         assert "data/cold.dvc" in dd.chunk_pins(wt), \
             "...while remaining pinned by the commit"
 
+    def test_an_empty_mount_list_means_nothing_not_everything(self, dvc_project):
+        """The two must not collapse, or opting out of every chunk opts you in.
+
+        An ABSENT list means "materialise everything" (the right default for a
+        scope that has not thought about it). A list that exists and selects
+        nothing means exactly that.
+        """
+        wt = dvc_project["worktree"]
+        (wt / ".awm").mkdir(exist_ok=True)
+        dd.provision_scope_data("p", "main", wt / ".awm")
+        (wt / "data" / "c").mkdir(parents=True)
+        (wt / "data" / "c" / "f.txt").write_text("v1\n")
+        _sh(dd.dvc_bin(), "add", "data/c", "-q", cwd=str(wt))
+        _git(wt, "add", "-A"); _git(wt, "commit", "-q", "-m", "chunk")
+
+        dd.write_mounts(wt / ".awm", [])
+        assert dd.read_mounts(wt / ".awm") == []
+        _sh("rm", "-rf", str(wt / "data" / "c"))
+        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+
+        assert rep["checkout"] == "skipped"
+        assert not (wt / "data" / "c").exists()
+
+        # ...and removing the list restores "everything".
+        (wt / ".awm" / dd.MOUNTS_FILE).unlink()
+        rep = dd.provision_scope_data("p", "main", wt / ".awm")
+        assert rep["checkout"] == "ok"
+        assert (wt / "data" / "c" / "f.txt").exists()
+
 
 @needs_dvc
 class TestCacheSafety:

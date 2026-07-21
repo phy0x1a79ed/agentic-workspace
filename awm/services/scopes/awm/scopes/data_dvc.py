@@ -148,12 +148,18 @@ SENTINEL=".awm/{failed_file}"
 MOUNTS=".awm/{mounts_file}"
 rm -f "$SENTINEL"
 targets=()
+have_list=0
 if [ -f "$MOUNTS" ]; then
+  have_list=1
   while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     targets+=("$line")
   done < "$MOUNTS"
 fi
+# An ABSENT list means "materialise everything"; a list that exists but selects
+# nothing means "materialise nothing". Collapsing those two would turn an
+# opted-out scope into one that checks out every cold chunk in the project.
+if [ "$have_list" = 1 ] && [ "${{#targets[@]}}" -eq 0 ]; then exit 0; fi
 if ! out=$("$DVC" checkout --quiet "${{targets[@]}}" 2>&1); then
   mkdir -p .awm
   {{ echo "dvc checkout FAILED after $1"; echo "$out"; }} > "$SENTINEL"
@@ -647,16 +653,20 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     report["chunks"] = len(pins)
     mounts = read_mounts(awm_dir)
     report["mounts"] = mounts if mounts is not None else "all"
-    if pins:
-        # Materialise only what this scope mounts. A bare `dvc checkout` would
-        # materialise EVERY pin -- there is no "pinned but not materialised"
-        # flag in DVC -- which on scadc means dragging ~65 GB of cold chunks and
-        # ~122k inodes into a scope that asked for none of it.
-        targets = mounts if mounts else []
-        co = _dvc(repo_dir, "checkout", "--quiet", *targets, timeout=None)
+    # Materialise only what this scope mounts. A bare `dvc checkout` would
+    # materialise EVERY pin -- there is no "pinned but not materialised" flag in
+    # DVC -- which on scadc means dragging ~65 GB of cold chunks and ~122k
+    # inodes into a scope that asked for none of it.
+    #
+    # `mounts is None` (no list) means everything; an empty list means nothing.
+    # Those must not collapse, or opting out of every chunk would opt you in.
+    if pins and mounts != []:
+        co = _dvc(repo_dir, "checkout", "--quiet", *(mounts or []), timeout=None)
         report["checkout"] = "ok" if co.returncode == 0 else "partial"
         if co.returncode != 0:
             report["checkout_detail"] = _out(co)[-400:]
+    else:
+        report["checkout"] = "skipped"
 
     # A sentinel left by the hook means a previous merge advanced a pin whose
     # content the cache could not supply -- and that `dvc checkout` deleted the
