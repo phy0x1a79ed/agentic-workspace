@@ -31,12 +31,44 @@ projects/{project}/
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       artifacts.md               # auto-generated: pointer on discovering/reusing sibling scopes' outputs
-      data -> ../../../data/{project}/  # symlink to shared project data
+      data/                      # project data — annex clone, or symlink to data/{project}/
       skills -> ../../../awm/skills/    # symlink to skill catalog
     [code files...]              # the actual repo content
 ```
 
-Scopes access project data via `.awm/data/`. All scopes in the same project share the same data directory.
+Scopes access project data via `.awm/data/` — that path never changes. What sits
+behind it depends on whether the project's data has been converted:
+
+| Mode | What `.awm/data` is | Concurrency |
+|---|---|---|
+| **annex** (converted) | a git-annex clone of `data/{project}/`, checked out on branch `scope/{scope}` | isolated + versioned; reconcile by an explicit merge |
+| **shared** (not yet converted) | a symlink to `data/{project}/` | none — every scope writes the same files |
+
+### Data concurrency (annex mode)
+
+Code gets isolation from worktrees; annex mode gives data the same thing. Your
+writes are yours until you publish them, and publishing is transactional.
+
+| Verb | What it does |
+|---|---|
+| `scope(verb="data_status", …)` | which mode you're in, your data branch/revision, drift from the project's canonical branch |
+| `scope(verb="data_snapshot", …)` | commit what you've written — bulk to the content store, small text to ordinary git |
+| `scope(verb="data_promote", …)` | publish your data branch into the project's canonical branch. All-or-nothing: a conflict, or another scope promoting first, returns cleanly and changes nothing |
+| `project(verb="data_init", …)` | convert a project's `data/{project}/` to annex. The per-project opt-in; refuses while any scope is active |
+| `scope(verb="gather"/"scatter", args={…, data:true})` | fan data in/out alongside the code merge |
+
+Two things behave differently in annex mode, and only these two:
+
+1. **Large files already in the repo are read-only symlinks** into a content
+   store. Write a new file rather than opening an existing one for writing (or
+   `git annex unlock` it first). Files under ~100 KB are ordinary git files and
+   are unaffected.
+2. **Secrets are excluded, not versioned.** Anything under a `secrets/` path,
+   any `.env`, and `.credentials.json` is deliberately never annexed — so it is
+   also never carried off-site by the nightly backup. It stays on local disk.
+
+Storage is not a reason to hesitate: content is hardlinked from the canonical
+store, so N scopes holding the same dataset cost one copy.
 
 ## Existing Projects
 
@@ -159,14 +191,19 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm gateway init` / `awm gateway status` / `awm gateway serve` / `awm gateway stop` / `awm gateway restart` | Core lifecycle |
 | `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
-| `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
+| `awm scope heal [--project P] [--dry-run]` | Idempotent repair pass: enforce tier-3 = `.awm/` only, and bring `.awm/data` to the project's current data mode |
+| `awm scope data-status/data-snapshot/data-promote <p> <s>` | Per-scope data versioning (annex mode) |
+| `awm project data-init <p> [--dry-run]` | Convert a project's `data/<p>/` to git-annex |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
+2. **Write outputs to `.awm/data/`** — then `scope(verb="data_snapshot")` and, when
+   the work is good, `scope(verb="data_promote")`. In shared mode those are no-ops
+   and outputs are visible to siblings immediately; in annex mode they are how your
+   work becomes visible at all. See § *Data concurrency* above.
 3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — auto-generated. Use MCP tools.
 4. **Run the `debrief` skill** when ending a session — commit, log the session, register artifacts, refresh.
 5. **Check `.awm/skills/` for a procedure** before improvising an unfamiliar workflow — the writeups are on disk even though the search service is retired.

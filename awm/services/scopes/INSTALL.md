@@ -27,5 +27,33 @@ this folder (any folder with a `run.sh` under `awm/services/`), starts it with
 
 No auth — the registration handshake carries no token.
 
+## Optional dependency: `git-annex`
+
+The data layer (`awm.scopes.data_annex`) needs the `git-annex` **binary**, not a
+Python package. It is deliberately optional: without it every data path falls
+back to the pre-annex shared symlink rather than failing, so the service starts
+and scopes are created either way — they just don't get isolated, versioned
+data.
+
+Install it into its own env (it is a large Haskell binary; keeping it out of the
+`awm` env avoids a slow solve there):
+
+    mamba create -n annex -c conda-forge git-annex
+
+Resolution order is `AWM_ANNEX_BIN` → `PATH` → the known mamba envs
+(`~/lib/miniforge3/envs/{annex,awm}/bin/git-annex`) → `/usr/bin`. The service
+runs under systemd's minimal PATH, so **set `AWM_ANNEX_BIN` explicitly** if it
+lives anywhere unusual.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `AWM_ANNEX_BIN` | — | absolute path to `git-annex`; wins over every other lookup |
+| `AWM_DATA_ANNEX` | `1` | global kill switch — `0` forces every project back to the shared symlink |
+| `AWM_DATA_ANNEX_AUTOGET_MAX` | `20000` | above this many tracked files a clone is left lazy instead of hardlinking all content in |
+
+Content is hardlinked from `<workspace>/data/`, so that directory and
+`<workspace>/projects/` **must be on the same filesystem** — otherwise git-annex
+silently falls back to real copies and every scope pays full price for its data.
+
 To iterate against a running sandbox without installing, use
 `awm dev shadow awm/services/scopes`; it execs this same `run.sh` as an overlay.

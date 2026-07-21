@@ -251,6 +251,14 @@ class TestIsTracked:
 
 
 class TestHealWorktree:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, scopes_workspace):
+        """Heal reaches outside the worktree now — it also reconciles
+        ``.awm/data`` against the project's canonical data dir. Without the
+        workspace fixture these tests would create ``proj-a/`` in the REAL
+        ``data/``."""
+        return scopes_workspace
+
     def test_strips_leaked_import_from_tracked_agents(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
@@ -407,7 +415,7 @@ class TestHealWorktree:
         assert second == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None,
+            "opencode_config": None, "data": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
         assert (wt / ".awm" / "context.md").read_text() == ctx_after
@@ -509,7 +517,7 @@ class TestHealScopes:
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None,
+            "opencode_config": None, "data": None,
         }
 
 
