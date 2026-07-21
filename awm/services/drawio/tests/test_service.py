@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from awm.drawio.checkout import Checkouts, Conflicted
+from awm.drawio.checkout import Behind, Checkouts, Conflicted
 from awm.drawio.ops import OpError
 from awm.drawio.service import Service
 from awm.drawio.store import Store
@@ -120,7 +120,7 @@ def test_handle_answers_path_url_and_status(svc):
     assert svc.path(handle)["path"].endswith("diagram.drawio")
     assert handle in svc.url(SAVE, handle=handle)["url"]
     assert svc.status(handle)["save"] == SAVE
-    assert result["url"].startswith("/ui/drawio/")
+    assert result["url"].startswith("/drawio-app/")
 
 
 def test_urls_are_origin_relative(svc):
@@ -239,22 +239,54 @@ def test_merge_does_not_hang_on_a_dead_tab(svc):
     assert result["changed"] is True
 
 
-def test_merge_folds_in_work_the_flush_revealed(svc):
-    """The autosave livelock: while the agent worked, the person kept typing.
-    A plain 'refuse while behind' would make the agent retry forever."""
+def test_merge_refuses_drift_the_agent_should_have_seen(svc):
+    """Reconciliation belongs in update, where the agent picked the moment and
+    can render the result. A merge that quietly folded in changes it never
+    showed anyone would be exactly the silent-guessing failure this design
+    exists to avoid."""
     handle = svc.checkout(SAVE, author="agent")["handle"]
-    svc.edit(handle, [{"op": "add_node", "page": "Page-1", "id": "agent/x",
-                       "label": "from agent"}])
+    svc.edit(handle, [{"op": "add_node", "id": "agent/x", "label": "from agent"}])
     svc.save_from_editor(SAVE, set_value(svc.read(SAVE)["xml"], "b", "from user"),
                          base_rev=svc.info(SAVE)["rev"], tab_id="tab-1")
 
-    result = asyncio.run(svc.merge(handle))
+    with pytest.raises(Behind):
+        asyncio.run(svc.merge(handle))
+
+
+def test_merge_folds_in_work_the_flush_itself_produced(svc):
+    """The autosave livelock: a live tab moves the tip every couple of seconds,
+    so 'refuse while behind' alone would let an actively-typing person starve
+    an agent forever. Work the flush *causes* is newer than anything the agent
+    could have seen, so folding it in is safe — and necessary."""
+    svc.note_tab(SAVE, "tab-1")
+    handle = svc.checkout(SAVE, author="agent")["handle"]
+    svc.edit(handle, [{"op": "add_node", "page": "Page-1", "id": "agent/x",
+                       "label": "from agent"}])
+
+    async def scenario():
+        async def flush_response():
+            # What a live tab does on `flush`: save its pending edits, then ack.
+            await asyncio.sleep(0.05)
+            svc.save_from_editor(
+                SAVE, set_value(svc.read(SAVE)["xml"], "b", "typed while merging"),
+                base_rev=svc.info(SAVE)["rev"], tab_id="tab-1")
+            svc.note_flush_ack(SAVE, "tab-1")
+
+        task = asyncio.create_task(flush_response())
+        result = await svc.merge(handle)
+        await task
+        return result
+
+    result = asyncio.run(scenario())
     landed = svc.read(SAVE)["xml"]
     assert result["changed"] is True
-    assert 'id="agent/x"' in landed and 'value="from user"' in landed
+    assert 'id="agent/x"' in landed and 'value="typed while merging"' in landed
 
 
 def test_merge_reports_a_genuine_conflict_rather_than_guessing(svc):
+    """Both sides move the same cell. merge sends the agent to update, update
+    reports the conflict instead of picking a winner, and the agent is left
+    with something it can actually fix by hand."""
     handle = svc.checkout(SAVE, author="agent")["handle"]
     svc.edit(handle, [{"op": "set", "id": "a", "move": [500, 0]}])
     svc.save_from_editor(
@@ -263,10 +295,16 @@ def test_merge_reports_a_genuine_conflict_rather_than_guessing(svc):
                                       'x="900" y="0" width="80"'),
         base_rev=svc.info(SAVE)["rev"], tab_id="tab-1")
 
+    with pytest.raises(Behind):
+        asyncio.run(svc.merge(handle))
+
+    result = svc.update(handle)
+    assert result["conflicts"] == 1
+    assert "how_to_resolve" in result
+    assert svc.status(handle)["conflict_markers"] > 0
+
     with pytest.raises(Conflicted):
         asyncio.run(svc.merge(handle))
-    # And the agent is left with something it can actually fix by hand.
-    assert svc.status(handle)["conflict_markers"] > 0
 
 
 def test_concurrent_merges_do_not_interleave(svc):

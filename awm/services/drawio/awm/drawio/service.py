@@ -28,8 +28,9 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
-from . import ops, store as store_mod, xmlmodel
+from . import mount, ops, store as store_mod, xmlmodel
 from .checkout import Behind, Checkouts, Conflicted
 from .store import Store
 
@@ -88,6 +89,7 @@ class Service:
         self.checkouts = checkouts
         self._emit = emit
         self._leases: dict[str, Lease] = {}
+        self._merge_locks: dict[str, asyncio.Lock] = {}
         # save -> {tab_id: last_seen}. Populated by the editor session layer.
         self.live_tabs: dict[str, dict[str, float]] = {}
         self._flush_acks: dict[str, set[str]] = {}
@@ -179,6 +181,49 @@ class Service:
     def remove(self, save: str, author: str) -> dict:
         return self.store.remove(save, author=author)
 
+    def export(self, save: str, fmt: str = "pdf", out: str | None = None,
+               page: int | None = None, scale: float = 1.0,
+               allow_broken: bool = False, handle: str | None = None) -> dict:
+        """Render a diagram to a file on disk.
+
+        Refuses by default when any image reference is broken. A figure with a
+        silently blank cell is worse than no figure at all: it looks finished,
+        so nobody goes looking for what is missing. Override deliberately with
+        ``allow_broken``.
+        """
+        from . import export as export_mod
+
+        xml = (self.read(handle=handle)["xml"] if handle
+               else self.store.read(save))
+        source = self.checkouts.status(handle)["save"] if handle else \
+            store_mod.normalize_save_path(save)
+
+        if not allow_broken and not handle:
+            report = self.check(source)
+            if not report["ok"]:
+                raise export_mod.ExportError(
+                    f"{len(report['problems'])} image reference(s) will not "
+                    "render; run `drawio check` for detail, or pass "
+                    "allow_broken=true to export anyway"
+                )
+
+        data, problems = export_mod.render(xml, fmt, page=page, scale=scale)
+        if problems and not allow_broken:
+            raise export_mod.ExportError(
+                "could not inline: " + "; ".join(problems))
+
+        target = Path(out).expanduser() if out else Path(
+            self.store.root).parent / "exports" / (
+                source.replace("/", "_").removesuffix(".drawio") + f".{fmt}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return {
+            "save": source, "format": fmt, "path": str(target),
+            "bytes": len(data), "problems": problems,
+            # Origin-relative, so the caller can just open it.
+            "url": f"/files{target}",
+        }
+
     def url(self, save: str, handle: str | None = None) -> dict:
         """The editor URL for a diagram, or for a checkout of one.
 
@@ -189,9 +234,11 @@ class Service:
         """
         if handle:
             self.checkouts.status(handle)  # raises if unknown
-            return {"url": f"/ui/drawio/edit/?checkout={handle}", "handle": handle}
+            return {"url": f"{mount.MOUNT_PREFIX}/index.html?checkout={handle}",
+                    "handle": handle}
         path = store_mod.normalize_save_path(save)
-        return {"url": f"/ui/drawio/edit/?save={path}", "save": path}
+        return {"url": f"{mount.MOUNT_PREFIX}/index.html?save={quote(path)}",
+                "save": path}
 
     # --- checkout surface --------------------------------------------------
 
@@ -250,33 +297,54 @@ class Service:
         did not move → land → release → push the result back. Without the
         flush, an in-flight autosave carrying a *pre-merge* snapshot could land
         immediately after and silently revert everything.
+
+        Drift that already existed is **refused**, before anything is touched:
+        reconciliation belongs in :meth:`update`, where the agent chose the
+        moment and can render the result to check it. Only drift the flush
+        itself produced is folded in here — that work is by definition newer
+        than anything the agent could have seen, and refusing it would let an
+        actively-typing person starve an agent forever, since a live tab moves
+        the tip every couple of seconds.
         """
         state = self.checkouts.status(handle)
         save = state["save"]
-        lease = self._leases.setdefault(save, Lease())
 
-        if not lease.acquire(handle):
-            raise Conflicted(f"{save} is being merged by another caller; retry")
-        try:
+        if state["behind"]:
+            raise Behind(
+                f"{save} has moved {state['behind']} revision(s) since this "
+                "checkout was taken; call update first, check the result, then "
+                "merge"
+            )
+
+        # Two distinct guards, and conflating them was a bug: the *lock*
+        # serializes merges against each other, while the *lease* blocks
+        # browser autosaves. The lease must not be held across the flush —
+        # the flush exists precisely to let tabs write, so holding it there
+        # would reject the saves we just asked for.
+        lock = self._merge_locks.setdefault(save, asyncio.Lock())
+        async with lock:
             await self._flush_live_tabs(save)
+
+            lease = self._leases.setdefault(save, Lease())
+            lease.acquire(handle)
             try:
-                return self.checkouts.merge(handle, label=label, keep=keep)
-            except Behind:
-                # The tabs flushed work we had not seen. Fold it in and retry
-                # once — still inside the lease, so nothing can move underneath
-                # us. A conflict here surfaces to the agent exactly as it would
-                # from an explicit `update`.
-                result = self.checkouts.update(handle)
-                if result.get("conflicts"):
-                    raise Conflicted(
-                        f"{save} changed while merging and the changes conflict "
-                        f"({result['conflicts']}); resolve at {state['path']}, "
-                        "then merge again"
-                    ) from None
-                return self.checkouts.merge(handle, label=label, keep=keep)
-        finally:
-            lease.release(handle)
-            await self._push_to_live_tabs(save)
+                try:
+                    return self.checkouts.merge(handle, label=label, keep=keep)
+                except Behind:
+                    # Only reachable when the flush we just triggered committed
+                    # something. Fold it in and retry once — the lease is held
+                    # now, so nothing else can move underneath us.
+                    result = self.checkouts.update(handle)
+                    if result.get("conflicts"):
+                        raise Conflicted(
+                            f"{save} changed while merging and the changes "
+                            f"conflict ({result['conflicts']}); resolve at "
+                            f"{state['path']}, then merge again"
+                        ) from None
+                    return self.checkouts.merge(handle, label=label, keep=keep)
+            finally:
+                lease.release(handle)
+                await self._push_to_live_tabs(save)
 
     # --- live tab coordination --------------------------------------------
 
