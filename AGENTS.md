@@ -141,12 +141,35 @@ Design facts worth knowing before you touch it:
   (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
   on PATH for *every* git call, since git-annex's own hooks re-invoke
   `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
+- **A worktree path from the DB is never trusted literally.** Legacy `agents`
+  rows carry an empty `worktree`, and some a workspace-relative one. `Path("")`
+  is `Path(".")` — which *exists*, so an existence check accepts it and the
+  caller then operates on the process's cwd. Both go through
+  `scopes._resolve_worktree` (empty → the conventional `projects/<p>/<s>`,
+  relative → anchored on the workspace root), and `provision_scope_data`
+  **refuses** a relative `.awm` rather than normalising it: the clone runs with
+  `cwd=<canonical repo>` and hands `dest` to git, so a relative dest resolves
+  *inside* the project's own data directory. There is no correct anchor to
+  normalise against, only a wrong one. "The path exists" is not proof the path
+  is meaningful — check where it came from.
 - **Teardown is the dangerous direction.** `_cleanup_worktree` calls
   `prepare_teardown` first, which publishes, refuses when content would be lost,
   and chmods the tree writable (annex marks objects *and their parent dirs*
   read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
   collides with the next `worktree add`). `create_scope` pre-cleans through the
   same path, so creation can now refuse where it previously steamrolled.
+
+**Converting a project.** `awm/gateway/scripts/data-rollout.sh` is the operator
+front end (`--check` / `--tier=` / `--only=` / `--rollback`), wrapping
+`python -m awm.scopes.scripts.migrate_data <project>` per project. Two ordering
+rules it enforces. **Deploy before converting** — a converted project under old
+code still symlinks `.awm/data` into what is now an annex working tree, giving a
+scope real data with no isolation and read-only large files; the reverse order
+is harmless. And **sweep broken symlinks first** — after conversion every
+annexed file *is* a symlink, so pre-existing rot becomes permanently
+indistinguishable from "content not fetched yet". Some projects are badly rotted
+(spanish-lakes 629 of 629 symlinks broken, cyanoverse 456 of 458), so the
+converter refuses until they are resolved.
 
 ## Frontend component system
 
