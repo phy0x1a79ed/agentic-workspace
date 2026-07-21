@@ -362,11 +362,15 @@ def _write_exclusions(repo: Path, vendored: list[tuple[str, str, str]]) -> None:
         body += "".join(f"/{path}/\n" for path, _u, _s in vendored)
     (repo / ".gitignore").write_text(body)
     (repo / ".gitattributes").write_text(_CANONICAL_GITATTRIBUTES)
-    if vendored:
-        (repo / _VENDORED_FILE).write_text(
-            _VENDORED_HEADER
-            + "".join(f"{p}\t{u}\t{s}\n" for p, u, s in vendored)
-        )
+    # Written unconditionally — the header alone when there is nothing to pin.
+    # Guarding this on a non-empty list makes the manifest append-only in
+    # practice: a checkout that goes away is never unpinned, so the file keeps
+    # asserting a dependency that no longer exists. "Deterministic" has to mean
+    # the file is a function of the current tree, including when that is empty.
+    (repo / _VENDORED_FILE).write_text(
+        _VENDORED_HEADER
+        + "".join(f"{p}\t{u}\t{s}\n" for p, u, s in vendored)
+    )
 
 
 def init_project_data(project: str, *, dry_run: bool = False,

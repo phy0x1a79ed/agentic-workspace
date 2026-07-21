@@ -349,3 +349,22 @@ class TestRelativePathRefusal:
         subprocess.run(["git", "init", "-q", str(repo / ".awm" / "data")], check=True)
 
         assert da.scan_vendored(repo) == []
+
+
+def test_vendored_manifest_is_regenerated_when_empty(tmp_path):
+    """An emptied vendored set must clear the manifest, not leave it stale.
+
+    Guarding the write on a non-empty list makes VENDORED.tsv append-only in
+    practice, so a checkout that goes away keeps being asserted as a pinned
+    dependency forever.
+    """
+    repo = tmp_path / "data"
+    repo.mkdir()
+    da._write_exclusions(repo, [("vendor/thing", "https://example/x", "abc123")])
+    assert "vendor/thing" in (repo / "VENDORED.tsv").read_text()
+
+    da._write_exclusions(repo, [])
+
+    body = (repo / "VENDORED.tsv").read_text()
+    assert "vendor/thing" not in body
+    assert body.lstrip().startswith("#")   # header survives
