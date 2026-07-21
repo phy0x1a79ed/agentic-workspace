@@ -49,13 +49,14 @@ declare -A DISTS=(
   [stt]="$WS/awm/services/stt::$WS/awm/services/stt/awm/stt/tests"
   [tts]="$WS/awm/services/tts::$WS/awm/services/tts/awm/tts/tests"
   [fileviewer]="$WS/awm/services/fileviewer::$WS/awm/services/fileviewer/tests"
+  [drawio]="$WS/awm/services/drawio::$WS/awm/services/drawio/tests"
   [notes]="$WS/awm/services/notes::$WS/awm/services/notes/tests"
   [virtmic]="$WS/awm/services/virtmic::$WS/awm/services/virtmic/tests"
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing precedence social 2fa rlm-browser orchestrator graphify stt tts fileviewer notes virtmic mic)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing precedence social 2fa rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
