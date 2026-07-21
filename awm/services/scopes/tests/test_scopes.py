@@ -461,17 +461,19 @@ class TestHealScopes:
         assert report[0]["error"].startswith("worktree missing")
         assert bogus in report[0]["error"]
 
-    def test_skips_scope_with_no_recorded_worktree(self, scopes_workspace,
-                                                   seeded_scopes,
-                                                   scopes_dao_conn):
+    def test_empty_worktree_never_resolves_to_the_cwd(self, scopes_workspace,
+                                                      seeded_scopes,
+                                                      scopes_dao_conn):
         """An empty worktree column must never be healed against the cwd.
 
         ``Path("")`` is ``Path(".")``, which *exists*, so an existence check
         alone waves the row through and heal then operates on whatever
         directory the process happens to be standing in. In production this
         repointed a live scope's ``.awm/data`` symlink and left a stray clone
-        inside the project's canonical data directory.
+        inside the project's canonical data directory. It must fall back to the
+        scope's conventional location instead.
         """
+        from awm.config import PROJECTS_DIR
         scopes_dao_conn.execute("UPDATE agents SET worktree='' WHERE scope='scope-1'")
         scopes_dao_conn.commit()
         before = sorted(p.name for p in Path.cwd().iterdir())
@@ -479,8 +481,10 @@ class TestHealScopes:
         report = heal_scopes()
 
         assert len(report) == 1
-        assert report[0]["ok"] is False
-        assert report[0]["error"] == "worktree not recorded"
+        resolved = Path(report[0]["worktree"])
+        assert resolved.is_absolute()
+        assert resolved == PROJECTS_DIR / "proj-a" / "scope-1"
+        assert resolved != Path.cwd()
         assert sorted(p.name for p in Path.cwd().iterdir()) == before
 
     def test_anchors_relative_worktree_on_the_workspace(self, scopes_workspace,

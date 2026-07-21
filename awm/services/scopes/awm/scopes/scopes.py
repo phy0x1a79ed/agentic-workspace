@@ -570,6 +570,26 @@ def _heal_data(awm_dir: Path, *, project: str, scope: str, dry_run: bool) -> str
     return None
 
 
+def _resolve_worktree(project: str, scope: str, recorded: str | None) -> Path:
+    """A scope's worktree as an absolute path, from a possibly-legacy DB row.
+
+    Two shapes in the ``agents`` table are hazardous read literally. An empty
+    ``worktree`` becomes ``Path('.')`` — which *exists*, so an existence check
+    accepts it and every caller then operates on whatever directory the process
+    is standing in. A workspace-relative value resolves the same way.
+
+    Both fall back to the conventional ``projects/<project>/<scope>``, which is
+    where ``git worktree`` actually put them. Note the distinction that matters:
+    the fallback is an absolute path derived from the scope's own identity, so
+    it is wrong-or-missing but never *someone else's directory*.
+    """
+    raw = (recorded or "").strip()
+    if not raw:
+        return PROJECTS_DIR / project / scope
+    worktree = Path(raw)
+    return worktree if worktree.is_absolute() else PROJECTS_DIR.parent / worktree
+
+
 def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]:
     dao = ScopesDAO()
     sql = (
@@ -592,16 +612,12 @@ def heal_scopes(project: str | None = None, dry_run: bool = False) -> list[dict]
         # relative path, which resolves against wherever the operator happened
         # to be standing. Anchor the relative form on the workspace root and
         # reject anything that still isn't a real directory.
-        raw = (row["worktree"] or "").strip()
-        worktree = Path(raw)
-        if raw and not worktree.is_absolute():
-            worktree = PROJECTS_DIR.parent / worktree
-        if not raw or not worktree.is_dir():
+        worktree = _resolve_worktree(row["project"], row["scope"], row["worktree"])
+        if not worktree.is_dir():
             report.append({
                 "project": row["project"], "scope": row["scope"],
-                "worktree": raw, "ok": False,
-                "error": ("worktree not recorded" if not raw
-                          else f"worktree missing: {worktree}"),
+                "worktree": str(worktree), "ok": False,
+                "error": f"worktree missing: {worktree}",
             })
             continue
         try:
@@ -1178,20 +1194,8 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
 # ---------------------------------------------------------------------------
 
 def _scope_worktree(project: str, scope: str) -> Path:
-    """The scope's worktree, as an absolute path.
-
-    Same legacy-row hazard as ``heal_scopes``: an empty ``worktree`` column
-    becomes ``Path('.')`` and would silently point every data operation at the
-    process's current directory. Fall back to the conventional location instead,
-    and anchor a relative row on the workspace root.
-    """
-    default = PROJECTS_DIR / project / scope
     rec = agent_record_for_scope(project, scope, active_only=False)
-    raw = ((rec["worktree"] if rec else "") or "").strip()
-    if not raw:
-        return default
-    worktree = Path(raw)
-    return worktree if worktree.is_absolute() else PROJECTS_DIR.parent / worktree
+    return _resolve_worktree(project, scope, rec["worktree"] if rec else None)
 
 
 def data_snapshot(project: str, scope: str, message: str | None = None) -> dict:
