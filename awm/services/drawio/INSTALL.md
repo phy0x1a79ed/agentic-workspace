@@ -119,7 +119,7 @@ Cells reference ordinary files through fileviewer's mount
 (`style="shape=image;image=/files/abs/path.svg;"`), so re-rendering a figure
 updates the diagram on reload instead of requiring a re-import.
 
-Two hazards this creates, and what handles each:
+Three hazards this creates, and what handles each:
 
 - **The semicolon landmine.** drawio splits style strings on `;`, so a
   conventional `data:image/svg+xml;base64,…` URI truncates and the cell renders
@@ -132,6 +132,15 @@ Two hazards this creates, and what handles each:
   masked directory is invisible with nothing logged anywhere. `drawio check`
   reports both cases separately, and `export` refuses by default when any
   reference is broken.
+- **Pointing at the wrong copy.** `drawio externalize` matches by content hash
+  and takes the *first* root that contains a match, so **root order is
+  precedence**. An archive directory typically holds byte-identical copies of
+  what the renderer currently emits, so a reference into it resolves, renders
+  identically, and passes `check` — and then silently never updates again,
+  which forfeits the only reason to externalize. Name the live render
+  directories explicitly rather than one parent that sweeps up its own archive
+  subdirectories. Nothing detects this for you; the failure is a figure that
+  quietly stops tracking its source.
 
 ### Export
 
@@ -217,6 +226,12 @@ Git is required at runtime. Docker is required only for `export`.
 - **Stripping viewport state** means the file no longer restores scroll
   position. The client preserves page/zoom/scroll across reloads itself, so
   this is invisible in practice.
+- **Editor tab counts leak on an unclean close.** The count decrements on
+  `editor_close`; a tab killed with the browser never sends one, so it lingers
+  in `service_status` / the page's `editors` badge and costs each merge one
+  `FLUSH_TIMEOUT_S` (4s) wait while the service waits for an ack that cannot
+  come. Bounded, and cleared by restarting the service — there is no TTL or
+  heartbeat reaping.
 - **No auth**, like every awm service. Anything that can reach the gateway can
   edit any diagram.
 
