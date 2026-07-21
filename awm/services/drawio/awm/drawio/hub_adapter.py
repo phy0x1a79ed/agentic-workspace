@@ -272,7 +272,16 @@ API_MANIFEST: dict[str, Any] = {
             "params": [
                 {"name": "handle", "type": "string", "required": True},
                 {"name": "roots", "type": "array", "required": True,
-                 "description": "Directories to search for the source images."},
+                 "description": (
+                     "Directories to search for the source images. ORDER IS "
+                     "PRECEDENCE: when the same image content exists under "
+                     "more than one root, the earliest root wins. List the "
+                     "current render directory first — pointing a reference at "
+                     "an archive copy resolves and renders correctly today, so "
+                     "nothing fails, but a later re-render never reaches the "
+                     "diagram. Prefer naming the exact directories over one "
+                     "parent, since a parent sweeps up its own archive subdirs."
+                 )},
             ],
             "timeout": 300,
         },
