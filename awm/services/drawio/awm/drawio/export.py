@@ -1,4 +1,11 @@
-"""Rendering a diagram to PDF/PNG/SVG through the containerized export server.
+"""Rendering a diagram to PDF/PNG/SVG.
+
+**Two backends, not one.** PDF, PNG and JPG go to the containerized export
+server. SVG cannot: that container answers ``400 Unsupported Format!``, because
+drawio has always produced SVG client-side from the live graph rather than on a
+server. So SVG is routed to :mod:`awm.drawio.chrome`, which loads drawio's own
+export client in headless Chrome and asks the rendered graph to serialize
+itself. Everything below — inlining especially — applies to both.
 
 Two things this has to get right.
 
@@ -165,6 +172,17 @@ def render(xml: str, fmt: str = "pdf", *, inline: bool = True,
     if inline:
         xml, problems = inline_images(xml)
 
+    if fmt == "svg":
+        # SVG does not go through the container at all — it cannot make one.
+        # See awm.drawio.chrome for why this needs a browser.
+        from . import chrome
+
+        try:
+            svg = chrome.render_svg(xml, scale=scale, page=page)
+        except chrome.ChromeError as exc:
+            raise ExportError(str(exc)) from exc
+        return svg.encode("utf-8"), problems
+
     state = ensure_container()
     if state != "running":
         raise ExportError(
@@ -175,10 +193,6 @@ def render(xml: str, fmt: str = "pdf", *, inline: bool = True,
     payload: dict = {"xml": xml, "format": fmt, "scale": scale}
     if page is not None:
         payload["from"] = payload["to"] = int(page)
-    if fmt == "svg":
-        # Belt and braces: we have already inlined, but if a reference slipped
-        # through, this keeps the SVG from silently depending on the network.
-        payload["embedImages"] = 1
 
     try:
         response = httpx.post(f"{EXPORT_URL}/", data=payload, timeout=180)

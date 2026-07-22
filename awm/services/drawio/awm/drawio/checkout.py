@@ -34,6 +34,7 @@ a half-resolved file cannot land.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -48,6 +49,8 @@ from .store import Store, StoreError, normalize_save_path
 #: what "still conflicted" means — the state file records intent, but the file
 #: itself is the truth, since the agent resolves by editing it directly.
 MARKERS = ("<<<<<<< ", "=======", ">>>>>>> ")
+
+log = logging.getLogger("awm.drawio.checkout")
 
 CHECKOUT_FILENAME = "diagram.drawio"
 STATE_FILENAME = "checkout.json"
@@ -131,7 +134,12 @@ class Checkouts:
         for state in sorted(self.root.glob(f"*/{STATE_FILENAME}")):
             try:
                 handle = Handle(**json.loads(state.read_text(encoding="utf-8")))
-            except (OSError, TypeError, ValueError):
+            except (OSError, TypeError, ValueError) as exc:
+                # Skipping it makes an agent's whole checkout disappear from
+                # `drawio checkouts` — the work is still on disk beside this
+                # file, so say where.
+                log.warning("unreadable checkout state at %s (%s); the working "
+                            "copy beside it is not listed", state, exc)
                 continue
             if save is None or handle.save == normalize_save_path(save):
                 handles.append(handle)
@@ -179,7 +187,12 @@ class Checkouts:
         if handle.base_rev:
             try:
                 behind = self.store.changed_since(handle.save, handle.base_rev)
-            except StoreError:
+            except StoreError as exc:
+                # Reporting "not behind" is what lets `merge` proceed, so a
+                # base revision we cannot resolve must not pass unremarked.
+                log.warning("checkout %s: cannot measure drift from base %s "
+                            "(%s); reporting it as up to date",
+                            handle.id, handle.base_rev[:8], exc)
                 behind = []
 
         base_text = (self.store.read(handle.save, rev=handle.base_rev)

@@ -70,7 +70,13 @@ def index_files(roots: list[str | Path],
                 continue
             try:
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            except OSError:
+            except OSError as exc:
+                # An unreadable candidate is simply absent from the index, so
+                # its cell is reported "unmatched" for a reason that has
+                # nothing to do with the content not being there.
+                log.warning("externalize: cannot read candidate %s (%s); "
+                            "images matching it will report as unmatched",
+                            path, exc)
                 continue
             index.setdefault(digest, path.resolve())
     return index
