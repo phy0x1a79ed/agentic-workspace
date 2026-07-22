@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
@@ -45,6 +47,39 @@ from awm.claude_view import binary, front
 log = logging.getLogger("awm.claude_view.hub_adapter")
 
 SUPERVISOR = binary.Supervisor()
+
+
+def _install_sigterm_cleanup() -> None:
+    """Run ``Supervisor.stop`` on SIGTERM, not only on a clean exit.
+
+    ``Supervisor`` registers its cleanup — kill the child's process group,
+    strip our hooks out of ``settings.json`` — with ``atexit``. That covers a
+    normal exit and a Ctrl-C (SIGINT raises ``KeyboardInterrupt``, which
+    unwinds and runs ``atexit``), which is what standalone testing exercised.
+
+    It does **not** cover SIGTERM, and SIGTERM is exactly how the gateway stops
+    a service: ``awm services stop`` / ``disable`` / ``restart`` all go through
+    ``kill_pid_group``, which ``SIGTERM``s the process group. Python's default
+    SIGTERM action terminates the process **without** running ``atexit`` — so
+    without this handler every gateway-mediated stop leaves our 25 hooks behind
+    in the fleet-wide ``settings.json``, each one curling at a now-dead port on
+    every tool call of every agent on the host, forever. That is silent and
+    fleet-wide, the worst shape of failure this service has.
+
+    The child is separately covered by ``PR_SET_PDEATHSIG`` (it dies with us no
+    matter how we die), but nothing else strips the hooks, so this handler's
+    real job is that removal. ``stop`` is idempotent and never raises, so a
+    later ``atexit`` firing too is harmless. ``os._exit`` after it skips a
+    second unwind we have already done by hand.
+    """
+    def _graceful(signum: int, _frame: object) -> None:
+        log.info("claude-view: SIGTERM — cleaning up before exit")
+        try:
+            SUPERVISOR.stop()
+        finally:
+            os._exit(0)
+
+    signal.signal(signal.SIGTERM, _graceful)
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -168,6 +203,7 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    _install_sigterm_cleanup()
     await ServiceAdapter(
         "claude-view", API_MANIFEST, HANDLERS, on_start=_on_start,
     ).run()
