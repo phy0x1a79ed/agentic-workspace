@@ -38,8 +38,10 @@ import atexit
 import ctypes
 import logging
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -88,6 +90,38 @@ def installed() -> bool:
     return (d / "claude-view").is_file() and (d / "dist" / "index.html").is_file()
 
 
+def node_path() -> Path | None:
+    """Absolute path to the ``node`` the upstream server needs, or None.
+
+    The Rust server is not self-contained. Its ``/api/sidecar/*`` routes and
+    the ``/ws/chat/*`` relay are proxies to a **Node sidecar** that the server
+    spawns itself, on demand, as literally ``Command::new("node")`` — so it is
+    resolved from ``PATH``, and the gateway runs services on systemd's minimal
+    PATH where ``node`` does not exist. The failure is quiet and misleading:
+    the SPA loads, the terminal works (that relay is Rust-native), and only
+    the chat surface breaks, as a 503 with the send button greyed out.
+
+    Worse, upstream's circuit breaker counts a failed spawn *before* it checks
+    whether ``node`` exists, so ten dead attempts in forty seconds latch it
+    open and every later request fails with a stale "circuit open" message
+    that says nothing about the real cause.
+
+    So resolve it the same way we resolve the server binary: explicitly, and
+    preferring our own interpreter's ``bin/`` — the awm conda env ships node
+    beside python, which makes this a dependency the service install already
+    guarantees rather than one the host has to happen to satisfy.
+    """
+    override = os.environ.get("CLAUDE_VIEW_NODE")
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    beside = Path(sys.executable).resolve().parent / "node"
+    if beside.is_file():
+        return beside
+    found = shutil.which("node")
+    return Path(found) if found else None
+
+
 def child_env() -> dict[str, str]:
     """The pinned environment the upstream server runs under.
 
@@ -118,6 +152,12 @@ def child_env() -> dict[str, str]:
     # 127.0.0.1, and loopback-only is the whole security model — the mesh sees
     # this server only through the authenticated HTTPS front.
     env.pop("CLAUDE_VIEW_BIND_ADDR", None)
+    # The server shells out to a bare `node` for its sidecar (see node_path).
+    # Prepending rather than replacing: the child also runs tmux, git and lsof
+    # off PATH, and those belong to the host.
+    node = node_path()
+    if node is not None:
+        env["PATH"] = os.pathsep.join([str(node.parent), env.get("PATH", "")])
     return env
 
 
@@ -296,12 +336,17 @@ class Supervisor:
     def snapshot(self) -> dict:
         with self._lock:
             snap = self._snapshot_locked()
+        node = node_path()
         snap.update({
             "pinned_version": PINNED_VERSION,
             "binary": str(binary_path()),
             "installed": installed(),
             "upstream_port": PORT,
             "data_dir": str(STATE_DIR),
+            # Reported because its absence degrades the service silently: chat
+            # dies, everything else keeps working. See node_path().
+            "node": str(node) if node else None,
+            "sidecar_capable": node is not None,
         })
         return snap
 
