@@ -67,8 +67,12 @@ awm() {
 }
 
 # -- resolve the release worktree -------------------------------------------
+# No `exit` in the awk and no `head` after it: either closes the pipe while git
+# is still writing, and under `pipefail` that SIGPIPE is a fatal error with no
+# output at all. Take every match and keep the first in the shell instead.
 RELEASE="$(git -C "$SRC" worktree list --porcelain \
-    | awk '/^worktree /{w=$2} /^branch refs\/heads\/release$/{print w; exit}')"
+    | awk '/^worktree /{w=$2} /^branch refs\/heads\/release$/{print w}')"
+RELEASE="${RELEASE%%$'\n'*}"
 [ -n "$RELEASE" ] || die "no worktree checked out on 'release'"
 
 # -- rollback ----------------------------------------------------------------
