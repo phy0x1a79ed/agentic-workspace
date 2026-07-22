@@ -136,6 +136,32 @@ class TestGates:
         assert rep["mode"] == "unknown"
         assert (wt / "data").is_symlink(), "must not delete what a human put there"
 
+    def test_a_refused_compat_symlink_is_reported_not_papered_over(self, dvc_project):
+        """The refusal must never be reported as a successful link.
+
+        A scope whose old annex clone still occupies `.awm/data` reads the
+        pre-reorg tree through every call site naming that path, while its code
+        expects the post-reorg one. Nothing raises. If provisioning answers
+        `mode: dvc, checkout: ok, compat_symlink: <path>` the migration looks
+        done and is not -- so the caller has to be told.
+        """
+        wt = dvc_project["worktree"]
+        awm = wt / ".awm"
+        awm.mkdir(exist_ok=True)
+        # stand in for the annex clone still sitting there
+        (awm / "data").mkdir()
+        (awm / "data" / "leftover.txt").write_text("from the old clone\n")
+
+        rep = dd.provision_scope_data("p", "main", awm)
+        assert rep["compat_symlink"] == "refused:real-directory"
+        assert (awm / "data" / "leftover.txt").exists(), "must not delete it either"
+
+        (awm / "data" / "leftover.txt").unlink()
+        (awm / "data").rmdir()
+        rep = dd.provision_scope_data("p", "main", awm)
+        assert rep["compat_symlink"] == str(awm / "data")
+        assert os.readlink(str(awm / "data")) == "../data"
+
 
 # ---------------------------------------------------------------------------
 # The properties the layer exists for

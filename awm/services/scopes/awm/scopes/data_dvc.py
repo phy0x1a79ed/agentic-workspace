@@ -690,8 +690,8 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     # contract, so it survives as a relative symlink to the real data folder
     # rather than as a second copy. This makes repointing those callers optional
     # cleanup instead of a blocking migration step.
-    _link_compat_path(compat, repo_dir)
-    report["compat_symlink"] = str(compat)
+    linked = _link_compat_path(compat, repo_dir)
+    report["compat_symlink"] = str(compat) if linked == "ok" else linked
     return report
 
 
@@ -733,23 +733,32 @@ def write_mounts(awm_dir: Path, chunks: list[str]) -> Path:
     return path
 
 
-def _link_compat_path(compat: Path, repo_dir: Path) -> None:
-    """Point ``.awm/data`` at ``../data`` — relative, so it survives a move."""
+def _link_compat_path(compat: Path, repo_dir: Path) -> str:
+    """Point ``.awm/data`` at ``../data`` — relative, so it survives a move.
+
+    Returns what actually happened, because the refusal below is the more
+    dangerous outcome and the caller must be able to report it. A scope whose
+    annex clone is still sitting at ``.awm/data`` reads the *pre-reorg* tree
+    through every one of the 125+ call sites that name that path, while its
+    merged code expects the post-reorg one — and there is no error anywhere. It
+    must not be reported as success.
+    """
     target = Path("..") / DATA_SUBDIR
     if compat.is_symlink():
         if os.readlink(str(compat)) == str(target):
-            return
+            return "ok"
         compat.unlink()
     elif compat.is_dir():
         # A real directory here is either the old annex clone or somebody's
         # files. Either way it is not ours to delete -- leave it and say so.
         log.warning("%s is a real directory; leaving it and skipping the compat "
                     "symlink. Move it aside once its content is migrated.", compat)
-        return
+        return "refused:real-directory"
     elif compat.exists():
         compat.unlink()
     data_dir(repo_dir).mkdir(parents=True, exist_ok=True)
     compat.symlink_to(target)
+    return "ok"
 
 
 def _provision_symlink(project: str, dest: Path, *, reason: str) -> dict:
