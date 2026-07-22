@@ -172,6 +172,23 @@ mkdir -p "$DEST"
 rsync -a --delete "$HERE/vendor/v$VERSION/" "$DEST/"
 info "$(du -sh "$DEST" | cut -f1) -> $DEST"
 
+# -- install from the release tree ------------------------------------------
+# Not left to `awm deploy`'s change detection, because the thing most likely to
+# be missing is invisible to it: `.runtime-env` is gitignored, so the
+# cherry-pick cannot carry it, and without it run.sh execs a bare `python` on
+# systemd's minimal PATH and the service never starts. install.sh writes it.
+#
+# This is the one context where running install.sh is correct rather than
+# dangerous: its httpsfront `pip install -e` re-points the live :12100 front at
+# whatever tree it runs from, and here that tree IS release. Never run it from a
+# feature worktree.
+say "Installing from release"
+bash "$RELEASE/awm/services/claude-view/install.sh" >/dev/null \
+    || die "install.sh failed in $RELEASE"
+[ -f "$RELEASE/awm/services/claude-view/.runtime-env" ] \
+    || die "install.sh left no .runtime-env — run.sh would exec a bare python"
+info "$(sed -n 's/^AWM_PYTHON=//p' "$RELEASE/awm/services/claude-view/.runtime-env")"
+
 # -- deploy ------------------------------------------------------------------
 say "awm deploy"
 ( cd "$RELEASE" && awm deploy ) || die "awm deploy failed — see above.
