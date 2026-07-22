@@ -146,6 +146,12 @@ _CHECKOUT_SH = """\
 DVC={dvc_bin}
 SENTINEL=".awm/{failed_file}"
 MOUNTS=".awm/{mounts_file}"
+# Hooks live in the COMMON git dir, so they fire in every worktree of the
+# project -- including the ones whose branch predates the conversion and has no
+# `.dvc/` at all. There, `dvc checkout` exits 253 ("not inside of a DVC
+# repository") and we would cry wolf on every merge. Not converted, nothing to
+# do.
+[ -d .dvc ] || exit 0
 rm -f "$SENTINEL"
 targets=()
 have_list=0
@@ -160,7 +166,9 @@ fi
 # nothing means "materialise nothing". Collapsing those two would turn an
 # opted-out scope into one that checks out every cold chunk in the project.
 if [ "$have_list" = 1 ] && [ "${{#targets[@]}}" -eq 0 ]; then exit 0; fi
-if ! out=$("$DVC" checkout --quiet "${{targets[@]}}" 2>&1); then
+# NOT --quiet: the sentinel exists to say WHY the checkout failed, and --quiet
+# silences the very message it is supposed to record, leaving an empty file.
+if ! out=$("$DVC" checkout "${{targets[@]}}" 2>&1); then
   mkdir -p .awm
   {{ echo "dvc checkout FAILED after $1"; echo "$out"; }} > "$SENTINEL"
   echo "!! awm: dvc checkout failed -- your data does NOT match this commit." >&2
