@@ -160,11 +160,11 @@ reports "circuit open" instead of the real cause. `status` reports
 
 ## Ports
 
-| Port | Bind | What |
-|---|---|---|
-| 47892 | `127.0.0.1` | upstream claude-view server — **loopback only** |
-| 12110 | `0.0.0.0` | TLS front, awm edge auth |
-| 3001 | `127.0.0.1` | Node sidecar, spawned by the server — **forced**, see below |
+| Port | Bind | What | Override |
+|---|---|---|---|
+| 47892 | `127.0.0.1` | upstream claude-view server — **loopback only** | `CLAUDE_VIEW_UPSTREAM_PORT` |
+| 12110 | `0.0.0.0` | TLS front, awm edge auth | `CLAUDE_VIEW_FRONT_PORT` |
+| 3001 | `127.0.0.1` | Node sidecar, spawned by the server — **forced**, see below | `CLAUDE_VIEW_SIDECAR_PORT` |
 
 12110 sits inside the `12100..12150` band that `/mnt/a/linux/ssh_settings.ps1`
 already forwards wholesale through the Windows portproxy, so no elevated re-run
@@ -192,6 +192,49 @@ covers HTTP, HTTPS and raw TCP. Verify after any bump with
 the child environment. The upstream server defaults to `127.0.0.1`, and
 loopback-only is the entire security model: the mesh reaches it *only* through
 the authenticated front.
+
+## Running a dev instance alongside prod
+
+Prod runs permanently under the systemd gateway while this service is still
+being worked on, so a second instance from a worktree is the normal case, not an
+edge case. Four things are per-instance, and all four are already parameterised:
+
+| What | Knob | Notes |
+|---|---|---|
+| server port | `CLAUDE_VIEW_UPSTREAM_PORT` | |
+| front port | `CLAUDE_VIEW_FRONT_PORT` | stay inside `12100..12150` to keep the portproxy |
+| index + state | `CLAUDE_VIEW_STATE_DIR` | already per-tree: defaults beside the source |
+| sidecar port | `CLAUDE_VIEW_SIDECAR_PORT` | **must differ — see below** |
+
+Two of those are not ordinary collisions, and both fail destructively rather
+than loudly:
+
+- **The sidecar port is a kill, not a bind failure.** Before spawning its
+  sidecar the server runs `kill_port_holder(port)`, which lsofs the port and
+  `kill -9`s any *node* process holding it. A second instance left on the
+  default 3001 does not fail to start — it SIGKILLs the first instance's
+  sidecar and takes over, so prod's chat surface dies with no error on prod's
+  side. Always give a dev instance its own.
+
+- **The hooks are a singleton, and claiming them is total.** They name one port,
+  so agent state can only flow to one instance; `install()` therefore strips
+  *every* claude-view entry rather than just its own. If a dev instance wrote
+  `~/.claude/settings.json` it would take prod's hooks away, and `remove()` —
+  scoped to its own port — would not give them back on the way out. Prod would
+  then run with no agent state at all, which surfaces as the Live Monitor
+  reporting the whole fleet as "Needs You" rather than as any kind of error.
+
+  So ownership is structural (`hooks.owns_fleet_settings`): only the instance
+  registered with the **prod gateway** (`AWM_HUB_URL` on `:7819`) writes the
+  fleet-wide file. A dev sandbox, or a standalone run with no hub at all, writes
+  `settings.dev.json` inside its own state dir instead. It fails safe — a
+  misconfigured dev instance loses *its own* agent state, never prod's — and
+  `status.hooks.fleet_wide` reports which side of that line an instance is on.
+
+  The cost is that a dev instance shows every session as "Needs You", because
+  nothing reads its scratch file. To actually exercise hooks in dev, stop prod
+  first and point the dev instance at the real file explicitly with
+  `CLAUDE_VIEW_SETTINGS=~/.claude/settings.json`.
 
 ## Hooks: we register them, claude-view does not
 

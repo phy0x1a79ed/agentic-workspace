@@ -30,6 +30,14 @@ The sentinel is deliberately upstream's own string. If someone ever drops
 ``CLAUDE_VIEW_SKIP_HOOKS``, claude-view's cleanup pass recognises and reclaims
 our entries instead of stacking a second copy beside them, and ours does the
 same to its. One namespace, no orphans, whichever side is running.
+
+**Exactly one instance on a host may own this file.** The hooks name a single
+port, so agent state can only ever flow to one instance, and ``install`` claims
+that slot by clearing every claude-view entry rather than just its own. Which
+instance gets the claim is therefore not a preference — it is decided in
+``owns_fleet_settings``, structurally and fail-safe, so that a dev instance
+started alongside prod writes to a scratch file instead of silently taking
+prod's hooks away and never giving them back.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 log = logging.getLogger("awm.claude_view.hooks")
 
@@ -46,9 +55,54 @@ log = logging.getLogger("awm.claude_view.hooks")
 #: purpose — see the module docstring.
 SENTINEL = "# claude-view-hook"
 
+#: The fleet-wide file every Claude Code session on this host reads.
+FLEET_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+#: The gateway the fleet's singleton instance registers with (prod systemd).
+PROD_HUB_PORT = int(os.environ.get("AWM_PROD_PORT", "7819"))
+
+_SERVICE_DIR = Path(__file__).resolve().parents[2]
+
+
+def owns_fleet_settings() -> bool:
+    """True only for the instance the fleet's agents should be reporting to.
+
+    Hooks are a **singleton** resource, and ``install`` claims the slot
+    outright — it strips every claude-view entry regardless of port, because a
+    stale instance's hooks curl into a dead port on every tool call of every
+    agent. That is correct for one instance and destructive with two: a dev
+    instance starting up would strip prod's entries, and ``remove``, scoped to
+    its own port, would not put them back on the way out. Prod would then run
+    with no hooks at all — which does not surface as an error anywhere, because
+    every session simply resolves to ``unknown`` and the Live Monitor reports
+    the entire fleet as "Needs You" while it works.
+
+    So ownership is decided structurally rather than by convention, and it
+    fails safe: the claim belongs to the instance registered with the
+    production gateway, and anything else — a dev sandbox on :7861, a
+    standalone run with no hub at all — writes to a scratch file instead.
+    Forgetting to configure a dev instance costs that instance its agent state.
+    It cannot cost prod's.
+
+    ``CLAUDE_VIEW_SETTINGS`` still overrides the result wholesale, which is how
+    a deliberate test writes somewhere specific (including at the real file,
+    with prod stopped).
+    """
+    try:
+        return urlsplit(os.environ.get("AWM_HUB_URL") or "").port == PROD_HUB_PORT
+    except ValueError:  # malformed AWM_HUB_URL — treat as "not prod"
+        return False
+
+
+def _default_settings_path() -> Path:
+    if owns_fleet_settings():
+        return FLEET_SETTINGS
+    state = Path(os.environ.get("CLAUDE_VIEW_STATE_DIR") or (_SERVICE_DIR / "state"))
+    return state / "settings.dev.json"
+
+
 SETTINGS_PATH = Path(
-    os.environ.get("CLAUDE_VIEW_SETTINGS")
-    or (Path.home() / ".claude" / "settings.json")
+    os.environ.get("CLAUDE_VIEW_SETTINGS") or _default_settings_path()
 )
 
 #: Transcribed from ``crates/server/src/live/hook_registrar.rs`` (taxonomy
@@ -262,8 +316,20 @@ def remove(port: int | None = None) -> dict:
 
 
 def status(port: int | None = None) -> dict:
-    """What is actually in settings.json right now. Never raises."""
-    out: dict = {"settings": str(SETTINGS_PATH), "ours": 0, "events": []}
+    """What is actually in settings.json right now. Never raises.
+
+    ``fleet_wide`` is the one to read first: false means this instance is
+    writing a scratch file that no Claude Code session loads, so every session
+    it shows will read "Needs You" no matter what the agents are doing. That is
+    the correct and deliberate state for a non-prod instance — see
+    ``owns_fleet_settings``.
+    """
+    out: dict = {
+        "settings": str(SETTINGS_PATH),
+        "fleet_wide": SETTINGS_PATH == FLEET_SETTINGS,
+        "ours": 0,
+        "events": [],
+    }
     try:
         hooks = _load().get("hooks")
         if not isinstance(hooks, dict):
