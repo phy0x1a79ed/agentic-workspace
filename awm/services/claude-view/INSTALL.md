@@ -164,25 +164,81 @@ reports "circuit open" instead of the real cause. `status` reports
 |---|---|---|
 | 47892 | `127.0.0.1` | upstream claude-view server — **loopback only** |
 | 12110 | `0.0.0.0` | TLS front, awm edge auth |
-| 3001 | `0.0.0.0` ⚠ | Node sidecar, spawned by the server — **no auth** |
+| 3001 | `127.0.0.1` | Node sidecar, spawned by the server — **forced**, see below |
 
 12110 sits inside the `12100..12150` band that `/mnt/a/linux/ssh_settings.ps1`
 already forwards wholesale through the Windows portproxy, so no elevated re-run
 of that script is needed (unlike Claude Science's 12201/12202).
 
-**The sidecar's bind is an upstream gap.** Its bundle calls
-`.listen(SIDECAR_PORT)` with no host argument, so Node binds every interface,
-and it reads no host/bind variable — there is no knob. It is unauthenticated and
-it is the CLI control bridge, so anything that reaches it can drive Claude Code
-sessions. Today it is not mesh-reachable, but only because the Windows portproxy
-forwards `12100..12150` and 3001 is outside that range — reachability by
-accident of an unrelated config, not by design. It *is* reachable from the
-Windows host on the WSL interface. Fix before this is considered hardened.
+**The sidecar's bind is forced, because upstream offers no knob.** Its bundle
+calls `.listen(SIDECAR_PORT)` with no host argument, so Node binds every
+interface, and it reads no host/bind variable. That matters because the sidecar
+is the unauthenticated CLI control bridge: whatever reaches it can spawn and
+drive Claude Code sessions. It was never mesh-reachable — the portproxy forwards
+only `12100..12150` — but it *was* reachable from the Windows host on the WSL
+interface, and "safe because an unrelated config file happens not to forward
+that port" is not a security boundary.
+
+`node/loopback-listen.cjs` patches `net.Server.prototype.listen` to supply
+`127.0.0.1`, preloaded via `NODE_OPTIONS=--require` from `child_env()`. The
+preload runs before the bundle is evaluated, so the vendored release asset —
+which is checksum-verified against upstream's `checksums.txt` — stays untouched
+and needs no re-patching on a version bump. `net` rather than `http` because
+`http.Server` extends `net.Server` and delegates `listen()` to it, so one seam
+covers HTTP, HTTPS and raw TCP. Verify after any bump with
+`ss -lntp | grep 3001`: it must read `127.0.0.1:3001`, never `*:3001`.
 
 `CLAUDE_VIEW_BIND_ADDR` is deliberately left unset and actively stripped from
 the child environment. The upstream server defaults to `127.0.0.1`, and
 loopback-only is the entire security model: the mesh reaches it *only* through
 the authenticated front.
+
+## Hooks: we register them, claude-view does not
+
+Agent state — "is this agent working, or waiting on me?" — has exactly one
+source. `routes/hooks/resolve_state.rs` calls itself "the SOLE authority for
+agent state" and means it: state exists only because Claude Code hooks POST to
+`/api/live/hook`. With no hooks, every session resolves to `state: "unknown"`,
+which the UI buckets as **"Needs You"** — so the Live Monitor cheerfully reports
+that seven agents are awaiting input while all seven are working. That is the
+one question this service exists to answer, so the hooks are not optional.
+
+Upstream registers them for us, but `register_hooks()` also injects a
+**statusline**, and the two cannot be separated — `CLAUDE_VIEW_SKIP_HOOKS=1`
+disables both. The statusline is the problem: it is a *single slot* in
+`settings.json`, not an array, so a dev and a prod instance would silently
+overwrite each other's, and the wrapper script it writes lands in
+`~/.claude-view/`, outside `CLAUDE_VIEW_DATA_DIR` and therefore outside every
+containment guarantee the corpus gate verified.
+
+So the flag stays set and `awm/claude_view/hooks.py` does the half we want:
+
+- **25 observation events, never `WorktreeCreate`.** Claude Code has two kinds
+  of hook. Observation hooks fire alongside the action and their stdout is
+  discarded. Replacement hooks *replace* the action and Claude Code parses their
+  stdout as the result. `WorktreeCreate` is a replacement hook — registering it
+  as an observer makes it return `{"ok":true}` where a worktree path belongs, so
+  every `isolation: "worktree"` subagent call on the host fails, silently and
+  nowhere near the cause. `install()` asserts the two sets are disjoint before
+  writing a byte.
+- **Upstream's sentinel** (`# claude-view-hook`) and its exact command string.
+  If anyone ever drops `CLAUDE_VIEW_SKIP_HOOKS`, claude-view's own cleanup pass
+  recognises and reclaims our entries rather than stacking a second copy beside
+  them. One namespace either way.
+- **User entries are never touched.** Only sentinel-bearing matcher groups are
+  added or removed; anything hand-authored is matched by neither branch.
+- **Atomic writes.** Rendered, re-parsed, then `os.replace`d. Claude Code skips
+  a settings file with a JSON error *entirely* — not just the bad key — so a
+  torn write would disable every setting on the host.
+- **Asymmetric lifecycle.** `install()` clears *all* claude-view entries then
+  adds its own, because a stale instance's hooks curl at a dead port on every
+  tool call of every agent. `remove()` is scoped to our own port, so shutting
+  one instance down never rips out hooks another has since installed.
+- **No statusline, ever.**
+
+`status` reports what is actually in the file, so a partial registration is
+visible without reading JSON by hand. Sessions pick the hooks up at *session
+start*: already-running agents keep reporting `unknown` until they next launch.
 
 ## Auth
 
@@ -212,23 +268,7 @@ radius, and the edge auth is what makes exposing it acceptable at all.
   Claude Code OAuth token to call Anthropic's usage API for the plan and
   rate-limit display. The token is not exposed through claude-view's own API,
   but it is a real capability sitting behind this front.
-- **Hooks and statusline.** Left to itself the server registers hooks and a
-  statusline into `~/.claude/settings.json`. `CLAUDE_VIEW_SKIP_HOOKS=1` disables
-  that, and as a bonus makes a port collision fail fast instead of walking the
-  port up to `port+10` and killing whatever it decides is a stale claude-view.
-  **This costs the live agent state — see below.** It is a real trade, not a
-  free win.
-- **Agent state needs the hooks.** `routes/hooks/resolve_state.rs` calls itself
-  "the SOLE authority for agent state", and it means it: state comes only from
-  Claude Code hook callbacks POSTing to `/api/live/hook`. With
-  `CLAUDE_VIEW_SKIP_HOOKS=1` no hooks are registered, nothing posts, and every
-  session resolves to `state: "unknown"` — which the UI buckets as **"Needs
-  You / Awaiting input"**. So the Live Monitor reads "7 needs you, 0 running"
-  while seven agents are working. Everything JSONL-derived is unaffected and
-  correct: cost, context window, tokens, transcripts, search, analytics.
-  Aliveness is also hook-free (`sessions_watcher.rs`), which is why sessions
-  appear at all. Only the state label is missing.
-- **`processCount` is always 0.** Unrelated to the above, and not host-specific:
+- **`processCount` is always 0.** Not host-specific:
   `count_claude_processes()` only counts a process when `process.cwd().is_some()`,
   but it refreshes via sysinfo 0.33's `refresh_processes()`, whose default
   `ProcessRefreshKind` requests neither `cwd` nor `cmd`. So `cwd` is `None` for
