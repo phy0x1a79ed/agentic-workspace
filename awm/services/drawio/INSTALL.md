@@ -149,6 +149,66 @@ inlined **server-side before the document is handed over**, so the container
 needs no network at all and the output is self-contained by construction — no
 host routing, and nothing to break when the gateway is down.
 
+**SVG does not go through the container.** It cannot: that server answers
+`400 Unsupported Format!` for `svg`, because drawio has always produced SVG
+client-side — `mxGraph.getSvg()` walks the live graph — and there is no
+server-side equivalent to call. So SVG is rendered by loading drawio's own
+`export3.html` in **headless Chrome** and asking the drawn graph to serialize
+itself (`awm/drawio/chrome.py`). The output is what the editor's *Export as SVG*
+gives you: real `<text>` elements, a viewBox cropped to the drawing,
+`data-cell-id` on every shape — roughly a tenth the size of a traced PDF, and
+still selectable and styleable.
+
+The browser is driven over the Chrome DevTools Protocol — JSON over a WebSocket,
+using the `httpx` + `websockets` this service already depends on, so there is no
+puppeteer/playwright install and no bundled browser download. One headless
+Chrome is kept alive between renders (a relaunch each time would cost ~1s, and
+autopublish can render every few seconds); it is left in the service's process
+group so the hub supervisor's group kill takes it down rather than orphaning it.
+
+The page is loaded from the gateway's own `/drawio-app` mount rather than
+`file://`, because the client pulls stencils and fonts over XHR, which `file://`
+blocks. So **SVG export needs the gateway mount up**; PDF and PNG do not.
+
+### Autopublish — keeping a file rendered
+
+`drawio autopublish` is the standing version of `export`: *this diagram, this
+page, rendered to this path, kept current*. Every accepted write to the diagram
+— browser save, agent `merge`, `restore` — re-renders every link on it, so a
+poster or paper figure stops needing anyone to remember to re-export.
+
+    drawio autopublish --save <save> --target /abs/path.svg [--page <name>]
+    drawio autopublish_list [--save <save>]
+    drawio autopublish_stop --id <id>
+    drawio autopublish_now [--id <id> | --save <save>]
+
+Four properties, each avoiding a specific failure:
+
+- **One way, always.** Nothing reads the target back; a link cannot carry an
+  edit backwards into the store.
+- **Replace, never write in place.** The render goes to a sibling `.tmp` and is
+  `os.replace`d on. A LaTeX build reading at the wrong moment sees the old file
+  or the new one, never half of either.
+- **Last good stays.** A failed render — broken `/files` refs, container or
+  browser down, the named page gone — leaves the published file untouched and
+  writes the reason to the service log. Nothing is recorded on the link itself:
+  links are configuration, not health. `autopublish_now` re-renders on demand
+  and reports what happened.
+- **The destination owns the link's life.** If the target's parent directory has
+  gone away, the link is deleted rather than recreating it — a directory that
+  vanished was deleted on purpose.
+
+Pages are addressed by **name**, not index: reordering tabs in the editor shifts
+every index, and a link that quietly starts publishing a different page is worse
+than one that stops. A multi-page diagram published in full is one link per page.
+
+Links live in `<AWM_DIR>/services/drawio/autopublish.json` and survive a restart;
+on boot every link is reconciled, so an edit made while the service was down is
+caught up. Writes are debounced — a diagram must go quiet for `DEBOUNCE_SECONDS`
+(3s) before rendering, so an editing burst costs one render rather than one per
+autosave, with a `MAX_DEFER_SECONDS` (30s) ceiling so a continuously-edited
+diagram still publishes.
+
 ### Registrations
 
 Three, all named `drawio` (the registry keys records on `(kind, name)`):
@@ -223,10 +283,13 @@ The page needs a built `dist/` to be discovered:
 |---|---|
 | `awm-config`, `awm-gatewayclient` | component libs (ServiceAdapter register/control loop) |
 | `awm-persistence` | resolves the per-service data dir |
-| `httpx`, `websockets` | already adapter deps; used by the mount lease + export |
+| `httpx`, `websockets` | already adapter deps; used by the mount lease, export, and the CDP browser driver |
 | `pygraphviz` *(optional)* | only for the `layout` operation |
 
-Git is required at runtime. Docker is required only for `export`.
+Git is required at runtime. Docker is required for `export` to PDF/PNG/JPG. A
+Chrome or Chromium binary is required for `export`/`autopublish` to **SVG** —
+see *Export* above for why a browser is unavoidable there. Neither is needed for
+any other verb.
 
 ## Env overrides
 
@@ -234,13 +297,16 @@ Git is required at runtime. Docker is required only for `export`.
 |---|---|---|
 | `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the store |
 | `AWM_DRAWIO_CHECKOUTS` | `<AWM_DIR>/services/drawio/checkouts` | working copies |
+| `AWM_DRAWIO_AUTOPUBLISH` | `<AWM_DIR>/services/drawio/autopublish.json` | the autopublish link registry |
 | `DRAWIO_APP_ROOT` | `<service>/webapp` | the web client tree |
 | `DRAWIO_MOUNT_PREFIX` | `/drawio-app` | origin path for the client |
 | `DRAWIO_TAG` | `v29.6.6` | upstream release to clone |
 | `DRAWIO_SKIP_APP` | *(unset)* | install verbs only |
 | `DRAWIO_FORCE` | *(unset)* | re-clone even if `webapp/` exists |
-| `DRAWIO_EXPORT_URL` | `http://127.0.0.1:8000` | export server |
+| `DRAWIO_EXPORT_URL` | `http://127.0.0.1:8000` | export server (pdf/png/jpg) |
 | `DRAWIO_EXPORT_CONTAINER` | `drawio-export` | container name |
+| `DRAWIO_CHROME` | *(first found on PATH)* | browser binary for SVG export |
+| `DRAWIO_EXPORT_PAGE` | `$AWM_HUB_URL/drawio-app/export3.html` | drawio's export client, for SVG |
 
 ## Scope & caveats
 
@@ -265,7 +331,7 @@ Git is required at runtime. Docker is required only for `export`.
 ## Verify
 
     awm services list                      # drawio → running
-    awm drawio service_status              # store, counts, mount, export container
+    awm drawio service_status              # store, counts, mount, both render backends
     awm drawio create --save sandbox/test
     awm drawio list
 
@@ -281,8 +347,18 @@ Git is required at runtime. Docker is required only for `export`.
     curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:12100/ui/drawio/
     curl -sk -o /dev/null -w '%{http_code}\n' https://127.0.0.1:12100/drawio-app/index.html
 
-    # export is self-contained
+    # export is self-contained — pdf via the container, svg via headless Chrome
     awm drawio export --save sandbox/test --format pdf
+    awm drawio export --save sandbox/test --format svg
+
+    # autopublish: the file stays current on its own
+    mkdir -p /tmp/pub
+    awm drawio autopublish --save sandbox/test --target /tmp/pub/test.svg
+    awm drawio autopublish_list
+    # edit the diagram (browser or checkout+merge), wait ~3s, then:
+    ls -l /tmp/pub/test.svg                # mtime and content moved by itself
+    rm -rf /tmp/pub                        # …and the link drops itself
+    awm drawio autopublish_now             # forces a pass; reports what happened
 
 Then open `/ui/drawio/` in a real browser — ideally from another device — click
 into a diagram, and confirm edits persist across a reload. The concurrency

@@ -19,11 +19,17 @@ The editor tab talks to the service over ordinary verbs plus one emit topic
 few seconds and an occasional push, not a byte stream, and emit already gives
 the ordered flush → acknowledge → land → push handshake that ``merge`` needs.
 
-**Surface split.** Read and checkout verbs project onto MCP so agents can drive
-the whole workflow. The editor's own plumbing (``editor_save``,
+**Surface split.** Read, checkout and autopublish verbs project onto MCP so
+agents can drive the whole workflow. The editor's own plumbing (``editor_save``,
 ``editor_flush_ack``, ``editor_open``, ``editor_close``) is ``cli``/``http``
 only — it is a browser protocol, not something an agent should ever call, and
 putting it on the MCP surface would just be a way to corrupt a diagram.
+
+**Background work.** Three tasks are started here and never awaited: the static
+mount's lease loop, the autopublish debounce loop, and the boot-time autopublish
+reconciliation. Awaiting any of them would stop the adapter serving its control
+WS. They are also the only code in this service with no caller to return an
+error to, which is why they log their failures rather than raising.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.drawio.hub_adapter
@@ -37,7 +43,8 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.drawio import export, mount, store as store_mod
+from awm.drawio import chrome, export, mount, store as store_mod
+from awm.drawio.autopublish import AutoPublisher
 from awm.drawio.checkout import Checkouts
 from awm.drawio.service import Service
 from awm.drawio.store import Store
@@ -48,6 +55,7 @@ _CLI_HTTP = ["cli", "http"]
 
 ADAPTER: ServiceAdapter | None = None
 SERVICE: Service | None = None
+PUBLISHER: AutoPublisher | None = None
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -179,11 +187,15 @@ API_MANIFEST: dict[str, Any] = {
             "name": "export",
             "tool": "drawio_export",
             "description": (
-                "Render a diagram to PDF/PNG/JPG/SVG. Image references are "
-                "inlined server-side, so the output is self-contained and needs "
-                "no network to display. Refuses if any reference is broken — a "
-                "figure with a silently blank cell looks finished, so nobody "
-                "goes looking for what is missing. Pass allow_broken to override."
+                "Render a diagram to PDF/PNG/JPG/SVG, once. (For a file that "
+                "should STAY current, use autopublish instead.) Image "
+                "references are inlined server-side, so the output is "
+                "self-contained and needs no network to display. Refuses if any "
+                "reference is broken — a figure with a silently blank cell "
+                "looks finished, so nobody goes looking for what is missing. "
+                "Pass allow_broken to override. SVG is drawio's own native "
+                "export (real text, cropped viewBox), rendered in a headless "
+                "browser; the other formats use the export container."
             ),
             "params": [
                 {"name": "save", "type": "string"},
@@ -221,6 +233,84 @@ API_MANIFEST: dict[str, Any] = {
             "description": "Delete a diagram (recoverable: its history is kept).",
             "params": [{"name": "save", "type": "string", "required": True}],
             "surfaces": _CLI_HTTP,
+        },
+
+        # ---- autopublish links --------------------------------------------
+        {
+            "name": "autopublish",
+            "tool": "drawio_autopublish",
+            "description": (
+                "Keep a file on disk continuously rendered from a diagram. "
+                "One way: the diagram is the source, the file is a copy, and "
+                "nothing is ever read back. Every accepted change to the "
+                "diagram — browser save, agent merge, restore — re-renders the "
+                "target, so a poster or paper figure stops needing anyone to "
+                "remember to re-export. Renders once immediately so you find "
+                "out here if it cannot. Links survive a service restart. "
+                "Create as many as you like; one per page for a multi-page "
+                "diagram. If the target's parent folder is ever deleted, the "
+                "link is deleted too — it is never recreated."
+            ),
+            "params": [
+                {"name": "save", "type": "string", "required": True,
+                 "description": "Diagram path, e.g. 'scadc/biomass-map'."},
+                {"name": "target", "type": "string", "required": True,
+                 "description": (
+                     "Absolute path of the file to keep current. Must end in "
+                     "the format's extension, and its parent folder must "
+                     "already exist — autopublish never creates directories."
+                 )},
+                {"name": "page", "type": "string",
+                 "description": (
+                     "Page NAME to publish (default: the whole document). "
+                     "Named, not indexed, so reordering tabs in the editor "
+                     "cannot silently repoint the link at a different page."
+                 )},
+                {"name": "format", "type": "string",
+                 "description": "svg (default), pdf, png, or jpg."},
+                {"name": "scale", "type": "number", "description": "Default 1.0."},
+            ],
+            "timeout": 300,
+        },
+        {
+            "name": "autopublish_list",
+            "tool": "drawio_autopublish_list",
+            "description": (
+                "Every autopublish link, optionally just one diagram's. Shows "
+                "what each link targets and the revision it last published, so "
+                "a link whose revision trails the diagram's is one that has "
+                "been failing — the service log says why."
+            ),
+            "params": [{"name": "save", "type": "string",
+                        "description": "Limit to one diagram."}],
+        },
+        {
+            "name": "autopublish_stop",
+            "tool": "drawio_autopublish_stop",
+            "description": (
+                "Stop an autopublish link. The file it already published is "
+                "left on disk — something may be consuming it."
+            ),
+            "params": [{"name": "id", "type": "string", "required": True,
+                        "description": "Link id from autopublish_list."}],
+        },
+        {
+            "name": "autopublish_now",
+            "tool": "drawio_autopublish_now",
+            "description": (
+                "Force autopublish links to re-render right now and report "
+                "what happened, by link id, by diagram, or all of them. This "
+                "is how you find out why a published file looks stale: links "
+                "keep the last good render on any failure and record nothing "
+                "on themselves, so the reason lives here and in the log."
+            ),
+            "params": [
+                {"name": "id", "type": "string",
+                 "description": "One link. Omit to do a whole diagram or all."},
+                {"name": "save", "type": "string",
+                 "description": "Every link on this diagram."},
+            ],
+            "timeout": 300,
         },
 
         # ---- checkouts ----------------------------------------------------
@@ -430,6 +520,12 @@ def _svc() -> Service:
     return SERVICE
 
 
+def _pub() -> AutoPublisher:
+    if PUBLISHER is None:  # pragma: no cover — set in main() before serving
+        raise RuntimeError("drawio service not initialized")
+    return PUBLISHER
+
+
 def _author(as_: str | None) -> str:
     """Who a revision is attributed to. The gateway passes caller identity as
     ``as_``; fall back to a name that is still greppable in history."""
@@ -458,6 +554,14 @@ HANDLERS: dict[str, Any] = {
         allow_broken=bool(a.get("allow_broken")), handle=a.get("handle")),
     "url": lambda a: _svc().url(a.get("save"), handle=a.get("handle")),
     "remove": lambda a, as_=None: _svc().remove(a["save"], author=_author(as_)),
+
+    "autopublish": lambda a, as_=None: _pub().create(
+        a["save"], a["target"], page=a.get("page"),
+        fmt=a.get("format") or "svg", scale=float(a.get("scale") or 1.0),
+        author=_author(as_)),
+    "autopublish_list": lambda a: _pub().list(a.get("save")),
+    "autopublish_stop": lambda a: _pub().stop(a["id"]),
+    "autopublish_now": lambda a: _pub().now(a.get("id"), a.get("save")),
 
     "checkout": lambda a, as_=None: _svc().checkout(a["save"], author=_author(as_)),
     "edit": lambda a: _svc().edit(a["handle"], a["ops"]),
@@ -509,7 +613,12 @@ def _status_service() -> dict:
         "editor_tabs": {save: len(tabs)
                         for save, tabs in service.live_tabs.items() if tabs},
         "app_mount": mount.status(),
+        # Two render backends: the container does pdf/png/jpg, headless Chrome
+        # does svg (drawio has no server-side SVG renderer). Both are reported
+        # because either being down silently stops a different set of exports.
         "export_container": export.container_state(),
+        "svg_browser": chrome.state(),
+        "autopublish": _pub().status(),
     }
 
 
@@ -521,19 +630,26 @@ async def _emit(topic: str, payload: Any) -> None:
 
 
 def _on_start() -> None:
-    """Stand the store up and launch the web-client mount loop.
+    """Stand the store up and launch the background loops.
 
-    ``hold_mount`` never returns, so it must be a task rather than awaited —
-    awaiting it would stop the adapter from ever serving its control WS.
+    ``hold_mount`` and the autopublish loop never return, so they must be tasks
+    rather than awaited — awaiting either would stop the adapter from ever
+    serving its control WS. Reconciliation is a task for the same reason: a
+    slow catch-up render must not delay the service coming up.
     """
-    global SERVICE
+    global SERVICE, PUBLISHER
     store = Store(store_mod.default_root())
     from awm.drawio.checkout import default_root as checkouts_root
 
     SERVICE = Service(store, Checkouts(store, checkouts_root()), emit=_emit)
+    PUBLISHER = AutoPublisher(store)
+    PUBLISHER.attach(store)
     asyncio.create_task(mount.hold_mount())
-    log.info("drawio store at %s (%d diagram(s)), app mount %s → %s",
-             store.root, len(store.list()), mount.MOUNT_PREFIX, mount.app_root())
+    asyncio.create_task(PUBLISHER.run())
+    asyncio.create_task(PUBLISHER.reconcile())
+    log.info("drawio store at %s (%d diagram(s)), %d autopublish link(s), "
+             "app mount %s → %s", store.root, len(store.list()),
+             len(PUBLISHER.registry.links), mount.MOUNT_PREFIX, mount.app_root())
 
 
 async def main() -> None:

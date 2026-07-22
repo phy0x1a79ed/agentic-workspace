@@ -31,14 +31,18 @@ machine.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from . import xmlmodel
+
+log = logging.getLogger("awm.drawio.store")
 
 #: How long an editing burst by one author folds into a single revision.
 SETTLE_SECONDS = 180
@@ -118,6 +122,12 @@ class Store:
         # Revisions a live checkout is based on. Amending one would move a sha
         # somebody is holding, so :meth:`_can_amend` refuses while pinned.
         self._pinned: set[str] = set()
+        #: Called ``(save, rev)`` after any commit that actually changed a
+        #: diagram. The hook lives here rather than on :class:`Service` because
+        #: :meth:`awm.drawio.checkout.Checkouts.merge` writes through the store
+        #: directly — a hook one layer up would silently miss agent merges,
+        #: which is the trigger that matters most.
+        self.on_commit: Callable[[str, str | None], None] | None = None
         self._ensure_repo()
 
     # --- git plumbing ------------------------------------------------------
@@ -186,7 +196,8 @@ class Store:
             rel = path.relative_to(self.root).as_posix()
             try:
                 out.append(self.info(rel))
-            except StoreError:
+            except StoreError as exc:
+                log.warning("diagram %s is unreadable: %s", rel, exc)
                 out.append({"save": rel, "error": "unreadable"})
         return out
 
@@ -306,8 +317,24 @@ class Store:
         if amend:
             args.append("--amend")
         self._git(*args)
-        return {"save": path, "rev": self._head(), "changed": True,
+        rev = self._head()
+        self._notify_commit(path, rev)
+        return {"save": path, "rev": rev, "changed": True,
                 "amended": amend}
+
+    def _notify_commit(self, path: str, rev: str | None) -> None:
+        """Fire the commit hook without letting it affect the write.
+
+        A subscriber that raises must not turn a landed commit into a failed
+        one — the write already happened, and reporting it as a failure would
+        be a lie the caller acts on.
+        """
+        if self.on_commit is None:
+            return
+        try:
+            self.on_commit(path, rev)
+        except Exception:  # noqa: BLE001
+            log.exception("commit hook failed for %s", path)
 
     def _can_amend(self, path: str, author: str) -> bool:
         """Whether this write should fold into the tip instead of adding a commit.
@@ -369,7 +396,9 @@ class Store:
         path = self._require(save)
         self._git("rm", "-q", "--", path)
         self._git("commit", "-m", _commit_message(f"remove {path}", author))
-        return {"save": path, "rev": self._head(), "changed": True}
+        rev = self._head()
+        self._notify_commit(path, rev)
+        return {"save": path, "rev": rev, "changed": True}
 
 
 def _commit_message(label: str, author: str) -> str:

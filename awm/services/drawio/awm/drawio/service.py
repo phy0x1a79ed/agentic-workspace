@@ -528,5 +528,10 @@ def _masked(path: Path) -> bool:
                     resolved, "/" + pattern.lstrip("/")):
                 hidden = not negate  # last match wins, gitignore-style
         return hidden
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # "Not masked" is the tolerant answer but it is also possibly a wrong
+        # one, so it does not get to be invisible — this is precisely the
+        # silent class of failure `check` exists to surface.
+        log.warning("could not consult fileviewer's mask for %s (%s); "
+                    "reporting it as visible, which may be wrong", path, exc)
         return False
