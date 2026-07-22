@@ -61,17 +61,6 @@ def status() -> dict:
     return dict(_STATUS)
 
 
-def _extra_sans() -> list[str]:
-    """Operator-declared extra SANs, one per line (gitignored, host-specific)."""
-    try:
-        if SANS_FILE.is_file():
-            return [ln.strip() for ln in SANS_FILE.read_text().splitlines()
-                    if ln.strip() and not ln.startswith("#")]
-    except Exception:  # noqa: BLE001
-        pass
-    return []
-
-
 def _serve_forever() -> None:
     """Mint certs and run the TLS front, restarting it if it ever falls over.
 
@@ -83,7 +72,12 @@ def _serve_forever() -> None:
     backoff = 1.0
     while True:
         try:
-            sans = certs.resolve_sans(extra=_extra_sans())
+            # resolve_sans already unions the auto-enumerated host addresses
+            # with AWM_TLS_EXTRA_SANS and a host-specific file, normalising and
+            # deduping in a stable order so the leaf only re-mints on a real
+            # change. The file is how the Windows-side ZeroTier IP gets in — it
+            # is invisible from inside WSL, so nothing can enumerate it.
+            sans = certs.resolve_sans(san_file=SANS_FILE)
             paths = certs.ensure_certs(CERT_DIR, sans=sans)
             _STATUS.update({"tls": True, "san": sans, "error": None,
                             "serving": True})

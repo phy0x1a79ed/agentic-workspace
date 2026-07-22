@@ -7,3 +7,7 @@ vendor/
 # Per-service claude-view state: the SQLite index, tantivy segments, and the
 # port file. Derived entirely from ~/.claude/projects, so it is disposable.
 state/
+# TLS leaf minted for the mesh front, and the host-specific extra SANs it is
+# cut for (the Windows-side ZeroTier IP). Both are per-host and re-derivable.
+.certs/
+.sans
