@@ -69,6 +69,19 @@ PINNED_VERSION = os.environ.get("CLAUDE_VIEW_VERSION", "0.45.0")
 #: front owns that and proxies here.
 PORT = int(os.environ.get("CLAUDE_VIEW_UPSTREAM_PORT", "47892"))
 
+#: Loopback port for the Node sidecar the server spawns for the chat surface.
+#:
+#: Set explicitly rather than left to upstream's built-in 3001, because the
+#: sidecar's startup path is *actively hostile* to a second instance: before
+#: spawning, ``lifecycle.rs`` calls ``kill_port_holder(port)``, which lsofs the
+#: port and ``kill -9``s any **node** process holding it (``process.rs``). Two
+#: claude-view instances sharing this port therefore do not collide politely
+#: with a failed bind — the one that starts second SIGKILLs the other's
+#: sidecar, taking out its chat surface. Upstream reads ``SIDECAR_PORT`` and
+#: derives the proxy's base URL from the same value, so overriding it moves the
+#: listener and the proxy target together.
+SIDECAR_PORT = int(os.environ.get("CLAUDE_VIEW_SIDECAR_PORT", "3001"))
+
 #: How often the supervision loop probes /api/health.
 HEALTH_INTERVAL_S = float(os.environ.get("CLAUDE_VIEW_HEALTH_INTERVAL_S", "20"))
 
@@ -152,6 +165,9 @@ def child_env() -> dict[str, str]:
         # Headless host: never try to open a browser.
         "CLAUDE_VIEW_NO_OPEN": "1",
         "CLAUDE_VIEW_PORT": str(PORT),
+        # Pinned, not defaulted — a shared sidecar port is a kill, not a
+        # collision. See SIDECAR_PORT.
+        "SIDECAR_PORT": str(SIDECAR_PORT),
         "RUST_LOG": os.environ.get("CLAUDE_VIEW_RUST_LOG", "info"),
     })
     # Deliberately NOT set: CLAUDE_VIEW_BIND_ADDR. The default is
@@ -371,6 +387,7 @@ class Supervisor:
             "binary": str(binary_path()),
             "installed": installed(),
             "upstream_port": PORT,
+            "sidecar_port": SIDECAR_PORT,
             "data_dir": str(STATE_DIR),
             # Reported because its absence degrades the service silently: chat
             # dies, everything else keeps working. See node_path().
