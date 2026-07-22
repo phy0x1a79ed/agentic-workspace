@@ -121,13 +121,32 @@ info "release clean on our paths ($OTHER unrelated uncommitted file(s) — left 
 info "binary staged: v$VERSION"
 
 # -- plan --------------------------------------------------------------------
+# Only the commits release does not ALREADY carry, compared by patch-id rather
+# than SHA — this is what makes an incremental redeploy safe. dev and release
+# hold the same work under different SHAs, and each deploy adds yet another set,
+# so a plain `$BASE..$BRANCH` would try to replay everything already shipped and
+# conflict against itself. `git cherry` marks a commit `-` when release has a
+# patch-equivalent one and `+` when it is genuinely new; we pick only the `+`.
 say "Plan"
-mapfile -t COMMITS < <(git -C "$SRC" rev-list --reverse "$BASE..$BRANCH")
-[ "${#COMMITS[@]}" -gt 0 ] || die "no commits in $BASE..$BRANCH to deploy"
-for c in "${COMMITS[@]}"; do
-    info "$(git -C "$SRC" log -1 --format='%h %s' "$c")"
-done
-info "-> cherry-pick ${#COMMITS[@]} commit(s) onto release, stage v$VERSION, awm deploy"
+declare -A NEWSET=()
+while read -r sha; do [ -n "$sha" ] && NEWSET["$sha"]=1; done \
+    < <(git -C "$SRC" cherry release "$BRANCH" "$BASE" | awk '/^\+ /{print $2}')
+# Walk BASE..BRANCH oldest-first and keep only the new ones, so cherry-pick
+# order stays topological.
+COMMITS=()
+while read -r sha; do
+    [ -n "${NEWSET[$sha]:-}" ] && COMMITS+=("$sha")
+done < <(git -C "$SRC" rev-list --reverse "$BASE..$BRANCH")
+
+if [ "${#COMMITS[@]}" -eq 0 ]; then
+    info "release already carries every commit in $BASE..$BRANCH (by patch-id)"
+    info "-> nothing to cherry-pick; will restage v$VERSION + awm deploy only"
+else
+    for c in "${COMMITS[@]}"; do
+        info "$(git -C "$SRC" log -1 --format='%h %s' "$c")"
+    done
+    info "-> cherry-pick ${#COMMITS[@]} new commit(s) onto release, stage v$VERSION, awm deploy"
+fi
 
 if [ "$DRY" = 1 ]; then
     say "Dry run — nothing changed"
@@ -135,32 +154,35 @@ if [ "$DRY" = 1 ]; then
     exit 0
 fi
 
-# -- trial -------------------------------------------------------------------
-# Cherry-pick into a throwaway detached worktree first. A conflict discovered
-# here costs nothing; the same conflict discovered in the release worktree
-# leaves it mid-cherry-pick with a live gateway running out of it.
-say "Trial cherry-pick"
-TRIAL="$(mktemp -d)/trial"
-cleanup_trial() { git -C "$SRC" worktree remove --force "$TRIAL" 2>/dev/null || true
-                  git -C "$SRC" worktree prune 2>/dev/null || true; }
-trap cleanup_trial EXIT
-git -C "$SRC" worktree add -d "$TRIAL" release -q
-if ! git -C "$TRIAL" cherry-pick "$BASE..$BRANCH" >/dev/null 2>&1; then
-    git -C "$TRIAL" cherry-pick --abort 2>/dev/null || true
-    die "cherry-pick conflicts against release — resolve before deploying"
-fi
-info "applies cleanly"
-cleanup_trial; trap - EXIT
-
-# -- apply -------------------------------------------------------------------
-say "Cherry-picking onto release"
 PREV="$(git -C "$RELEASE" rev-parse HEAD)"
-if ! git -C "$RELEASE" cherry-pick "$BASE..$BRANCH"; then
-    git -C "$RELEASE" cherry-pick --abort 2>/dev/null || true
-    die "cherry-pick failed in $RELEASE (was clean in trial — investigate)"
+NEW=()
+if [ "${#COMMITS[@]}" -gt 0 ]; then
+    # -- trial ---------------------------------------------------------------
+    # Cherry-pick into a throwaway detached worktree first. A conflict found
+    # here costs nothing; the same conflict in the release worktree leaves it
+    # mid-cherry-pick with a live gateway running out of it.
+    say "Trial cherry-pick"
+    TRIAL="$(mktemp -d)/trial"
+    cleanup_trial() { git -C "$SRC" worktree remove --force "$TRIAL" 2>/dev/null || true
+                      git -C "$SRC" worktree prune 2>/dev/null || true; }
+    trap cleanup_trial EXIT
+    git -C "$SRC" worktree add -d "$TRIAL" release -q
+    if ! git -C "$TRIAL" cherry-pick "${COMMITS[@]}" >/dev/null 2>&1; then
+        git -C "$TRIAL" cherry-pick --abort 2>/dev/null || true
+        die "cherry-pick conflicts against release — resolve before deploying"
+    fi
+    info "applies cleanly"
+    cleanup_trial; trap - EXIT
+
+    # -- apply ---------------------------------------------------------------
+    say "Cherry-picking onto release"
+    if ! git -C "$RELEASE" cherry-pick "${COMMITS[@]}"; then
+        git -C "$RELEASE" cherry-pick --abort 2>/dev/null || true
+        die "cherry-pick failed in $RELEASE (was clean in trial — investigate)"
+    fi
+    mapfile -t NEW < <(git -C "$RELEASE" rev-list --reverse "$PREV..HEAD")
+    info "applied ${#NEW[@]} commit(s); release $PREV -> $(git -C "$RELEASE" rev-parse --short HEAD)"
 fi
-mapfile -t NEW < <(git -C "$RELEASE" rev-list --reverse "$PREV..HEAD")
-info "applied ${#NEW[@]} commit(s); release $PREV -> $(git -C "$RELEASE" rev-parse --short HEAD)"
 
 # -- stage the binary --------------------------------------------------------
 # Gitignored, so the cherry-pick did not carry it. Same host, same file — a
@@ -243,6 +265,14 @@ print(f"\n   version={s.get('version')} pid={proc.get('pid')} "
       f"upstream=:{proc.get('upstream_port')} sidecar=:{proc.get('sidecar_port')} "
       f"front=:{front.get('listener_port')} index={s.get('index',{}).get('db_bytes',0)//1048576}MB")
 
+# Record what --rollback would revert. A binary-only redeploy (no new commits)
+# must NOT clobber the previous batch's SHAs with an empty list — otherwise
+# rollback after such a deploy would find nothing to revert. Keep the prior
+# batch in that case.
+import os
+if not shas and os.path.exists(record):
+    prior = json.load(open(record))
+    shas, prev = prior.get("release_shas", []), prior.get("release_prev", prev)
 json.dump({"release_shas": shas, "release_prev": prev,
            "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}, open(record, "w"), indent=2)
 
