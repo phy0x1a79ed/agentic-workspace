@@ -4,7 +4,7 @@
 #
 # The web client is a ~150 MB tree of JS/CSS/images. It is *built*, not
 # committed: this script clones upstream jgraph/drawio at a pinned tag and
-# applies awm's two patches on top, so `webapp/` is reproducible from source and
+# applies awm's three patches on top, so `webapp/` is reproducible from source and
 # stays out of the repo. Skip it with DRAWIO_SKIP_APP=1 when you only want the
 # verbs (an agent can build a diagram headlessly; only the browser editor needs
 # these bytes).
@@ -76,14 +76,26 @@ PY
         || { echo "FATAL: __drawioUi patch did not apply" >&2; exit 1; }
     echo "  patched app.min.js (expose window.__drawioUi)"
 
-    # -- patch 2: awm's PreConfig -------------------------------------------
-    # Replaces upstream's stub with the save/flush/push client that talks to
-    # this service. Upstream loads js/PreConfig.js before the app, which is
-    # exactly the hook we need.
-    cp "$HERE/patches/PreConfig.js" "$APP/js/PreConfig.js"
-    echo "  installed awm PreConfig.js"
+    echo "Web client fetched to $APP ($(du -sh "$APP" | cut -f1))."
+fi
 
-    echo "Web client ready at $APP ($(du -sh "$APP" | cut -f1))."
+# -- patches 2 and 3: awm's PreConfig / PostConfig ---------------------------
+# Both are whole-file replacements of upstream stubs, so they are idempotent
+# and applied on EVERY run — not only after a clone. Patch 1 above cannot be:
+# it injects text into a minified bundle, so re-running it would double the
+# injection. Keeping these two out here means adding or fixing client code is
+# a re-run of install.sh, not a 150 MB DRAWIO_FORCE re-clone.
+#
+#   PreConfig  — loaded before the app bundle. Replaces upstream's stub with
+#                the save/flush/push client that talks to this service.
+#   PostConfig — loaded after it, which is the only point where mxEdgeStyle
+#                and mxStyleRegistry exist. Registers `ellipticArcEdgeStyle`,
+#                which diagrams in the store already reference; without it
+#                those edges silently fall back to straight/bezier.
+if [ "${DRAWIO_SKIP_APP:-}" != "1" ] && [ -f "$APP/index.html" ]; then
+    cp "$HERE/patches/PreConfig.js"  "$APP/js/PreConfig.js"
+    cp "$HERE/patches/PostConfig.js" "$APP/js/PostConfig.js"
+    echo "  installed awm PreConfig.js + PostConfig.js"
 fi
 
 echo "Installed awm-drawio into env '$ENV'."

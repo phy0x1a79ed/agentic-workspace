@@ -173,18 +173,45 @@ the `awm` env (override with `AWM_ENV=<name>`), and writes a gitignored
 service under systemd's minimal PATH.
 
 It then clones upstream `jgraph/drawio` at a pinned tag into `webapp/` and
-applies two patches:
+applies three patches:
 
 1. **`app.min.js`** — inject `window.__drawioUi=x;` after the `App`
    construction. Without it `PreConfig.js` never attaches and the editor looks
    fine while saving nothing, so the install **fails loudly** if the anchor is
    not found exactly once. Moving `DRAWIO_TAG` means re-deriving this anchor.
+   Applied **only on a fresh clone** — it is a text injection into a minified
+   bundle, so re-running it would double the injection.
 2. **`js/PreConfig.js`** — replaced with awm's client (revision-checked saves,
    the flush/push handshake, no polling).
+3. **`js/PostConfig.js`** — replaced with upstream's stub plus
+   `ellipticArcEdgeStyle` (below).
+
+Patches 2 and 3 are whole-file replacements, so they are idempotent and
+re-applied on **every** `install.sh` run. That is deliberate: fixing client-side
+code is a re-run, not a 150 MB `DRAWIO_FORCE=1` re-clone.
 
 `webapp/` is gitignored: it is a reproducible build, not source. Skip it with
 `DRAWIO_SKIP_APP=1` when you only want the verbs — an agent can build a diagram
 headlessly; only the browser editor needs those bytes.
+
+### The elliptic-arc edge style
+
+Diagrams in this store use a custom edge router, `ellipticArcEdgeStyle`, which
+draws an edge as a true circular arc through both cell centres. The bulge is
+set per-edge by `arcSagitta` (px), `arcSagittaFraction` (× chord length), or
+`arcRadius` (circle radius as a multiple of chord length — *larger* N is
+*flatter*), in that priority order, with a `window.ELLIPTIC_ARC_CONFIG` global
+for tuning the un-tagged default from the console. Usage is an Edit Style line:
+
+    edgeStyle=ellipticArcEdgeStyle;arcRadius=12;curved=1
+
+It has to ship with the client because **an unregistered edge style is not an
+error in mxGraph** — the edge quietly falls back to the default router. So a
+missing `PostConfig.js` looks like every arc turning straight (or bezier, where
+the style also sets `curved=1`) with nothing logged, no failed save, and no
+change to the stored document. `prokaryotic_metabolism.drawio` alone carries
+~225 edges that depend on it. This is the one patch whose absence is a pure
+rendering regression, which is exactly why it is easy to lose.
 
 The page needs a built `dist/` to be discovered:
 
