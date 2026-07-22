@@ -48,12 +48,18 @@ from pathlib import Path
 
 import httpx
 
+from awm.claude_view import hooks
+
 log = logging.getLogger("awm.claude_view.binary")
 
 HERE = Path(__file__).resolve().parent           # awm/services/claude-view/awm/claude_view
 SERVICE_DIR = HERE.parents[1]                    # awm/services/claude-view
 VENDOR_DIR = SERVICE_DIR / "vendor"
 STATE_DIR = Path(os.environ.get("CLAUDE_VIEW_STATE_DIR") or (SERVICE_DIR / "state"))
+
+#: Preloaded into the sidecar to force its listener onto loopback. Committed
+#: source, not a vendored artifact — it is ours and it is meant to be read.
+NODE_PRELOAD = SERVICE_DIR / "node" / "loopback-listen.cjs"
 
 #: The upstream release this service is pinned to. Bumping it is a deliberate
 #: step: re-run the corpus gate (INSTALL.md) before trusting a new version.
@@ -158,6 +164,17 @@ def child_env() -> dict[str, str]:
     node = node_path()
     if node is not None:
         env["PATH"] = os.pathsep.join([str(node.parent), env.get("PATH", "")])
+    # Pin the sidecar to loopback. It binds every interface and offers no way
+    # to say otherwise, so the bind is corrected in the sidecar's own process
+    # via a preload — see node/loopback-listen.cjs. Appending keeps any
+    # NODE_OPTIONS the host set; the server strips only CLAUDE*/ANTHROPIC_API_KEY
+    # from the env it hands the sidecar, so this survives the handoff.
+    if NODE_PRELOAD.is_file():
+        env["NODE_OPTIONS"] = " ".join(
+            filter(None, [env.get("NODE_OPTIONS", ""), f"--require {NODE_PRELOAD}"]))
+    else:
+        log.warning("claude-view: %s missing — sidecar will bind 0.0.0.0",
+                    NODE_PRELOAD)
     return env
 
 
@@ -192,6 +209,7 @@ class Supervisor:
         self._last_error: str | None = None
         self._version: str | None = None
         self._stopping = False
+        self._hooks: dict = {}
         atexit.register(self.stop)
 
     # -- lifecycle ---------------------------------------------------------
@@ -225,6 +243,12 @@ class Supervisor:
                 self._last_error = None
                 log.info("claude-view: spawned pid=%d port=%d data=%s",
                          self._proc.pid, PORT, STATE_DIR)
+                # After the spawn, not before: the hooks curl at this port, so
+                # there is no value in pointing Claude Code at it until
+                # something is listening. Non-fatal by construction — without
+                # hooks the dashboard loses agent state but keeps everything
+                # JSONL-derived.
+                self._hooks = hooks.install(PORT)
             except Exception as exc:  # noqa: BLE001
                 self._proc = None
                 self._last_error = f"{type(exc).__name__}: {exc}"
@@ -242,6 +266,11 @@ class Supervisor:
         with self._lock:
             self._stopping = True
             proc, self._proc = self._proc, None
+        # Unregister first. Every hook entry is a curl at a port that is about
+        # to close, fired on every tool call of every agent on this host — so
+        # leaving them behind taxes the whole fleet to no purpose. Scoped to
+        # our port, so we never strip an instance that has taken over.
+        hooks.remove(PORT)
         if proc is None or proc.poll() is not None:
             return {"stopped": True}
         try:
@@ -347,6 +376,9 @@ class Supervisor:
             # dies, everything else keeps working. See node_path().
             "node": str(node) if node else None,
             "sidecar_capable": node is not None,
+            # Likewise: no hooks means no agent state, and the UI shows that
+            # as every session "Needs You" rather than as an error.
+            "hooks": hooks.status(PORT),
         })
         return snap
 
