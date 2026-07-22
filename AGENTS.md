@@ -162,7 +162,16 @@ projects/<project>/<scope>/data/<chunk>.dvc   the pin — TRACKED, ~110 bytes
   `pin_would_be_ignored` probes with `git check-ignore` and provisioning refuses.
 - **`.awm/data` survives as a compat symlink** to `../data`, because ~125 scadc
   files and the WORKSPACE.md contract still name it. Repointing them is optional
-  cleanup, not a blocking migration step.
+  cleanup, not a blocking migration step. When something else already occupies
+  that path — an un-parked annex clone — provisioning does **not** create the
+  symlink and reports `compat_symlink: "refused:real-directory"`. Gate on that:
+  the scope would otherwise read the *old* tree through every one of those call
+  sites while its code expects the new one, with nothing raising.
+- **The hooks live in the common git dir, so they fire in every worktree of the
+  project** — including branches with no `.dvc/` at all. Both guard on
+  `[ -d .dvc ]` and exit 0, or every merge in every unconverted scope prints a
+  false "your data does NOT match this commit". Anything that creates `.dvc/`
+  ahead of the merge defeats that guard.
 - **Unconverted projects are untouched.** 186 scopes across 25 projects keep the
   legacy shared symlink, and a machine without dvc degrades to it rather than
   failing scope creation.
