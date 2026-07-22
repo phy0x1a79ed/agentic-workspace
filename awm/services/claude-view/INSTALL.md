@@ -139,16 +139,45 @@ outbound connections.
 | `.certs/` | minted TLS leaf for the mesh front (gitignored) |
 | `.sans` | operator-declared extra SANs, one per line (gitignored) |
 
+## Node is a hard runtime dependency
+
+The Rust server is not self-contained. Its `/api/sidecar/*` routes and the
+`/ws/chat/*` relay — everything behind the **Chat** tab — are proxies to a Node
+sidecar that the server spawns on demand as literally `Command::new("node")`,
+resolved from `PATH`. The gateway runs services on systemd's minimal `PATH`,
+where `node` does not exist, so the service resolves it explicitly (`node_path()`
+in `binary.py`) and prepends its directory to the child's `PATH`. It prefers the
+`node` sitting beside our own interpreter — the awm conda env ships one — so the
+dependency is satisfied by the same install that provides python.
+
+Getting this wrong fails *quietly and misleadingly*: the SPA loads, the terminal
+works (that relay is Rust-native), and only chat breaks — a 503 with the send
+button greyed out and the chat list stuck on "Loading...". Upstream's circuit
+breaker then counts the failed spawn **before** it checks whether `node` exists,
+so ten dead attempts in forty seconds latch it open and every later request
+reports "circuit open" instead of the real cause. `status` reports
+`sidecar_capable` so this is visible without reading logs.
+
 ## Ports
 
 | Port | Bind | What |
 |---|---|---|
 | 47892 | `127.0.0.1` | upstream claude-view server — **loopback only** |
 | 12110 | `0.0.0.0` | TLS front, awm edge auth |
+| 3001 | `0.0.0.0` ⚠ | Node sidecar, spawned by the server — **no auth** |
 
 12110 sits inside the `12100..12150` band that `/mnt/a/linux/ssh_settings.ps1`
 already forwards wholesale through the Windows portproxy, so no elevated re-run
 of that script is needed (unlike Claude Science's 12201/12202).
+
+**The sidecar's bind is an upstream gap.** Its bundle calls
+`.listen(SIDECAR_PORT)` with no host argument, so Node binds every interface,
+and it reads no host/bind variable — there is no knob. It is unauthenticated and
+it is the CLI control bridge, so anything that reaches it can drive Claude Code
+sessions. Today it is not mesh-reachable, but only because the Windows portproxy
+forwards `12100..12150` and 3001 is outside that range — reachability by
+accident of an unrelated config, not by design. It *is* reachable from the
+Windows host on the WSL interface. Fix before this is considered hardened.
 
 `CLAUDE_VIEW_BIND_ADDR` is deliberately left unset and actively stripped from
 the child environment. The upstream server defaults to `127.0.0.1`, and
@@ -187,6 +216,33 @@ radius, and the edge auth is what makes exposing it acceptable at all.
   statusline into `~/.claude/settings.json`. `CLAUDE_VIEW_SKIP_HOOKS=1` disables
   that, and as a bonus makes a port collision fail fast instead of walking the
   port up to `port+10` and killing whatever it decides is a stale claude-view.
+  **This costs the live agent state — see below.** It is a real trade, not a
+  free win.
+- **Agent state needs the hooks.** `routes/hooks/resolve_state.rs` calls itself
+  "the SOLE authority for agent state", and it means it: state comes only from
+  Claude Code hook callbacks POSTing to `/api/live/hook`. With
+  `CLAUDE_VIEW_SKIP_HOOKS=1` no hooks are registered, nothing posts, and every
+  session resolves to `state: "unknown"` — which the UI buckets as **"Needs
+  You / Awaiting input"**. So the Live Monitor reads "7 needs you, 0 running"
+  while seven agents are working. Everything JSONL-derived is unaffected and
+  correct: cost, context window, tokens, transcripts, search, analytics.
+  Aliveness is also hook-free (`sessions_watcher.rs`), which is why sessions
+  appear at all. Only the state label is missing.
+- **`processCount` is always 0.** Unrelated to the above, and not host-specific:
+  `count_claude_processes()` only counts a process when `process.cwd().is_some()`,
+  but it refreshes via sysinfo 0.33's `refresh_processes()`, whose default
+  `ProcessRefreshKind` requests neither `cwd` nor `cmd`. So `cwd` is `None` for
+  every process and the count cannot be anything but zero. The `cmd` half of the
+  name test is dead for the same reason. Impact is nil — the scan's only consumer
+  is this display metric (`ClaudeProcess`, `find_process_for_project` and
+  `has_running_process` have no callers), and session/project attribution comes
+  from the JSONL `entrypoint` instead. Worth offering upstream as a one-line fix.
+- **The process-name test would miss modern Claude Code anyway.** It matches
+  `name().contains("claude")` or an arg containing `@anthropic-ai/claude`.
+  Claude Code 2.1.x runs sessions from `~/.local/share/claude/versions/<ver>`,
+  so `comm` is the bare version string (`2.1.217`) and argv carries
+  `claude bg-spare --bg-spare …` — neither test matches. Only the daemon
+  (`comm=claude`) would.
 - **The `private` submodule.** `.gitmodules` declares `claude-view-private`,
   which is not public. The server target does not need it and the build never
   initialises submodules, but it means a from-source build of the *full*
