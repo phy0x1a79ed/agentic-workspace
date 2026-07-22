@@ -1,0 +1,25 @@
+diff --git a/crates/server/src/live/manager/helpers.rs b/crates/server/src/live/manager/helpers.rs
+index fc59327..ff45c81 100644
+--- a/crates/server/src/live/manager/helpers.rs
++++ b/crates/server/src/live/manager/helpers.rs
+@@ -91,7 +91,20 @@ pub(super) fn parse_timestamp_to_unix(ts: &str) -> Option<i64> {
+ // =============================================================================
+ 
+ /// Path to the PID snapshot file for server restart recovery.
++///
++/// Honours `CLAUDE_VIEW_DATA_DIR`, which `claude_view_core::paths` documents as
++/// the single source of truth for *all* claude-view write paths. Without that
++/// check this one file escapes the configured data dir into `~/.claude`, so two
++/// instances pointed at different data dirs (e.g. a dev and a prod deployment
++/// on one host) silently share — and clobber — a single snapshot, and a
++/// sandboxed install writes outside its sandbox.
++///
++/// Falls back to the historical `~/.claude` location when the variable is
++/// unset, so the default single-instance behaviour is unchanged.
+ pub(super) fn pid_snapshot_path() -> Option<PathBuf> {
++    if let Ok(dir) = std::env::var("CLAUDE_VIEW_DATA_DIR") {
++        return Some(PathBuf::from(dir).join("live-monitor-pids.json"));
++    }
+     Some(
+         dirs::home_dir()?
+             .join(".claude")
