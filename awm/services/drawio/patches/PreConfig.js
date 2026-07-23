@@ -71,6 +71,15 @@ urlParams['splash'] = '0';
   var holding = false;    // a merge is landing; defer saves
   var attached = false;
 
+  // Consumer view images: pages placed here via /drawio-app/view/<save>/<page>.
+  // We subscribe to each source diagram's change events and refresh the placed
+  // image in-place when it moves — without ever touching this document's XML.
+  var VIEW_MARK = '/drawio-app/view/';
+  var viewSubs = {};       // source save -> change-event WebSocket
+  var viewUrlSave = {};    // image url -> resolved source save (or false)
+  var lastScanPageId = null;
+  var scanTimer = null;
+
   function call(fn, args) {
     return fetch(SVC + fn, {
       method: 'POST',
@@ -297,6 +306,124 @@ urlParams['splash'] = '0';
     };
   }
 
+  // -- consumer view images (placed pages that stay live) ------------------
+  //
+  // A page rendered elsewhere and inserted here via Insert > Image > URL is an
+  // ordinary image cell whose style carries `image=<origin>/drawio-app/view/…`.
+  // We watch the active page for those, subscribe to each source diagram, and
+  // when one moves we force just that image to re-fetch. The refresh is a DOM
+  // href bust on the rendered node only — the model, and therefore what we
+  // save, is never touched, so a consumer never autosaves a churned URL.
+
+  function activePageViewUrls(ui) {
+    var urls = {};
+    try {
+      var model = ui.editor.graph.getModel();
+      for (var id in model.cells) {
+        var cell = model.cells[id];
+        var style = cell && (cell.style ||
+          (cell.getStyle ? cell.getStyle() : null));
+        if (!style || style.indexOf(VIEW_MARK) < 0) continue;
+        var m = /(?:^|;)image=([^;]+)/.exec(style);
+        if (m && m[1].indexOf(VIEW_MARK) >= 0) urls[m[1]] = true;
+      }
+    } catch (e) { /* best effort — never break the editor over a scan */ }
+    return Object.keys(urls);
+  }
+
+  function resolveViewSave(url) {
+    // Which diagram does this URL render? A HEAD to the endpoint answers it
+    // (no render), so the save-vs-page split in the path is settled by the
+    // server rather than guessed here. Cached per url, including failures.
+    if (Object.prototype.hasOwnProperty.call(viewUrlSave, url)) {
+      return Promise.resolve(viewUrlSave[url]);
+    }
+    viewUrlSave[url] = false;
+    return fetch(url, { method: 'HEAD' }).then(function (r) {
+      viewUrlSave[url] = r.headers.get('X-Drawio-Save') || false;
+      return viewUrlSave[url];
+    }).catch(function () { return false; });
+  }
+
+  function subscribeView(ui, save) {
+    if (!save || viewSubs[save]) return;
+    var scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var url = scheme + window.location.host + '/svc/drawio/emit/drawio:' + save;
+    var ws;
+    try { ws = new WebSocket(url); } catch (e) { return; }
+    viewSubs[save] = ws;
+    ws.onmessage = function (event) {
+      var msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      var payload = msg.payload || msg;
+      if (payload.type === 'view-updated') {
+        refreshViewImages(ui, save, payload.rev);
+      }
+    };
+    ws.onclose = function () {
+      delete viewSubs[save];
+      // Only re-subscribe if the active page still shows this source.
+      setTimeout(function () {
+        var still = activePageViewUrls(ui).some(function (u) {
+          return viewUrlSave[u] === save;
+        });
+        if (still) subscribeView(ui, save);
+      }, 2000);
+    };
+  }
+
+  function scanViewImages(ui) {
+    activePageViewUrls(ui).forEach(function (url) {
+      resolveViewSave(url).then(function (save) { subscribeView(ui, save); });
+    });
+  }
+
+  function refreshViewImages(ui, save, rev) {
+    try {
+      var graph = ui.editor.graph, model = graph.getModel();
+      var bust = 'rev=' + encodeURIComponent(rev || String(Date.now()));
+      for (var id in model.cells) {
+        var cell = model.cells[id];
+        var style = cell && (cell.style ||
+          (cell.getStyle ? cell.getStyle() : null));
+        if (!style || style.indexOf(VIEW_MARK) < 0) continue;
+        var m = /(?:^|;)image=([^;]+)/.exec(style);
+        if (!m || viewUrlSave[m[1]] !== save) continue;
+        var state = graph.view.getState(cell);
+        if (!state || !state.shape || !state.shape.node) continue;
+        var busted = m[1] + (m[1].indexOf('?') >= 0 ? '&' : '?') + bust;
+        var imgs = state.shape.node.getElementsByTagName('image');
+        for (var i = 0; i < imgs.length; i++) {
+          imgs[i].setAttribute('href', busted);
+          imgs[i].setAttributeNS(
+            'http://www.w3.org/1999/xlink', 'href', busted);
+        }
+      }
+    } catch (e) { console.warn('[awm] view refresh failed', e); }
+  }
+
+  function watchViewImages(ui) {
+    scanViewImages(ui);
+    // Catch images inserted while editing, debounced so a drag does not scan
+    // on every model change.
+    try {
+      if (typeof mxEvent !== 'undefined') {
+        ui.editor.graph.model.addListener(mxEvent.CHANGE, function () {
+          clearTimeout(scanTimer);
+          scanTimer = setTimeout(function () { scanViewImages(ui); }, 800);
+        });
+      }
+    } catch (e) { /* the page-change rescan still covers most cases */ }
+  }
+
+  function pageId(ui) {
+    try {
+      if (!ui.currentPage) return null;
+      return ui.currentPage.getId ? ui.currentPage.getId()
+        : (ui.pages ? ui.pages.indexOf(ui.currentPage) : null);
+    } catch (e) { return null; }
+  }
+
   // -- the loop ------------------------------------------------------------
 
   function tick() {
@@ -306,11 +433,16 @@ urlParams['splash'] = '0';
       attached = true;
       load(ui).then(function () {
         subscribe(ui);
+        watchViewImages(ui);
+        lastScanPageId = pageId(ui);
         console.log('[awm] editing', target && target.save,
                     target && target.handle ? '(checkout ' + target.handle + ')' : '');
       });
       return;
     }
+    // Re-scan for placed view images whenever the visible page changes.
+    var pid = pageId(ui);
+    if (pid !== lastScanPageId) { lastScanPageId = pid; scanViewImages(ui); }
     if (!target || holding || inflight) return;
     var xml = snapshot(ui);
     if (!xml || xml === lastXml) return;

@@ -454,7 +454,7 @@ class AutoPublisher:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        store.on_commit = self.notify
+        store.subscribe(self.notify)
 
     def _ready(self) -> list[str]:
         """Diagrams whose links should render now.
