@@ -209,19 +209,66 @@ caught up. Writes are debounced — a diagram must go quiet for `DEBOUNCE_SECOND
 autosave, with a `MAX_DEFER_SECONDS` (30s) ceiling so a continuously-edited
 diagram still publishes.
 
+### View URL — a page's live SVG, placeable into another diagram
+
+`autopublish` renders *to a file*; the view URL renders *to a URL*, so a page can
+be dropped into another diagram straight from drawio's own **Insert → Image →
+URL** and behave like any placed image — movable, selectable, and kept current
+while the consumer is open.
+
+    GET  /drawio-app/view/<save>/<page>        → image/svg+xml (that page)
+    GET  /drawio-app/view/<save>               → the whole/first page
+    HEAD /drawio-app/view/<save>/<page>        → resolves save/page/rev, no render
+
+The last path segment is the page **name** (a trailing `.svg` is accepted and
+ignored); everything before it is the diagram path. Render settings are fixed:
+drawio's native *Export as SVG* — transparent background, 0 border, a viewBox
+cropped to the drawing. A missing diagram or unknown page is an honest `404`,
+never a blank image.
+
+It is a fourth registration — a loopback listener fronted as a `kind=url` mount at
+`/drawio-app/view`. A service's browser surface is `POST /svc/…/fn/…` (no
+GET-to-verb) and a `kind=static` mount cannot render on demand, so the listener
+is what turns a GET into a render. The gateway's longest-prefix routing resolves
+`/drawio-app/view/…` to it and everything else under `/drawio-app` to the editor.
+
+**Cache.** Each render is cached under
+`<AWM_DIR>/services/drawio/viewcache/<save>/<page>/<hash>.svg`, keyed by the
+SHA-256 of the page's *inlined* XML — so a diagram edit **or** a changed
+referenced `/files` image busts it, while an unchanged page keeps its cache
+across an unrelated commit. Responses carry that hash as an `ETag` with
+`Cache-Control: no-cache`, so a re-fetch after a change collapses to a `304` when
+nothing actually moved. A gone page (rename/removal) or a removed diagram has its
+cache directory pruned on the next commit — the destination owns the cache the
+same way an autopublish link owns its file. Only the newest
+`MAX_VERSIONS_PER_PAGE` (5) renders per page are kept.
+
+**Live update in an open consumer.** On every accepted write the service emits
+`{"type":"view-updated","save","rev"}` on the source diagram's existing
+`drawio:<save>` emit topic. The client (`PreConfig.js`) recognizes view-URL
+images on the *active* page, learns each one's source diagram via a `HEAD`
+(`X-Drawio-Save`), subscribes to that topic, and on an event re-fetches just those
+images — a cache-bust on the rendered `<image>` node only, never a model edit, so
+a consumer never autosaves a churned URL and its document stays byte-for-byte
+canonical. Insert the image as a **link** (URL kept) for this; an embedded copy is
+a one-time snapshot by definition. A consumer that is closed simply re-fetches the
+current render when it is next opened.
+
 ### Registrations
 
-Three, all named `drawio` (the registry keys records on `(kind, name)`):
+Four, named `drawio` except the view mount (the registry keys records on
+`(kind, name)`, so the view mount takes a distinct name):
 
-| kind | prefix | what |
-|---|---|---|
-| `service` | `/svc/drawio` | the verbs, plus supervision |
-| `static` | `/drawio-app` | the web client's ~150 MB of assets |
-| `page` | `/ui/drawio` | the reception page |
+| kind | name | prefix | what |
+|---|---|---|---|
+| `service` | `drawio` | `/svc/drawio` | the verbs, plus supervision |
+| `static` | `drawio` | `/drawio-app` | the web client's ~150 MB of assets |
+| `page` | `drawio` | `/ui/drawio` | the reception page |
+| `url` | `drawio-view` | `/drawio-app/view` | the loopback listener that renders a page's live SVG |
 
-The control WS does not cover mounts, so the static mount runs its own
-register/hold-lease/reconnect loop — records are in-memory, and without it the
-editor would 404 after any gateway restart.
+The control WS does not cover mounts, so the static mount and the view mount each
+run their own register/hold-lease/reconnect loop — records are in-memory, and
+without it they would 404 after any gateway restart.
 
 ## Install
 
@@ -298,8 +345,10 @@ any other verb.
 | `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the store |
 | `AWM_DRAWIO_CHECKOUTS` | `<AWM_DIR>/services/drawio/checkouts` | working copies |
 | `AWM_DRAWIO_AUTOPUBLISH` | `<AWM_DIR>/services/drawio/autopublish.json` | the autopublish link registry |
+| `AWM_DRAWIO_VIEWCACHE` | `<AWM_DIR>/services/drawio/viewcache` | rendered-page cache for the view URL |
 | `DRAWIO_APP_ROOT` | `<service>/webapp` | the web client tree |
 | `DRAWIO_MOUNT_PREFIX` | `/drawio-app` | origin path for the client |
+| `DRAWIO_VIEW_PREFIX` | `/drawio-app/view` | origin path for the live-SVG view mount |
 | `DRAWIO_TAG` | `v29.6.6` | upstream release to clone |
 | `DRAWIO_SKIP_APP` | *(unset)* | install verbs only |
 | `DRAWIO_FORCE` | *(unset)* | re-clone even if `webapp/` exists |
@@ -360,7 +409,19 @@ any other verb.
     rm -rf /tmp/pub                        # …and the link drops itself
     awm drawio autopublish_now             # forces a pass; reports what happened
 
+    # the view URL — a page's live SVG, served and cached on demand
+    curl -sk -H 'Accept: image/svg+xml' \
+      https://127.0.0.1:12100/drawio-app/view/sandbox/test/Page-1 | head -c 80
+    curl -skI https://127.0.0.1:12100/drawio-app/view/sandbox/test/Page-1 \
+      | grep -i 'content-type\|etag\|x-drawio'      # image/svg+xml + resolve headers
+
 Then open `/ui/drawio/` in a real browser — ideally from another device — click
 into a diagram, and confirm edits persist across a reload. The concurrency
 behaviour only shows up with a real tab open: take a checkout, edit a different
 page in the browser, then `update` and `merge`, and check both changes survive.
+
+For the view URL end to end: in one diagram, **Insert → Image → URL**, paste a
+`…/drawio-app/view/<save>/<page>` link, and choose **Link** (not a copy) — it
+places as a movable image. Then edit that source page in another tab; the placed
+image refreshes on its own within a few seconds, and the consumer diagram's saved
+XML is unchanged (no autosave churn).

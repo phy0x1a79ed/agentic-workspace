@@ -373,7 +373,7 @@ def test_reconcile_catches_up_an_edit_made_while_down(tmp_path, store, out, rend
     run(first.create(SAVE, str(target)))
 
     # Service is "down": nothing is attached to the store's commit hook.
-    store.on_commit = None
+    store.clear_commit_subscribers()
     store.write(SAVE, set_value(TEMPLATE, "a", "while-down"), author="tester")
     render.payload = b"<svg>caught-up</svg>"
 

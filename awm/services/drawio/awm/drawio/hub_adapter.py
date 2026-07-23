@@ -48,6 +48,8 @@ from awm.drawio.autopublish import AutoPublisher
 from awm.drawio.checkout import Checkouts
 from awm.drawio.service import Service
 from awm.drawio.store import Store
+from awm.drawio import view as view_mod
+from awm.drawio.view import ViewNotifier, ViewServer
 
 log = logging.getLogger("awm.drawio.hub_adapter")
 
@@ -56,6 +58,7 @@ _CLI_HTTP = ["cli", "http"]
 ADAPTER: ServiceAdapter | None = None
 SERVICE: Service | None = None
 PUBLISHER: AutoPublisher | None = None
+VIEW: ViewServer | None = None
 
 
 API_MANIFEST: dict[str, Any] = {
@@ -613,6 +616,7 @@ def _status_service() -> dict:
         "editor_tabs": {save: len(tabs)
                         for save, tabs in service.live_tabs.items() if tabs},
         "app_mount": mount.status(),
+        "view_mount": VIEW.status() if VIEW is not None else {"mounted": False},
         # Two render backends: the container does pdf/png/jpg, headless Chrome
         # does svg (drawio has no server-side SVG renderer). Both are reported
         # because either being down silently stops a different set of exports.
@@ -637,19 +641,29 @@ def _on_start() -> None:
     serving its control WS. Reconciliation is a task for the same reason: a
     slow catch-up render must not delay the service coming up.
     """
-    global SERVICE, PUBLISHER
+    global SERVICE, PUBLISHER, VIEW
     store = Store(store_mod.default_root())
     from awm.drawio.checkout import default_root as checkouts_root
 
     SERVICE = Service(store, Checkouts(store, checkouts_root()), emit=_emit)
     PUBLISHER = AutoPublisher(store)
     PUBLISHER.attach(store)
+
+    # The view layer: a URL that returns a page's live SVG. Two commit
+    # subscribers — prune the cache a rename/removal orphaned, and tell
+    # subscribed consumers the page moved so they re-fetch their placed image.
+    VIEW = ViewServer(store)
+    store.subscribe(VIEW.renderer.prune_for_commit)
+    ViewNotifier(_emit).attach(store)
+
     asyncio.create_task(mount.hold_mount())
+    asyncio.create_task(VIEW.hold_mount())
     asyncio.create_task(PUBLISHER.run())
     asyncio.create_task(PUBLISHER.reconcile())
     log.info("drawio store at %s (%d diagram(s)), %d autopublish link(s), "
-             "app mount %s → %s", store.root, len(store.list()),
-             len(PUBLISHER.registry.links), mount.MOUNT_PREFIX, mount.app_root())
+             "app mount %s → %s, view mount %s", store.root, len(store.list()),
+             len(PUBLISHER.registry.links), mount.MOUNT_PREFIX, mount.app_root(),
+             view_mod.VIEW_PREFIX)
 
 
 async def main() -> None:
