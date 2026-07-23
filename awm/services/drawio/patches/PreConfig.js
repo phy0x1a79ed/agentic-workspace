@@ -391,15 +391,41 @@ urlParams['splash'] = '0';
         if (!m || viewUrlSave[m[1]] !== save) continue;
         var state = graph.view.getState(cell);
         if (!state || !state.shape || !state.shape.node) continue;
+        // An edit can reshape the source page, but this box was sized to the
+        // old proportions — force aspect-preservation (letterbox) on the shape
+        // and its rendered node, or the new SVG stretches to fill. Render-time
+        // only: the model, and what we save, is never touched.
+        state.shape.preserveImageAspect = true;
         var busted = m[1] + (m[1].indexOf('?') >= 0 ? '&' : '?') + bust;
         var imgs = state.shape.node.getElementsByTagName('image');
         for (var i = 0; i < imgs.length; i++) {
           imgs[i].setAttribute('href', busted);
           imgs[i].setAttributeNS(
             'http://www.w3.org/1999/xlink', 'href', busted);
+          imgs[i].setAttribute('preserveAspectRatio', 'xMidYMid meet');
         }
       }
     } catch (e) { console.warn('[awm] view refresh failed', e); }
+  }
+
+  // Insert > Image > URL yields a cell with imageAspect=0, so drawio stretches
+  // the image to fill its box (preserveAspectRatio="none"). Harmless while the
+  // box matches the render, but a source edit that reshapes the page then
+  // distorts it — on every redraw, not just our refresh. Force aspect
+  // preservation for any image whose href is a view URL: a one-time shape
+  // patch, so it holds across zoom/pan and freshly placed images, and still
+  // writes nothing to the consumer diagram.
+  var imageAspectPatched = false;
+  function patchViewImageAspect() {
+    if (imageAspectPatched || typeof mxImageShape === 'undefined') return;
+    imageAspectPatched = true;
+    var apply = mxImageShape.prototype.apply;
+    mxImageShape.prototype.apply = function () {
+      apply.apply(this, arguments);
+      if (this.image && this.image.indexOf(VIEW_MARK) >= 0) {
+        this.preserveImageAspect = true;
+      }
+    };
   }
 
   function watchViewImages(ui) {
@@ -433,6 +459,7 @@ urlParams['splash'] = '0';
       attached = true;
       load(ui).then(function () {
         subscribe(ui);
+        patchViewImageAspect();
         watchViewImages(ui);
         lastScanPageId = pageId(ui);
         console.log('[awm] editing', target && target.save,
