@@ -404,8 +404,35 @@ urlParams['splash'] = '0';
             'http://www.w3.org/1999/xlink', 'href', busted);
           imgs[i].setAttribute('preserveAspectRatio', 'xMidYMid meet');
         }
+        reshapeToRender(graph, cell, busted);
       }
     } catch (e) { console.warn('[awm] view refresh failed', e); }
+  }
+
+  function reshapeToRender(graph, cell, url) {
+    // Follow the render's aspect ratio: keep the top-left corner and the width,
+    // recompute the height from the new SVG's own proportions, so the box fills
+    // without margins instead of letterboxing. A real, savable geometry change
+    // on the consumer — but only when the aspect actually shifts, so it settles
+    // and never loops. Set directly (not via the model's execute) so an
+    // automatic reflow never lands in the user's undo stack as a phantom edit.
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var nw = img.naturalWidth, nh = img.naturalHeight;
+        if (!nw || !nh) return;
+        var geo = cell.getGeometry && cell.getGeometry();
+        if (!geo || !geo.width) return;
+        var want = geo.width * (nh / nw);
+        if (Math.abs(want - geo.height) < 0.5) return;
+        var next = geo.clone();
+        next.height = want;
+        cell.setGeometry(next);
+        graph.view.invalidate(cell, true, true);
+        graph.view.validate();
+      } catch (e) { /* never break the editor over a reshape */ }
+    };
+    img.src = url;
   }
 
   // Insert > Image > URL yields a cell with imageAspect=0, so drawio stretches
