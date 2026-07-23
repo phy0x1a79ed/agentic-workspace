@@ -126,8 +126,11 @@ class Store:
         #: diagram. The hook lives here rather than on :class:`Service` because
         #: :meth:`awm.drawio.checkout.Checkouts.merge` writes through the store
         #: directly — a hook one layer up would silently miss agent merges,
-        #: which is the trigger that matters most.
-        self.on_commit: Callable[[str, str | None], None] | None = None
+        #: which is the trigger that matters most. A *list*, not a single slot,
+        #: because more than one thing now cares that a diagram moved:
+        #: autopublish re-renders its links, and the view layer both prunes its
+        #: cache and tells subscribed consumers to refresh.
+        self._commit_subscribers: list[Callable[[str, str | None], None]] = []
         self._ensure_repo()
 
     # --- git plumbing ------------------------------------------------------
@@ -322,19 +325,27 @@ class Store:
         return {"save": path, "rev": rev, "changed": True,
                 "amended": amend}
 
+    def subscribe(self, callback: Callable[[str, str | None], None]) -> None:
+        """Register a ``(save, rev)`` commit callback. Fired in subscribe order."""
+        self._commit_subscribers.append(callback)
+
+    def clear_commit_subscribers(self) -> None:
+        """Drop every commit subscriber (tests use this to simulate 'down')."""
+        self._commit_subscribers.clear()
+
     def _notify_commit(self, path: str, rev: str | None) -> None:
-        """Fire the commit hook without letting it affect the write.
+        """Fire the commit hooks without letting them affect the write.
 
         A subscriber that raises must not turn a landed commit into a failed
         one — the write already happened, and reporting it as a failure would
-        be a lie the caller acts on.
+        be a lie the caller acts on. Each subscriber is guarded independently so
+        one raising cannot starve the others.
         """
-        if self.on_commit is None:
-            return
-        try:
-            self.on_commit(path, rev)
-        except Exception:  # noqa: BLE001
-            log.exception("commit hook failed for %s", path)
+        for callback in self._commit_subscribers:
+            try:
+                callback(path, rev)
+            except Exception:  # noqa: BLE001
+                log.exception("commit hook failed for %s", path)
 
     def _can_amend(self, path: str, author: str) -> bool:
         """Whether this write should fold into the tip instead of adding a commit.
