@@ -101,6 +101,15 @@ def _handle_scope_post(args: dict) -> dict:
         meta=args.get("meta"),
         to_scope=args.get("to_scope"),
     )
+    # A journal post is a scope's debrief entry; refresh its indexes so the next
+    # session sees it without a manual scope_refresh. Best-effort: a refresh
+    # failure (e.g. scope dir absent in tests) must never fail the post.
+    if args.get("kind") == "journal":
+        try:
+            from awm.scopes import scopes
+            scopes.awm_refresh(args["project"], args["scope"])
+        except Exception:
+            pass
     return {"post": post.to_dict()}
 
 
