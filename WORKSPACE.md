@@ -70,31 +70,23 @@ Two things behave differently in annex mode, and only these two:
 Storage is not a reason to hesitate: content is hardlinked from the canonical
 store, so N scopes holding the same dataset cost one copy.
 
-## Existing Projects
+## Finding Projects
 
-```
-projects/
-  _vagrant/              # sentinel: per-user vagrant-scope handlers
-  awm/                   # AWM itself (dev, feat-dag, feat-gamebot, web-*, svc-*, comp-*, infra-*, …)
-  container_builds/      # apptainer image recipes
-  cyanoverse/            # cyanobacteria genomics figures + analyses
-  drawio/                # diagrams + poster integration
-  market_monitor/        # trading data pipelines
-  metasmith/             # metasmith dev (caching, cancellation, hints, mcp, …)
-  metasmith-libraries/   # per-pipeline libraries (eukaryotic-assembly, fabfos, phyloflash, …)
-  mitacs-purify/         # bioreactor work
-  odysseus/              # odysseus fork (https://github.com/phy0x1a79ed/odysseus)
-  research/              # biofilms, ecological-modelling, functional-decomposition
-  scadc/                 # figures + analyses for the SCADC paper
-  scratch/               # one-off sandboxes (endfield, minecraft-turtles, network_debug)
-  self-improvement/      # factorio-learning-environment, opencode
-  spanish-lakes/         # spanish-lakes metagenomics
-  synclust/              # synclust dev
-  threejs-scene-manager/ # scene manager dev
-  vpn_bounce/            # vpn relay experiments
-```
+**Deliberately not enumerated here.** Projects and their scopes are created, renamed, and
+completed constantly — any list written into this file is stale within days, and keeping it
+current is pure churn for every agent that edits it. Do NOT add a project map back. The same
+rule that governs the MCP catalog below applies here: **discover it, don't memorize it.**
 
-Each project has one or more scope worktrees under it; `awm scope list --project <p>` enumerates them live.
+Enumerate live instead:
+
+- `project(verb="search")` — every project (MCP); `awm project search [query]` from a shell.
+- `scope(verb="search", args={project:<p>})` — a project's scopes, their branches and worktrees;
+  `awm scope list --project <p>` from a shell.
+- `ls projects/` — the on-disk truth: one directory per project, each holding a `.bare/` repo
+  and one worktree directory per scope.
+
+What a given project is *for* lives in that project's own worktree — its `AGENTS.md`,
+`README.md`, and per-scope `.awm/context.md` — not in this file.
 
 ## Startup Ritual
 
@@ -172,6 +164,65 @@ This is the canonical, shared copy; each hub may mirror its own row into its `.a
 
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
+## Dev protocol — parallel consumer/library scopes
+
+Some projects **consume a shared-library project as a git submodule** and need to
+work the *library* (its transforms) and the *consumer* in lockstep, across several
+scopes at once. If every consumer scope pins the submodule to the **same** library
+branch, parallel library edits collide on that one branch. The dev protocol gives
+each consumer scope its **own** library branch + worktree, isolating library work
+exactly the way code worktrees isolate consumer work — and it's a **reusable
+template**, so a second consumer adopts it by filling slots.
+
+**The N-slot template.** The consumer side uses role-generic scope names; the library
+side names its parallel scopes **after the consumer**, so from inside the library
+project you can tell which consumer effort a scope serves:
+
+| Role | consumer scope | ↔ library scope |
+|------|----------------|-----------------|
+| lead / integrator | `dev` | `<consumer>` (hub) |
+| parallel worker 1..3 | `dev1`, `dev2`, `dev3` | `<consumer>1`, `<consumer>2`, `<consumer>3` |
+
+`dev`↔`<consumer>` are the two **hubs**; `devN`↔`<consumer>N` are the **peripherals** —
+the same hub/peripheral shape as scatter/gather above, one pairing per project side.
+
+**Submodule tracking (push-free, local).** Each consumer scope's `src/<lib>` submodule:
+
+- carries an `awm` remote → the library project's local `.bare` (`origin` stays the
+  GitHub url so `clone --recurse-submodules` still works);
+- is checked out on its paired branch `feat/<consumer>N` with upstream set to
+  `awm/feat/<consumer>N`;
+- has `.gitmodules` `branch=` naming that same paired branch.
+
+Sync is **fully local, never through GitHub**: the library worktrees and the consumer
+submodule checkouts share one local `.bare` via the `awm` remote. Preferred workflow —
+**edit transforms in the library worktree** (`projects/<lib>/<consumer>N`); commits
+land straight in the shared bare; then in the consumer scope `git -C src/<lib> fetch
+awm` and bump the gitlink. Editing inside the submodule instead? `git push awm
+HEAD:feat/<consumer>N` targets the local bare — still no GitHub.
+
+**Merging a worker up is a parallel merge.** Promoting `devN` is two gathers, one per
+side: merge the library peripheral `feat/<consumer>N` into the library hub
+`feat/<consumer>`, **and** merge the consumer peripheral into the consumer hub `dev`,
+then bump the consumer hub's gitlink to the new library-hub tip. Drive each side with
+`scope(verb="gather", …)` (hub + its peripherals) as usual.
+
+Gotchas that bite this specifically: `git submodule update --remote` follows
+`.gitmodules` `branch=` on the **default** remote (origin=GitHub), not `awm` — so sync
+with explicit `fetch awm` / `push awm`, never `update --remote`. And `git worktree
+move` **refuses on a worktree containing submodules** — move the dir by hand, then
+`git worktree repair`, rename the `.bare/worktrees/<name>` admin dir to match, and fix
+each submodule's `.git` gitdir pointer + `core.worktree`.
+
+**Current instantiation — `fabfos` consuming `metasmith-libraries`:**
+
+| consumer `fabfos` scope | branch | ↔ `metasmith-libraries` scope | library branch |
+|---|---|---|---|
+| `dev` (lead) | `dev` | `fabfos` (hub) | `feat/fabfos` |
+| `dev1` | `feat/dev1` | `fabfos1` | `feat/fabfos1` |
+| `dev2` | `feat/dev2` | `fabfos2` | `feat/fabfos2` |
+| `dev3` | `feat/dev3` | `fabfos3` | `feat/fabfos3` |
+
 ## Git Model
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
@@ -226,4 +277,6 @@ For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `awm/gateway
 
 ## What goes in this file
 
-WORKSPACE.md is the structural orientation every scope agent inherits at session start, for any project in the workspace: the workspace layout and per-scope `.awm/` paths, the project map, how the MCP tool surface is projected and discovered (not a hand-maintained list), the startup ritual, scope lifecycle and naming conventions, the git model, and the workspace-wide agent + Python-environment rules. awm-internal architecture goes in `AGENTS.md`; human install/usage goes in `README.md`.
+WORKSPACE.md is the structural orientation every scope agent inherits at session start, for any project in the workspace: the workspace layout and per-scope `.awm/` paths, how the MCP tool surface is projected and discovered, the startup ritual, scope lifecycle and naming conventions, the git model, and the workspace-wide agent + Python-environment rules. awm-internal architecture goes in `AGENTS.md`; human install/usage goes in `README.md`.
+
+**Nothing enumerable goes in here.** The test is whether the list changes without this file changing — a roster of projects, scopes, services, MCP domains, or verbs all fail it, and each one silently rots into a lie an agent then acts on. Write the *shape* and the discovery command instead; the runtime is the source of truth. The two standing exceptions are lists that are themselves the convention rather than a snapshot of state: the scope-prefix families and the hub/peripheral table, which are decisions this file makes, not facts it reports.
