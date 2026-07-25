@@ -61,7 +61,6 @@ class TestCreateProjectClone:
         awm_dir = worktree / ".awm"
         assert (awm_dir / "context.md").exists()
         assert (awm_dir / "history.md").exists()
-        assert (awm_dir / "artifacts.md").exists()
         assert (awm_dir / "data").is_symlink()
         assert (awm_dir / "skills").is_symlink()
 

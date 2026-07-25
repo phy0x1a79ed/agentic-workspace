@@ -200,7 +200,7 @@ SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "awm_refresh",
         "tool": "scope_refresh",
-        "description": "Re-generate .awm/history.md and .awm/artifacts.md for a scope.",
+        "description": "Re-generate .awm/history.md for a scope.",
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
