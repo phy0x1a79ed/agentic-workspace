@@ -41,6 +41,7 @@ declare -A DISTS=(
   [artifacts]="$WS/awm/services/artifacts::$WS/awm/services/artifacts/tests"
   [writing]="$WS/awm/services/writing::$WS/awm/services/writing/tests"
   [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
+  [events]="$WS/awm/services/events::$WS/awm/services/events/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
@@ -57,7 +58,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

@@ -559,7 +559,7 @@ HANDLERS = {
 def _on_start() -> None:
     """Stand up the DB + boot a connector task per configured account.
 
-    Sync (the adapter awaits it before the first connect). Connector tasks are
+    Sync (the adapter runs it alongside registration). Connector tasks are
     scheduled on the running loop via ``create_task``; each owns its own
     reconnect so a dead platform never stalls the control-WS loop. A malformed
     ``social.toml`` is logged and skipped — the service still serves its DB-only

@@ -16,15 +16,21 @@
    * list.
    */
   import { onDestroy } from 'svelte';
-  import { TaskList, FocusPanel, buildIndex } from '@awm/dag-graph';
+  import { TaskList, FocusPanel, SteeringChip, buildIndex } from '@awm/dag-graph';
   import {
     fetchDag,
     openNode,
     setTitle,
     setTags,
     setPaused,
+    attachTask,
+    setUserDone,
+    fetchTaskDetail,
+    cancelTask,
+    retryTask,
     type DagSnapshot,
     type DagTask,
+    type TaskDetail,
   } from '@awm/client';
   import { AgentChat } from '@awm/agent-chat';
 
@@ -45,6 +51,14 @@
   // independently once the snapshot matches it ("my edit wins" until confirmed).
   type Edit = { title?: string; tags?: string[]; paused?: boolean };
   let edits = $state<Record<string, Edit>>({});
+
+  // Steering + lifecycle are SERVER-AUTHORITATIVE (they change from both sides),
+  // so they never enter the optimistic `edits` overlay — the controls just go
+  // busy-until-poll and the chip/flags flip when the next snapshot lands.
+  let now = $state(Date.now()); // bumped each poll so attention ages refresh.
+  let detail = $state<TaskDetail | null>(null); // on-selection heavier read.
+  let lifecycleBusy = $state(false);
+  let steerBusy = $state(false);
 
   function sameTags(a: string[], b: string[]): boolean {
     return a.length === b.length && a.every((x, i) => x === b[i]);
@@ -86,11 +100,39 @@
       const snap = await fetchDag();
       reconcileEdits(snap);
       snapshot = snap;
+      now = Date.now();
       error = null;
     } catch (err) {
       error = (err as Error).message;
     }
+    // Refresh the selected task's objective/detail alongside the poll so the
+    // objective record appears when the detach handshake commits it.
+    void refreshDetail(selectedId);
   }
+
+  // On-selection (and per-poll) heavier read: the objective text, plan ref, and
+  // attempt memories. Guarded against a selection race — only apply if the id is
+  // still selected when the response lands.
+  async function refreshDetail(id: string | null) {
+    if (!id) { detail = null; return; }
+    try {
+      const d = await fetchTaskDetail(id);
+      if (id === selectedId) detail = d.ok ? d : null;
+    } catch {
+      /* leave the last-good detail in place */
+    }
+  }
+
+  // Fetch detail immediately on a selection change (don't wait for the next poll).
+  let lastDetailId: string | null = null;
+  $effect(() => {
+    const id = selectedId;
+    if (id !== lastDetailId) {
+      lastDetailId = id;
+      detail = null;
+      void refreshDetail(id);
+    }
+  });
 
   // --- Create a new task ---------------------------------------------------
   // One click: place an attended worker on an EMPTY goal (born paused, idle until
@@ -133,6 +175,69 @@
     try { await setPaused(slug, paused, taskId); } catch (err) { error = (err as Error).message; }
   }
 
+  // --- Lifecycle controls (busy-until-poll, NO optimistic overlay) ---------
+
+  type LifecycleFn = (taskId: string) => Promise<{ ok?: boolean; error?: string }>;
+  async function runLifecycle(fn: LifecycleFn, taskId: string) {
+    if (lifecycleBusy) return;
+    lifecycleBusy = true;
+    error = null;
+    try {
+      const res = await fn(taskId);
+      if (res && res.ok === false) error = res.error ?? 'action failed';
+      await refresh();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      lifecycleBusy = false;
+    }
+  }
+  const onCancel = (id: string) => runLifecycle(cancelTask, id);
+  const onRetry = (id: string) => runLifecycle(retryTask, id);
+
+  // --- Steering controls (attach + hand-off; server-authoritative) ---------
+
+  async function doAttach() {
+    if (!selected?.workspace_slug || steerBusy) return;
+    steerBusy = true;
+    error = null;
+    try {
+      await attachTask(selected.workspace_slug, selected.task_id);
+      await refresh();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      steerBusy = false;
+    }
+  }
+
+  async function doSetUserDone(done: boolean) {
+    if (!selected?.workspace_slug || steerBusy) return;
+    steerBusy = true;
+    error = null;
+    try {
+      const r = await setUserDone(selected.workspace_slug, done, selected.task_id);
+      if (r && r.ok === false) error = r.error ?? 'not attached';
+      await refresh();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      steerBusy = false;
+    }
+  }
+
+  // Attach-on-send seam handed to AgentChat: the first message while detached is
+  // the explicit interrupt. Awaited on the single send path (no extra post),
+  // then a refresh so the attach flag flips in the chip.
+  async function attachForSend() {
+    if (!selected?.workspace_slug) return;
+    try {
+      await attachTask(selected.workspace_slug, selected.task_id);
+    } finally {
+      void refresh();
+    }
+  }
+
   // Poll loop.
   let timer: ReturnType<typeof setInterval> | null = null;
   $effect(() => {
@@ -171,7 +276,7 @@
   <div class="panels">
     <section class="left">
       {#if index}
-        <TaskList {index} {query} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
+        <TaskList {index} {query} nowMs={now} selectedTaskId={selectedId} onSelectTask={(id) => (selectedId = id)} />
       {:else}
         <p class="hint mono">loading the plan…</p>
       {/if}
@@ -194,14 +299,59 @@
                 {onSetTitle}
                 {onSetTags}
                 {onSetPaused}
+                {detail}
+                {onCancel}
+                {onRetry}
+                {lifecycleBusy}
               />
             </div>
           {:else}
             <p class="hint mono">loading the plan…</p>
           {/if}
         {:else if selected && selected.workspace_slug}
+          <!-- Steering bar: read-only chip + explicit attach / hand-off controls.
+               Sending in the chat below also attaches (attach-on-send). -->
+          {#if !isTerminal}
+            <div class="steerbar">
+              <SteeringChip task={selected} />
+              <div class="steeractions">
+                {#if !selected.attached}
+                  <button
+                    class="steerbtn mono"
+                    type="button"
+                    title="attach to steer without sending a message"
+                    disabled={steerBusy}
+                    onclick={doAttach}
+                  >{steerBusy ? '…' : 'attach'}</button>
+                {:else if !selected.steer_user_done}
+                  <button
+                    class="steerbtn mono"
+                    type="button"
+                    title="signal you're done — the node detaches automatically once the agent is ready"
+                    disabled={steerBusy}
+                    onclick={() => doSetUserDone(true)}
+                  >{steerBusy ? '…' : 'hand off'}</button>
+                {:else}
+                  <span class="handoff-pending mono" title="waiting for the agent to confirm it understands">you: done — waiting on agent</span>
+                  <button
+                    class="steerbtn mono"
+                    type="button"
+                    title="un-say done (you're still attached)"
+                    disabled={steerBusy}
+                    onclick={() => doSetUserDone(false)}
+                  >{steerBusy ? '…' : 'un-say done'}</button>
+                {/if}
+              </div>
+            </div>
+          {/if}
           {#key selected.workspace_slug}
-            <AgentChat slug={selected.workspace_slug} embedded readonly={isTerminal} />
+            <AgentChat
+              slug={selected.workspace_slug}
+              embedded
+              readonly={isTerminal}
+              attached={selected.attached}
+              onAttach={attachForSend}
+            />
           {/key}
         {:else if selected}
           <p class="hint mono">task <code>{selected.task_id}</code> is <code>{selected.state}</code> — no agent attached yet (the planner mints its unit on dispatch).</p>
@@ -280,6 +430,41 @@
     display: grid;
     grid-template-columns: minmax(260px, 360px) 1fr;
     min-height: 0;
+  }
+  .steerbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border, #333);
+    background: var(--surface, #1a1a1a);
+    flex: 0 0 auto;
+  }
+  .steeractions { display: flex; align-items: center; gap: 8px; }
+  .steerbtn {
+    background: var(--surface2, #222);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    color: var(--text2, #bbb);
+    padding: 4px 10px;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .steerbtn:hover:not(:disabled) {
+    background: var(--surface3, #2a2a2a);
+    color: var(--text, #ddd);
+    border-color: var(--atomizer, #ffb74d);
+  }
+  .steerbtn:disabled { opacity: 0.5; cursor: default; }
+  .handoff-pending {
+    font-size: 10px;
+    color: var(--atomizer, #ffb74d);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
   }
   .left {
     border-right: 1px solid var(--border, #333);

@@ -110,11 +110,15 @@ So the reflex when a task *looks* like it needs a human — send a message, appr
 
 One domain is worth singling out because it changes *how you search*, not just what you can do: **`graphify`** — an AST knowledge graph of the awm source tree (`find` label→`file:line`, `refs` callers/callees/importers, `query` NL traversal, `path`, `affected` blast-radius). Reach for it **before dispatching an Explore agent** on any "where is X / what calls or imports Y / impact of changing Z" question on the awm tree; it answers structurally and mostly in-process. Caveat: it indexes the **deployed/release** tree, not your uncommitted worktree changes — use Explore for code you just wrote and for non-awm projects.
 
+Another domain changes *how you decide*, not how you search: **`precedence`** — a searchable archive of past **user-adjustment decisions** (the free-text triple *situation + decision-point + what-was-decided*), so you act on a preference the user already expressed instead of re-asking. Reach for it **before re-asking the user a preference-shaped question, and whenever the user corrects or overrides a choice you made**: `precedence(verb="search", args={…})` — query any subset of the triple (`context` / `question` / `decision`) or `query` for keywords; pass `explore=0` for the single most-trusted hit — then act on the stored decision rather than re-litigating it. When the user *does* make or adjust such a decision, contribute it back so the archive compounds: `precedence(verb="add")` for a new one, `verb="note"` / `verb="vote"` to amend or rate an existing entry. (Curation verbs live on CLI/HTTP only; `precedence(verb="describe")` gives exact schemas.)
+
+A third changes *how you manage context*: **`reflection`** acts on your own tmux pane. `reflection(verb="compact", args={pane: "<your $TMUX_PANE>", followup: "<next task>"})` queues a `/compact` behind your current turn plus a follow-up prompt, so the session compacts at end-of-turn and resumes with fresh context instead of going idle — the answer to a filling context mid-task, not a reason to stop. Find your pane with `echo $TMUX_PANE` and pass it explicitly (the service runs out-of-process and can't read your env; auto-detect is reliable only with a single agent pane). Outside tmux (bare terminal, IDE, web) it's a clean no-op. Compact at a clean seam — a phase boundary, a finished chunk, crossing from planning into execution — and pass a `followup` naming the next task so the fresh context resumes pointed at the right work.
+
 The **CLI and HTTP surfaces stay expanded** — `awm scope create`, `POST /invoke {name:"scope_create"}`, one command/route per verb — so only the MCP projection collapses; see the CLI note below.
 
 ## Skills
 
-The end-of-session **debrief** is a native Claude Code skill (`~/.claude/skills/debrief/`): say "debrief" and the agent runs it — commit, journal (`scope_post kind=journal`), refresh. No MCP lookup needed.
+The end-of-session **debrief** is a native Claude Code skill (`~/.claude/skills/debrief/`): say "debrief" and the agent runs it — commit, journal (`scope_post kind=journal`), refresh. No MCP lookup needed. The debrief is for a coherent unit of finished work worth recording; in a fully autonomous run, that call is yours to make.
 
 Other procedural references (the `create-project` / `create-scope` / `harness-setup` writeups and tool guides for git, mamba, mcp, metasmith, plotly, chrome-devtools, threejs) still live on disk under `.awm/skills/` and are Read-able when relevant. The skills *service* (the `skill_search` / `skill_get` / `skill_sync` MCP tools + embeddings search) is **retired/disabled** — these files are reference-only now, not searchable through MCP.
 
@@ -156,6 +160,7 @@ A **hub** scope integrates work from a set of **peripheral** feature scopes via 
 |-----|--------|-------------------------------------------------|
 | `feat-dag` | `feat/feat-dag` | `svc-agents`, `svc-orchestrator`, `svc-events`, `web-stt`, `web-tts`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio` |
+| `feat-fleet` | `feat/feat-fleet` | `svc-agents` |
 | `dev` | `dev` | all promotable scopes (the `svc-*`, `web-*`, `rlm-*` set) |
 
 This is the canonical, shared copy; each hub may mirror its own row into its `.awm/context.md` (gitignored, so local-only) for a hub agent to find it without walking up here.

@@ -113,7 +113,7 @@ def _serve_forever(info: dict) -> None:
 def _on_start() -> None:
     """Mint/reuse the TLS cert, then launch the HTTPS front in a daemon thread.
 
-    Runs once before the first control-WS connect. A cert failure is fatal since
+    Runs once, alongside registration. A cert failure is fatal since
     the listener can't come up without TLS.
     """
     sans = certs.resolve_sans(san_file=SANS_FILE)

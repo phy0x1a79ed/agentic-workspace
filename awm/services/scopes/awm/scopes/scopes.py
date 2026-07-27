@@ -245,7 +245,6 @@ def _generate_history_md(project: str, scope: str) -> str:
     return preface + "\n".join(sections)
 
 
-
 def refresh_history(project: str, scope: str) -> str:
     validate_name(project, kind="project name")
     validate_name(scope, kind="scope name")

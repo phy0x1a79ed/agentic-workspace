@@ -49,7 +49,10 @@ async def _register_base(name: str, pid: int):
 
 
 def _fake_scan(monkeypatch, procs):
-    monkeypatch.setattr(go, "_scan_hub_adapters", lambda: list(procs))
+    """Fake the /proc scan. ``age_s`` defaults to well past any grace — a
+    process too young to have registered is spared, and that is its own test."""
+    filled = [{"age_s": 3600.0, **p} for p in procs]
+    monkeypatch.setattr(go, "_scan_hub_adapters", lambda: list(filled))
 
 
 def _capture_kills(monkeypatch):
@@ -161,3 +164,244 @@ def test_reap_projects_to_mcp_tool():
     assert "services_reap" in tools
     props = tools["services_reap"].inputSchema["properties"]
     assert props["dry_run"]["type"] == "boolean"
+
+
+# ---------------------------------------------------------------------------
+# Authority over zombies: a lease is possession, not health.
+#
+# The 2026-07-27 outage survived a targeted cleanup because stale instances
+# kept their slot without ever serving — every replacement was refused in
+# favour of a corpse. So a holder that never reached ready, past a grace, is
+# reapable; a ready one, an overlay, and a still-starting one are not.
+# ---------------------------------------------------------------------------
+
+
+def _claim_lease(service_id: str, *, held_for: float = 0.0) -> None:
+    """Take the lease the way the control-WS handler does, optionally
+    backdating when it was taken."""
+    import time
+    lm = lease_mod.get_lease_manager()
+    lm._holders[service_id] = asyncio.Event()
+    lm._claimed_at[service_id] = time.monotonic() - held_for
+
+
+def _mark_ready(service_id: str) -> None:
+    from awm.gateway.hub import rpc as rpc_mod
+    rpc_mod.ensure_control(service_id).set_api({})
+
+
+@pytest.fixture(autouse=True)
+def _clean_rpc():
+    from awm.gateway.hub import rpc as rpc_mod
+    rpc_mod._channels.clear()
+    yield
+    rpc_mod._channels.clear()
+
+
+async def test_unready_lease_holder_past_grace_is_reaped(monkeypatch):
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    rec = await _register_base("zombie", pid=4001)
+    _claim_lease(rec.service_id, held_for=120.0)     # holding, never ready
+    _fake_scan(monkeypatch, [
+        {"pid": 4001, "cmdline": "python -m awm.zombie.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == [4001]
+    assert out["count"] == 1
+
+
+async def test_a_ready_lease_holder_is_never_reaped(monkeypatch):
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    rec = await _register_base("healthy", pid=4002)
+    _claim_lease(rec.service_id, held_for=99999.0)   # ancient, but serving
+    _mark_ready(rec.service_id)
+    _fake_scan(monkeypatch, [
+        {"pid": 4002, "cmdline": "python -m awm.healthy.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_a_still_starting_holder_is_spared(monkeypatch):
+    """Inside the grace, an unready holder is a slow starter, not a corpse."""
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    rec = await _register_base("booting", pid=4003)
+    _claim_lease(rec.service_id, held_for=1.0)
+    _fake_scan(monkeypatch, [
+        {"pid": 4003, "cmdline": "python -m awm.booting.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_an_overlay_is_never_reaped(monkeypatch):
+    """`awm dev shadow` owns its own lifecycle — it is never journaled, never
+    respawn-watchdogged, and must never be reaped either."""
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    rec = await _register_base("shadowed", pid=4004)
+    rec.is_overlay = True
+    _claim_lease(rec.service_id, held_for=99999.0)   # unready and ancient
+    _fake_scan(monkeypatch, [
+        {"pid": 4004, "cmdline": "python -m awm.shadowed.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_origin_check_precedes_the_zombie_rule(monkeypatch):
+    """A wedged dev-sandbox child must survive a prod sweep. The origin filter
+    is the only thing standing between the two, so it cannot be conditional on
+    the health verdict."""
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    _fake_scan(monkeypatch, [
+        {"pid": 4005, "cmdline": "python -m awm.notes.hub_adapter",
+         "hub_url": "http://127.0.0.1:7821/"},       # dev sandbox, unregistered
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_a_freshly_spawned_process_is_spared(monkeypatch):
+    """The sweep is automatic now, so it will regularly run while a service is
+    mid-registration: no lease yet, no record yet, indistinguishable from an
+    orphan by every other signal."""
+    killed = _capture_kills(monkeypatch)
+    monkeypatch.setattr(go, "_READY_GRACE_S", 30.0)
+    _fake_scan(monkeypatch, [
+        {"pid": 5001, "cmdline": "python -m awm.notes.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/", "age_s": 2.0},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_an_unknowable_age_is_treated_as_young(monkeypatch):
+    """/proc read raced the exit, or this is not Linux. Never guess toward
+    killing."""
+    killed = _capture_kills(monkeypatch)
+    _fake_scan(monkeypatch, [
+        {"pid": 5002, "cmdline": "python -m awm.notes.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/", "age_s": None},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+
+
+def test_proc_age_of_this_process_is_plausible():
+    """The /proc/<pid>/stat field-22 arithmetic, against a real process."""
+    import os as _os
+    age = go._proc_age_s(_os.getpid())
+    assert age is not None
+    assert 0.0 <= age < 86400.0
+
+
+def test_proc_age_of_a_dead_pid_is_none():
+    assert go._proc_age_s(2 ** 22) is None
+
+
+# ---------------------------------------------------------------------------
+# A service is a process TREE; the registry knows one pid of it
+# ---------------------------------------------------------------------------
+#
+# Found in live e2e on the :7821 sandbox: every automatic sweep reaped ~50
+# processes — two per healthy service. The supervisor spawns `bash run.sh`,
+# which becomes `mamba run ...`, which forks `python -m awm.<svc>.hub_adapter`.
+# Both the wrapper and the child match the hub_adapter regex and carry
+# AWM_HUB_URL, but only ONE of them is `rec.backend_pid`. The sibling looked
+# like a textbook orphan, and because the kill is a group kill it took the
+# protected process down with it. Grace hid it from `--dry-run`: after each
+# sweep everything was freshly respawned and therefore too young to reap.
+
+
+def _fake_pgids(monkeypatch, mapping: dict[int, int]) -> None:
+    """Map pid -> pgid for the reaper; unknown pids are their own group."""
+    monkeypatch.setattr(go, "_pgid_of", lambda pid: mapping.get(pid, pid))
+
+
+async def test_the_sibling_of_a_protected_process_is_not_an_orphan(monkeypatch):
+    killed = _capture_kills(monkeypatch)
+    rec = await _register_base("notes", pid=6001)       # the wrapper
+    _hold_lease(rec.service_id)
+    _mark_ready(rec.service_id)
+    _fake_pgids(monkeypatch, {6001: 6001, 6002: 6001})  # child shares the group
+    _fake_scan(monkeypatch, [
+        {"pid": 6001, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "mamba run -n awm python -m awm.notes.hub_adapter"},
+        {"pid": 6002, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.notes.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_a_genuine_orphan_in_its_own_group_is_still_reaped(monkeypatch):
+    """The group rule must not become a blanket amnesty."""
+    killed = _capture_kills(monkeypatch)
+    rec = await _register_base("notes", pid=6001)
+    _hold_lease(rec.service_id)
+    _mark_ready(rec.service_id)
+    _fake_pgids(monkeypatch, {6001: 6001, 6002: 6001, 7001: 7001})
+    _fake_scan(monkeypatch, [
+        {"pid": 6002, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.notes.hub_adapter"},
+        {"pid": 7001, "pgid": 7001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.stale.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == [7001]
+    assert out["count"] == 1
+
+
+async def test_the_gateways_own_process_group_is_spared(monkeypatch):
+    """The gateway's pid is excluded by identity; anything sharing its group
+    (a child it spawned in-session) must be excluded too."""
+    import os as _os
+    killed = _capture_kills(monkeypatch)
+    me = _os.getpid()
+    _fake_pgids(monkeypatch, {me: me, 8001: me})
+    _fake_scan(monkeypatch, [
+        {"pid": 8001, "pgid": me, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.x.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+def test_pgid_of_a_dead_pid_is_none():
+    assert go._pgid_of(2 ** 22) is None

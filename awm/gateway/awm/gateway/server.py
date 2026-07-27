@@ -297,16 +297,33 @@ async def lifespan(app: FastAPI):
     # only after reconcile's window + respawns have settled — no double-spawn.
     async def _bring_up_services() -> None:
         from awm.gateway.hub.supervisor import (
+            bootstrap_discovered_pages,
             bootstrap_discovered_services,
             reconcile_journaled_services,
             self_heal_loop,
         )
         await reconcile_journaled_services()
         await bootstrap_discovered_services()
-        # 3. Periodic self-heal: re-bootstrap any service later found wedged
-        #    (dead PID, no ready control) without waiting for a gateway restart
-        #    — covers crashes that bypass the control-WS disconnect watchdog.
-        asyncio.create_task(self_heal_loop())
+        # 2b. Register discovered page bundles (/ui/<name>). Pages hold no
+        #     control WS and are never journaled, so this filesystem re-derive
+        #     is what brings them back after a restart.
+        await bootstrap_discovered_pages()
+        # 3. The two standing background sweeps, started under
+        #    ``spawn_supervised`` — a bare create_task that dies on its first
+        #    line leaves the gateway looking healthy with a whole capability
+        #    silently absent, which is exactly the class of fault these sweeps
+        #    exist to catch.
+        #      self_heal_loop — re-bootstrap a service later found wedged (dead
+        #        PID, no ready control), covering crashes that bypass the
+        #        control-WS disconnect watchdog.
+        #      reap_loop — kill orphaned hub_adapter processes targeting this
+        #        origin. Recovery must not depend on an operator noticing and
+        #        typing `awm services reap`.
+        from awm.gatewayclient import spawn_supervised
+
+        from awm.gateway.gateway_ops import reap_loop
+        spawn_supervised("gateway/self-heal", self_heal_loop)
+        spawn_supervised("gateway/reap", reap_loop)
 
     try:
         asyncio.create_task(_bring_up_services())
@@ -393,32 +410,6 @@ def list_tools_endpoint(view: str | None = None):
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
-_REFLECTION_FLAT_NAMES = {"reflection_send", "reflection_compact"}
-
-
-def _default_reflection_pane(name: str, args: dict, pane_header: str | None) -> None:
-    """Fill in `pane` for a reflection call from the caller's own tmux pane.
-
-    `awm-mcp` forwards the calling agent's `$TMUX_PANE` as `X-Awm-Tmux-Pane`
-    (absent outside tmux). Reflection is the only domain whose contract with
-    the model requires zero pid/pane awareness from the agent — normal calls
-    arrive with no `pane` at all, and this is the one place that fills it in
-    before the call ever reaches `catalog.dispatch`. An explicit `pane` the
-    caller already supplied is never overwritten (manual/override use, e.g. a
-    human at a shell with no `awm-mcp` proxy in front of it, keeps working).
-    Scoped to reflection only — no other service's args are touched. Mutates
-    ``args`` in place (mirrors how the flat/domain shapes already nest it).
-    """
-    if not pane_header:
-        return
-    if name == "reflection":
-        inner = args.get("args")
-        if isinstance(inner, dict) and "pane" not in inner:
-            inner["pane"] = pane_header
-    elif name in _REFLECTION_FLAT_NAMES and "pane" not in args:
-        args["pane"] = pane_header
-
-
 @app.post("/invoke")
 async def invoke_tool(payload: dict, request: Request):
     """Dispatch an MCP-style tool call by name through the catalog. Async so
@@ -431,7 +422,6 @@ async def invoke_tool(payload: dict, request: Request):
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
     as_ = request.headers.get("X-Awm-As")
-    _default_reflection_pane(name, args, request.headers.get("X-Awm-Tmux-Pane"))
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except ValueError as e:
@@ -597,6 +587,16 @@ def run_server(foreground: bool = True):
     # EADDRINUSE restart-loop pattern (inbox #232).
     from awm.gateway._process_utils import exit_if_healthy_peer
     exit_if_healthy_peer(HOST, PORT, str(WORKSPACE_ROOT))
+    # Give the root logger a handler so `awm.*` records reach the log file.
+    # uvicorn only configures its own loggers (and marks them non-propagating),
+    # so without this every gateway INFO — service spawn, respawn, control-WS
+    # open, subscriber teardown — falls through to logging.lastResort and is
+    # dropped below WARNING. All 16 sites are lifecycle events, none per-request.
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     uvicorn.run(
         app,
         host=HOST,
