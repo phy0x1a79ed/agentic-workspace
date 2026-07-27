@@ -225,7 +225,7 @@ async def _h_accounts(args: dict) -> dict:
     if not peer:
         return {"accounts": out}
 
-    local = {a["name"] for a in out}
+    by_name = {a["name"]: a for a in out}
     try:
         remote = await gatewayclient.call_peer(peer, "social", "accounts", {})
     except (gatewayclient.PeerError, gatewayclient.GatewayCallError) as exc:
@@ -233,9 +233,17 @@ async def _h_accounts(args: dict) -> dict:
         return {"accounts": out, "peer": peer, "peer_error": str(exc)}
 
     for acc in (remote or {}).get("accounts", []):
-        if acc.get("name") in local:
+        name = acc.get("name")
+        mine = by_name.get(name)
+        if mine is None:
+            out.append({**acc, "owner": peer})
             continue
-        out.append({**acc, "owner": peer})
+        if mine.get("singleton"):
+            # Configured here but owned there. Saying "local" would be a lie in
+            # the one case a caller most needs the truth: it is the session on
+            # the *peer* that answers, so its liveness is the one that matters.
+            mine["owner"] = peer
+            mine["live"] = bool(acc.get("live"))
     return {"accounts": out, "peer": peer}
 
 
