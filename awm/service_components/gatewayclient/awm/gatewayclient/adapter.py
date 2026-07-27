@@ -67,6 +67,13 @@ log = logging.getLogger("awm.gatewayclient.adapter")
 # orphaned services behind (see the lifecycle plan: T2). Override via env.
 _RECONNECT_DEADLINE_S = float(os.environ.get("AWM_RECONNECT_DEADLINE_S", "10.0"))
 
+# How long an inbound call waits for ``on_start`` to finish before failing with
+# "still initialising". Bounded on purpose: a service whose init genuinely hangs
+# must surface as a slow-then-failing call, not as every caller blocking
+# forever. Comfortably longer than any honest init, and comfortably shorter than
+# a human's patience. Override via env.
+_INIT_WAIT_S = float(os.environ.get("AWM_INIT_WAIT_S", "60.0"))
+
 
 class GiveUp(Exception):
     """Sentinel: the service has been told to stand down (or the gateway is
@@ -138,9 +145,15 @@ class ServiceAdapter:
         Optional ``{session_kind: async callable(SessionContext)}`` for
         services that expose direct sessions (tts/stt PCM bridges).
     on_start:
-        Optional sync-or-async zero-arg callable run once before the first
-        connect — the place to call ``init_service_db`` so the service's own
-        DB exists before it serves.
+        Optional sync-or-async zero-arg callable run once at startup — the
+        place to call ``init_service_db`` so the service's own DB exists before
+        it serves. It runs CONCURRENTLY with registration, not before it: the
+        adapter registers and sends ``ready`` first, then initialises. Inbound
+        ``call`` / ``notify`` / ``session.open`` envelopes that arrive during
+        initialisation wait for it (up to ``AWM_INIT_WAIT_S``) rather than
+        being answered against a half-built service, so a caller sees a slow
+        first call instead of an error. See AGENTS.md § *The ready-ASAP
+        contract* for why readiness has to be immediate.
     start_cmd:
         Argv the hub uses to respawn the service after a silence eviction.
         Defaults to ``["bash", "run.sh"]`` (the convention every service's
@@ -168,6 +181,61 @@ class ServiceAdapter:
         # The currently-connected control WS, or None between reconnects. Held
         # so the service can originate `emit` frames (pub/sub) on it.
         self._control_ws: Any | None = None
+        # Set once ``on_start`` has finished (or failed, recorded below). Every
+        # inbound envelope waits on it, which is what lets the adapter announce
+        # readiness before initialisation has run.
+        self._init_done = asyncio.Event()
+        self._init_error: BaseException | None = None
+        # False until ``run()`` has actually scheduled initialisation. An
+        # adapter driven directly (tests, an embedding harness) has no init to
+        # wait for, and must not block on a gate nobody will ever open.
+        self._init_started = False
+
+    # -- initialisation gate -----------------------------------------------
+
+    async def _run_init(self) -> None:
+        """Run ``on_start`` once, in the background, and open the gate.
+
+        Errors are recorded AND re-raised: recorded so a buffered call gets a
+        real reason instead of timing out, re-raised so ``run()`` returns and
+        the process exits — a service whose init failed must not sit there
+        looking healthy. The supervisor respawns it, and a genuinely broken
+        init burns the respawn budget and trips the breaker, which is the
+        intended loud failure.
+        """
+        try:
+            res = self.on_start()
+            if inspect.isawaitable(res):
+                await res
+        except BaseException as exc:
+            self._init_error = exc
+            self._init_done.set()
+            log.error("%s: initialisation FAILED: %s", self.name, exc)
+            raise
+        self._init_done.set()
+        log.info("%s: initialisation complete", self.name)
+
+    async def _await_init(self, what: str) -> None:
+        """Block an inbound envelope until initialisation finishes.
+
+        The buffer behind the ready-ASAP contract. The wait is bounded so a
+        hung init surfaces as a failing call rather than silently freezing
+        every caller; the DB dependency is covered because ``on_start`` is
+        where ``init_service_db`` runs, so a handler can never reach a
+        half-built database through this gate.
+        """
+        if not self._init_done.is_set() and self._init_started:
+            log.info("%s: %s arrived during initialisation; buffering",
+                     self.name, what)
+            try:
+                await asyncio.wait_for(self._init_done.wait(), _INIT_WAIT_S)
+            except (asyncio.TimeoutError, TimeoutError):
+                raise RuntimeError(
+                    f"{self.name} is still initialising after "
+                    f"{_INIT_WAIT_S:.0f}s") from None
+        if self._init_error is not None:
+            raise RuntimeError(
+                f"{self.name} failed to initialise: {self._init_error}")
 
     # -- service-originated emit -------------------------------------------
 
@@ -196,6 +264,9 @@ class ServiceAdapter:
         handler = self.handlers.get(fn or "")
         if handler is None:
             raise RuntimeError(f"unknown function {fn!r}")
+        # Buffer until initialisation finishes — the service announced itself
+        # ready before running it, so a call can legitimately land first.
+        await self._await_init(f"call {fn!r}")
         args = args or {}
         # Pass as_ only if the handler asked for a second positional arg.
         try:
@@ -342,6 +413,9 @@ class ServiceAdapter:
             }))
             return
         try:
+            # Same buffer as `call`/`notify`: a session opened before init
+            # finished would hand the handler a half-built service.
+            await self._await_init(f"session.open {kind!r}")
             await ws.send(json.dumps({
                 "kind": "session.opened", "session_id": session_id, "ok": True,
             }))
@@ -493,11 +567,6 @@ class ServiceAdapter:
         if not hub_url:
             raise RuntimeError("AWM_HUB_URL not set; cannot reach the gateway")
 
-        if self.on_start is not None:
-            res = self.on_start()
-            if inspect.isawaitable(res):
-                await res
-
         # Primary target: a base (or, when `awm dev shadow` spawned us, an
         # overlay) on our own hub, exactly as before — params from env.
         prefix = os.environ.get("AWM_SERVICE_PREFIX") or f"/svc/{self.name}"
@@ -515,5 +584,17 @@ class ServiceAdapter:
             loops.append(self._run_target(
                 shadow, "", name=f"{self.name}-shadow",
                 prefix=f"/svc/{self.name}", overlay=True))
+
+        # Initialisation runs CONCURRENTLY with the register/serve loops, never
+        # before them. Announcing readiness first is what makes "not ready" a
+        # trustworthy signal that something is broken — the gateway now reaps a
+        # lease-holder that stays unready past its grace, and until this
+        # inversion a service with a slow ``on_start`` was invisible to the hub
+        # for the whole of it. Inbound envelopes buffer on ``_await_init``.
+        self._init_started = True
+        if self.on_start is not None:
+            loops.append(self._run_init())
+        else:
+            self._init_done.set()
 
         await asyncio.gather(*loops)
