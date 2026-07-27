@@ -325,3 +325,83 @@ def test_proc_age_of_this_process_is_plausible():
 
 def test_proc_age_of_a_dead_pid_is_none():
     assert go._proc_age_s(2 ** 22) is None
+
+
+# ---------------------------------------------------------------------------
+# A service is a process TREE; the registry knows one pid of it
+# ---------------------------------------------------------------------------
+#
+# Found in live e2e on the :7821 sandbox: every automatic sweep reaped ~50
+# processes — two per healthy service. The supervisor spawns `bash run.sh`,
+# which becomes `mamba run ...`, which forks `python -m awm.<svc>.hub_adapter`.
+# Both the wrapper and the child match the hub_adapter regex and carry
+# AWM_HUB_URL, but only ONE of them is `rec.backend_pid`. The sibling looked
+# like a textbook orphan, and because the kill is a group kill it took the
+# protected process down with it. Grace hid it from `--dry-run`: after each
+# sweep everything was freshly respawned and therefore too young to reap.
+
+
+def _fake_pgids(monkeypatch, mapping: dict[int, int]) -> None:
+    """Map pid -> pgid for the reaper; unknown pids are their own group."""
+    monkeypatch.setattr(go, "_pgid_of", lambda pid: mapping.get(pid, pid))
+
+
+async def test_the_sibling_of_a_protected_process_is_not_an_orphan(monkeypatch):
+    killed = _capture_kills(monkeypatch)
+    rec = await _register_base("notes", pid=6001)       # the wrapper
+    _hold_lease(rec.service_id)
+    _mark_ready(rec.service_id)
+    _fake_pgids(monkeypatch, {6001: 6001, 6002: 6001})  # child shares the group
+    _fake_scan(monkeypatch, [
+        {"pid": 6001, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "mamba run -n awm python -m awm.notes.hub_adapter"},
+        {"pid": 6002, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.notes.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_a_genuine_orphan_in_its_own_group_is_still_reaped(monkeypatch):
+    """The group rule must not become a blanket amnesty."""
+    killed = _capture_kills(monkeypatch)
+    rec = await _register_base("notes", pid=6001)
+    _hold_lease(rec.service_id)
+    _mark_ready(rec.service_id)
+    _fake_pgids(monkeypatch, {6001: 6001, 6002: 6001, 7001: 7001})
+    _fake_scan(monkeypatch, [
+        {"pid": 6002, "pgid": 6001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.notes.hub_adapter"},
+        {"pid": 7001, "pgid": 7001, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.stale.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == [7001]
+    assert out["count"] == 1
+
+
+async def test_the_gateways_own_process_group_is_spared(monkeypatch):
+    """The gateway's pid is excluded by identity; anything sharing its group
+    (a child it spawned in-session) must be excluded too."""
+    import os as _os
+    killed = _capture_kills(monkeypatch)
+    me = _os.getpid()
+    _fake_pgids(monkeypatch, {me: me, 8001: me})
+    _fake_scan(monkeypatch, [
+        {"pid": 8001, "pgid": me, "hub_url": "http://127.0.0.1:7819/",
+         "cmdline": "python -m awm.x.hub_adapter"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+def test_pgid_of_a_dead_pid_is_none():
+    assert go._pgid_of(2 ** 22) is None
