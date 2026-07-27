@@ -2,7 +2,7 @@
 
 *Internal architecture reference for agents working ON awm itself — the gateway, the registry/supervisor, the RPC envelope layer, the operations/catalog generation layer, the feature-service contract, and the frontend component system. Auto-injected only when the agent's cwd contains this file at its root: `projects/awm/*` scopes inherit it via `.bare`-worktree sharing; other projects' agents never see it.*
 
-For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
+For workspace structure (paths, MCP tools, project/scope discovery, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
 ## Architecture overview
 
@@ -102,6 +102,7 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **Prefix conflicts return 409.** Pick a unique prefix. `/hub` and `/hub/*` are reserved.
 - **`AWM_WORKSPACE` + `AWM_HUB_URL` attach to a sandbox, not prod.** Without them, the CLI hits global discovery and may target prod `:7819`. The dev starter exports both for its children; if you shell out separately, export them yourself. To check which hub a running process was set up against: `tr '\0' '\n' </proc/<pid>/environ | grep -E 'AWM_WORKSPACE|AWM_HUB_URL'`.
 - **Never run two gateways on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are how dev parallelism works.
+- **Never hand-roll an emit-subscription loop — use `gatewayclient.SupervisedSubscription`.** A subscriber's socket and the emitting service's control channel are two things that must agree: when the emitter restarts, the gateway drops the subscriber from the fan-out table, and unless the proxy also closes the socket the consumer waits forever on a connection that looks perfectly healthy (keepalives still pass — they only prove the *gateway* is alive). Three services shipped byte-identical copies of the same naive loop and all three went permanently deaf together. The helper reconnects, bounds every unmodelled staleness class with a jittered idle deadline, and reports `healthy` — surface that in the service's `status` so deafness is visible before something urgent depends on it.
 
 ## Project data layer (`awm.scopes.data_annex`)
 
@@ -230,7 +231,7 @@ The script reports pass/fail per dist and exits non-zero if any failed. Known di
 
 ## Agent rules
 
-1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` and `.awm/artifacts.md` accurate across all scopes.
+1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` accurate across all scopes.
 2. **`awm scope heal` is idempotent and safe** — run with `--dry-run` first to preview, then for real. Enforces tier-3 = `.awm/` only.
 
 ## What goes in this file
