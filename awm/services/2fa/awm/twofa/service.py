@@ -382,8 +382,17 @@ class TwoFAService:
         sub = self._social_sub
         if sub is None:
             if not self.cfg.social_subscribe:
+                # Say *why* it is off. "Disabled" on the node that borrows 2fa
+                # is the correct state, and an operator who cannot tell that
+                # from a fault will go looking for a bug that isn't there.
+                from awm import gatewayclient
+                owner = gatewayclient.peer_env("AWM_TWOFA_PEER")
+                why = (f"2fa is owned by peer {owner!r}; only the owner listens "
+                       f"for /approve" if owner else
+                       "social subscription disabled by config")
                 return {"healthy": True, "connected": False,
-                        "last_error": "social subscription disabled by config"}
+                        "listening": False, "owner": owner,
+                        "last_error": why}
             return {"healthy": False, "connected": False,
                     "last_error": "social listener not started"}
         try:

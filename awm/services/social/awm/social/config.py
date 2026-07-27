@@ -8,6 +8,7 @@ token(s). Shape::
     [account.discord-bot]          # Discord is bot-only (user token = self-bot).
     platform = "discord"
     token = "..."                  # Bot token from the developer portal.
+    singleton = true               # One session fleet-wide; see below.
 
     [account.slack-bot]
     platform = "slack"
@@ -35,6 +36,15 @@ token(s). Shape::
     [account.teams]                # Teams is ONLY reachable via the mira daemon.
     platform = "teams"
     source = "mira"
+
+``singleton = true`` marks an identity that is ONE session for the whole fleet —
+a Discord bot token, a mailbox — where a second login is not a second client but
+a collision (Discord hands interactions to one session, so the other answers with
+"Unknown interaction"). The account's owner is whichever node leaves
+``AWM_SOCIAL_PEER`` unset. A node that sets the selector does not connect such an
+account at all; a verb naming it is forwarded to the peer instead, so the identity
+stays usable from every node while existing exactly once. Non-singleton accounts
+are per-node and unaffected.
 
 A web-session account may instead pin the pair inline (``token = "xoxc-..."`` +
 ``cookie = "xoxd-..."``, or ``cookie_file``) — both are required together. The
@@ -97,6 +107,12 @@ class AccountConfig:
     display_name: str | None = None
     address: str | None = None  # mailbox/login address (required for gmail)
     enabled: bool = True
+    # Fleet singleton: this identity is ONE session shared by the whole fleet
+    # (a Discord bot token, a mailbox), so exactly one node may connect it. The
+    # owner is whichever node leaves AWM_SOCIAL_PEER unset; a node that sets the
+    # selector treats the account as remote and forwards calls naming it. See
+    # `_is_borrowed` in hub_adapter.py.
+    singleton: bool = False
     # mira-routed accounts: the connector is a thin client of the mira API
     # daemon. These are stamped from the service-level [mira] block at load time.
     source: str | None = None       # "mira" routes via MiraConnector
@@ -331,6 +347,11 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             raise SocialConfigError(
                 f"{path}: [account.{name}].enabled must be a boolean"
             )
+        singleton = section.get("singleton", False)
+        if not isinstance(singleton, bool):
+            raise SocialConfigError(
+                f"{path}: [account.{name}].singleton must be a boolean"
+            )
         accounts.append(AccountConfig(
             name=str(name).strip(),
             platform=platform,
@@ -341,6 +362,7 @@ def load(path: Path | None = None) -> list[AccountConfig]:
             display_name=display_name.strip() if display_name else None,
             address=address.strip() if address else None,
             enabled=enabled,
+            singleton=singleton,
             source=source,
             mira_url=(mira or {}).get("url") if source == "mira" else None,
             mira_token=(mira or {}).get("token") if source == "mira" else None,
