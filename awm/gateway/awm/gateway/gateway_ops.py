@@ -144,20 +144,27 @@ async def _op_gateway_deregister(name: str, kind: str | None = None) -> dict[str
 async def _op_services_list() -> dict[str, Any]:
     """Discovery ⋈ enable-state ⋈ live registration — the ``awm services list``
     view (also the offline fallback's online counterpart)."""
-    from awm.gateway.hub import discovery
+    from awm.gateway.hub import discovery, supervisor
     from awm.gateway.hub.registry import get_registry
 
     registry = get_registry()
     out = []
     for spec in discovery.discover_services():
         rec = registry.get_by_name("service", spec.name)
-        out.append({
+        tripped = supervisor.breaker_reason(spec.name)
+        row = {
             "name": spec.name,
             "enabled": spec.enabled,
             "running": rec is not None,
             "status": rec.backend_status if rec is not None else "stopped",
             "pid": rec.backend_pid if rec is not None else None,
-        })
+        }
+        if tripped:
+            # A tripped breaker is the reason a service is down and staying
+            # down; without it here "stopped" reads like someone stopped it.
+            row["status"] = "breaker-tripped"
+            row["breaker_reason"] = tripped
+        out.append(row)
     return {"services": out}
 
 
@@ -190,6 +197,9 @@ async def _op_services_start(name: str) -> dict[str, Any]:
 
     log = logging.getLogger("awm.gateway.ops")
     registry = get_registry()
+    # The operator gesture that clears a tripped crash-loop breaker. Deliberate:
+    # the breaker never auto-retries, so this is the only way back.
+    supervisor.clear_breaker(name)
     existing = registry.get_by_name("service", name)
     if existing is not None and _record_is_live(existing):
         return {"name": name, "started": False, "reason": "already-running"}

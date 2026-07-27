@@ -42,9 +42,11 @@ def _isolate_state(awm_workspace, tmp_path, monkeypatch):
     monkeypatch.setenv("AWM_PAGES_DIR", str(tmp_path / "_empty_pages"))
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
+    supervisor.reset_breaker_state()
     yield
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
+    supervisor.reset_breaker_state()
 
 
 def _make_service_folder(root, name, cwd_marker=True):
@@ -511,3 +513,156 @@ class TestPhantomServiceRecord:
         rec.service_id = "sid-live"
         rec.backend_pid = os.getpid()          # certainly alive
         assert gateway_ops._record_is_live(rec) is True
+
+
+# ---------------------------------------------------------------------------
+# Bounded respawn: the crash-loop breaker and the deduplicated watchdog.
+#
+# The 2026-07-27 outage was an amplifier, not a single bug: every disconnect
+# scheduled its own watchdog, every watchdog respawned, and every respawn that
+# lost the race to the incumbent's slot disconnected again. These pin the two
+# halves of the bound — one watchdog at a time, and a hard stop after a budget.
+# ---------------------------------------------------------------------------
+
+
+class TestRespawnBreaker:
+    def _journal(self, name="loopy"):
+        supervisor.update_service_journal_entry(name, {
+            "service_id": f"sid-{name}",
+            "prefix": f"/svc/{name}",
+            "start_cmd": ["run.sh"],
+            "cwd": "/srv",
+        })
+
+    def test_budget_bounds_the_number_of_spawns(self, monkeypatch):
+        """A service that fails instantly on every launch must produce a
+        countable number of processes, not an unbounded stream."""
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 3)
+        spawn = MagicMock(return_value=4242)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        self._journal()
+
+        async def go():
+            for _ in range(20):
+                entry = supervisor.load_service_journal()["loopy"]
+                await supervisor._respawn_from_journal("loopy", entry)
+
+        asyncio.new_event_loop().run_until_complete(go())
+
+        assert spawn.call_count == 3
+        assert supervisor.breaker_reason("loopy") is not None
+
+    def test_tripped_breaker_is_recorded_in_the_journal(self, monkeypatch):
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)
+        monkeypatch.setattr(supervisor, "spawn_service", MagicMock(return_value=1))
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        self._journal()
+
+        async def go():
+            for _ in range(3):
+                entry = supervisor.load_service_journal()["loopy"]
+                await supervisor._respawn_from_journal("loopy", entry)
+
+        asyncio.new_event_loop().run_until_complete(go())
+        assert supervisor.load_service_journal()["loopy"]["breaker_tripped"] is True
+
+    def test_old_attempts_fall_out_of_the_window(self, monkeypatch):
+        """The budget is a rolling window, not a lifetime cap — a service that
+        crashes once a day must never accumulate its way into the breaker."""
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 2)
+        monkeypatch.setattr(supervisor, "_RESPAWN_WINDOW_S", 0.05)
+        assert supervisor._note_respawn("slow") is True
+        assert supervisor._note_respawn("slow") is True
+        time.sleep(0.08)
+        assert supervisor._note_respawn("slow") is True
+        assert supervisor.breaker_reason("slow") is None
+
+    def test_clear_breaker_is_the_way_back(self, monkeypatch):
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)
+        assert supervisor._note_respawn("wedged") is True
+        assert supervisor._note_respawn("wedged") is False
+        assert supervisor.breaker_reason("wedged") is not None
+
+        supervisor.clear_breaker("wedged")
+
+        assert supervisor.breaker_reason("wedged") is None
+        assert supervisor._note_respawn("wedged") is True
+
+    def test_self_heal_sweep_honours_the_breaker(self, monkeypatch):
+        """The 45s sweep is an independent respawn path; if it did not consult
+        the breaker it would quietly undo it."""
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)
+        spawn = MagicMock(return_value=99)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        monkeypatch.setattr(supervisor, "pid_alive", lambda pid: False)
+        self._journal("sweepy")
+        supervisor._note_respawn("sweepy")
+        supervisor._note_respawn("sweepy")          # trips it
+        assert supervisor.breaker_reason("sweepy") is not None
+
+        asyncio.new_event_loop().run_until_complete(supervisor._self_heal_once())
+
+        spawn.assert_not_called()
+
+    def test_services_start_clears_the_breaker(self, monkeypatch, tmp_path):
+        from awm.gateway import gateway_ops
+
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)
+        supervisor._note_respawn("revive")
+        supervisor._note_respawn("revive")
+        assert supervisor.breaker_reason("revive") is not None
+
+        services_root = tmp_path / "svcs"
+        _make_service_folder(services_root, "revive")
+        monkeypatch.setenv("AWM_SERVICES_DIR", str(services_root))
+        monkeypatch.setattr(supervisor, "spawn_and_journal",
+                            MagicMock(return_value=321))
+
+        asyncio.new_event_loop().run_until_complete(
+            gateway_ops._op_services_start("revive"))
+
+        assert supervisor.breaker_reason("revive") is None
+
+
+class TestDisconnectWatchdogDedup:
+    def test_only_one_watchdog_per_service_at_a_time(self, monkeypatch):
+        """N rapid disconnects must not become N respawns. Without this the
+        hook fanned out one sleeping watchdog per close, and each of them
+        respawned into the same already-held slot."""
+        started = []
+
+        async def slow_watchdog(name):
+            started.append(name)
+            await asyncio.sleep(0.2)
+
+        monkeypatch.setattr(supervisor, "supervise_disconnect", slow_watchdog)
+
+        async def go():
+            for _ in range(10):
+                supervisor.schedule_disconnect_watchdog("flappy")
+            await asyncio.sleep(0.05)
+            assert started == ["flappy"]
+            # Once it finishes, the next disconnect may schedule again.
+            await asyncio.sleep(0.25)
+            supervisor.schedule_disconnect_watchdog("flappy")
+            await asyncio.sleep(0.05)
+            assert started == ["flappy", "flappy"]
+
+        asyncio.new_event_loop().run_until_complete(go())
+
+    def test_a_tripped_breaker_short_circuits_the_watchdog(self, monkeypatch):
+        """No re-register, no 10s sleep, no respawn — just leave it down."""
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)
+        reregister = MagicMock()
+        monkeypatch.setattr(supervisor, "_reregister_record", reregister)
+        supervisor.update_service_journal_entry("dead", {
+            "service_id": "sid-dead", "start_cmd": ["run.sh"], "cwd": "/srv"})
+        supervisor._note_respawn("dead")
+        supervisor._note_respawn("dead")
+
+        asyncio.new_event_loop().run_until_complete(
+            supervisor.supervise_disconnect("dead"))
+
+        reregister.assert_not_called()

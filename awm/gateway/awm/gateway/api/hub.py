@@ -361,6 +361,25 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     except Exception:
         return
 
+    lm = get_lease_manager()
+    disconnect = asyncio.Event()
+
+    # Claim the lease BEFORE wiring up any per-service state. A duplicate
+    # instance must leave the incumbent untouched, and everything below this
+    # point is shared-by-service_id: `ensure_control` hands back the
+    # INCUMBENT's channel, the journal entry is the INCUMBENT's, and the
+    # teardown block marks it down and schedules a respawn on its behalf.
+    # Refusing here — before any of it — is what stops a rejected duplicate
+    # from amplifying into the respawn storm of 2026-07-27.
+    if not await lm.claim(service_id, disconnect):
+        log.warning("refusing duplicate control WS for service %s id=%s: "
+                    "lease already held", rec.name, service_id)
+        try:
+            await websocket.close(code=4409, reason="lease already held")
+        except Exception:
+            pass
+        return
+
     ch = rpc.ensure_control(service_id)
     log.info("control WS opened for service %s id=%s", rec.name, service_id)
 
@@ -369,9 +388,6 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
         # update on a record register() already created, never a creation.
         update_service_journal_entry(rec.name, {"control_ws_open": True},
                                      create=False)
-
-    lm = get_lease_manager()
-    disconnect = asyncio.Event()
 
     async def writer() -> None:
         try:
@@ -408,12 +424,9 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     reader_task = asyncio.create_task(reader())
 
     try:
-        try:
-            await lm.hold(service_id, disconnect)
-        except LeaseAlreadyHeld:
-            await websocket.close(code=4409, reason="lease already held")
-            return
-        # hold returned: either the client closed, or a newer shadow evicted us.
+        # The lease is ours (claimed above); this only waits for the socket to
+        # drop or a newer shadow to evict us, then releases + evicts.
+        await lm.release(service_id, disconnect)
         notice = lm.take_eviction(service_id)
         if notice is not None:
             reason, evictor = notice
@@ -454,7 +467,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                     and not rec.is_overlay
                     and supervisor.load_service_journal().get(rec.name)
                     and discovery.is_enabled(rec.name)):
-                asyncio.create_task(supervisor.supervise_disconnect(rec.name))
+                supervisor.schedule_disconnect_watchdog(rec.name)
         except Exception:
             log.debug("disconnect watchdog hook skipped for %s",
                       rec.name, exc_info=True)

@@ -36,6 +36,29 @@ _RECONNECT_WINDOW_S = 10.0
 # to respawn the same crash.
 _SELF_HEAL_INTERVAL_S = 45.0
 
+# Crash-loop breaker. A service that cannot stay up is respawned at most
+# ``_RESPAWN_BUDGET`` times inside a rolling ``_RESPAWN_WINDOW_S``; past that the
+# gateway stops respawning it, logs at ERROR, and leaves it down until an
+# operator runs ``awm services start|restart``. The budget needs headroom for
+# an ordinary one-off crash (which costs exactly one respawn) but has to be
+# small enough that a service failing instantly on every launch produces a
+# countable number of processes rather than an unbounded stream.
+_RESPAWN_BUDGET = 5
+_RESPAWN_WINDOW_S = 300.0
+
+# name -> monotonic timestamps of recent respawn attempts (trimmed to window).
+_respawn_history: dict[str, list[float]] = {}
+# name -> why the breaker tripped. Presence means "do not respawn this".
+# In-memory on purpose: a gateway restart is an operator action, and the same
+# operator gesture that would clear the breaker also restarts the gateway.
+_breaker: dict[str, str] = {}
+
+# name -> the single in-flight disconnect watchdog. Deduplication lives here
+# because the control-WS disconnect hook fires once per close, and without it N
+# rapid disconnects became N concurrent watchdogs, each of which respawned and
+# was rejected and scheduled another. That is the amplifier.
+_disconnect_watchdogs: dict[str, "asyncio.Task"] = {}
+
 # Set true while the gateway is tearing down (graceful lifespan shutdown). The
 # crash-respawn watchdog checks this so it does not fight the teardown by
 # resurrecting services the gateway is deliberately stopping. Set as early as
@@ -51,6 +74,72 @@ def set_shutting_down(value: bool) -> None:
 
 def is_shutting_down() -> bool:
     return _shutting_down
+
+
+# ---------------------------------------------------------------------------
+# Crash-loop breaker
+# ---------------------------------------------------------------------------
+
+
+def breaker_reason(name: str) -> str | None:
+    """Why ``name`` is being left down, or ``None`` if it is not tripped."""
+    return _breaker.get(name)
+
+
+def clear_breaker(name: str) -> None:
+    """Forget a service's respawn history and any tripped breaker.
+
+    The operator gesture. ``awm services start`` / ``restart`` call this, which
+    is the ONLY way a tripped service comes back — there is no auto-retry, so a
+    wedged service stays visibly wedged instead of flapping quietly forever.
+    """
+    _respawn_history.pop(name, None)
+    if _breaker.pop(name, None) is not None:
+        log.info("respawn breaker cleared for service %s", name)
+    update_service_journal_entry(
+        name, {"breaker_tripped": False, "breaker_reason": ""}, create=False)
+
+
+def reset_breaker_state() -> None:
+    """Drop all respawn history, tripped breakers, and pending watchdogs.
+
+    Test-support: this state is module-global and would otherwise leak across
+    cases, so a file that respawns the same service name more than
+    ``_RESPAWN_BUDGET`` times would start tripping the breaker on itself.
+    """
+    _respawn_history.clear()
+    _breaker.clear()
+    for task in list(_disconnect_watchdogs.values()):
+        task.cancel()
+    _disconnect_watchdogs.clear()
+
+
+def _note_respawn(name: str) -> bool:
+    """Record a respawn attempt; ``False`` if the breaker forbids it.
+
+    The single choke point — every respawn path (boot reconcile, the disconnect
+    watchdog, the self-heal sweep) goes through ``_respawn_from_journal``, so
+    counting here means no path can quietly bypass the budget.
+    """
+    if name in _breaker:
+        return False
+    now = _time.monotonic()
+    hist = [t for t in _respawn_history.get(name, []) if now - t < _RESPAWN_WINDOW_S]
+    hist.append(now)
+    _respawn_history[name] = hist
+    if len(hist) > _RESPAWN_BUDGET:
+        reason = (f"{len(hist)} respawns in {_RESPAWN_WINDOW_S:.0f}s "
+                  f"(budget {_RESPAWN_BUDGET})")
+        _breaker[name] = reason
+        log.error(
+            "RESPAWN BREAKER TRIPPED for service %s: %s. Leaving it DOWN. "
+            "Fix the service, then `awm services restart %s` to clear.",
+            name, reason, name)
+        update_service_journal_entry(
+            name, {"breaker_tripped": True, "breaker_reason": reason},
+            create=False)
+        return False
+    return True
 
 
 def _services_journal_path() -> Path:
@@ -308,7 +397,8 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
 
     The caller is responsible for the higher-level gating (reconnected? enabled?
     still journaled?); this only does the kill-and-spawn, including the
-    no-``start_cmd`` guard.
+    no-``start_cmd`` guard and the crash-loop breaker (``_note_respawn``) that
+    every respawn path shares.
 
     Identity is resolved through ``_resolve_identity`` (discovery wins), so a
     discoverable service always respawns from *this* tree even if the journal
@@ -318,6 +408,9 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
     non-discoverable external registration can still hit the no-``start_cmd``
     guard.
     """
+    if not _note_respawn(name):
+        log.info("not respawning service %s: %s", name, _breaker.get(name))
+        return
     sid = entry.get("service_id")
     last_pid = entry.get("last_pid")
     start_cmd, cwd = _resolve_identity(name, entry)
@@ -408,6 +501,11 @@ async def _self_heal_once() -> None:
             continue
         if not _discovery.is_enabled(name):
             continue
+        if name in _breaker:
+            # The breaker is authoritative for BOTH respawn paths. Checked here
+            # as well as inside _respawn_from_journal so a tripped service does
+            # not re-log a wedge warning on every 45s sweep.
+            continue
         if pid_alive(entry.get("last_pid")):
             continue
         if _has_ready_control(entry.get("service_id")):
@@ -479,13 +577,23 @@ async def supervise_disconnect(name: str) -> None:
     * journal entry present — ``awm services stop`` removes the entry *before*
       killing the process, so a deliberate stop is skipped.
     * ``discovery.is_enabled`` — a disabled service stays down.
+    * the crash-loop breaker — a service that has burned its respawn budget
+      stays down until an operator clears it.
     * not already reconnected — a genuine quick reconnect is a no-op.
+
+    Schedule it through :func:`schedule_disconnect_watchdog`, never directly:
+    one watchdog per service at a time is what keeps a burst of disconnects
+    from turning into a burst of respawns.
     """
     from awm.gateway.hub import discovery as _discovery
     if is_shutting_down():
         return
     entry = load_service_journal().get(name)
     if not entry or not _discovery.is_enabled(name):
+        return
+    if name in _breaker:
+        log.info("service %s disconnected but its respawn breaker is tripped "
+                 "(%s); leaving it down", name, _breaker[name])
         return
 
     # Re-register so the service's own quick reconnect (same service_id) is
@@ -508,6 +616,27 @@ async def supervise_disconnect(name: str) -> None:
     log.info("service %s did not reconnect within %.0fs; respawning",
              name, _RECONNECT_WINDOW_S)
     await _respawn_from_journal(name, entry)
+
+
+def schedule_disconnect_watchdog(name: str) -> None:
+    """Start :func:`supervise_disconnect` for ``name``, at most one at a time.
+
+    The control-WS disconnect hook fires once per close. Without this the hook
+    spawned an unbounded fan of watchdogs: every one slept the reconnect window
+    and then respawned, and each respawn that lost the race to the incumbent's
+    slot disconnected again and scheduled yet another. A second disconnect while
+    a watchdog is already pending is a no-op — the pending one re-reads the
+    journal after its window and will make the right call anyway.
+    """
+    live = _disconnect_watchdogs.get(name)
+    if live is not None and not live.done():
+        log.debug("disconnect watchdog for %s already in flight; skipping", name)
+        return
+    task = asyncio.create_task(supervise_disconnect(name))
+    _disconnect_watchdogs[name] = task
+    task.add_done_callback(
+        lambda t, n=name: _disconnect_watchdogs.pop(n, None)
+        if _disconnect_watchdogs.get(n) is t else None)
 
 
 async def bootstrap_discovered_services() -> None:
