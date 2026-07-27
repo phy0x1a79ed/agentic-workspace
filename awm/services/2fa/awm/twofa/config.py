@@ -24,7 +24,10 @@ Env overrides (all optional):
   AWM_2FA_HOLD_TTL_SECONDS     drop a held tx after          (default 120.0)
   AWM_2FA_BURST_WINDOW         burst poll window seconds     (default 60.0)
   AWM_2FA_BURST_INTERVAL       burst poll interval seconds   (default 1.0)
-  AWM_2FA_SOCIAL_SUBSCRIBE     listen to the social service's slash commands (default 1/on)
+  AWM_2FA_SOCIAL_SUBSCRIBE     listen to the social service's slash commands
+                               (default: on, unless AWM_TWOFA_PEER names an
+                               owner — a borrowing node must not arm its own
+                               burst off the owner's /approve)
   AWM_2FA_SOCIAL_WINDOW        social-armed burst window sec (default 300.0 = 5 min)
   AWM_2FA_SOCIAL_INTERVAL      social-armed burst poll sec   (default 2.0)
   AWM_2FA_SOCIAL_COUNT         social-armed expected count   (default 1000 = stay armed)
@@ -92,6 +95,24 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None or raw.strip() == "":
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _owns_the_singleton() -> bool:
+    """True when this node is the canonical 2fa, i.e. borrows it from nobody.
+
+    2fa is a fleet singleton because Duo's attempt budget is per *account*, not
+    per host: if every node listens for ``/approve`` and arms its own burst, one
+    slash command spends the budget N times over and N nodes reply into the same
+    DM. So the listener belongs to the owner alone, and ownership is already
+    stated by ``AWM_TWOFA_PEER`` — set on a borrower, unset on the owner. Reusing
+    that selector rather than a second flag is what stops the two from
+    disagreeing; a node cannot end up borrowing the service while still acting as
+    its owner. ``AWM_2FA_SOCIAL_SUBSCRIBE`` still overrides, for the deliberate
+    second listener.
+    """
+    from awm import gatewayclient
+
+    return gatewayclient.peer_env("AWM_TWOFA_PEER") is None
 
 
 def _env_str(name: str, default: str) -> str:
@@ -180,8 +201,11 @@ class Config:
         default_factory=lambda: _env_float("AWM_2FA_BURST_INTERVAL", 1.0))
 
     # Social slash-command subscription (Discord /approve → arm a burst).
+    # Defaults to "only the node that OWNS 2fa listens" — see
+    # :func:`_owns_the_singleton`.
     social_subscribe: bool = field(
-        default_factory=lambda: _env_bool("AWM_2FA_SOCIAL_SUBSCRIBE", True))
+        default_factory=lambda: _env_bool(
+            "AWM_2FA_SOCIAL_SUBSCRIBE", _owns_the_singleton()))
     social_window_seconds: float = field(
         default_factory=lambda: _env_float("AWM_2FA_SOCIAL_WINDOW", 300.0))
     social_interval_seconds: float = field(

@@ -273,6 +273,18 @@ insecure.
   daemon are **canonical on mira** (always-on). Consumers reach them via the
   node-level env selectors above (`AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER`), not a
   general auto-resolve — a borrowing node opts in explicitly.
+- **Singleton *accounts*** are the same rule one level down, and the level that
+  actually bites. `social` itself is per-node — every node wants its own Slack,
+  Gmail and bucket access — but an individual identity inside it may still be one
+  session fleet-wide. A Discord bot token is the case: a second login is not a
+  second client, it is a collision, and the loser answers slash commands with
+  `10062 Unknown interaction`. Mark such an account `singleton = true` in
+  `social.toml`; the node with `AWM_SOCIAL_PEER` unset owns it, and a borrowing
+  node connects it not at all and forwards verbs naming it to the owner. So the
+  service runs everywhere, the identity exists once, and callers on either node
+  are oblivious. Whether a shared account tolerates concurrent logins is the
+  platform's answer, not ours — Discord does not, which is why the flag is
+  per-account and opt-in rather than inferred.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
 
@@ -287,8 +299,4 @@ carries its own copy under `awm/services/httpsfront/`, so the eventual
 
 - Live SSH wiring/verification of the peer-auth channel (fir is lockout-sensitive
   — done carefully in a dedicated session).
-- Migrating the singleton services onto mira: mira is stood up with `2fa` and
-  `social` **disabled**; they stay canonical on Capella until the dedicated
-  re-home session (which must prove prod `social` reaches the re-homed daemon
-  before the mira monolith is retired).
 - The ecspr HPC worked example (T5).
