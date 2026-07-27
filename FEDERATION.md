@@ -295,6 +295,31 @@ Land on `dev` and promote `feat → dev → release`; do **not** deploy from
 carries its own copy under `awm/services/httpsfront/`, so the eventual
 `dev → release` merge must reconcile the two (they are the same service).
 
+### Updating mira
+
+mira's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
+pointing at capella's bare repo over ssh. To update it:
+
+    git fetch --no-tags awm release && git reset --hard awm/release
+    git clean -fd            # NOT -fdx — .awm/ is ignored and must survive
+    systemctl --user restart awm.service
+
+Three things about that sequence are load-bearing. **Fetch to the tracking ref,
+not the branch**: `fetch awm release:release` is refused once `release` is
+checked out, and `reset --hard` is what moves a checked-out branch anyway.
+**`clean` without `-x`**: the reset writes every path the commit contains but
+removes nothing it omits, so files release deleted linger — including `.py`
+leftovers inside editable-installed packages, which stay importable. `-x` would
+take `.awm/` with them, and that holds the Duo credentials, `social.toml` and
+every service DB. **`enabled.json` must stay explicit**: a service absent from
+it is *enabled*, so anything added to the tree since the last sync starts on
+the next boot, on the node least able to absorb a crash loop.
+
+mira is supervised by a per-user systemd unit, capella's prod is started from
+its PID file and orphaned to init. `awm gateway restart` probes which, via
+`systemctl --user is-active` — deliberately not `is-enabled`, since a dangling
+unit symlink reports enabled-but-bad and cannot be started.
+
 ## Deferred (not in v1)
 
 - Live SSH wiring/verification of the peer-auth channel (fir is lockout-sensitive
