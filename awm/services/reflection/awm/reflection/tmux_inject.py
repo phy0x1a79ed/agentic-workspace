@@ -69,6 +69,10 @@ _IDLE_CONFIRM_POLLS = 3  # consecutive idle samples that count as "settled" (a
                          # a transient idle beat before compaction starts won't
                          # reach this, so the resume can't fire in that gap
 _FOLLOWUP_MAX_WAIT_S = 900.0   # hard cap; inject anyway past this (resume beats hang)
+_FAST_POLL_S = 0.3       # poll cadence before the driving turn/compaction is
+                         # observed to have started, so a brief compacting
+                         # window (or an agent that self-resumes the instant
+                         # compaction ends) isn't skipped between samples
 
 # TUI pane-state markers (calibrated against the interactive `claude` TUI). Order
 # of checks matters: an active turn shows the `esc to interrupt` footer even when
@@ -225,6 +229,25 @@ def _assert_pane_exists(pane: str, socket: Optional[str], runner: Runner) -> Non
          runner, text=True)
 
 
+def _assert_pane_has_agent(pane: str, socket: Optional[str], runner: Runner) -> None:
+    """Refuse to inject into a pane whose process subtree has no agent.
+
+    Guards every path that can produce a `pane` value (explicit arg,
+    header-derived default, auto-detect) against the one case none of them
+    rules out: the pane id is real and exists, but nothing running there is a
+    `claude`/`opencode` process (a stale id repointed at a shell/editor, or an
+    outright wrong explicit `pane` argument). Reuses the same subtree walk
+    `autodetect_pane` already pays for.
+    """
+    proc = _run(_base_argv(socket) + ["display-message", "-p", "-t", pane,
+                                       "#{pane_pid}"], runner, text=True)
+    pid_s = (proc.stdout or "").strip()
+    if not pid_s.isdigit() or not _subtree_has_agent(int(pid_s), _ppid_children()):
+        raise TmuxError(
+            f"pane {pane} is not running an agent (claude/opencode); refusing "
+            f"to inject — pass the correct pane or leave it unset for auto-detect")
+
+
 # ---------------------------------------------------------------------------
 # The one primitive
 # ---------------------------------------------------------------------------
@@ -261,6 +284,36 @@ def capture_pane(pane: str, *, socket: Optional[str] = None,
     return proc.stdout or ""
 
 
+def pane_session(pane: str, *, socket: Optional[str] = None,
+                 runner: Runner = subprocess.run) -> Optional[str]:
+    """Return ``pane``'s tmux session name, or ``None`` if it can't be read.
+
+    Captured alongside the pane at injection time so the deferred follow-up
+    watcher can recover if the specific pane id is destroyed mid-wait (the
+    session name is the more stable identity across a within-session pane
+    reshuffle — e.g. the agent was backgrounded and reattached elsewhere).
+    """
+    try:
+        proc = _run(_base_argv(socket) + ["display-message", "-p", "-t", pane,
+                                          "#{session_name}"], runner, text=True)
+    except TmuxError:
+        return None
+    name = (proc.stdout or "").strip()
+    return name or None
+
+
+def _reresolve_pane(session: str, *, socket: Optional[str],
+                    runner: Runner) -> Optional[str]:
+    """Return ``session``'s current pane id, or ``None`` if the session is gone."""
+    try:
+        proc = _run(_base_argv(socket) + ["display-message", "-p", "-t", session,
+                                          "#{pane_id}"], runner, text=True)
+    except TmuxError:
+        return None
+    pane = (proc.stdout or "").strip()
+    return pane or None
+
+
 def _pane_phase(snapshot: str) -> str:
     """Classify the pane tail as ``compacting`` / ``busy`` / ``compacted`` / ``idle``.
 
@@ -281,32 +334,73 @@ def _pane_phase(snapshot: str) -> str:
 
 def _await_and_followup(text: str, followup: str, pane: str, *,
                         socket: Optional[str], runner: Runner,
+                        session: Optional[str] = None,
                         sleep: Callable[[float], None] = time.sleep,
                         clock: Callable[[], float] = time.monotonic) -> None:
     """Block until the injected command has finished, then submit ``followup``.
 
     Runs on a detached thread (a synchronous wait would deadlock — the agent's
-    turn would never end, so the queued ``/compact`` would never run). Waits for a
-    busy→idle transition; for ``/compact`` the positive signal is the ``Compacted``
-    marker appearing *after* an observed busy/compacting phase (so a stale marker
-    from a prior compaction is ignored). A ``_FOLLOWUP_MAX_WAIT_S`` cap injects the
-    resume anyway rather than strand the session on a mis-calibrated detector.
+    turn would never end, so the queued ``/compact`` would never run).
+
+    The fire condition is edge-based, not state-based: once a ``compacting``
+    sample has been observed, the very *next* sample — whatever phase it reads,
+    busy, compacted, or idle — means the command has visibly finished, because
+    reaching ``compacting`` at all already rules out a stale marker or a
+    transient pre-compaction idle beat. This matters because an agent can
+    resume its own next turn immediately once ``/compact`` completes (no idle
+    gap) — waiting for a settled idle streak or the ``Compacted`` marker alone
+    would miss that and only fire on the ``_FOLLOWUP_MAX_WAIT_S`` hard cap,
+    arriving late and queued behind an unrelated turn. The ``compacted``-marker
+    and settled-idle paths remain as a fallback for the case where compaction is
+    fast enough that the ``compacting`` phase itself is never sampled.
+
+    Polling runs at a tighter cadence (``_FAST_POLL_S``) until the driving turn
+    is observed busy, to shrink the odds of a fast compacting→done transition
+    landing entirely between two samples; it relaxes to ``_POLL_S`` afterward.
+
+    If the pane vanishes mid-wait (the agent was backgrounded and its session
+    ended up on a different pane — plausible with multiple agent panes in play
+    at once), ``session`` (the pane's tmux session name, captured at injection
+    time) is used to re-resolve the session's *current* pane and the wait
+    continues against it, carrying over all state accumulated so far. Only a
+    vanished *session* (not just the specific pane) ends the wait early.
     """
     is_compact = text.strip().split()[0] == "/compact"
     deadline = clock() + _FOLLOWUP_MAX_WAIT_S
     saw_busy = False
+    saw_compacting = False
     idle_streak = 0
     ready = False
     while clock() < deadline:
         try:
             phase = _pane_phase(capture_pane(pane, socket=socket, runner=runner))
         except TmuxError:
-            log.warning("reflection: pane %s vanished while awaiting completion; "
-                        "no resume injected", pane)
-            return
-        if phase in ("busy", "compacting"):
-            # The driving turn (or compaction itself) is running. Reset the idle
-            # streak so a transient idle beat before compaction can't accumulate.
+            new_pane = _reresolve_pane(session, socket=socket, runner=runner) \
+                if session else None
+            if new_pane is None:
+                log.warning("reflection: pane %s (session %s) vanished while "
+                            "awaiting completion; no resume injected",
+                            pane, session)
+                return
+            log.info("reflection: pane %s vanished, resumed watching session "
+                     "%s on pane %s", pane, session, new_pane)
+            pane = new_pane
+            sleep(_POLL_S)
+            continue
+
+        if saw_compacting and phase != "compacting":
+            # Compaction has visibly ended — fire regardless of what the pane
+            # does next (settle idle, self-resume into a new turn, or show the
+            # Compacted marker). Unambiguous once compacting was observed: a
+            # transient pre-compaction idle beat can no longer be confused with
+            # this, since compacting can only be reached after that beat.
+            ready = True
+            break
+        if phase == "compacting":
+            saw_busy = True
+            saw_compacting = True
+            idle_streak = 0
+        elif phase == "busy":
             saw_busy = True
             idle_streak = 0
         elif saw_busy and is_compact and phase == "compacted":
@@ -324,7 +418,7 @@ def _await_and_followup(text: str, followup: str, pane: str, *,
             # Not busy yet, or a stale `Compacted` from a prior compaction while
             # saw_busy is still False — ignore and keep waiting.
             idle_streak = 0
-        sleep(_POLL_S)
+        sleep(_POLL_S if saw_busy else _FAST_POLL_S)
     if not ready:
         log.warning("reflection: command %r completion not observed within %ss; "
                     "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
@@ -392,6 +486,7 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
     if pane is None:
         pane = autodetect_pane(socket=socket, runner=runner)
     _assert_pane_exists(pane, socket, runner)
+    _assert_pane_has_agent(pane, socket, runner)
 
     if delay_ms and delay_ms > 0:
         time.sleep(min(delay_ms, 25_000) / 1000.0)
@@ -411,8 +506,13 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
         followup_sent = (followup.strip() if followup and followup.strip()
                          else DEFAULT_FOLLOWUP)
         followup_deferred = True
+        # Captured now (not inside the watcher thread) so a pane that vanishes
+        # before the watcher even gets scheduled still has a session to fall
+        # back on.
+        session = pane_session(pane, socket=socket, runner=runner)
         spawn(lambda: _await_and_followup(text, followup_sent, pane,
-                                          socket=socket, runner=runner))
+                                          socket=socket, runner=runner,
+                                          session=session))
 
     return {"ok": True, "pane": pane, "text": text,
             "submitted": submitted, "followup": followup_sent,
