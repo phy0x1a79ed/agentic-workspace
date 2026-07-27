@@ -55,10 +55,11 @@ declare -A DISTS=(
   [notes]="$WS/awm/services/notes::$WS/awm/services/notes/tests"
   [virtmic]="$WS/awm/services/virtmic::$WS/awm/services/virtmic/tests"
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
+  [compute]="$WS/awm/services/compute::$WS/awm/services/compute/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic compute)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
