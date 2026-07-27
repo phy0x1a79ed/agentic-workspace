@@ -30,7 +30,6 @@ projects/{project}/
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
-      artifacts.md               # auto-generated: pointer on discovering/reusing sibling scopes' outputs
       data/                      # project data — annex clone, or symlink to data/{project}/
       skills -> ../../../awm/skills/    # symlink to skill catalog
     [code files...]              # the actual repo content
@@ -92,16 +91,15 @@ What a given project is *for* lives in that project's own worktree — its `AGEN
 
 Every scope agent runs this on session start (the `.awm/context.md` for newly-created scopes embeds the boilerplate; agents in long-lived scopes can re-run it any time to refresh):
 
-1. `scope(verb="refresh", args={project:<p>, scope:<s>})` — re-renders `.awm/history.md` (session log, from the DB) and `.awm/artifacts.md` (the artifact-discovery pointer).
+1. `scope(verb="refresh", args={project:<p>, scope:<s>})` — re-renders `.awm/history.md` (session log, from the DB).
 2. Read `.awm/history.md` — open + resolved session log for this scope and its siblings.
-3. Skim `.awm/artifacts.md` — how to discover and reuse sibling scopes' outputs (figures, datasets, reports, models, scripts). It's a bounded pointer, not a list; `artifact_search` returns the live matches when you need one.
-4. `scope(verb="fetch", args={scope:<s>, kind:"message"})` (and optionally the `workspace` channel) — anything addressed to you or the workspace that's waiting.
+3. `scope(verb="fetch", args={scope:<s>, kind:"message"})` (and optionally the `workspace` channel) — anything addressed to you or the workspace that's waiting.
 
-`.awm/history.md` and `.awm/artifacts.md` are auto-generated. Never edit them by hand — use the `scope` domain's `refresh`/`post` verbs and `artifact`'s `register` verb (`scope(verb="refresh", …)`, etc.).
+`.awm/history.md` is auto-generated. Never edit it by hand — use the `scope` domain's `refresh`/`post` verbs (`scope(verb="refresh", …)`, etc.).
 
 ## MCP Tools
 
-The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The surface is **projected live** from whatever feature services are currently registered and **collapsed by domain**: instead of one tool per `<domain>_<verb>` (dozens of them), your client sees **one generic tool per domain** — `scope`, `project`, `agent`, `artifact`, `services`, … — each called with `{ "verb": "<name>", "args": { … } }`. This keeps the tool surface tiny for clients that can't defer schemas (spawned agents, OpenCode).
+The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The surface is **projected live** from whatever feature services are currently registered and **collapsed by domain**: instead of one tool per `<domain>_<verb>` (dozens of them), your client sees **one generic tool per domain** — `scope`, `project`, `agent`, `services`, … — each called with `{ "verb": "<name>", "args": { … } }`. This keeps the tool surface tiny for clients that can't defer schemas (spawned agents, OpenCode).
 
 **The catalog is self-describing — discover it, don't memorize it.** This file deliberately does **not** enumerate the domains or their verbs. The set grows every time a service registers (`social`, `2fa`, `mic`, `vpn`, `ssh`, `reflection`, `writing`, … all arrived this way), so any list written here would only drift and go stale. Find what's actually available at runtime instead — two moves:
 
@@ -116,7 +114,7 @@ The **CLI and HTTP surfaces stay expanded** — `awm scope create`, `POST /invok
 
 ## Skills
 
-The end-of-session **debrief** is a native Claude Code skill (`~/.claude/skills/debrief/`): say "debrief" and the agent runs it — commit, journal (`scope_post kind=journal`), reconcile artifacts, refresh. No MCP lookup needed.
+The end-of-session **debrief** is a native Claude Code skill (`~/.claude/skills/debrief/`): say "debrief" and the agent runs it — commit, journal (`scope_post kind=journal`), refresh. No MCP lookup needed.
 
 Other procedural references (the `create-project` / `create-scope` / `harness-setup` writeups and tool guides for git, mamba, mcp, metasmith, plotly, chrome-devtools, threejs) still live on disk under `.awm/skills/` and are Read-able when relevant. The skills *service* (the `skill_search` / `skill_get` / `skill_sync` MCP tools + embeddings search) is **retired/disabled** — these files are reference-only now, not searchable through MCP.
 
@@ -235,7 +233,7 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 
 `awm <command> --help` for full options on any of these. The MCP tools above are usually more ergonomic from inside an agent — the CLI is for shell-level work.
 
-**The CLI mirrors the full expanded surface.** Beyond the gateway-control commands in the table below, the CLI generates one `awm <domain> <verb>` command per registered feature-service tool — `awm scope create`, `awm artifact register`, `awm agent list`, etc. — from the **same live catalog** the MCP surface reads (the default `GET /tools`, the per-verb projection), so the two never drift and a newly-registered service's verbs appear with no extra wiring. Note the asymmetry: the **MCP** projection collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`), but the **CLI/HTTP** surfaces stay fully expanded — one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` per verb — so shell ergonomics are unchanged. `awm <domain> --help` lists a domain's verbs; `awm <domain> <verb> --help` shows that tool's exact parameters straight from its `inputSchema` (all `--flag` options). When the gateway is down the CLI lists from a cached snapshot; when it's up it's live-accurate every invocation.
+**The CLI mirrors the full expanded surface.** Beyond the gateway-control commands in the table below, the CLI generates one `awm <domain> <verb>` command per registered feature-service tool — `awm scope create`, `awm agent list`, `awm project search`, etc. — from the **same live catalog** the MCP surface reads (the default `GET /tools`, the per-verb projection), so the two never drift and a newly-registered service's verbs appear with no extra wiring. Note the asymmetry: the **MCP** projection collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`), but the **CLI/HTTP** surfaces stay fully expanded — one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` per verb — so shell ergonomics are unchanged. `awm <domain> --help` lists a domain's verbs; `awm <domain> <verb> --help` shows that tool's exact parameters straight from its `inputSchema` (all `--flag` options). When the gateway is down the CLI lists from a cached snapshot; when it's up it's live-accurate every invocation.
 
 | Command | Purpose |
 |---|---|
@@ -255,8 +253,8 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
    the work is good, `scope(verb="data_promote")`. In shared mode those are no-ops
    and outputs are visible to siblings immediately; in annex mode they are how your
    work becomes visible at all. See § *Data concurrency* above.
-3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — auto-generated. Use MCP tools.
-4. **Run the `debrief` skill** when ending a session — commit, log the session, register artifacts, refresh.
+3. **Don't edit `.awm/history.md`** — auto-generated. Use MCP tools.
+4. **Run the `debrief` skill** when ending a session — commit, log the session, refresh.
 5. **Check `.awm/skills/` for a procedure** before improvising an unfamiliar workflow — the writeups are on disk even though the search service is retired.
 
 ## Python Environment Rules

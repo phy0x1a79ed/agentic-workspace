@@ -520,6 +520,22 @@ def provision_scope_data(project: str, scope: str, awm_dir: Path) -> dict:
     awm_dir.mkdir(parents=True, exist_ok=True)
 
     if dest.is_symlink():
+        target = os.readlink(str(dest))
+        if target in ("../data", "..\\data"):
+            # This project has been migrated to the DVC data layer, where
+            # `.awm/data` is a compat symlink to the repo's own tracked `data/`
+            # folder. Replacing it with an annex clone would bury a converted
+            # scope's data under a stale one, silently, from a command
+            # advertised as an idempotent *repair* pass. Refuse instead.
+            return {
+                "mode": "dvc",
+                "path": str(dest),
+                "detail": (
+                    "scope uses the DVC data layer (.awm/data -> ../data); "
+                    "this annex layer left it alone. Deploy the data_dvc "
+                    "module to manage it."
+                ),
+            }
         # Legacy shared symlink, or a stale one — replace it with the clone.
         dest.unlink()
     elif dest.exists() and not is_annex_repo(dest):

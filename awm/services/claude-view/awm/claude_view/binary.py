@@ -141,6 +141,43 @@ def node_path() -> Path | None:
     return Path(found) if found else None
 
 
+def claude_cli_path() -> Path | None:
+    """Absolute path to the ``claude`` CLI the Live Monitor spawns, or None.
+
+    The Live Monitor's "new session" button POSTs ``/api/cli-sessions``, and
+    upstream services it by running ``tmux new-session -d … "claude <args>"`` —
+    the pane's command is the **bare name** ``claude``, resolved from PATH, and
+    the pane inherits *this* process's PATH (tmux copies the calling client's
+    environment into the new session). Under the gateway that PATH is systemd's
+    minimal one, which does **not** carry ``~/.local/bin`` where the native
+    installer puts ``claude``. So the pane command fails ENOENT, the pane exits,
+    tmux tears the one-window session down, and upstream's very next step —
+    ``list-panes -F '#{pane_pid}'`` — finds nothing and returns
+    ``Failed to read tmux pane PID`` as a bare 500.
+
+    It is the same silent-under-the-gateway trap as ``node`` (see
+    ``node_path``), and it hid the same way: a standalone run has ``~/.local/bin``
+    on PATH, so create-session worked in testing and only broke once supervised.
+    Resolve it explicitly and prepend its dir in ``child_env`` so the panes find
+    it.
+
+    Resolution order: an explicit override, then the two locations the native
+    Claude Code installer uses (``~/.local/bin`` and the older
+    ``~/.claude/local``), then whatever the ambient PATH happens to carry.
+    """
+    override = os.environ.get("CLAUDE_VIEW_CLI")
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    home = Path(os.environ.get("HOME", "~")).expanduser()
+    for cand in (home / ".local" / "bin" / "claude",
+                 home / ".claude" / "local" / "claude"):
+        if cand.is_file():
+            return cand
+    found = shutil.which("claude")
+    return Path(found) if found else None
+
+
 def child_env() -> dict[str, str]:
     """The pinned environment the upstream server runs under.
 
@@ -180,6 +217,14 @@ def child_env() -> dict[str, str]:
     node = node_path()
     if node is not None:
         env["PATH"] = os.pathsep.join([str(node.parent), env.get("PATH", "")])
+    # Same story for the `claude` CLI the Live Monitor spawns in a tmux pane:
+    # it is a bare-name command resolved off this PATH, and ~/.local/bin (where
+    # the native installer puts it) is not on systemd's PATH. Without this the
+    # pane exits ENOENT and create-session 500s with "Failed to read tmux pane
+    # PID". See claude_cli_path().
+    claude = claude_cli_path()
+    if claude is not None:
+        env["PATH"] = os.pathsep.join([str(claude.parent), env.get("PATH", "")])
     # Pin the sidecar to loopback. It binds every interface and offers no way
     # to say otherwise, so the bind is corrected in the sidecar's own process
     # via a preload — see node/loopback-listen.cjs. Appending keeps any
@@ -382,6 +427,7 @@ class Supervisor:
         with self._lock:
             snap = self._snapshot_locked()
         node = node_path()
+        claude = claude_cli_path()
         snap.update({
             "pinned_version": PINNED_VERSION,
             "binary": str(binary_path()),
@@ -393,6 +439,11 @@ class Supervisor:
             # dies, everything else keeps working. See node_path().
             "node": str(node) if node else None,
             "sidecar_capable": node is not None,
+            # Likewise: absent, the Live Monitor's "new session" button 500s
+            # ("Failed to read tmux pane PID") because the spawned pane can't
+            # find `claude`. See claude_cli_path().
+            "claude_cli": str(claude) if claude else None,
+            "live_monitor_capable": claude is not None,
             # Likewise: no hooks means no agent state, and the UI shows that
             # as every session "Needs You" rather than as an error.
             "hooks": hooks.status(PORT),

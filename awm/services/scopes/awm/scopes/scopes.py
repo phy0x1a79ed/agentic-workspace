@@ -507,6 +507,13 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
 def _heal_data(awm_dir: Path, *, project: str, scope: str, dry_run: bool) -> str | None:
     """Bring ``.awm/data`` to whatever this project's data mode currently is."""
     dest = awm_dir / "data"
+    # A `.awm/data -> ../data` symlink means this scope is on the DVC data
+    # layer, which this annex layer does not manage. Checked here as well as in
+    # provision_scope_data so the DRY RUN does not advertise a conversion that
+    # the real run correctly refuses -- a dry run that misreports is worse than
+    # no dry run.
+    if dest.is_symlink() and os.readlink(str(dest)) in ("../data", "..\\data"):
+        return None
     wants_annex = data_annex.is_annex_project(project) and data_annex.annex_available()
     is_clone = data_annex.is_annex_repo(dest) if dest.exists() and not dest.is_symlink() else False
 
