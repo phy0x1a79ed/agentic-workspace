@@ -110,3 +110,51 @@ def test_subscription_disabled_by_env(tmp_path, monkeypatch):
     svc = TwoFAService(cfg)
     svc.init()  # must not spawn a listener nor raise
     assert svc._social_task is None
+
+
+class TestOwnershipDecidesWhoListens:
+    """`/approve` must arm ONE burst fleet-wide.
+
+    Duo's attempt budget is per account, not per host, so a node that borrows
+    2fa listening for the owner's slash commands spends the budget twice and
+    replies into the DM twice. Ownership is already stated by AWM_TWOFA_PEER —
+    reusing it is what stops a second flag from disagreeing with it.
+    """
+
+    def test_owner_listens_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AWM_TWOFA_PEER", raising=False)
+        monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
+        cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")})
+        assert cfg.social_subscribe is True
+
+    def test_borrower_does_not_listen_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWM_TWOFA_PEER", "mira")
+        monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
+        cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")})
+        assert cfg.social_subscribe is False
+
+    def test_explicit_env_overrides_the_selector(self, tmp_path, monkeypatch):
+        """The deliberate second listener stays possible."""
+        monkeypatch.setenv("AWM_TWOFA_PEER", "mira")
+        monkeypatch.setenv("AWM_2FA_SOCIAL_SUBSCRIBE", "1")
+        cfg = Config(devices={"cwl": _creds(tmp_path, "cwl")})
+        assert cfg.social_subscribe is True
+
+    def test_borrower_status_says_why_it_is_not_listening(self, tmp_path, monkeypatch):
+        """"Off because someone else owns it" and "off because it broke" have
+        different fixes; status must not collapse them."""
+        monkeypatch.setenv("AWM_TWOFA_PEER", "mira")
+        monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
+        svc = TwoFAService(Config(devices={"cwl": _creds(tmp_path, "cwl")}))
+        health = svc._subscription_health()
+        assert health["healthy"] is True          # deliberate, not a fault
+        assert health["owner"] == "mira"
+        assert "owned by peer" in health["last_error"]
+
+    def test_owner_with_no_listener_is_a_fault(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("AWM_TWOFA_PEER", raising=False)
+        monkeypatch.delenv("AWM_2FA_SOCIAL_SUBSCRIBE", raising=False)
+        svc = TwoFAService(Config(devices={"cwl": _creds(tmp_path, "cwl")}))
+        health = svc._subscription_health()
+        assert health["healthy"] is False
+        assert "not started" in health["last_error"]

@@ -81,6 +81,7 @@ __all__ = [
     "subscribe_peer",
     "peer_env",
     "call_maybe_peer",
+    "call_sync_maybe_peer",
     "subscribe_maybe_peer",
     "SupervisedSubscription",
     "spawn_supervised",
@@ -636,6 +637,29 @@ async def call_maybe_peer(
     if peer:
         return await call_peer(peer, service, fn, args, as_=as_, timeout=timeout)
     return await call(service, fn, args, as_=as_, timeout=timeout)
+
+
+def call_sync_maybe_peer(
+    peer: str | None,
+    service: str,
+    fn: str,
+    args: dict | None = None,
+    *,
+    as_: str | None = None,
+    timeout: float = 30.0,
+) -> Any:
+    """:func:`call_sync` when ``peer`` is falsy, else :func:`call_peer_sync`.
+
+    The blocking twin of :func:`call_maybe_peer`, for a consumer whose call site
+    is not on the event loop. It exists so such a consumer routes through the
+    same single branch point as everyone else: a sync caller that hand-rolls its
+    own local POST is exactly how a node ends up borrowing a singleton for one
+    consumer and not another, which is the half-routing this module's selectors
+    are here to prevent.
+    """
+    if peer:
+        return call_peer_sync(peer, service, fn, args, as_=as_, timeout=timeout)
+    return call_sync(service, fn, args, as_=as_, timeout=timeout)
 
 
 async def subscribe_maybe_peer(
