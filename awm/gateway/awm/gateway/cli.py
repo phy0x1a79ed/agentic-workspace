@@ -210,25 +210,33 @@ def stop():
 
 
 @gateway_app.command()
-def refresh():
+def refresh(
+    timeout: float = typer.Option(
+        60.0, "--timeout",
+        help="Seconds to wait for the old listener to release the port."),
+):
     """Restart the server to pick up source changes."""
+    from awm.gateway.core import _wait_port_free
+
     # Stop the running server if present
     if PID_FILE.exists():
         pid = int(PID_FILE.read_text().strip())
         try:
             os.kill(pid, signal.SIGTERM)
             typer.echo(f"Stopping server (PID {pid})...")
-            # Wait up to 5s for process to exit
-            for _ in range(50):
-                time.sleep(0.1)
-                try:
-                    os.kill(pid, 0)  # probe — raises if gone
-                except ProcessLookupError:
-                    break
         except ProcessLookupError:
             typer.echo("Server process already gone (stale PID file)")
         if PID_FILE.exists():
             PID_FILE.unlink(missing_ok=True)
+        # Wait on the PORT, not the process. The replacement binds the same
+        # socket, so a listener that has exited but not yet released it makes
+        # the new one die on EADDRINUSE — which reads as a gateway that crashed
+        # on boot rather than a restart that overlapped itself.
+        if not _wait_port_free(HOST, PORT, time.monotonic() + timeout):
+            typer.echo(
+                f"Error: {HOST}:{PORT} still held {timeout:.0f}s after "
+                f"stopping PID {pid}; not starting a replacement", err=True)
+            raise typer.Exit(1)
     elif _server_running():
         typer.echo("Warning: server is running but no PID file found — cannot stop it")
         raise typer.Exit(1)
@@ -240,7 +248,11 @@ def refresh():
 
 @gateway_app.command()
 def restart():
-    """Drain services, restart the systemd unit, and wait for a healthy new process.
+    """Drain services, restart the gateway, and wait for a healthy new process.
+
+    Works whether or not systemd supervises this host — which it probes rather
+    than assumes, since a gateway started from the PID file and orphaned to init
+    cannot be restarted by ``systemctl``.
 
     Polls the gateway's ``/status`` endpoint across the restart cycle:
     connection-refused → new PID + fresh uptime. Stale-process and stale-
@@ -258,6 +270,7 @@ def restart():
 
     lines = []
     lines.append(f"  Status:     {result.get('status')}")
+    lines.append(f"  Managed by: {result.get('managed_by')}")
     if result.get("new_pid"):
         old = result.get("old_pid")
         lines.append(f"  PID:        {f'{old} → ' if old else ''}{result['new_pid']}")
