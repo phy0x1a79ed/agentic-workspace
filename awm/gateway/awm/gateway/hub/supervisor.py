@@ -36,17 +36,27 @@ _RECONNECT_WINDOW_S = 10.0
 # to respawn the same crash.
 _SELF_HEAL_INTERVAL_S = 45.0
 
-# Crash-loop breaker. A service that cannot stay up is respawned at most
-# ``_RESPAWN_BUDGET`` times inside a rolling ``_RESPAWN_WINDOW_S``; past that the
-# gateway stops respawning it, logs at ERROR, and leaves it down until an
-# operator runs ``awm services start|restart``. The budget needs headroom for
-# an ordinary one-off crash (which costs exactly one respawn) but has to be
-# small enough that a service failing instantly on every launch produces a
-# countable number of processes rather than an unbounded stream.
+# Crash-loop breaker. A service is respawned at most ``_RESPAWN_BUDGET`` times
+# WITHOUT REACHING READY in between; past that the gateway stops respawning it,
+# logs at ERROR, and leaves it down until an operator runs
+# ``awm services start|restart``.
+#
+# Counting respawns-since-last-ready rather than respawns-per-unit-time is
+# deliberate. A pure rolling window has to be tuned against the respawn
+# cadence, and the cadence is not fixed: the disconnect watchdog fires on a
+# crash, the self-heal sweep every 45s, and a service that leaves a zombie
+# behind is skipped by some sweeps entirely. Tuned wrong, a *slower* crash loop
+# escapes the bound completely, which is exactly what a 300s window did to a
+# fixture that crash-looped for ten minutes without tripping. Reaching ready is
+# the only honest evidence a respawn worked.
+#
+# ``_RESPAWN_WINDOW_S`` remains as a decay valve so a service that crashes once
+# a day never accumulates its way into the breaker.
 _RESPAWN_BUDGET = 5
-_RESPAWN_WINDOW_S = 300.0
+_RESPAWN_WINDOW_S = 3600.0
 
-# name -> monotonic timestamps of recent respawn attempts (trimmed to window).
+# name -> monotonic timestamps of respawn attempts since the service was last
+# seen ready (also trimmed to the decay window).
 _respawn_history: dict[str, list[float]] = {}
 # name -> why the breaker tripped. Presence means "do not respawn this".
 # In-memory on purpose: a gateway restart is an operator action, and the same
@@ -114,6 +124,17 @@ def reset_breaker_state() -> None:
     _disconnect_watchdogs.clear()
 
 
+def note_service_ready(name: str) -> None:
+    """A service reached ready — forget its respawn history.
+
+    Called from the control-WS ``ready`` handler. This is what makes the budget
+    mean "respawns that did not work" rather than "respawns per unit time": a
+    service that crashes, is respawned, and comes up healthy has spent nothing.
+    """
+    if _respawn_history.pop(name, None):
+        log.debug("service %s reached ready; respawn history cleared", name)
+
+
 def _note_respawn(name: str) -> bool:
     """Record a respawn attempt; ``False`` if the breaker forbids it.
 
@@ -128,7 +149,7 @@ def _note_respawn(name: str) -> bool:
     hist.append(now)
     _respawn_history[name] = hist
     if len(hist) > _RESPAWN_BUDGET:
-        reason = (f"{len(hist)} respawns in {_RESPAWN_WINDOW_S:.0f}s "
+        reason = (f"{len(hist)} respawns without reaching ready "
                   f"(budget {_RESPAWN_BUDGET})")
         _breaker[name] = reason
         log.error(

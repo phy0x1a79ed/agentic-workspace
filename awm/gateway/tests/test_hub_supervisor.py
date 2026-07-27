@@ -568,8 +568,8 @@ class TestRespawnBreaker:
         assert supervisor.load_service_journal()["loopy"]["breaker_tripped"] is True
 
     def test_old_attempts_fall_out_of_the_window(self, monkeypatch):
-        """The budget is a rolling window, not a lifetime cap — a service that
-        crashes once a day must never accumulate its way into the breaker."""
+        """The decay valve: a service that crashes once a day must never
+        accumulate its way into the breaker even if it never reports ready."""
         monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 2)
         monkeypatch.setattr(supervisor, "_RESPAWN_WINDOW_S", 0.05)
         assert supervisor._note_respawn("slow") is True
@@ -577,6 +577,28 @@ class TestRespawnBreaker:
         time.sleep(0.08)
         assert supervisor._note_respawn("slow") is True
         assert supervisor.breaker_reason("slow") is None
+
+    def test_reaching_ready_resets_the_budget(self, monkeypatch):
+        """The budget counts respawns that did NOT work. Counting per unit time
+        instead makes the bound depend on the respawn cadence — and the cadence
+        varies (watchdog vs 45s sweep, zombie-skipped ticks), so a SLOWER crash
+        loop escaped the bound entirely."""
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 2)
+        for _ in range(2):
+            assert supervisor._note_respawn("flaky") is True
+        supervisor.note_service_ready("flaky")
+        for _ in range(2):
+            assert supervisor._note_respawn("flaky") is True
+        assert supervisor.breaker_reason("flaky") is None
+
+    def test_respawns_that_never_reach_ready_trip_regardless_of_cadence(
+            self, monkeypatch):
+        monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 3)
+        monkeypatch.setattr(supervisor, "_RESPAWN_WINDOW_S", 3600.0)
+        for _ in range(3):
+            assert supervisor._note_respawn("wedged") is True
+        assert supervisor._note_respawn("wedged") is False
+        assert "without reaching ready" in supervisor.breaker_reason("wedged")
 
     def test_clear_breaker_is_the_way_back(self, monkeypatch):
         monkeypatch.setattr(supervisor, "_RESPAWN_BUDGET", 1)

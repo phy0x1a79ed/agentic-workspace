@@ -488,6 +488,11 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         if rec is not None:
             rec.api = ch.api
             rec.backend_status = "ready"
+            # Reaching ready is the only honest evidence a respawn worked, so
+            # it is what resets the crash-loop budget.
+            if not rec.is_overlay:
+                from awm.gateway.hub import supervisor as _sup
+                _sup.note_service_ready(rec.name)
     elif kind == "reply":
         ch.handle_reply(env)
     elif kind == "emit":
