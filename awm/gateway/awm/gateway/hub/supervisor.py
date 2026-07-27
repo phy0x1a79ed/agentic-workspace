@@ -82,13 +82,25 @@ def write_service_journal(state: dict[str, dict]) -> None:
     tmp.replace(path)
 
 
-def update_service_journal_entry(name: str, patch: dict) -> None:
+def update_service_journal_entry(name: str, patch: dict, *,
+                                 create: bool = True) -> None:
     """Read-modify-write one service entry. Called on register, control-WS
     open, control-WS close. Not atomic across writers — one event loop
     owns the supervisor so concurrent updates from the hub itself can't
     race; external `awm services list` reads are tolerant of partial
-    writes (tmp-then-rename above)."""
+    writes (tmp-then-rename above).
+
+    ``create=False`` makes this update-if-exists, which matters on the
+    control-WS teardown path: ``awm services stop`` deletes the entry FIRST as
+    its deliberate-stop signal, then blocks for seconds killing the process
+    group — and the dying service's cleanup runs inside that window. Creating
+    the entry there RESURRECTS it as a stub with no pid and no start command;
+    the disconnect watchdog re-registers from that stub, and ``start`` then
+    refuses forever with "already-running".
+    """
     state = load_service_journal()
+    if not create and name not in state:
+        return
     entry = state.get(name, {})
     entry.update(patch)
     entry.setdefault("name", name)

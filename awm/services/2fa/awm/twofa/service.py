@@ -48,6 +48,9 @@ log = logging.getLogger("awm.twofa.service")
 # that node social is co-located so this is unset and social calls stay local.
 # A node that borrows social exports AWM_SOCIAL_PEER=<peer>. Read fresh per use.
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+# Duo reachability probe budget. Short: `ping` is called on the recovery path,
+# where a slow answer is nearly as bad as a wrong one.
+_REACH_PROBE_TIMEOUT = 8
 
 
 def _tx_view(tx: Transaction) -> dict[str, Any]:
@@ -76,6 +79,11 @@ class DeviceRuntime:
     # window-end). Set by start_burst(notify=…); the social path uses it to
     # echo outcomes back to the Discord DM. None = silent.
     burst_notify: Any = None
+    # Wall-clock of the last VERIFIED round-trip to the Duo API for this
+    # device. Recency, not the absence of a recorded error, is what any
+    # downstream consumer must require — see TwoFAService.ping.
+    last_reachable_ts: float | None = None
+    last_reach_error: str | None = None
 
     @property
     def enrolled(self) -> bool:
@@ -94,6 +102,9 @@ class TwoFAService:
         }
         self._devices_lock = threading.Lock()
         self._social_task: asyncio.Task | None = None
+        # The live social/command subscription, once started. Read by `ping`
+        # so a deaf listener is visible before an emergency needs it.
+        self._social_sub: Any = None
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -124,10 +135,12 @@ class TwoFAService:
         # connectors: a task on the already-running loop.
         if self.cfg.social_subscribe:
             try:
-                loop = asyncio.get_event_loop()
-                self._social_task = loop.create_task(self._social_listener())
+                from awm import gatewayclient
+                self._social_task = gatewayclient.spawn_supervised(
+                    "2fa/social-listener", self._social_listener)
             except RuntimeError as exc:  # no running loop (shouldn't happen at on_start)
-                log.warning("2fa: social subscription not started: %s", exc)
+                log.error("2fa: social subscription not started — Discord "
+                          "/approve will not arm a burst: %s", exc)
 
     def _load_engine(self, rt: DeviceRuntime) -> ApprovalEngine:
         """Build (and cache) one device's client + engine from on-disk creds.
@@ -164,29 +177,24 @@ class TwoFAService:
     async def _social_listener(self) -> None:
         """Listen to the social service's ``command`` emit and arm bursts.
 
-        Owns its own reconnect/backoff (``subscribe`` yields one socket's worth
-        of events then returns when it closes — it does NOT reconnect itself).
-        Best-effort: when no ``social`` service is on the gateway the connect
-        just fails and we retry with backoff, so this is inert until social
-        shows up. Cancelled cleanly on shutdown.
+        Reconnect, backoff, and the idle-deadline re-subscribe belong to
+        :class:`SupervisedSubscription` (``subscribe`` yields one socket's
+        worth of events then returns when it closes — it does NOT reconnect
+        itself). Best-effort: when no ``social`` service is on the gateway the
+        connect just fails and we retry with backoff, so this is inert until
+        social shows up. Cancelled cleanly on shutdown.
         """
         from awm import gatewayclient
 
-        log.info("2fa: subscribing to social/command for slash-armed bursts")
-        backoff = 2.0
-        while True:
-            try:
-                async for ev in gatewayclient.subscribe_maybe_peer(
-                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                        "social", "command"):
-                    backoff = 2.0  # connected and receiving
-                    await self._handle_social_command(ev)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — never let the task die
-                log.debug("2fa: social subscription dropped (retrying): %s", exc)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 1.5, 30.0)
+        def _stream():
+            # peer selector read per connection, so a re-home takes effect on
+            # the next reconnect without a restart.
+            return gatewayclient.subscribe_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV), "social", "command")
+
+        self._social_sub = gatewayclient.SupervisedSubscription(
+            "2fa/social.command", _stream, self._handle_social_command)
+        await self._social_sub.run()
 
     async def _handle_social_command(self, ev: Any) -> None:
         """React to one social ``command`` event. Only ``approve`` arms a burst."""
@@ -264,21 +272,74 @@ class TwoFAService:
 
     # ---- verbs ------------------------------------------------------------
 
-    def _ping_one(self, rt: DeviceRuntime) -> dict[str, Any]:
-        return {
+    def _probe_one(self, rt: DeviceRuntime) -> dict[str, Any]:
+        """One device's reachability, via a real read-only Duo API call.
+
+        ``get_transactions`` is a GET that lists already-pending pushes: it
+        fires nothing, costs no multi-factor budget, and is the same call the
+        approval engine polls with — so if it works, the approver works.
+
+        This exists because ``ping`` used to report ``ok: true, enrolled:
+        true`` purely from local enrollment state, with no network call at
+        all. On 2026-07-26 it said exactly that while the Duo API was
+        unresolvable and every push was timing out. That false green is what
+        made the approver look healthy throughout the diagnosis, so nothing
+        downstream may depend on this answer until it is a real one.
+        """
+        out: dict[str, Any] = {
             "enrolled": rt.enrolled,
             "host": rt.client.host if rt.client else None,
             "burst_active": rt.burst_active(),
+            "reachable": False,
+            "last_reachable_at": rt.last_reachable_ts,
         }
+        if not rt.enrolled:
+            out["error"] = "device not enrolled"
+            return out
+        try:
+            engine = self._load_engine(rt)
+            engine.client.get_transactions(timeout=_REACH_PROBE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 — an unreachable API IS the answer
+            rt.last_reach_error = f"{type(exc).__name__}: {exc}"
+            out["error"] = rt.last_reach_error
+            out["host"] = rt.client.host if rt.client else None
+            return out
+        rt.last_reachable_ts = time.time()
+        rt.last_reach_error = None
+        out.update(reachable=True, host=rt.client.host if rt.client else None,
+                   last_reachable_at=rt.last_reachable_ts)
+        return out
 
-    def ping(self, device: str | None = None) -> dict[str, Any]:
+    async def ping(self, device: str | None = None) -> dict[str, Any]:
+        """Reachability of the Duo API, per device. ``ok`` means *verified*.
+
+        The probe is blocking (``requests``), so it runs off the event loop.
+        """
         targets = self._target_devices(device)
+        probes = {rt.name: await asyncio.to_thread(self._probe_one, rt)
+                  for rt in targets}
+        ok = bool(probes) and all(p.get("reachable") for p in probes.values())
         if device and str(device).strip():
             rt = targets[0]
-            return {"ok": True, "device": rt.name, **self._ping_one(rt)}
+            return {"ok": ok, "device": rt.name, **probes[rt.name]}
+        return {"ok": ok, "devices": probes}
+
+    def reachability(self, device: str) -> dict[str, Any]:
+        """The last VERIFIED reachability for one device, without probing.
+
+        Read by the ssh arbiter's self-clear check. Deliberately returns the
+        recorded timestamp rather than a fresh probe result, so the caller
+        decides what counts as recent — "no error seen" must never be able to
+        stand in for "reachable".
+        """
+        rt = self._devices.get(str(device or "").strip())
+        if rt is None:
+            return {"known": False, "last_reachable_at": None}
         return {
-            "ok": True,
-            "devices": {rt.name: self._ping_one(rt) for rt in targets},
+            "known": True,
+            "enrolled": rt.enrolled,
+            "last_reachable_at": rt.last_reachable_ts,
+            "last_error": rt.last_reach_error,
         }
 
     def _status_one(self, rt: DeviceRuntime) -> dict[str, Any]:
@@ -312,12 +373,33 @@ class TwoFAService:
         )
         return out
 
+    def _subscription_health(self) -> dict[str, Any]:
+        """Health of the social/command wire that carries ``/approve``.
+
+        A deaf listener used to be indistinguishable from an idle one. Never
+        raises: health has to be reportable precisely when things are broken.
+        """
+        sub = self._social_sub
+        if sub is None:
+            if not self.cfg.social_subscribe:
+                return {"healthy": True, "connected": False,
+                        "last_error": "social subscription disabled by config"}
+            return {"healthy": False, "connected": False,
+                    "last_error": "social listener not started"}
+        try:
+            return sub.health()
+        except Exception as exc:  # noqa: BLE001
+            return {"healthy": False, "last_error": f"unavailable: {exc}"}
+
     def status(self, device: str | None = None) -> dict[str, Any]:
         targets = self._target_devices(device)
+        sub = self._subscription_health()
         if device and str(device).strip():
             rt = targets[0]
-            return {"device": rt.name, **self._status_one(rt)}
-        return {"devices": {rt.name: self._status_one(rt) for rt in targets}}
+            return {"device": rt.name, **self._status_one(rt),
+                    "subscription": sub}
+        return {"devices": {rt.name: self._status_one(rt) for rt in targets},
+                "subscription": sub}
 
     def _pending_one(self, rt: DeviceRuntime) -> list[dict[str, Any]]:
         if not rt.enrolled:

@@ -540,7 +540,14 @@ async def proxy_service_emit_ws(
         except Exception:
             return
 
-    tasks = [asyncio.create_task(reader()), asyncio.create_task(writer())]
+    # Third arm: the emitting service's control channel going down. Without
+    # it neither reader nor writer can ever fire again — the subscriber sits
+    # on a healthy-looking socket that will never deliver, which is exactly
+    # the "permanently deaf after the emitter restarts" failure.
+    channel_gone = asyncio.create_task(ch.closed.wait())
+    tasks = [asyncio.create_task(reader()), asyncio.create_task(writer()),
+             channel_gone]
+    done: set[asyncio.Task] = set()
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
@@ -548,6 +555,13 @@ async def proxy_service_emit_ws(
     finally:
         ch.drop_subscriber(topic, sub.sub_id)
         try:
-            await client_ws.close()
+            if channel_gone in done:
+                log.info(
+                    "emit subscriber %s on %s/%s closing: control channel gone",
+                    sub.sub_id, service_id, topic,
+                )
+                await client_ws.close(code=1012, reason="service restarting")
+            else:
+                await client_ws.close()
         except Exception:
             pass

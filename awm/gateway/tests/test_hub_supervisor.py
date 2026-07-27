@@ -457,3 +457,57 @@ class TestBootstrapPages:
         assert reg.longest_match("/ui/shared").name == "aaa"
         # The independent page still registered despite the collision.
         assert reg.longest_match("/ui/ccc") is not None
+
+
+# ---------------------------------------------------------------------------
+# The phantom service record: `stop` must not be undone by the dying service's
+# own cleanup, and `start` must not treat a stub as a running instance.
+# ---------------------------------------------------------------------------
+
+
+class TestPhantomServiceRecord:
+    def test_teardown_does_not_resurrect_a_deliberately_stopped_entry(self):
+        """`services stop` removes the journal entry FIRST as its
+        deliberate-stop signal, then blocks for seconds killing the process
+        group — and the dying service's control-WS cleanup runs inside that
+        window. Creating the entry there produced a pid-less stub that the
+        watchdog re-registered and `start` then refused forever."""
+        supervisor.update_service_journal_entry(
+            "svc-x", {"last_pid": 4242, "start": ["run.sh"]})
+        assert "svc-x" in supervisor.load_service_journal()
+
+        supervisor.remove_service_journal_entry("svc-x")          # the stop
+        supervisor.update_service_journal_entry(                  # the cleanup
+            "svc-x", {"control_ws_open": False}, create=False)
+
+        assert supervisor.load_service_journal() == {}
+
+    def test_update_if_exists_still_updates_a_live_entry(self):
+        supervisor.update_service_journal_entry("svc-y", {"last_pid": 7})
+        supervisor.update_service_journal_entry(
+            "svc-y", {"control_ws_open": True}, create=False)
+        entry = supervisor.load_service_journal()["svc-y"]
+        assert entry["control_ws_open"] is True
+        assert entry["last_pid"] == 7          # the patch, not a replacement
+
+    def test_create_is_still_the_default(self):
+        supervisor.update_service_journal_entry("svc-z", {"last_pid": 1})
+        assert "svc-z" in supervisor.load_service_journal()
+
+    def test_a_pidless_stub_is_not_a_live_instance(self):
+        """`start`'s guard must ask whether something actually exists, not
+        merely whether a dictionary has a key."""
+        from awm.gateway import gateway_ops
+
+        stub = MagicMock()
+        stub.service_id = "sid-stub"
+        stub.backend_pid = None
+        assert gateway_ops._record_is_live(stub) is False
+
+    def test_a_record_with_a_live_pid_is_a_live_instance(self):
+        from awm.gateway import gateway_ops
+
+        rec = MagicMock()
+        rec.service_id = "sid-live"
+        rec.backend_pid = os.getpid()          # certainly alive
+        assert gateway_ops._record_is_live(rec) is True

@@ -78,6 +78,21 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "host", "type": "string", "required": False},
             ],
         },
+        {
+            "name": "receive_test",
+            "tool": "ssh_receive_test",
+            "description": (
+                "The inbound twin of notify_test: prove this service can still "
+                "HEAR an operator /approve. Asks social to emit a synthetic, "
+                "inert probe (a nonce only — no device, no channel, no Discord "
+                "traffic) and waits for it to come back. Fails loudly if it does "
+                "not, and distinguishes 'could not emit' from 'did not receive'. "
+                "Opens no approval window, arms nothing, writes no lockfile."
+            ),
+            "params": [
+                {"name": "timeout", "type": "number", "required": False},
+            ],
+        },
     ],
     "emitters": [],
     # Direct-session slot lease: a requester (this node or a peer) holds an open
@@ -93,6 +108,8 @@ HANDLERS = {
     "disconnect": lambda args: svc.disconnect(args["host"]),
     "status": lambda _args: svc.status(),
     "notify_test": lambda args: svc.notify_test(args.get("host", "[selftest]")),
+    "receive_test": lambda args: svc.receive_test(
+        float(args.get("timeout") or 10.0)),
 }
 
 

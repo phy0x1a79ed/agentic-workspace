@@ -161,14 +161,47 @@ async def _op_services_list() -> dict[str, Any]:
     return {"services": out}
 
 
+def _record_is_live(rec: Any) -> bool:
+    """Is this registry record backed by something that actually exists?
+
+    A record alone is NOT evidence. ``stop`` can leave a stub behind — no pid,
+    lease released — and a guard that trusts the dictionary then refuses to
+    start the service forever, which is what turned a two-command recovery
+    into a manual fight on 2026-07-26. Mirrors the duplicate-instance guard in
+    ``api/hub.py``: a held control-WS lease, or a pid that is genuinely alive.
+    """
+    from awm.gateway.hub import supervisor
+    from awm.gateway.hub.lease import get_lease_manager
+
+    try:
+        if get_lease_manager().is_held(rec.service_id):
+            return True
+    except Exception:  # noqa: BLE001 — an unanswerable lease is not a yes
+        pass
+    return supervisor.pid_alive(rec.backend_pid)
+
+
 async def _op_services_start(name: str) -> dict[str, Any]:
     """Start a stopped service (idempotent — a running one is left alone)."""
+    import logging
+
     from awm.gateway.hub import discovery, supervisor
     from awm.gateway.hub.registry import get_registry
 
+    log = logging.getLogger("awm.gateway.ops")
     registry = get_registry()
-    if registry.get_by_name("service", name) is not None:
+    existing = registry.get_by_name("service", name)
+    if existing is not None and _record_is_live(existing):
         return {"name": name, "started": False, "reason": "already-running"}
+    if existing is not None:
+        log.warning("services start %s: stale registry record (pid=%r, lease "
+                    "not held) — evicting it and starting fresh",
+                    name, existing.backend_pid)
+        try:
+            await registry.evict_by_name(name, kind="service")
+        except Exception as exc:  # noqa: BLE001 — the start is what matters
+            log.warning("services start %s: could not evict the stale record: "
+                        "%s", name, exc)
     spec = discovery.discover_service(name)
     if spec is None:
         raise FileNotFoundError(f"no service folder {name!r} with a run.sh")

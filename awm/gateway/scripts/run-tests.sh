@@ -43,6 +43,7 @@ declare -A DISTS=(
   [precedence]="$WS/awm/services/precedence::$WS/awm/services/precedence/tests"
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
+  [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
@@ -56,7 +57,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing precedence social 2fa rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
+ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

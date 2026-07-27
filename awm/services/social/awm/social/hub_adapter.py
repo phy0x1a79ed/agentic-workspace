@@ -126,6 +126,33 @@ async def _on_command(cmd: connectors.Command) -> None:
     await _adapter.emit("command", payload)
 
 
+# The command name a self-test probe carries. Deliberately NOT a registered
+# slash command, so no operator can ever produce one, and no consumer's
+# domain handler will match it.
+PROBE_COMMAND = "__awm_probe__"
+
+
+async def _h_emit_probe(args: dict) -> dict:
+    """Emit a synthetic ``command`` event carrying only a nonce.
+
+    Lets a subscriber prove on demand that it can still *receive* — the one
+    thing no existing check covers, and the gap that let ssh sit deaf through
+    three ``/approve`` attempts on 2026-07-26.
+
+    The payload is deliberately inert: no device, no account, no channel_id.
+    It therefore cannot open an approval window, cannot arm a Duo burst, and
+    cannot generate any Discord traffic. The command name is a constant that
+    is not a registered slash command.
+    """
+    if _adapter is None:
+        return {"ok": False, "error": "social adapter not started"}
+    nonce = str(args.get("nonce") or "")
+    if not nonce:
+        return {"ok": False, "error": "nonce is required"}
+    await _adapter.emit("command", {"command": PROBE_COMMAND, "nonce": nonce})
+    return {"ok": True, "nonce": nonce}
+
+
 # -- handlers ---------------------------------------------------------------
 
 async def _h_send(args: dict) -> dict:
@@ -489,6 +516,17 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "limit", "type": "number", "required": False},
             ],
         },
+        {
+            "name": "emit_probe",
+            "tool": "social_emit_probe",
+            "description": "Emit a synthetic, inert `command` event carrying "
+                           "only `nonce`, so a subscriber can prove on demand "
+                           "that it can still receive. Opens no window, arms "
+                           "nothing, sends no message.",
+            "params": [
+                {"name": "nonce", "type": "string", "required": True},
+            ],
+        },
     ],
     "emitters": [{"topic": "message"}, {"topic": "command"}],
     "sessions": [],
@@ -512,6 +550,7 @@ HANDLERS = {
     "bucket_put": _h_bucket_put,
     "bucket_rm": _h_bucket_rm,
     "bucket_search": _h_bucket_search,
+    "emit_probe": _h_emit_probe,
 }
 
 

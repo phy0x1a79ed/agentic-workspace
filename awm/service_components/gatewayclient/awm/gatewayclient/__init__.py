@@ -62,6 +62,10 @@ from typing import Any, AsyncIterator
 import httpx
 
 from awm.gatewayclient.adapter import ServiceAdapter, SessionContext
+from awm.gatewayclient.subscription import (
+    SupervisedSubscription,
+    spawn_supervised,
+)
 
 log = logging.getLogger("awm.gatewayclient")
 
@@ -78,6 +82,8 @@ __all__ = [
     "peer_env",
     "call_maybe_peer",
     "subscribe_maybe_peer",
+    "SupervisedSubscription",
+    "spawn_supervised",
     "acquire_lease",
     "acquire_lease_peer",
     "acquire_lease_maybe_peer",
@@ -89,6 +95,13 @@ __all__ = [
     "ServiceAdapter",
     "SessionContext",
 ]
+
+# Keepalive for every subscription socket, pinned rather than inherited from
+# the websockets library's defaults. This is the ONLY detector of a half-open
+# TCP connection (one where the peer vanished without a FIN), so a future
+# change to the library's defaults must not be able to silently remove it.
+# ~40 s to notice a dead socket.
+_PING_KWARGS = {"ping_interval": 20.0, "ping_timeout": 20.0}
 
 # Default only used when AWM_HUB_URL is unset. Prefer the env var: the hub
 # injects it into every service process and it carries the correct per-sandbox
@@ -201,6 +214,7 @@ async def subscribe(
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """Async generator over a service's emitter topic, via the gateway.
 
@@ -214,6 +228,10 @@ async def subscribe(
     The ``X-Awm-As`` identity header is sent as a connect header when
     ``as_`` is given (the gateway's emit route reads it the same way the
     HTTP route reads it).
+
+    ``on_connect``, if given, is called with no arguments once the socket is
+    open — so a supervisor can observe "connected" without this function
+    growing a reconnect loop it must not have.
     """
     import websockets  # local import: WS isn't needed on the call() hot path
 
@@ -229,7 +247,10 @@ async def subscribe(
         additional_headers=extra or None,
         max_size=None,
         open_timeout=10,
+        **_PING_KWARGS,
     ) as ws:
+        if on_connect is not None:
+            on_connect()
         async for raw in ws:
             if isinstance(raw, (bytes, bytearray)):
                 # Non-direct emit fan-out is always JSON text; ignore binary.
@@ -503,6 +524,7 @@ async def subscribe_peer(
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """Async generator over a peer node's emitter topic, via its edge directly.
 
@@ -547,6 +569,7 @@ async def subscribe_peer(
                 ssl=ssl_ctx,
                 max_size=None,
                 open_timeout=10,
+                **_PING_KWARGS,
             )
         except websockets.InvalidStatus as exc:
             # Handshake rejected by the peer edge. 401/403 here means the bearer
@@ -560,6 +583,8 @@ async def subscribe_peer(
         break
 
     async with conn:
+        if on_connect is not None:
+            on_connect()
         async for raw in conn:
             if isinstance(raw, (bytes, bytearray)):
                 # Non-direct emit fan-out is always JSON text; ignore binary.
@@ -619,6 +644,7 @@ async def subscribe_maybe_peer(
     topic: str,
     *,
     as_: str | None = None,
+    on_connect: Any = None,
 ) -> AsyncIterator[Any]:
     """:func:`subscribe` when ``peer`` is falsy, else :func:`subscribe_peer`.
 
@@ -627,9 +653,10 @@ async def subscribe_maybe_peer(
     handling is oblivious to whether the stream is local or from a peer.
     """
     if peer:
-        gen = subscribe_peer(peer, service, topic, as_=as_)
+        gen = subscribe_peer(peer, service, topic, as_=as_,
+                             on_connect=on_connect)
     else:
-        gen = subscribe(service, topic, as_=as_)
+        gen = subscribe(service, topic, as_=as_, on_connect=on_connect)
     async for item in gen:
         yield item
 

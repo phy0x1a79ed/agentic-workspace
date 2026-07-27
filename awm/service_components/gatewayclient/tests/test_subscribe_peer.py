@@ -282,11 +282,12 @@ def test_subscribe_maybe_peer_routes(monkeypatch):
     """Falsy peer -> subscribe(); a peer name -> subscribe_peer()."""
     routed = []
 
-    async def fake_subscribe(service, topic, *, as_=None):
+    async def fake_subscribe(service, topic, *, as_=None, on_connect=None):
         routed.append(("local", service, topic))
         yield {"ok": "local"}
 
-    async def fake_subscribe_peer(peer, service, topic, *, as_=None):
+    async def fake_subscribe_peer(peer, service, topic, *, as_=None,
+                                  on_connect=None):
         routed.append(("peer", peer, service, topic))
         yield {"ok": "peer"}
 

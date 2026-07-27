@@ -469,6 +469,37 @@ class TestEmitterFanout:
 
         asyncio.new_event_loop().run_until_complete(run())
 
+    def test_subscriber_socket_closes_when_service_goes_down(self, running_hub):
+        """The emitter's control channel dropping must end the subscriber's
+        stream.
+
+        Without this a subscriber whose emitting service restarts is dropped
+        from the fan-out table but never told: its socket stays open, its
+        keepalives keep succeeding, and it is deaf forever. That is what
+        silently swallowed the operator's Discord ``/approve`` on 2026-07-26.
+        This test times out before the fix.
+        """
+        port, token = running_hub["port"], running_hub["token"]
+
+        async def run():
+            svc = FakeService(port, token, "tick",
+                              {"emitters": [{"topic": "beat"}]})
+            await svc.open_control()
+            ws_url = f"ws://127.0.0.1:{port}/svc/tick/emit/beat"
+            async with websockets.connect(
+                ws_url,
+                subprotocols=[f"bearer.{token}"],
+                max_size=None,
+                open_timeout=5,
+            ) as browser_ws:
+                await svc.wait_for(lambda e: e.get("kind") == "sub")
+                # The service goes away — a restart, a crash, a dropped link.
+                await svc.close()
+                with pytest.raises(websockets.exceptions.ConnectionClosed):
+                    await asyncio.wait_for(browser_ws.recv(), timeout=5)
+
+        asyncio.new_event_loop().run_until_complete(run())
+
 
 # ---------------------------------------------------------------------------
 # Direct-bridge session round-trip via /svc/X/session/<id>
