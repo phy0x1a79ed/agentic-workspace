@@ -196,6 +196,33 @@ class TestAccountsListing:
         assert by_name["discord-bot"]["owner"] == "mira"  # peer-only is merged
         assert out["peer"] == "mira"
 
+    def test_a_borrowed_singleton_reports_its_real_owner(self, monkeypatch):
+        """Configured here, owned there.
+
+        The account is in this node's social.toml but deliberately unconnected,
+        so reporting owner=local would be a lie in exactly the case a caller
+        most needs the truth — and its liveness is the peer's, not ours.
+        """
+        from awm.social import hub_adapter as ha
+        from awm.social import config as social_config
+        import awm.gatewayclient as gc
+
+        cfg = social_config.AccountConfig(
+            name="discord-bot", platform="discord", token="t", singleton=True)
+        monkeypatch.setattr(ha, "_accounts", {"discord-bot": cfg})
+        monkeypatch.setattr(ha, "_connectors", {})   # borrowed ⇒ not connected
+        monkeypatch.setattr(gc, "peer_env", lambda var: "mira")
+
+        async def _peer_says_live(p, service, fn, args=None, **kw):
+            return {"accounts": [{"name": "discord-bot", "platform": "discord",
+                                  "live": True}]}
+
+        monkeypatch.setattr(gc, "call_peer", _peer_says_live)
+        acc = asyncio.run(ha._h_accounts({}))["accounts"][0]
+
+        assert acc["owner"] == "mira"
+        assert acc["live"] is True    # the peer's session is the live one
+
     def test_unreachable_peer_still_lists_local_accounts(self, monkeypatch):
         from awm.social import hub_adapter as ha
         from awm.social import config as social_config
