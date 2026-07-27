@@ -47,18 +47,25 @@ every judgement that was dropped, refused, or dry-run suppressed.
 
 ## Rollout
 
-The service ships **disarmed and in dry-run**: it judges and records exactly as
-normal and signals nothing. Run it that way through a normal working day and
-read the ledger. The success criterion is not that it caught something — it is
-that it flagged nothing it shouldn't have.
+Three postures. The service ships in **observe** and signals nothing; **shadow**
+runs every judgement and records exactly what it *would* have done; **live**
+acts. Sit in shadow through a normal working day and read the ledger before
+going live. The success criterion is not that it caught something — it is that
+it flagged nothing it shouldn't have.
 
 ```bash
-awm compute arm --dry-run true --armed true    # shadow: records, never signals
-awm compute arm --dry-run false                # live
-awm compute arm --armed false                  # instant rollback, no restart
+awm compute arm --mode shadow    # records exactly what it WOULD do; signals nothing
+awm compute arm --mode live      # acts
+awm compute arm --mode observe   # instant rollback, no restart
+awm compute arm                  # read the current posture
 ```
 
-Arming only takes effect on the production gateway. Every dev sandbox
+One string rather than two booleans because the CLI generator renders a
+boolean parameter as a bare flag, which can only ever turn a setting *on* —
+leaving no way to roll back from the command line, which is the one direction
+that has to work under pressure.
+
+`live` only takes effect on the production gateway. Every dev sandbox
 bootstraps this service too and sandboxes share one process table, so without
 that guard starting a sandbox would put a second armed watchdog on the same
 processes. A sandbox's copy reports `arm_eligible: false` and stays
