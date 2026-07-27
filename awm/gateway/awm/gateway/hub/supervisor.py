@@ -451,7 +451,7 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
         log.error("respawn failed for service %s: %s", name, exc)
 
 
-def _has_ready_control(sid: str | None) -> bool:
+def has_ready_control(sid: str | None) -> bool:
     """True iff the service holds an open, ready control channel."""
     if not sid:
         return False
@@ -508,7 +508,7 @@ async def _self_heal_once() -> None:
             continue
         if pid_alive(entry.get("last_pid")):
             continue
-        if _has_ready_control(entry.get("service_id")):
+        if has_ready_control(entry.get("service_id")):
             continue
         log.warning(
             "self-heal: service %s wedged (dead pid=%s, no ready control); "
@@ -520,9 +520,13 @@ async def self_heal_loop() -> None:
     """Periodic wedged-service watchdog, started once at gateway boot.
 
     Runs forever on ``_SELF_HEAL_INTERVAL_S``; each tick is a best-effort sweep
-    that never lets an exception kill the loop."""
-    while not is_shutting_down():
+    that never lets an exception kill the loop. It also never *returns* —
+    ``spawn_supervised`` (which starts it) reads a return as a defect, so
+    shutdown skips the tick's work instead of exiting the loop."""
+    while True:
         await asyncio.sleep(_SELF_HEAL_INTERVAL_S)
+        if is_shutting_down():
+            continue
         try:
             await _self_heal_once()
         except Exception:
@@ -553,7 +557,7 @@ async def reconcile_journaled_services() -> None:
     from awm.gateway.hub import discovery as _discovery
     for name in list(journal.keys()):
         entry = journal.get(name) or {}
-        if _has_ready_control(entry.get("service_id")):
+        if has_ready_control(entry.get("service_id")):
             log.info("service %s reconnected within window", name)
             continue
         if not _discovery.is_enabled(name):
@@ -610,7 +614,7 @@ async def supervise_disconnect(name: str) -> None:
     entry = load_service_journal().get(name)
     if not entry or not _discovery.is_enabled(name):
         return
-    if _has_ready_control(entry.get("service_id")):
+    if has_ready_control(entry.get("service_id")):
         log.info("service %s reconnected after disconnect; not respawning", name)
         return
     log.info("service %s did not reconnect within %.0fs; respawning",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from awm.gateway.hub.registry import Registry, get_registry
 
@@ -23,6 +24,11 @@ class LeaseManager:
         # WS handler to read (via ``take_eviction``) once ``hold`` returns, so
         # it can close the socket with a who/why notice instead of bare.
         self._eviction: dict[str, tuple[str, str]] = {}
+        # service_id -> monotonic time the current holder took the slot. The
+        # orphan reaper needs it: possession alone is not health, so a holder
+        # that has never reached ready is only spared while it is plausibly
+        # still starting up.
+        self._claimed_at: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     async def claim(self, service_id: str, disconnect: asyncio.Event) -> bool:
@@ -37,6 +43,7 @@ class LeaseManager:
             if service_id in self._holders:
                 return False
             self._holders[service_id] = disconnect
+            self._claimed_at[service_id] = time.monotonic()
             return True
 
     async def release(self, service_id: str, disconnect: asyncio.Event) -> None:
@@ -50,6 +57,7 @@ class LeaseManager:
         finally:
             async with self._lock:
                 self._holders.pop(service_id, None)
+                self._claimed_at.pop(service_id, None)
             evicted = await self._registry.evict_by_id(service_id)
             if evicted is not None:
                 log.info("evicted service %s (id=%s) on lease close",
@@ -64,6 +72,11 @@ class LeaseManager:
 
     def is_held(self, service_id: str) -> bool:
         return service_id in self._holders
+
+    def held_for(self, service_id: str) -> float | None:
+        """Seconds the current holder has had the slot, or ``None`` if free."""
+        since = self._claimed_at.get(service_id)
+        return None if since is None else time.monotonic() - since
 
     def signal_evicted(self, service_id: str, reason: str, evictor: str) -> None:
         """Stage a who/why notice and wake the holder's WS handler.

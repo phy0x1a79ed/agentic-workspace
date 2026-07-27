@@ -308,10 +308,22 @@ async def lifespan(app: FastAPI):
         #     control WS and are never journaled, so this filesystem re-derive
         #     is what brings them back after a restart.
         await bootstrap_discovered_pages()
-        # 3. Periodic self-heal: re-bootstrap any service later found wedged
-        #    (dead PID, no ready control) without waiting for a gateway restart
-        #    — covers crashes that bypass the control-WS disconnect watchdog.
-        asyncio.create_task(self_heal_loop())
+        # 3. The two standing background sweeps, started under
+        #    ``spawn_supervised`` — a bare create_task that dies on its first
+        #    line leaves the gateway looking healthy with a whole capability
+        #    silently absent, which is exactly the class of fault these sweeps
+        #    exist to catch.
+        #      self_heal_loop — re-bootstrap a service later found wedged (dead
+        #        PID, no ready control), covering crashes that bypass the
+        #        control-WS disconnect watchdog.
+        #      reap_loop — kill orphaned hub_adapter processes targeting this
+        #        origin. Recovery must not depend on an operator noticing and
+        #        typing `awm services reap`.
+        from awm.gatewayclient import spawn_supervised
+
+        from awm.gateway.gateway_ops import reap_loop
+        spawn_supervised("gateway/self-heal", self_heal_loop)
+        spawn_supervised("gateway/reap", reap_loop)
 
     try:
         asyncio.create_task(_bring_up_services())
