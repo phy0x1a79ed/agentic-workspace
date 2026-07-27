@@ -12,6 +12,12 @@ dependencies = [
     "websockets",
 ]
 
+# Per-dist pytest config (see gateway/scripts/run-tests.sh). asyncio_mode=auto
+# so `async def test_…` runs without a per-test decorator, matching the gateway
+# dist; the existing sync tests that drive asyncio.run themselves are unaffected.
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 # PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/gatewayclient/.
 [tool.setuptools.packages.find]
 include = ["awm.gatewayclient*"]

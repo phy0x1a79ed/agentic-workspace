@@ -469,6 +469,37 @@ class TestEmitterFanout:
 
         asyncio.new_event_loop().run_until_complete(run())
 
+    def test_subscriber_socket_closes_when_service_goes_down(self, running_hub):
+        """The emitter's control channel dropping must end the subscriber's
+        stream.
+
+        Without this a subscriber whose emitting service restarts is dropped
+        from the fan-out table but never told: its socket stays open, its
+        keepalives keep succeeding, and it is deaf forever. That is what
+        silently swallowed the operator's Discord ``/approve`` on 2026-07-26.
+        This test times out before the fix.
+        """
+        port, token = running_hub["port"], running_hub["token"]
+
+        async def run():
+            svc = FakeService(port, token, "tick",
+                              {"emitters": [{"topic": "beat"}]})
+            await svc.open_control()
+            ws_url = f"ws://127.0.0.1:{port}/svc/tick/emit/beat"
+            async with websockets.connect(
+                ws_url,
+                subprotocols=[f"bearer.{token}"],
+                max_size=None,
+                open_timeout=5,
+            ) as browser_ws:
+                await svc.wait_for(lambda e: e.get("kind") == "sub")
+                # The service goes away — a restart, a crash, a dropped link.
+                await svc.close()
+                with pytest.raises(websockets.exceptions.ConnectionClosed):
+                    await asyncio.wait_for(browser_ws.recv(), timeout=5)
+
+        asyncio.new_event_loop().run_until_complete(run())
+
 
 # ---------------------------------------------------------------------------
 # Direct-bridge session round-trip via /svc/X/session/<id>
@@ -549,3 +580,55 @@ class TestDirectSessionBridge:
                     handler_task.cancel()
 
         asyncio.new_event_loop().run_until_complete(run())
+
+
+# ---------------------------------------------------------------------------
+# A duplicate instance must leave NO trace on the incumbent.
+#
+# Everything downstream of the control-WS accept is keyed by service_id and is
+# therefore SHARED with the incumbent: rpc.ensure_control hands back its
+# channel, the journal entry is its entry, and the teardown block marks it
+# down and schedules a respawn on its behalf. Before this was fixed, a
+# correctly-rejected duplicate still ran all of that on the way out — which is
+# how one saturated host turned into a 25-minute respawn storm on 2026-07-27.
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateControlWs:
+    async def test_second_control_ws_is_refused_and_changes_nothing(
+            self, running_hub, monkeypatch):
+        from awm.gateway.hub import rpc as rpc_mod
+        from awm.gateway.hub import supervisor
+
+        port, token = running_hub["port"], running_hub["token"]
+        scheduled: list[str] = []
+        monkeypatch.setattr(supervisor, "schedule_disconnect_watchdog",
+                            lambda name: scheduled.append(name))
+
+        async with fake_service(port, token, name="dup", api={}) as svc:
+            sid = svc.service_id
+            supervisor.update_service_journal_entry(
+                "dup", {"service_id": sid, "control_ws_open": True,
+                        "start_cmd": ["run.sh"], "cwd": "/srv"})
+
+            url = f"ws://127.0.0.1:{port}/hub/service/control/{sid}"
+            with pytest.raises(websockets.ConnectionClosed) as exc:
+                async with websockets.connect(
+                        url, subprotocols=[f"bearer.{token}"],
+                        max_size=None, open_timeout=5) as dup:
+                    await dup.recv()          # the close arrives here
+            # 4409 is what the adapter maps to GiveUp, so the duplicate exits 0
+            # rather than retrying into the incumbent forever.
+            assert exc.value.rcvd.code == 4409
+
+            # The incumbent is untouched on all three of the surfaces the
+            # duplicate used to corrupt.
+            ch = rpc_mod.get_control(sid)
+            assert ch is not None and ch.ready.is_set()
+            entry = supervisor.load_service_journal()["dup"]
+            assert entry["control_ws_open"] is True
+            assert scheduled == []
+
+            # …and it can still serve.
+            from awm.gateway.hub.registry import get_registry
+            assert get_registry().get_by_name("service", "dup") is not None

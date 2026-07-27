@@ -1,0 +1,5 @@
+# install.sh sidecar (absolute interpreter path; host-specific)
+.runtime-env
+# The drawio web client: ~150 MB cloned + patched by install.sh. Reproducible,
+# so it is built rather than committed.
+webapp/

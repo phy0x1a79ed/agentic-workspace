@@ -34,6 +34,7 @@ generator, so they're re-shaped here).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -144,31 +145,74 @@ async def _op_gateway_deregister(name: str, kind: str | None = None) -> dict[str
 async def _op_services_list() -> dict[str, Any]:
     """Discovery ⋈ enable-state ⋈ live registration — the ``awm services list``
     view (also the offline fallback's online counterpart)."""
-    from awm.gateway.hub import discovery
+    from awm.gateway.hub import discovery, supervisor
     from awm.gateway.hub.registry import get_registry
 
     registry = get_registry()
     out = []
     for spec in discovery.discover_services():
         rec = registry.get_by_name("service", spec.name)
-        out.append({
+        tripped = supervisor.breaker_reason(spec.name)
+        row = {
             "name": spec.name,
             "enabled": spec.enabled,
             "running": rec is not None,
             "status": rec.backend_status if rec is not None else "stopped",
             "pid": rec.backend_pid if rec is not None else None,
-        })
+        }
+        if tripped:
+            # A tripped breaker is the reason a service is down and staying
+            # down; without it here "stopped" reads like someone stopped it.
+            row["status"] = "breaker-tripped"
+            row["breaker_reason"] = tripped
+        out.append(row)
     return {"services": out}
+
+
+def _record_is_live(rec: Any) -> bool:
+    """Is this registry record backed by something that actually exists?
+
+    A record alone is NOT evidence. ``stop`` can leave a stub behind — no pid,
+    lease released — and a guard that trusts the dictionary then refuses to
+    start the service forever, which is what turned a two-command recovery
+    into a manual fight on 2026-07-26. Mirrors the duplicate-instance guard in
+    ``api/hub.py``: a held control-WS lease, or a pid that is genuinely alive.
+    """
+    from awm.gateway.hub import supervisor
+    from awm.gateway.hub.lease import get_lease_manager
+
+    try:
+        if get_lease_manager().is_held(rec.service_id):
+            return True
+    except Exception:  # noqa: BLE001 — an unanswerable lease is not a yes
+        pass
+    return supervisor.pid_alive(rec.backend_pid)
 
 
 async def _op_services_start(name: str) -> dict[str, Any]:
     """Start a stopped service (idempotent — a running one is left alone)."""
+    import logging
+
     from awm.gateway.hub import discovery, supervisor
     from awm.gateway.hub.registry import get_registry
 
+    log = logging.getLogger("awm.gateway.ops")
     registry = get_registry()
-    if registry.get_by_name("service", name) is not None:
+    # The operator gesture that clears a tripped crash-loop breaker. Deliberate:
+    # the breaker never auto-retries, so this is the only way back.
+    supervisor.clear_breaker(name)
+    existing = registry.get_by_name("service", name)
+    if existing is not None and _record_is_live(existing):
         return {"name": name, "started": False, "reason": "already-running"}
+    if existing is not None:
+        log.warning("services start %s: stale registry record (pid=%r, lease "
+                    "not held) — evicting it and starting fresh",
+                    name, existing.backend_pid)
+        try:
+            await registry.evict_by_name(name, kind="service")
+        except Exception as exc:  # noqa: BLE001 — the start is what matters
+            log.warning("services start %s: could not evict the stale record: "
+                        "%s", name, exc)
     spec = discovery.discover_service(name)
     if spec is None:
         raise FileNotFoundError(f"no service folder {name!r} with a run.sh")
@@ -266,9 +310,37 @@ def _read_proc_environ(pid: int) -> dict[str, str]:
     return out
 
 
+def _proc_age_s(pid: int) -> float | None:
+    """Seconds since ``pid`` started, or ``None`` if it can't be determined.
+
+    Field 22 of ``/proc/<pid>/stat`` is the start time in clock ticks since
+    boot; ``/proc/uptime`` converts it to an age. The comm field (2) is
+    parenthesised and may itself contain spaces or a ``)``, so the tail is
+    taken after the LAST ``)``.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        uptime = float(Path("/proc/uptime").read_text().split()[0])
+        fields = stat.rpartition(")")[2].split()
+        starttime_ticks = float(fields[19])          # field 22, 0-based after comm
+    except (OSError, ValueError, IndexError):
+        return None
+    hz = os.sysconf("SC_CLK_TCK") or 100
+    return max(0.0, uptime - starttime_ticks / hz)
+
+
+def _pgid_of(pid: int) -> int | None:
+    """Process-group id of ``pid``, or ``None`` if it can't be read."""
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
 def _scan_hub_adapters() -> list[dict[str, Any]]:
-    """Scan ``/proc`` for ``hub_adapter`` processes. Returns ``[{pid, cmdline,
-    hub_url}]``. Linux-only (reads ``/proc``); empty list elsewhere."""
+    """Scan ``/proc`` for ``hub_adapter`` processes. Returns ``[{pid, pgid,
+    cmdline, hub_url, age_s}]``. Linux-only (reads ``/proc``); empty list
+    elsewhere."""
     procfs = Path("/proc")
     found: list[dict[str, Any]] = []
     if not procfs.is_dir():
@@ -286,25 +358,96 @@ def _scan_hub_adapters() -> list[dict[str, Any]]:
             continue
         found.append({
             "pid": pid,
+            "pgid": _pgid_of(pid),
             "cmdline": cmd,
             "hub_url": _read_proc_environ(pid).get("AWM_HUB_URL", ""),
+            "age_s": _proc_age_s(pid),
         })
     return found
 
 
-async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
-    """Find and (unless ``dry_run``) SIGTERM→SIGKILL orphaned ``hub_adapter``
-    processes that target THIS gateway's origin but hold no live registry lease.
+# How long a lease-holder may sit without a ready control channel before the
+# reaper treats it as a zombie rather than a slow starter. Must exceed the
+# worst honest time-to-ready — which is why the adapter now registers and
+# signals ready BEFORE running slow initialisation (see AGENTS.md § the
+# ready-ASAP contract): a service that buffers during init is ready in
+# milliseconds, so anything still unready after this is genuinely stuck.
+_READY_GRACE_S = 90.0
 
-    The durable, single-command replacement for hand-crafted ``ps | awk | kill``
-    cleanup of dangling service instances (the orphan storm from repeated
-    respawn / ``awm dev shadow`` generations). Discrimination keys off each
-    process's ``AWM_HUB_URL`` reduced to ``host:port`` (the documented dev/prod
-    discriminator) — so reaping from prod (``:7819``) never touches the dev hub's
-    children (``:7821``) and vice-versa. A pid that currently holds a lease (a
-    healthy registered base) is never reaped, nor is the gateway's own pid. Kill
+# How often the gateway sweeps for orphans on its own. Recovery must not
+# depend on an operator noticing and typing `awm services reap`.
+_REAP_INTERVAL_S = 120.0
+
+
+def _protected_pids(records, lm, *, grace_s: float) -> set[int]:
+    """PIDs the reaper must never touch, from the live registry.
+
+    A lease is possession, not health. A holder is protected when it has a
+    ready control channel, when it is an overlay (``awm dev shadow`` owns its
+    own lifecycle and is never journaled or respawned), or when it took the
+    lease recently enough to still plausibly be starting. A holder that has
+    been unready past ``grace_s`` is the exact shape of the stale slot-holders
+    that turned the 2026-07-27 disconnect storm into a 25-minute outage: alive
+    enough to keep the slot, dead enough that every replacement was refused.
+
+    Returns the registry-known pids only. A service is a process *tree* — the
+    supervisor launches ``bash run.sh``, which execs ``mamba run``, which
+    forks the ``python -m awm.<svc>.hub_adapter`` child — and only one of those
+    pids is ever in the registry. Callers must widen this to the process
+    *group* (see :func:`_protected_pgids`) or the reaper will find the other
+    half of every healthy service tree and group-kill the whole thing.
+    """
+    from awm.gateway.hub import supervisor
+
+    protected: set[int] = set()
+    for rec in records:
+        if not rec.backend_pid or not lm.is_held(rec.service_id):
+            continue
+        if rec.is_overlay:
+            protected.add(rec.backend_pid)
+            continue
+        if supervisor.has_ready_control(rec.service_id):
+            protected.add(rec.backend_pid)
+            continue
+        held = lm.held_for(rec.service_id)
+        if held is None or held < grace_s:
+            protected.add(rec.backend_pid)
+    return protected
+
+
+def _protected_pgids(pids: set[int]) -> set[int]:
+    """Process groups spanned by ``pids``.
+
+    ``kill_pid_group`` kills by group, and each service is spawned into its own
+    session, so the group IS the unit of life and death here. Protecting a bare
+    pid is therefore not protection at all: the sibling process in the same
+    tree is an unprotected match, and reaping it takes the protected one down
+    with it.
+    """
+    out: set[int] = set()
+    for pid in pids:
+        pgid = _pgid_of(pid)
+        if pgid is not None:
+            out.add(pgid)
+    return out
+
+
+async def reap_orphans(*, dry_run: bool = False) -> dict[str, Any]:
+    """Find and (unless ``dry_run``) SIGTERM→SIGKILL orphaned ``hub_adapter``
+    processes that target THIS gateway's origin and hold no healthy lease.
+
+    Discrimination keys off each process's ``AWM_HUB_URL`` reduced to
+    ``host:port`` (the documented dev/prod discriminator) — so reaping from
+    prod (``:7819``) never touches the dev hub's children (``:7821``) and
+    vice-versa. The origin check runs before any kill decision, never after.
+    Healthy lease-holders, overlays, still-starting instances (see
+    :func:`_protected_pids`) and the gateway's own pid are never reaped. Kill
     escalation reuses the supervisor's ``kill_pid_group`` (SIGTERM, grace,
     SIGKILL), not a re-rolled signal dance.
+
+    Called both by the operator verb (``awm services reap``) and by the
+    gateway's own periodic sweep — the same code either way, so what an
+    operator can verify with ``--dry-run`` is exactly what runs unattended.
     """
     import asyncio as _asyncio
 
@@ -317,23 +460,33 @@ async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
     my_origin = _origin_of(supervisor.default_hub_url())
     me = os.getpid()
 
-    # PIDs that currently hold a live lease are healthy bases — never reap them.
-    live_pids = {
-        rec.backend_pid
-        for rec in await registry.list()
-        if rec.backend_pid and lm.is_held(rec.service_id)
-    }
+    protected = _protected_pids(await registry.list(), lm, grace_s=_READY_GRACE_S)
+    protected_groups = _protected_pgids(protected | {me})
 
     candidates: list[dict[str, Any]] = []
     for proc in _scan_hub_adapters():
-        if proc["pid"] == me or proc["pid"] in live_pids:
+        if proc["pid"] == me or proc["pid"] in protected:
+            continue
+        # Group, not pid: the registry knows one pid per service but the
+        # service is a tree, and the kill is a group kill either way.
+        if proc.get("pgid") is not None and proc["pgid"] in protected_groups:
             continue
         if _origin_of(proc["hub_url"]) != my_origin:
+            continue
+        # A process younger than the grace has not had time to register, so it
+        # holds no lease and would look exactly like an orphan. This matters
+        # now that the sweep is automatic rather than operator-invoked: without
+        # it, a service spawned moments before a tick would be killed
+        # mid-registration and the supervisor would respawn it into the same
+        # race. An unknowable age is treated as young — the reaper never
+        # guesses in the direction of killing.
+        age = proc.get("age_s")
+        if age is None or age < _READY_GRACE_S:
             continue
         candidates.append(proc)
 
     reaped: list[dict[str, Any]] = []
-    if not req.dry_run:
+    if not dry_run:
         loop = _asyncio.get_event_loop()
         for proc in candidates:
             await loop.run_in_executor(
@@ -342,11 +495,49 @@ async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
 
     return {
         "origin": my_origin,
-        "dry_run": req.dry_run,
+        "dry_run": dry_run,
         "count": len(candidates),
         "found": candidates,
         "reaped": reaped,
     }
+
+
+async def reap_loop() -> None:
+    """Periodic orphan sweep. Started once at gateway boot.
+
+    Never raises and never returns: it runs under ``spawn_supervised``, which
+    treats *both* as a defect worth logging at ERROR and respawning. Shutdown
+    skips the work rather than exiting the loop — the task is cancelled when
+    the process goes away.
+    """
+    import asyncio as _asyncio
+
+    from awm.gateway.hub import supervisor
+
+    while True:
+        await _asyncio.sleep(_REAP_INTERVAL_S)
+        if supervisor.is_shutting_down():
+            continue
+        try:
+            result = await reap_orphans()
+        except Exception:  # noqa: BLE001 — a sweep must never kill its loop
+            logging.getLogger("awm.gateway.ops").debug(
+                "orphan sweep failed", exc_info=True)
+            continue
+        if result["count"]:
+            logging.getLogger("awm.gateway.ops").warning(
+                "orphan sweep reaped %d stale hub_adapter process(es) on %s: %s",
+                result["count"], result["origin"],
+                [p["pid"] for p in result["reaped"]])
+
+
+async def _op_services_reap(req: ReapRequest) -> dict[str, Any]:
+    """Operator entry point for the orphan sweep — see :func:`reap_orphans`.
+
+    Kept as a thin wrapper so ``awm services reap [--dry-run]`` and the
+    gateway's own periodic sweep can never diverge.
+    """
+    return await reap_orphans(dry_run=req.dry_run)
 
 
 # ---------------------------------------------------------------------------

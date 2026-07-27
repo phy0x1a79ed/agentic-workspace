@@ -24,6 +24,9 @@ def build_sbatch(serve_id: str, model: ModelSpec, cfg: ClusterConfig,
     if cfg.partition:
         partition_line = f"#SBATCH --partition={cfg.partition}"
 
+    # Alliance clusters (fir) require a GPU type in the gres spec.
+    gres = f"gpu:{cfg.gpu_type}:{gpus}" if cfg.gpu_type else f"gpu:{gpus}"
+
     return f"""\
 #!/bin/bash
 #SBATCH --account={cfg.account}
@@ -32,7 +35,7 @@ def build_sbatch(serve_id: str, model: ModelSpec, cfg: ClusterConfig,
 #SBATCH --cpus-per-task={cpus}
 #SBATCH --mem={mem}G
 #SBATCH --time={hours}:00:00
-#SBATCH --gres=gpu:{gpus}
+#SBATCH --gres={gres}
 #SBATCH --job-name=hpcllm-{serve_id}
 #SBATCH --output={log_dir}/{serve_id}-%j.out
 #SBATCH --error={log_dir}/{serve_id}-%j.err
@@ -67,8 +70,9 @@ apptainer exec --nv --cleanenv \\
     --env HF_HOME="$SLURM_TMPDIR/hf_cache" \\
     --env HF_HUB_OFFLINE=1 \\
     --env TRANSFORMERS_OFFLINE=1 \\
+    --env LD_LIBRARY_PATH=/app \\
     "$SLURM_TMPDIR/llamacpp.sif" \\
-    llama-server \\
+    /app/llama-server \\
         --model "$SLURM_TMPDIR/model.gguf" \\
         --host 0.0.0.0 \\
         --port {port} \\

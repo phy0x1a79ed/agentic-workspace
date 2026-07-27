@@ -15,9 +15,21 @@ export interface TabState {
   collapsed: string[];      // collapsed folder paths
   left: boolean;            // notes panel open
   right: boolean;           // vocabulary panel open
+  leftW: number;            // notes panel width (px)
+  rightW: number;           // vocabulary panel width (px)
 }
 
-const DEFAULT: TabState = { last: null, collapsed: [], left: true, right: false };
+// Panel width clamps — kept here so readState and the drag handler agree.
+export const LEFT_MIN = 190, LEFT_MAX = 560, LEFT_DEFAULT = 268;
+export const RIGHT_MIN = 210, RIGHT_MAX = 520, RIGHT_DEFAULT = 304;
+
+const clamp = (n: unknown, lo: number, hi: number, dflt: number): number =>
+  typeof n === 'number' && isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+
+const DEFAULT: TabState = {
+  last: null, collapsed: [], left: true, right: false,
+  leftW: LEFT_DEFAULT, rightW: RIGHT_DEFAULT,
+};
 
 export function readState(): TabState {
   try {
@@ -29,6 +41,8 @@ export function readState(): TabState {
       collapsed: Array.isArray(s.collapsed) ? s.collapsed.filter((x: unknown) => typeof x === 'string') : [],
       left: s.left !== false,
       right: s.right === true,
+      leftW: clamp(s.leftW, LEFT_MIN, LEFT_MAX, LEFT_DEFAULT),
+      rightW: clamp(s.rightW, RIGHT_MIN, RIGHT_MAX, RIGHT_DEFAULT),
     };
   } catch {
     return { ...DEFAULT };

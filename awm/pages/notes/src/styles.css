@@ -26,6 +26,7 @@
   --nt-accent: #2f6b4f;
   --nt-accent-soft: rgba(47, 107, 79, 0.12);
   --nt-active-bg: rgba(47, 107, 79, 0.11);
+  --nt-select: rgba(47, 107, 79, 0.22);
   --nt-on-accent: #f8f9f4;
   --nt-live: #c2562f;
   --nt-live-soft: rgba(194, 86, 47, 0.14);
@@ -49,6 +50,9 @@
     --nt-accent: #74c096;
     --nt-accent-soft: rgba(116, 192, 150, 0.15);
     --nt-active-bg: rgba(116, 192, 150, 0.12);
+    /* Selection needs more presence on dark ink than the 0.15 accent-soft: a
+       clearer teal-green wash that stays legible under cream + accent text. */
+    --nt-select: rgba(116, 192, 150, 0.30);
     --nt-on-accent: #10120b;
     --nt-live: #ec8a5e;
     --nt-live-soft: rgba(236, 138, 94, 0.16);
@@ -69,6 +73,7 @@
   --nt-border: #d2d7c7; --nt-hover: #dde1d4;
   --nt-accent: #2f6b4f; --nt-accent-soft: rgba(47,107,79,0.12);
   --nt-active-bg: rgba(47,107,79,0.11); --nt-on-accent: #f8f9f4;
+  --nt-select: rgba(47,107,79,0.22);
   --nt-live: #c2562f; --nt-live-soft: rgba(194,86,47,0.14); --nt-danger: #b23b2e;
   --nt-input-bg: #fbfcf8; --nt-chip-bg: #eef1e8; --nt-code-bg: #e7ebdf;
 }
@@ -79,6 +84,7 @@
   --nt-border: #2c2f23; --nt-hover: #23261b;
   --nt-accent: #74c096; --nt-accent-soft: rgba(116,192,150,0.15);
   --nt-active-bg: rgba(116,192,150,0.12); --nt-on-accent: #10120b;
+  --nt-select: rgba(116,192,150,0.30);
   --nt-live: #ec8a5e; --nt-live-soft: rgba(236,138,94,0.16); --nt-danger: #e2705a;
   --nt-input-bg: #10120b; --nt-chip-bg: #20241a; --nt-code-bg: #20241a;
 }
@@ -96,17 +102,89 @@ body {
 /* ---- app shell -------------------------------------------------------- */
 .app { display: flex; height: 100vh; overflow: hidden; }
 
+/* Mobile-only backdrop behind an open drawer (hidden on desktop). */
+.scrim {
+  display: none;
+  position: fixed; inset: 0; z-index: 20;
+  border: 0; padding: 0; margin: 0;
+  background: rgba(10, 14, 8, 0.42);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* ---- themed native controls ------------------------------------------- */
+/* Checkboxes/radios (rendered markdown task-list boxes) follow the ink accent. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
+
+/* Text-selection highlight — an ink-green wash that fits the theme in both
+   modes (the browser default clashes, and is nearly invisible on dark ink). */
+::selection { background: var(--nt-select); }
+/* CodeMirror draws its own selection layer (.cm-selectionBackground) and ships a
+   default (#d7d4f0, an off-brand lavender that's especially wrong on dark ink).
+   Its injected StyleModule outranks the EditorView.theme rule, so override it
+   from global CSS with !important (CM's default isn't !important, so this wins). */
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground { background: var(--nt-select) !important; }
+
+/* Themed scrollbars — Firefox (scrollbar-*) + WebKit/Blink (::-webkit-*). The
+   CodeMirror scroller (.cm-scroller) is themed here too since these are global. */
+.tree-scroll, .trash, .vocab-scroll, .preview, .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nt-faint) transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--nt-border);
+  border-radius: 7px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--nt-faint);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
 .left, .right {
   display: flex;
   flex-direction: column;
   background: var(--nt-panel);
   flex: 0 0 auto;
   overflow: hidden;
-  transition: width 0.18s ease, opacity 0.18s ease;
 }
 .left { width: 268px; border-right: 1px solid var(--nt-border); }
 .right { width: 304px; border-left: 1px solid var(--nt-border); }
 .left.closed, .right.closed { width: 0; opacity: 0; }
+/* Width/opacity animate only AFTER first paint — otherwise a saved-closed panel
+   would visibly open (default) then collapse (cookie) on reload. And never while
+   dragging the resizer (the drag must track the pointer instantly). */
+.app.ready .left, .app.ready .right { transition: width 0.18s ease, opacity 0.18s ease; }
+.app.resizing .left, .app.resizing .right { transition: none; }
+/* While the window is being resized, snap the panels through the desktop↔mobile
+   layout swap instead of animating it — otherwise crossing the 680px breakpoint
+   with a closed panel flashes it open then slides it shut (the mobile drawer
+   transitions `transform`, which changes from the open position to off-screen at
+   the crossing). `!important` beats both the rule above and the mobile
+   `transition: transform` rule regardless of source order. */
+.app.vp-resizing .left, .app.vp-resizing .right { transition: none !important; }
+
+/* Drag handle on a panel's inner edge — resize + persist width. */
+.resizer {
+  flex: 0 0 auto;
+  width: 7px;
+  margin: 0 -3px;             /* overlap the border so it's easy to grab */
+  cursor: col-resize;
+  z-index: 3;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+.resizer::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+  background: transparent; transition: background 0.12s ease;
+}
+.resizer:hover::before, .app.resizing .resizer::before { background: var(--nt-accent); }
 
 .panel-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -151,14 +229,36 @@ body {
   border: 0; background: none; color: var(--nt-faint);
   font-size: 1rem; cursor: pointer; line-height: 1;
 }
-.sem-toggle {
-  display: flex; align-items: center; gap: 0.35rem;
-  padding: 0.4rem 0.95rem 0.2rem;
-  font-size: 0.72rem; color: var(--nt-faint);
-  font-family: var(--nt-mono);
+/* semantic-search toggle — a chip that echoes the .rail-btn.on / .seg-btn.on
+   "active = accent" affordance instead of a naked checkbox. */
+.chip-toggle {
+  align-self: flex-start;
+  margin: 0.4rem 0.95rem 0.2rem;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--nt-border);
+  background: var(--nt-surface);
+  color: var(--nt-text2);
+  font-family: var(--nt-sans); font-size: 0.72rem; font-weight: 600;
+  padding: 0.28rem 0.65rem; border-radius: 999px;
   cursor: pointer; user-select: none;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
-.sem-toggle input { accent-color: var(--nt-accent); }
+.chip-toggle:hover { border-color: var(--nt-accent); color: var(--nt-accent); }
+.chip-toggle.on {
+  background: var(--nt-accent-soft);
+  border-color: var(--nt-accent);
+  color: var(--nt-accent);
+}
+.chip-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--nt-faint);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.chip-toggle:hover .chip-dot { background: var(--nt-accent); }
+.chip-toggle.on .chip-dot {
+  background: var(--nt-accent);
+  box-shadow: 0 0 0 3px var(--nt-accent-soft);
+}
 
 .tree-scroll { flex: 1 1 auto; overflow-y: auto; padding: 0.35rem 0.35rem 0.85rem; }
 .empty-note {
@@ -226,6 +326,7 @@ body {
 }
 .rail-btn:hover { color: var(--nt-accent); border-color: var(--nt-accent); }
 .rail-btn.on { color: var(--nt-accent); border-color: var(--nt-accent); background: var(--nt-accent-soft); }
+.theme-btn { font-size: 1rem; line-height: 1; }
 
 .titlebox { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
 .path-input {
@@ -265,66 +366,57 @@ body {
   padding: 0.35rem 0.7rem; border-radius: 8px; cursor: pointer;
 }
 .mic-btn:hover { border-color: var(--nt-live); color: var(--nt-live); }
-.mic-glyph { font-size: 0.6rem; color: var(--nt-faint); }
-.mic-btn:hover .mic-glyph { color: var(--nt-live); }
+/* The dot doubles as a live VU meter: while listening its size + halo scale with
+   `--lvl` (0..1 mic RMS, set inline from micLevel). Idle it's a small faint dot. */
+.mic-glyph {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--nt-faint);
+  transition: transform 0.08s linear, box-shadow 0.08s linear, background-color 0.15s;
+}
+.mic-btn:hover .mic-glyph { background: var(--nt-live); }
 .mic-btn.connecting { color: var(--nt-live); border-color: var(--nt-live); }
+.mic-btn.connecting .mic-glyph { background: var(--nt-live); }
 .mic-btn.live {
   background: var(--nt-live); color: var(--nt-on-accent); border-color: var(--nt-live);
 }
-.mic-btn.live .mic-glyph { color: var(--nt-on-accent); animation: nt-pulse 1s ease-in-out infinite; }
+.mic-btn.live .mic-glyph {
+  background: var(--nt-on-accent);
+  transform: scale(calc(0.7 + var(--lvl, 0) * 1.7));
+  box-shadow: 0 0 0 calc(var(--lvl, 0) * 5px) color-mix(in oklab, var(--nt-on-accent) 32%, transparent);
+}
 
 .editor-wrap { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 
-/* Syntax-highlight overlay: a transparent <textarea> sits pixel-for-pixel over a
-   highlighted <pre>, so the caret + editing behaviour stay native while the
-   markdown source is coloured underneath. Both layers MUST share identical
-   typography + box metrics or the text drifts out of register. */
-.edit-stack { position: relative; flex: 1 1 auto; min-height: 0; }
-.editor-layer {
-  position: absolute; inset: 0;
-  margin: 0;
-  width: 100%; height: 100%;
-  box-sizing: border-box;
-  border: 0;
-  font-family: var(--nt-mono);
-  font-size: 0.94rem;
-  line-height: 1.75;
-  letter-spacing: 0;
-  tab-size: 2;
-  padding: 1.6rem clamp(1.1rem, 6vw, 4rem);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-}
-.editor-hl {
-  z-index: 0;
-  overflow: hidden;                 /* scroll is mirrored from the textarea */
-  background: var(--nt-surface);
-  color: var(--nt-text);
-  pointer-events: none;
-}
-.editor {
-  z-index: 1;
-  resize: none;
-  overflow-y: auto;
-  background: transparent;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  caret-color: var(--nt-text);
-  outline: none;
-}
-.editor::placeholder { color: var(--nt-faint); -webkit-text-fill-color: var(--nt-faint); }
-.editor::selection { background: var(--nt-accent-soft); }
+/* The editor is CodeMirror 6 (lib/editor.ts): it highlights markdown + fenced
+   code in place, auto-closes brackets, and continues list markup. Its own theme
+   — mapped to these --nt-* tokens — lives in editor.ts; here the mount host just
+   needs a bounded, scrollable box (CM owns the internal scroller). */
+.cm-host { flex: 1 1 auto; min-height: 0; }
+.cm-host .cm-editor { height: 100%; }
 
-/* markdown source tokens (highlight.js markdown grammar), themed via tokens */
-.markdown-hl .hljs-section { color: var(--nt-accent); font-weight: 700; }
-.markdown-hl .hljs-strong { color: var(--nt-text); font-weight: 700; }
-.markdown-hl .hljs-emphasis { color: var(--nt-text2); font-style: italic; }
-.markdown-hl .hljs-bullet { color: var(--nt-accent); }
-.markdown-hl .hljs-quote { color: var(--nt-text2); font-style: italic; }
-.markdown-hl .hljs-code { color: var(--nt-live); }
-.markdown-hl .hljs-link, .markdown-hl .hljs-string { color: var(--nt-accent); }
-.markdown-hl .hljs-symbol, .markdown-hl .hljs-attr { color: var(--nt-text2); }
+/* Spellcheck right-click menu (spellcheck.ts renders it to <body>). */
+.nt-spell-menu {
+  position: fixed; z-index: 9999;
+  min-width: 176px; max-width: 264px;
+  background: var(--nt-surface);
+  border: 1px solid var(--nt-border);
+  border-radius: 9px;
+  box-shadow: var(--nt-shadow);
+  padding: 0.28rem;
+  display: flex; flex-direction: column;
+  font-family: var(--nt-sans); font-size: 0.82rem;
+}
+.nt-spell-item {
+  text-align: left; border: 0; background: none;
+  color: var(--nt-text);
+  padding: 0.34rem 0.55rem; border-radius: 6px;
+  cursor: pointer; font: inherit;
+}
+.nt-spell-item:hover { background: var(--nt-hover); color: var(--nt-accent); }
+.nt-spell-action { color: var(--nt-text2); font-size: 0.78rem; }
+.nt-spell-empty { padding: 0.34rem 0.55rem; color: var(--nt-faint); font-style: italic; }
+.nt-spell-sep { height: 1px; background: var(--nt-border); margin: 0.28rem 0.15rem; }
 
 .preview {
   flex: 1 1 auto; overflow-y: auto;
@@ -332,29 +424,6 @@ body {
   padding: 1.7rem clamp(1.1rem, 6vw, 4rem);
 }
 .preview-empty { color: var(--nt-faint); font-style: italic; font-family: var(--nt-sans); }
-
-/* dictation live strip */
-.dictation-bar {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.55rem clamp(1.1rem, 6vw, 4rem);
-  background: var(--nt-live-soft);
-  border-top: 1px solid color-mix(in oklab, var(--nt-live) 40%, transparent);
-  backdrop-filter: blur(2px);
-}
-.pulse {
-  flex: 0 0 auto;
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--nt-live);
-  transform: scale(calc(0.7 + var(--lvl, 0) * 1.6));
-  box-shadow: 0 0 0 calc(var(--lvl, 0) * 8px) var(--nt-live-soft);
-  transition: transform 0.08s linear, box-shadow 0.08s linear;
-}
-.dictation-text {
-  font-family: var(--nt-serif); font-style: italic; font-size: 0.9rem;
-  color: color-mix(in oklab, var(--nt-live) 78%, var(--nt-text));
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 
 /* ---- status bar ------------------------------------------------------- */
 .statusbar {
@@ -385,6 +454,8 @@ body {
 .save-state { font-family: var(--nt-sans); font-weight: 600; color: var(--nt-faint); }
 .save-state[data-state="synced"] { color: var(--nt-accent); }
 .save-state[data-state="saving"] { color: var(--nt-text2); }
+.save-state[data-state="savedLocal"] { color: var(--nt-text2); }
+.save-state[data-state="offline"] { color: var(--nt-live); font-weight: 700; }
 .save-state[data-state="editing"] { color: var(--nt-live); }
 
 .live-pill {
@@ -408,7 +479,9 @@ body {
 .vocab-scroll { flex: 1 1 auto; overflow-y: auto; padding: 0.5rem 0.85rem 1rem; }
 
 /* ---- rendered markdown ------------------------------------------------ */
-.markdown { color: var(--nt-text); font-family: var(--nt-serif); line-height: 1.72; max-width: 46rem; margin: 0 auto; }
+/* No narrow column cap — the preview fills its pane (matching the editor), with
+   the surrounding .preview padding providing side breathing room. */
+.markdown { color: var(--nt-text); font-family: var(--nt-serif); line-height: 1.72; max-width: none; margin: 0; }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   font-family: var(--nt-sans); line-height: 1.25; margin: 1.8em 0 0.6em; color: var(--nt-text);
@@ -441,15 +514,77 @@ body {
 .markdown th { background: var(--nt-code-bg); font-family: var(--nt-sans); }
 .markdown img { max-width: 100%; border-radius: 6px; }
 
-@keyframes nt-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
-
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
 
-/* ---- responsive: collapse panels on narrow screens -------------------- */
-@media (max-width: 860px) {
-  .left { width: 220px; }
-  .right { width: 240px; }
-  .filepath code { max-width: 32vw; }
+/* ---- responsive: overlay drawers + title reflow on phones ------------- */
+@media (max-width: 680px) {
+  /* Side panels become fixed overlay drawers so opening one no longer squeezes
+     the editor down to nothing — it slides over the content instead. The
+     !important beats the inline drag-width applied in the markup. */
+  .left, .right {
+    position: fixed; top: 0; bottom: 0; z-index: 30;
+    width: min(86vw, 340px) !important;
+    opacity: 1 !important;
+    box-shadow: var(--nt-shadow);
+  }
+  .left  { left: 0;  transform: translateX(0); }
+  .right { right: 0; transform: translateX(0); }
+  .left.closed  { transform: translateX(-100%); }
+  .right.closed { transform: translateX(100%); }
+  .app.ready .left, .app.ready .right,
+  .app.resizing .left, .app.resizing .right { transition: transform 0.22s ease; }
+  .resizer { display: none; }
+
+  /* Backdrop visible while a drawer is open — tap it to dismiss. */
+  .scrim { display: block; }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+
+  /* Topbar reflow: the title/path drops to its own full-width row so the
+     toolbar (view toggle + mic + vocab) can never crush it. */
+  .topbar { flex-wrap: wrap; row-gap: 0.45rem; column-gap: 0.5rem; padding: 0.5rem 0.7rem; }
+  .titlebox { order: 3; flex: 1 1 100%; }
+  .tools { margin-left: auto; }
+  .path-input { font-size: 0.95rem; }
+  .crumbs { display: none; }              /* reclaim vertical space on a phone */
+
+  .filepath code { max-width: 40vw; }
+  .statusbar { padding: 0.4rem 0.7rem; }
+
+  /* ---- document-level scroll + auto-hiding chrome (phones) --------------
+     On desktop the shell is locked to the viewport (`.app` height:100vh /
+     overflow:hidden) and the note scrolls inside CodeMirror's OWN scroller. A
+     mobile browser only collapses its URL/nav bar on ROOT-document scroll, so
+     here we unlock the shell and let the BODY scroll instead: CM + preview grow
+     to their content, and the top bar / footer pin to the viewport edges and
+     slide out of the way on scroll-down (App.svelte toggles .chrome-hidden). */
+  .app { height: auto; min-height: 100dvh; overflow: visible; }
+  .center { display: block; }             /* stack; the document is the scroller */
+
+  /* CodeMirror + preview: grow to content, no inner scrollbar. The !important
+     beats CM's injected StyleModule (`height:100%` / `.cm-scroller overflow:auto`
+     from editor.ts), same tactic as the .cm-selectionBackground override above. */
+  .cm-host, .cm-host .cm-editor { height: auto !important; }
+  .cm-host .cm-scroller { overflow: visible !important; }
+  .preview { overflow: visible; }
+  .editor-wrap { padding-bottom: 2.6rem; } /* keep the last lines clear of the footer */
+
+  /* Top bar pins to the top, footer to the bottom; both are opaque so scrolling
+     content passes cleanly behind them, and both slide away when .chrome-hidden
+     is set. Sticky (not fixed) reserves their flow space and behaves better with
+     the soft keyboard. env() honors notch / home-indicator insets. */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--nt-bg);
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    transition: transform 0.22s ease;
+  }
+  .statusbar {
+    position: sticky; bottom: 0; z-index: 10;
+    padding-bottom: max(0.4rem, env(safe-area-inset-bottom));
+    transition: transform 0.22s ease;
+  }
+  .app.chrome-hidden .topbar    { transform: translateY(-100%); }
+  .app.chrome-hidden .statusbar { transform: translateY(100%); }
 }

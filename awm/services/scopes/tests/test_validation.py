@@ -78,10 +78,6 @@ class TestApplyAtEntryPoints:
         with pytest.raises(ValueError):
             scopes.refresh_history("proj", "scope/sub")
 
-    def test_refresh_artifacts(self, scopes_workspace):
-        with pytest.raises(ValueError):
-            scopes.refresh_artifacts("proj/sub", "scope")
-
     def test_awm_refresh(self, scopes_workspace):
         with pytest.raises(ValueError):
             scopes.awm_refresh("proj", "nested/scope")

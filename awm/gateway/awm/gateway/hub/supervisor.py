@@ -36,6 +36,39 @@ _RECONNECT_WINDOW_S = 10.0
 # to respawn the same crash.
 _SELF_HEAL_INTERVAL_S = 45.0
 
+# Crash-loop breaker. A service is respawned at most ``_RESPAWN_BUDGET`` times
+# WITHOUT REACHING READY in between; past that the gateway stops respawning it,
+# logs at ERROR, and leaves it down until an operator runs
+# ``awm services start|restart``.
+#
+# Counting respawns-since-last-ready rather than respawns-per-unit-time is
+# deliberate. A pure rolling window has to be tuned against the respawn
+# cadence, and the cadence is not fixed: the disconnect watchdog fires on a
+# crash, the self-heal sweep every 45s, and a service that leaves a zombie
+# behind is skipped by some sweeps entirely. Tuned wrong, a *slower* crash loop
+# escapes the bound completely, which is exactly what a 300s window did to a
+# fixture that crash-looped for ten minutes without tripping. Reaching ready is
+# the only honest evidence a respawn worked.
+#
+# ``_RESPAWN_WINDOW_S`` remains as a decay valve so a service that crashes once
+# a day never accumulates its way into the breaker.
+_RESPAWN_BUDGET = 5
+_RESPAWN_WINDOW_S = 3600.0
+
+# name -> monotonic timestamps of respawn attempts since the service was last
+# seen ready (also trimmed to the decay window).
+_respawn_history: dict[str, list[float]] = {}
+# name -> why the breaker tripped. Presence means "do not respawn this".
+# In-memory on purpose: a gateway restart is an operator action, and the same
+# operator gesture that would clear the breaker also restarts the gateway.
+_breaker: dict[str, str] = {}
+
+# name -> the single in-flight disconnect watchdog. Deduplication lives here
+# because the control-WS disconnect hook fires once per close, and without it N
+# rapid disconnects became N concurrent watchdogs, each of which respawned and
+# was rejected and scheduled another. That is the amplifier.
+_disconnect_watchdogs: dict[str, "asyncio.Task"] = {}
+
 # Set true while the gateway is tearing down (graceful lifespan shutdown). The
 # crash-respawn watchdog checks this so it does not fight the teardown by
 # resurrecting services the gateway is deliberately stopping. Set as early as
@@ -51,6 +84,83 @@ def set_shutting_down(value: bool) -> None:
 
 def is_shutting_down() -> bool:
     return _shutting_down
+
+
+# ---------------------------------------------------------------------------
+# Crash-loop breaker
+# ---------------------------------------------------------------------------
+
+
+def breaker_reason(name: str) -> str | None:
+    """Why ``name`` is being left down, or ``None`` if it is not tripped."""
+    return _breaker.get(name)
+
+
+def clear_breaker(name: str) -> None:
+    """Forget a service's respawn history and any tripped breaker.
+
+    The operator gesture. ``awm services start`` / ``restart`` call this, which
+    is the ONLY way a tripped service comes back — there is no auto-retry, so a
+    wedged service stays visibly wedged instead of flapping quietly forever.
+    """
+    _respawn_history.pop(name, None)
+    if _breaker.pop(name, None) is not None:
+        log.info("respawn breaker cleared for service %s", name)
+    update_service_journal_entry(
+        name, {"breaker_tripped": False, "breaker_reason": ""}, create=False)
+
+
+def reset_breaker_state() -> None:
+    """Drop all respawn history, tripped breakers, and pending watchdogs.
+
+    Test-support: this state is module-global and would otherwise leak across
+    cases, so a file that respawns the same service name more than
+    ``_RESPAWN_BUDGET`` times would start tripping the breaker on itself.
+    """
+    _respawn_history.clear()
+    _breaker.clear()
+    for task in list(_disconnect_watchdogs.values()):
+        task.cancel()
+    _disconnect_watchdogs.clear()
+
+
+def note_service_ready(name: str) -> None:
+    """A service reached ready — forget its respawn history.
+
+    Called from the control-WS ``ready`` handler. This is what makes the budget
+    mean "respawns that did not work" rather than "respawns per unit time": a
+    service that crashes, is respawned, and comes up healthy has spent nothing.
+    """
+    if _respawn_history.pop(name, None):
+        log.debug("service %s reached ready; respawn history cleared", name)
+
+
+def _note_respawn(name: str) -> bool:
+    """Record a respawn attempt; ``False`` if the breaker forbids it.
+
+    The single choke point — every respawn path (boot reconcile, the disconnect
+    watchdog, the self-heal sweep) goes through ``_respawn_from_journal``, so
+    counting here means no path can quietly bypass the budget.
+    """
+    if name in _breaker:
+        return False
+    now = _time.monotonic()
+    hist = [t for t in _respawn_history.get(name, []) if now - t < _RESPAWN_WINDOW_S]
+    hist.append(now)
+    _respawn_history[name] = hist
+    if len(hist) > _RESPAWN_BUDGET:
+        reason = (f"{len(hist)} respawns without reaching ready "
+                  f"(budget {_RESPAWN_BUDGET})")
+        _breaker[name] = reason
+        log.error(
+            "RESPAWN BREAKER TRIPPED for service %s: %s. Leaving it DOWN. "
+            "Fix the service, then `awm services restart %s` to clear.",
+            name, reason, name)
+        update_service_journal_entry(
+            name, {"breaker_tripped": True, "breaker_reason": reason},
+            create=False)
+        return False
+    return True
 
 
 def _services_journal_path() -> Path:
@@ -82,13 +192,25 @@ def write_service_journal(state: dict[str, dict]) -> None:
     tmp.replace(path)
 
 
-def update_service_journal_entry(name: str, patch: dict) -> None:
+def update_service_journal_entry(name: str, patch: dict, *,
+                                 create: bool = True) -> None:
     """Read-modify-write one service entry. Called on register, control-WS
     open, control-WS close. Not atomic across writers — one event loop
     owns the supervisor so concurrent updates from the hub itself can't
     race; external `awm services list` reads are tolerant of partial
-    writes (tmp-then-rename above)."""
+    writes (tmp-then-rename above).
+
+    ``create=False`` makes this update-if-exists, which matters on the
+    control-WS teardown path: ``awm services stop`` deletes the entry FIRST as
+    its deliberate-stop signal, then blocks for seconds killing the process
+    group — and the dying service's cleanup runs inside that window. Creating
+    the entry there RESURRECTS it as a stub with no pid and no start command;
+    the disconnect watchdog re-registers from that stub, and ``start`` then
+    refuses forever with "already-running".
+    """
     state = load_service_journal()
+    if not create and name not in state:
+        return
     entry = state.get(name, {})
     entry.update(patch)
     entry.setdefault("name", name)
@@ -229,6 +351,28 @@ def spawn_and_journal(name: str, start_cmd: list[str], cwd: str,
     return new_pid
 
 
+def _resolve_identity(name: str, entry: dict) -> tuple[list[str], str]:
+    """The ``(start_cmd, cwd)`` to (re)launch a journaled service with.
+
+    **Filesystem discovery wins.** If ``name`` is a real service folder under
+    *this* gateway's ``services_root()``, its discovered ``start_cmd`` / ``cwd``
+    are authoritative — a stale or clobbered journal (wrong worktree from a
+    cross-tree contamination, or an empty ``start_cmd`` from a bad self-register)
+    can never send the service to the wrong tree or silently strand it. Only a
+    *non-discoverable* registration — an external service that registered over
+    the wire with no folder here — falls back to the journal entry.
+
+    This mirrors the existing precedent that already re-derives ``hub_url`` from
+    live config instead of trusting the journal field (see
+    ``_respawn_from_journal``).
+    """
+    from awm.gateway.hub import discovery as _discovery
+    spec = _discovery.discover_service(name)
+    if spec is not None:
+        return list(spec.start_cmd), spec.cwd
+    return list(entry.get("start_cmd") or []), entry.get("cwd") or ""
+
+
 async def _reregister_record(name: str, entry: dict):
     """Re-create the registry record for a journaled service so its control-WS
     reconnect (carrying the journaled ``service_id``) is accepted.
@@ -238,17 +382,22 @@ async def _reregister_record(name: str, entry: dict):
     ``registry.register_service`` directly, bypassing the endpoint's
     duplicate-instance guard (T3) — that guard is for *new* instances, not for
     rehydrating a record we already own.
+
+    Identity (``start_cmd`` / ``cwd``) comes from ``_resolve_identity`` so the
+    record carries the *discovered* values for a discoverable service, not
+    whatever a contaminated journal recorded.
     """
     from awm.gateway.hub.registry import get_registry
     registry = get_registry()
     sid = entry.get("service_id")
     prefix = entry.get("prefix") or f"/svc/{name}"
+    start_cmd, cwd = _resolve_identity(name, entry)
     try:
         rec = await registry.register_service(
             name, prefix,
             pid=entry.get("last_pid"),
-            start_cmd=list(entry.get("start_cmd") or []),
-            cwd=entry.get("cwd") or "",
+            start_cmd=list(start_cmd),
+            cwd=cwd,
         )
         # Restore the journaled service_id so the service hits the same control
         # URL it had before the restart. registry.get_by_id reads service_id off
@@ -269,14 +418,27 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
 
     The caller is responsible for the higher-level gating (reconnected? enabled?
     still journaled?); this only does the kill-and-spawn, including the
-    no-``start_cmd`` guard.
+    no-``start_cmd`` guard and the crash-loop breaker (``_note_respawn``) that
+    every respawn path shares.
+
+    Identity is resolved through ``_resolve_identity`` (discovery wins), so a
+    discoverable service always respawns from *this* tree even if the journal
+    names a wrong ``cwd`` or an empty ``start_cmd``; the resolved identity is
+    written back into the journal, so a contaminated entry self-corrects on the
+    first respawn (this is what retires the manual ``rm services.json``). Only a
+    non-discoverable external registration can still hit the no-``start_cmd``
+    guard.
     """
+    if not _note_respawn(name):
+        log.info("not respawning service %s: %s", name, _breaker.get(name))
+        return
     sid = entry.get("service_id")
     last_pid = entry.get("last_pid")
-    start_cmd = entry.get("start_cmd") or []
+    start_cmd, cwd = _resolve_identity(name, entry)
     if not start_cmd:
         log.warning(
-            "service %s did not reconnect and has no start_cmd; leaving", name)
+            "service %s did not reconnect and has no start_cmd "
+            "(not discoverable); leaving", name)
         return
     if last_pid:
         log.info("service %s silent; killing stale pid=%d", name, last_pid)
@@ -292,19 +454,25 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
         new_pid = spawn_service(
             name,
             start_cmd,
-            entry.get("cwd") or "",
+            cwd,
             {
                 "AWM_HUB_URL": hub_url,
                 "AWM_SERVICE_NAME": name,
                 "AWM_SERVICE_ID": sid or "",
             },
         )
-        update_service_journal_entry(name, {"last_pid": new_pid})
+        # Write back the resolved identity (not just the PID) so a stale/wrong
+        # journal entry self-heals to the tree the gateway actually launched.
+        update_service_journal_entry(name, {
+            "last_pid": new_pid,
+            "start_cmd": list(start_cmd),
+            "cwd": cwd,
+        })
     except (OSError, ValueError) as exc:
         log.error("respawn failed for service %s: %s", name, exc)
 
 
-def _has_ready_control(sid: str | None) -> bool:
+def has_ready_control(sid: str | None) -> bool:
     """True iff the service holds an open, ready control channel."""
     if not sid:
         return False
@@ -354,9 +522,14 @@ async def _self_heal_once() -> None:
             continue
         if not _discovery.is_enabled(name):
             continue
+        if name in _breaker:
+            # The breaker is authoritative for BOTH respawn paths. Checked here
+            # as well as inside _respawn_from_journal so a tripped service does
+            # not re-log a wedge warning on every 45s sweep.
+            continue
         if pid_alive(entry.get("last_pid")):
             continue
-        if _has_ready_control(entry.get("service_id")):
+        if has_ready_control(entry.get("service_id")):
             continue
         log.warning(
             "self-heal: service %s wedged (dead pid=%s, no ready control); "
@@ -368,9 +541,13 @@ async def self_heal_loop() -> None:
     """Periodic wedged-service watchdog, started once at gateway boot.
 
     Runs forever on ``_SELF_HEAL_INTERVAL_S``; each tick is a best-effort sweep
-    that never lets an exception kill the loop."""
-    while not is_shutting_down():
+    that never lets an exception kill the loop. It also never *returns* —
+    ``spawn_supervised`` (which starts it) reads a return as a defect, so
+    shutdown skips the tick's work instead of exiting the loop."""
+    while True:
         await asyncio.sleep(_SELF_HEAL_INTERVAL_S)
+        if is_shutting_down():
+            continue
         try:
             await _self_heal_once()
         except Exception:
@@ -401,7 +578,7 @@ async def reconcile_journaled_services() -> None:
     from awm.gateway.hub import discovery as _discovery
     for name in list(journal.keys()):
         entry = journal.get(name) or {}
-        if _has_ready_control(entry.get("service_id")):
+        if has_ready_control(entry.get("service_id")):
             log.info("service %s reconnected within window", name)
             continue
         if not _discovery.is_enabled(name):
@@ -425,13 +602,23 @@ async def supervise_disconnect(name: str) -> None:
     * journal entry present — ``awm services stop`` removes the entry *before*
       killing the process, so a deliberate stop is skipped.
     * ``discovery.is_enabled`` — a disabled service stays down.
+    * the crash-loop breaker — a service that has burned its respawn budget
+      stays down until an operator clears it.
     * not already reconnected — a genuine quick reconnect is a no-op.
+
+    Schedule it through :func:`schedule_disconnect_watchdog`, never directly:
+    one watchdog per service at a time is what keeps a burst of disconnects
+    from turning into a burst of respawns.
     """
     from awm.gateway.hub import discovery as _discovery
     if is_shutting_down():
         return
     entry = load_service_journal().get(name)
     if not entry or not _discovery.is_enabled(name):
+        return
+    if name in _breaker:
+        log.info("service %s disconnected but its respawn breaker is tripped "
+                 "(%s); leaving it down", name, _breaker[name])
         return
 
     # Re-register so the service's own quick reconnect (same service_id) is
@@ -448,12 +635,33 @@ async def supervise_disconnect(name: str) -> None:
     entry = load_service_journal().get(name)
     if not entry or not _discovery.is_enabled(name):
         return
-    if _has_ready_control(entry.get("service_id")):
+    if has_ready_control(entry.get("service_id")):
         log.info("service %s reconnected after disconnect; not respawning", name)
         return
     log.info("service %s did not reconnect within %.0fs; respawning",
              name, _RECONNECT_WINDOW_S)
     await _respawn_from_journal(name, entry)
+
+
+def schedule_disconnect_watchdog(name: str) -> None:
+    """Start :func:`supervise_disconnect` for ``name``, at most one at a time.
+
+    The control-WS disconnect hook fires once per close. Without this the hook
+    spawned an unbounded fan of watchdogs: every one slept the reconnect window
+    and then respawned, and each respawn that lost the race to the incumbent's
+    slot disconnected again and scheduled yet another. A second disconnect while
+    a watchdog is already pending is a no-op — the pending one re-reads the
+    journal after its window and will make the right call anyway.
+    """
+    live = _disconnect_watchdogs.get(name)
+    if live is not None and not live.done():
+        log.debug("disconnect watchdog for %s already in flight; skipping", name)
+        return
+    task = asyncio.create_task(supervise_disconnect(name))
+    _disconnect_watchdogs[name] = task
+    task.add_done_callback(
+        lambda t, n=name: _disconnect_watchdogs.pop(n, None)
+        if _disconnect_watchdogs.get(n) is t else None)
 
 
 async def bootstrap_discovered_services() -> None:
@@ -490,3 +698,32 @@ async def bootstrap_discovered_services() -> None:
             log.error("bootstrap spawn failed for %s: %s", spec.name, exc)
             continue
         log.info("bootstrap: spawned %s pid=%d", spec.name, new_pid)
+
+
+async def bootstrap_discovered_pages() -> None:
+    """Boot-time page bootstrap: register every discovered page bundle
+    (``awm/pages/<name>`` with a built ``dist/``) as a ``/ui/<name>`` base.
+
+    Pages are static and hold no control WS, so there is nothing to journal or
+    reconcile — a page base is pure in-RAM routing state that a restart drops.
+    Unlike a service, a page can never re-register itself, so re-deriving it
+    from the filesystem on every boot is the *only* thing that keeps ``/ui/...``
+    pages alive across a ``systemctl restart``.
+
+    Idempotent: ``register_page`` replaces a same-name base in place, so a
+    re-run is harmless. A prefix already owned by a *different* name is logged
+    and skipped — one bad page never aborts the loop.
+    """
+    from awm.gateway.hub import discovery
+    from awm.gateway.hub.registry import PrefixConflict, get_registry
+
+    registry = get_registry()
+    for spec in discovery.discover_pages():
+        try:
+            await registry.register_page(spec.name, spec.prefix, spec.dist_dir)
+        except PrefixConflict as exc:
+            log.warning("bootstrap page %s: %s; skipping", spec.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            log.error("bootstrap page %s failed: %s", spec.name, exc)
+        else:
+            log.info("bootstrap: page %s → %s", spec.name, spec.prefix)

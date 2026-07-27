@@ -28,11 +28,13 @@ def _isolate(awm_workspace, monkeypatch):
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
     supervisor.set_shutting_down(False)
+    supervisor.reset_breaker_state()
     monkeypatch.setattr(supervisor, "_RECONNECT_WINDOW_S", 0.1)
     yield
     reg_mod._singleton = reg_mod.Registry()
     rpc_mod._channels.clear()
     supervisor.set_shutting_down(False)
+    supervisor.reset_breaker_state()
 
 
 def _journal(name="tts", **extra):

@@ -2,7 +2,7 @@
 
 *Internal architecture reference for agents working ON awm itself — the gateway, the registry/supervisor, the RPC envelope layer, the operations/catalog generation layer, the feature-service contract, and the frontend component system. Auto-injected only when the agent's cwd contains this file at its root: `projects/awm/*` scopes inherit it via `.bare`-worktree sharing; other projects' agents never see it.*
 
-For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
+For workspace structure (paths, MCP tools, project/scope discovery, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
 ## Architecture overview
 
@@ -61,8 +61,10 @@ The gateway↔service lifecycle covers all start/stop/crash directions determini
 - **Duplicate rejection — bases only (`api/hub.py::service_register`).** A second *base* instance registering under a name whose record still holds a **live** control-WS lease gets `409` and stands down; the incumbent is untouched. Takeover of a **dead** (lease-not-held) record still replaces in place. Respawn-by-sid skips `_register` entirely. (This is the base-takeover guard; *overlays* follow last-connect-wins instead — see next.)
 - **Shadow eviction — last connect wins (`registry.replace_overlays` + `lease.signal_evicted`).** An overlay register (`/hub/service/register` with `overlay=true`, or `/hub/shadow/register` for pages) routes through `registry.replace_overlays`, which pops every incumbent overlay on the prefix (keeping the base) and installs the newcomer as the sole overlay — so a duplicate overlay name evicts the incumbent rather than 409ing (the old `PrefixConflict`-on-duplicate-name is gone; only a collision with the **base** name still 409s). Each evicted overlay is staged a `(reason, evictor)` notice via `lease.signal_evicted`, which sets its lease's disconnect `Event`; when the held WS handler unwinds it reads the notice with `take_eviction` and closes with code **`4410`** + a 123-byte-clamped `evicted by <origin>: a newer shadow connected` reason. Client side: the `gatewayclient` adapter maps `4410 → GiveUp(reason)` (logged by `_run_target`); the `awm dev shadow` page-lease holder (`cli._hold_one_lease`) parses it and raises `_ShadowEvicted` to tear the whole shadow stack down. The "who" (`origin`) is `"<name> @ <worktree>"`, threaded from the CLI via `AWM_SERVICE_ORIGIN` (services) / the shadow-register `origin` field (pages).
 - **Graceful teardown (`server.py`).** On SIGTERM/SIGINT the gateway drains its services **in-band**, then force-kills any straggler, then clears the journal so the next boot bootstraps clean. The drain is one reusable `server._drain_services()` coroutine. In-band delivery works via a **loop-level signal override** installed at lifespan startup that takes ownership of SIGTERM/SIGINT *before* uvicorn's own handler, so the gateway delivers the `{"kind":"shutdown"}` frame over each live control WS **while it is still open** — each service stands itself down, drops its lease, and exits. The override captures uvicorn's `Server` off `signal.getsignal(sig).__self__` — **this uvicorn (0.x) registers `signal.signal(sig, server.handle_exit)`, NOT `loop.add_signal_handler`**, so a `loop._signal_handlers` capture finds nothing; `getsignal` is the correct seam — then installs `loop.add_signal_handler(sig, _on_signal)` (works on uvloop too) which drains then flips `server.should_exit`. A second signal force-exits (operator escape hatch). If the Server can't be captured (TestClient / non-main-thread) it falls back to a flag-only wrapper and the drain runs from the lifespan-shutdown backstop. **Force-kill is the backstop, not the primary mechanism** — it fires only for a straggler whose lease is still held after the ~8s grace window, or whose process is alive while its lease is already gone.
-- **Crash-respawn watchdog (`supervisor.supervise_disconnect` + `hub.py` disconnect hook).** An unexpected control-WS disconnect schedules a watchdog: re-register the record (so a quick self-reconnect is accepted), wait `_RECONNECT_WINDOW_S` (10s), respawn from the journal if still silent. Gated on not-shutting-down + journal-entry-present + enabled + not-reconnected. `awm services stop` drops the journal entry **before** killing, so a deliberate stop is never respawned. Two independent 10s windows exist — the service's give-up deadline and the gateway's reconnect/respawn window (service-side vs gateway-side authority).
-- **Orphan reaper backstop (`gateway_ops.py`).** `awm services reap` scans `/proc` for `awm.<svc>.hub_adapter` processes whose `AWM_HUB_URL` origin (`host:port`) matches this gateway and which hold **no** live registry lease, then SIGTERM→SIGKILL via `supervisor.kill_pid_group`. `--dry-run` lists only. Origin-keyed, so a prod reap (`:7819`) never touches the dev hub's children (`:7821`); never reaps a live-lease holder or the gateway's own pid.
+- **Crash-respawn watchdog (`supervisor.schedule_disconnect_watchdog` + `hub.py` disconnect hook).** An unexpected control-WS disconnect schedules a watchdog: re-register the record (so a quick self-reconnect is accepted), wait `_RECONNECT_WINDOW_S` (10s), respawn from the journal if still silent. Gated on not-shutting-down + journal-entry-present + enabled + not-reconnected + breaker-not-tripped. `awm services stop` drops the journal entry **before** killing, so a deliberate stop is never respawned. Two independent 10s windows exist — the service's give-up deadline and the gateway's reconnect/respawn window (service-side vs gateway-side authority). **Schedule through `schedule_disconnect_watchdog`, never `create_task(supervise_disconnect(...))`** — one watchdog per service at a time is what stops a burst of disconnects becoming a burst of respawns.
+- **Respawn is bounded — the crash-loop breaker (`supervisor._note_respawn`).** Every respawn path (boot reconcile, disconnect watchdog, self-heal sweep) funnels through `_respawn_from_journal`, which counts **respawns that did not reach ready** (`_RESPAWN_BUDGET`; reaching ready clears the count, and `_RESPAWN_WINDOW_S` is only a slow decay valve). Counting per unit time instead ties the bound to the respawn cadence — and the cadence varies (watchdog vs 45s sweep, ticks skipped because the corpse is a zombie), so a *slower* crash loop escaped a 300s window entirely. Past the budget the gateway **stops respawning**, logs at ERROR, annotates the journal entry, and shows `breaker-tripped` in `awm services list`. There is deliberately **no auto-retry**: `awm services start|restart` is the only way back, so a wedged service stays visibly wedged instead of flapping. A previously self-recovering (if noisy) failure now needs an operator — that is the point, and the ERROR log is the only notification.
+- **Orphan reaper (`gateway_ops.reap_orphans`).** Scans `/proc` for `awm.<svc>.hub_adapter` processes whose `AWM_HUB_URL` origin (`host:port`) matches this gateway and which hold no *healthy* lease, then SIGTERM→SIGKILL via `supervisor.kill_pid_group`. Runs both on a timer (`reap_loop`, started under `spawn_supervised`) and on demand as `awm services reap [--dry-run]` — same code, so the dry run shows exactly what runs unattended. **A lease is possession, not health:** a holder is spared only if it has a ready control channel, is an overlay, or took the lease inside `_READY_GRACE_S`. A holder unready past that grace is a corpse and is reaped, which is what unsticks a name whose slot a zombie is squatting. Processes younger than the grace are spared too (mid-registration they have no lease and no record); an unknowable age counts as young — the reaper never guesses toward killing. The origin check runs before any kill decision, so a prod sweep can't touch a dev sandbox's children. **Sparing is by process *group*, never by pid:** a service is a tree (`run.sh` → `mamba run` → `python -m awm.<svc>.hub_adapter`), every process in it matches the scan, and the registry knows only one of them — so a pid-keyed spare leaves the sibling looking like a textbook orphan and the group kill takes the spared process down with it. Same tree shape as the `dev.pid` wrapper trap below; anything that acts on a service's pid has to think in groups.
+- **The ready-ASAP contract (`gatewayclient/adapter.py`).** A service **registers and sends its `ready` frame before running `on_start`**, then keeps initialising in the background. Inbound `call` / `notify` / `session.open` envelopes that arrive during initialisation **buffer** on an event (bounded by `AWM_INIT_WAIT_S`, default 60s) rather than failing, so a caller sees a slow first call instead of an error — and because `on_start` is where `init_service_db` runs, that gate is what keeps a handler off a half-built database. A hung init surfaces as a "still initialising" error; a failed one propagates out of `run()` so the process exits rather than sitting there looking healthy. **Do not await slow work before `run()`** — the reaper above treats a prolonged unready state as evidence the process is broken, so "unready" has to mean *broken*, not *still loading*. Long-running startup work belongs in a task `on_start` spawns, not in `on_start` itself.
 
 **Starting a dev sandbox: use the `awm dev start` CLI, NOT the `dev_*` MCP tools.** `start` always execs `awm/gateway/dev/run.sh` locally (it bootstraps the very sandbox that would serve it); `status`/`stop`/`restart`/`seed` route to prod's `/svc/dev` and fall back to local `run.sh` when prod's base answers `{"inert": true}` (no sandbox shadowing it yet). The `dev_*` **MCP** tools hit prod's base with **no** local fallback, so they just return `inert` until a sandbox is up — don't reach for them to start one. Once a sandbox is running, its `dev` service overlays `/svc/dev` onto prod, so `awm dev status`/etc. then route to your worktree. Only the **`dev`** scope runs the shared sandbox; most awm scopes (`comp-*`/`svc-*`/`web-*`/…) shadow the already-running hub at `:7821` (`awm dev shadow --port 7821 …`) instead of starting a second one — a second sandbox is a different port with none of dev's seeded state. If nothing is on `:7821`, ask the `dev`-scope agent to start it. The two **composition scopes** — `feat-dag` (conversational agents + voice + web-ui + DAG orchestration) and `feat-gamebot` (web game bots) — are the exception: each runs its OWN isolated sandbox (`:7861` / `:7871`, pinned per-worktree via a gitignored `awm/gateway/dev/.env`) so its feature family never pollutes dev's seeded state.
 
@@ -102,6 +104,54 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **Prefix conflicts return 409.** Pick a unique prefix. `/hub` and `/hub/*` are reserved.
 - **`AWM_WORKSPACE` + `AWM_HUB_URL` attach to a sandbox, not prod.** Without them, the CLI hits global discovery and may target prod `:7819`. The dev starter exports both for its children; if you shell out separately, export them yourself. To check which hub a running process was set up against: `tr '\0' '\n' </proc/<pid>/environ | grep -E 'AWM_WORKSPACE|AWM_HUB_URL'`.
 - **Never run two gateways on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are how dev parallelism works.
+- **Never hand-roll an emit-subscription loop — use `gatewayclient.SupervisedSubscription`.** A subscriber's socket and the emitting service's control channel are two things that must agree: when the emitter restarts, the gateway drops the subscriber from the fan-out table, and unless the proxy also closes the socket the consumer waits forever on a connection that looks perfectly healthy (keepalives still pass — they only prove the *gateway* is alive). Three services shipped byte-identical copies of the same naive loop and all three went permanently deaf together. The helper reconnects, bounds every unmodelled staleness class with a jittered idle deadline, and reports `healthy` — surface that in the service's `status` so deafness is visible before something urgent depends on it.
+- **Never hand-roll a long-lived background task either — use `gatewayclient.spawn_supervised`.** `self._x_task = asyncio.create_task(self._x())` and then never reading `_x_task` leaves a service running, apparently healthy, with that whole capability silently absent if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a *return* as a defect too, so a supervised loop must never exit — check the shutdown flag and skip the tick instead of breaking out.
+- **A slow `on_start` is a bug now, not just a smell.** See the ready-ASAP contract above: the gateway reaps a lease-holder that stays unready, so startup work that takes real time belongs in a task, and anything a caller needs must be behind the adapter's init gate rather than raced against it.
+
+## Project data layer (`awm.scopes.data_annex`)
+
+`.awm/data` used to be one line in `_scaffold_awm_dir`: a symlink to
+`data/<project>/`, shared by every scope. It is now produced by
+`data_annex.provision_scope_data`, which returns either that same symlink or a
+**git-annex clone** — the *only* entry point, deliberately, so there is one
+place that decides.
+
+Design facts worth knowing before you touch it:
+
+- **The opt-in is the canonical repo's existence.** `is_annex_project(p)` is
+  "is `data/<p>` a git-annex repo?" There is no config table and no flag to
+  keep in sync; `project_data_init` flips a project by converting the directory.
+  `AWM_DATA_ANNEX=0` is the global kill switch.
+- **A clone, not a submodule.** A submodule inside a *secondary* git worktree
+  makes git write a relative `core.worktree` that git-annex resolves from a
+  different base — every annex command then dies with
+  `changeWorkingDirectory: does not exist`. A plain clone has an ordinary
+  `.git` and is immune. `projects/annex-poc/` preserves the reproduction.
+- **The canonical repo keeps a working tree** on `main`, and promotion pushes
+  into it with `receive.denyCurrentBranch=updateInstead`. That is what keeps
+  every existing absolute path into `data/<project>/` resolving — including the
+  TTS model lookup and scadc's ~171 absolute symlinks.
+- **Merges use plain `git merge`, never `git annex sync`.** git-annex only
+  auto-resolves conflicting content into `file.variant-<key>` under its own
+  merge machinery; under plain merge a conflict is an ordinary unmerged path.
+  Keeping both sides must stay an explicit decision. `publish_data` therefore
+  does fetch → `git annex merge` → explicit push by hand rather than calling
+  sync.
+- **The location log rides the `git-annex` branch and is never rolled back.**
+  Pushing only the data branch leaves peers seeing *0 copies* for content that
+  is physically present. And reverting the log *is* the data-loss operation —
+  it produces that same symptom while the bytes sit on disk. The transaction
+  boundary in `merge_data` is the data branch ref, nothing else.
+- **git-annex is not on the daemon's PATH.** `annex_bin()` resolves it
+  (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
+  on PATH for *every* git call, since git-annex's own hooks re-invoke
+  `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
+- **Teardown is the dangerous direction.** `_cleanup_worktree` calls
+  `prepare_teardown` first, which publishes, refuses when content would be lost,
+  and chmods the tree writable (annex marks objects *and their parent dirs*
+  read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
+  collides with the next `worktree add`). `create_scope` pre-cleans through the
+  same path, so creation can now refuse where it previously steamrolled.
 
 ## Frontend component system
 
@@ -140,9 +190,11 @@ awm dev shadow --port 7821 pages/<name>     # overlays dist/ at /ui/<name> on :7
 
 `npm run build` builds every `pages/*/` that has an `index.html` (source-only placeholders are skipped) with the one root config. Shadow reads the built `dist/` + `prefix.txt`, so **build first**. Only the `dev` scope runs the sandbox (`awm dev start`); every other scope shadows the already-running hub — don't start a second one (see README § *Iterating on a page in a scope*).
 
-## Federation: retired
+## Federation
 
-Federation is gone — see git history for the deletion. No `/peer/*` routes, no `awm peer *` CLI, no `awm-exposed.service`, no auth layer, no `peers`/`peer_sync_state` tables. The local listener (`awm.service` on `127.0.0.1:7819`) is the only listener. Single host, no auth, plain HTTP loopback.
+**`FEDERATION.md` is the reference** — read it before touching anything cross-node. The one-line shape: the loopback gateway stays open and unauthenticated, and a peer's services are reached **directly on that peer's `httpsfront` edge** over CA-verified TLS with a bearer fetched by ssh — never relayed through a gateway, never replicating a database. The gateway is a *directory* (`peer_resolve`), not a router.
+
+Two things bite agents who assume otherwise. First, this is **not** the retired v0 federation (cr-sqlite replication, leader election, a `peers`/`peer_sync_state` registry) — that really is gone, and git history for the deletion is not a guide to the current system. Second, a **singleton is re-homed per node**, not per call: `AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER` / `AWM_SSH_SLOT_PEER` in `<workspace>/.awm/env` name the node that owns each singleton, and `gatewayclient.call_maybe_peer` / `subscribe_maybe_peer` are the single branch point so a consumer can never half-route. A node that borrows a singleton must not also *run* it — a stale `enabled.json` that starts a local `social` on a node with `AWM_SOCIAL_PEER` set puts two bots on one Discord token, and the failure looks like a flaky slash command, not a config error.
 
 ## Implementation file map
 
@@ -185,7 +237,7 @@ The script reports pass/fail per dist and exits non-zero if any failed. Known di
 
 ## Agent rules
 
-1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` and `.awm/artifacts.md` accurate across all scopes.
+1. **The native `debrief` skill (`~/.claude/skills/debrief/`) is mandatory at end-of-session** — it keeps `.awm/history.md` accurate across all scopes.
 2. **`awm scope heal` is idempotent and safe** — run with `--dry-run` first to preview, then for real. Enforces tier-3 = `.awm/` only.
 
 ## What goes in this file

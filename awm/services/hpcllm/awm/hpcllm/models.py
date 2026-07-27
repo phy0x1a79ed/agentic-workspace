@@ -28,10 +28,19 @@ REGISTRY: dict[str, ModelSpec] = {
         min_mem_gb=16,
         ctx_size=32768,
     ),
+    "Qwen/Qwen2.5-14B-Instruct": ModelSpec(
+        name="Qwen/Qwen2.5-14B-Instruct",
+        gguf_filename="Qwen2.5-14B-Instruct-Q5_K_M.gguf",
+        api_name="qwen2.5-14b-instruct",
+        min_gpus=1,
+        min_mem_gb=24,
+        ctx_size=32768,
+    ),
 }
 
 CLUSTER_MODELS: dict[str, list[str]] = {
     "sockeye": ["Qwen/Qwen3-8B"],
+    "fir": ["Qwen/Qwen2.5-14B-Instruct"],
 }
 
 

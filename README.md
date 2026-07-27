@@ -1,6 +1,6 @@
 # Agentic Workspace Manager (AWM)
 
-*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` skill: `skill_get path="awm/harness-setup.md"`) and search skills via the `skill_search` MCP tool — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
+*Human setup + usage guide for awm. Agents operating in this workspace load [`WORKSPACE.md`](WORKSPACE.md) at session start via the harness's native mechanism (see the `harness-setup` writeup on disk at `.awm/skills/awm/harness-setup.md`) — not this file. **Do not merge this README into AGENTS.md or WORKSPACE.md** — their audience is agents in scope worktrees; this one's audience is humans installing, networking, and operating the system.*
 
 A lightweight Python service + CLI for coordinating multiple AI agents working in parallel on shared resources. Provides project/scope management, a skills catalog, the scope channel (per-scope journal + messages), artifact registration, autonomous agent spawning, and an MCP server for direct tool use by Claude Code / OpenCode / other MCP clients.
 
@@ -36,7 +36,7 @@ env with `AWM_ENV`.
 
 ## Harness Integration
 
-AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` skill (discoverable from inside an agent via `skill_get path="awm/harness-setup.md"`) covers:
+AWM drives **Claude Code** and **OpenCode** as first-class harnesses. The `harness-setup` writeup (on disk at `.awm/skills/awm/harness-setup.md` inside any scope) covers:
 
 - How Claude Code and OpenCode each pick up the 3-tier orientation (workspace `WORKSPACE.md` + repo `AGENTS.md` + scope `.awm/context.md`) — CC via instructions in `~/.claude/CLAUDE.md` that direct the agent to Read each tier; OC via native `AGENTS.md` walk-up plus per-scope `mcp-opencode.json` `instructions` array for the other two.
 - The MCP exporter framework that fans `<workspace>/.mcp.json` out to backend-specific configs (`spawn-mcp.json` for claude, `mcp-opencode.json` for opencode) — registered services are advertised even when their upstream is down.
@@ -314,7 +314,7 @@ awm gateway refresh   # restart server to pick up source changes (dev mode)
 
 The server auto-shuts down after 30 minutes of inactivity (configurable via `AWM_IDLE_SHUTDOWN` env var; set to `0` to disable).
 
-`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm artifact register`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
+`awm <command> --help` lists every subcommand. Beyond the gateway-control groups, the CLI generates an `awm <domain> <verb>` command for every registered feature-service tool (`awm scope create`, `awm agent list`, …) from the same live catalog the MCP surface reads. Note the surfaces are projected differently from one shared catalog: the **CLI and HTTP** stay fully expanded (one `awm <domain> <verb>` command and one `POST /invoke {name:"<domain>_<verb>"}` route per verb), while the **MCP** surface collapses to one generic `{verb,args}` tool per domain (`GET /tools?view=domains`, with a `describe` verb for parameter schemas) to keep the tool count small for agents. So shell usage is unchanged; only what an MCP client sees is collapsed. For agent-facing usage (scopes, the scope channel, artifacts, skills), see `WORKSPACE.md` — those workflows are typically driven from inside an MCP-equipped agent, not the shell.
 
 ### Per-workspace env file
 
@@ -336,6 +336,64 @@ SSH_AUTH_SOCK=/run/user/1000/keyring/ssh
 Restart the daemon (`sudo systemctl restart awm.service` or
 `systemctl --user restart awm.service`, depending on which unit is
 live on your host) to pick up changes.
+
+## Project data — versioning and concurrency
+
+Project data lives at `<workspace>/data/<project>/` and every scope reaches it
+at `.awm/data/`. Both of those paths are permanent; what changed is what sits
+behind them.
+
+By default `.awm/data` is a symlink and every scope in a project writes the same
+files — no history, no isolation, and two scopes writing the same path destroy
+each other's work. Converting a project's data to **git-annex** gives it the
+same model code already has from worktrees:
+
+```bash
+awm project data-init <project> --dry-run   # preview: file count, vendored checkouts found
+awm project data-init <project>             # convert (refuses while any scope is active)
+awm scope heal --project <project>          # give existing scopes their clones
+```
+
+After conversion each scope's `.awm/data` is a clone on its own branch
+`scope/<scope>`, and `<workspace>/data/<project>/` stays a normal checked-out
+working tree on `main` — so every absolute path and symlink that pointed there
+still resolves.
+
+```bash
+awm scope data-status  <project> <scope>    # mode, branch, revision, drift, dirt
+awm scope data-snapshot <project> <scope>   # commit what this scope wrote
+awm scope data-promote  <project> <scope>   # publish into the project's canonical branch
+awm scope gather <project> <hub> --peripherals a --peripherals b --data
+```
+
+`data-promote` is all-or-nothing. It snapshots, publishes content and the
+location log, reconciles against the canonical branch, then **fast-forwards**
+it — so two scopes promoting at once produce one winner and one clean
+rejection, never a clobber. A content conflict is reported as a conflict and
+rolls back to the exact pre-merge revision; nothing is auto-merged into
+`file.variant-<key>` behind your back.
+
+Operational notes:
+
+- **Storage.** Content is hardlinked from the canonical store, so N scopes
+  holding the same dataset cost one copy. This requires `data/` and `projects/`
+  on the same filesystem; if they aren't, git-annex silently falls back to real
+  copies.
+- **Read-only files.** Anything above ~100 KB becomes a symlink into the content
+  store and is not writable in place. Small text stays an ordinary git file.
+- **Secrets are excluded, never annexed.** `secrets/` paths, `.env*`,
+  `.credentials.json` and `.nextflow/secrets` are gitignored in the canonical
+  repo, so they are never committed and never reach the off-site mirror. They
+  stay on local disk untouched.
+- **Vendored git checkouts are pinned, not annexed.** Conversion finds nested
+  repos, excludes their trees, and records URL + commit in `VENDORED.tsv`.
+- **git-annex is optional.** It is resolved from `AWM_ANNEX_BIN`, then PATH,
+  then the known mamba envs. When it isn't found every path degrades to the
+  legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
+  globally.
+- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
+  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
+  are content-addressed and never mutated in place.
 
 ## Destructive operations
 

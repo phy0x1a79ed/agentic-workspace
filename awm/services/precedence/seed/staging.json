@@ -1,0 +1,137 @@
+{
+  "_comment": "Curated day-one seed for the precedence archive (plan T2). Produced by hand-curating the output of `python -m awm.precedence.seed scrape` over three sources: feedback memories (feedback_*.md), operator posts (scopes.db, author=user:operator), and journal decisions (scope_posts kind=journal, meta.decisions[]). Curation: all 12 operator posts dropped (test/demo noise + one-off task directives, no durable preference); the 193 user-marked journal decisions narrowed to 8 that generalize as reusable preferences, each rephrased into a clean triple, marked source=journal and lower-confidence; the NXF-parser and no-push/no-publish clusters deduped to one entry each. Reload with: python -m awm.precedence.seed import awm/services/precedence/seed/staging.json",
+  "decisions": [
+    {
+      "context": "An agent is executing a multi-step plan or task list and hits a fork: commit-message wording, a filename within a clear convention, a choice between equivalent paths, or the recommended option from a question it framed itself.",
+      "question": "Should the agent stop and ask the user, or decide the fork itself and keep moving?",
+      "decision": "Drive the plan to completion autonomously — decide low-impact/trivial forks yourself and keep moving. Pause only when: the decision has a durable outcome impact (architectural direction, public API shape, ship-vs-defer, user-facing scope/doc names); the best option is genuinely non-obvious (paths trade off in ways you can't resolve from the work or stated preferences); a risky/irreversible action is about to happen (force-push, history rewrite, deleting tracked files, broad refactor, mutating shared state); or a standing hard constraint applies. Surface any small decision that turned out to matter in the end-of-turn summary. Once the user OKs autonomous commits for a plan, treat that authorization as standing for that plan's execution — don't re-ask per scope.",
+      "created": "2026-05-30",
+      "source": "memory",
+      "source_ref": "memory/feedback_autonomous_completion.md",
+      "tags": ["feedback", "autonomy", "workflow", "planning"]
+    },
+    {
+      "context": "Serving static files on the awm hub (kind=static), or answering a static-file-serving question generally — e.g. fixing deep-link refresh 404s.",
+      "question": "Should the server fall back to a SPA shell, use try_files, or sniff extensions on a miss?",
+      "decision": "No. Use canonical URL↔file mapping: each URL resolves to exactly one file on disk (or the directory's index.html), or 404s. No Accept-conditional fallback to a SPA shell, no try_files $uri /index.html, no extension-sniffing, no server-side synthesis on miss. Bundles that need refresh-survives-deep-links must prerender every route into a real <route>/index.html; runtime-dynamic state goes in query params, not path segments. Directory→index.html resolution is fine (deterministic 1:1); shell fallback is not.",
+      "created": "2026-06-01",
+      "source": "memory",
+      "source_ref": "memory/feedback_canonical_static_paths.md",
+      "tags": ["feedback", "static-serving", "awm-hub", "architecture"]
+    },
+    {
+      "context": "Beginning a scope-aware operation (inbox or scope ops) when the user refers to 'this scope' or 'my inbox'.",
+      "question": "How should the agent determine which scope is meant?",
+      "decision": "Resolve the scope from the working directory immediately — the cwd maps to a scope worktree (e.g. /home/tony/agentic_workspace/projects/awm/dev → scope:awm/dev). Don't guess workspace or project level and don't escalate. Default inbox/scope fetches to scope:<project>/<scope>; match the cwd against known worktree paths (or call scope_list once and cache).",
+      "created": "2026-04-08",
+      "source": "memory",
+      "source_ref": "memory/feedback_know_your_scope.md",
+      "tags": ["feedback", "scopes", "workflow"]
+    },
+    {
+      "context": "Debugging a service where its own status reports READY but a client connect to it returns ECONNREFUSED / 500.",
+      "question": "Look first at the readiness-tracking logic, or at the client transport / event-loop layer?",
+      "decision": "Suspect the readiness signal first: grep the field that toggles status and audit who sets it (seconds) before chasing httpx client caches, asyncio.Lock cross-loop binding, port-pool TIME_WAIT, or proxy hop-by-hop headers (minutes of progressively-wronger hypotheses). Only move to the transport layer once the readiness signal is confirmed to have a single, clearly-correct writer.",
+      "created": "2026-06-01",
+      "source": "memory",
+      "source_ref": "memory/feedback_status_vs_transport.md",
+      "tags": ["feedback", "debugging", "services", "awm"]
+    },
+    {
+      "context": "An agent has finished a unit of work (a merge, a release prep, a build) and is deciding what to do with the result.",
+      "question": "Should the agent push to origin/upstream or publish artifacts on its own?",
+      "decision": "No — default to local prep only. Do not push to origin/upstream and do not publish (containers, docs, PyPI) unless the user explicitly asks. Prepare everything locally and stop; pushing and publishing are the user's call.",
+      "created": "2026-05-25",
+      "source": "journal",
+      "source_ref": "scope_post/journal:151#dec5",
+      "tags": ["journal-sourced", "autonomy", "git", "release"],
+      "notes": [
+        {"body": "Agent-origin journal decision; lower confidence. Corroborated across scopes (metasmith-libraries/main journal:151#dec5, metasmith/release journal:152#dec6) — a recurring user directive, so treated as durable.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Adding a 'delete' / 'remove' capability to an awm surface (rooms, records, etc.).",
+      "question": "Hard-delete the data, or use a reversible soft state?",
+      "decision": "Prefer a reversible soft archive (e.g. an 'archived' status excluded from default listings) over destructive delete — it matches awm's no-data-loss posture. Reserve hard deletion for explicit curator action.",
+      "created": "2026-05-21",
+      "source": "journal",
+      "source_ref": "scope_post/journal:123#dec0",
+      "tags": ["journal-sourced", "awm", "data-safety", "architecture"],
+      "notes": [
+        {"body": "Agent-origin journal decision (user pick); lower confidence — confirm it still reflects a durable preference.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Versioning a metasmith release that produces both a Python package and a container image.",
+      "question": "Use one version string, or a separate container tag file?",
+      "decision": "Keep one canonical PEP 440 version string (version.txt, local form '<x.y.z>+<gitshort>'); do not split into a separate container_tag.txt. The user wants a single source of version truth shared by the package and the container.",
+      "created": "2026-05-22",
+      "source": "journal",
+      "source_ref": "scope_post/journal:132#dec0",
+      "tags": ["journal-sourced", "metasmith", "versioning"],
+      "notes": [
+        {"body": "Agent-origin journal decision (user explicit); lower confidence.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Setting an environment variable (e.g. PYTORCH_CUDA_ALLOC_CONF) for a containerized step running under SLURM.",
+      "question": "Set it job-wide (beforeScript / os.environ) or scope it to the container run?",
+      "decision": "Scope env vars to the actual container run (apptainer --env), not the whole SLURM job or the Python process — the user prefers the narrowest scope that works.",
+      "created": "2026-05-22",
+      "source": "journal",
+      "source_ref": "scope_post/journal:136#dec2",
+      "tags": ["journal-sourced", "hpc", "containers", "metasmith-libraries"],
+      "notes": [
+        {"body": "Agent-origin journal decision (per user preference); lower confidence.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Merging several feature worktrees or branches together.",
+      "question": "Rebase, a single octopus merge, or individual merges?",
+      "decision": "Merge branches individually with latest-commit-wins (git checkout --ours/--theirs) rather than rebasing or a single octopus merge — the user prefers readable history.",
+      "created": "2026-05-25",
+      "source": "journal",
+      "source_ref": "scope_post/journal:151#dec0",
+      "tags": ["journal-sourced", "git", "workflow"],
+      "notes": [
+        {"body": "Agent-origin journal decision (user's stated preference); lower confidence.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Running an interactive pty / shell on behalf of a guest or friend user (awm vagrant-shell).",
+      "question": "Allow a root / privilege-escalation flag?",
+      "decision": "No privilege escalation, ever — the pty runs as the guest's own user and there is no --as-root flag. This security boundary is non-negotiable.",
+      "created": "2026-05-26",
+      "source": "journal",
+      "source_ref": "scope_post/journal:155#dec7",
+      "tags": ["journal-sourced", "awm", "security"],
+      "notes": [
+        {"body": "Agent-origin journal decision (hard user boundary); lower confidence on phrasing, high confidence on intent.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Introducing new default behavior into an API (e.g. whether a WorkflowPlan publishes intermediate outputs).",
+      "question": "Hardcode the new behavior, or add a flag?",
+      "decision": "Add an explicit flag defaulting to the new behavior (e.g. publish_intermediates=True) rather than hardcoding it — the user prefers opt-out flexibility over a silent always-on behavior change.",
+      "created": "2026-05-19",
+      "source": "journal",
+      "source_ref": "scope_post/journal:104#dec0",
+      "tags": ["journal-sourced", "api-design", "metasmith"],
+      "notes": [
+        {"body": "Agent-origin journal decision (user chose); lower confidence.", "kind": "comment"}
+      ]
+    },
+    {
+      "context": "Producing publication figures in the cyanoverse project.",
+      "question": "Follow FIGURE-PUBLICATION.md's dark-background recommendation, and how should the ORF caller be labelled?",
+      "decision": "Use a white figure background (overriding the dark recommendation) and label the ORF caller 'ORFs from Prodigal' (not 'bakta-prodigal'). These are the user's standing figure preferences for cyanoverse.",
+      "created": "2026-04-28",
+      "source": "journal",
+      "source_ref": "scope_post/journal:82#dec0",
+      "tags": ["journal-sourced", "cyanoverse", "figures"],
+      "notes": [
+        {"body": "Agent-origin journal decision (user preference); combines journal:17#dec2 (white background) and journal:82#dec0 (ORF label). Project-scoped; lower confidence.", "kind": "comment"}
+      ]
+    }
+  ]
+}

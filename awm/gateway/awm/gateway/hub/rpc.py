@@ -316,6 +316,12 @@ class ControlChannel:
 
     def close(self) -> None:
         """Tear down all sessions, subscribers, and pending calls."""
+        n_subs = sum(len(bucket) for bucket in self._subs.values())
+        log.info(
+            "control channel %s closing: %d subscriber(s), %d session(s), "
+            "%d pending call(s) torn down",
+            self.service_id, n_subs, len(self._sessions), len(self._pending),
+        )
         for pending in self._pending.values():
             if not pending.future.done():
                 pending.future.set_exception(

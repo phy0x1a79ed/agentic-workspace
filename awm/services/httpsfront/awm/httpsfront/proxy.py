@@ -273,7 +273,16 @@ async def _ws_proxy(ws: WebSocket) -> None:
             pass
 
 
-def build_app(upstream: str, ca_path: str) -> Starlette:
+def build_app(upstream: str, ca_path: str, *, landing: bool = True) -> Starlette:
+    """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
+
+    The landing page is right for the gateway front, whose ``/`` has nothing
+    else to serve. It is wrong for a front that sits in front of a *single*
+    app — claude-view's SPA lives at ``/``, and the index route would shadow
+    it. Turning it off lets ``/`` fall through to the catch-all proxy, which is
+    what makes this module reusable for any upstream rather than the gateway
+    alone. Default keeps the gateway front's behaviour byte-identical.
+    """
     http_up = upstream.rstrip("/")
     # http://… → ws://… ,  https://… → wss://…
     ws_up = "ws" + http_up[len("http"):]
@@ -286,8 +295,11 @@ def build_app(upstream: str, ca_path: str) -> Starlette:
         Route("/__auth/login", _login, methods=["POST"]),
         Route("/__auth/logout", _logout, methods=["POST", "GET"]),
         Route("/__auth/whoami", _whoami, methods=["GET"]),
+    ]
+    if landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
-        Route("/", _root, methods=["GET"]),
+        routes.append(Route("/", _root, methods=["GET"]))
+    routes += [
         # Everything else is auth-gated inside the handler, then proxied.
         WebSocketRoute("/{path:path}", _ws_proxy),
         Route("/{path:path}", _http_proxy, methods=_ALL_METHODS),
@@ -310,10 +322,17 @@ def build_app(upstream: str, ca_path: str) -> Starlette:
     return app
 
 
-def serve(*, port: int, cert: str, key: str, ca: str, upstream: str) -> None:
+def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
+          landing: bool = True) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
-    (blocks). Designed to run in a daemon thread from the hub adapter."""
-    app = build_app(upstream, ca)
+    (blocks). Designed to run in a daemon thread from the hub adapter.
+
+    ``upstream`` and ``landing`` are what make this reusable beyond the gateway:
+    the ``claude-view`` service calls it against its own loopback binary with
+    ``landing=False`` to get TLS, the shared CA, and the ``awm_session`` edge
+    auth without duplicating any of it.
+    """
+    app = build_app(upstream, ca, landing=landing)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",

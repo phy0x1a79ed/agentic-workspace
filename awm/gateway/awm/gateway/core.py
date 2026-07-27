@@ -61,7 +61,17 @@ class _RestartTimeout(RuntimeError):
     """Raised when restart_core_and_wait fails at a specific phase."""
 
 
-def restart_core_and_wait(timeout: float = 30.0) -> dict[str, object]:
+# The default restart invocation (a per-user unit). ``awm deploy`` overrides
+# this with the prod *system* unit command (``sudo -n systemctl restart``) —
+# prod runs ``/etc/systemd/system/awm.service``, which a per-user restart cannot
+# touch.
+_DEFAULT_RESTART_CMD = ["systemctl", "--user", "restart", "awm.service"]
+
+
+def restart_core_and_wait(
+    timeout: float = 30.0,
+    restart_cmd: list[str] | None = None,
+) -> dict[str, object]:
     """Restart the gateway via systemd and wait until the new process is healthy.
 
     Steps:
@@ -102,7 +112,7 @@ def restart_core_and_wait(timeout: float = 30.0) -> dict[str, object]:
 
     try:
         subprocess.Popen(
-            ["systemctl", "--user", "restart", "awm.service"],
+            list(restart_cmd or _DEFAULT_RESTART_CMD),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

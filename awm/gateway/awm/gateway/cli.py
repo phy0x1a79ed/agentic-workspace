@@ -274,6 +274,151 @@ def restart():
 
 
 # ---------------------------------------------------------------------------
+# `awm deploy` — one safe command to ship the release worktree to prod
+# (hand-authored: it orchestrates subprocesses + a systemd restart + a hub
+# poll, none of which fits a declarative request/response Operation). The pure
+# planning logic lives in awm.gateway.deploy and is unit-tested.
+# ---------------------------------------------------------------------------
+
+@app.command("deploy")
+def deploy(
+    no_install: bool = typer.Option(
+        False, "--no-install",
+        help="Skip the pip reinstall even if the dist set changed."),
+    no_build: bool = typer.Option(
+        False, "--no-build",
+        help="Skip the page rebuild even if page source changed."),
+    no_reap: bool = typer.Option(
+        False, "--no-reap",
+        help="Skip reaping orphaned service adapters after the restart."),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Reinstall + rebuild everything, ignoring the change manifest."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print the plan and the verify set; change nothing."),
+    timeout: float = typer.Option(
+        60.0, "--timeout",
+        help="Seconds to wait for the gateway to come back healthy / verify."),
+):
+    """Ship the release worktree to the running (systemd) gateway, safely.
+
+    install (only if the dist set changed) → build (only if page source
+    changed) → restart the system awm.service → reap orphaned adapters →
+    verify every enabled service and built page came back. Idempotent: a
+    no-op deploy skips the slow steps. Pages return on their own (discovered
+    on boot) and services respawn from *this* tree — no journal wipe, no
+    manual re-register. Use ``--dry-run`` to preview.
+    """
+    from awm.gateway import deploy as D
+    from awm.gateway.core import _RestartTimeout, restart_core_and_wait
+    from awm.gateway.hub import discovery
+
+    root = D.awm_root()
+    plan = D.plan_deploy(root, AWM_DIR, force=force, no_install=no_install,
+                         no_build=no_build, no_reap=no_reap)
+
+    expected_services = sorted(s.name for s in discovery.discover_services()
+                               if s.enabled)
+    expected_pages = sorted(plan.page_sigs)  # buildable → servable after build
+
+    # --- print the plan ---
+    typer.echo(f"deploy target: {root}")
+    typer.echo(f"  install:  {'YES' if plan.do_install else 'no '}  "
+               f"({plan.install_reason})")
+    typer.echo(f"  build:    {'YES' if plan.do_build else 'no '}  "
+               f"({plan.build_reason})")
+    if plan.changed_pages:
+        typer.echo(f"            changed: {', '.join(plan.changed_pages)}")
+    typer.echo(f"  reap:     {'YES' if plan.do_reap else 'no '}")
+    typer.echo("  restart:  YES (system awm.service)")
+    typer.echo(f"  verify:   {len(expected_services)} service(s), "
+               f"{len(expected_pages)} page(s)")
+
+    if dry_run:
+        typer.echo("--- dry run: nothing changed ---")
+        typer.echo(f"  expected services: {', '.join(expected_services) or '(none)'}")
+        typer.echo(f"  expected pages:    {', '.join(expected_pages) or '(none)'}")
+        return
+
+    # --- 1. install (dist-set membership changed) ---
+    if plan.do_install:
+        typer.echo("→ installing dist set (pip -e) …")
+        if subprocess.run(["bash", str(root / "gateway" / "install.sh")]).returncode != 0:
+            typer.echo("install.sh failed", err=True)
+            raise typer.Exit(1)
+
+    # --- 2. build pages (source changed) ---
+    if plan.do_build:
+        typer.echo("→ building pages …")
+        if subprocess.run(["bash", str(root / "scripts" / "build.sh")]).returncode != 0:
+            typer.echo("build.sh failed (run 'npm install' in the awm/ tree "
+                       "if vite is missing)", err=True)
+            raise typer.Exit(1)
+
+    # --- 3. restart the system unit ---
+    probe = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+    if probe.returncode != 0:
+        typer.echo("cannot sudo non-interactively to restart the system unit. "
+                   "Restart it yourself, then re-run to finish:\n"
+                   "  sudo systemctl restart awm.service\n"
+                   "  awm deploy --no-install --no-build", err=True)
+        raise typer.Exit(1)
+    typer.echo("→ restarting system awm.service …")
+    try:
+        result = restart_core_and_wait(
+            timeout=timeout,
+            restart_cmd=["sudo", "-n", "systemctl", "restart", "awm.service"],
+        )
+    except _RestartTimeout as exc:
+        typer.echo(f"restart failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"  gateway up: pid={result.get('new_pid')} ({result.get('total_s')}s)")
+
+    # --- 4. reap orphaned adapters (best-effort; L2 already re-homed the
+    #        journaled ones on boot, this catches extra generations) ---
+    if plan.do_reap:
+        try:
+            r = httpx.post(f"{BASE_URL}/hub/services/reap",
+                           json={"dry_run": False}, timeout=30)
+            if r.status_code < 400:
+                typer.echo(f"  reaped {r.json().get('count', 0)} orphaned adapter(s)")
+            else:
+                typer.echo(f"  reap skipped ({r.status_code})", err=True)
+        except httpx.HTTPError as exc:
+            typer.echo(f"  reap skipped: {exc}", err=True)
+
+    # --- 5. verify every enabled service + built page came back ---
+    typer.echo("→ verifying services + pages …")
+    deadline = time.monotonic() + timeout
+    missing = {"services": list(expected_services), "pages": list(expected_pages)}
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{BASE_URL}/hub/services", timeout=3)
+            listing = r.json().get("services", []) if r.status_code == 200 else []
+        except httpx.HTTPError:
+            listing = []
+        missing = D.missing_from_listing(listing, expected_services, expected_pages)
+        if not missing["services"] and not missing["pages"]:
+            break
+        time.sleep(0.5)
+
+    if missing["services"] or missing["pages"]:
+        if missing["services"]:
+            typer.echo(f"  MISSING services: {', '.join(missing['services'])}", err=True)
+        if missing["pages"]:
+            typer.echo(f"  MISSING pages: {', '.join(missing['pages'])}", err=True)
+        typer.echo("deploy incomplete — gateway is up but the set above did not "
+                   "register within the timeout", err=True)
+        raise typer.Exit(1)
+
+    # --- success: record the manifest so the next deploy can skip no-op work ---
+    D.save_manifest(AWM_DIR, plan.next_manifest())
+    typer.echo(f"✓ deploy complete — {len(expected_services)} service(s), "
+               f"{len(expected_pages)} page(s) up")
+
+
+# ---------------------------------------------------------------------------
 # Register an external bundle/service and hold its WS lease (hand-authored:
 # stateful — it POSTs then holds the lease open, so it can't be a declarative
 # request/response Operation). Lives under `awm gateway register`.
@@ -580,12 +725,9 @@ def _post_page_register(name: str, prefix: str, dir_: str) -> dict:
 
 
 def _read_prefix_txt(pkg_dir: pathlib.Path, default: str) -> str:
-    f = pkg_dir / "prefix.txt"
-    if f.is_file():
-        text = f.read_text(encoding="utf-8").strip()
-        if text:
-            return text if text.startswith("/") else "/" + text
-    return default
+    # One source of truth for a page's prefix, shared with boot discovery.
+    from awm.gateway.hub.discovery import read_prefix_txt
+    return read_prefix_txt(pkg_dir, default)
 
 
 def _dev_run_sh() -> pathlib.Path:

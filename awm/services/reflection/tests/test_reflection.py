@@ -19,17 +19,46 @@ def _noop_spawn(fn):
     return None
 
 
+@pytest.fixture(autouse=True)
+def _agent_present(monkeypatch):
+    """Default the T3 agent-subtree sanity check to "yes" for every test.
+
+    `_subtree_has_agent` walks the real `/proc`, which a unit test has no
+    business depending on. Tests exercising the refusal path override this
+    per-test via `monkeypatch.setattr(tmux_inject, "_subtree_has_agent", ...)`.
+    """
+    monkeypatch.setattr(tmux_inject, "_subtree_has_agent", lambda pid, kids: True)
+
+
 class FakeRunner:
-    def __init__(self, returncode: int = 0, captures=None):
+    def __init__(self, returncode: int = 0, captures=None,
+                pane_pid: str = "4242", session: str = "sess0",
+                reresolved_pane: str = "%32"):
         self.calls: list[tuple[list, dict]] = []
         self.returncode = returncode
         # Scripted `capture-pane -p` snapshots served in order (last one repeats).
         self._captures = list(captures) if captures else []
+        self._pane_pid = pane_pid
+        self._session = session
+        # What a `display-message -t <session>` re-resolve query returns —
+        # the session's pane id after a hop (T5).
+        self._reresolved_pane = reresolved_pane
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
         if "display-message" in argv:
-            stdout = "%32"
+            fmt = argv[-1]
+            if fmt == "#{pane_pid}":
+                stdout = self._pane_pid
+            elif fmt == "#{session_name}":
+                stdout = self._session
+            elif fmt == "#{pane_id}":
+                # `-t <pane>` existence check echoes the pane; `-t <session>`
+                # re-resolve returns wherever that session's current pane is.
+                target = argv[argv.index("-t") + 1]
+                stdout = self._reresolved_pane if target == self._session else target
+            else:
+                stdout = "%32"
         elif "capture-pane" in argv:
             stdout = self._next_capture()
         else:
@@ -84,10 +113,13 @@ def test_send_pastes_loads_and_submits():
                    "submitted": True, "followup": tmux_inject.DEFAULT_FOLLOWUP,
                    "followup_deferred": True}
     # ONLY the command is injected synchronously: display-message (existence
-    # check) → load → paste → send-keys. The resume is deferred to the watcher,
-    # never co-queued behind /compact.
-    assert r.verbs() == ["display-message",
-                         "load-buffer", "paste-buffer", "send-keys"]
+    # check) → display-message (agent-subtree check) → load → paste →
+    # send-keys → display-message (session captured for the deferred
+    # watcher's pane-hop fallback). The resume itself is deferred to the
+    # watcher, never co-queued behind /compact.
+    assert r.verbs() == ["display-message", "display-message",
+                         "load-buffer", "paste-buffer", "send-keys",
+                         "display-message"]
     assert len(scheduled) == 1
 
 
@@ -380,3 +412,107 @@ def test_tmux_failure_raises_tmuxerror():
     with pytest.raises(tmux_inject.TmuxError):
         tmux_inject.send("/compact", pane="%32", runner=FakeRunner(returncode=1),
                          spawn=_noop_spawn)
+
+
+# ---------------------------------------------------------------------------
+# T3: refuse to inject into a pane with no agent in its process subtree
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_refuses_pane_with_no_agent(monkeypatch):
+    # The pane exists (display-message succeeds) but nothing in its subtree is
+    # claude/opencode — a stale id repointed at a shell, or a wrong explicit
+    # `pane` argument. Must refuse, not silently paste into whatever is there.
+    monkeypatch.setattr(tmux_inject, "_subtree_has_agent", lambda pid, kids: False)
+    r = FakeRunner()
+    with pytest.raises(tmux_inject.TmuxError, match="not running an agent"):
+        tmux_inject.send("/compact", pane="%32", runner=r, spawn=_noop_spawn)
+    # Nothing pasted once the agent-subtree check fails.
+    assert "load-buffer" not in r.verbs()
+
+
+@pytest.mark.smoke
+def test_agent_present_allows_injection():
+    # Sanity: the default fixture's "agent present" stub is exercised by every
+    # other test in this file; this asserts it explicitly for the happy path.
+    r = FakeRunner()
+    res = tmux_inject.send("/compact", pane="%32", runner=r, spawn=_noop_spawn)
+    assert res["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# T5: the deferred watcher survives its pane vanishing mid-wait, via the
+# pane's tmux session name
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_await_followup_reresolves_pane_after_session_hop():
+    # The original pane (%32) vanishes mid-wait (capture-pane fails once); the
+    # watcher falls back to the session's *current* pane (%99, per
+    # FakeRunner's reresolved_pane) and keeps watching — and pastes the resume
+    # against — that pane instead.
+    r = FakeRunner(reresolved_pane="%99")
+    n = {"captures": 0}
+
+    def flaky(argv, **kw):
+        if "capture-pane" in argv:
+            n["captures"] += 1
+            if n["captures"] == 1:
+                proc = subprocess.CompletedProcess(argv, 1, stdout="", stderr="gone")
+            else:
+                snapshot = ("Compacting conversation…" if n["captures"] == 2
+                           else "Compacted (ctrl+o to see full summary)\n❯ ")
+                proc = subprocess.CompletedProcess(argv, 0, stdout=snapshot, stderr="")
+            r.calls.append((argv, kw))
+            return proc
+        return r(argv, **kw)
+
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32", session="sess0",
+        socket=None, runner=flaky, sleep=lambda _s: None, clock=FakeClock())
+    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
+    assert loaded == [b"resume"]
+    # The resume must have been pasted against the re-resolved pane, not the
+    # vanished one.
+    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
+    assert any("%99" in argv for argv in pastes)
+
+
+@pytest.mark.smoke
+def test_await_followup_gives_up_if_session_also_gone():
+    # If the session itself is gone (re-resolve also fails), drop the resume
+    # cleanly rather than loop or crash.
+    r = FakeRunner(returncode=1)
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32", session=None,
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
+    assert loaded == []
+
+
+# ---------------------------------------------------------------------------
+# T6: fire on the compacting→anything transition, not on settled idle alone —
+# so an agent that self-resumes immediately after /compact isn't missed.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_await_followup_fires_when_agent_self_resumes_after_compacting():
+    # busy -> compacting -> busy again (the agent started its own next turn
+    # immediately, no idle gap, no lingering Compacted marker). Must still
+    # fire promptly on the very next sample after compacting, not wait for an
+    # idle streak that will never come.
+    r = FakeRunner(captures=[
+        "assistant working… esc to interrupt",     # driving turn
+        "Compacting conversation…",                  # compaction underway
+        "assistant working… esc to interrupt",       # self-resumed immediately
+        "assistant working… esc to interrupt",       # still going (must not matter)
+    ])
+    tmux_inject._await_and_followup(
+        "/compact", "resume now", "%32",
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
+    assert loaded == [b"resume now"]
+    caps = [argv for argv, _ in r.calls if "capture-pane" in argv]
+    # Fired on the third sample (first non-compacting after compacting) —
+    # never consumed the fourth.
+    assert len(caps) == 3

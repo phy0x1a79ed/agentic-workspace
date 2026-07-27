@@ -47,7 +47,7 @@ from awm.gateway.hub.lease import LeaseAlreadyHeld, get_lease_manager
 from awm.gateway.hub.registry import (
     NoBaseToShadow, PrefixConflict, ServiceRecord, get_registry,
 )
-from awm.gateway.hub.supervisor import update_service_journal_entry
+from awm.gateway.hub.supervisor import _resolve_identity, update_service_journal_entry
 
 log = logging.getLogger("awm.api.hub")
 
@@ -298,12 +298,21 @@ async def service_register(req: ServiceRegisterRequest) -> ServiceRegisterRespon
     # Overlays are ephemeral — they are never journaled (reconcile must not
     # respawn them; they belong to a live `awm dev shadow` process).
     if not rec.is_overlay:
+        # Journal identity that matches what a respawn will actually use: for a
+        # discoverable service, discovery is authoritative, so a self-register
+        # from a wrong worktree can never re-contaminate the journal's cwd. Only
+        # a non-discoverable external registration records its self-reported
+        # start_cmd/cwd (defense-in-depth complementing _resolve_identity's
+        # respawn-side win).
+        j_start, j_cwd = _resolve_identity(rec.name, {
+            "start_cmd": list(rec.start_cmd), "cwd": rec.cwd,
+        })
         update_service_journal_entry(rec.name, {
             "service_id": rec.service_id,
             "prefix": rec.prefix,
             "last_pid": rec.backend_pid,
-            "start_cmd": list(rec.start_cmd),
-            "cwd": rec.cwd,
+            "start_cmd": list(j_start),
+            "cwd": j_cwd,
             "last_register": _now_iso(),
             "control_ws_open": False,
         })
@@ -352,14 +361,33 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     except Exception:
         return
 
+    lm = get_lease_manager()
+    disconnect = asyncio.Event()
+
+    # Claim the lease BEFORE wiring up any per-service state. A duplicate
+    # instance must leave the incumbent untouched, and everything below this
+    # point is shared-by-service_id: `ensure_control` hands back the
+    # INCUMBENT's channel, the journal entry is the INCUMBENT's, and the
+    # teardown block marks it down and schedules a respawn on its behalf.
+    # Refusing here — before any of it — is what stops a rejected duplicate
+    # from amplifying into the respawn storm of 2026-07-27.
+    if not await lm.claim(service_id, disconnect):
+        log.warning("refusing duplicate control WS for service %s id=%s: "
+                    "lease already held", rec.name, service_id)
+        try:
+            await websocket.close(code=4409, reason="lease already held")
+        except Exception:
+            pass
+        return
+
     ch = rpc.ensure_control(service_id)
     log.info("control WS opened for service %s id=%s", rec.name, service_id)
 
     if not rec.is_overlay:
-        update_service_journal_entry(rec.name, {"control_ws_open": True})
-
-    lm = get_lease_manager()
-    disconnect = asyncio.Event()
+        # Same update-if-exists rule as the teardown below: this is a state
+        # update on a record register() already created, never a creation.
+        update_service_journal_entry(rec.name, {"control_ws_open": True},
+                                     create=False)
 
     async def writer() -> None:
         try:
@@ -396,12 +424,9 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     reader_task = asyncio.create_task(reader())
 
     try:
-        try:
-            await lm.hold(service_id, disconnect)
-        except LeaseAlreadyHeld:
-            await websocket.close(code=4409, reason="lease already held")
-            return
-        # hold returned: either the client closed, or a newer shadow evicted us.
+        # The lease is ours (claimed above); this only waits for the socket to
+        # drop or a newer shadow to evict us, then releases + evicts.
+        await lm.release(service_id, disconnect)
         notice = lm.take_eviction(service_id)
         if notice is not None:
             reason, evictor = notice
@@ -415,7 +440,13 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     finally:
         rec.backend_status = "down"
         if not rec.is_overlay:
-            update_service_journal_entry(rec.name, {"control_ws_open": False})
+            # update-if-exists: `services stop` removes the entry FIRST as its
+            # deliberate-stop signal, then blocks killing the process group —
+            # so this cleanup runs inside that window. Re-creating the entry
+            # here resurrects it as a pid-less stub, which the disconnect
+            # watchdog re-registers and `services start` then refuses forever.
+            update_service_journal_entry(
+                rec.name, {"control_ws_open": False}, create=False)
         writer_task.cancel()
         reader_task.cancel()
         rpc.drop_control(service_id)
@@ -436,7 +467,7 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
                     and not rec.is_overlay
                     and supervisor.load_service_journal().get(rec.name)
                     and discovery.is_enabled(rec.name)):
-                asyncio.create_task(supervisor.supervise_disconnect(rec.name))
+                supervisor.schedule_disconnect_watchdog(rec.name)
         except Exception:
             log.debug("disconnect watchdog hook skipped for %s",
                       rec.name, exc_info=True)
@@ -457,6 +488,11 @@ def _route_inbound(ch: "rpc.ControlChannel", service_id: str,
         if rec is not None:
             rec.api = ch.api
             rec.backend_status = "ready"
+            # Reaching ready is the only honest evidence a respawn worked, so
+            # it is what resets the crash-loop budget.
+            if not rec.is_overlay:
+                from awm.gateway.hub import supervisor as _sup
+                _sup.note_service_ready(rec.name)
     elif kind == "reply":
         ch.handle_reply(env)
     elif kind == "emit":

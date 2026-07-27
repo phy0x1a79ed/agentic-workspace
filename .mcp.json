@@ -1,0 +1,38 @@
+{
+  "mcpServers": {
+    "awm": {
+      "command": "/home/tony/lib/miniforge3/envs/awm/bin/awm-mcp",
+      "args": [],
+      "env": {
+        "AWM_WORKSPACE": "/home/tony/agentic_workspace",
+        "AWM_EXPOSED_HOST": "127.0.0.1",
+        "AWM_EXPOSED_PORT": "12100"
+      }
+    },
+    "chrome-devtools": {
+      "command": "/home/tony/lib/miniforge3/envs/awm/bin/npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--browserUrl",
+        "http://172.25.176.1:19222",
+        "--usageStatistics",
+        "false"
+      ],
+      "env": {
+        "PATH": "/home/tony/lib/miniforge3/envs/awm/bin:/usr/local/bin:/usr/bin:/bin"
+      }
+    },
+    "ollama": {
+      "command": "/home/tony/lib/miniforge3/envs/awm/bin/npx",
+      "args": [
+        "-y",
+        "@iflow-mcp/ollama-mcp"
+      ],
+      "env": {
+        "PATH": "/home/tony/lib/miniforge3/envs/awm/bin:/usr/local/bin:/usr/bin:/bin",
+        "OLLAMA_HOST": "http://172.25.176.1:11434"
+      }
+    }
+  }
+}

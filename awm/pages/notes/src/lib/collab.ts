@@ -27,6 +27,12 @@ export interface CollabHandlers {
   onText: (text: string) => void;
   // Connection lifecycle, for a subtle "live" indicator.
   onStatus?: (live: boolean) => void;
+  // Sync lifecycle of the local text vs the server room, for the save-state
+  // indicator: 'saving' while an edit is in flight, 'synced' once the server has
+  // confirmed our latest text, 'offline' when a send failed (edits remain safe
+  // in the local draft). This is what lets the status read "Synced" for a solo
+  // editor whose edits round-trip with no remote change.
+  onSync?: (state: 'saving' | 'synced' | 'offline') => void;
 }
 
 const rid = () => Math.random().toString(36).slice(2, 10);
@@ -60,14 +66,16 @@ export function createCollab(h: CollabHandlers) {
 
   async function doSend() {
     if (sending || noteId === null) return;
-    if (text === shadow) return;            // nothing new to send
+    if (text === shadow) { h.onSync?.('synced'); return; }  // nothing new — already agreed
     sending = true;
+    h.onSync?.('saving');
     const mine = text;
     const base = shadowV;
     // Optimistically treat `mine` as agreed, so integrating the reply (which
     // echoes `mine` back merged with any remote change) applies only the remote
     // delta rather than re-applying our own edit.
     shadow = mine;
+    let failed = false;
     try {
       const res = await svc('notes').fn<{ version: number; content: string; changed: boolean }>(
         'collab_edit', { id: noteId, base_version: base, content: mine, client_id: clientId },
@@ -75,9 +83,18 @@ export function createCollab(h: CollabHandlers) {
       integrate(res.content, res.version);
     } catch {
       shadow = ''; shadowV = -1;            // force a resync on next contact
+      failed = true;
     } finally {
       sending = false;
-      if (pendingSend || text !== shadow) { pendingSend = false; scheduleSend(0); }
+      if (pendingSend || text !== shadow) {
+        pendingSend = false;
+        scheduleSend(0);
+      } else if (failed) {
+        h.onSync?.('offline');              // edits stay safe in the local draft
+      } else {
+        // Server confirmed our latest text and nothing new is queued → synced.
+        h.onSync?.('synced');
+      }
     }
   }
 

@@ -235,6 +235,29 @@ stop** (the socket is the single source of truth for both sides). Implemented in
 `_connect_through_arbiter` (requester); the ssh manifest declares
 `sessions: [{"kind":"lease","transport":"direct"}]`.
 
+**The verdict answers "was the MFA budget spent?", not "did the connect
+succeed".** The slot exists solely to bound Duo attempts, so a connect that died
+**before the auth phase** reports `verdict ok` — it spent nothing, the account is
+not at risk, and holding the host would cost the operator an `/approve` for a
+failure that was never theirs. `SSHService._is_preauth_failure` classifies the
+captured ssh stderr and `_verdict_ok` maps it. The classification is deliberately
+**asymmetric**: mistaking an auth failure for pre-auth means retrying and burning
+the budget toward a real lockout, while the reverse is just a spurious hold — so
+only unambiguous markers count (`kex_exchange_identification`, `Exceeded
+MaxStartups`, `Connection refused`, DNS/routing), **any** auth-phase marker
+(`Permission denied`, `Duo`, `MFA`, …) vetoes, an askpass deviation vetoes (the
+Duo prompt was reached), and no/unrecognised evidence holds. It runs on the
+**requester**, so a borrowing node gets it from its own tree; an arbiter node's
+in-process connects need its tree updated too.
+
+**Peer cred fetch (`gatewayclient.fetch_peer_cred`)** gates every peer call and
+the lease, and the arbiter fails closed on it — so it retries transient ssh
+failures (exit 255 / timeout; a plain `cat` spends no MFA, unlike the attempt it
+guards) but raises at once on a definitive answer. `timeout` is a **total**
+budget, not per-attempt, so retries can't multiply the worst-case fail-closed
+latency. Async callers **must** use `fetch_peer_cred_async` — the sync fetch
+shells out to ssh and will otherwise stall the whole service's event loop.
+
 ## TLS
 
 Peer edges present certs signed by the shared **remote-audio root CA** (the same
