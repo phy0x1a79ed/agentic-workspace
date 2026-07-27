@@ -138,6 +138,9 @@ class SupervisedSubscription:
         self.last_connect_ts: float | None = None
         self.last_event_ts: float | None = None
         self.last_error: str | None = None
+        # Monotonic twin of last_connect_ts. Wall-clock can jump (NTP, suspend)
+        # and this measures a duration, not a moment.
+        self._connected_since: float | None = None
 
     # -- health -------------------------------------------------------------
 
@@ -148,8 +151,24 @@ class SupervisedSubscription:
         Deliberately *not* a function of when the last event arrived: a
         recovery topic is legitimately silent for weeks, and the idle deadline
         already replaces a socket that has gone quiet.
+
+        A live connection that has outlived the stability window counts as
+        putting the failures behind it, even though the counter itself is only
+        cleared when that connection ends. Without this, a subscription that
+        fails once and then reconnects successfully reports unhealthy for as
+        long as the good connection lasts — which is forever, for a socket that
+        never drops again. That is the worst possible failure for this signal:
+        it exists because a dead subscription was once indistinguishable from a
+        quiet one, and a health flag that is permanently red is exactly as
+        uninformative as one that is permanently green.
         """
-        return bool(self.connected) and self.consecutive_failures == 0
+        if not self.connected:
+            return False
+        if self.consecutive_failures == 0:
+            return True
+        started = self._connected_since
+        return (started is not None
+                and (time.monotonic() - started) >= self._stability)
 
     def health(self) -> dict[str, Any]:
         """A status-block dict. Never raises — callers report health when
@@ -166,6 +185,13 @@ class SupervisedSubscription:
                 "handler_errors": self.handler_errors,
                 "consecutive_failures": self.consecutive_failures,
                 "connected_at": self.last_connect_ts,
+                # How long the CURRENT connection has held. Past the stability
+                # window this is what makes a once-failed subscription healthy
+                # again, so it should be readable rather than inferred.
+                "connected_for_s": (
+                    round(time.monotonic() - self._connected_since, 1)
+                    if self._connected_since is not None else None
+                ),
                 "last_event_at": self.last_event_ts,
                 "last_event_age_s": (
                     round(now - self.last_event_ts, 1)
@@ -210,6 +236,7 @@ class SupervisedSubscription:
                 self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
                 self.connected = False
+                self._connected_since = None
 
             lasted = time.monotonic() - started
             if lasted >= self._stability:
@@ -246,6 +273,7 @@ class SupervisedSubscription:
             self.reconnects += 1
         self.connected = True
         self.last_connect_ts = time.time()
+        self._connected_since = time.monotonic()
         log.info("subscription %s: connected (attempt #%d)",
                  self.name, self.connects)
         try:

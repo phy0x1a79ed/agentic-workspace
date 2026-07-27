@@ -190,3 +190,69 @@ class TestHealth:
         assert h["last_event_age_s"] is not None
         assert set(h) >= {"connected", "healthy", "reconnects",
                           "handler_errors", "last_error"}
+
+
+class TestHealthAfterRecovery:
+    """A subscription that failed once and then reconnected must not read
+    unhealthy for the whole life of the good connection.
+
+    ``consecutive_failures`` is only cleared when a connection *ends* having
+    lasted past the stability window, so a socket that reconnects and then
+    never drops again would otherwise report unhealthy forever. That is the
+    worst possible failure for this particular signal: it exists because a dead
+    subscription was once indistinguishable from a quiet one, and a health flag
+    stuck on red is exactly as uninformative as one stuck on green.
+    """
+
+    @staticmethod
+    def _sub(**kw):
+        async def _factory():
+            if False:
+                yield None
+
+        async def _handler(_ev):
+            pass
+
+        return SupervisedSubscription("t/topic", _factory, _handler, **kw)
+
+    def test_disconnected_is_never_healthy(self):
+        s = self._sub()
+        s.connected = False
+        s.consecutive_failures = 0
+        assert s.healthy is False
+
+    def test_clean_connection_is_healthy(self):
+        s = self._sub()
+        s.connected = True
+        s.consecutive_failures = 0
+        assert s.healthy is True
+
+    def test_fresh_reconnect_after_failure_is_not_yet_healthy(self):
+        """Still inside the stability window — it has not proven itself yet."""
+        import time
+        s = self._sub(stability_seconds=30.0)
+        s.connected = True
+        s.consecutive_failures = 2
+        s._connected_since = time.monotonic() - 5
+        assert s.healthy is False
+
+    def test_connection_outliving_stability_is_healthy_again(self):
+        import time
+        s = self._sub(stability_seconds=30.0)
+        s.connected = True
+        s.consecutive_failures = 2
+        s._connected_since = time.monotonic() - 31
+        assert s.healthy is True
+
+    def test_connected_for_s_is_reported(self):
+        import time
+        s = self._sub()
+        s.connected = True
+        s._connected_since = time.monotonic() - 10
+        assert s.health()["connected_for_s"] >= 9.9
+
+    def test_connected_for_s_is_none_while_down(self):
+        s = self._sub()
+        s.connected = False
+        s._connected_since = None
+        assert s.health()["connected_for_s"] is None
