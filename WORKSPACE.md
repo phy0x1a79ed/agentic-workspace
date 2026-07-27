@@ -138,6 +138,7 @@ A **hub** scope integrates work from a set of **peripheral** feature scopes via 
 |-----|--------|-------------------------------------------------|
 | `feat-dag` | `feat/feat-dag` | `svc-agents`, `svc-orchestrator`, `svc-events`, `web-stt`, `web-tts`, `web-ui` |
 | `feat-gamebot` | `feat/feat-gamebot` | `svc-effector`, `svc-events`, `rlm-browser`, `rlm-factorio` |
+| `feat-fleet` | `feat/feat-fleet` | `svc-agents` |
 | `dev` | `dev` | all promotable scopes (the `svc-*`, `web-*`, `rlm-*` set) |
 
 This is the canonical, shared copy; each hub may mirror its own row into its `.awm/context.md` (gitignored, so local-only) for a hub agent to find it without walking up here.
