@@ -85,11 +85,36 @@ def test_status_reports_derived_caps_and_the_arming_guard(adapter):
     assert "duty_cycle_pct_of_one_core" in s["duty"]
 
 
-def test_arm_cannot_arm_a_non_production_origin(adapter):
-    out = adapter.HANDLERS["arm"]({"armed": True, "dry_run": False})
+def test_arm_cannot_go_live_on_a_non_production_origin(adapter):
+    out = adapter.HANDLERS["arm"]({"mode": "live"})
+    assert out["mode"] == "observe"
     assert out["armed"] is False
-    assert out["effective"] is False
     assert "not the production origin" in out["note"]
+
+
+def test_arm_rejects_an_unknown_mode(adapter):
+    with pytest.raises(ValueError, match="unknown mode"):
+        adapter.HANDLERS["arm"]({"mode": "yolo"})
+
+
+def test_arm_reads_the_current_posture_without_changing_it(adapter):
+    before = adapter.HANDLERS["arm"]({})
+    assert before["requested"] is None
+    assert adapter.HANDLERS["arm"]({})["mode"] == before["mode"]
+
+
+def test_every_posture_is_reachable_from_the_cli(adapter):
+    """The rollback direction is the one that has to work under pressure.
+
+    A boolean manifest parameter becomes a bare CLI flag, which can only turn a
+    setting on — so postures are a single string, and going back is just
+    another value.
+    """
+    for mode in ("observe", "shadow", "live"):
+        params = adapter.API_MANIFEST["functions"]
+        arm = next(f for f in params if f["name"] == "arm")
+        assert arm["params"][0]["type"] == "string"
+        assert mode in adapter.MODES
 
 
 def test_tune_rejects_unknown_thresholds_and_applies_known_ones(adapter):

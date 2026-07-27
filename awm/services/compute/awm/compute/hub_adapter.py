@@ -100,16 +100,18 @@ API_MANIFEST: dict[str, Any] = {
             "name": "arm",
             "tool": "compute_arm",
             "description": (
-                "Arm or disarm the watchdog and toggle dry-run. Disarmed or "
-                "dry-run, it judges and records exactly as normal but signals "
-                "nothing — the shadow mode to run before trusting it. Arming "
-                "only takes effect on the production gateway; a dev sandbox's "
-                "copy stays observation-only regardless, so starting a sandbox "
-                "cannot put a second watchdog on the same processes."
+                "Set the watchdog's posture: 'observe' (judges and records, "
+                "clearly not enforcing), 'shadow' (records exactly what it "
+                "WOULD do and signals nothing — run this before trusting it), "
+                "or 'live' (acts). Pass nothing to read the current posture. "
+                "Going back to observe or shadow is the instant rollback, no "
+                "restart needed. 'live' only takes effect on the production "
+                "gateway; a dev sandbox's copy stays observation-only "
+                "regardless, so starting a sandbox cannot put a second "
+                "watchdog on the same processes."
             ),
             "params": [
-                {"name": "armed", "type": "boolean", "required": False},
-                {"name": "dry_run", "type": "boolean", "required": False},
+                {"name": "mode", "type": "string", "required": False},
             ],
         },
         {
@@ -184,20 +186,38 @@ def _h_decisions(args: dict) -> dict:
     return {"decisions": store.recent_decisions(int(args.get("limit") or 50))}
 
 
+# One string beats two booleans here: the CLI generator renders a boolean
+# parameter as a bare flag, which can only ever turn a setting ON — leaving no
+# way to roll back from the command line, which is the one direction that has
+# to work under pressure.
+MODES = {
+    "observe": {"armed": False, "dry_run": True},
+    "shadow": {"armed": True, "dry_run": True},
+    "live": {"armed": True, "dry_run": False},
+}
+
+
+def _current_mode() -> str:
+    if not WATCHER.armed:
+        return "observe"
+    return "shadow" if WATCHER.dry_run else "live"
+
+
 def _h_arm(args: dict) -> dict:
-    values = {}
-    if args.get("armed") is not None:
-        values["armed"] = bool(args["armed"])
-    if args.get("dry_run") is not None:
-        values["dry_run"] = bool(args["dry_run"])
-    if values:
-        store.set_settings(values)
+    mode = (args.get("mode") or "").strip().lower()
+    if mode:
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode!r}; one of {sorted(MODES)}")
+        store.set_settings(MODES[mode])
         WATCHER.reload_settings()
+        log.info("compute watchdog posture -> %s (effective: %s)",
+                 mode, _current_mode())
     return {
+        "mode": _current_mode(),
+        "requested": mode or None,
         "armed": WATCHER.armed,
         "dry_run": WATCHER.dry_run,
         "arm_eligible": WATCHER.arm_eligible,
-        "effective": WATCHER.armed and not WATCHER.dry_run,
         "note": (
             "" if WATCHER.arm_eligible else
             "this gateway is not the production origin — the watchdog stays "
