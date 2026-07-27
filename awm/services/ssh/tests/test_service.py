@@ -96,6 +96,23 @@ class TestConfig:
         assert "awm-ssh-locks" in p
 
 
+@pytest.fixture(autouse=True)
+def _no_live_gateway(monkeypatch):
+    """No test may reach the live fleet.
+
+    The service now asks the 2fa service to attribute a failure and to verify
+    the approver's health. Left unpatched, those calls hit whatever gateway is
+    running on the developer's machine, and the suite's verdict starts
+    depending on whether Duo happens to be reachable right now. Tests that
+    care about those answers patch this themselves — a later setattr wins.
+    """
+    async def _refuse(*_a, **_kw):
+        raise RuntimeError("test tried to reach the live gateway")
+
+    monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _refuse)
+    monkeypatch.setattr(ssh_service.gatewayclient, "call", _refuse)
+
+
 @pytest.fixture
 def isolated_dirs(tmp_path, monkeypatch):
     """Redirect lock/live dirs so breaker tests never touch the real ~/.ssh."""
@@ -134,6 +151,61 @@ class TestCircuitBreaker:
         # Hold persists (only a Discord /approve window lifts it).
         assert svc._read_lock(cfg) is not None
 
+    async def test_preauth_failure_does_not_trip_breaker(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A connect that dies before the auth phase spends no MFA attempt, so
+        holding the host would be a false positive costing the operator an
+        /approve. Seen live: both fir login nodes at `Exceeded MaxStartups`."""
+        live, _ = isolated_dirs
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        (live / "fir.connect.stderr").write_text(
+            "kex_exchange_identification: Connection closed by remote host\n"
+            "Connection closed by 206.12.125.2 port 22\n")
+
+        tripped: list[str] = []
+
+        async def _trip(c, r):
+            tripped.append(r)
+
+        async def _fail_attempt(c, marker):
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(svc, "_trip_breaker", _trip)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
+
+        result = await svc._do_connect_attempt(cfg, gated=False)
+
+        assert result["status"] == "error"
+        assert tripped == [], "pre-auth failure must not trip the breaker"
+        assert svc._read_lock(cfg) is None, "no hold for a failure that spent nothing"
+        assert "safe to retry" in result["error"]
+
+    async def test_auth_failure_still_trips_breaker(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The protective default is unchanged for anything that reached auth."""
+        live, _ = isolated_dirs
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        (live / "fir.connect.stderr").write_text(
+            "phyberos@fir.computecanada.ca: Permission denied (keyboard-interactive).\n")
+
+        tripped: list[str] = []
+
+        async def _trip(c, r):
+            tripped.append(r)
+
+        async def _fail_attempt(c, marker):
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(svc, "_trip_breaker", _trip)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
+
+        await svc._do_connect_attempt(cfg, gated=False)
+        assert len(tripped) == 1, "an auth failure must still hold the host"
+
     async def test_no_unlock_verb_or_method(self) -> None:
         # Agents must not be able to clear their own hold.
         from awm.ssh import hub_adapter
@@ -141,6 +213,13 @@ class TestCircuitBreaker:
         verbs = [f["name"] for f in hub_adapter.API_MANIFEST["functions"]]
         assert "unlock" not in verbs
         assert not hasattr(SSHService, "unlock")
+        # Pinned, not merely filtered: adding ANY verb to this service has to
+        # come here first and be argued for. A hold is lifted only by an
+        # operator /approve, never by something an agent can call.
+        assert set(hub_adapter.HANDLERS) == {
+            "connect", "disconnect", "status", "notify_test", "receive_test",
+        }
+        assert set(verbs) == set(hub_adapter.HANDLERS)
 
     async def test_approve_window_lifts_hold_and_reconnects(
             self, isolated_dirs, monkeypatch) -> None:
@@ -307,6 +386,86 @@ class TestCircuitBreaker:
         assert "askpass deviation" in reason
 
 
+class TestPreAuthClassification:
+    """`_is_preauth_failure` decides whether a failed connect spent an MFA attempt.
+
+    The two mistakes are NOT symmetric: calling an auth failure "pre-auth" means we
+    keep retrying and burn the budget toward a real provider lockout, while calling
+    a pre-auth failure "auth" merely costs a spurious /approve. Every test here
+    pins the conservative direction.
+    """
+
+    def _svc_cfg(self, live, stderr: str | None):
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        if stderr is not None:
+            (live / "fir.connect.stderr").write_text(stderr)
+        return svc, cfg
+
+    @pytest.mark.parametrize("blob", [
+        "kex_exchange_identification: Connection closed by remote host",
+        "Exceeded MaxStartups",
+        "ssh: connect to host fir port 22: Connection refused",
+        "ssh: Could not resolve hostname fir: Name or service not known",
+        "ssh: connect to host fir port 22: No route to host",
+        "ssh: connect to host fir port 22: Network is unreachable",
+    ])
+    def test_unambiguous_preauth_markers(self, isolated_dirs, blob) -> None:
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, blob)
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is True
+
+    @pytest.mark.parametrize("blob", [
+        "Permission denied (keyboard-interactive).",
+        "Too many authentication failures",
+        "Authentication failed.",
+        "Your account is locked",
+        "Duo two-factor login for phyberos",
+        "MFA required",
+    ])
+    def test_auth_phase_markers_are_not_preauth(self, isolated_dirs, blob) -> None:
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, blob)
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+
+    def test_auth_marker_vetoes_a_preauth_marker(self, isolated_dirs) -> None:
+        """THE safety-critical case: if both appear, auth wins and we hold. An ssh
+        run that failed auth and then lost the connection must never read as
+        'spent nothing, retry freely'."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(
+            live,
+            "Permission denied (keyboard-interactive).\n"
+            "kex_exchange_identification: Connection closed by remote host\n")
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+
+    def test_askpass_deviation_vetoes(self, isolated_dirs) -> None:
+        """The marker means we reached the Duo prompt, so a push may have fired —
+        regardless of how the connection then died."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, "Exceeded MaxStartups")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text("deviation")
+        assert svc._is_preauth_failure(cfg, marker) is False
+
+    def test_missing_stderr_is_not_preauth(self, isolated_dirs) -> None:
+        """No evidence is not evidence of safety — hold."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, None)
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+
+    def test_empty_stderr_is_not_preauth(self, isolated_dirs) -> None:
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, "   \n\n")
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+
+    def test_unrecognised_stderr_is_not_preauth(self, isolated_dirs) -> None:
+        """Default is protective for anything we don't positively recognise."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, "some novel ssh explosion nobody has seen")
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+
+
 class TestStateMachine:
     """The connect/disconnect state machine: dedup, breaker-safe timeout,
     disconnect-during-auth deferral, and the CONNECTED liveness probe."""
@@ -452,7 +611,12 @@ class TestStateMachine:
         async def _spawn(*a, **k):
             return _Proc()
 
+        async def _fake_maybe_peer(_peer, service, verb, args=None, **kw):
+            return await _fake_call(service, verb, args, **kw)
+
         monkeypatch.setattr(ssh_service.gatewayclient, "call", _fake_call)
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
+                            _fake_maybe_peer)
         monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
         monkeypatch.setattr(svc, "_check_master", _true)    # master appears at once
 
@@ -933,6 +1097,65 @@ class TestSlotArbiter:
         assert tripped == []                          # arbiter owns LOCKED, not this
         assert svc._read_lock(cfg) is None            # gated writes no local lock
 
+    async def test_gated_preauth_failure_frees_slot_without_locking(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The lease verdict answers "was the MFA budget spent?", not "did the
+        connect succeed". A pre-auth failure spent nothing, so the arbiter must
+        free the slot and leave the host UNLOCKED — otherwise a saturated login
+        node (MaxStartups) holds fir fleet-wide behind an /approve."""
+        live, _ = isolated_dirs
+        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)  # local arbiter
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        (live / "fir.connect.stderr").write_text(
+            "kex_exchange_identification: Connection closed by remote host")
+
+        alerts: list[str] = []
+        monkeypatch.setattr(svc, "_alert", lambda t: alerts.append(t) or _noop_alert(t))
+
+        async def _fail_attempt(c, marker):
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
+
+        result = await svc._connect_via_local_arbiter(cfg)
+
+        assert result["status"] == "error"
+        assert svc._read_lock(cfg) is None, "pre-auth must not LOCK the arbiter"
+        assert alerts == [], "nothing to page the operator about — nothing was spent"
+        assert "fir" not in svc._leased, "slot must be freed for the next attempt"
+        assert "_preauth" not in result, "internal flag must not leak to the agent"
+        assert "_lock_reason" not in result
+
+    async def test_gated_auth_failure_still_locks_the_arbiter(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The fleet-global hold is unchanged for a failure that reached auth."""
+        live, _ = isolated_dirs
+        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        (live / "fir.connect.stderr").write_text(
+            "Permission denied (keyboard-interactive).")
+
+        monkeypatch.setattr(svc, "_alert", _noop_alert)
+
+        async def _fail_attempt(c, marker):
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _fail_attempt)
+
+        await svc._connect_via_local_arbiter(cfg)
+        assert svc._read_lock(cfg) is not None, "auth failure must still hold fir"
+        assert "fir" not in svc._leased
+
+    async def test_verdict_ok_semantics(self) -> None:
+        assert SSHService._verdict_ok({"status": "connected"}) is True
+        assert SSHService._verdict_ok({"status": "error", "_preauth": True}) is True
+        assert SSHService._verdict_ok({"status": "error", "_preauth": False}) is False
+        assert SSHService._verdict_ok({"status": "error"}) is False
+
     async def test_do_connect_routes_2fa_host_through_gated_arbiter(
             self, isolated_dirs, monkeypatch) -> None:
         monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)  # local arbiter
@@ -962,3 +1185,269 @@ class TestSlotArbiter:
         result = await svc._do_connect(resolve_host("chamois"))  # no twofa_device
         assert result["status"] == "connected"
         assert seen["gated"] is False                 # ungated per-node local path
+
+
+class TestApproveObservability:
+    """The /approve wire must be visible: an acknowledgement the operator can
+    see, and a health block they can check before an emergency."""
+
+    async def test_ack_failure_cannot_close_the_window(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The window is decided synchronously; the receipt is a separate,
+        best-effort step afterwards. A Discord outage must not be able to
+        swallow a recovery the operator already authorised."""
+        svc = SSHService()
+        cfg = resolve_host("fir")
+
+        async def _boom(*_a, **_kw):
+            raise RuntimeError("discord is down")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _boom)
+        await svc._on_approve_event({
+            "command": "approve", "device": cfg.twofa_device,
+            "account": "discord-bot", "channel_id": "123",
+        })
+        assert svc._approve_active(cfg.twofa_device)
+
+    async def test_ack_is_sent_for_a_valid_approve(
+            self, isolated_dirs, monkeypatch) -> None:
+        sent = []
+
+        async def _capture(peer, service, fn, args):
+            sent.append((service, fn, args))
+            return {"ok": True}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _capture)
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        await svc._on_approve_event({
+            "command": "approve", "device": cfg.twofa_device,
+            "account": "discord-bot", "channel_id": "123",
+        })
+        assert len(sent) == 1
+        service, fn, args = sent[0]
+        assert (service, fn) == ("social", "send")
+        assert cfg.twofa_device in args["text"]
+        # A receipt, never an instruction: nothing here should train a reflex
+        # to re-run /approve, which spends multi-factor budget.
+        assert "/approve" not in args["text"]
+
+    async def test_unrelated_commands_are_not_acked(
+            self, isolated_dirs, monkeypatch) -> None:
+        sent = []
+
+        async def _capture(*a, **kw):
+            sent.append(a)
+            return {"ok": True}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _capture)
+        svc = SSHService()
+        await svc._on_approve_event({"command": "something-else"})
+        assert sent == []
+
+    async def test_status_reports_a_missing_subscription_as_unhealthy(
+            self, isolated_dirs) -> None:
+        svc = SSHService()          # listener never started
+        st = await svc.status()
+        assert st["subscription"]["healthy"] is False
+        assert st["approval_windows"] == {}
+
+    async def test_status_reports_open_windows_read_only(
+            self, isolated_dirs) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._handle_approve({"command": "approve", "device": cfg.twofa_device})
+        st = await svc.status()
+        assert st["approval_windows"][cfg.twofa_device] > 0
+
+
+class TestReceiveTest:
+    """The inbound self-test: prove this service can still HEAR an /approve."""
+
+    async def test_probe_is_intercepted_and_never_reaches_the_handler(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+
+        emitted = {}
+
+        async def _emit(peer, service, fn, args):
+            emitted.update(args)
+            # Deliver it the way the subscription would.
+            svc._intercept_probe({"command": ssh_service._PROBE_COMMAND,
+                                  "nonce": args["nonce"]})
+            return {"ok": True}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _emit)
+        svc._approve_sub = object()   # a listener exists
+        result = await svc.receive_test(timeout=2.0)
+        assert result["received"] is True
+        # Inert: no window opened, no lockfile written.
+        assert svc._approve_until == {}
+        assert not os.path.exists(lock_path(resolve_host("fir")))
+
+    async def test_deafness_fails_loudly(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+
+        async def _emit_into_the_void(*_a, **_kw):
+            return {"ok": True}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
+                            _emit_into_the_void)
+        svc._approve_sub = object()
+        with pytest.raises(RuntimeError, match="DEAF"):
+            await svc.receive_test(timeout=0.2)
+
+    async def test_emit_failure_does_not_read_as_deafness(
+            self, isolated_dirs, monkeypatch) -> None:
+        """An un-upgraded peer that lacks emit_probe is a different fault, and
+        must not be reported as 'you cannot receive'."""
+        svc = SSHService()
+
+        async def _no_such_verb(*_a, **_kw):
+            raise RuntimeError("unknown function emit_probe")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer",
+                            _no_such_verb)
+        svc._approve_sub = object()
+        with pytest.raises(RuntimeError) as exc:
+            await svc.receive_test(timeout=0.2)
+        assert "could not ask social" in str(exc.value)
+        assert "DEAF" not in str(exc.value)
+
+
+class TestActiveSignalUnlock:
+    """A hold releases only on an affirmative assertion that it is safe to.
+    Never because time passed, never because no error was seen."""
+
+    def _fake_2fa(self, monkeypatch, *, ping=None, reachability=None,
+                  boom: bool = False):
+        calls = []
+
+        async def _call(peer, service, fn, args=None, **kw):
+            calls.append((service, fn, args))
+            if boom:
+                raise RuntimeError("2fa unreachable")
+            if service == "social":
+                return {"ok": True}
+            if fn == "ping":
+                return ping if ping is not None else {"reachable": False}
+            if fn == "reachability":
+                return reachability if reachability is not None else {}
+            return {}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+        return calls
+
+    async def test_timeout_while_the_approver_was_dead_is_self_attributed(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The 2026-07-26 shape: fir's hold read 'connect exceeded 120s' — true
+        but misattributed. Nothing was wrong with fir; our own approver could
+        not reach Duo."""
+        self._fake_2fa(monkeypatch, reachability={"last_reachable_at": None})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        await svc._trip_breaker(cfg, "connect exceeded 120s")
+        assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_SELF
+
+    async def test_a_recently_healthy_approver_makes_it_external(
+            self, isolated_dirs, monkeypatch) -> None:
+        self._fake_2fa(monkeypatch,
+                       reachability={"last_reachable_at": time.time()})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        await svc._trip_breaker(cfg, "connect exceeded 120s")
+        assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_EXTERNAL
+
+    async def test_an_auth_rejection_is_never_self_attributed(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The veto. Auth was reached, so an MFA attempt was spent and the
+        failure is not ours to forgive."""
+        self._fake_2fa(monkeypatch, reachability={"last_reachable_at": None})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        await svc._trip_breaker(
+            cfg, "connect exceeded 120s; ssh: Permission denied "
+                 "(keyboard-interactive).")
+        assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_EXTERNAL
+
+    async def test_an_unaskable_2fa_service_is_never_self_attributed(
+            self, isolated_dirs, monkeypatch) -> None:
+        """Failing to establish self-attribution is not evidence of it."""
+        self._fake_2fa(monkeypatch, boom=True)
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        monkeypatch.setattr(svc, "_alert", _noop_alert)
+        await svc._trip_breaker(cfg, "connect exceeded 120s")
+        assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_EXTERNAL
+
+    async def test_external_holds_are_never_self_cleared(
+            self, isolated_dirs, monkeypatch) -> None:
+        self._fake_2fa(monkeypatch, ping={"reachable": True})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "Permission denied",
+                        cause=ssh_service._CAUSE_EXTERNAL)
+        assert await svc._maybe_self_clear(cfg) is False
+        assert svc._read_lock(cfg) is not None
+
+    async def test_a_self_inflicted_hold_needs_a_positive_assertion(
+            self, isolated_dirs, monkeypatch) -> None:
+        """Not 'no error seen' — a live round-trip, or the hold stands."""
+        self._fake_2fa(monkeypatch, ping={"reachable": False})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "connect exceeded 120s",
+                        cause=ssh_service._CAUSE_SELF)
+        assert await svc._maybe_self_clear(cfg) is False
+        assert svc._read_lock(cfg) is not None
+
+    async def test_a_healthy_approver_releases_a_self_inflicted_hold(
+            self, isolated_dirs, monkeypatch) -> None:
+        self._fake_2fa(monkeypatch, ping={"reachable": True})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "connect exceeded 120s",
+                        cause=ssh_service._CAUSE_SELF)
+        assert await svc._maybe_self_clear(cfg) is True
+        assert svc._read_lock(cfg) is None
+
+    async def test_self_clear_grants_permission_not_an_attempt(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The G1 boundary. Clearing a hold makes the ask possible; it must
+        never BE the ask. Nothing here may reach ssh."""
+        self._fake_2fa(monkeypatch, ping={"reachable": True})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "connect exceeded 120s",
+                        cause=ssh_service._CAUSE_SELF)
+
+        async def _boom(*a, **k):
+            raise AssertionError("no connect may be started by a self-clear")
+
+        monkeypatch.setattr(svc, "_check_master", _boom)
+        monkeypatch.setattr(svc, "_attempt_master", _boom)
+        monkeypatch.setattr(svc, "_do_connect", _boom)
+
+        assert await svc._maybe_self_clear(cfg) is True
+        await asyncio.sleep(0.05)          # nothing scheduled, nothing fires
+
+    async def test_an_unreadable_lockfile_is_never_self_cleared(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A torn read degrades to 'locked for an unreadable reason', which
+        carries no cause — and no cause means operator-only."""
+        self._fake_2fa(monkeypatch, ping={"reachable": True})
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        Path(lock_path(cfg)).write_text("{not json")
+        assert await svc._maybe_self_clear(cfg) is False
+
+    async def test_lockfile_write_is_atomic(
+            self, isolated_dirs) -> None:
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        svc._write_lock(cfg, "reason", cause=ssh_service._CAUSE_SELF)
+        _, locks = isolated_dirs
+        assert [p.name for p in locks.iterdir()] == ["fir.lock"]
+        assert json.loads(Path(lock_path(cfg)).read_text())["cause"] == \
+            ssh_service._CAUSE_SELF

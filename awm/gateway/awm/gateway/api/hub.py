@@ -365,7 +365,10 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     log.info("control WS opened for service %s id=%s", rec.name, service_id)
 
     if not rec.is_overlay:
-        update_service_journal_entry(rec.name, {"control_ws_open": True})
+        # Same update-if-exists rule as the teardown below: this is a state
+        # update on a record register() already created, never a creation.
+        update_service_journal_entry(rec.name, {"control_ws_open": True},
+                                     create=False)
 
     lm = get_lease_manager()
     disconnect = asyncio.Event()
@@ -424,7 +427,13 @@ async def service_control(websocket: WebSocket, service_id: str) -> None:
     finally:
         rec.backend_status = "down"
         if not rec.is_overlay:
-            update_service_journal_entry(rec.name, {"control_ws_open": False})
+            # update-if-exists: `services stop` removes the entry FIRST as its
+            # deliberate-stop signal, then blocks killing the process group —
+            # so this cleanup runs inside that window. Re-creating the entry
+            # here resurrects it as a pid-less stub, which the disconnect
+            # watchdog re-registers and `services start` then refuses forever.
+            update_service_journal_entry(
+                rec.name, {"control_ws_open": False}, create=False)
         writer_task.cancel()
         reader_task.cancel()
         rpc.drop_control(service_id)

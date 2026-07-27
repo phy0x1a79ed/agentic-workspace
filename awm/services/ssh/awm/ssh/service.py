@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import stat
 import time
 from dataclasses import dataclass
@@ -48,6 +49,11 @@ _CHECK_TIMEOUT = 10.0
 # pile-up of simultaneously-wedged probes.
 _RECONCILE_WAIT_TIMEOUT = 60.0
 
+# Which node is speaking. Under federation two ssh services consume the same
+# social/command stream and both will acknowledge an /approve; naming the node
+# makes that informative rather than confusing.
+_NODE_NAME = socket.gethostname()
+
 # Discord notifications target for lockout alerts: unimatrix0#notifications.
 _ALERT_ACCOUNT = "discord-bot"
 _ALERT_CHANNEL = "1522674357762261112"
@@ -59,6 +65,26 @@ _ALERT_CHANNEL = "1522674357762261112"
 # gatewayclient.peer_env so a reconnect picks up a change without a restart.
 _TWOFA_PEER_ENV = "AWM_TWOFA_PEER"
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
+# The synthetic command name `social emit_probe` carries (mirrors social's
+# PROBE_COMMAND). Not a registered slash command, so no operator can produce
+# one and no domain handler will ever match it.
+_PROBE_COMMAND = "__awm_probe__"
+
+# Cause buckets recorded in the lockfile. A hold is a statement about WHY
+# automated access is refused, and the two answers differ in what can lift it.
+#   _CAUSE_EXTERNAL — the host, the credentials, or anything we cannot verify.
+#     Only an operator /approve lifts it. This is the default for everything,
+#     including an unrecognised cause: silence is never evidence.
+#   _CAUSE_SELF — attributable to OUR OWN approver being unable to function
+#     (Duo unreachable from this fleet). Verifiably gone once the approver is
+#     healthy again, so requiring a human then is the trap the incident of
+#     2026-07-26 walked into: the hold on fir recorded "connect exceeded 120s",
+#     which was true but misattributed — nothing was wrong with fir.
+_CAUSE_EXTERNAL = "external"
+_CAUSE_SELF = "approver-unavailable"
+# How recent a verified Duo round-trip must be to count as a fresh positive
+# assertion. Short on purpose: this is the whole safety margin.
+_SELF_CLEAR_FRESH_SECONDS = 120.0
 # Connection-slot arbiter selector (federation). For a lockout-sensitive host,
 # EXACTLY ONE attempt may be in flight across the whole fleet — the per-node
 # breaker isn't enough once several nodes drive the same account. So a gated
@@ -85,6 +111,48 @@ _NOTABLE_STDERR = (
     "Connection timed out",
     "Could not resolve hostname",
     "Operation timed out",
+    "kex_exchange_identification",
+    "Exceeded MaxStartups",
+)
+
+# --- pre-auth vs auth failure classification -------------------------------
+#
+# The breaker exists for ONE reason: bound the MFA attempts spent toward provider
+# lockout (fir re-locks at 10 failed Duo). A connect that dies BEFORE the auth
+# phase spends nothing, so holding the host for it — and making the operator run
+# `/approve` to clear it — is a false positive. Seen live 2026-07-15: both fir
+# login nodes answered `Exceeded MaxStartups` (sshd's pre-auth connection cap),
+# ssh died at `kex_exchange_identification`, zero Duo pushes fired, and the
+# arbiter still locked fir fleet-wide.
+#
+# Classification is deliberately ASYMMETRIC, because the two mistakes are not
+# equally bad:
+#   * calling an AUTH failure "pre-auth"  -> we keep retrying and burn the MFA
+#     budget toward a real lockout. CATASTROPHIC.
+#   * calling a PRE-AUTH failure "auth"   -> a spurious hold + an /approve. Mild;
+#     it is exactly today's behaviour.
+# So: only these unambiguous markers count as pre-auth, and ANY auth-phase marker
+# (below) VETOES the classification. Silence is not evidence — an empty stderr is
+# treated as an auth failure, i.e. we hold.
+_PREAUTH_STDERR = (
+    "kex_exchange_identification",   # died during key exchange — before auth
+    "Exceeded MaxStartups",          # sshd's pre-auth connection cap
+    "Connection refused",            # no TCP listener
+    "Could not resolve hostname",    # never left this host
+    "No route to host",
+    "Network is unreachable",
+)
+
+# Any of these means the auth phase was reached, so an MFA attempt may have been
+# spent. Vetoes _PREAUTH_STDERR even if a pre-auth marker also appears (e.g. a
+# retry inside one ssh invocation that failed auth, then lost the connection).
+_AUTH_PHASE_STDERR = (
+    "Permission denied",
+    "Too many authentication failures",
+    "Authentication failed",
+    "locked",
+    "MFA",
+    "Duo",
 )
 
 
@@ -142,6 +210,11 @@ class SSHService:
         self._arbiter_lock = asyncio.Lock()
         self._social_task: asyncio.Task | None = None
         self._reconcile_task: asyncio.Task | None = None
+        # The live /approve subscription, once started. Read by `status` — the
+        # only way to see this wire is broken before an emergency needs it.
+        self._approve_sub: Any = None
+        # nonce -> future, for the inbound self-test (`receive_test`).
+        self._probe_waiters: dict[str, asyncio.Future] = {}
         # Held open for the process lifetime once acquired, so the flock stays
         # held (releasing on process death). Stored to keep the fd from being GC'd.
         self._singleton_fd: int | None = None
@@ -157,15 +230,22 @@ class SSHService:
         # Subscribe to the social service's slash commands so a Discord /approve
         # opens the recovery window (best-effort + self-reconnecting; inert when
         # no social service is present). Mirrors the 2fa service's listener.
+        # Started independently: a failure to create either must not take the
+        # other down with it. They used to share one try/except.
         try:
-            loop = asyncio.get_running_loop()
-            self._social_task = loop.create_task(self._approve_listener())
+            self._social_task = gatewayclient.spawn_supervised(
+                "ssh/approve-listener", self._approve_listener)
+        except RuntimeError as exc:  # no running loop (shouldn't happen at on_start)
+            log.error("ssh: approve listener not started — operator /approve "
+                      "will not be heard: %s", exc)
+        try:
             # Rebuild per-host state from the world (adopt live masters, respect
             # breaker locks) and reap stale sockets — in the background so startup
             # never blocks on ssh probes.
+            loop = asyncio.get_running_loop()
             self._reconcile_task = loop.create_task(self._reconcile_on_boot())
-        except RuntimeError as exc:  # no running loop (shouldn't happen at on_start)
-            log.warning("ssh: startup tasks not started: %s", exc)
+        except RuntimeError as exc:
+            log.warning("ssh: boot reconcile not started: %s", exc)
         log.info("ssh service initialised (live_connections: %s)", LIVE_DIR)
 
     def _acquire_singleton(self) -> None:
@@ -328,13 +408,22 @@ class SSHService:
                     # while an operator approval window is open.
                     if self._read_lock(cfg) is not None:
                         if not self._approve_active(cfg.twofa_device):
-                            return self._status_dict(
-                                cfg, "unavailable",
-                                error=f"{cfg.host} is not available for automated "
-                                      f"access right now")
-                        log.info("operator approval window open for %s (device %s) "
-                                 "— clearing hold and reconnecting (one-shot)",
-                                 cfg.host, cfg.twofa_device)
+                            # A hold recorded against our OWN approver may lift
+                            # itself, but only on a fresh positive health
+                            # assertion, and only here — on a request somebody
+                            # actually made. Nothing polls for this, so no
+                            # attempt is ever started that nobody asked for.
+                            # _maybe_self_clear removes the lockfile itself.
+                            if not await self._maybe_self_clear(cfg):
+                                return self._status_dict(
+                                    cfg, "unavailable",
+                                    error=f"{cfg.host} is not available for "
+                                          f"automated access right now")
+                        else:
+                            log.info(
+                                "operator approval window open for %s (device %s) "
+                                "— clearing hold and reconnecting (one-shot)",
+                                cfg.host, cfg.twofa_device)
                         self._clear_lock(cfg)
                         # ONE-SHOT: consume the window as we spend it. Each operator
                         # /approve authorises exactly one reconnect attempt. Without
@@ -438,7 +527,37 @@ class SSHService:
                 connections[name] = self._status_dict(cfg, "unavailable")
             else:
                 connections[name] = self._status_dict(cfg, "disconnected")
-        return {"connections": connections}
+        return {
+            "connections": connections,
+            "subscription": self._subscription_health(),
+            "approval_windows": self._approval_windows(),
+        }
+
+    def _subscription_health(self) -> dict:
+        """Health of the ``/approve`` wire — the only thing that lifts a hold.
+
+        Before this, a deaf listener was indistinguishable from an idle one and
+        was only discovered mid-emergency. Never raises: health has to be
+        reportable precisely when things are broken.
+        """
+        sub = self._approve_sub
+        if sub is None:
+            return {"healthy": False, "connected": False,
+                    "last_error": "approve listener not started"}
+        try:
+            return sub.health()
+        except Exception as exc:  # noqa: BLE001
+            return {"healthy": False, "last_error": f"unavailable: {exc}"}
+
+    def _approval_windows(self) -> dict[str, int]:
+        """Open operator windows, as remaining seconds. Read-only — there is no
+        verb that opens or extends one, and this must not become it."""
+        try:
+            now = time.monotonic()
+            return {d: int(until - now)
+                    for d, until in self._approve_until.items() if until > now}
+        except Exception:  # noqa: BLE001
+            return {}
 
     # -- attempt / disposal drivers -----------------------------------------
 
@@ -552,11 +671,25 @@ class SSHService:
         reason = ""
         try:
             result = await self._do_connect_attempt(cfg, gated=True)
-            ok = result.get("status") == "connected"
+            ok = self._verdict_ok(result)
             reason = result.pop("_lock_reason", "")
             return result
         finally:
             await self._slot_release(cfg.host, token, ok=ok, reason=reason)
+
+    @staticmethod
+    def _verdict_ok(result: dict) -> bool:
+        """The lease verdict answers "was the lockout budget spent?", NOT "did the
+        connect succeed" — the slot exists solely to bound MFA attempts fleet-wide.
+
+        So a connect that died before the auth phase reports ``ok``: it spent
+        nothing, the account is not at risk, and the slot should simply be freed
+        rather than held (which would cost the operator an /approve for a failure
+        that was never their account's fault). Popping ``_preauth`` here keeps it
+        off the dict the agent sees.
+        """
+        preauth = result.pop("_preauth", False)
+        return result.get("status") == "connected" or bool(preauth)
 
     async def _connect_via_arbiter_peer(self, cfg: HostConfig,
                                         slot_peer: str) -> dict:
@@ -581,7 +714,7 @@ class SSHService:
                     cfg, "unavailable",
                     error=f"{cfg.host} is not available for automated access right now")
             result = await self._do_connect_attempt(cfg, gated=True)
-            ok = result.get("status") == "connected"
+            ok = self._verdict_ok(result)
             reason = result.pop("_lock_reason", "")
             await lease.verdict(ok=ok, reason=reason)
             return result
@@ -598,10 +731,15 @@ class SSHService:
                 return ("busy", None)
             if self._read_lock(cfg) is not None:
                 if not self._approve_active(cfg.twofa_device):
-                    return ("locked", "held after a prior failed connect")
-                # Approval window open → clear + consume one-shot (see connect()).
-                self._clear_lock(cfg)
-                self._approve_until.pop(cfg.twofa_device, None)
+                    # Same lazy self-clear as connect(): a hold attributable to
+                    # our own approver lifts on the approver's fresh positive
+                    # assertion, on a request — never on a timer.
+                    if not await self._maybe_self_clear(cfg):
+                        return ("locked", "held after a prior failed connect")
+                else:
+                    # Approval window open → clear + consume one-shot (see connect()).
+                    self._clear_lock(cfg)
+                    self._approve_until.pop(cfg.twofa_device, None)
             token = secrets.token_urlsafe(8)
             self._leased[host] = token
             return ("granted", token)
@@ -615,6 +753,10 @@ class SSHService:
         Idempotent by ``lease_id``: a duplicate or stale release is a no-op."""
         cfg = resolve_host(host)
         do_alert = False
+        reason = reason or "attempt failed (slot arbiter)"
+        # Classified outside the lock: it may make a gateway call, and the
+        # arbiter lock guards the in-flight slot, not the network.
+        cause = await self._classify_cause(cfg, reason)
         async with self._arbiter_lock:
             if lease_id is not None and self._leased.get(host) != lease_id:
                 return  # superseded / already released — ignore
@@ -622,7 +764,7 @@ class SSHService:
             if ok:
                 self._clear_lock(cfg)
                 return
-            self._write_lock(cfg, reason or "attempt failed (slot arbiter)")
+            self._write_lock(cfg, reason, cause=cause)
             do_alert = True
         if do_alert:
             log.error("BREAKER TRIPPED (arbiter) — holding %s: %s", host, reason)
@@ -695,7 +837,11 @@ class SSHService:
         When ``gated`` the slot arbiter owns the breaker: a failure returns an
         error dict WITHOUT tripping the local breaker or alerting, stashing the
         reason under ``_lock_reason`` so the caller can pass it up as the lease
-        verdict — the arbiter records LOCKED and pages the operator exactly once."""
+        verdict — the arbiter records LOCKED and pages the operator exactly once.
+
+        A failure that died BEFORE the auth phase spent no MFA attempt, so it does
+        not trip the breaker at all (and sets ``_preauth`` for the gated caller to
+        release the slot without a hold). See :meth:`_is_preauth_failure`."""
         marker = self._deviation_marker(cfg)
         self._safe_unlink(marker)
         try:
@@ -726,15 +872,30 @@ class SSHService:
         except Exception as e:  # noqa: BLE001
             log.error("connect to %s failed: %s", cfg.host, e)
             reason = self._failure_reason(cfg, marker, str(e))
-        # Neutral to the caller — the detailed reason goes to the lock + the
-        # operator Discord alert, not to the agent.
-        result = self._status_dict(cfg, "error", error=f"connect to {cfg.host} failed")
+        preauth = self._is_preauth_failure(cfg, marker)
+        if preauth:
+            # Nothing was spent, so there is nothing to protect: no hold, no page.
+            # Tell the caller it is safe to retry — unlike a held host, this needs
+            # no /approve, and the host is simply refusing connections right now.
+            log.warning("pre-auth failure on %s (no MFA attempt spent, breaker "
+                        "NOT tripped): %s", cfg.host, reason)
+            result = self._status_dict(
+                cfg, "error",
+                error=(f"{cfg.host} refused the connection before authentication "
+                       f"— no MFA attempt was spent, safe to retry later"))
+        else:
+            # Neutral to the caller — the detailed reason goes to the lock + the
+            # operator Discord alert, not to the agent.
+            result = self._status_dict(
+                cfg, "error", error=f"connect to {cfg.host} failed")
         if not gated:
-            await self._trip_breaker(cfg, reason)
+            if not preauth:
+                await self._trip_breaker(cfg, reason)
         else:
             # The slot arbiter owns LOCKED + the alert (via the lease verdict);
             # surface the reason so the caller can hand it up.
             result["_lock_reason"] = reason
+            result["_preauth"] = preauth
         return result
 
     async def _attempt_master(self, cfg: HostConfig, marker: str) -> None:
@@ -784,12 +945,23 @@ class SSHService:
             "AWM_SSH_ASKPASS_MARKER": marker,
         })
 
+        # Cap keyboard-interactive (Duo) to a SINGLE attempt. OpenSSH's default
+        # `NumberOfPasswordPrompts` is 3, so one `ssh` invocation will retry the
+        # kbd-interactive/Duo exchange up to THREE times before giving up — and
+        # each retry is a fresh Duo push. That silently turns one connect into up
+        # to three failed MFA attempts on a failing-auth path, so the one-strike
+        # breaker (which counts *connects*) under-counts *pushes* 3:1 and a
+        # handful of connects can still march the provider to its 10-strike
+        # lockout. Forcing =1 makes the invariant exact: one connect ⇒ at most one
+        # Duo push. (Confirmed in the wild: fir.connect.stderr showed three
+        # back-to-back kbd-interactive attempts inside a single ssh. #0317299.)
+        # Harmless for pubkey-only hosts, which never enter kbd-interactive.
+        argv = ["ssh", "-f", "-N", "-M", "-o", "NumberOfPasswordPrompts=1"]
         # A guarded host carries a ProxyCommand guard in ~/.ssh/config that
         # blocks bare `ssh <host>` when no master exists. The service is the
         # sole allowed master-creator, so it overrides the guard here.
         # (Command-line `-o` is first-match-wins over config.) Do NOT do this
         # for VPN-bounced hosts — their ProxyCommand is the required tunnel.
-        argv = ["ssh", "-f", "-N", "-M"]
         if cfg.guarded:
             argv += ["-o", "ProxyCommand=none"]
         argv.append(cfg.host)
@@ -854,32 +1026,49 @@ class SSHService:
 
         Subscribes to the social service's ``command`` emit (the same stream the
         2fa service arms bursts from) — local, or a peer's social@<peer> stream
-        when AWM_SOCIAL_PEER is set. Owns its own reconnect/backoff; inert when
-        no social service is present. This is the ONLY thing that lifts a breaker
-        hold — there is no verb, so an agent cannot clear its own lock.
+        when AWM_SOCIAL_PEER is set. Reconnect, backoff, and the idle-deadline
+        re-subscribe belong to :class:`SupervisedSubscription`; inert when no
+        social service is present. This is the ONLY thing that lifts a breaker
+        hold — there is no verb, so an agent cannot clear its own lock, which
+        is exactly why the wire has to heal itself and report its own health.
         """
-        log.info("ssh: subscribing to social/command for operator /approve")
-        backoff = 2.0
-        while True:
-            try:
-                async for ev in gatewayclient.subscribe_maybe_peer(
-                        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-                        "social", "command"):
-                    backoff = 2.0
-                    self._handle_approve(ev)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — never let the task die
-                log.debug("ssh: approval subscription dropped (retrying): %s", exc)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 1.5, 30.0)
+        def _stream():
+            # peer selector read per connection, so a re-home takes effect on
+            # the next reconnect without a restart.
+            return gatewayclient.subscribe_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV), "social", "command")
 
-    def _handle_approve(self, ev: object) -> None:
+        self._approve_sub = gatewayclient.SupervisedSubscription(
+            "ssh/social.command", _stream, self._on_approve_event,
+            intercept=self._intercept_probe)
+        await self._approve_sub.run()
+
+    async def _on_approve_event(self, ev: object) -> None:
+        """One social ``command`` event: open the window, then acknowledge.
+
+        Split deliberately. ``_handle_approve`` is synchronous and decides the
+        window; the acknowledgement is a separate awaited step afterwards, so
+        an ack that fails (Discord down, peer unreachable) can never affect
+        whether the window opened.
+        """
+        verdict = self._handle_approve(ev)
+        if verdict is not None:
+            await self._ack_approve(ev, verdict)
+
+    def _handle_approve(self, ev: object) -> str | None:
+        """Decide the recovery window for one ``/approve``. Pure and sync.
+
+        Returns the text to acknowledge with, or ``None`` when this event is
+        not ours to answer (not an ``approve``, or no device named — another
+        consumer's business). Sending the acknowledgement is the caller's job;
+        keeping it out of here is what guarantees a Discord failure cannot
+        change whether the window opened.
+        """
         if not isinstance(ev, dict) or ev.get("command") != "approve":
-            return
+            return None
         device = str(ev.get("device") or "").strip()
         if not device:
-            return
+            return None
         # Only accept a device some managed host actually uses. An unknown string
         # (a typo, or another service's device) can never authorise an ssh recovery
         # anyway, and storing it would leak into _approve_until forever. Mirrors the
@@ -888,7 +1077,8 @@ class SSHService:
         if device not in known:
             log.warning("ssh: /approve for unknown device %r — ignoring "
                         "(known: %s)", device, ", ".join(sorted(known)))
-            return
+            return (f"⚠️ ssh: `{device}` is not a device any managed host uses "
+                    f"(known: {', '.join(sorted(known))})")
         now = time.monotonic()
         # Opportunistically drop expired windows so the dict can't grow unbounded
         # over a long-lived process.
@@ -897,6 +1087,35 @@ class SSHService:
         self._approve_until[device] = now + _APPROVE_WINDOW_SECONDS
         log.info("ssh: operator /approve → recovery window open for device %r "
                  "(%.0fs)", device, _APPROVE_WINDOW_SECONDS)
+        mins = int(_APPROVE_WINDOW_SECONDS // 60) or 1
+        return (f"🔓 ssh [{_NODE_NAME}]: breaker recovery window open for "
+                f"`{device}` — {mins} min")
+
+    async def _ack_approve(self, ev: object, text: str) -> None:
+        """Receipt back to the originating DM. Best-effort, never load-bearing.
+
+        Why this exists: on 2026-07-26 the operator saw Discord's own ack and
+        2fa's "Duo approvals armed" and reasonably concluded the chain was
+        live, while the one consumer that mattered — this one — was deaf.
+        With a receipt, **silence from ssh is itself the symptom**, visible at
+        the moment the operator acts rather than during the emergency.
+
+        Worded as a statement of fact, never an instruction: nothing here
+        should train a reflex to re-run ``/approve``, which spends multi-factor
+        budget.
+        """
+        account = (ev or {}).get("account") if isinstance(ev, dict) else None
+        channel = (ev or {}).get("channel_id") if isinstance(ev, dict) else None
+        if not account or not channel:
+            return
+        try:
+            await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+                "social", "send",
+                {"account": account, "channel": str(channel), "text": text})
+        except Exception as exc:  # noqa: BLE001 — a receipt is not the window
+            log.warning("ssh: /approve acknowledgement failed (the window is "
+                        "open regardless): %s", exc)
 
     def _approve_active(self, device: str) -> bool:
         if not device:
@@ -929,19 +1148,57 @@ class SSHService:
             # A malformed/unreadable lock still means "locked" — fail safe.
             return {"reason": "lockfile present but unreadable"}
 
-    def _write_lock(self, cfg: HostConfig, reason: str) -> None:
+    def _write_lock(self, cfg: HostConfig, reason: str, *,
+                    cause: str = _CAUSE_EXTERNAL) -> None:
         os.makedirs(LOCK_DIR, exist_ok=True)
         payload = {
             "host": cfg.host,
             "reason": reason,
+            # Which side the failure is attributable to. Only _CAUSE_SELF is
+            # ever eligible for a self-clear, and only on a fresh positive
+            # health assertion — see _self_clear_ok.
+            "cause": cause,
             "ts": time.time(),
             "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
-        with open(lock_path(cfg), "w", encoding="utf-8") as f:
-            json.dump(payload, f)
+        # Temp-and-rename: a torn read already degrades to "locked for an
+        # unreadable reason", and would now also lose the cause bucket —
+        # which fails safe, but silently.
+        path = lock_path(cfg)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        except OSError:
+            self._safe_unlink(tmp)
+            raise
 
     def _clear_lock(self, cfg: HostConfig) -> None:
         self._safe_unlink(lock_path(cfg))
+
+    def _is_preauth_failure(self, cfg: HostConfig, marker: str) -> bool:
+        """Did this attempt die before the auth phase — i.e. spend no MFA?
+
+        Reads the captured ssh stderr rather than the folded reason string so the
+        askpass-deviation note and our own timeout text can't be mistaken for ssh
+        output. Conservative by construction (see _PREAUTH_STDERR): an auth-phase
+        marker vetoes, an askpass deviation vetoes (the Duo prompt was reached, so
+        a push may have fired), and no evidence at all -> False (hold the host).
+        """
+        if os.path.exists(marker):
+            return False  # reached the Duo prompt — assume an attempt was spent
+        try:
+            with open(stderr_path(cfg), "r", encoding="utf-8",
+                      errors="replace") as f:
+                blob = f.read()
+        except FileNotFoundError:
+            return False  # no evidence — hold, don't guess
+        if not blob.strip():
+            return False
+        if any(s.lower() in blob.lower() for s in _AUTH_PHASE_STDERR):
+            return False  # auth was reached — the veto
+        return any(s.lower() in blob.lower() for s in _PREAUTH_STDERR)
 
     def _failure_reason(self, cfg: HostConfig, marker: str, base: str) -> str:
         parts = [base]
@@ -980,10 +1237,108 @@ class SSHService:
             f"Discord. While that window is open the service will reconnect on "
             f"its own.")
 
+    async def _classify_cause(self, cfg: HostConfig, reason: str) -> str:
+        """Which side is this failure attributable to? Decided at write time.
+
+        Strict allowlist, never a fallback. A hold is bucketed ``_CAUSE_SELF``
+        only when BOTH hold:
+
+        * the failure was our own connect timeout — not an ssh-reported auth
+          rejection, whose marker vetoes outright; and
+        * the 2fa service positively reports that its last verified Duo
+          round-trip for this device is NOT recent, i.e. our approver was
+          demonstrably unable to function at the time.
+
+        Anything else — an unrecognised reason, an unreachable 2fa service, a
+        device we cannot ask about — is ``_CAUSE_EXTERNAL`` and stays
+        operator-only. Failing to establish self-attribution is not evidence
+        of it.
+        """
+        if not cfg.twofa_device:
+            return _CAUSE_EXTERNAL
+        blob = reason.lower()
+        if any(s.lower() in blob for s in _AUTH_PHASE_STDERR):
+            return _CAUSE_EXTERNAL          # auth was reached — the veto
+        if "exceeded" not in blob or "s" not in blob:
+            return _CAUSE_EXTERNAL          # not the timeout shape
+        try:
+            info = await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_TWOFA_PEER_ENV),
+                "2fa", "reachability", {"device": cfg.twofa_device})
+        except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot attribute
+            log.info("ssh: cannot attribute %s's failure (2fa unreachable: %s) "
+                     "— holding as external", cfg.host, exc)
+            return _CAUSE_EXTERNAL
+        last = (info or {}).get("last_reachable_at")
+        if last and (time.time() - float(last)) <= _SELF_CLEAR_FRESH_SECONDS:
+            # The approver was verifiably fine — so this failure is not ours.
+            return _CAUSE_EXTERNAL
+        log.warning("ssh: %s timed out while our own Duo approver was NOT "
+                    "verifiably reachable — recording a self-inflicted hold, "
+                    "clearable once the approver proves itself healthy",
+                    cfg.host)
+        return _CAUSE_SELF
+
+    async def _self_clear_ok(self, cfg: HostConfig) -> bool:
+        """May this hold be lifted without an operator, right now?
+
+        Evaluated LAZILY, on an inbound request — deliberately not by a
+        background sweep over lockfiles, which is one small step from "and
+        then reconnect". Clearing a hold grants permission for an attempt
+        somebody asks for; it never starts one.
+
+        Requires a FRESH POSITIVE assertion: a live ``2fa ping`` that actually
+        round-trips to Duo. "No error seen" is not an assertion.
+        """
+        lock = self._read_lock(cfg)
+        if lock is None or lock.get("cause") != _CAUSE_SELF:
+            return False
+        if not cfg.twofa_device:
+            return False
+        try:
+            res = await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_TWOFA_PEER_ENV),
+                "2fa", "ping", {"device": cfg.twofa_device})
+        except Exception as exc:  # noqa: BLE001
+            log.info("ssh: %s stays held — could not verify the approver: %s",
+                     cfg.host, exc)
+            return False
+        if not (res or {}).get("reachable"):
+            log.info("ssh: %s stays held — the approver still cannot reach Duo",
+                     cfg.host)
+            return False
+        log.warning("ssh: self-clearing the hold on %s — it was recorded as "
+                    "%s (%s) and the Duo approver has just verified a live "
+                    "round-trip for device %r. This grants ONE attempt.",
+                    cfg.host, _CAUSE_SELF, lock.get("reason"), cfg.twofa_device)
+        return True
+
+    async def _maybe_self_clear(self, cfg: HostConfig) -> bool:
+        """Clear a self-inflicted hold if the approver proves itself healthy.
+
+        One-shot by construction: the lockfile is removed, so the very next
+        failure re-writes it. Pages the operator informationally — a hold that
+        lifted itself must never be silent.
+        """
+        if not await self._self_clear_ok(cfg):
+            return False
+        lock = self._read_lock(cfg) or {}
+        self._clear_lock(cfg)
+        await self._alert(
+            f"🔁 awm-ssh [{_NODE_NAME}] released its own hold on "
+            f"**{cfg.host}**.\n"
+            f"The hold was recorded against our own Duo approver being "
+            f"unreachable ({lock.get('reason')}), and the approver has just "
+            f"verified a live round-trip. One attempt is now permitted; a "
+            f"genuine failure will hold it again immediately.\n"
+            f"No action needed.")
+        return True
+
     async def _trip_breaker(self, cfg: HostConfig, reason: str) -> None:
         """Hold the host after a failed connect and page the operator. Threshold=1."""
-        self._write_lock(cfg, reason)
-        log.error("BREAKER TRIPPED — holding %s: %s", cfg.host, reason)
+        cause = await self._classify_cause(cfg, reason)
+        self._write_lock(cfg, reason, cause=cause)
+        log.error("BREAKER TRIPPED — holding %s (%s): %s", cfg.host, cause, reason)
         await self._alert(self._lock_alert_text(cfg, reason))
 
     async def _send_social(self, text: str) -> Any:
@@ -1030,6 +1385,66 @@ class SSHService:
             "channel": _ALERT_CHANNEL,
             "result": result,
         }
+
+    async def receive_test(self, timeout: float = 10.0) -> dict:
+        """Prove the INBOUND ``/approve`` wire on demand — the twin of
+        :meth:`notify_test`.
+
+        ``notify_test`` proves this service can reach the operator. Nothing
+        proved it could still *hear* them, and the only evidence was a real
+        successful ``/approve`` — which is why three of them were swallowed on
+        2026-07-26 with no signal at all.
+
+        Asks social to emit a synthetic, inert probe carrying only a nonce,
+        then waits for the subscription to hand that nonce back. The probe
+        never reaches the domain handler (it is intercepted first), carries no
+        device, and cannot open a window or arm anything.
+        """
+        sub = self._approve_sub
+        if sub is None:
+            raise RuntimeError(
+                "ssh: the /approve subscription was never started — this "
+                "service cannot hear an operator approve")
+        nonce = secrets.token_urlsafe(8)
+        waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._probe_waiters[nonce] = waiter
+        peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
+        try:
+            # Emit failures must NOT read as "you are deaf" — an un-upgraded
+            # peer that lacks emit_probe is a different fault entirely.
+            try:
+                await gatewayclient.call_maybe_peer(
+                    peer, "social", "emit_probe", {"nonce": nonce})
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f"ssh: could not ask social@{peer or 'local'} to emit a "
+                    f"probe ({exc}) — this says nothing about whether this "
+                    f"service can receive; check social is up and upgraded"
+                ) from exc
+            try:
+                await asyncio.wait_for(waiter, timeout=timeout)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"ssh: probe emitted but not received within {timeout:.0f}s "
+                    f"— this service is DEAF to social/command, so an operator "
+                    f"/approve would not reach it"
+                ) from None
+        finally:
+            self._probe_waiters.pop(nonce, None)
+        return {
+            "received": True,
+            "peer": peer or "local",
+            "subscription": self._subscription_health(),
+        }
+
+    def _intercept_probe(self, ev: object) -> bool:
+        """Claim a self-test probe before it can reach ``_handle_approve``."""
+        if not isinstance(ev, dict) or ev.get("command") != _PROBE_COMMAND:
+            return False
+        waiter = self._probe_waiters.get(str(ev.get("nonce") or ""))
+        if waiter is not None and not waiter.done():
+            waiter.set_result(True)
+        return True
 
     @staticmethod
     def _status_dict(cfg: HostConfig, status: str, *,

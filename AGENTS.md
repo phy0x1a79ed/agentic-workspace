@@ -2,7 +2,7 @@
 
 *Internal architecture reference for agents working ON awm itself — the gateway, the registry/supervisor, the RPC envelope layer, the operations/catalog generation layer, the feature-service contract, and the frontend component system. Auto-injected only when the agent's cwd contains this file at its root: `projects/awm/*` scopes inherit it via `.bare`-worktree sharing; other projects' agents never see it.*
 
-For workspace structure (paths, MCP tools, project map, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
+For workspace structure (paths, MCP tools, project/scope discovery, scope lifecycle) see `WORKSPACE.md` (auto-injected before this file). This file assumes you're modifying awm itself.
 
 ## Architecture overview
 
@@ -102,6 +102,52 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **Prefix conflicts return 409.** Pick a unique prefix. `/hub` and `/hub/*` are reserved.
 - **`AWM_WORKSPACE` + `AWM_HUB_URL` attach to a sandbox, not prod.** Without them, the CLI hits global discovery and may target prod `:7819`. The dev starter exports both for its children; if you shell out separately, export them yourself. To check which hub a running process was set up against: `tr '\0' '\n' </proc/<pid>/environ | grep -E 'AWM_WORKSPACE|AWM_HUB_URL'`.
 - **Never run two gateways on the same port.** Side-by-side sandboxes on distinct ports (`:7821`, `:7831`, …) are how dev parallelism works.
+- **Never hand-roll an emit-subscription loop — use `gatewayclient.SupervisedSubscription`.** A subscriber's socket and the emitting service's control channel are two things that must agree: when the emitter restarts, the gateway drops the subscriber from the fan-out table, and unless the proxy also closes the socket the consumer waits forever on a connection that looks perfectly healthy (keepalives still pass — they only prove the *gateway* is alive). Three services shipped byte-identical copies of the same naive loop and all three went permanently deaf together. The helper reconnects, bounds every unmodelled staleness class with a jittered idle deadline, and reports `healthy` — surface that in the service's `status` so deafness is visible before something urgent depends on it.
+
+## Project data layer (`awm.scopes.data_annex`)
+
+`.awm/data` used to be one line in `_scaffold_awm_dir`: a symlink to
+`data/<project>/`, shared by every scope. It is now produced by
+`data_annex.provision_scope_data`, which returns either that same symlink or a
+**git-annex clone** — the *only* entry point, deliberately, so there is one
+place that decides.
+
+Design facts worth knowing before you touch it:
+
+- **The opt-in is the canonical repo's existence.** `is_annex_project(p)` is
+  "is `data/<p>` a git-annex repo?" There is no config table and no flag to
+  keep in sync; `project_data_init` flips a project by converting the directory.
+  `AWM_DATA_ANNEX=0` is the global kill switch.
+- **A clone, not a submodule.** A submodule inside a *secondary* git worktree
+  makes git write a relative `core.worktree` that git-annex resolves from a
+  different base — every annex command then dies with
+  `changeWorkingDirectory: does not exist`. A plain clone has an ordinary
+  `.git` and is immune. `projects/annex-poc/` preserves the reproduction.
+- **The canonical repo keeps a working tree** on `main`, and promotion pushes
+  into it with `receive.denyCurrentBranch=updateInstead`. That is what keeps
+  every existing absolute path into `data/<project>/` resolving — including the
+  TTS model lookup and scadc's ~171 absolute symlinks.
+- **Merges use plain `git merge`, never `git annex sync`.** git-annex only
+  auto-resolves conflicting content into `file.variant-<key>` under its own
+  merge machinery; under plain merge a conflict is an ordinary unmerged path.
+  Keeping both sides must stay an explicit decision. `publish_data` therefore
+  does fetch → `git annex merge` → explicit push by hand rather than calling
+  sync.
+- **The location log rides the `git-annex` branch and is never rolled back.**
+  Pushing only the data branch leaves peers seeing *0 copies* for content that
+  is physically present. And reverting the log *is* the data-loss operation —
+  it produces that same symptom while the bytes sit on disk. The transaction
+  boundary in `merge_data` is the data branch ref, nothing else.
+- **git-annex is not on the daemon's PATH.** `annex_bin()` resolves it
+  (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
+  on PATH for *every* git call, since git-annex's own hooks re-invoke
+  `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
+- **Teardown is the dangerous direction.** `_cleanup_worktree` calls
+  `prepare_teardown` first, which publishes, refuses when content would be lost,
+  and chmods the tree writable (annex marks objects *and their parent dirs*
+  read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
+  collides with the next `worktree add`). `create_scope` pre-cleans through the
+  same path, so creation can now refuse where it previously steamrolled.
 
 ## Frontend component system
 

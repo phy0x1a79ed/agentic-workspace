@@ -251,6 +251,14 @@ class TestIsTracked:
 
 
 class TestHealWorktree:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, scopes_workspace):
+        """Heal reaches outside the worktree now — it also reconciles
+        ``.awm/data`` against the project's canonical data dir. Without the
+        workspace fixture these tests would create ``proj-a/`` in the REAL
+        ``data/``."""
+        return scopes_workspace
+
     def test_strips_leaked_import_from_tracked_agents(self, tmp_path):
         wt = tmp_path / "wt"
         wt.mkdir()
@@ -407,7 +415,7 @@ class TestHealWorktree:
         assert second == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None,
+            "opencode_config": None, "data": None,
         }
         assert (wt / "AGENTS.md").read_text() == agents_after
         assert (wt / ".awm" / "context.md").read_text() == ctx_after
@@ -450,7 +458,52 @@ class TestHealScopes:
         report = heal_scopes()
         assert len(report) == 1
         assert report[0]["ok"] is False
-        assert report[0]["error"] == "worktree missing"
+        assert report[0]["error"].startswith("worktree missing")
+        assert bogus in report[0]["error"]
+
+    def test_empty_worktree_never_resolves_to_the_cwd(self, scopes_workspace,
+                                                      seeded_scopes,
+                                                      scopes_dao_conn):
+        """An empty worktree column must never be healed against the cwd.
+
+        ``Path("")`` is ``Path(".")``, which *exists*, so an existence check
+        alone waves the row through and heal then operates on whatever
+        directory the process happens to be standing in. In production this
+        repointed a live scope's ``.awm/data`` symlink and left a stray clone
+        inside the project's canonical data directory. It must fall back to the
+        scope's conventional location instead.
+        """
+        from awm.config import PROJECTS_DIR
+        scopes_dao_conn.execute("UPDATE agents SET worktree='' WHERE scope='scope-1'")
+        scopes_dao_conn.commit()
+        before = sorted(p.name for p in Path.cwd().iterdir())
+
+        report = heal_scopes()
+
+        assert len(report) == 1
+        resolved = Path(report[0]["worktree"])
+        assert resolved.is_absolute()
+        assert resolved == PROJECTS_DIR / "proj-a" / "scope-1"
+        assert resolved != Path.cwd()
+        assert sorted(p.name for p in Path.cwd().iterdir()) == before
+
+    def test_anchors_relative_worktree_on_the_workspace(self, scopes_workspace,
+                                                        seeded_scopes,
+                                                        scopes_dao_conn):
+        """A workspace-relative row resolves against the workspace, not the cwd."""
+        from awm.config import PROJECTS_DIR
+        wt = PROJECTS_DIR / "proj-a" / "rel-scope"
+        wt.mkdir(parents=True)
+        rel = str(wt.relative_to(PROJECTS_DIR.parent))
+        assert not Path(rel).is_absolute()
+        scopes_dao_conn.execute(
+            "UPDATE agents SET worktree=? WHERE scope='scope-1'", (rel,))
+        scopes_dao_conn.commit()
+
+        report = heal_scopes()
+
+        assert len(report) == 1
+        assert report[0]["ok"] is True, report[0]
 
     def test_filters_by_project(self, scopes_workspace, seeded_scopes,
                                  scopes_dao_conn, tmp_path):
@@ -509,5 +562,5 @@ class TestHealScopes:
         assert second[0]["actions"] == {
             "import_line": None, "agents_md": None,
             "claude_md": None, "context_md": None,
-            "opencode_config": None,
+            "opencode_config": None, "data": None,
         }

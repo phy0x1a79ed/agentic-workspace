@@ -40,11 +40,26 @@ API_MANIFEST: dict[str, Any] = {
             "name": "ping",
             "tool": "2fa_ping",
             "description": (
-                "Liveness + enrollment check. device=<name> for one device; "
-                "omit to report every device."
+                "Reachability + enrollment check. Makes a REAL read-only Duo "
+                "API call (lists already-pending transactions; fires no push "
+                "and spends no MFA budget), so ok=true means the approver was "
+                "verified working just now — not merely that creds exist on "
+                "disk. device=<name> for one device; omit for every device."
             ),
             "params": [
                 {"name": "device", "type": "string", "required": False},
+            ],
+        },
+        {
+            "name": "reachability",
+            "tool": "2fa_reachability",
+            "description": (
+                "The last VERIFIED Duo round-trip for one device, as a "
+                "timestamp, without probing. For callers that must require "
+                "recency rather than the absence of a recorded error."
+            ),
+            "params": [
+                {"name": "device", "type": "string", "required": True},
             ],
         },
         {
@@ -142,6 +157,7 @@ async def _h_burst(args: dict[str, Any]) -> Any:
 HANDLERS = {
     "devices": lambda args: _svc.devices(),
     "ping": lambda args: _svc.ping(args.get("device")),
+    "reachability": lambda args: _svc.reachability(args["device"]),
     "status": lambda args: _svc.status(args.get("device")),
     "pending": lambda args: _svc.pending(args.get("device")),
     "activate": lambda args: _svc.activate(args["code"], args["device"]),

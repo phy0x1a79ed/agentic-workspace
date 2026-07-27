@@ -337,6 +337,64 @@ Restart the daemon (`sudo systemctl restart awm.service` or
 `systemctl --user restart awm.service`, depending on which unit is
 live on your host) to pick up changes.
 
+## Project data — versioning and concurrency
+
+Project data lives at `<workspace>/data/<project>/` and every scope reaches it
+at `.awm/data/`. Both of those paths are permanent; what changed is what sits
+behind them.
+
+By default `.awm/data` is a symlink and every scope in a project writes the same
+files — no history, no isolation, and two scopes writing the same path destroy
+each other's work. Converting a project's data to **git-annex** gives it the
+same model code already has from worktrees:
+
+```bash
+awm project data-init <project> --dry-run   # preview: file count, vendored checkouts found
+awm project data-init <project>             # convert (refuses while any scope is active)
+awm scope heal --project <project>          # give existing scopes their clones
+```
+
+After conversion each scope's `.awm/data` is a clone on its own branch
+`scope/<scope>`, and `<workspace>/data/<project>/` stays a normal checked-out
+working tree on `main` — so every absolute path and symlink that pointed there
+still resolves.
+
+```bash
+awm scope data-status  <project> <scope>    # mode, branch, revision, drift, dirt
+awm scope data-snapshot <project> <scope>   # commit what this scope wrote
+awm scope data-promote  <project> <scope>   # publish into the project's canonical branch
+awm scope gather <project> <hub> --peripherals a --peripherals b --data
+```
+
+`data-promote` is all-or-nothing. It snapshots, publishes content and the
+location log, reconciles against the canonical branch, then **fast-forwards**
+it — so two scopes promoting at once produce one winner and one clean
+rejection, never a clobber. A content conflict is reported as a conflict and
+rolls back to the exact pre-merge revision; nothing is auto-merged into
+`file.variant-<key>` behind your back.
+
+Operational notes:
+
+- **Storage.** Content is hardlinked from the canonical store, so N scopes
+  holding the same dataset cost one copy. This requires `data/` and `projects/`
+  on the same filesystem; if they aren't, git-annex silently falls back to real
+  copies.
+- **Read-only files.** Anything above ~100 KB becomes a symlink into the content
+  store and is not writable in place. Small text stays an ordinary git file.
+- **Secrets are excluded, never annexed.** `secrets/` paths, `.env*`,
+  `.credentials.json` and `.nextflow/secrets` are gitignored in the canonical
+  repo, so they are never committed and never reach the off-site mirror. They
+  stay on local disk untouched.
+- **Vendored git checkouts are pinned, not annexed.** Conversion finds nested
+  repos, excludes their trees, and records URL + commit in `VENDORED.tsv`.
+- **git-annex is optional.** It is resolved from `AWM_ANNEX_BIN`, then PATH,
+  then the known mamba envs. When it isn't found every path degrades to the
+  legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
+  globally.
+- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
+  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
+  are content-addressed and never mutated in place.
+
 ## Destructive operations
 
 `POST /projects` and `DELETE /scopes/{p}/{s}` are 403'd by default. Set `AWM_ALLOW_DESTRUCTIVE=1` in the environment to permit them. No restart needed — re-read each request.

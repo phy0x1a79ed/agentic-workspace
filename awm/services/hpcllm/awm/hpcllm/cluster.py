@@ -14,6 +14,9 @@ class ClusterConfig:
     partition: str
     constraint: str
     apptainer_module: str
+    # GPU type qualifier for --gres (e.g. "h100"). Alliance clusters now
+    # REQUIRE a type: --gres=gpu:h100:N. Empty → bare --gres=gpu:N (sockeye).
+    gpu_type: str = ""
     default_gpus: int = 1
     default_cpus: int = 4
     default_mem_gb: int = 32
@@ -37,12 +40,16 @@ CLUSTERS: dict[str, ClusterConfig] = {
         name="fir",
         ssh_host="fir",
         user="phyberos",
-        project_dir="~/projects/rpp-shallam/$USER/hpcllm",
-        scratch_dir="~/scratch/hpcllm",
+        # Absolute paths REQUIRED: SLURM --output/--error do not expand ~ (they
+        # create literal "~" dirs), and cleanenv batch scripts can't rely on
+        # $USER. Home on fir is /home/phyberos.
+        project_dir="/home/phyberos/projects/rpp-shallam/phyberos/hpcllm",
+        scratch_dir="/home/phyberos/scratch/hpcllm",
         account="def-shallam_gpu",
         partition="",
         constraint="",
         apptainer_module="apptainer/1.3.5",
+        gpu_type="h100",
     ),
 }
 

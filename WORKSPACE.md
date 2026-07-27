@@ -31,38 +31,62 @@ projects/{project}/
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       artifacts.md               # auto-generated: pointer on discovering/reusing sibling scopes' outputs
-      data -> ../../../data/{project}/  # symlink to shared project data
+      data/                      # project data — annex clone, or symlink to data/{project}/
       skills -> ../../../awm/skills/    # symlink to skill catalog
     [code files...]              # the actual repo content
 ```
 
-Scopes access project data via `.awm/data/`. All scopes in the same project share the same data directory.
+Scopes access project data via `.awm/data/` — that path never changes. What sits
+behind it depends on whether the project's data has been converted:
 
-## Existing Projects
+| Mode | What `.awm/data` is | Concurrency |
+|---|---|---|
+| **annex** (converted) | a git-annex clone of `data/{project}/`, checked out on branch `scope/{scope}` | isolated + versioned; reconcile by an explicit merge |
+| **shared** (not yet converted) | a symlink to `data/{project}/` | none — every scope writes the same files |
 
-```
-projects/
-  _vagrant/              # sentinel: per-user vagrant-scope handlers
-  awm/                   # AWM itself (dev, feat-dag, feat-gamebot, web-*, svc-*, comp-*, infra-*, …)
-  container_builds/      # apptainer image recipes
-  cyanoverse/            # cyanobacteria genomics figures + analyses
-  drawio/                # diagrams + poster integration
-  market_monitor/        # trading data pipelines
-  metasmith/             # metasmith dev (caching, cancellation, hints, mcp, …)
-  metasmith-libraries/   # per-pipeline libraries (eukaryotic-assembly, fabfos, phyloflash, …)
-  mitacs-purify/         # bioreactor work
-  odysseus/              # odysseus fork (https://github.com/phy0x1a79ed/odysseus)
-  research/              # biofilms, ecological-modelling, functional-decomposition
-  scadc/                 # figures + analyses for the SCADC paper
-  scratch/               # one-off sandboxes (endfield, minecraft-turtles, network_debug)
-  self-improvement/      # factorio-learning-environment, opencode
-  spanish-lakes/         # spanish-lakes metagenomics
-  synclust/              # synclust dev
-  threejs-scene-manager/ # scene manager dev
-  vpn_bounce/            # vpn relay experiments
-```
+### Data concurrency (annex mode)
 
-Each project has one or more scope worktrees under it; `awm scope list --project <p>` enumerates them live.
+Code gets isolation from worktrees; annex mode gives data the same thing. Your
+writes are yours until you publish them, and publishing is transactional.
+
+| Verb | What it does |
+|---|---|
+| `scope(verb="data_status", …)` | which mode you're in, your data branch/revision, drift from the project's canonical branch |
+| `scope(verb="data_snapshot", …)` | commit what you've written — bulk to the content store, small text to ordinary git |
+| `scope(verb="data_promote", …)` | publish your data branch into the project's canonical branch. All-or-nothing: a conflict, or another scope promoting first, returns cleanly and changes nothing |
+| `project(verb="data_init", …)` | convert a project's `data/{project}/` to annex. The per-project opt-in; refuses while any scope is active |
+| `scope(verb="gather"/"scatter", args={…, data:true})` | fan data in/out alongside the code merge |
+
+Two things behave differently in annex mode, and only these two:
+
+1. **Large files already in the repo are read-only symlinks** into a content
+   store. Write a new file rather than opening an existing one for writing (or
+   `git annex unlock` it first). Files under ~100 KB are ordinary git files and
+   are unaffected.
+2. **Secrets are excluded, not versioned.** Anything under a `secrets/` path,
+   any `.env`, and `.credentials.json` is deliberately never annexed — so it is
+   also never carried off-site by the nightly backup. It stays on local disk.
+
+Storage is not a reason to hesitate: content is hardlinked from the canonical
+store, so N scopes holding the same dataset cost one copy.
+
+## Finding Projects
+
+**Deliberately not enumerated here.** Projects and their scopes are created, renamed, and
+completed constantly — any list written into this file is stale within days, and keeping it
+current is pure churn for every agent that edits it. Do NOT add a project map back. The same
+rule that governs the MCP catalog below applies here: **discover it, don't memorize it.**
+
+Enumerate live instead:
+
+- `project(verb="search")` — every project (MCP); `awm project search [query]` from a shell.
+- `scope(verb="search", args={project:<p>})` — a project's scopes, their branches and worktrees;
+  `awm scope list --project <p>` from a shell.
+- `ls projects/` — the on-disk truth: one directory per project, each holding a `.bare/` repo
+  and one worktree directory per scope.
+
+What a given project is *for* lives in that project's own worktree — its `AGENTS.md`,
+`README.md`, and per-scope `.awm/context.md` — not in this file.
 
 ## Startup Ritual
 
@@ -145,6 +169,65 @@ This is the canonical, shared copy; each hub may mirror its own row into its `.a
 
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
+## Dev protocol — parallel consumer/library scopes
+
+Some projects **consume a shared-library project as a git submodule** and need to
+work the *library* (its transforms) and the *consumer* in lockstep, across several
+scopes at once. If every consumer scope pins the submodule to the **same** library
+branch, parallel library edits collide on that one branch. The dev protocol gives
+each consumer scope its **own** library branch + worktree, isolating library work
+exactly the way code worktrees isolate consumer work — and it's a **reusable
+template**, so a second consumer adopts it by filling slots.
+
+**The N-slot template.** The consumer side uses role-generic scope names; the library
+side names its parallel scopes **after the consumer**, so from inside the library
+project you can tell which consumer effort a scope serves:
+
+| Role | consumer scope | ↔ library scope |
+|------|----------------|-----------------|
+| lead / integrator | `dev` | `<consumer>` (hub) |
+| parallel worker 1..3 | `dev1`, `dev2`, `dev3` | `<consumer>1`, `<consumer>2`, `<consumer>3` |
+
+`dev`↔`<consumer>` are the two **hubs**; `devN`↔`<consumer>N` are the **peripherals** —
+the same hub/peripheral shape as scatter/gather above, one pairing per project side.
+
+**Submodule tracking (push-free, local).** Each consumer scope's `src/<lib>` submodule:
+
+- carries an `awm` remote → the library project's local `.bare` (`origin` stays the
+  GitHub url so `clone --recurse-submodules` still works);
+- is checked out on its paired branch `feat/<consumer>N` with upstream set to
+  `awm/feat/<consumer>N`;
+- has `.gitmodules` `branch=` naming that same paired branch.
+
+Sync is **fully local, never through GitHub**: the library worktrees and the consumer
+submodule checkouts share one local `.bare` via the `awm` remote. Preferred workflow —
+**edit transforms in the library worktree** (`projects/<lib>/<consumer>N`); commits
+land straight in the shared bare; then in the consumer scope `git -C src/<lib> fetch
+awm` and bump the gitlink. Editing inside the submodule instead? `git push awm
+HEAD:feat/<consumer>N` targets the local bare — still no GitHub.
+
+**Merging a worker up is a parallel merge.** Promoting `devN` is two gathers, one per
+side: merge the library peripheral `feat/<consumer>N` into the library hub
+`feat/<consumer>`, **and** merge the consumer peripheral into the consumer hub `dev`,
+then bump the consumer hub's gitlink to the new library-hub tip. Drive each side with
+`scope(verb="gather", …)` (hub + its peripherals) as usual.
+
+Gotchas that bite this specifically: `git submodule update --remote` follows
+`.gitmodules` `branch=` on the **default** remote (origin=GitHub), not `awm` — so sync
+with explicit `fetch awm` / `push awm`, never `update --remote`. And `git worktree
+move` **refuses on a worktree containing submodules** — move the dir by hand, then
+`git worktree repair`, rename the `.bare/worktrees/<name>` admin dir to match, and fix
+each submodule's `.git` gitdir pointer + `core.worktree`.
+
+**Current instantiation — `fabfos` consuming `metasmith-libraries`:**
+
+| consumer `fabfos` scope | branch | ↔ `metasmith-libraries` scope | library branch |
+|---|---|---|---|
+| `dev` (lead) | `dev` | `fabfos` (hub) | `feat/fabfos` |
+| `dev1` | `feat/dev1` | `fabfos1` | `feat/fabfos1` |
+| `dev2` | `feat/dev2` | `fabfos2` | `feat/fabfos2` |
+| `dev3` | `feat/dev3` | `fabfos3` | `feat/fabfos3` |
+
 ## Git Model
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
@@ -164,14 +247,19 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm gateway init` / `awm gateway status` / `awm gateway serve` / `awm gateway stop` / `awm gateway restart` | Core lifecycle |
 | `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
-| `awm scope heal [--dry-run]` | Cleanup pass: enforce tier-3 = `.awm/` only across active scopes |
+| `awm scope heal [--project P] [--dry-run]` | Idempotent repair pass: enforce tier-3 = `.awm/` only, and bring `.awm/data` to the project's current data mode |
+| `awm scope data-status/data-snapshot/data-promote <p> <s>` | Per-scope data versioning (annex mode) |
+| `awm project data-init <p> [--dry-run]` | Convert a project's `data/<p>/` to git-annex |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write outputs to `.awm/data/`** — shared across all scopes in the project.
+2. **Write outputs to `.awm/data/`** — then `scope(verb="data_snapshot")` and, when
+   the work is good, `scope(verb="data_promote")`. In shared mode those are no-ops
+   and outputs are visible to siblings immediately; in annex mode they are how your
+   work becomes visible at all. See § *Data concurrency* above.
 3. **Don't edit `.awm/history.md` or `.awm/artifacts.md`** — auto-generated. Use MCP tools.
 4. **Run the `debrief` skill** when ending a session — commit, log the session, register artifacts, refresh.
 5. **Check `.awm/skills/` for a procedure** before improvising an unfamiliar workflow — the writeups are on disk even though the search service is retired.
@@ -194,4 +282,6 @@ For AWM itself: `mamba run -n awm <cmd>` (the `awm` env, created by `awm/gateway
 
 ## What goes in this file
 
-WORKSPACE.md is the structural orientation every scope agent inherits at session start, for any project in the workspace: the workspace layout and per-scope `.awm/` paths, the project map, how the MCP tool surface is projected and discovered (not a hand-maintained list), the startup ritual, scope lifecycle and naming conventions, the git model, and the workspace-wide agent + Python-environment rules. awm-internal architecture goes in `AGENTS.md`; human install/usage goes in `README.md`.
+WORKSPACE.md is the structural orientation every scope agent inherits at session start, for any project in the workspace: the workspace layout and per-scope `.awm/` paths, how the MCP tool surface is projected and discovered, the startup ritual, scope lifecycle and naming conventions, the git model, and the workspace-wide agent + Python-environment rules. awm-internal architecture goes in `AGENTS.md`; human install/usage goes in `README.md`.
+
+**Nothing enumerable goes in here.** The test is whether the list changes without this file changing — a roster of projects, scopes, services, MCP domains, or verbs all fail it, and each one silently rots into a lie an agent then acts on. Write the *shape* and the discovery command instead; the runtime is the source of truth. The two standing exceptions are lists that are themselves the convention rather than a snapshot of state: the scope-prefix families and the hub/peripheral table, which are decisions this file makes, not facts it reports.

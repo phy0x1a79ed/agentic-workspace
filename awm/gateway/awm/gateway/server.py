@@ -575,6 +575,16 @@ def run_server(foreground: bool = True):
     # EADDRINUSE restart-loop pattern (inbox #232).
     from awm.gateway._process_utils import exit_if_healthy_peer
     exit_if_healthy_peer(HOST, PORT, str(WORKSPACE_ROOT))
+    # Give the root logger a handler so `awm.*` records reach the log file.
+    # uvicorn only configures its own loggers (and marks them non-propagating),
+    # so without this every gateway INFO — service spawn, respawn, control-WS
+    # open, subscriber teardown — falls through to logging.lastResort and is
+    # dropped below WARNING. All 16 sites are lifecycle events, none per-request.
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     uvicorn.run(
         app,
         host=HOST,
