@@ -32,9 +32,19 @@ drills deeper — so they would freeze the session (only a hand-typed Esc recove
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
 
 Because the service is a separate gateway-spawned process, it does not share the
-caller's environment. **The caller passes its own pane** as the `pane` argument
-(get it with `echo $TMUX_PANE`). Best-effort auto-detection is attempted when
-`pane` is omitted, but is only reliable when a single agent pane exists.
+caller's environment — but the calling agent never has to work around that. The
+per-session `awm-mcp` proxy sits inside the caller's own tmux pane and forwards
+`$TMUX_PANE` as a header (`X-Awm-Tmux-Pane`); the gateway fills it in as the
+default `pane` before the call ever reaches this service. **A normal call
+passes no `pane` at all.** `pane` remains an accepted argument only as a manual
+override (a human driving `reflection` from a plain shell/CLI with no `awm-mcp`
+proxy in front of it, or deliberately targeting a pane other than their own) —
+best-effort auto-detection is still the fallback there when `pane` is omitted
+and no header is present, but is only reliable when a single agent pane exists.
+
+Before pasting, the resolved pane is also checked to actually be running a
+`claude`/`opencode` process — a stale or wrong pane id is refused outright
+rather than silently pasted into whatever happens to be there.
 
 Not in tmux (bare terminal, IDE extension, web) → no pane to drive; `send`
 returns a clear error.
@@ -72,18 +82,22 @@ Two verbs, both on MCP + CLI + HTTP:
   command is trailed by a `followup` prompt to keep the session alive.
 - `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
 
-Example (from an agent that knows it is in pane `%32`):
+Example (the normal case — no pane, no pid, nothing agent-specific to know):
+
+    reflection(verb="compact")
+    reflection(verb="send", args={text: "/model opus"})
+
+Manual override (a human at a shell, or deliberately targeting another pane):
 
     reflection(verb="compact", args={pane: "%32"})
-    reflection(verb="send", args={text: "/model opus", pane: "%32"})
 
-## Note: making the pane implicit (future)
+## Not tmux-hosted at all
 
-Requiring the caller to pass `$TMUX_PANE` is the price of keeping this a pure
-drop-in service. To make the pane implicit, the per-session `awm-mcp` proxy
-(which *does* inherit the caller's `TMUX_PANE`) would forward it as a header,
-mirroring its existing `AWM_AS`→`X-Awm-As` block — but that edits shared gateway
-infrastructure and is intentionally out of scope here.
+An agent with no tmux pane at all (an IDE extension session, a claude.ai web
+session, an SDK-driven session with no terminal) has nothing for `reflection` to
+inject into — there is currently no non-tmux mechanism to push input into a
+running Claude Code session from an external process. `reflection` returns a
+clear error in this case rather than guessing.
 
 ## Iterating
 

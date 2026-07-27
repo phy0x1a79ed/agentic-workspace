@@ -10,9 +10,13 @@ point (an agent calls ``reflection(verb="compact", args={pane})`` on itself).
 - ``send``    — paste any text/slash command into a tmux pane and submit it.
 - ``compact`` — sugar for ``send`` with ``text="/compact"``.
 
-The target pane arrives as an argument because this process does not share the
-caller's environment; the caller passes its ``$TMUX_PANE``. See
-``awm.reflection.tmux_inject`` for the mechanics.
+This process does not share the caller's environment, so the target pane can't
+be read directly here — but the calling agent never needs to know or pass it
+either. The per-session ``awm-mcp`` proxy sits inside the caller's own tmux pane
+and forwards ``$TMUX_PANE`` as a header; the gateway fills it in as the default
+``pane`` before the call reaches this service. ``pane`` remains an accepted
+argument only as a manual override (a human at a shell, or deliberately
+targeting another pane). See ``awm.reflection.tmux_inject`` for the mechanics.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.reflection.hub_adapter
@@ -47,15 +51,16 @@ API_MANIFEST: dict[str, Any] = {
                 "never queued behind it) so it can't run ahead of the command. "
                 "Modal commands (/mcp, /status, /model with no arg, …) are refused "
                 "— they trap input and freeze the session. "
-                "Pass `pane` = your $TMUX_PANE (find it with `echo $TMUX_PANE`)."
+                "Call with no `pane` — your own tmux pane is detected automatically."
             ),
             "timeout": 60,
             "params": [
                 {"name": "text", "type": "string", "required": True,
                  "description": "The line to inject, e.g. '/compact' or '/model opus'."},
                 {"name": "pane", "type": "string",
-                 "description": "Target tmux pane id (your $TMUX_PANE). "
-                                "If omitted, best-effort auto-detect of a single agent pane."},
+                 "description": "Advanced override: a specific tmux pane id to "
+                                "target instead of your own (e.g. to drive a "
+                                "different session). Leave unset for the normal case."},
                 {"name": "enter", "type": "boolean",
                  "description": "Press Enter to submit after pasting (default true)."},
                 {"name": "followup", "type": "string",
@@ -80,14 +85,15 @@ API_MANIFEST: dict[str, Any] = {
                 "detached watcher waits for it — the resume is never queued behind "
                 "/compact, so it always lands on the freshly-compacted context) so "
                 "the session resumes instead of going idle. Returns immediately "
-                "with followup_deferred=true. Pass `pane` = your $TMUX_PANE (find "
-                "it with `echo $TMUX_PANE`)."
+                "with followup_deferred=true. Call with no arguments — your own "
+                "tmux pane is detected automatically."
             ),
             "timeout": 60,
             "params": [
                 {"name": "pane", "type": "string",
-                 "description": "Target tmux pane id (your $TMUX_PANE). "
-                                "If omitted, best-effort auto-detect of a single agent pane."},
+                 "description": "Advanced override: a specific tmux pane id to "
+                                "target instead of your own. Leave unset for the "
+                                "normal case."},
                 {"name": "followup", "type": "string",
                  "description": "Prompt queued after /compact to resume work "
                                 "(default 'Continue with what you were doing.')."},
