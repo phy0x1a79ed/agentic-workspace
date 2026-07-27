@@ -100,6 +100,11 @@ always blocked on the very command that was stopped and would otherwise see a
 bare `Killed`. PreToolUse covers the detached job nobody was waiting on, and
 adds a one-line pressure warning before an agent launches more work.
 
+`additionalContext` from a `PostToolUse` hook does reach the model — verified
+end-to-end on Claude Code 2.1.220, and the entries take effect without
+restarting a running session. So the blocking `exit 2` fallback is not needed;
+if a future release changes that, it is the alternative.
+
 Removing the two entries is an independent rollback from disarming the
 watchdog.
 
