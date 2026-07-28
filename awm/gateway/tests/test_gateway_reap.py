@@ -405,3 +405,46 @@ async def test_the_gateways_own_process_group_is_spared(monkeypatch):
 
 def test_pgid_of_a_dead_pid_is_none():
     assert go._pgid_of(2 ** 22) is None
+
+
+# ---------------------------------------------------------------------------
+# Identity beats bookkeeping: the respawn-by-sid stale-pid outage (2026-07-28)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_respawned_service_is_not_an_orphan_when_the_record_is_stale(
+        monkeypatch):
+    """A respawn reuses the journaled service_id and does NOT re-register, so
+    the record can name the pid of the process the respawn replaced. Keyed on
+    pid alone the live process looks like an orphan and the sweep group-kills
+    it — which is what took the whole fleet down every 120s: kill, respawn,
+    re-stale, kill. The live process is identified by its AWM_SERVICE_ID.
+    """
+    killed = _capture_kills(monkeypatch)
+    rec = await _register_base("respawned", pid=5001)   # 5001 died
+    _claim_lease(rec.service_id, held_for=99999.0)
+    _mark_ready(rec.service_id)
+    _fake_scan(monkeypatch, [
+        {"pid": 5002, "cmdline": "python -m awm.respawned.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/", "service_id": rec.service_id},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == []
+    assert out["count"] == 0
+
+
+async def test_a_dead_service_id_does_not_shield_an_orphan(monkeypatch):
+    """The identity rule spares processes something is *talking to*, not any
+    process that once had an id. No ready control channel → still an orphan."""
+    killed = _capture_kills(monkeypatch)
+    _fake_scan(monkeypatch, [
+        {"pid": 5003, "cmdline": "python -m awm.gone.hub_adapter",
+         "hub_url": "http://127.0.0.1:7819/", "service_id": "id-of-a-corpse"},
+    ])
+
+    out = await go.reap_orphans()
+
+    assert killed == [5003]
+    assert out["count"] == 1
