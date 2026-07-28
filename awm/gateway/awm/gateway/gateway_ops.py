@@ -230,7 +230,11 @@ async def _op_services_stop(name: str) -> dict[str, Any]:
     registry = get_registry()
     entry = supervisor.load_service_journal().get(name) or {}
     rec = registry.get_by_name("service", name)
-    pid = (rec.backend_pid if rec is not None else None) or entry.get("last_pid")
+    # Journal first: it is rewritten on every respawn, while the record's pid is
+    # only set at registration and a respawn-by-sid never re-registers. Reading
+    # the record first is how `stop` came to SIGTERM a corpse and leave the real
+    # process running (which then held its singleton lock against the restart).
+    pid = entry.get("last_pid") or (rec.backend_pid if rec is not None else None)
     # Drop the journal entry FIRST, before evicting/killing, so the disconnect
     # watchdog sees a deliberate stop and does not respawn (see api/hub.py).
     supervisor.remove_service_journal_entry(name)
@@ -356,11 +360,16 @@ def _scan_hub_adapters() -> list[dict[str, Any]]:
         cmd = " ".join(p.decode("utf-8", "replace") for p in parts if p)
         if not _HUB_ADAPTER_RE.search(cmd):
             continue
+        env = _read_proc_environ(pid)
         found.append({
             "pid": pid,
             "pgid": _pgid_of(pid),
             "cmdline": cmd,
-            "hub_url": _read_proc_environ(pid).get("AWM_HUB_URL", ""),
+            "hub_url": env.get("AWM_HUB_URL", ""),
+            # The identity the gateway itself assigned. Unlike a pid it survives
+            # a respawn, so it can answer "is this process a live service?"
+            # without trusting the registry's pid bookkeeping.
+            "service_id": env.get("AWM_SERVICE_ID", ""),
             "age_s": _proc_age_s(pid),
         })
     return found
@@ -472,6 +481,15 @@ async def reap_orphans(*, dry_run: bool = False) -> dict[str, Any]:
         if proc.get("pgid") is not None and proc["pgid"] in protected_groups:
             continue
         if _origin_of(proc["hub_url"]) != my_origin:
+            continue
+        # Identity, not pid. The pid-keyed protection above is only as good as
+        # the registry's bookkeeping, and a respawn that reuses a service_id
+        # does not re-register — so a healthy service can be missing from
+        # `protected` entirely. A process whose AWM_SERVICE_ID has a ready
+        # control channel is by definition serving this gateway right now, and
+        # is never an orphan. This is the invariant the sweep must not violate:
+        # it may only ever kill processes nothing is talking to.
+        if supervisor.has_ready_control(proc.get("service_id")):
             continue
         # A process younger than the grace has not had time to register, so it
         # holds no lease and would look exactly like an orphan. This matters

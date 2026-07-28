@@ -688,3 +688,66 @@ class TestDisconnectWatchdogDedup:
             supervisor.supervise_disconnect("dead"))
 
         reregister.assert_not_called()
+
+
+class TestRespawnRefreshesTheRecordPid:
+    """A respawn must leave the registry record pointing at the process that is
+    now running.
+
+    The record's pid is set at registration, and a respawn reuses the journaled
+    ``service_id`` so the adapter reconnects *without* re-registering — nothing
+    else ever refreshes it. Left stale it names a corpse, and everything that
+    keys off it acts on the wrong process: the orphan reaper protects the dead
+    pid and kills the live one, `services stop` SIGTERMs the corpse and leaves
+    the service running. (2026-07-28: the whole fleet died every 120s.)
+    """
+
+    def test_record_pid_follows_the_respawn(self, monkeypatch):
+        from awm.gateway.hub import registry as reg_mod
+
+        monkeypatch.setattr(supervisor, "spawn_service", MagicMock(return_value=777))
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        supervisor.update_service_journal_entry("svc", {
+            "service_id": "sid-svc",
+            "prefix": "/svc/svc",
+            "start_cmd": ["run.sh"],
+            "cwd": "/srv",
+            "last_pid": 111,
+        })
+
+        async def go():
+            registry = reg_mod.get_registry()
+            rec = await registry.register_service(
+                "svc", "/svc/svc", pid=111, start_cmd=["run.sh"], cwd="/srv")
+            rec.service_id = "sid-svc"
+            entry = supervisor.load_service_journal()["svc"]
+            await supervisor._respawn_from_journal("svc", entry)
+            return registry.get_by_id("sid-svc")
+
+        rec = asyncio.new_event_loop().run_until_complete(go())
+
+        assert rec is not None
+        assert rec.backend_pid == 777
+        assert supervisor.load_service_journal()["svc"]["last_pid"] == 777
+
+    def test_a_missing_record_does_not_break_the_respawn(self, monkeypatch):
+        """The respawn can race the re-register; bookkeeping is best-effort."""
+        spawn = MagicMock(return_value=778)
+        monkeypatch.setattr(supervisor, "spawn_service", spawn)
+        monkeypatch.setattr(supervisor, "kill_pid_group", MagicMock())
+        supervisor.update_service_journal_entry("ghost", {
+            "service_id": "sid-ghost",
+            "prefix": "/svc/ghost",
+            "start_cmd": ["run.sh"],
+            "cwd": "/srv",
+            "last_pid": 222,
+        })
+
+        async def go():
+            entry = supervisor.load_service_journal()["ghost"]
+            await supervisor._respawn_from_journal("ghost", entry)
+
+        asyncio.new_event_loop().run_until_complete(go())
+
+        assert spawn.call_count == 1
+        assert supervisor.load_service_journal()["ghost"]["last_pid"] == 778

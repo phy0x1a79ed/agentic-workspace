@@ -412,6 +412,21 @@ async def _reregister_record(name: str, entry: dict):
         return None
 
 
+async def _set_record_pid(sid: str | None, pid: int | None) -> None:
+    """Point the registry record for ``sid`` at the process that is actually
+    running. Best-effort: a missing record is normal (the respawn races the
+    re-register), and a bookkeeping update must never break a respawn."""
+    if not sid or not pid:
+        return
+    try:
+        from awm.gateway.hub.registry import get_registry
+        rec = get_registry().get_by_id(sid)
+        if rec is not None:
+            rec.backend_pid = pid
+    except Exception as exc:  # noqa: BLE001
+        log.debug("could not refresh record pid for %s: %s", sid, exc)
+
+
 async def _respawn_from_journal(name: str, entry: dict) -> None:
     """SIGTERM the stale PID (if any) and respawn the service from its journal
     entry. Shared by boot reconcile and the runtime disconnect watchdog.
@@ -468,6 +483,15 @@ async def _respawn_from_journal(name: str, entry: dict) -> None:
             "start_cmd": list(start_cmd),
             "cwd": cwd,
         })
+        # And into the REGISTRY record, which the journal is not. A respawn
+        # reuses the journaled service_id, so the adapter reconnects its control
+        # WS without re-registering — nothing else ever refreshes the record's
+        # pid. Left stale, the record names a corpse: the orphan reaper protects
+        # that dead pid and group-kills the live process as an orphan, then the
+        # respawn re-stales the record, and the fleet dies every sweep. Same
+        # stale pid made `services stop` kill a corpse and leave the real
+        # process running.
+        await _set_record_pid(sid, new_pid)
     except (OSError, ValueError) as exc:
         log.error("respawn failed for service %s: %s", name, exc)
 
