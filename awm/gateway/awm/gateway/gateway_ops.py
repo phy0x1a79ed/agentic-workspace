@@ -618,6 +618,23 @@ def _op_peer_forget(name: str) -> dict[str, Any]:
     return {"forgot": entry}
 
 
+async def _op_peer_providers(tool: str | None = None,
+                             refresh: bool = False) -> dict[str, Any]:
+    """Which fleet nodes can serve an MCP tool, and which one it defaults to.
+
+    The companion of the address book: ``peer_resolve`` says *where a node is*,
+    this says *what a node can do*. It is the same handler the reserved
+    ``providersOf`` MCP tool uses, so ``awm peer providers`` and what an agent
+    sees can never disagree.
+
+    Imported locally because ``catalog`` imports this module at load time — the
+    dependency has to point one way only.
+    """
+    from awm.gateway import catalog
+
+    return await catalog._providers_of(tool, refresh)
+
+
 # ---------------------------------------------------------------------------
 # Config contracts — aggregate every opted-in service contract + the gateway's
 # own global slot into one settings surface; route writes back to the owner.
@@ -752,7 +769,12 @@ GATEWAY_OPERATIONS: list[Operation] = [
         description="Restart the AWM core systemd unit (awm.service).",
         service_func=_op_restart,
         http_method="POST", http_path="/restart",
-        cli_group="", cli_command="",
+        # Labelled even though ``surfaces`` withholds the CLI (``awm gateway
+        # restart`` is hand-authored in cli.py): the collapsed MCP projection
+        # folds native ops by cli_group/cli_command, so empty labels produced a
+        # domain named '' with a single verb named '' — an unusable tool on the
+        # surface. The labels are the fold key, not a CLI opt-in.
+        cli_group="gateway", cli_command="restart",
         output=JsonOutput(), surfaces=_MCP_HTTP,
     ),
     Operation(
@@ -909,6 +931,29 @@ GATEWAY_OPERATIONS: list[Operation] = [
         params=[Param(name="name", type="string", required=True,
                       location="path", cli_type="argument",
                       description="Peer node name to forget.")],
+        surfaces=_CLI,
+    ),
+    Operation(
+        name="peer_providers",
+        description="Which fleet nodes can serve a given MCP tool/domain and "
+                    "which one it goes to by default (omit the tool for the "
+                    "whole fleet map). Backs the providersOf MCP tool.",
+        service_func=_op_peer_providers,
+        # Not ``/peers/providers``: ``GET /peers/{name}`` is registered ahead of
+        # it and would swallow "providers" as a peer name. The ``-`` segment says
+        # "no particular peer" and keeps the route order-independent.
+        http_method="GET", http_path="/peers/-/providers",
+        cli_group="peer", cli_command="providers",
+        output=JsonOutput(),
+        params=[
+            Param(name="tool", type="string", required=False,
+                  cli_type="argument",
+                  description="Domain/tool name to look up; omit for every one."),
+            Param(name="refresh", type="boolean", required=False, default=False,
+                  cli_name="--refresh",
+                  description="Sweep every peer now instead of reading the "
+                              "background snapshot."),
+        ],
         surfaces=_CLI,
     ),
     # --- config contracts (settings page) ---------------------------------

@@ -65,6 +65,7 @@ snapshot.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import logging
@@ -74,6 +75,7 @@ from typing import Any
 from mcp.types import Tool
 from starlette.concurrency import run_in_threadpool
 
+from awm.gateway import peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.hub import rpc
 from awm.gateway.hub.registry import ServiceRecord, get_registry
@@ -255,11 +257,25 @@ async def _rpc_call(rec: ServiceRecord, fn: str, args: dict, as_: str | None) ->
 # verb ``create``). One service can yield several domains (scopes → scope /
 # project / ref); gateway-native ops group by their ``cli_group`` (``gateway`` /
 # ``services``) with the verb being their ``cli_command``. The MCP stdio proxy
-# requests this view (``GET /tools?view=domains``), so a non-deferring client
-# carries ~8–10 generic tools instead of ~71 verb-tools; verbs + their full
-# param schemas are learned on demand via the reserved ``describe`` verb.
+# requests this view, so a non-deferring client carries a few dozen generic tools
+# instead of hundreds of verb-tools; verbs + their full param schemas are learned
+# on demand via the reserved ``describe`` verb.
+#
+# ``?view=domains&peers=1`` widens the same projection to the **fleet**: still one
+# tool per domain name, but a domain only a peer runs appears too, and the
+# envelope's ``peer`` key chooses the node. That replaced merging each peer's whole
+# catalog under ``<domain>@<peer>`` names, which multiplied the tool count by the
+# number of peers joined while adding no capability at all. Which node a call lands
+# on by default is ``peer_catalog``'s decision, not this module's.
 
 _DESCRIBE_VERB = "describe"
+
+#: The reserved top-level tool that reports where a domain can run. Not a domain
+#: verb: folding it into the domain scheme would yield the junk single-verb shape
+#: ``providersOf(verb="providersOf")``, so it is emitted directly and dispatched
+#: ahead of the domain branch — the federation analogue of the reserved
+#: ``describe`` verb.
+_PROVIDERS_TOOL = "providersOf"
 
 # The minimal envelope every domain tool advertises (discovery-only — the rich
 # per-verb schema is fetched via ``describe``, never inlined here).
@@ -275,6 +291,14 @@ _DOMAIN_INPUT_SCHEMA: dict[str, Any] = {
         "args": {
             "type": "object",
             "description": "Arguments for the chosen verb (see describe).",
+        },
+        "peer": {
+            "type": "string",
+            "description": "Optional. Run this verb on a specific fleet node "
+                           "instead of the tool's default provider (usually this "
+                           "node; a singleton's owner for a singleton). "
+                           "providersOf(tool=<domain>) lists the valid values "
+                           "and which one is the default.",
         },
     },
     "required": ["verb"],
@@ -324,22 +348,179 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
     return domains
 
 
-def list_domain_tools() -> list[Tool]:
+def _domain_envelope(verb_names: list[str]) -> dict[str, Any]:
+    """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated.
+
+    Deep-copied — a shallow copy shares the nested ``properties`` dict, so
+    stamping the enum would mutate the module constant for every later domain.
+
+    The enum is discovery, not enforcement: dispatch validates a verb against the
+    live catalog (locally) or lets the target peer validate its own, so a snapshot
+    that is a couple of minutes stale can never block a call that would work.
+    """
+    schema = copy.deepcopy(_DOMAIN_INPUT_SCHEMA)
+    if verb_names:
+        schema["properties"]["verb"]["enum"] = verb_names
+    return schema
+
+
+def _local_domain_verbs(
+        catalog: dict[str, list[dict[str, Any]]]) -> dict[str, list[str]]:
+    """``{domain: [verb…]}`` for this node — the shape ``peer_catalog`` reasons
+    over, so it never has to import this module back."""
+    return {domain: [v["verb"] for v in verbs] for domain, verbs in catalog.items()}
+
+
+def _providers_tool() -> Tool:
+    """The reserved top-level ``providersOf`` tool (see ``_PROVIDERS_TOOL``)."""
+    return Tool(
+        name=_PROVIDERS_TOOL,
+        description=(
+            "Which fleet nodes can serve a given awm MCP tool, and which one it "
+            "goes to by default. Pass the tool/domain name, e.g. "
+            "providersOf(tool='2fa'). Use it before setting peer= on a domain "
+            "call: an ordinary domain defaults to this node, a singleton has "
+            "exactly one valid provider, and a domain no local service provides "
+            "may require peer= explicitly."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string",
+                         "description": "Domain/tool name to look up. Omit for "
+                                        "the whole fleet map."},
+                "refresh": {"type": "boolean",
+                            "description": "Force a fresh sweep of every peer "
+                                           "instead of reading the cached one.",
+                            "default": False},
+            },
+        },
+    )
+
+
+async def _providers_of(tool: str | None = None,
+                        refresh: bool = False) -> dict[str, Any]:
+    """Answer ``providersOf`` — where a tool can run, and where it goes by default.
+
+    Shared by the reserved MCP tool and the ``peer providers`` Operation (so
+    ``awm peer providers`` and the HTTP route can never drift from what the agent
+    sees). ``refresh`` forces a synchronous peer sweep; without it this reads the
+    background snapshot and never touches the network. Omit ``tool`` for the whole
+    fleet map.
+
+    An unreachable peer is reported as unreachable with its last-known domains,
+    never dropped: "mira does not have this" and "mira is asleep" are different
+    answers and conflating them is what makes a discovery tool useless.
+    """
+    if refresh:
+        await peer_catalog.sweep()
+    snap = peer_catalog.snapshot()
+    local = _local_domain_verbs(_domain_catalog())
+    swept = peer_catalog.swept_at()
+    if tool:
+        return {**peer_catalog.resolve(tool, local, snap), "swept_at": swept}
+    return {
+        "swept_at": swept,
+        "tools": [peer_catalog.resolve(d, local, snap)
+                  for d in peer_catalog.fleet_domains(local, snap)],
+    }
+
+
+def list_domain_tools(*, peers: bool = False) -> list[Tool]:
     """Project the collapsed per-domain MCP surface — one ``Tool`` per domain,
-    each advertising the minimal ``{verb, args}`` envelope. Names every verb in
-    the free-text description (cheap discovery) while keeping the schema minimal
-    per the discovery-only decision."""
+    each advertising the ``{verb, args, peer}`` envelope with ``verb`` enumerated.
+
+    With ``peers=False`` (the default) this is **this node's** domains only, which
+    is what a peer's edge serves when another node reads our catalog — the local
+    view has to stay local or the fleet would advertise transitive peers nobody
+    can dial.
+
+    With ``peers=True`` (what the MCP proxy requests) the surface is the
+    fleet-wide *union*: still one tool per domain name, but a domain only a peer
+    runs appears too, each tool's description saying where it runs by default and
+    where else it can be sent. That is the whole point — before this, a peer's
+    catalog was merged under ``<domain>@<peer>`` names and two peers tripled the
+    tool count for no new capability. The reserved ``providersOf`` tool is
+    appended so the peer options are discoverable without listing them per tool.
+    """
+    catalog = _domain_catalog()
+    local_verbs = _local_domain_verbs(catalog)
+
+    if not peers:
+        return [Tool(name=domain,
+                     description=_local_domain_description(domain, verbs),
+                     inputSchema=_domain_envelope(verbs))
+                for domain, verbs in local_verbs.items()]
+
+    snap = peer_catalog.snapshot()
     out: list[Tool] = []
-    for domain, verbs in _domain_catalog().items():
-        verb_names = [v["verb"] for v in verbs]
-        desc = (
-            f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
-            f"Call with {{verb, args}}; verb='describe' (optionally "
-            f"args={{verb:<name>}}) returns full parameter schemas."
-        )
-        out.append(Tool(name=domain, description=desc,
-                        inputSchema=dict(_DOMAIN_INPUT_SCHEMA)))
+    for domain in peer_catalog.fleet_domains(local_verbs, snap):
+        res = peer_catalog.resolve(domain, local_verbs, snap)
+        out.append(Tool(name=domain,
+                        description=_fleet_domain_description(res),
+                        inputSchema=_domain_envelope(_advertised_verbs(res))))
+    out.append(_providers_tool())
     return out
+
+
+def _local_domain_description(domain: str, verb_names: list[str]) -> str:
+    return (
+        f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
+        f"Call with {{verb, args}}; verb='describe' (optionally "
+        f"args={{verb:<name>}}) returns full parameter schemas."
+    )
+
+
+def _advertised_verbs(res: dict[str, Any]) -> list[str]:
+    """Verbs to enumerate for a fleet domain: the default provider's, exactly.
+
+    With no default (several peers, no local) there is nothing authoritative to
+    show, so take the union of the candidates — a superset is harmless (dispatch
+    does not enforce the enum) while an arbitrary pick would be misleading.
+    """
+    providers = res.get("providers") or []
+    default = res.get("default")
+    for p in providers:
+        if p["peer"] == default:
+            return list(p["verbs"])
+    seen: list[str] = []
+    for p in providers:
+        for v in p["verbs"]:
+            if v not in seen:
+                seen.append(v)
+    return seen
+
+
+def _fleet_domain_description(res: dict[str, Any]) -> str:
+    """One domain's description in the fleet-wide view — where it runs, and where
+    else it may be sent. Says it in prose because this is what the model reads to
+    decide whether it needs ``peer`` at all."""
+    domain = res["tool"]
+    verbs = _advertised_verbs(res)
+    others = [p["peer"] for p in res["providers"] if p["peer"] != res["default"]]
+    head = (
+        f"Generic '{domain}' domain tool. Verbs: {', '.join(verbs)}. "
+        f"Call with {{verb, args}}; verb='describe' (optionally "
+        f"args={{verb:<name>}}) returns full parameter schemas."
+    )
+    reason = res["reason"]
+    if reason == peer_catalog.REASON_SINGLETON:
+        tail = (f" Fleet singleton owned by '{res['default']}' — every call "
+                f"routes there and peer= cannot redirect it.")
+    elif reason == peer_catalog.REASON_LOCAL:
+        tail = (f" Runs on this node by default"
+                + (f"; also on {', '.join(others)} via peer=<name>." if others
+                   else "."))
+    elif reason == peer_catalog.REASON_SOLE_PEER:
+        tail = (f" No local service provides it: runs on '{res['default']}', "
+                f"the only provider, by default.")
+    elif reason == peer_catalog.REASON_AMBIGUOUS:
+        tail = (f" No local service provides it and several peers do "
+                f"({', '.join(p['peer'] for p in res['providers'])}) — pass "
+                f"peer=<name>; there is no default.")
+    else:
+        tail = ""
+    return head + tail
 
 
 def _describe_domain(domain: str, verb: str | None = None,
@@ -377,10 +558,19 @@ def _find_native_op(domain: str, verb: str):
 
 async def _dispatch_domain(name: str, args: dict, as_: str | None,
                            catalog: dict[str, list[dict[str, Any]]]) -> str:
-    """Dispatch a collapsed per-domain tool call (``{verb, args}``).
+    """Dispatch a collapsed per-domain tool call (``{verb, args, peer}``).
 
-    ``verb='describe'`` is answered from the catalog. A native verb routes
-    through its Operation (same handler as the HTTP route + CLI command); a
+    Routing comes first: the envelope's optional ``peer`` (or, absent one, the
+    domain's default provider — this node for an ordinary domain, the owner for a
+    declared singleton) decides *where* the verb runs. A peer target raises
+    :class:`peer_catalog.PeerRedirect` carrying that peer's edge address, for the
+    caller to dial directly — the gateway resolves and never relays, so no peer
+    bytes traverse it. An unhonourable request raises ``ValueError`` naming the
+    valid providers rather than quietly running here, which would be exactly the
+    half-route failure the default-provider model exists to prevent.
+
+    Then, locally: ``verb='describe'`` is answered from the catalog. A native verb
+    routes through its Operation (same handler as the HTTP route + CLI command); a
     service verb is resolved back to its internal function via the existing
     ``_find_service_fn`` reverse lookup (so a name≠tool divergence like
     ``scope_refresh`` → internal ``awm_refresh`` still routes) and RPC'd with the
@@ -389,6 +579,15 @@ async def _dispatch_domain(name: str, args: dict, as_: str | None,
     inner = args.get("args") or {}
     if not isinstance(inner, dict):
         raise ValueError("'args' must be an object")
+
+    requested_peer = args.get("peer")
+    if requested_peer is not None and not isinstance(requested_peer, str):
+        raise ValueError("'peer' must be a node name string")
+    target = peer_catalog.choose_target(
+        name, requested_peer, _local_domain_verbs(catalog))
+    if target != peer_catalog.LOCAL:
+        raise peer_catalog.PeerRedirect(target, name, verb)
+
     if verb == _DESCRIBE_VERB:
         return _serialize(_describe_domain(name, inner.get("verb"), catalog))
 
@@ -430,11 +629,21 @@ async def dispatch(name: str, args: dict, as_: str | None = None) -> str:
     branches. The ``"verb" in args`` guard keeps a future flat tool literally
     named like a domain from being hijacked, and the flat branches below stay
     intact so the CLI's by-name ``/invoke`` posts keep working.
+
+    A domain **no local service provides** but a peer does routes here too, so a
+    peer-only domain (``hpcllm``, ``orch``, …) is callable by its plain name
+    rather than needing the ``<domain>@<peer>`` twin the surface used to carry.
+    ``providersOf`` is checked first: it is a reserved top-level tool, not a
+    domain verb.
     """
     args = args or {}
+    if name == _PROVIDERS_TOOL:
+        return _serialize(await _providers_of(
+            args.get("tool"), bool(args.get("refresh"))))
     if "verb" in args:
         domains = _domain_catalog()
-        if name in domains:
+        if name in domains or name in peer_catalog.fleet_domains(
+                _local_domain_verbs(domains)):
             return await _dispatch_domain(name, args, as_, domains)
 
     op = _GATEWAY_OPS_BY_NAME.get(name)
