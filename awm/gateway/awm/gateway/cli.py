@@ -317,14 +317,19 @@ def deploy(
     """Ship the release worktree to the running (systemd) gateway, safely.
 
     install (only if the dist set changed) → build (only if page source
-    changed) → restart the system awm.service → reap orphaned adapters →
-    verify every enabled service and built page came back. Idempotent: a
+    changed) → restart whichever awm.service unit supervises this gateway →
+    reap orphaned adapters → verify every enabled service and built page
+    came back. Idempotent: a
     no-op deploy skips the slow steps. Pages return on their own (discovered
     on boot) and services respawn from *this* tree — no journal wipe, no
     manual re-register. Use ``--dry-run`` to preview.
     """
     from awm.gateway import deploy as D
-    from awm.gateway.core import _RestartTimeout, restart_core_and_wait
+    from awm.gateway.core import (
+        _RestartTimeout,
+        restart_core_and_wait,
+        user_unit_is_active,
+    )
     from awm.gateway.hub import discovery
 
     root = D.awm_root()
@@ -344,7 +349,14 @@ def deploy(
     if plan.changed_pages:
         typer.echo(f"            changed: {', '.join(plan.changed_pages)}")
     typer.echo(f"  reap:     {'YES' if plan.do_reap else 'no '}")
-    typer.echo("  restart:  YES (system awm.service)")
+    # Which supervisor is probed, not assumed. The fleet is mixed: capella's prod
+    # runs as a system unit needing sudo, while mira and altair run a per-user
+    # unit that must NOT be restarted with sudo (a different systemd instance
+    # entirely — `sudo systemctl restart awm.service` there reports the unit
+    # missing and leaves the old gateway running until the wait times out).
+    user_unit = user_unit_is_active()
+    typer.echo(f"  restart:  YES ({'per-user' if user_unit else 'system'} "
+               f"awm.service)")
     typer.echo(f"  verify:   {len(expected_services)} service(s), "
                f"{len(expected_pages)} page(s)")
 
@@ -369,20 +381,21 @@ def deploy(
                        "if vite is missing)", err=True)
             raise typer.Exit(1)
 
-    # --- 3. restart the system unit ---
-    probe = subprocess.run(["sudo", "-n", "true"], capture_output=True)
-    if probe.returncode != 0:
-        typer.echo("cannot sudo non-interactively to restart the system unit. "
-                   "Restart it yourself, then re-run to finish:\n"
-                   "  sudo systemctl restart awm.service\n"
-                   "  awm deploy --no-install --no-build", err=True)
-        raise typer.Exit(1)
-    typer.echo("→ restarting system awm.service …")
+    # --- 3. restart the unit that is actually supervising this gateway ---
+    restart_cmd = None            # None ⇒ core probes and uses the per-user unit
+    if not user_unit:
+        probe = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+        if probe.returncode != 0:
+            typer.echo("cannot sudo non-interactively to restart the system unit. "
+                       "Restart it yourself, then re-run to finish:\n"
+                       "  sudo systemctl restart awm.service\n"
+                       "  awm deploy --no-install --no-build", err=True)
+            raise typer.Exit(1)
+        restart_cmd = ["sudo", "-n", "systemctl", "restart", "awm.service"]
+    typer.echo(f"→ restarting {'per-user' if user_unit else 'system'} "
+               f"awm.service …")
     try:
-        result = restart_core_and_wait(
-            timeout=timeout,
-            restart_cmd=["sudo", "-n", "systemctl", "restart", "awm.service"],
-        )
+        result = restart_core_and_wait(timeout=timeout, restart_cmd=restart_cmd)
     except _RestartTimeout as exc:
         typer.echo(f"restart failed: {exc}", err=True)
         raise typer.Exit(1) from exc

@@ -203,3 +203,38 @@ class TestHealthGateAppliesToBothPaths:
             ])
         with pytest.raises(core._RestartTimeout, match="did not become healthy"):
             core.restart_core_and_wait(timeout=1)
+
+
+class TestDeployPicksTheRightUnit:
+    """`awm deploy` must restart the unit that is actually supervising it.
+
+    The fleet is mixed: capella's prod is a system unit reached through sudo,
+    while mira and altair run a per-user unit. `sudo systemctl restart
+    awm.service` on a per-user host talks to a different systemd instance
+    entirely — it reports the unit missing and leaves the old gateway running,
+    so the deploy sat waiting for a process that was never asked to exit and
+    failed with "old gateway pid did not exit within 60s" after everything else
+    had already been installed and built.
+    """
+
+    def test_a_per_user_host_needs_no_sudo_and_no_explicit_cmd(self):
+        import inspect
+
+        from awm.gateway import cli
+
+        src = inspect.getsource(cli.deploy)
+        # The sudo pre-flight and the system restart_cmd are both inside the
+        # not-a-user-unit branch.
+        assert "user_unit = user_unit_is_active()" in src
+        assert "if not user_unit:" in src
+        sudo_at = src.index('"sudo", "-n", "true"')
+        branch_at = src.index("if not user_unit:")
+        assert branch_at < sudo_at, "the sudo probe must be gated by the unit probe"
+
+    def test_the_plan_line_reports_which_unit(self):
+        import inspect
+
+        from awm.gateway import cli
+
+        src = inspect.getsource(cli.deploy)
+        assert "'per-user' if user_unit else 'system'" in src

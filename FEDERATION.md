@@ -363,7 +363,16 @@ every service DB. **`awm deploy`, not a bare unit restart**: it reinstalls dists
 if the set changed, rebuilds changed pages, restarts, reaps orphans, and then
 verifies every enabled service and built page came back — a restart alone silently
 skips all of that, and a service whose dist never got installed comes back as a
-crash loop rather than an error.
+crash loop rather than an error. It probes which `awm.service` supervises the
+gateway rather than assuming; the fleet is mixed (capella a system unit behind
+sudo, mira and altair per-user), and `sudo systemctl` on a per-user host addresses
+a different systemd instance, reports the unit missing, and leaves the old gateway
+running.
+
+`awm deploy` needs `mamba` and the env's `node` on `PATH` and a populated
+`awm/node_modules`. Neither is implied by a fresh clone: `environment.yml` carries
+no nodejs, so a node that has never built pages needs `mamba install -n awm nodejs`
+and one `npm install` in `awm/` before its first deploy.
 
 `enabled.json` must stay explicit for the same reason: a service absent from it is
 *enabled*, so anything added to the tree since the last sync starts on the next
