@@ -301,6 +301,16 @@ budget, not per-attempt, so retries can't multiply the worst-case fail-closed
 latency. Async callers **must** use `fetch_peer_cred_async` — the sync fetch
 shells out to ssh and will otherwise stall the whole service's event loop.
 
+### Standing up a new node against a lockout-sensitive host
+
+Install the target's **host keys from a node that already has them** before the
+first connect — `ssh-keygen -F <host>` on capella or mira, appended to the new
+node's `~/.ssh/known_hosts`. Otherwise `ssh` raises a confirm-the-fingerprint
+prompt, the askpass refuses it (correctly — it is not a Duo menu), and the connect
+fails. It costs no MFA attempt and no longer trips a hold, but it is a wasted round
+trip, and taking the fingerprint from a node with a long history of using the host
+beats accepting it blind on the new one.
+
 ## TLS
 
 Peer edges present certs signed by the shared **remote-audio root CA** (the same
