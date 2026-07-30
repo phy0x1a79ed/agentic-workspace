@@ -320,8 +320,7 @@ CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
 insecure.
 
-**Only one node holds the CA key.** A new node gets `ca.pem` and deliberately
-**not** `ca-key.pem`: it must verify its peers and must not be able to mint for the
+**A new node gets `ca.pem` and deliberately not `ca-key.pem`:** it must verify its peers and must not be able to mint for the
 fleet. Its leaf is cut on the CA holder with SANs covering the addresses it will be
 dialed at, and both halves dropped into `awm/services/httpsfront/.certs/`.
 `ensure_certs` recognises that state as a *trust consumer* and validates instead of
@@ -330,6 +329,11 @@ a warning only when it fails to cover some newly-appeared docker bridge, because
 taking the edge down for an address nobody dials is worse. It used to read a missing
 key as a missing CA and re-mint, which replaced the fleet's root and surfaced as a
 certificate error on every peer.
+
+capella and mira both still hold a `ca-key.pem` — they predate this rule and each
+minted their own leaf. That is not urgent (they hold the *same* root), but it means
+either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
+one key-holder and the rest trust consumers.
 
 `mic` keeps its own copy of that code, shares the root, and is **enabled by default
 on every node** — so left unfixed it would win the boot race, put a key back, and
