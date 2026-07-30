@@ -711,11 +711,18 @@ class Lease:
                 await lease.verdict(ok=success)
     """
 
-    def __init__(self, ws: Any, status: str, reason: str | None) -> None:
+    def __init__(self, ws: Any, status: str, reason: str | None,
+                 *, node: str | None = None) -> None:
         self._ws = ws
         # "granted" | "busy" | "locked" | "error" — the owning service's first frame.
         self.status = status
         self.reason = reason
+        # Who is holding the lease. Echoed in the verdict so an arbiter that
+        # reports a failure can name the node that actually made the attempt
+        # rather than itself — see the ssh service's lock alert. Passed in by the
+        # caller rather than looked up here: gatewayclient does not depend on
+        # awm-config, and "who is asking" is the caller's fact anyway.
+        self._node = node
         self._closed = False
 
     @property
@@ -726,9 +733,12 @@ class Lease:
         """Report the outcome on the held socket, then close (a clean release)."""
         if self._closed:
             return
+        frame: dict[str, Any] = {"verdict": "ok" if ok else "fail",
+                                 "reason": reason}
+        if self._node:
+            frame["node"] = self._node
         try:
-            await self._ws.send(json.dumps(
-                {"verdict": "ok" if ok else "fail", "reason": reason}))
+            await self._ws.send(json.dumps(frame))
         except Exception:  # noqa: BLE001 — socket already gone counts as a drop
             pass
         await self.aclose()
@@ -762,7 +772,7 @@ def _lease_ws_path(resp: httpx.Response, where: str) -> str:
     return ws_path
 
 
-async def _read_grant(ws: Any) -> Lease:
+async def _read_grant(ws: Any, node: str | None = None) -> Lease:
     """Read the owning service's first frame — its grant/deny — into a Lease."""
     try:
         raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
@@ -776,7 +786,8 @@ async def _read_grant(ws: Any) -> Lease:
         frame = json.loads(raw) if isinstance(raw, str) else {}
     except json.JSONDecodeError:
         frame = {}
-    return Lease(ws, frame.get("lease") or "error", frame.get("reason"))
+    return Lease(ws, frame.get("lease") or "error", frame.get("reason"),
+                 node=node)
 
 
 async def acquire_lease(
@@ -785,6 +796,7 @@ async def acquire_lease(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """Open a direct-session lease on a LOCAL service and read the grant frame.
@@ -797,7 +809,7 @@ async def acquire_lease(
     import websockets
 
     base = hub_base_url()
-    body = json.dumps({"host": host})
+    body = json.dumps({"host": host, "node": node} if node else {"host": host})
     async with httpx.AsyncClient(timeout=timeout) as cli:
         resp = await cli.post(f"{base}/svc/{service}/session/{kind}",
                               content=body, headers=_headers(as_))
@@ -807,7 +819,7 @@ async def acquire_lease(
     ws = await websockets.connect(f"{ws_base}{ws_path}",
                                   additional_headers=extra,
                                   max_size=None, open_timeout=10)
-    return await _read_grant(ws)
+    return await _read_grant(ws, node)
 
 
 async def acquire_lease_peer(
@@ -817,6 +829,7 @@ async def acquire_lease_peer(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """:func:`acquire_lease` against a PEER node's service, via its edge directly.
@@ -837,7 +850,7 @@ async def acquire_lease_peer(
     ws_base = edge.replace("https://", "wss://").replace("http://", "ws://")
     ca = _peer_ca()
     ssl_ctx = ssl.create_default_context(cafile=ca)
-    body = json.dumps({"host": host})
+    body = json.dumps({"host": host, "node": node} if node else {"host": host})
     where = f"{service}@{peer}"
 
     ws = None
@@ -874,6 +887,7 @@ async def acquire_lease_maybe_peer(
     *,
     kind: str = "lease",
     as_: str | None = None,
+    node: str | None = None,
     timeout: float = 10.0,
 ) -> Lease:
     """:func:`acquire_lease` when ``peer`` is falsy, else :func:`acquire_lease_peer`.
@@ -882,9 +896,10 @@ async def acquire_lease_maybe_peer(
     local-vs-peer for a slot-arbiter consumer, so the decision lives here.
     """
     if peer:
-        return await acquire_lease_peer(peer, service, host,
-                                        kind=kind, as_=as_, timeout=timeout)
-    return await acquire_lease(service, host, kind=kind, as_=as_, timeout=timeout)
+        return await acquire_lease_peer(peer, service, host, kind=kind, as_=as_,
+                                        node=node, timeout=timeout)
+    return await acquire_lease(service, host, kind=kind, as_=as_, node=node,
+                               timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

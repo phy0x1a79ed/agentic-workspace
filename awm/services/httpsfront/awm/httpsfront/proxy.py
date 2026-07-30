@@ -33,7 +33,13 @@ import websockets
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -109,6 +115,48 @@ async def _login(request: Request) -> Response:
     if not token:
         return JSONResponse({"ok": False}, status_code=401)
     resp = JSONResponse({"ok": True})
+    _set_session_cookie(resp, token, int(await gate.session_ttl_seconds()))
+    return resp
+
+
+def safe_local_path(raw: str | None, default: str = "/") -> str:
+    """Coerce a caller-supplied redirect target into a *local* path.
+
+    Anything that could leave this origin falls back to ``default``: a scheme, an
+    authority (``//host``, and ``/\\host`` which some browsers normalise to one),
+    a relative path, or a header-splitting character. Query and fragment are
+    dropped — an autologin lands you on a *page*, and letting the caller append
+    arbitrary query state to it widens the route for no current use.
+    """
+    if not raw or not raw.startswith("/") or raw.startswith("//"):
+        return default
+    if any(c in raw for c in ("\\", "\n", "\r", "\t", "\x00")):
+        return default
+    path = raw.split("#", 1)[0].split("?", 1)[0]
+    return path or default
+
+
+async def _auth_link(request: Request) -> Response:
+    """``GET /__auth/link?p=<password>[&to=<local path>]`` — the tappable
+    autologin the Discord password push carries.
+
+    A password in a URL is only safe if the URL is never a page. So the *only*
+    successful outcome here is a 302 to a clean local path with the session
+    cookie already set: nothing is rendered under the address that carried the
+    credential, the response is uncacheable, and no referrer leaks it onward. It
+    cannot act as a bearer for an API call either — it mints a cookie and
+    redirects, nothing else.
+
+    A wrong or expired password sets no cookie and lands on the login form,
+    without echoing the submitted value.
+    """
+    gate: AuthGate = request.app.state.gate
+    dest = safe_local_path(request.query_params.get("to"))
+    token = await gate.verify_password(request.query_params.get("p") or "")
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    if not token:
+        return RedirectResponse("/", status_code=302, headers=headers)
+    resp = RedirectResponse(dest, status_code=302, headers=headers)
     _set_session_cookie(resp, token, int(await gate.session_ttl_seconds()))
     return resp
 
@@ -228,7 +276,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
             up_url, additional_headers=fwd, max_size=None, open_timeout=10,
         )
     except Exception as exc:  # noqa: BLE001 — upstream refused / bad path
-        log.debug("ws upstream connect failed for %s: %s", up_url, exc)
+        # Path only, never the query string — see the log_level note in serve().
+        log.debug("ws upstream connect failed for %s: %s", ws.url.path, exc)
         await ws.close(code=1011)
         return
 
@@ -293,6 +342,9 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True) -> Starlette
         Route("/ca.pem", _ca, methods=["GET"]),
         # Auth endpoints — handled by the edge itself, never proxied.
         Route("/__auth/login", _login, methods=["POST"]),
+        # Autologin from the Discord password push — validates and 302s; see
+        # _auth_link for why it may never render a page.
+        Route("/__auth/link", _auth_link, methods=["GET"]),
         Route("/__auth/logout", _logout, methods=["POST", "GET"]),
         Route("/__auth/whoami", _whoami, methods=["GET"]),
     ]
@@ -339,6 +391,11 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
         port=port,
         ssl_certfile=cert,
         ssl_keyfile=key,
+        # SECURITY, not tidiness: uvicorn writes access records — including the
+        # full query string — to `uvicorn.access` at INFO. `GET /__auth/link?p=…`
+        # carries a live login password, so raising this to "info" or "debug" to
+        # chase an unrelated problem would start writing passwords to disk.
+        # Pinned by tests/test_no_access_logging.py.
         log_level="warning",
         ws="websockets",
         timeout_keep_alive=75,

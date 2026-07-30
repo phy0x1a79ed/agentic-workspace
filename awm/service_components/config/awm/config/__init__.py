@@ -94,6 +94,80 @@ SKILLS_DIR = WORKSPACE_ROOT / "skills"
 
 GITHUB_USER = os.environ.get("AWM_GITHUB_USER", "phy0x1a79ed")
 
+# ---------------------------------------------------------------------------
+# Node identity
+# ---------------------------------------------------------------------------
+# Any message that leaves a node for a shared channel — the daily password push
+# to Discord, an SSH lockout alert — is ambiguous in a multi-node fleet unless it
+# names its sender, and the OS hostname is not that name: mira's hostname is
+# ``pavilion``, so its alerts named a machine nobody calls mira. The fleet name
+# is declared per node in ``<workspace>/.awm/env`` and read from there.
+#
+# The edge URL is declared rather than discovered for a reason worth keeping:
+# capella's edge is reached at the *Windows* host's mesh address, which is
+# invisible from inside WSL. That is the same asymmetry ``AWM_TLS_EXTRA_SANS``
+# exists for, so the env var is the primary source and enumeration only the
+# fallback for a node that owns its own mesh interface.
+
+NODE_NAME_ENV = "AWM_NODE_NAME"
+EDGE_URL_ENV = "AWM_EDGE_URL"
+MESH_SUBNET_ENV = "AWM_MESH_SUBNET"
+# The fleet's ZeroTier network ("phynet").
+DEFAULT_MESH_SUBNET = "10.74.81.0/24"
+
+
+def node_name() -> str:
+    """This node's fleet name — ``AWM_NODE_NAME``, else the OS hostname."""
+    import socket
+    return (os.environ.get(NODE_NAME_ENV) or "").strip() or socket.gethostname()
+
+
+def mesh_address() -> str | None:
+    """This host's own address on the fleet mesh, or ``None`` if it has none.
+
+    Enumerated from the interfaces this host can actually see, so it is correct
+    on a node that runs its own ZeroTier client and simply absent on one that is
+    reached through another host's membership.
+    """
+    import ipaddress
+    import subprocess
+    try:
+        net = ipaddress.ip_network(
+            os.environ.get(MESH_SUBNET_ENV) or DEFAULT_MESH_SUBNET, strict=False)
+    except ValueError:
+        log.warning("bad %s; ignoring", MESH_SUBNET_ENV)
+        return None
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True,
+                             text=True, timeout=5)
+    except Exception as exc:  # noqa: BLE001 — no `hostname`, or it hung
+        log.debug("mesh address enumeration failed: %s", exc)
+        return None
+    for tok in out.stdout.split():
+        try:
+            addr = ipaddress.ip_address(tok)
+        except ValueError:
+            continue
+        if addr in net:
+            return str(addr)
+    return None
+
+
+def edge_url() -> str | None:
+    """URL of this node's own ``httpsfront`` edge, as another device reaches it.
+
+    ``AWM_EDGE_URL`` when set (the preferred form — see the note above), else
+    built from this host's enumerated mesh address and ``AWM_HTTPS_PORT``.
+    ``None`` when neither is available, so a caller omits a link rather than
+    printing one that goes nowhere.
+    """
+    if declared := (os.environ.get(EDGE_URL_ENV) or "").strip():
+        return declared.rstrip("/")
+    addr = mesh_address()
+    if not addr:
+        return None
+    return f"https://{addr}:{os.environ.get('AWM_HTTPS_PORT', '8443')}"
+
 # Sentinel project value reserved for vagrant scopes. Vagrant scopes live in
 # a unified bare repo at PROJECTS_DIR / VAGRANT_PROJECT / ".bare" with one
 # branch per scope, rather than belonging to a per-project repo.

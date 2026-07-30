@@ -7,13 +7,12 @@ import json
 import logging
 import os
 import secrets
-import socket
 import stat
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from awm import gatewayclient
+from awm import config, gatewayclient
 from awm.ssh.config import (
     KNOWN_HOSTS,
     LIVE_DIR,
@@ -51,8 +50,10 @@ _RECONCILE_WAIT_TIMEOUT = 60.0
 
 # Which node is speaking. Under federation two ssh services consume the same
 # social/command stream and both will acknowledge an /approve; naming the node
-# makes that informative rather than confusing.
-_NODE_NAME = socket.gethostname()
+# makes that informative rather than confusing. The name comes from the node env,
+# not the OS hostname — mira's hostname is "pavilion", which named a machine
+# nobody in the fleet calls mira.
+_NODE_NAME = config.node_name()
 
 # Discord notifications target for lockout alerts: unimatrix0#notifications.
 _ALERT_ACCOUNT = "discord-bot"
@@ -675,7 +676,9 @@ class SSHService:
             reason = result.pop("_lock_reason", "")
             return result
         finally:
-            await self._slot_release(cfg.host, token, ok=ok, reason=reason)
+            # We own the arbiter AND made the attempt, so we are the requester.
+            await self._slot_release(cfg.host, token, ok=ok, reason=reason,
+                                     requester=_NODE_NAME)
 
     @staticmethod
     def _verdict_ok(result: dict) -> bool:
@@ -699,7 +702,7 @@ class SSHService:
         LOCKED on its own."""
         try:
             lease = await gatewayclient.acquire_lease_maybe_peer(
-                slot_peer, "ssh", cfg.host)
+                slot_peer, "ssh", cfg.host, node=_NODE_NAME)
         except Exception as e:  # noqa: BLE001 — arbiter unreachable → FAIL CLOSED
             log.error("connection arbiter %s unreachable for %s: %s",
                       slot_peer, cfg.host, e)
@@ -745,12 +748,18 @@ class SSHService:
             return ("granted", token)
 
     async def _slot_release(self, host: str, lease_id: str | None, *,
-                            ok: bool, reason: str = "") -> None:
+                            ok: bool, reason: str = "",
+                            requester: str | None = None) -> None:
         """Arbiter ``verdict_ok`` / ``verdict_fail`` / ``drop`` transition.
         ``ok`` frees the slot (→ IDLE, clearing any lock); otherwise → LOCKED
         (persist the lockfile) and page the operator — the arbiter is the SOLE
         notifier on a LOCKED transition, so the requester's attempt stays silent.
-        Idempotent by ``lease_id``: a duplicate or stale release is a no-op."""
+        Idempotent by ``lease_id``: a duplicate or stale release is a no-op.
+
+        ``requester`` is the node whose attempt failed, reported in the lease's
+        init/verdict frame. It is NOT this node: the arbiter pages on behalf of
+        someone else, so naming ourselves in that alert would name the node that
+        did not make the attempt."""
         cfg = resolve_host(host)
         do_alert = False
         reason = reason or "attempt failed (slot arbiter)"
@@ -767,8 +776,10 @@ class SSHService:
             self._write_lock(cfg, reason, cause=cause)
             do_alert = True
         if do_alert:
-            log.error("BREAKER TRIPPED (arbiter) — holding %s: %s", host, reason)
-            await self._alert(self._lock_alert_text(cfg, reason))
+            log.error("BREAKER TRIPPED (arbiter) — holding %s for %s: %s",
+                      host, requester or "an unidentified node", reason)
+            await self._alert(
+                self._lock_alert_text(cfg, reason, requester=requester))
 
     async def _lease_session(self, ctx: Any) -> None:
         """Direct-session handler (the arbiter side of a WS lease). The OPEN bridge
@@ -776,7 +787,11 @@ class SSHService:
         the requester reports a ``verdict`` or the socket drops. Drop without a
         verdict is treated as a failed attempt (LOCKED) — the ZooKeeper-ephemeral
         semantics that make a dead holder free (or trip) its slot at once."""
-        host = (ctx.init or {}).get("host", "")
+        init = ctx.init or {}
+        host = init.get("host", "")
+        # Who is asking. Carried in BOTH frames on purpose: the init frame covers
+        # the drop-without-verdict case, where there is no verdict to read it from.
+        requester = str(init.get("node") or "") or None
         bridge = await ctx.open_bridge()
         token: str | None = None
         try:
@@ -807,22 +822,26 @@ class SSHService:
                     if v in ("ok", "fail"):
                         verdict = v
                         vreason = msg.get("reason") or ""
+                        requester = str(msg.get("node") or "") or requester
                         break
             except Exception:  # noqa: BLE001 — socket dropped mid-hold
                 pass
             if verdict == "ok":
-                await self._slot_release(host, token, ok=True)
+                await self._slot_release(host, token, ok=True,
+                                         requester=requester)
             else:
                 reason = (vreason or "requester reported connect failure"
                           if verdict == "fail"
                           else "requester dropped the lease without a verdict")
-                await self._slot_release(host, token, ok=False, reason=reason)
+                await self._slot_release(host, token, ok=False, reason=reason,
+                                         requester=requester)
             token = None
         finally:
             if token is not None:
                 # Aborted after grant without a clean release — trip closed (safe).
                 await self._slot_release(host, token, ok=False,
-                                         reason="lease handler aborted")
+                                         reason="lease handler aborted",
+                                         requester=requester)
             try:
                 await bridge.close()
             except Exception:  # noqa: BLE001
@@ -1224,14 +1243,22 @@ class SSHService:
         picked = notable or lines[-3:]
         return " | ".join(picked[-3:])
 
-    def _lock_alert_text(self, cfg: HostConfig, reason: str) -> str:
+    def _lock_alert_text(self, cfg: HostConfig, reason: str,
+                         *, requester: str | None = None) -> str:
         """The operator lockout page. Shared by the per-node breaker trip and the
-        slot arbiter's LOCKED transition so both read identically."""
+        slot arbiter's LOCKED transition so both read identically.
+
+        ``requester`` is the node whose attempt failed — which is only *this* node
+        on the local-breaker path. On the arbiter path the alert is generated on
+        the arbiter for someone else's attempt, so it must be passed in; naming
+        ``_NODE_NAME`` unconditionally would attribute every fleet failure to the
+        arbiter, which is the same defect as mira's alerts saying "pavilion"."""
         device = cfg.twofa_device or "your device"
+        who = requester or "an unidentified node"
         return (
-            f"🔒 awm-ssh held **{cfg.host}** after a failed connect — further "
-            f"automated connects are refused so they can't burn an MFA attempt "
-            f"toward provider lockout.\n"
+            f"🔒 awm-ssh held **{cfg.host}** after a failed connect from "
+            f"**{who}** — further automated connects are refused so they can't "
+            f"burn an MFA attempt toward provider lockout.\n"
             f"Reason: {reason}\n"
             f"To recover once you've checked it out: run `/approve {device}` in "
             f"Discord. While that window is open the service will reconnect on "
@@ -1339,7 +1366,9 @@ class SSHService:
         cause = await self._classify_cause(cfg, reason)
         self._write_lock(cfg, reason, cause=cause)
         log.error("BREAKER TRIPPED — holding %s (%s): %s", cfg.host, cause, reason)
-        await self._alert(self._lock_alert_text(cfg, reason))
+        # Local (non-arbiter) path: the attempt was ours, so we are the requester.
+        await self._alert(
+            self._lock_alert_text(cfg, reason, requester=_NODE_NAME))
 
     async def _send_social(self, text: str) -> Any:
         """Post ``text`` to Discord unimatrix0#notifications and RETURN the social
@@ -1374,8 +1403,9 @@ class SSHService:
         device."""
         peer = gatewayclient.peer_env(_SOCIAL_PEER_ENV)
         text = (
-            f"🧪 awm-ssh notify self-test for **{host}** — the Discord alert wire "
-            f"is working. No action needed; this is NOT a real lock."
+            f"🧪 awm-ssh [{_NODE_NAME}] notify self-test for **{host}** — the "
+            f"Discord alert wire is working. No action needed; this is NOT a "
+            f"real lock."
         )
         result = await self._send_social(text)  # surfaces on failure — no try/except
         return {

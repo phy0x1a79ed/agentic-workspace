@@ -25,3 +25,12 @@ test = [
 [tool.setuptools.packages.find]
 include = ["awm.httpsfront*"]
 namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real docker, or network; excluded from smoke",
+    "unit: pure unit tests (models, validation, registries)",
+    "integration: cross-component integration tests",
+]

@@ -34,6 +34,7 @@ declare -A DISTS=(
   [gateway]="$WS/awm/gateway::$WS/awm/gateway/tests"
   [agentcore]="$WS/awm/service_components/agentcore::$WS/awm/service_components/agentcore/tests"
   [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
+  [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
@@ -45,6 +46,8 @@ declare -A DISTS=(
   [social]="$WS/awm/services/social::$WS/awm/services/social/tests"
   [2fa]="$WS/awm/services/2fa::$WS/awm/services/2fa/tests"
   [ssh]="$WS/awm/services/ssh::$WS/awm/services/ssh/tests"
+  [auth]="$WS/awm/services/auth::$WS/awm/services/auth/tests"
+  [httpsfront]="$WS/awm/services/httpsfront::$WS/awm/services/httpsfront/tests"
   [rlm-browser]="$WS/awm/services/rlm-browser::$WS/awm/services/rlm-browser/tests"
   [orchestrator]="$WS/awm/services/orchestrator::$WS/awm/services/orchestrator/tests"
   [graphify]="$WS/awm/services/graphify::$WS/awm/services/graphify/tests"
@@ -60,7 +63,7 @@ declare -A DISTS=(
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute)
+ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

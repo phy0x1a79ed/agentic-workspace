@@ -12,6 +12,14 @@ once it exists; only the leaf rotates. A reimplementation of remote-audio's
 ``ensure-certs.sh`` in pure Python so the service is self-contained (it doesn't
 need the remote-audio worktree on disk), while sharing the trust root.
 
+**Trust consumers:** sharing the root means sharing the rule that protects it. A
+fleet node given ``ca.pem`` and deliberately *not* ``ca-key.pem`` must never have
+the root re-minted under it. This service is enabled by default on every node, so
+if it treated a missing key as a missing CA it would put a key back and swap the
+root before ``httpsfront``'s own guard ever ran. See
+``awm/services/httpsfront/awm/httpsfront/certs.py`` — the two copies of this
+module must not diverge on that point.
+
 SANs are auto-enumerated from the host's non-loopback IPv4 addresses (plus
 ``127.0.0.1`` / ``localhost``); the leaf is re-minted whenever that set changes,
 so whatever ZeroTier IP the host has is covered without hand-editing. Addresses
@@ -123,6 +131,16 @@ def _ca_dir() -> Path:
     return Path(base) / "remote-audio" / "ca"
 
 
+class TrustConsumerError(RuntimeError):
+    """The CA halves are in a state this node must not resolve by minting.
+
+    Twin of ``awm.httpsfront.certs.TrustConsumerError``; the two services share
+    the trust root, so they must share this rule. A node given ``ca.pem`` without
+    ``ca-key.pem`` is a trust consumer by design — able to verify its peers,
+    unable to mint for the fleet.
+    """
+
+
 def ensure_certs(cert_dir, *, ca_dir=None, sans: list[str] | None = None) -> dict:
     """Ensure a CA-signed leaf exists under ``cert_dir``; mint what's missing.
 
@@ -143,9 +161,15 @@ def ensure_certs(cert_dir, *, ca_dir=None, sans: list[str] | None = None) -> dic
 
     san = ",".join(sans if sans is not None else default_sans())
 
-    # 1. Local root CA — long-lived, shared, install-once on devices. Reused if
-    #    it already exists (so trust never breaks); minted only the first time.
-    if not ca_cert.exists() or not ca_key.exists():
+    # 1. Local root CA — long-lived, shared, install-once on devices. Minted only
+    #    when NEITHER half is present. This service shares the root with
+    #    ``httpsfront``, so it also shares the trap: ``ca.pem`` without
+    #    ``ca-key.pem`` is a deliberate *trust consumer*, and re-minting there
+    #    replaces the fleet's root with an unrelated one. mic is enabled by
+    #    default on every node, so if it wins the boot race it puts a key back
+    #    and httpsfront's own guard never even fires.
+    #    KEEP IN SYNC with awm/services/httpsfront/awm/httpsfront/certs.py.
+    if not ca_cert.exists() and not ca_key.exists():
         log.info("minting local root CA at %s (install ca.pem on devices once)", ca_dir)
         subprocess.run(
             ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -156,10 +180,29 @@ def ensure_certs(cert_dir, *, ca_dir=None, sans: list[str] | None = None) -> dic
             check=True,
         )
         os.chmod(ca_key, 0o600)
+    elif not ca_cert.exists():
+        raise TrustConsumerError(
+            f"{ca_key} exists but {ca_cert} does not — the root's public half "
+            f"cannot be regenerated from the key alone. Restore {ca_cert} from "
+            f"the node that holds the CA, or remove {ca_key} to mint a new "
+            f"(fleet-incompatible) root deliberately."
+        )
     shutil.copyfile(ca_cert, ca_pub)
 
     # 2. Leaf server cert signed by the CA — (re)mint if missing or SAN changed.
     prev_san = san_file.read_text().strip() if san_file.exists() else None
+    if not ca_key.exists():
+        # Trust consumer: this node cannot sign, so it can only use a leaf minted
+        # elsewhere. Refuse rather than provision — see the note above.
+        if not cert.exists() or not key.exists():
+            raise TrustConsumerError(
+                f"{ca_cert} is present without {ca_key}, so this node cannot "
+                f"sign — but no leaf was provisioned at {cert} / {key}. Mint one "
+                f"on the node holding the CA key with SAN={san} and copy both "
+                f"files here, or disable the mic service on this node."
+            )
+        log.info("using pre-provisioned leaf at %s (no CA key on this node)", cert)
+        return {"cert": str(cert), "key": str(key), "ca": str(ca_pub), "san": san}
     if not cert.exists() or not key.exists() or prev_san != san:
         log.info("minting leaf cert signed by local CA (SAN=%s)", san)
         csr = cert_dir / "csr.pem"

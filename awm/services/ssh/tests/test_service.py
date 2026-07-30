@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import socket
@@ -20,6 +21,11 @@ from awm.ssh.config import (
     resolve_host,
 )
 from awm.ssh.service import ConnState, SSHService
+
+
+async def _coro(value):
+    """Wrap a plain value so it can stand in for an async method's return."""
+    return value
 
 
 async def _false(_host):
@@ -931,8 +937,10 @@ class _FakeBridge:
 
 
 class _FakeCtx:
-    def __init__(self, host, bridge):
+    def __init__(self, host, bridge, node=None):
         self.init = {"host": host}
+        if node is not None:
+            self.init["node"] = node
         self._bridge = bridge
 
     async def open_bridge(self):
@@ -1451,3 +1459,184 @@ class TestActiveSignalUnlock:
         assert [p.name for p in locks.iterdir()] == ["fir.lock"]
         assert json.loads(Path(lock_path(cfg)).read_text())["cause"] == \
             ssh_service._CAUSE_SELF
+
+
+class TestNodeIdentity:
+    """Which node an alert says it came from.
+
+    `socket.gethostname()` used to be the only node-identity in the tree, and
+    mira's hostname is `pavilion` — so its lockout alerts, the ones that decide
+    whether an operator reaches for `/approve`, named a machine nobody in the
+    fleet calls mira. The name now comes from the node env.
+    """
+
+    def _reloaded(self, monkeypatch, *, declared: str | None, hostname: str):
+        """Re-import the service with a given env, since _NODE_NAME is bound at
+        import time (the gateway loads .awm/env before spawning any service)."""
+        import importlib
+        if declared is None:
+            monkeypatch.delenv("AWM_NODE_NAME", raising=False)
+        else:
+            monkeypatch.setenv("AWM_NODE_NAME", declared)
+        monkeypatch.setattr(socket, "gethostname", lambda: hostname)
+        return importlib.reload(ssh_service)
+
+    def test_the_declared_fleet_name_wins(self, monkeypatch) -> None:
+        mod = self._reloaded(monkeypatch, declared="mira", hostname="pavilion")
+        try:
+            assert mod._NODE_NAME == "mira"
+        finally:
+            importlib.reload(mod)
+
+    def test_the_hostname_is_the_fallback(self, monkeypatch) -> None:
+        mod = self._reloaded(monkeypatch, declared=None, hostname="pavilion")
+        try:
+            assert mod._NODE_NAME == "pavilion"
+        finally:
+            importlib.reload(mod)
+
+    def test_the_lockout_page_names_the_node_whose_attempt_failed(
+            self, monkeypatch) -> None:
+        """The message that actually pages the operator carried no node name at
+        all before. What it must name is the *requester* — not whoever generated
+        the text."""
+        mod = self._reloaded(monkeypatch, declared="mira", hostname="pavilion")
+        try:
+            text = mod.SSHService()._lock_alert_text(
+                resolve_host("fir"), "connect timed out", requester="capella")
+            assert "capella" in text
+            assert "fir" in text
+            # The arbiter must not put its own name on someone else's failure.
+            assert "mira" not in text
+        finally:
+            importlib.reload(mod)
+
+    def test_an_unattributed_failure_says_so_rather_than_guessing(
+            self, monkeypatch) -> None:
+        """A lease dropped by a client too old to report its node. Better an
+        honest "unidentified" than confidently naming the arbiter."""
+        mod = self._reloaded(monkeypatch, declared="mira", hostname="pavilion")
+        try:
+            text = mod.SSHService()._lock_alert_text(
+                resolve_host("fir"), "dropped", requester=None)
+            assert "unidentified" in text
+            assert "mira" not in text
+        finally:
+            importlib.reload(mod)
+
+    async def test_the_local_breaker_path_names_itself(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A non-2FA host keeps the per-node breaker, and there the requester
+        genuinely IS this node — so the same message must name us."""
+        mod = self._reloaded(monkeypatch, declared="altair", hostname="devbox-02")
+        try:
+            svc = mod.SSHService()
+            alerts: list[str] = []
+
+            async def _capture(text):
+                alerts.append(text)
+
+            monkeypatch.setattr(svc, "_alert", _capture)
+            monkeypatch.setattr(svc, "_classify_cause",
+                                lambda cfg, reason: _coro("other"))
+            await svc._trip_breaker(resolve_host("fir"), "connect timed out")
+            assert len(alerts) == 1
+            assert "altair" in alerts[0]
+            assert "unidentified" not in alerts[0]
+        finally:
+            importlib.reload(mod)
+
+    def test_the_approve_ack_says_which_node_reopened(self, monkeypatch) -> None:
+        """Two ssh services consume the same /approve; both acknowledge it."""
+        mod = self._reloaded(monkeypatch, declared="mira", hostname="pavilion")
+        try:
+            text = mod.SSHService()._handle_approve({
+                "command": "approve",
+                "device": resolve_host("fir").twofa_device,
+            })
+            assert "mira" in text
+            assert "pavilion" not in text
+        finally:
+            importlib.reload(mod)
+
+
+class TestArbiterAttribution:
+    """Who the arbiter says failed.
+
+    The arbiter is the SOLE notifier on a LOCKED transition, and it usually is
+    not the node that made the attempt: capella's `AWM_SSH_SLOT_PEER=mira` means
+    a failed capella connect produces an alert generated on mira. So the
+    requester's identity has to travel with the lease.
+    """
+
+    async def test_the_lease_init_frame_carries_the_requester(
+            self, isolated_dirs, monkeypatch) -> None:
+        """Covers the drop case, where there is no verdict frame to read."""
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        bridge = _FakeBridge([])                      # drops with no verdict
+        await svc._lease_session(_FakeCtx("fir", bridge, node="capella"))
+        assert len(alerts) == 1
+        assert "capella" in alerts[0]
+
+    async def test_the_verdict_frame_carries_the_requester(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        bridge = _FakeBridge([json.dumps(
+            {"verdict": "fail", "reason": "master never came up",
+             "node": "altair"})])
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert len(alerts) == 1
+        assert "altair" in alerts[0]
+        assert "master never came up" in alerts[0]
+
+    async def test_a_client_that_reports_no_node_is_not_misattributed(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        alerts: list[str] = []
+
+        async def _capture(text):
+            alerts.append(text)
+
+        monkeypatch.setattr(svc, "_alert", _capture)
+        bridge = _FakeBridge([json.dumps({"verdict": "fail", "reason": "boom"})])
+        await svc._lease_session(_FakeCtx("fir", bridge))
+        assert len(alerts) == 1
+        assert "unidentified" in alerts[0]
+
+    async def test_the_requester_passes_its_own_name_when_acquiring(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The other half of the wire: the connect path must actually send it."""
+        seen: dict = {}
+
+        class _Lease:
+            granted = False
+            status = "busy"
+            reason = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+        async def _acquire(peer, service, host, **kw):
+            seen.update(peer=peer, service=service, host=host, **kw)
+            return _Lease()
+
+        monkeypatch.setattr(ssh_service.gatewayclient,
+                            "acquire_lease_maybe_peer", _acquire)
+        svc = SSHService()
+        await svc._connect_via_arbiter_peer(resolve_host("fir"), "mira")
+        assert seen["node"] == ssh_service._NODE_NAME

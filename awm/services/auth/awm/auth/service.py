@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from awm import config
 from awm.config import SERVICES_DIR, tokens
 
 from awm.auth import store
@@ -53,22 +55,45 @@ def _settings() -> Any:
     return CONTRACT.load_model()
 
 
+def _autologin_link(login_password: str) -> str | None:
+    """A tappable ``/__auth/link`` URL for this node's own edge, or ``None``.
+
+    The password already travels in the message body; putting it in a URL as
+    well is what turns the push from a transcription job into a tap. The edge
+    route it points at never renders under that URL — it validates and 302s to a
+    clean path with the session cookie set (see ``httpsfront.proxy``).
+    """
+    base = config.edge_url()
+    if not base:
+        return None
+    return f"{base}/__auth/link?p={urllib.parse.quote(login_password, safe='')}"
+
+
 async def _push_password_to_discord(login_password: str, expires_at: float) -> None:
     """Best-effort: send the day's login password to Discord #notifications.
 
     Never raises into the mint — a social outage must not block rotation; the
-    next mint (or `awm auth password`) recovers the value.
+    next mint (or `awm auth password`) recovers the value. Every lookup that
+    could fail (node name, edge URL) is therefore inside the try, not above it:
+    with three nodes pushing into one channel the message must say which node it
+    came from, but not at the cost of the mint.
     """
     s = _settings()
     if not s.push_enabled:
         return
-    text = (
-        f"🔑 **awm login password** minted\n"
-        f"`{login_password}`\n"
-        f"valid ~{s.validity_hours:.0f}h. Get it any time on the daemon host with "
-        f"`awm auth password`."
-    )
     try:
+        node = config.node_name()
+        link = _autologin_link(login_password)
+        text = (
+            f"🔑 **awm login password** minted on **{node}**\n"
+            f"`{login_password}`\n"
+            # Bare URL in angle brackets: clickable in every Discord surface
+            # (masked-link rendering is not), and the brackets stop Discord from
+            # trying to unfurl a URL that carries a live credential.
+            + (f"tap to open {node} signed in: <{link}>\n" if link else "")
+            + f"valid ~{s.validity_hours:.0f}h. Get it any time on {node} with "
+            f"`awm auth password`."
+        )
         from awm import gatewayclient
         await gatewayclient.call_maybe_peer(
             gatewayclient.peer_env(_SOCIAL_PEER_ENV),
@@ -77,8 +102,8 @@ async def _push_password_to_discord(login_password: str, expires_at: float) -> N
                 "channel": s.discord_channel,
                 "text": text,
             })
-        log.info("auth: pushed login password to Discord %s#%s",
-                 s.discord_account, s.discord_channel)
+        log.info("auth: pushed %s's login password to Discord %s#%s",
+                 node, s.discord_account, s.discord_channel)
     except Exception as exc:  # noqa: BLE001 — push is best-effort
         log.warning("auth: Discord password push failed (will retry next mint): %s", exc)
 

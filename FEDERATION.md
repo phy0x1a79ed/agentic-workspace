@@ -176,10 +176,40 @@ selector to the owner's peer name. The env-var convention:
   arbiter `ssh@<peer>` before a lockout-sensitive connect (see below).
 
 So on **mira** (which owns both `2fa` and `social` and is the slot arbiter) these
-are unset and everything is local; on **capella** they are set to `mira`. This is
-node-level env, deliberately not a per-host field: the same service code runs on
+are unset and everything is local; on borrowing nodes they are set to `mira`. This
+is node-level env, deliberately not a per-host field: the same service code runs on
 every node, and a hard-coded `2fa@mira` on the owning node would make it call
 itself.
+
+### Node identity — who a shared message came from
+
+The same env file carries the node's own name and address, because several nodes
+write into **one** shared channel:
+
+- `AWM_NODE_NAME=<name>` — the fleet name this node signs its Discord pushes and
+  ssh lockout alerts with. Falls back to the OS hostname, which is exactly the
+  bug it exists for: mira's hostname is `pavilion`, so its lockout alerts named a
+  machine nobody in the fleet calls mira.
+- `AWM_EDGE_URL=https://<addr>:<port>` — this node's own edge, *as another device
+  reaches it*. Used to build the autologin link in the password push.
+
+Both are read through `awm.config.node_name()` / `edge_url()`, and both must be
+**declared** rather than discovered. The name is obvious. The edge URL is subtler:
+capella's edge is reached at the *Windows* host's ZeroTier address, which is
+invisible from inside WSL — the same asymmetry `AWM_TLS_EXTRA_SANS` exists for.
+`edge_url()` falls back to the first enumerated address inside `AWM_MESH_SUBNET`
+(default `10.74.81.0/24`), which is right only on a node that owns its own mesh
+interface, and returns nothing at all otherwise so a caller omits the link instead
+of printing one that goes nowhere.
+
+**The autologin link.** The password push carries
+`<edge>/__auth/link?p=<password>`, so a phone taps instead of transcribing. A live
+credential in a URL is only acceptable because that route is never a page: it
+validates, 302s to a clean local path with the session cookie set, and sends
+`Cache-Control: no-store` + `Referrer-Policy: no-referrer`. Nothing renders under
+the address that carried the password, and it cannot serve as a bearer for an API
+call. Keep it that way — and keep the edge from logging query strings (it does not
+today: `access_log.py` records `path` only).
 
 ## Connection-slot arbiter — fleet-global single-attempt for ssh
 
@@ -267,6 +297,26 @@ CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
 insecure.
 
+**Only one node holds the CA key.** A new node is given `ca.pem` and deliberately
+**not** `ca-key.pem` — it must verify its peers, and must not be able to mint for
+the fleet. Its leaf is cut on the node that holds the key, with SANs covering the
+addresses it will actually be dialed at, and both halves copied into
+`awm/services/httpsfront/.certs/`. `ensure_certs` recognises that state as a
+*trust consumer* and provisions nothing there; it used to read a missing key as a
+missing CA and re-mint, which replaced the fleet's root with an unrelated one and
+surfaced as a certificate error on every peer rather than the config mistake it
+was. A missing leaf on such a node is fatal (it cannot sign a replacement), as is
+one that doesn't chain to the `ca.pem` beside it or has expired; a leaf that
+merely fails to cover some newly-appeared docker bridge only warns, because taking
+the whole edge down for an address nobody dials is the worse failure.
+
+`mic` carries its own copy of that cert code and shares the same root, so it
+carries the same rule — and it matters more there, not less: `mic` is enabled by
+default on every node, so a copy that still treated a missing key as a missing CA
+would win the boot race, put a key back, and swap the root before `httpsfront`'s
+guard ever ran. The two files must not diverge on that predicate; a test in `mic`'s
+suite reads both and fails if they do.
+
 ## Singletons vs per-node services
 
 - **Singletons** (front a single external resource): `2fa` and `social`/the mira
@@ -290,19 +340,17 @@ insecure.
 
 ## Deploy
 
-Land on `dev` and promote `feat → dev → release`; do **not** deploy from
-`feat-federation`. `httpsfront` currently exists on `release` only — this branch
-carries its own copy under `awm/services/httpsfront/`, so the eventual
-`dev → release` merge must reconcile the two (they are the same service).
+Land on `dev` and promote `feat → dev → release`. Nodes track `release`, so a fix
+hand-patched onto a running node is a fix that gets reverted by the next update.
 
-### Updating mira
+### Updating a node
 
-mira's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
+A node's `~/agentic_workspace` is a git checkout of `release`, with an `awm` remote
 pointing at capella's bare repo over ssh. To update it:
 
     git fetch --no-tags awm release && git reset --hard awm/release
     git clean -fd            # NOT -fdx — .awm/ is ignored and must survive
-    systemctl --user restart awm.service
+    awm deploy
 
 Three things about that sequence are load-bearing. **Fetch to the tracking ref,
 not the branch**: `fetch awm release:release` is refused once `release` is
@@ -311,13 +359,19 @@ checked out, and `reset --hard` is what moves a checked-out branch anyway.
 removes nothing it omits, so files release deleted linger — including `.py`
 leftovers inside editable-installed packages, which stay importable. `-x` would
 take `.awm/` with them, and that holds the Duo credentials, `social.toml` and
-every service DB. **`enabled.json` must stay explicit**: a service absent from
-it is *enabled*, so anything added to the tree since the last sync starts on
-the next boot, on the node least able to absorb a crash loop.
+every service DB. **`awm deploy`, not a bare unit restart**: it reinstalls dists
+if the set changed, rebuilds changed pages, restarts, reaps orphans, and then
+verifies every enabled service and built page came back — a restart alone silently
+skips all of that, and a service whose dist never got installed comes back as a
+crash loop rather than an error.
 
-mira is supervised by a per-user systemd unit, capella's prod is started from
-its PID file and orphaned to init. `awm gateway restart` probes which, via
-`systemctl --user is-active` — deliberately not `is-enabled`, since a dangling
+`enabled.json` must stay explicit for the same reason: a service absent from it is
+*enabled*, so anything added to the tree since the last sync starts on the next
+boot, on the node least able to absorb a crash loop.
+
+mira is supervised by a per-user systemd unit; capella's prod is
+started from its PID file and orphaned to init. `awm gateway restart` probes which,
+via `systemctl --user is-active` — deliberately not `is-enabled`, since a dangling
 unit symlink reports enabled-but-bad and cannot be started.
 
 ## Deferred (not in v1)

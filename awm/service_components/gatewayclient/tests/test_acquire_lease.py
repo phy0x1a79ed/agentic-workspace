@@ -132,12 +132,16 @@ def test_context_manager_closes_on_exit():
 def test_maybe_peer_routes_local_when_selector_unset(monkeypatch):
     calls = {}
 
-    async def _local(service, host, *, kind="lease", as_=None, timeout=10.0):
+    async def _local(service, host, *, kind="lease", as_=None, node=None,
+                     timeout=10.0):
         calls["where"] = ("local", service, host)
+        calls["node"] = node
         return "L"
 
-    async def _peer(peer, service, host, *, kind="lease", as_=None, timeout=10.0):
+    async def _peer(peer, service, host, *, kind="lease", as_=None, node=None,
+                    timeout=10.0):
         calls["where"] = ("peer", peer, service, host)
+        calls["node"] = node
         return "P"
 
     monkeypatch.setattr(gc, "acquire_lease", _local)
@@ -151,12 +155,16 @@ def test_maybe_peer_routes_local_when_selector_unset(monkeypatch):
 def test_maybe_peer_routes_to_peer_when_selector_set(monkeypatch):
     calls = {}
 
-    async def _local(service, host, *, kind="lease", as_=None, timeout=10.0):
+    async def _local(service, host, *, kind="lease", as_=None, node=None,
+                     timeout=10.0):
         calls["where"] = ("local", service, host)
+        calls["node"] = node
         return "L"
 
-    async def _peer(peer, service, host, *, kind="lease", as_=None, timeout=10.0):
+    async def _peer(peer, service, host, *, kind="lease", as_=None, node=None,
+                    timeout=10.0):
         calls["where"] = ("peer", peer, service, host)
+        calls["node"] = node
         return "P"
 
     monkeypatch.setattr(gc, "acquire_lease", _local)
@@ -165,3 +173,61 @@ def test_maybe_peer_routes_to_peer_when_selector_set(monkeypatch):
     out = asyncio.run(gc.acquire_lease_maybe_peer("mira", "ssh", "fir"))
     assert out == "P"
     assert calls["where"] == ("peer", "mira", "ssh", "fir")
+
+
+def test_maybe_peer_carries_the_requesting_node_either_way(monkeypatch):
+    """The arbiter pages on someone else's behalf, so it can only name the
+    requester if the requester's name travels with the lease. Pin that it does
+    on both branches — a selector change must not silently drop it."""
+    seen = []
+
+    async def _local(service, host, *, kind="lease", as_=None, node=None,
+                     timeout=10.0):
+        seen.append(("local", node))
+        return "L"
+
+    async def _peer(peer, service, host, *, kind="lease", as_=None, node=None,
+                    timeout=10.0):
+        seen.append(("peer", node))
+        return "P"
+
+    monkeypatch.setattr(gc, "acquire_lease", _local)
+    monkeypatch.setattr(gc, "acquire_lease_peer", _peer)
+
+    asyncio.run(gc.acquire_lease_maybe_peer(None, "ssh", "fir", node="altair"))
+    asyncio.run(gc.acquire_lease_maybe_peer("mira", "ssh", "fir", node="altair"))
+    assert seen == [("local", "altair"), ("peer", "altair")]
+
+
+def test_the_verdict_frame_reports_the_holder(monkeypatch):
+    """The other half of the wire: a Lease that knows its node says so."""
+    sent = []
+
+    class _WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+        async def close(self):
+            pass
+
+    lease = gc.Lease(_WS(), "granted", None, node="capella")
+    asyncio.run(lease.verdict(ok=False, reason="master never came up"))
+    assert sent == [{"verdict": "fail", "reason": "master never came up",
+                     "node": "capella"}]
+
+
+def test_a_lease_with_no_node_omits_the_field(monkeypatch):
+    """Backwards compatible: an arbiter reading an older client's frame sees no
+    `node` key rather than an empty one it would have to special-case."""
+    sent = []
+
+    class _WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+        async def close(self):
+            pass
+
+    lease = gc.Lease(_WS(), "granted", None)
+    asyncio.run(lease.verdict(ok=True))
+    assert sent == [{"verdict": "ok", "reason": ""}]
