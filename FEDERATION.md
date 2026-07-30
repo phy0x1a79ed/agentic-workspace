@@ -1,9 +1,19 @@
 # AWM Federation v1
 
-Cross-node networking so a second always-on host (**mira**) is a full peer AWM
-node. Two nodes use each other's services **on demand** — defaulting to local,
-**never syncing databases, never relaying peer traffic through a gateway** —
-behind a **single authentication system** while the loopback interior stays open.
+Cross-node networking so every host in the fleet is a full peer AWM node. Nodes use
+each other's services **on demand** — defaulting to local, **never syncing
+databases, never relaying peer traffic through a gateway** — behind a **single
+authentication system** while the loopback interior stays open.
+
+| Node | Where | Role |
+|---|---|---|
+| `capella` | WSL on a Windows desktop | holds the **CA key**; sleeps with the host |
+| `mira` | always-on mini PC | owns the singletons: `2fa`, `social`, the ssh slot arbiter |
+| `altair` | Arbutus cloud VM (16 vCPU / 1.9 TB) | always-on compute; borrows every singleton from mira |
+
+All three are reached over the ZeroTier mesh `phynet` (`10.74.81.0/24`); the `*z`
+ssh aliases mean "same host via the mesh". altair is private-only on its cloud
+network, so the mesh is its *only* route to the other two.
 
 This is deliberately **not** the retired federation (cr-sqlite replication,
 leader election, a peers/replication registry). It is point-to-point service
@@ -183,33 +193,36 @@ itself.
 
 ### Node identity — who a shared message came from
 
-The same env file carries the node's own name and address, because several nodes
-write into **one** shared channel:
+Several nodes write into **one** shared Discord channel, so the same env file
+carries the node's own name and address:
 
-- `AWM_NODE_NAME=<name>` — the fleet name this node signs its Discord pushes and
-  ssh lockout alerts with. Falls back to the OS hostname, which is exactly the
-  bug it exists for: mira's hostname is `pavilion`, so its lockout alerts named a
-  machine nobody in the fleet calls mira.
-- `AWM_EDGE_URL=https://<addr>:<port>` — this node's own edge, *as another device
-  reaches it*. Used to build the autologin link in the password push.
+- `AWM_NODE_NAME=<name>` — the fleet name this node signs its password pushes and
+  ssh lockout alerts with. Falls back to the OS hostname, which is the bug it
+  exists for: mira's hostname is `pavilion`.
+- `AWM_EDGE_URL=https://<addr>:<port>` — this node's edge *as another device
+  reaches it*, used to build the autologin link.
 
-Both are read through `awm.config.node_name()` / `edge_url()`, and both must be
-**declared** rather than discovered. The name is obvious. The edge URL is subtler:
-capella's edge is reached at the *Windows* host's ZeroTier address, which is
-invisible from inside WSL — the same asymmetry `AWM_TLS_EXTRA_SANS` exists for.
-`edge_url()` falls back to the first enumerated address inside `AWM_MESH_SUBNET`
-(default `10.74.81.0/24`), which is right only on a node that owns its own mesh
-interface, and returns nothing at all otherwise so a caller omits the link instead
-of printing one that goes nowhere.
+Read via `awm.config.node_name()` / `edge_url()`. Declare both. `edge_url()` can
+fall back to the first enumerated address in `AWM_MESH_SUBNET` (default
+`10.74.81.0/24`), but that is only right on a node that owns its own mesh
+interface — capella's edge is reached at the *Windows* host's ZeroTier address,
+invisible from inside WSL, the same asymmetry `AWM_TLS_EXTRA_SANS` exists for.
+Undeclared and unenumerable yields `None`, and callers omit the link.
 
-**The autologin link.** The password push carries
-`<edge>/__auth/link?p=<password>`, so a phone taps instead of transcribing. A live
-credential in a URL is only acceptable because that route is never a page: it
-validates, 302s to a clean local path with the session cookie set, and sends
-`Cache-Control: no-store` + `Referrer-Policy: no-referrer`. Nothing renders under
-the address that carried the password, and it cannot serve as a bearer for an API
-call. Keep it that way — and keep the edge from logging query strings (it does not
-today: `access_log.py` records `path` only).
+**The autologin link.** The password push carries `<edge>/__auth/link?p=<password>`
+so a phone taps instead of transcribing. A live credential in a URL is acceptable
+only because that route is never a page: it validates, 302s to a clean local path
+with the cookie set, and sends `no-store` + `no-referrer`. Two things keep it that
+way and must not be undone — the redirect-before-render shape, and uvicorn's
+`log_level="warning"` in `proxy.serve`, which is what actually keeps query strings
+out of the logs (`gateway/access_log.py` is dormant and protects nothing).
+
+**Who a failure is attributed to.** The lockout alert names the *requester*, and on
+the arbiter path that is not the node writing the message — `AWM_SSH_SLOT_PEER=mira`
+means mira pages on capella's behalf. The requester's name therefore travels with
+the lease (init frame, so a silent drop is still attributable; verdict frame for a
+reported failure). An arbiter that interpolated its own name would reintroduce
+exactly the defect above.
 
 ## Connection-slot arbiter — fleet-global single-attempt for ssh
 
@@ -297,25 +310,21 @@ CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
 insecure.
 
-**Only one node holds the CA key.** A new node is given `ca.pem` and deliberately
-**not** `ca-key.pem` — it must verify its peers, and must not be able to mint for
-the fleet. Its leaf is cut on the node that holds the key, with SANs covering the
-addresses it will actually be dialed at, and both halves copied into
-`awm/services/httpsfront/.certs/`. `ensure_certs` recognises that state as a
-*trust consumer* and provisions nothing there; it used to read a missing key as a
-missing CA and re-mint, which replaced the fleet's root with an unrelated one and
-surfaced as a certificate error on every peer rather than the config mistake it
-was. A missing leaf on such a node is fatal (it cannot sign a replacement), as is
-one that doesn't chain to the `ca.pem` beside it or has expired; a leaf that
-merely fails to cover some newly-appeared docker bridge only warns, because taking
-the whole edge down for an address nobody dials is the worse failure.
+**Only one node holds the CA key.** A new node gets `ca.pem` and deliberately
+**not** `ca-key.pem`: it must verify its peers and must not be able to mint for the
+fleet. Its leaf is cut on the CA holder with SANs covering the addresses it will be
+dialed at, and both halves dropped into `awm/services/httpsfront/.certs/`.
+`ensure_certs` recognises that state as a *trust consumer* and validates instead of
+provisioning — fatal on a leaf that is missing, unchained, mismatched or expired;
+a warning only when it fails to cover some newly-appeared docker bridge, because
+taking the edge down for an address nobody dials is worse. It used to read a missing
+key as a missing CA and re-mint, which replaced the fleet's root and surfaced as a
+certificate error on every peer.
 
-`mic` carries its own copy of that cert code and shares the same root, so it
-carries the same rule — and it matters more there, not less: `mic` is enabled by
-default on every node, so a copy that still treated a missing key as a missing CA
-would win the boot race, put a key back, and swap the root before `httpsfront`'s
-guard ever ran. The two files must not diverge on that predicate; a test in `mic`'s
-suite reads both and fails if they do.
+`mic` keeps its own copy of that code, shares the root, and is **enabled by default
+on every node** — so left unfixed it would win the boot race, put a key back, and
+swap the root before httpsfront's guard ever ran. A test in `mic`'s suite reads both
+files and fails if the predicate diverges.
 
 ## Singletons vs per-node services
 
@@ -383,8 +392,10 @@ started from its PID file and orphaned to init. `awm gateway restart` probes whi
 via `systemctl --user is-active` — deliberately not `is-enabled`, since a dangling
 unit symlink reports enabled-but-bad and cannot be started.
 
-## Deferred (not in v1)
+## Not done
 
-- Live SSH wiring/verification of the peer-auth channel (fir is lockout-sensitive
-  — done carefully in a dedicated session).
-- The ecspr HPC worked example (T5).
+**Cross-node data sync.** Each node owns its own `notes` / `writing` / `drawio` /
+`precedence` / `scopes` databases and nothing reconciles them — replication is
+deliberately out of scope (see the top of this file). So "my notes" means "this
+node's notes"; reach across explicitly with `notes@<peer>` when you need to. Worth
+designing before a second node becomes a real writing surface.
