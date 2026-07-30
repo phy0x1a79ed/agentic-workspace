@@ -415,6 +415,8 @@ class TestPreAuthClassification:
         "ssh: Could not resolve hostname fir: Name or service not known",
         "ssh: connect to host fir port 22: No route to host",
         "ssh: connect to host fir port 22: Network is unreachable",
+        "Host key verification failed.",
+        "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@",
     ])
     def test_unambiguous_preauth_markers(self, isolated_dirs, blob) -> None:
         live, _ = isolated_dirs
@@ -445,11 +447,79 @@ class TestPreAuthClassification:
             "kex_exchange_identification: Connection closed by remote host\n")
         assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
 
-    def test_askpass_deviation_vetoes(self, isolated_dirs) -> None:
-        """The marker means we reached the Duo prompt, so a push may have fired —
-        regardless of how the connection then died."""
+    def test_askpass_deviation_decides_when_ssh_named_no_phase(
+            self, isolated_dirs) -> None:
+        """With no phase marker in ssh's own stderr, the deviation marker is the
+        only evidence and its conservative reading stands: hold."""
         live, _ = isolated_dirs
-        svc, cfg = self._svc_cfg(live, "Exceeded MaxStartups")
+        svc, cfg = self._svc_cfg(live, "something we do not recognise")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text("deviation")
+        assert svc._is_preauth_failure(cfg, marker) is False
+
+    def test_a_non_duo_deviation_does_not_veto(self, isolated_dirs) -> None:
+        """The live failure this came from (altair's first fir connect, 2026-07-29).
+
+        A brand-new node had no host key for fir. `ssh` invokes SSH_ASKPASS for a
+        host-key confirmation too, so the askpass was handed a prompt that was not
+        a Duo menu and refused, fail-closed — correctly. Two things then misread
+        that refusal as "Duo was reached": the marker vetoed unconditionally, and
+        the askpass's own message ("not a known **Duo** menu") matched the
+        auth-phase scan of the shared stderr stream. Host-key verification precedes
+        authentication in the protocol, so no push can have fired — yet the arbiter
+        held `fir` fleet-wide for a failure that provably spent nothing.
+        """
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(
+            live,
+            "awm-duo-askpass: REFUSING — unrecognized prompt (not a known Duo "
+            "menu). Not answering (fail-closed).\nHost key verification failed.\n")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text("unrecognized prompt (not a known Duo menu)")
+        assert svc._is_preauth_failure(cfg, marker) is True
+
+    def test_a_duo_menu_deviation_still_vetoes(self, isolated_dirs) -> None:
+        """The askpass's other refusal reasons all follow a real Duo menu, so they
+        keep holding — narrowing one case must not loosen those."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, "Host key verification failed.")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text(
+            "device 'alliance' is on Duo push-hold (auto-clears 900s)")
+        assert svc._is_preauth_failure(cfg, marker) is False
+
+    def test_a_mixed_deviation_record_vetoes(self, isolated_dirs) -> None:
+        """The marker is appended to, so one run can record several reasons. A
+        single Duo-menu reason among them keeps the veto."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(live, "Host key verification failed.")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text(
+            "unrecognized prompt (not a known Duo menu)\n"
+            "no Duo option matched our devices (awm|Mira)\n")
+        assert svc._is_preauth_failure(cfg, marker) is False
+
+    def test_the_askpass_own_message_is_not_read_as_ssh_output(
+            self, isolated_dirs) -> None:
+        """The askpass shares ssh's stderr and its refusal text says "Duo". Scanning
+        the raw blob turned a refusal into proof the Duo phase was reached."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(
+            live,
+            "awm-duo-askpass: REFUSING — unrecognized prompt (not a known Duo "
+            "menu). Not answering (fail-closed).\n"
+            "kex_exchange_identification: Connection closed by remote host\n")
+        marker = svc._deviation_marker(cfg)
+        Path(marker).write_text("unrecognized prompt (not a known Duo menu)")
+        assert svc._is_preauth_failure(cfg, marker) is True
+
+    def test_an_auth_marker_still_vetoes_even_with_a_preauth_phase_and_marker(
+            self, isolated_dirs) -> None:
+        """Loosening the marker rule must not loosen the auth veto."""
+        live, _ = isolated_dirs
+        svc, cfg = self._svc_cfg(
+            live,
+            "Duo two-factor login for phyberos\nHost key verification failed.\n")
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text("deviation")
         assert svc._is_preauth_failure(cfg, marker) is False

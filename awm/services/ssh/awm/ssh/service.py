@@ -114,6 +114,7 @@ _NOTABLE_STDERR = (
     "Operation timed out",
     "kex_exchange_identification",
     "Exceeded MaxStartups",
+    "Host key verification failed",
 )
 
 # --- pre-auth vs auth failure classification -------------------------------
@@ -142,7 +143,26 @@ _PREAUTH_STDERR = (
     "Could not resolve hostname",    # never left this host
     "No route to host",
     "Network is unreachable",
+    # Host-key verification precedes authentication in the protocol, so a failure
+    # here provably fires no Duo push. Seen live on altair's first fir connect
+    # 2026-07-29: a new node had no host key for fir, ssh raised the
+    # confirm-the-fingerprint prompt, and the arbiter held the host fleet-wide for
+    # a failure that spent nothing.
+    "Host key verification failed",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
 )
+
+# The askpass writes its own refusal to the same stderr stream ssh does, and that
+# text contains the word "Duo" — so scanning the raw blob for auth-phase markers
+# reads a *refusal to answer* as proof the Duo phase was reached. Classification
+# looks at ssh's lines only; these are the askpass's.
+_ASKPASS_PREFIX = "awm-duo-askpass:"
+
+# Deviation reasons that mean the prompt was never a Duo menu. `ssh` invokes
+# SSH_ASKPASS for a host-key confirmation too, so an askpass refusal can be the
+# opposite of "Duo was reached". The askpass's other reasons (push-hold, rate cap,
+# no matching option) all follow a real Duo menu and keep vetoing.
+_NON_DUO_DEVIATIONS = ("not a known Duo menu",)
 
 # Any of these means the auth phase was reached, so an MFA attempt may have been
 # spent. Vetoes _PREAUTH_STDERR even if a pre-auth marker also appears (e.g. a
@@ -1199,14 +1219,13 @@ class SSHService:
     def _is_preauth_failure(self, cfg: HostConfig, marker: str) -> bool:
         """Did this attempt die before the auth phase — i.e. spend no MFA?
 
-        Reads the captured ssh stderr rather than the folded reason string so the
-        askpass-deviation note and our own timeout text can't be mistaken for ssh
-        output. Conservative by construction (see _PREAUTH_STDERR): an auth-phase
-        marker vetoes, an askpass deviation vetoes (the Duo prompt was reached, so
-        a push may have fired), and no evidence at all -> False (hold the host).
+        Reads the captured ssh stderr rather than the folded reason string, and
+        within it only ssh's OWN lines — the askpass writes its refusal to the same
+        stream and that text mentions Duo, so including it turns "refused to answer"
+        into "the Duo phase was reached". Conservative by construction: an
+        auth-phase marker vetoes, a Duo-menu deviation vetoes, and no positive
+        evidence at all -> False (hold the host).
         """
-        if os.path.exists(marker):
-            return False  # reached the Duo prompt — assume an attempt was spent
         try:
             with open(stderr_path(cfg), "r", encoding="utf-8",
                       errors="replace") as f:
@@ -1215,9 +1234,30 @@ class SSHService:
             return False  # no evidence — hold, don't guess
         if not blob.strip():
             return False
-        if any(s.lower() in blob.lower() for s in _AUTH_PHASE_STDERR):
+        ssh_only = "\n".join(
+            ln for ln in blob.splitlines()
+            if not ln.lstrip().startswith(_ASKPASS_PREFIX)).lower()
+        if any(s.lower() in ssh_only for s in _AUTH_PHASE_STDERR):
             return False  # auth was reached — the veto
-        return any(s.lower() in blob.lower() for s in _PREAUTH_STDERR)
+        if os.path.exists(marker) and not self._deviation_was_non_duo(marker):
+            return False  # a Duo menu was presented — a push may have fired
+        return any(s.lower() in ssh_only for s in _PREAUTH_STDERR)
+
+    @staticmethod
+    def _deviation_was_non_duo(marker: str) -> bool:
+        """True when EVERY recorded deviation says the prompt was not a Duo menu.
+
+        The marker is appended to, so one ssh run can record several reasons; a
+        single Duo-menu deviation among them is enough to keep the veto.
+        """
+        try:
+            with open(marker, "r", encoding="utf-8", errors="replace") as f:
+                reasons = [ln.strip() for ln in f if ln.strip()]
+        except OSError:
+            return False
+        if not reasons:
+            return False
+        return all(any(nd in r for nd in _NON_DUO_DEVIATIONS) for r in reasons)
 
     def _failure_reason(self, cfg: HostConfig, marker: str, base: str) -> str:
         parts = [base]
