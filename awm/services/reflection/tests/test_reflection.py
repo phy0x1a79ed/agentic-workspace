@@ -33,7 +33,7 @@ def _agent_present(monkeypatch):
 class FakeRunner:
     def __init__(self, returncode: int = 0, captures=None,
                 pane_pid: str = "4242", session: str = "sess0",
-                reresolved_pane: str = "%32"):
+                reresolved_pane: str = "%32", list_panes=None):
         self.calls: list[tuple[list, dict]] = []
         self.returncode = returncode
         # Scripted `capture-pane -p` snapshots served in order (last one repeats).
@@ -43,10 +43,16 @@ class FakeRunner:
         # What a `display-message -t <session>` re-resolve query returns —
         # the session's pane id after a hop (T5).
         self._reresolved_pane = reresolved_pane
+        # Rows for `list-panes -a`, as (pane, pid, command, session, activity)
+        # tuples; each becomes one tab-separated stdout line.
+        self._list_panes = list(list_panes) if list_panes else []
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
-        if "display-message" in argv:
+        if "list-panes" in argv:
+            stdout = "\n".join("\t".join(str(f) for f in row)
+                               for row in self._list_panes)
+        elif "display-message" in argv:
             fmt = argv[-1]
             if fmt == "#{pane_pid}":
                 stdout = self._pane_pid
@@ -516,3 +522,78 @@ def test_await_followup_fires_when_agent_self_resumes_after_compacting():
     # Fired on the third sample (first non-compacting after compacting) —
     # never consumed the fourth.
     assert len(caps) == 3
+
+
+# ---------------------------------------------------------------------------
+# T7: autodetect_pane() picks instead of blocking on multiple agent panes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_autodetect_pane_single_match():
+    r = FakeRunner(list_panes=[("%1", "111", "claude", "sess0", 10)])
+    assert tmux_inject.autodetect_pane(runner=r) == "%1"
+
+
+@pytest.mark.smoke
+def test_autodetect_pane_zero_matches_raises():
+    r = FakeRunner(list_panes=[])
+    with pytest.raises(tmux_inject.TmuxError, match="could not auto-detect"):
+        tmux_inject.autodetect_pane(runner=r)
+
+
+@pytest.mark.smoke
+def test_autodetect_pane_multiple_matches_picks_most_active():
+    # Ambiguity (multiple agent panes on the server) must never block the
+    # caller — the most-recently-active candidate is picked, not raised on.
+    r = FakeRunner(list_panes=[
+        ("%1", "111", "claude", "sess0", 10),
+        ("%2", "222", "claude", "sess1", 99),   # most recently active
+        ("%3", "333", "claude", "sess2", 50),
+    ])
+    assert tmux_inject.autodetect_pane(runner=r) == "%2"
+
+
+# ---------------------------------------------------------------------------
+# T8: the follow-up re-checks tmux immediately before sending, so an agent
+# that bounced to another pane mid-wait still gets its resume there.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_await_followup_rechecks_tmux_before_sending():
+    # The cached pane (%32) is still alive throughout the wait, but by the
+    # time the resume is ready to send, auto-detect resolves to a different
+    # pane (%77) — the agent bounced there. The resume must follow it.
+    r = FakeRunner(
+        captures=[
+            "assistant working… esc to interrupt",
+            "Compacting conversation…",
+            "Compacted (ctrl+o to see full summary)\n❯ ",
+        ],
+        list_panes=[("%77", "555", "claude", "sess9", 42)],
+    )
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32",
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
+    assert any("%77" in argv for argv in pastes)
+    assert not any("%32" in argv for argv in pastes)
+
+
+@pytest.mark.smoke
+def test_await_followup_falls_back_when_final_autodetect_finds_nothing():
+    # If the last-moment re-check can't find any agent pane at all (e.g. a
+    # transient scan gap), fall back to the cached/last-known pane rather
+    # than dropping the resume.
+    r = FakeRunner(
+        captures=[
+            "assistant working… esc to interrupt",
+            "Compacting conversation…",
+            "Compacted (ctrl+o to see full summary)\n❯ ",
+        ],
+        list_panes=[],
+    )
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32",
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
+    assert any("%32" in argv for argv in pastes)
