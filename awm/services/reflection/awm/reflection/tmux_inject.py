@@ -148,8 +148,9 @@ def _run(argv: list[str], runner: Runner, **kw: Any) -> subprocess.CompletedProc
 
 def list_panes(*, socket: Optional[str] = None,
                runner: Runner = subprocess.run) -> list[dict]:
-    """List every pane on the tmux server as ``{pane, pid, command, session}``."""
-    fmt = "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}"
+    """List every pane on the tmux server as ``{pane, pid, command, session, activity}``."""
+    fmt = ("#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}"
+           "\t#{pane_activity}")
     proc = _run(_base_argv(socket) + ["list-panes", "-a", "-F", fmt],
                 runner, text=True)
     panes: list[dict] = []
@@ -157,8 +158,13 @@ def list_panes(*, socket: Optional[str] = None,
         parts = line.split("\t")
         if len(parts) < 4:
             continue
+        try:
+            activity = int(parts[4]) if len(parts) > 4 else 0
+        except ValueError:
+            activity = 0
         panes.append({"pane": parts[0], "pid": parts[1],
-                      "command": parts[2], "session": parts[3]})
+                      "command": parts[2], "session": parts[3],
+                      "activity": activity})
     return panes
 
 
@@ -209,19 +215,29 @@ def _subtree_has_agent(root_pid: int, kids: dict[int, list[int]]) -> bool:
 
 def autodetect_pane(*, socket: Optional[str] = None,
                     runner: Runner = subprocess.run) -> str:
-    """Return the single tmux pane running an agent, or raise if ambiguous."""
+    """Return a tmux pane running an agent.
+
+    Multiple candidate panes are not an error — an agent can plausibly share
+    a tmux server with other agent panes, and blocking the caller over that
+    ambiguity is worse than picking one. The most-recently-active candidate
+    (by tmux's own ``pane_activity`` timestamp) is the best guess for "the
+    pane that just made this call", so it wins; the full candidate list is
+    still logged for visibility.
+    """
     panes = list_panes(socket=socket, runner=runner)
     kids = _ppid_children()
     matches = [p for p in panes
                if p["pid"].isdigit() and _subtree_has_agent(int(p["pid"]), kids)]
-    if len(matches) == 1:
-        return matches[0]["pane"]
     if not matches:
         raise TmuxError(
             "could not auto-detect an agent pane; pass your $TMUX_PANE explicitly")
+    if len(matches) == 1:
+        return matches[0]["pane"]
+    matches.sort(key=lambda p: p["activity"], reverse=True)
     cand = ", ".join(f'{p["pane"]} ({p["session"]})' for p in matches)
-    raise TmuxError(
-        f"multiple agent panes found ({cand}); pass your $TMUX_PANE explicitly")
+    log.info("reflection: multiple agent panes found (%s); picking most "
+             "recently active: %s", cand, matches[0]["pane"])
+    return matches[0]["pane"]
 
 
 def _assert_pane_exists(pane: str, socket: Optional[str], runner: Runner) -> None:
@@ -422,6 +438,14 @@ def _await_and_followup(text: str, followup: str, pane: str, *,
     if not ready:
         log.warning("reflection: command %r completion not observed within %ss; "
                     "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
+    try:
+        fresh = autodetect_pane(socket=socket, runner=runner)
+        if fresh != pane:
+            log.info("reflection: agent bounced from pane %s to %s before "
+                     "resume; injecting into the current pane", pane, fresh)
+        pane = fresh
+    except TmuxError:
+        pass  # no agent pane found right now — fall back to the cached one
     try:
         _paste_and_submit(followup, pane, enter=True, socket=socket, runner=runner)
     except TmuxError:
