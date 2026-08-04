@@ -10,7 +10,7 @@ Verbs:
   - ``verify``          login password → signed session token.
   - ``edge_material``   signing secret + valid peer creds for the edge.
   - ``rotate``          force a mint now (ops/testing).
-  - ``status``          rotation state summary.
+  - ``status``          rotation state summary, incl. last push outcome.
   - ``config_get``/``config_set`` from the config contract.
 """
 
@@ -65,7 +65,8 @@ API_MANIFEST: dict[str, Any] = {
         {
             "name": "status",
             "description": "Report rotation state: valid generations, latest "
-                           "window, cadence, and the peer-cred file path.",
+                           "window, cadence, the last Discord push attempt's "
+                           "outcome, and the peer-cred file path.",
             "params": [],
         },
     ],
