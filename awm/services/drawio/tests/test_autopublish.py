@@ -12,6 +12,7 @@ test drives the real registry, debounce loop and replace logic.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -43,12 +44,15 @@ class FakeRender:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.kwargs: list[dict] = []
         self.payload = b"<svg>one</svg>"
         self.problems: list[str] = []
         self.raises: Exception | None = None
 
-    def __call__(self, xml, fmt="pdf", *, page=None, scale=1.0, inline=True):
+    def __call__(self, xml, fmt="pdf", *, page=None, scale=1.0, inline=True,
+                 **kw):
         self.calls.append((fmt, page, scale))
+        self.kwargs.append(kw)
         if self.raises is not None:
             raise self.raises
         return self.payload, list(self.problems)
@@ -155,6 +159,57 @@ def test_page_is_addressed_by_name(tmp_path, render, out):
 
     run(pub.create(SAVE, str(out / "second.svg"), page="Second"))
     assert render.calls[0][1] == 1  # resolved to the second page's index
+
+
+# --- the view URL's parameters, on a standing link -------------------------
+#
+# A published file has to be *definitionally* the bytes its view URL serves,
+# not a second thing that happens to agree today. Same parser, same fields.
+
+def test_a_link_carries_swaps_and_crop_through_to_the_render(pub, out, render):
+    run(pub.create(SAVE, str(out / "green.svg"), swaps=["#F0F:00aa55"],
+                   crop="A"))
+    assert render.kwargs[0]["swaps"] == (("ff00ff", "00aa55"),)
+    assert render.kwargs[0]["crop"] == "A"
+
+
+def test_several_colours_of_one_page_are_just_several_links(pub, out, render):
+    run(pub.create(SAVE, str(out / "green.svg"), swaps=["ff00ff:00aa55"]))
+    run(pub.create(SAVE, str(out / "blue.svg"), swaps=["ff00ff:0055aa"]))
+    assert pub.list()["count"] == 2
+    assert render.kwargs[0]["swaps"] != render.kwargs[1]["swaps"]
+
+
+def test_a_link_written_before_parameters_existed_still_loads(tmp_path, store,
+                                                              render, out):
+    registry = tmp_path / "autopublish.json"
+    registry.write_text(json.dumps({"links": [{
+        "id": "old1", "save": SAVE, "target": str(out / "demo.svg"),
+        "format": "svg", "page": None, "scale": 1.0, "author": "agent",
+        "created_at": 1, "last_rev": None, "last_published_at": None,
+    }]}), encoding="utf-8")
+    pub = AutoPublisher(store, registry, render=render)
+    link = pub.registry.get("old1")
+    assert link.swaps == [] and link.crop is None
+    assert link.spec().is_plain
+
+
+def test_a_typo_in_a_swap_is_refused_at_creation(pub, out):
+    with pytest.raises(AutoPublishError, match="not a 3- or 6-digit"):
+        run(pub.create(SAVE, str(out / "x.svg"), swaps=["ff00ff:notacolour"]))
+    assert pub.list()["count"] == 0
+
+
+def test_an_unknown_crop_name_is_refused_at_creation(pub, out):
+    with pytest.raises(AutoPublishError, match="no shape named"):
+        run(pub.create(SAVE, str(out / "x.svg"), crop="ghost"))
+    assert pub.list()["count"] == 0
+
+
+def test_crop_is_refused_for_a_container_format(pub, out):
+    """The container cannot render one shape exactly; only the SVG path can."""
+    with pytest.raises(AutoPublishError, match="only the SVG path"):
+        run(pub.create(SAVE, str(out / "x.pdf"), fmt="pdf", crop="A"))
 
 
 def test_unknown_page_is_refused_at_creation(tmp_path, render, out):
