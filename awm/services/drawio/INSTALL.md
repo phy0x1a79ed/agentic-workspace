@@ -202,6 +202,14 @@ Pages are addressed by **name**, not index: reordering tabs in the editor shifts
 every index, and a link that quietly starts publishing a different page is worse
 than one that stops. A multi-page diagram published in full is one link per page.
 
+The reception page's **Publish** tab is the same four verbs as a form plus a
+managed list, with an *all diagrams* toggle. Two things it derives rather than
+reads, because a link stores no health: a row is flagged when its `last_rev`
+trails its diagram's, and when its page name is no longer in that diagram. It
+also reports a `published: false` first render as a failure — the verb *returns*
+that outcome rather than raising, so a link created but never rendered would
+otherwise read as success.
+
 Links live in `<AWM_DIR>/services/drawio/autopublish.json` and survive a restart;
 on boot every link is reconciled, so an edit made while the service was down is
 caught up. Writes are debounced — a diagram must go quiet for `DEBOUNCE_SECONDS`
@@ -219,6 +227,17 @@ while the consumer is open.
     GET  /drawio-app/view/<save>/<page>        → image/svg+xml (that page)
     GET  /drawio-app/view/<save>               → the whole/first page
     HEAD /drawio-app/view/<save>/<page>        → resolves save/page/rev, no render
+
+`drawio view_url --save <save> [--page <name>]` is the one authority for
+building that URL — it percent-encodes each segment (a `/` or `;` in a page name
+would otherwise split the path or truncate the drawio style string the URL ends
+up inside) and validates the page name, so a wrong name fails there rather than
+404ing after the image has been placed. The reception page's **Pages** tab uses
+it for two per-page buttons: *copy url* for the Insert dialog, and *copy cell*,
+which puts a one-cell `<mxGraphModel>` fragment sized to the render's own aspect
+on the clipboard — pasting that into any open diagram places the image directly,
+no dialog. When the browser has no clipboard (it needs a secure origin) the text
+is offered for manual copying rather than silently doing nothing.
 
 The last path segment is the page **name** (a trailing `.svg` is accepted and
 ignored); everything before it is the diagram path. Render settings are fixed:
@@ -410,6 +429,7 @@ any other verb.
     awm drawio autopublish_now             # forces a pass; reports what happened
 
     # the view URL — a page's live SVG, served and cached on demand
+    awm drawio view-url --save sandbox/test --page Page-1   # 404s here on a bad name
     curl -sk -H 'Accept: image/svg+xml' \
       https://127.0.0.1:12100/drawio-app/view/sandbox/test/Page-1 | head -c 80
     curl -skI https://127.0.0.1:12100/drawio-app/view/sandbox/test/Page-1 \
@@ -420,8 +440,16 @@ into a diagram, and confirm edits persist across a reload. The concurrency
 behaviour only shows up with a real tab open: take a checkout, edit a different
 page in the browser, then `update` and `merge`, and check both changes survive.
 
-For the view URL end to end: in one diagram, **Insert → Image → URL**, paste a
-`…/drawio-app/view/<save>/<page>` link, and choose **Link** (not a copy) — it
-places as a movable image. Then edit that source page in another tab; the placed
-image refreshes on its own within a few seconds, and the consumer diagram's saved
-XML is unchanged (no autosave churn).
+For the view URL end to end, the short path is the page's **Pages** tab: *copy
+cell* on a page, then Ctrl-V in another diagram's tab — it places as a movable
+image. Then edit that source page in another tab; the placed image refreshes on
+its own within a few seconds, and the consumer diagram's saved XML is unchanged
+(no autosave churn). The long path is the same thing by hand: **Insert → Image →
+URL** with a `…/drawio-app/view/<save>/<page>` link, choosing **Link** (not a
+copy) — an embedded copy is a one-time snapshot by definition.
+
+For the **Publish** tab: start a link to a scratch directory, confirm the file
+appears; edit the diagram and watch it move on its own; rename the published page
+and confirm the row warns while the last render stays on disk; *stop* it (the
+file is deliberately left behind); then delete the target's parent directory and
+confirm the row disappears on the next poll.
