@@ -68,7 +68,7 @@ def test_scale_and_page_reach_the_renderer(monkeypatch):
 
     monkeypatch.setattr(chrome, "render_svg", capture)
     export.render(XML, "svg", scale=2.0, page=3)
-    assert seen == {"scale": 2.0, "page": 3}
+    assert seen == {"scale": 2.0, "page": 3, "crop_id": None}
 
 
 def test_a_browser_failure_surfaces_as_an_export_error(monkeypatch):

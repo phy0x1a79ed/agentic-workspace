@@ -19,6 +19,13 @@
     type CheckReport, type Diagram, type Link, type Revision, type TreeNode,
   } from '$lib/api';
 
+  // Illustrative, not this diagram's: the note is documentation, and a URL you
+  // are meant to read beats one you might paste unread. The real one comes from
+  // `copy url`, which is the only thing that knows the prefix and the encoding.
+  const EXAMPLE_URL =
+    '/drawio-app/view/scadc/plasmids/plasmid' +
+    '?swap=ff00ff:00aa55&swap=00ff00:333333&crop=frame-a';
+
   let diagrams = $state<Diagram[]>([]);
   let tree = $state<TreeNode[]>([]);
   let selected = $state<string | null>(null);
@@ -288,6 +295,29 @@
             Copy a page as a cell and paste it into another diagram — the placed
             image re-renders whenever this page changes.
           </p>
+          <!-- Collapsed by default: the note is worth finding, but the page
+               list is what this tab is for and must stay above the fold. -->
+          <details class="recipe">
+            <summary>one page, many colours and framings</summary>
+            <p>
+              The URL is the variable, so you do not need a near-duplicate page
+              per colour. Draw the region that should vary in
+              <code>#ff00ff</code>, then add <code>swap=from:to</code> — bare
+              hex, repeatable, applied simultaneously. Draw a rectangle around a
+              region and label it, then add <code>crop=that-label</code>; the
+              rectangle itself never appears in the render. Append either to the
+              URL from <em>copy url</em>:
+            </p>
+            <textarea class="example" readonly rows="2"
+              onfocus={(e) => e.currentTarget.select()}
+              >{EXAMPLE_URL}</textarea>
+            <p class="fine">
+              Swaps reach style colours, label colours and referenced SVGs — not
+              raster images, where a pink region stays pink. Both parameters
+              survive export: the exporter renders the referenced page and
+              embeds it, so the file works off this machine.
+            </p>
+          </details>
           <ul class="pages">
             {#each [null, ...detail.pages] as page (page ? (page.id ?? page.name) : '__whole__')}
               {@const name = page ? (page.name ?? '(unnamed)') : 'whole document'}
@@ -508,6 +538,37 @@
     font-size: 0.72rem;
     padding: 0.3rem;
     margin-bottom: 0.4rem;
+    resize: vertical;
+  }
+
+  /* The parameter note. Same muted register as .hint and the same selectable
+     textarea idiom as .manual, so the example can be copied without adding a
+     second clipboard path. */
+  .recipe {
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 0.4rem 0.7rem;
+    margin: 0 0 0.7rem;
+    font-size: 0.78rem;
+    color: var(--text3, #888);
+  }
+  .recipe summary { cursor: pointer; color: var(--text2, #bbb); }
+  .recipe p { margin: 0.5rem 0 0.4rem; line-height: 1.45; }
+  .recipe p.fine { margin-bottom: 0.2rem; }
+  .recipe code {
+    font-family: var(--mono, monospace);
+    font-size: 0.9em;
+    color: var(--text2, #bbb);
+  }
+  .recipe textarea.example {
+    width: 100%;
+    background: var(--surface2, #1c1c1c);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    color: var(--text, #ddd);
+    font-family: var(--mono, monospace);
+    font-size: 0.72rem;
+    padding: 0.3rem;
     resize: vertical;
   }
 

@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import xmlmodel
+from . import renderspec, xmlmodel
 from .store import Store, normalize_save_path
 
 log = logging.getLogger("awm.drawio.autopublish")
@@ -87,6 +87,18 @@ class Link:
     created_at: int = 0
     last_rev: str | None = None
     last_published_at: int | None = None
+    #: The view URL's parameters, so a published file is definitionally the
+    #: bytes that link serves rather than a second thing that happens to agree.
+    #: Empty defaults, so every record written before they existed still loads.
+    swaps: list[str] = field(default_factory=list)
+    crop: str | None = None
+
+    def spec(self) -> renderspec.RenderSpec:
+        return renderspec.RenderSpec(
+            scale=self.scale,
+            swaps=renderspec.parse_swaps(self.swaps or ()),
+            crop=self.crop or None,
+        )
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -253,8 +265,10 @@ class AutoPublisher:
         ``docker`` subprocesses — which is exactly why it must not touch the
         registry or run on the loop.
         """
+        spec = link.spec()
         data, problems = self._renderer()(
-            xml, link.format, page=index, scale=link.scale)
+            xml, link.format, page=index, scale=spec.scale,
+            swaps=spec.swaps, crop=spec.crop)
         if problems:
             raise AutoPublishError(
                 "image reference(s) could not be inlined: " + "; ".join(problems))
@@ -319,17 +333,32 @@ class AutoPublisher:
 
     async def create(self, save: str, target: str, page: str | None = None,
                      fmt: str = "svg", scale: float = 1.0,
-                     author: str = "agent") -> dict:
+                     author: str = "agent", swaps: list[str] | None = None,
+                     crop: str | None = None) -> dict:
         """Register a link and publish it once, synchronously.
 
         The first render happens inline so the caller finds out immediately that
         the container is down or a reference is broken — every later render is
         a background side-effect nobody is watching.
+
+        ``swaps`` and ``crop`` are the view URL's parameters, taken through the
+        same parser, so a link and a placed image of the same page cannot drift
+        into meaning different things. Several links off one page with different
+        parameters is just several files.
         """
         fmt = (fmt or "svg").lower()
         if fmt not in FORMATS:
             raise AutoPublishError(
                 f"unknown format {fmt!r} (known: {', '.join(FORMATS)})")
+
+        try:
+            parsed_swaps = renderspec.parse_swaps(swaps or ())
+        except renderspec.SpecError as exc:
+            raise AutoPublishError(str(exc)) from None
+        if crop and fmt != "svg":
+            raise AutoPublishError(
+                "crop needs an exact render of one shape, which only the SVG "
+                f"path can do; a {fmt} link goes through the export container")
 
         path = normalize_save_path(save)
         if not self.store.exists(path):
@@ -358,14 +387,21 @@ class AutoPublisher:
             )
 
         # Fail before registering rather than after: a link that can never
-        # resolve its page is a configuration error, not a runtime one.
-        if page is not None:
-            page_index(self.store.read(path), page)
+        # resolve its page — or crop to a shape that is not there — is a
+        # configuration error, not a runtime one.
+        xml = self.store.read(path)
+        index = page_index(xml, page) if page is not None else None
+        if crop:
+            try:
+                renderspec.prepare_crop(xml, index, crop)
+            except (renderspec.CropNotFound, xmlmodel.MalformedDiagram) as exc:
+                raise AutoPublishError(str(exc)) from None
 
         link = Link(
             id=uuid.uuid4().hex[:12], save=path, target=str(destination),
             format=fmt, page=page, scale=float(scale), author=author,
             created_at=int(time.time()),
+            swaps=[f"{a}:{b}" for a, b in parsed_swaps], crop=crop or None,
         )
         self.registry.links[link.id] = link
         self.registry.save()

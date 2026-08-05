@@ -148,7 +148,10 @@
 <div class="head">
   <p class="hint">
     The file stays rendered: every accepted change to the diagram re-renders it.
-    One way — nothing is ever read back.
+    One way — nothing is ever read back. A link takes the same
+    <code>swap</code> and <code>crop</code> a page-view URL takes, so a
+    published file is the bytes that link serves; pass them from the CLI, e.g.
+    <code>drawio autopublish … swap=ff00ff:00aa55 crop=frame-a</code>.
   </p>
   <label class="toggle">
     <input type="checkbox" bind:checked={all} onchange={() => onchanged()} />

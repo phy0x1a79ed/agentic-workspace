@@ -67,6 +67,64 @@ class ChromeError(RuntimeError):
     """The browser could not be started, reached, or made to render."""
 
 
+#: Ask the drawn graph for its SVG, and — when a crop frame was named — trim the
+#: result to that frame's box and delete the frame itself. ``__CROP_ID__`` is
+#: substituted with a JSON string or ``null``.
+_SVG_SCRIPT = """(function(){
+    var g = window.__awmGraph;
+    var bg = g.background;
+    if (bg == mxConstants.NONE) { bg = null; }
+    var done = document.getElementById('LoadingComplete');
+    var scale = parseFloat(done.getAttribute('scale')) || 1;
+    var border = parseInt(done.getAttribute('border')) || 0;
+    var root = g.getSvg(bg, scale, border, false, null, true, null,
+                        null, null, null, null, 'auto');
+    if (g.shadowVisible) { g.addSvgShadow(root); }
+    if (g.mathEnabled && typeof Editor !== 'undefined'
+        && Editor.prototype.addMathCss) {
+        Editor.prototype.addMathCss(root);
+    }
+
+    var cropId = __CROP_ID__;
+    if (cropId != null) {
+        document.body.appendChild(root);
+        try {
+            var frame = root.querySelector('[data-cell-id="' + cropId + '"]');
+            if (frame == null) {
+                throw new Error('the crop frame ' + cropId + ' drew nothing to '
+                    + 'measure; give the shape a size and no children');
+            }
+            var m = root.getScreenCTM().inverse().multiply(frame.getScreenCTM());
+            var b = frame.getBBox();
+            var xs = [], ys = [];
+            var corners = [[b.x, b.y], [b.x + b.width, b.y],
+                           [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]];
+            for (var i = 0; i < corners.length; i++) {
+                var p = root.createSVGPoint();
+                p.x = corners[i][0]; p.y = corners[i][1];
+                var q = p.matrixTransform(m);
+                xs.push(q.x); ys.push(q.y);
+            }
+            var x = Math.min.apply(null, xs), y = Math.min.apply(null, ys);
+            var w = Math.max.apply(null, xs) - x, h = Math.max.apply(null, ys) - y;
+            if (!(w > 0) || !(h > 0)) {
+                throw new Error('the crop frame ' + cropId + ' has no area');
+            }
+            var r = function(v) { return Math.round(v * 100) / 100; };
+            x = r(x); y = r(y); w = r(w); h = r(h);
+            frame.parentNode.removeChild(frame);
+            root.setAttribute('viewBox', x + ' ' + y + ' ' + w + ' ' + h);
+            root.setAttribute('width', w + 'px');
+            root.setAttribute('height', h + 'px');
+        } finally {
+            if (root.parentNode != null) { root.parentNode.removeChild(root); }
+        }
+    }
+
+    return new XMLSerializer().serializeToString(root);
+})()"""
+
+
 def chrome_binary() -> str | None:
     override = os.environ.get("DRAWIO_CHROME")
     if override:
@@ -246,19 +304,25 @@ class Browser:
 
     def render_svg(self, xml: str, *, scale: float = 1.0,
                    page: int | None = None, border: int = 0,
-                   transparent: bool = True) -> str:
+                   transparent: bool = True, crop_id: str | None = None) -> str:
         """Render one diagram to drawio's own SVG. Blocking.
 
         Serialized with a lock: one browser, and two concurrent renders would
         interleave their targets' setup for no gain, since the work is the
         page's, not ours.
+
+        The lock is **not** re-entrant, so nothing reached from here may render
+        again. Embedded page views are resolved by
+        :func:`awm.drawio.export.inline_images`, which runs strictly before this
+        call; moving inlining inside it would self-deadlock.
         """
         with self._lock:
             if not self._alive():
                 self._close_locked()
                 self._launch()
             try:
-                return self._render_locked(xml, scale, page, border, transparent)
+                return self._render_locked(xml, scale, page, border, transparent,
+                                           crop_id)
             except (ChromeError, OSError) as exc:
                 # A browser that failed once is suspect — a crashed renderer
                 # would otherwise fail every future publish identically. Drop
@@ -269,7 +333,8 @@ class Browser:
                 raise
 
     def _render_locked(self, xml: str, scale: float, page: int | None,
-                       border: int, transparent: bool) -> str:
+                       border: int, transparent: bool,
+                       crop_id: str | None = None) -> str:
         url = export_page_url()
         with ws_connect(self._ws_url, max_size=None,
                         open_timeout=15) as ws:  # type: ignore[arg-type]
@@ -283,7 +348,7 @@ class Browser:
             session.session_id = attached["sessionId"]
             try:
                 return self._render_in_target(session, url, xml, scale, page,
-                                              border, transparent)
+                                              border, transparent, crop_id)
             finally:
                 try:
                     session.send("Target.closeTarget",
@@ -294,7 +359,7 @@ class Browser:
 
     def _render_in_target(self, session: _Session, url: str, xml: str,
                           scale: float, page: int | None, border: int,
-                          transparent: bool) -> str:
+                          transparent: bool, crop_id: str | None = None) -> str:
         session.send("Page.enable")
         session.send("Runtime.enable")
         session.send("Page.navigate", {"url": url})
@@ -358,22 +423,17 @@ class Browser:
         # The same call drawio's own Electron export makes (see the
         # 'get-svg-data' handler in the client's js/export.js): background,
         # the scale the client actually used, our border, and links left alone.
-        svg = session.evaluate("""(function(){
-            var g = window.__awmGraph;
-            var bg = g.background;
-            if (bg == mxConstants.NONE) { bg = null; }
-            var done = document.getElementById('LoadingComplete');
-            var scale = parseFloat(done.getAttribute('scale')) || 1;
-            var border = parseInt(done.getAttribute('border')) || 0;
-            var root = g.getSvg(bg, scale, border, false, null, true, null,
-                                null, null, null, null, 'auto');
-            if (g.shadowVisible) { g.addSvgShadow(root); }
-            if (g.mathEnabled && typeof Editor !== 'undefined'
-                && Editor.prototype.addMathCss) {
-                Editor.prototype.addMathCss(root);
-            }
-            return new XMLSerializer().serializeToString(root);
-        })()""")
+        #
+        # Cropping is measured, not computed. The exported SVG carries
+        # `data-cell-id` on every shape group (drawio's own
+        # createSvgImageExport puts it there), so the frame can be found in the
+        # output and its box read straight off the DOM — via the CTM relative to
+        # the root, which cancels device pixel ratio, scroll and every transform
+        # in between. Reconstructing getSvg's translate/scale arithmetic in
+        # Python would be the same answer derived from assumptions that a client
+        # upgrade is free to break.
+        svg = session.evaluate(_SVG_SCRIPT.replace(
+            "__CROP_ID__", json.dumps(crop_id)))
 
         if not svg or "<svg" not in svg:
             raise ChromeError("drawio's client returned no SVG")
@@ -387,8 +447,9 @@ BROWSER = Browser()
 
 
 def render_svg(xml: str, *, scale: float = 1.0, page: int | None = None,
-               border: int = 0) -> str:
-    return BROWSER.render_svg(xml, scale=scale, page=page, border=border)
+               border: int = 0, crop_id: str | None = None) -> str:
+    return BROWSER.render_svg(xml, scale=scale, page=page, border=border,
+                              crop_id=crop_id)
 
 
 def state() -> str:
