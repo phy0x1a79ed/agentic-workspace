@@ -14,7 +14,9 @@ Then a background loop mints every cadence. Each mint:
 
 * a **loud** log line (so an operator/agent watching a dev session sees it),
 * a best-effort push of the *login* password to Discord ``#notifications``
-  (never the peer credential, and never blocking the mint on social being up),
+  (never the peer credential, and never blocking the mint on social being up
+  — it runs detached, and retries a transient failure with backoff before
+  giving up; see ``h_status``'s ``push_last_*`` fields),
 * rewrites the ``$AWM_PEER_CRED`` file with the current peer credential,
 * prunes fully-expired generations.
 """
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -49,6 +52,15 @@ _DAY = 86400.0
 # social@<peer>. Unset/empty ⇒ local. Read fresh per push.
 _SOCIAL_PEER_ENV = "AWM_SOCIAL_PEER"
 
+# Outcome of the most recent Discord push attempt, surfaced via h_status so an
+# operator can see a failure without grepping logs. In-memory only — a
+# restart naturally repopulates it via the next mint-if-stale push.
+_push_status: dict[str, Any] = {"ok": None, "at": None, "error": None}
+
+# Handle to the in-flight background push task (see _spawn_push), so a mint
+# that supersedes an in-progress retry can cancel it instead of racing it.
+_push_task: "asyncio.Task[None] | None" = None
+
 
 def _settings() -> Any:
     """Current config values (defaults merged with stored overrides)."""
@@ -69,43 +81,92 @@ def _autologin_link(login_password: str) -> str | None:
     return f"{base}/__auth/link?p={urllib.parse.quote(login_password, safe='')}"
 
 
-async def _push_password_to_discord(login_password: str, expires_at: float) -> None:
-    """Best-effort: send the day's login password to Discord #notifications.
+async def _push_password_to_discord_attempt(login_password: str) -> None:
+    """One attempt to send the day's login password to Discord #notifications.
 
-    Never raises into the mint — a social outage must not block rotation; the
-    next mint (or `awm auth password`) recovers the value. Every lookup that
-    could fail (node name, edge URL) is therefore inside the try, not above it:
-    with three nodes pushing into one channel the message must say which node it
-    came from, but not at the cost of the mint.
+    Raises on failure — the caller (`_push_password_to_discord`) owns retry
+    and never-raise semantics. Every lookup that could fail (node name, edge
+    URL) is inside this function, not above it: with three nodes pushing into
+    one channel the message must say which node it came from, but a retry
+    must redo the whole message, not resume a half-built one.
+    """
+    s = _settings()
+    node = config.node_name()
+    link = _autologin_link(login_password)
+    text = (
+        f"🔑 **awm login password** minted on **{node}**\n"
+        f"`{login_password}`\n"
+        # Bare URL in angle brackets: clickable in every Discord surface
+        # (masked-link rendering is not), and the brackets stop Discord from
+        # trying to unfurl a URL that carries a live credential.
+        + (f"tap to open {node} signed in: <{link}>\n" if link else "")
+        + f"valid ~{s.validity_hours:.0f}h. Get it any time on {node} with "
+        f"`awm auth password`."
+    )
+    from awm import gatewayclient
+    await gatewayclient.call_maybe_peer(
+        gatewayclient.peer_env(_SOCIAL_PEER_ENV),
+        "social", "send", {
+            "account": s.discord_account,
+            "channel": s.discord_channel,
+            "text": text,
+        })
+    log.info("auth: pushed %s's login password to Discord %s#%s",
+             node, s.discord_account, s.discord_channel)
+
+
+async def _push_password_to_discord(login_password: str, expires_at: float) -> None:
+    """Best-effort, with retries: push the day's login password to Discord.
+
+    Never raises into the mint — a social outage must not block rotation.
+    A single attempt failing is often transient (e.g. a VPN blip to the peer
+    hosting the singleton social service), so retry with doubling backoff for
+    a few minutes rather than leaving the operator without a password message
+    until the next scheduled mint (up to `mint_cadence_hours` later). The mint
+    itself has already succeeded by the time this runs (see mint_now) — all
+    that is at stake here is how fast the operator gets notified.
     """
     s = _settings()
     if not s.push_enabled:
         return
-    try:
-        node = config.node_name()
-        link = _autologin_link(login_password)
-        text = (
-            f"🔑 **awm login password** minted on **{node}**\n"
-            f"`{login_password}`\n"
-            # Bare URL in angle brackets: clickable in every Discord surface
-            # (masked-link rendering is not), and the brackets stop Discord from
-            # trying to unfurl a URL that carries a live credential.
-            + (f"tap to open {node} signed in: <{link}>\n" if link else "")
-            + f"valid ~{s.validity_hours:.0f}h. Get it any time on {node} with "
-            f"`awm auth password`."
-        )
-        from awm import gatewayclient
-        await gatewayclient.call_maybe_peer(
-            gatewayclient.peer_env(_SOCIAL_PEER_ENV),
-            "social", "send", {
-                "account": s.discord_account,
-                "channel": s.discord_channel,
-                "text": text,
-            })
-        log.info("auth: pushed %s's login password to Discord %s#%s",
-                 node, s.discord_account, s.discord_channel)
-    except Exception as exc:  # noqa: BLE001 — push is best-effort
-        log.warning("auth: Discord password push failed (will retry next mint): %s", exc)
+    attempts = max(1, int(getattr(s, "push_retry_attempts", 1)))
+    backoff = float(getattr(s, "push_retry_backoff_seconds", 0.0))
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        if attempt:
+            await asyncio.sleep(backoff * (2 ** (attempt - 1)))
+        try:
+            await _push_password_to_discord_attempt(login_password)
+        except Exception as exc:  # noqa: BLE001 — push is best-effort
+            last_exc = exc
+            log.warning(
+                "auth: Discord password push failed (attempt %d/%d): %s",
+                attempt + 1, attempts, exc)
+            continue
+        _push_status.update(ok=True, at=time.time(), error=None)
+        return
+    log.error(
+        "auth: Discord password push failed after %d attempt(s); giving up "
+        "until the next mint: %s", attempts, last_exc)
+    _push_status.update(
+        ok=False, at=time.time(),
+        error=str(last_exc) if last_exc else None)
+
+
+def _spawn_push(login_password: str, expires_at: float) -> None:
+    """Fire the Discord push (with its own retries) in the background.
+
+    A slow or retrying push must never delay mint_now's return or the
+    rotation loop's cadence timing — that invariant only holds if the push
+    runs detached. Cancels any still-in-flight push first, so a mint that
+    supersedes an in-progress retry does not end up racing it or notifying
+    about a since-superseded password.
+    """
+    global _push_task
+    if _push_task is not None and not _push_task.done():
+        _push_task.cancel()
+    _push_task = asyncio.create_task(
+        _push_password_to_discord(login_password, expires_at))
 
 
 def _write_peer_cred_file(peer_credential: str) -> None:
@@ -131,7 +192,7 @@ async def mint_now(*, reason: str = "rotation") -> dict[str, Any]:
     removed = store.prune_expired()
     if removed:
         log.info("auth: pruned %d expired generation(s)", removed)
-    await _push_password_to_discord(gen["login_password"], gen["expires_at"])
+    _spawn_push(gen["login_password"], gen["expires_at"])
     return gen
 
 
@@ -139,7 +200,6 @@ async def _mint_if_stale() -> None:
     """Mint on startup unless a fresh-enough generation already exists."""
     s = _settings()
     latest = store.latest()
-    import time
     now = time.time()
     if latest is None:
         await mint_now(reason="startup (none existed)")
@@ -156,7 +216,6 @@ async def _mint_if_stale() -> None:
 
 async def _rotation_loop() -> None:
     """Sleep until the next cadence boundary, mint, repeat — forever."""
-    import time
     while True:
         s = _settings()
         latest = store.latest()
@@ -272,5 +331,8 @@ def h_status(args: dict) -> dict:
         "mint_cadence_hours": s.mint_cadence_hours,
         "validity_hours": s.validity_hours,
         "push_enabled": s.push_enabled,
+        "push_last_ok": _push_status["ok"],
+        "push_last_attempt_at": _push_status["at"],
+        "push_last_error": _push_status["error"],
         "peer_cred_path": str(PEER_CRED_FILE),
     }

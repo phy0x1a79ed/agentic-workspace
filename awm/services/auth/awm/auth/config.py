@@ -58,6 +58,19 @@ class AuthSettings(BaseModel):
         default=_DEFAULT_DISCORD_CHANNEL,
         description="Discord channel id the password push is sent to.",
     )
+    push_retry_attempts: int = Field(
+        default=4,
+        description="Attempts to push the login password to Discord before "
+                    "giving up until the next mint. A transient failure (e.g. "
+                    "a VPN blip to the peer hosting social) is retried with "
+                    "doubling backoff (see push_retry_backoff_seconds); the "
+                    "mint itself always succeeds regardless.",
+    )
+    push_retry_backoff_seconds: float = Field(
+        default=30.0,
+        description="Seconds to wait before the second push attempt; doubles "
+                    "on each subsequent attempt.",
+    )
 
 
 CONTRACT = ConfigContract("auth", AuthSettings, title="Authentication")
