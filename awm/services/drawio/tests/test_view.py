@@ -108,6 +108,22 @@ def test_unknown_page_is_404(renderer):
     assert exc.value.status == 404
 
 
+def test_view_url_round_trips_through_the_renderer(renderer, store, tmp_path):
+    """The verb the UI copies from and the renderer that answers the copied URL
+    have to agree on encoding — otherwise a paste places an image that 404s."""
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    store.create("fig/odd.drawio", author="t",
+                 xml=TWO_PAGES.replace('name="Second"', 'name="a/b;c"'))
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+
+    for save, page in [(SAVE, "Second"), (SAVE, None), ("fig/odd.drawio", "a/b;c")]:
+        url = svc.view_url(save, page=page)["url"]
+        rel = url[len(V.VIEW_PREFIX):]
+        assert renderer.resolve_target(rel) == (svc.view_url(save)["save"], page)
+
+
 # --- cache: hit, miss, per-page invalidation -------------------------------
 
 def test_second_request_hits_cache(renderer, render):

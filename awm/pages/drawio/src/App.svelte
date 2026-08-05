@@ -11,10 +11,12 @@
    */
   import { onMount } from 'svelte';
   import DiagramTree from '$lib/DiagramTree.svelte';
+  import PublishPanel from '$lib/PublishPanel.svelte';
   import {
-    ago, buildTree, check, checkoutUrl, create, editorUrl, history, info, list,
-    restore, size,
-    type CheckReport, type Diagram, type Revision, type TreeNode,
+    absolute, ago, autopublishList, buildTree, check, checkoutUrl, copyText,
+    create, editorUrl, history, imageCellXml, info, list, renderSize, restore,
+    size, viewUrl,
+    type CheckReport, type Diagram, type Link, type Revision, type TreeNode,
   } from '$lib/api';
 
   let diagrams = $state<Diagram[]>([]);
@@ -22,10 +24,21 @@
   let selected = $state<string | null>(null);
   let detail = $state<Diagram | null>(null);
   let revisions = $state<Revision[]>([]);
+  let links = $state<Link[]>([]);
   let report = $state<CheckReport | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let newPath = $state('');
+
+  // The tab lives here rather than per-diagram, so switching diagrams keeps
+  // you on the tab you were reading.
+  let tab = $state<'pages' | 'publish' | 'history'>('pages');
+  let allLinks = $state(false);
+  let copied = $state<string | null>(null);
+  //  Shown when the clipboard is unavailable — the gateway is plain HTTP unless
+  //  it is fronted by httpsfront, and `navigator.clipboard` needs a secure
+  //  context. A silent no-op here would break the whole flow invisibly.
+  let manual = $state<{ label: string; text: string } | null>(null);
 
   async function refresh() {
     try {
@@ -45,6 +58,10 @@
     try {
       detail = await info(save);
       revisions = (await history(save)).revisions;
+      // Rides the existing 5s poll, so a link created, stopped, or dropped by
+      // the service (its target folder went away) shows up without a second
+      // timer.
+      links = (await autopublishList(allLinks ? undefined : save)).links;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -94,6 +111,52 @@
     try {
       await restore(selected, rev.rev);
       await refresh();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Hand `text` to the clipboard, or show it for manual copying. */
+  async function offer(row: string, kind: string, text: string) {
+    manual = null;
+    if (await copyText(text)) {
+      copied = row;
+      setTimeout(() => { if (copied === row) copied = null; }, 2500);
+    } else {
+      manual = { label: `${row} (${kind})`, text };
+    }
+  }
+
+  /**
+   * Copy a paste-ready image cell pointing at the page's live SVG.
+   *
+   * The fetch is a real render on a cold cache and can take seconds — which is
+   * also the point: a page that will not render fails here, loudly, instead of
+   * handing over a URL that 404s once it has been placed.
+   */
+  async function copyCell(page: string | null, label: string) {
+    if (!detail) return;
+    busy = true;
+    try {
+      const url = absolute((await viewUrl(detail.save, page)).url);
+      const { width, height } = await renderSize(url);
+      await offer(label, 'cell', imageCellXml(url, width, height));
+      error = null;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function copyViewUrl(page: string | null, label: string) {
+    if (!detail) return;
+    busy = true;
+    try {
+      await offer(label, 'url', absolute((await viewUrl(detail.save, page)).url));
+      error = null;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -196,18 +259,71 @@
           </div>
         {/if}
 
-        <h3>Pages</h3>
-        <ul class="pages">
-          {#each detail.pages as page (page.id ?? page.name)}
-            <li>
-              <span>{page.name ?? '(unnamed)'}</span>
-              <span class="count">{page.cells} cells</span>
-            </li>
+        <div class="tabs" role="tablist">
+          {#each [['pages', 'pages'], ['publish', 'publish'], ['history', 'history']] as [id, label] (id)}
+            <button
+              role="tab"
+              aria-selected={tab === id}
+              class:active={tab === id}
+              onclick={() => (tab = id as typeof tab)}
+            >{label}</button>
           {/each}
-        </ul>
+        </div>
 
-        <h3>History</h3>
-        {#if revisions.length === 0}
+        {#if manual}
+          <div class="manual">
+            <p>
+              The clipboard is unavailable here (it needs a secure origin) —
+              select and copy <strong>{manual.label}</strong> by hand:
+            </p>
+            <!-- svelte-ignore a11y_autofocus -->
+            <textarea readonly autofocus onfocus={(e) => e.currentTarget.select()}
+              >{manual.text}</textarea>
+            <button onclick={() => (manual = null)}>dismiss</button>
+          </div>
+        {/if}
+
+        {#if tab === 'pages'}
+          <p class="hint">
+            Copy a page as a cell and paste it into another diagram — the placed
+            image re-renders whenever this page changes.
+          </p>
+          <ul class="pages">
+            {#each [null, ...detail.pages] as page (page ? (page.id ?? page.name) : '__whole__')}
+              {@const name = page ? (page.name ?? '(unnamed)') : 'whole document'}
+              {@const key = page ? page.name : null}
+              <li>
+                <div class="page">
+                  <span class="label">{name}</span>
+                  {#if page}<span class="count">{page.cells} cells</span>{/if}
+                </div>
+                <span class="buttons">
+                  {#if copied === name}<span class="ok">copied</span>{/if}
+                  <button
+                    onclick={() => copyCell(key, name)}
+                    disabled={busy || (!!page && !page.name)}
+                    title="Paste into a drawio tab with Ctrl-V"
+                  >copy cell</button>
+                  <button
+                    onclick={() => copyViewUrl(key, name)}
+                    disabled={busy || (!!page && !page.name)}
+                    title="For Insert > Image > URL (choose Link, not a copy)"
+                  >copy url</button>
+                </span>
+              </li>
+            {/each}
+          </ul>
+        {:else if tab === 'publish'}
+          <PublishPanel
+            save={detail.save}
+            pages={detail.pages}
+            {diagrams}
+            {links}
+            bind:all={allLinks}
+            onchanged={() => refresh()}
+            onerror={(m: string | null) => (error = m)}
+          />
+        {:else if revisions.length === 0}
           <p class="empty">No revisions.</p>
         {:else}
           <ul class="history">
@@ -255,14 +371,7 @@
     margin: 0 0 0.25rem;
   }
   h2 { font-size: 1rem; margin: 0 0 0.2rem; font-family: var(--mono, monospace); }
-  h3 {
-    font-size: 0.8rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--text2, #bbb);
-    margin: 1.2rem 0 0.4rem;
-  }
-  .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0; }
+  .hint { font-size: 0.85rem; color: var(--text3, #888); margin: 0 0 0.6rem; }
 
   .split {
     display: grid;
@@ -351,6 +460,60 @@
   .report.bad { border-color: #a8552f; color: #d68b5f; }
   .report ul { margin: 0.4rem 0 0; padding-left: 1rem; }
   .report .fix { display: block; color: var(--text3, #888); font-size: 0.75rem; }
+
+  /* The tab strip sits between the diagram-level actions (which stay above it,
+     because they are about the diagram rather than any one tab) and the tab
+     body. Underlined-active rather than boxed, so it reads as a divider. */
+  .tabs {
+    display: flex;
+    gap: 0.15rem;
+    border-bottom: 1px solid var(--border, #333);
+    margin: 1rem 0 0.6rem;
+  }
+  .tabs button {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text3, #888);
+    margin-bottom: -1px;
+  }
+  .tabs button:hover:not(:disabled) { background: none; color: var(--text2, #bbb); }
+  .tabs button.active {
+    color: var(--text, #ddd);
+    border-bottom-color: var(--text2, #bbb);
+  }
+
+  .manual {
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.7rem;
+    font-size: 0.8rem;
+    color: var(--text2, #bbb);
+  }
+  .manual p { margin: 0 0 0.4rem; }
+  .manual textarea {
+    width: 100%;
+    height: 5rem;
+    background: var(--surface2, #1c1c1c);
+    border: 1px solid var(--border, #333);
+    border-radius: 3px;
+    color: var(--text, #ddd);
+    font-family: var(--mono, monospace);
+    font-size: 0.72rem;
+    padding: 0.3rem;
+    margin-bottom: 0.4rem;
+    resize: vertical;
+  }
+
+  .page { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+  .buttons { display: flex; align-items: center; gap: 0.3rem; flex: 0 0 auto; }
+  .ok { font-size: 0.72rem; color: #7bd88f; }
 
   ul.pages, ul.history { list-style: none; margin: 0; padding: 0; }
   ul.pages li, ul.history li {

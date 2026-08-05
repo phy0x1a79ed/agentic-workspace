@@ -240,6 +240,34 @@ class Service:
         return {"url": f"{mount.MOUNT_PREFIX}/index.html?save={quote(path)}",
                 "save": path}
 
+    def view_url(self, save: str, page: str | None = None) -> dict:
+        """The URL that serves a page as a live SVG, for placing in a diagram.
+
+        One authority for the prefix, the encoding and the page check, so a
+        caller never has to hand-assemble a path the renderer then 404s on.
+        Origin-relative for the same reason :meth:`url` is.
+
+        The page name is encoded with an empty safe set — a page called ``a/b``
+        would otherwise split into two path segments and resolve to nothing,
+        and a ``;`` reaching a drawio style string unescaped truncates it, which
+        renders the placed cell blank rather than failing.
+        """
+        from . import view as view_mod
+        from .autopublish import page_index
+
+        path = store_mod.normalize_save_path(save)
+        xml = self.store.read(path)  # raises UnknownDiagram
+        page_index(xml, page)  # raises on a name this diagram does not have
+
+        url = f"{view_mod.VIEW_PREFIX}/{quote(path, safe='/')}"
+        if page is not None:
+            url += f"/{quote(page, safe='')}"
+        # No save-vs-page ambiguity to report: the renderer prefers
+        # save=all-but-last, and its fallback would need `<save>.drawio` to be a
+        # directory as well as a file. Store paths always end in `.drawio`, so
+        # the two readings can never both resolve.
+        return {"url": url, "save": path, "page": page}
+
     # --- checkout surface --------------------------------------------------
 
     def checkout(self, save: str, author: str) -> dict:

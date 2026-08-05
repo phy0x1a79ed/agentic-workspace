@@ -112,10 +112,12 @@ class Renderer:
         """Map the path after the prefix to ``(save, page_name | None)``.
 
         The last segment is the page name (a trailing ``.svg`` is stripped);
-        the rest is the diagram path. If instead the *whole* remainder names an
-        existing diagram, it is taken as a page-omitted request for the whole
-        document — so ``view/a/b`` resolves to diagram ``a/b`` when that exists,
-        else to diagram ``a`` page ``b``.
+        the rest is the diagram path. If that does not name a diagram, the
+        *whole* remainder is tried as a page-omitted request for the whole
+        document — so ``view/a/b`` is diagram ``a`` page ``b`` when ``a`` is a
+        diagram, else diagram ``a/b``. The save-plus-page reading wins, and the
+        two can never both resolve: a store path always ends in ``.drawio``, so
+        the fallback would need that same name to be a directory too.
         """
         raw = rel_path.strip("/")
         if not raw:

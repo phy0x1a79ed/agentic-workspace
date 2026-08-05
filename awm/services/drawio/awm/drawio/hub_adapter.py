@@ -231,6 +231,27 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "view_url",
+            "tool": "drawio_view_url",
+            "description": (
+                "The URL that serves one page (or the whole document) as a "
+                "live SVG. Place it in ANOTHER diagram — Insert > Image > URL, "
+                "or paste a cell carrying it — and that image re-renders "
+                "whenever the source page changes, so one diagram can embed "
+                "another's page without a copy going stale. Fails here if the "
+                "page name is wrong, rather than 404ing after it is placed."
+            ),
+            "params": [
+                {"name": "save", "type": "string", "required": True,
+                 "description": "Diagram path, e.g. 'scadc/biomass-map'."},
+                {"name": "page", "type": "string",
+                 "description": (
+                     "Page NAME to serve (default: the whole document). Named, "
+                     "not indexed, so reordering tabs cannot repoint it."
+                 )},
+            ],
+        },
+        {
             "name": "remove",
             "tool": "drawio_remove",
             "description": "Delete a diagram (recoverable: its history is kept).",
@@ -556,6 +577,7 @@ HANDLERS: dict[str, Any] = {
         page=a.get("page"), scale=float(a.get("scale") or 1.0),
         allow_broken=bool(a.get("allow_broken")), handle=a.get("handle")),
     "url": lambda a: _svc().url(a.get("save"), handle=a.get("handle")),
+    "view_url": lambda a: _svc().view_url(a["save"], page=a.get("page")),
     "remove": lambda a, as_=None: _svc().remove(a["save"], author=_author(as_)),
 
     "autopublish": lambda a, as_=None: _pub().create(
