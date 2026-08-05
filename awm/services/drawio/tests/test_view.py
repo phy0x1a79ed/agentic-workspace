@@ -11,6 +11,7 @@ forever, or failing a commit because a fan-out subscriber raised.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 
 import pytest
 
@@ -42,15 +43,26 @@ TWO_PAGES = TEMPLATE.replace(
 
 
 class FakeRender:
-    """Stands in for the export container + browser. Counts renders."""
+    """Stands in for the export container + browser. Counts renders.
+
+    Deliberately echoes a digest of the XML it was handed rather than a
+    constant: with a constant payload every cache assertion below would pass
+    even if the key were wrong, because the wrong bytes and the right bytes
+    would be the same bytes.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
-        self.payload = b"<svg>one</svg>"
+        self.kwargs: list[dict] = []
+        self.last_xml = ""
 
-    def __call__(self, xml, fmt="pdf", *, page=None, scale=1.0, inline=True):
+    def __call__(self, xml, fmt="pdf", *, page=None, scale=1.0, inline=True,
+                 **kw):
         self.calls.append((fmt, page, scale, inline))
-        return self.payload, []
+        self.kwargs.append(kw)
+        self.last_xml = xml
+        digest = hashlib.sha256(xml.encode("utf-8")).hexdigest()[:16]
+        return f"<svg>{digest}</svg>".encode("utf-8"), []
 
 
 @pytest.fixture()
@@ -270,7 +282,7 @@ def test_get_returns_svg_with_content_type(server):
     assert r.headers["content-type"] == "image/svg+xml"
     assert r.headers["x-drawio-save"] == SAVE
     assert r.headers["etag"]
-    assert r.content == b"<svg>one</svg>"
+    assert r.content.startswith(b"<svg>")
 
 
 def test_conditional_get_is_304(server):
@@ -295,6 +307,244 @@ def test_head_resolves_save_without_body(server):
 
 def test_get_missing_is_404(server):
     assert _get(server, "/drawio-app/view/scadc/ghost/Page-1").status_code == 404
+
+
+# --- variants: one page, many placements -----------------------------------
+
+def _spec(**kw):
+    from awm.drawio import renderspec
+
+    return renderspec.from_query(kw)
+
+
+def test_two_variants_of_one_page_cache_independently(renderer):
+    """Each renders once and neither evicts the other — the actual fix for
+    three colours of one plasmid thrashing a five-slot cache."""
+    green = _spec(swap=["ff00ff:00aa55"])
+    blue = _spec(swap=["ff00ff:0055aa"])
+
+    a1 = renderer.render("scadc/demo/Page-1", spec=green)
+    b1 = renderer.render("scadc/demo/Page-1", spec=blue)
+    a2 = renderer.render("scadc/demo/Page-1", spec=green)
+    b2 = renderer.render("scadc/demo/Page-1", spec=blue)
+
+    assert renderer.renders == 2
+    assert (a1.cached, b1.cached) == (False, False)
+    assert (a2.cached, b2.cached) == (True, True)
+    assert a1.etag != b1.etag
+
+
+def test_a_variant_does_not_disturb_the_plain_render(renderer):
+    plain = renderer.render("scadc/demo/Page-1")
+    renderer.render("scadc/demo/Page-1", spec=_spec(swap=["ff00ff:00aa55"]))
+    again = renderer.render("scadc/demo/Page-1")
+    assert again.cached is True and again.etag == plain.etag
+
+
+def test_the_plain_render_keeps_its_original_cache_path(renderer):
+    renderer.render("scadc/demo/Page-1")
+    page_dir = renderer._page_dir(SAVE, "Page-1")
+    assert list(page_dir.glob("*.svg")), "the plain render moved; old cache orphaned"
+
+
+def test_the_version_cap_applies_per_variant(renderer, store):
+    spec = _spec(swap=["ff00ff:00aa55"])
+    for i in range(V.MAX_VERSIONS_PER_PAGE + 3):
+        store.write(SAVE, set_value(store.read(SAVE), "a", f"v{i}"), author="t")
+        renderer.render("scadc/demo/Page-1", spec=spec)
+        renderer.render("scadc/demo/Page-1")
+    page_dir = renderer._page_dir(SAVE, "Page-1")
+    variant_dir = renderer._variant_dir(SAVE, "Page-1", spec)
+    assert len(list(page_dir.glob("*.svg"))) == V.MAX_VERSIONS_PER_PAGE
+    assert len(list(variant_dir.glob("*.svg"))) == V.MAX_VERSIONS_PER_PAGE
+
+
+def test_abandoned_variants_are_reclaimed(renderer):
+    for i in range(V.MAX_VARIANTS_PER_PAGE + 4):
+        renderer.render("scadc/demo/Page-1",
+                        spec=_spec(swap=[f"ff00ff:0000{i:02d}"]))
+    page_dir = renderer._page_dir(SAVE, "Page-1")
+    kept = [p for p in page_dir.iterdir() if p.is_dir()]
+    assert len(kept) == V.MAX_VARIANTS_PER_PAGE
+
+
+def test_removing_a_page_prunes_its_variants_too(renderer, store):
+    renderer.render("scadc/demo/Second", spec=_spec(swap=["ff00ff:00aa55"]))
+    store.write(SAVE, TEMPLATE, author="t")
+    renderer.prune_for_commit(SAVE)
+    assert "Second" not in _page_dirs(renderer, SAVE)
+
+
+def test_an_unknown_crop_name_is_404(renderer):
+    with pytest.raises(ViewError) as exc:
+        renderer.render("scadc/demo/Page-1", spec=_spec(crop=["ghost"]))
+    assert exc.value.status == 404
+
+
+# --- the handler's parameter contract --------------------------------------
+
+def test_a_malformed_swap_is_400_naming_the_token(server):
+    r = _get(server, "/drawio-app/view/scadc/demo/Page-1?swap=nope")
+    assert r.status_code == 400
+    assert "nope" in r.text
+
+
+def test_a_blank_swap_is_400_not_a_plain_render(server):
+    """`parse_qs` drops it by default; that would render the plain page and
+    report success, which is the failure this whole service refuses."""
+    assert _get(server, "/drawio-app/view/scadc/demo/Page-1?swap=").status_code \
+        == 400
+
+
+def test_head_refuses_a_url_whose_get_can_only_fail(server):
+    import httpx
+
+    r = httpx.head(f"http://127.0.0.1:{server.port}"
+                   "/drawio-app/view/scadc/demo/Page-1?swap=nope")
+    assert r.status_code == 400
+
+
+def test_variants_have_different_etags_over_the_wire(server):
+    plain = _get(server, "/drawio-app/view/scadc/demo/Page-1")
+    green = _get(server, "/drawio-app/view/scadc/demo/Page-1?swap=ff00ff:00aa55")
+    assert plain.status_code == green.status_code == 200
+    assert plain.headers["etag"] != green.headers["etag"]
+    again = _get(server, "/drawio-app/view/scadc/demo/Page-1?swap=ff00ff:00aa55",
+                 headers={"If-None-Match": green.headers["etag"]})
+    assert again.status_code == 304
+
+
+def test_an_empty_rev_does_not_reach_the_store(server):
+    assert _get(server, "/drawio-app/view/scadc/demo/Page-1?rev=").status_code \
+        == 200
+
+
+# --- embedding one page in another -----------------------------------------
+#
+# A placed page view is an origin-relative URL, so a document that keeps one is
+# a picture that only works on this host. The exporter resolves it by rendering
+# the page — which means a page can, in principle, ask for itself.
+
+def _placing(url: str) -> str:
+    """TWO_PAGES with cell 'a' turned into an image of `url`."""
+    return TWO_PAGES.replace(
+        '<mxCell id="a" value="A"',
+        f'<mxCell id="a" value="A" style="shape=image;image={url};"')
+
+
+def test_an_embedded_page_view_is_rendered_and_inlined(renderer, store):
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Second"))
+    result = renderer.render("fig/host/Page-1")
+    assert not result.problems
+    assert renderer.renders == 2          # the host, and the page it embeds
+    handed = render_xml_of(renderer)
+    assert V.VIEW_PREFIX not in handed and "data:image/svg+xml," in handed
+
+
+def render_xml_of(renderer):
+    """The XML handed to the last render — what the browser would have seen."""
+    return renderer._render.last_xml
+
+
+def test_a_page_that_embeds_itself_is_reported_not_hung(renderer, store):
+    store.create("fig/loop.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/fig/loop/Page-1"))
+    result = renderer.render("fig/loop/Page-1")
+    assert any("embeds itself" in p for p in result.problems)
+
+
+def test_a_cycle_across_two_diagrams_terminates(renderer, store):
+    store.create("fig/one.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/fig/two/Page-1"))
+    store.create("fig/two.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/fig/one/Page-1"))
+    result = renderer.render("fig/one/Page-1")
+    assert any("embeds itself" in p for p in result.problems)
+
+
+def test_nesting_past_the_limit_is_reported(renderer, store, monkeypatch):
+    from awm.drawio import export as export_mod
+
+    monkeypatch.setattr(export_mod, "MAX_VIEW_DEPTH", 2)
+    for i in range(5):
+        store.create(f"fig/d{i}.drawio", author="t",
+                     xml=_placing(f"{V.VIEW_PREFIX}/fig/d{i + 1}/Page-1"))
+    store.create("fig/d5.drawio", author="t", xml=TWO_PAGES)
+    result = renderer.render("fig/d0/Page-1")
+    assert any("nest more than" in p for p in result.problems)
+
+
+def test_an_escaped_query_on_a_placed_view_survives_the_store(renderer, store):
+    """The store escapes '&' into '&amp;' on write. A reference that lost every
+    parameter but the first would embed the wrong colour, silently."""
+    # Spelled the way drawio writes it: a literal '&' would not be well-formed.
+    url = (f"{V.VIEW_PREFIX}/scadc/demo/Second"
+           "?swap=ff00ff:00aa55&amp;swap=00ff00:333333")
+    store.create("fig/q.drawio", author="t", xml=_placing(url))
+    assert "&amp;" in store.read("fig/q.drawio")
+    result = renderer.render("fig/q/Page-1")
+    assert not result.problems and renderer.renders == 2
+
+
+def test_check_reports_a_placed_view_whose_page_is_gone(store, tmp_path):
+    """`check` gates `export`; a checker blind to view references would pass an
+    export with a hole in it."""
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Ghost"))
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+    report = svc.check("fig/host.drawio")
+    assert report["ok"] is False
+    assert report["problems"][0]["problem"] == "view"
+    assert "Ghost" in report["problems"][0]["fix"]
+
+
+def test_check_accepts_a_placed_view_that_resolves(store, tmp_path):
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Second"))
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+    report = svc.check("fig/host.drawio")
+    assert report["ok"] is True and report["references"] == 1
+
+
+def test_check_reports_a_malformed_parameter(store, tmp_path):
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Second?swap=nope"))
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+    assert svc.check("fig/host.drawio")["ok"] is False
+
+
+def test_view_url_builds_the_query_the_renderer_answers(store, tmp_path,
+                                                        renderer):
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+    url = svc.view_url(SAVE, page="Second", swaps=["#F0F:00aa55"])["url"]
+    assert url.endswith("?swap=ff00ff:00aa55")
+    rel, query = V.split_view_url(url)
+    assert renderer.render(rel, spec=_spec(**query)).save == SAVE
+
+
+def test_view_url_refuses_a_typo_where_it_is_written(store, tmp_path):
+    from awm.drawio import renderspec
+    from awm.drawio.checkout import Checkouts
+    from awm.drawio.service import Service
+
+    svc = Service(store, Checkouts(store, tmp_path / "checkouts"))
+    with pytest.raises(renderspec.SpecError):
+        svc.view_url(SAVE, page="Second", swaps=["ff00ff:notacolour"])
+    with pytest.raises(renderspec.CropNotFound):
+        svc.view_url(SAVE, page="Second", crop="ghost")
 
 
 def test_a_raising_subscriber_does_not_fail_the_commit(store):

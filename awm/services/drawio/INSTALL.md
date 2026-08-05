@@ -117,7 +117,9 @@ revision a live checkout has pinned.
 
 Cells reference ordinary files through fileviewer's mount
 (`style="shape=image;image=/files/abs/path.svg;"`), so re-rendering a figure
-updates the diagram on reload instead of requiring a re-import.
+updates the diagram on reload instead of requiring a re-import. A cell can also
+reference *another diagram's page* through the view mount (below); both kinds
+are origin-relative, and both are resolved to embedded data at export time.
 
 Three hazards this creates, and what handles each:
 
@@ -148,6 +150,24 @@ Three hazards this creates, and what handles each:
 inlined **server-side before the document is handed over**, so the container
 needs no network at all and the output is self-contained by construction — no
 host routing, and nothing to break when the gateway is down.
+
+Inlining covers both reference kinds: a `/files` reference becomes the file's
+bytes, and a placed page view becomes *that page rendered*, honouring the
+reference's own query, so two placements of one page in different colours embed
+as two different images. Both are matched by a single alternation, which is what
+keeps a diagram stored under a path containing `files` from having the `/files/…`
+*inside its own view URL* rewritten. In stored XML a multi-parameter query is
+spelled `&amp;`, so the matcher admits an XML ampersand entity — a terminator set
+that stopped at `;` would cut the URL at `&amp` and drop every parameter but the
+first, silently. Because a placed page can itself place another, resolution is
+bounded three ways: nesting depth, total nested renders, and total inlined bytes
+(nesting re-encodes, so it roughly doubles per level). A cycle is keyed on
+`(save, page)` — a page embedding itself at a different scale is still a cycle —
+and is reported, never hung.
+
+Inlining strictly **precedes** the render call at every call site. The headless
+browser's lock is not re-entrant, and a nested page render happens during
+inlining; moving inlining inside the render would self-deadlock.
 
 **SVG does not go through the container.** It cannot: that server answers
 `400 Unsupported Format!` for `svg`, because drawio has always produced SVG
@@ -228,6 +248,10 @@ while the consumer is open.
     GET  /drawio-app/view/<save>               → the whole/first page
     HEAD /drawio-app/view/<save>/<page>        → resolves save/page/rev, no render
 
+    ?swap=<from>:<to>   repeatable — replace one colour with another
+    ?crop=<name>        render only the shape with that label (or cell id)
+    ?scale=<n>
+
 `drawio view_url --save <save> [--page <name>]` is the one authority for
 building that URL — it percent-encodes each segment (a `/` or `;` in a page name
 would otherwise split the path or truncate the drawio style string the URL ends
@@ -240,10 +264,46 @@ no dialog. When the browser has no clipboard (it needs a secure origin) the text
 is offered for manual copying rather than silently doing nothing.
 
 The last path segment is the page **name** (a trailing `.svg` is accepted and
-ignored); everything before it is the diagram path. Render settings are fixed:
+ignored); everything before it is the diagram path. Otherwise the render is
 drawio's native *Export as SVG* — transparent background, 0 border, a viewBox
-cropped to the drawing. A missing diagram or unknown page is an honest `404`,
-never a blank image.
+cropped to the drawing. A missing diagram, unknown page or unknown crop name is
+an honest `404`, never a blank image; a malformed parameter is a `400` naming
+the token, including the empty `?swap=` case (the handler keeps blank values
+precisely so that one cannot vanish into a plain render).
+
+**The URL is the variable.** `swap` and `crop` are what let *one* source page
+serve every placement, instead of keeping `plasmid-red`, `plasmid-green` and
+`plasmid-blue` and repeating every edit three times. Draw the region that should
+vary in a mask colour — `#ff00ff` is the convention, since nobody picks it on
+purpose — and recolour per placement. Both parameters are parsed, formatted and
+fingerprinted by `awm/drawio/renderspec.py`, which is the *only* place that
+grammar lives: the HTTP handler, `view_url`, an autopublish link and the
+export-time inliner all go through it, so a parameter cannot exist on one
+surface and silently not on another. Order never matters — the formatter and the
+fingerprint both sort.
+
+What a swap reaches is deliberately narrow: style values whose key ends in
+`Color` (plus `imageBorder`/`imageBackground`), colours inside a cell's label,
+and the *text* of referenced `/files/**.svg` images. It never touches an
+`image=` value, which is how an inlined data URI survives untouched — a blanket
+text replace is ruled out for exactly that reason. Raster images cannot be
+masked at all: a pink region inside a PNG stays pink. Replacements are
+simultaneous, never chained (one compiled alternation, one pass), and named
+colours / `rgb()` / eight-digit `#rrggbbaa` are out of scope, the last rejected
+rather than half-supported. A compressed diagram fails loudly instead of
+returning an un-swapped render that looks like a swap which matched nothing.
+
+`crop` names a shape by label (or cell id). The frame is restyled to a bare
+outline before rendering — drawio builds no state for an invisible cell, so a
+hidden frame is one the browser cannot measure — then measured off the rendered
+SVG via `data-cell-id` and deleted from the output, so it never appears and the
+author does not have to make it invisible. Moving or resizing the frame changes
+the page's content, which busts every placement on the next change event.
+
+Cropping narrows the `viewBox`; it does not delete geometry. Shapes outside the
+frame are clipped everywhere the SVG is displayed, but they are still *in* the
+file — worth knowing before cropping is used to keep something out of a figure
+somebody else will read.
 
 It is a fourth registration — a loopback listener fronted as a `kind=url` mount at
 `/drawio-app/view`. A service's browser surface is `POST /svc/…/fn/…` (no
@@ -261,6 +321,14 @@ nothing actually moved. A gone page (rename/removal) or a removed diagram has it
 cache directory pruned on the next commit — the destination owns the cache the
 same way an autopublish link owns its file. Only the newest
 `MAX_VERSIONS_PER_PAGE` (5) renders per page are kept.
+
+Each **variant** (a non-empty query) caches in its own subdirectory under the
+page, so the version cap applies per variant rather than letting three colours
+of one plasmid evict each other on every edit; the query space is
+caller-controlled, so `MAX_VARIANTS_PER_PAGE` (12) reclaims abandoned ones. The
+un-parameterised render keeps the original path and key, which is why deploying
+variants threw no already-rendered page away. Variants of a page share one
+change topic and therefore refresh together — they have one source.
 
 **Live update in an open consumer.** On every accepted write the service emits
 `{"type":"view-updated","save","rev"}` on the source diagram's existing

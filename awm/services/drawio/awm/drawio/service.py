@@ -12,25 +12,25 @@ moved, land, release, push the result back. The hold is sub-second and the
 tabs cooperate, so the agent always gets a turn.
 
 **Image references.** Cells point at ordinary files through fileviewer's
-``/files/<abs-path>`` mount instead of carrying embedded data. That keeps a
-re-rendered figure live in the diagram without a re-import, but it means a
-reference can break silently: fileviewer's mask is a denylist and a masked path
-404s exactly like a missing one, so a cell whose image sits somewhere the mask
-covers renders blank with no error anywhere. :meth:`Service.check` is what
-turns that into a report.
+``/files/<abs-path>`` mount, or at another diagram's page through the view
+mount, instead of carrying embedded data. That keeps a re-rendered figure live
+in the diagram without a re-import, but it means a reference can break silently:
+fileviewer's mask is a denylist and a masked path 404s exactly like a missing
+one, so a cell whose image sits somewhere the mask covers renders blank with no
+error anywhere — and a page view whose source page was renamed does the same.
+:meth:`Service.check` is what turns both into a report.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
-from . import mount, ops, store as store_mod, xmlmodel
+from . import mount, ops, renderspec, store as store_mod, xmlmodel
 from .checkout import Behind, Checkouts, Conflicted
 from .store import Store
 
@@ -44,15 +44,6 @@ FLUSH_TIMEOUT_S = 4.0
 #: How long the write lease keeps tabs from autosaving while a merge lands.
 #: Tabs stay editable throughout; only the *save* is deferred.
 LEASE_SECONDS = 10.0
-
-#: Image references we can check: fileviewer mount paths, which is the shape
-#: this service tells agents to use — ``style="…;image=/files/abs/path.svg;"``.
-#: ``/files`` is followed directly by the absolute path, so the capture keeps
-#: its leading slash. The terminator set includes ``;`` because that is what
-#: separates drawio style segments, and ``"`` / ``'`` / ``)`` because the same
-#: reference also appears inside attribute values and CSS ``url()``.
-_FILES_REF = re.compile(r"/files(/[^\s;\"')<>]+)")
-
 
 class Lease:
     """A short exclusive window in which only the merging caller may write.
@@ -183,18 +174,23 @@ class Service:
 
     def export(self, save: str, fmt: str = "pdf", out: str | None = None,
                page: int | None = None, scale: float = 1.0,
-               allow_broken: bool = False, handle: str | None = None) -> dict:
+               allow_broken: bool = False, handle: str | None = None,
+               swaps: list[str] | None = None, crop: str | None = None) -> dict:
         """Render a diagram to a file on disk.
 
         Refuses by default when any image reference is broken. A figure with a
         silently blank cell is worse than no figure at all: it looks finished,
         so nobody goes looking for what is missing. Override deliberately with
         ``allow_broken``.
+
+        Takes the same ``swaps`` and ``crop`` a view URL takes, through the same
+        parser, so "export what that link shows" needs no translation step.
         """
         from . import export as export_mod
 
         xml = (self.read(handle=handle)["xml"] if handle
                else self.store.read(save))
+        parsed_swaps = renderspec.parse_swaps(swaps or ())
         source = self.checkouts.status(handle)["save"] if handle else \
             store_mod.normalize_save_path(save)
 
@@ -207,7 +203,8 @@ class Service:
                     "allow_broken=true to export anyway"
                 )
 
-        data, problems = export_mod.render(xml, fmt, page=page, scale=scale)
+        data, problems = export_mod.render(xml, fmt, page=page, scale=scale,
+                                           swaps=parsed_swaps, crop=crop)
         if problems and not allow_broken:
             raise export_mod.ExportError(
                 "could not inline: " + "; ".join(problems))
@@ -240,33 +237,51 @@ class Service:
         return {"url": f"{mount.MOUNT_PREFIX}/index.html?save={quote(path)}",
                 "save": path}
 
-    def view_url(self, save: str, page: str | None = None) -> dict:
+    def view_url(self, save: str, page: str | None = None,
+                 swaps: list[str] | None = None, crop: str | None = None,
+                 scale: float | None = None) -> dict:
         """The URL that serves a page as a live SVG, for placing in a diagram.
 
-        One authority for the prefix, the encoding and the page check, so a
-        caller never has to hand-assemble a path the renderer then 404s on.
-        Origin-relative for the same reason :meth:`url` is.
+        One authority for the prefix, the encoding, the page check and the
+        parameters, so a caller never has to hand-assemble a path the renderer
+        then 404s on. Origin-relative for the same reason :meth:`url` is.
 
         The page name is encoded with an empty safe set — a page called ``a/b``
         would otherwise split into two path segments and resolve to nothing,
         and a ``;`` reaching a drawio style string unescaped truncates it, which
         renders the placed cell blank rather than failing.
+
+        ``swaps`` and ``crop`` are validated here rather than at first fetch: a
+        typo'd colour should fail where it is written, not silently render the
+        wrong picture from inside somebody else's diagram.
         """
         from . import view as view_mod
         from .autopublish import page_index
 
         path = store_mod.normalize_save_path(save)
         xml = self.store.read(path)  # raises UnknownDiagram
-        page_index(xml, page)  # raises on a name this diagram does not have
+        index = page_index(xml, page)  # raises on a name this diagram does not have
+
+        spec = renderspec.RenderSpec(
+            scale=float(scale) if scale else 1.0,
+            swaps=renderspec.parse_swaps(swaps or ()),
+            crop=(crop or None),
+        )
+        if spec.crop:
+            renderspec.prepare_crop(xml, index, spec.crop)  # raises CropNotFound
 
         url = f"{view_mod.VIEW_PREFIX}/{quote(path, safe='/')}"
         if page is not None:
             url += f"/{quote(page, safe='')}"
+        query = renderspec.to_query(spec)
+        if query:
+            url += f"?{query}"
         # No save-vs-page ambiguity to report: the renderer prefers
         # save=all-but-last, and its fallback would need `<save>.drawio` to be a
         # directory as well as a file. Store paths always end in `.drawio`, so
         # the two readings can never both resolve.
-        return {"url": url, "save": path, "page": page}
+        return {"url": url, "save": path, "page": page,
+                "spec": renderspec.describe(spec)}
 
     # --- checkout surface --------------------------------------------------
 
@@ -513,20 +528,48 @@ class Service:
         the browser and blank in an export, with nothing logged anywhere. Both
         cases are reported here, separately, because the fixes differ: one is a
         missing render, the other a file in the wrong place.
+
+        Placed page views are checked too, against the same pattern the exporter
+        inlines with — a checker that only looked for ``/files`` would let a
+        renamed source page through, and the ``export`` gate that consults this
+        would pass an export with a hole in it. Nothing is rendered here: this
+        stays a cheap pre-flight, so it verifies that the diagram, the page and
+        the parameters resolve, and leaves the render to the caller.
         """
+        from . import export as export_mod
+        from . import view as view_mod
+        from .autopublish import AutoPublishError, page_index
+
         text = self.store.read(save)
         problems, checked = [], []
-        for match in _FILES_REF.finditer(text):
-            target = Path(match.group(1))
-            checked.append(str(target))
-            if not target.exists():
-                problems.append({"path": str(target), "problem": "missing",
-                                 "fix": "render the image, or repoint the cell"})
-            elif _masked(target):
+        for match in export_mod.REFERENCE_PATTERN.finditer(text):
+            if match.group("file") is not None:
+                target = Path(match.group("file"))
+                checked.append(str(target))
+                if not target.exists():
+                    problems.append({"path": str(target), "problem": "missing",
+                                     "fix": "render the image, or repoint the cell"})
+                elif _masked(target):
+                    problems.append({
+                        "path": str(target), "problem": "masked",
+                        "fix": "fileviewer hides this path, so it 404s like a "
+                               "missing file; move the image outside the mask",
+                    })
+                continue
+
+            url = export_mod.unescape_amp(match.group("view"))
+            checked.append(url)
+            try:
+                rel, query = view_mod.split_view_url(url)
+                renderspec.from_query(query)
+                source, page = view_mod.resolve_target(self.store, rel)
+                page_index(self.store.read(source), page)
+            except (view_mod.ViewError, renderspec.SpecError,
+                    AutoPublishError) as exc:
                 problems.append({
-                    "path": str(target), "problem": "masked",
-                    "fix": "fileviewer hides this path, so it 404s like a missing "
-                           "file; move the image outside the mask",
+                    "path": url, "problem": "view",
+                    "fix": f"{exc} — repoint the cell with `drawio view_url`, "
+                           "or restore the page it names",
                 })
         return {
             "save": store_mod.normalize_save_path(save),
