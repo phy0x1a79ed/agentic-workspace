@@ -87,14 +87,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # need no model-supplied token). Read at call time, not import time, so a
         # reused proxy always reflects its own env. Absent for normal sessions.
         as_ = os.environ.get("AWM_AS")
-        # A ``$TMUX_PANE``-hosted session's proxy sits inside that exact pane's
-        # environment (one `claude` process, one `awm-mcp` child), so it can
-        # forward the pane id the same way it forwards AWM_AS — letting the
-        # reflection service target the caller's own pane with zero pid/pane
-        # awareness required from the agent. Absent outside tmux (IDE
-        # extension, web, SDK-driven sessions). Read at call time, same reason
-        # as AWM_AS above.
-        tmux_pane = os.environ.get("TMUX_PANE")
+        # This proxy is spawned by the calling session as a stdio child — one
+        # `claude` REPL, one `awm-mcp` child — so our parent pid *is* the caller.
+        # That is the identity the reflection service targets, and it is the same
+        # fact whether the session sits in a tmux pane or runs as a background
+        # job, which is what lets an agent reflect on itself without knowing how
+        # it happens to be hosted. Read at call time (see AWM_AS above); it is
+        # observed here rather than accepted as an argument, so a model cannot
+        # aim reflection at anyone but itself.
+        session_pid = str(os.getppid())
         # A ``<domain>@<peer>`` tool name routes to that peer's edge directly.
         if "@" in name:
             base, _, peer_name = name.rpartition("@")
@@ -103,8 +104,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         headers = {}
         if as_:
             headers["X-Awm-As"] = as_
-        if tmux_pane:
-            headers["X-Awm-Tmux-Pane"] = tmux_pane
+        if session_pid:
+            headers["X-Awm-Session-Pid"] = session_pid
         data = await _request_with_retry(
             "POST", "/invoke", json_body={"name": name, "args": arguments},
             headers=headers or None,
