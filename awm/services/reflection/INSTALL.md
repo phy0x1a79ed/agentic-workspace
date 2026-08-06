@@ -1,21 +1,19 @@
 # Installing the `reflection` service
 
-A Python feature service in the `awm.reflection` namespace. It lets a terminal
-agent — an interactive Claude Code / OpenCode session, or an awm-spawned agent —
-run a slash-command **on itself** by pasting it into its own tmux pane. The
-headline case is `/compact`: an agent whose context is filling up can compact
-itself, which it otherwise cannot do (the TUI only takes `/compact` as typed
-input).
+A Python feature service in the `awm.reflection` namespace. It lets an agent run
+a slash-command **on itself** by typing it into its own prompt. The headline case
+is `/compact`: an agent whose context is filling up can compact itself, which it
+otherwise cannot do (the TUI only takes `/compact` as typed input).
 
 It owns **no database** and depends only on the shared component libraries it
 imports (`config`, `gatewayclient`).
 
 ## How it works
 
-The service pastes the command into a target tmux pane using bracketed paste and
-presses Enter — the exact sequence awm already uses to drive spawned agents. It
-sends **no Escape**, so the command *queues* behind the agent's current turn and
-runs the instant that turn ends (which is the only safe moment to `/compact`).
+The service types the command into the caller's own prompt using bracketed paste
+and presses Enter. It sends **no Escape**, so the command *queues* behind the
+agent's current turn and runs the instant that turn ends (which is the only safe
+moment to `/compact`).
 
 **Follow-up prompt (kept alive).** A bare slash command runs at end-of-turn and
 then leaves the session idle with nothing to do — for an autonomous agent that is
@@ -31,23 +29,63 @@ drills deeper — so they would freeze the session (only a hand-typed Esc recove
 `send` **refuses** them outright (this cannot be overridden by `confirm`). Run
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
 
-Because the service is a separate gateway-spawned process, it does not share the
-caller's environment — but the calling agent never has to work around that. The
-per-session `awm-mcp` proxy sits inside the caller's own tmux pane and forwards
-`$TMUX_PANE` as a header (`X-Awm-Tmux-Pane`); the gateway fills it in as the
-default `pane` before the call ever reaches this service. **A normal call
-passes no `pane` at all.** `pane` remains an accepted argument only as a manual
-override (a human driving `reflection` from a plain shell/CLI with no `awm-mcp`
-proxy in front of it, or deliberately targeting a pane other than their own) —
-best-effort auto-detection is still the fallback there when `pane` is omitted
-and no header is present, but is only reliable when a single agent pane exists.
+## Who gets typed into
 
-Before pasting, the resolved pane is also checked to actually be running a
-`claude`/`opencode` process — a stale or wrong pane id is refused outright
-rather than silently pasted into whatever happens to be there.
+Reflection acts on the caller and on nobody else, so **nothing in the surface
+takes a target**. Identity is not accepted as an argument at all; it is observed.
+`awm-mcp` runs as a stdio child of the session that calls it, so the gateway
+stamps that proxy's parent pid onto every reflection call as `_caller_pid` —
+always overwriting, and stripping it when there is no header, so a model cannot
+name a different session.
 
-Not in tmux (bare terminal, IDE extension, web) → no pane to drive; `send`
-returns a clear error.
+`session_target` turns that pid into a target via Claude Code's own per-session
+record at `~/.claude/sessions/<repl-pid>.json`, which says how the session is
+hosted:
+
+| `kind` | Backend | Reached via |
+|---|---|---|
+| `interactive` | `tmux_inject` | the pane whose process subtree contains the pid |
+| `bg` | `daemon_inject` | the PTY socket in `~/.claude/daemon/roster.json` |
+
+Both are exact lookups. Anything that does not resolve — no session record, a
+recycled pid whose `procStart` disagrees with `/proc`, an interactive session not
+under tmux, a background session with no roster entry — **refuses**. There is no
+fallback that picks a plausible session, and adding one back would be a bug:
+
+> Reflection once re-scanned the tmux server for "the current agent pane" just
+> before injecting a deferred resume, ranking candidates by `#{pane_activity}`.
+> That format does not exist, so every candidate tied and the lowest-numbered
+> pane always won — delivering resumes into *other agents'* prompts. Rank panes
+> by nothing. The caller's identity is the only vote.
+
+Two joins are easy to get wrong and are load-bearing: the roster's `pid` is the
+`bg-pty-host` process rather than the REPL, and its key does not reliably prefix
+the session id — so a background session is matched on `sessionId` alone. And
+because session records are keyed by pid, `procStart` must agree with
+`/proc/<pid>/stat` before a record is trusted.
+
+Callers with no proxy in front of them (a human at a plain shell) have no
+identity and are refused. `reflection_whoami` reports what the service resolved,
+which is the quickest way to see why.
+
+## Reaching a background session
+
+A pty has exactly one master. tmux owns it for terminal sessions; `claude
+bg-pty-host` owns it for background ones — so the two backends have disjoint
+reach by construction, and neither can substitute for the other.
+
+The daemon publishes each session's pty on a unix socket. Frames are a four-byte
+big-endian payload length, one type byte, then the payload — **the length
+excludes the type byte**, and assuming otherwise misparses everything after the
+first frame. Type `0x01` is a JSON control frame, `0x00` is raw pty bytes. Reading
+is unauthenticated; writing requires a control frame carrying the session's
+`ptyAuth` first, or input is silently dropped. Tokens and socket paths are minted
+per worker and do not survive a respawn, so both are read fresh per call.
+
+This is a private protocol read out of the CLI bundle, not a documented
+interface. The greeting is shape-checked on connect so a CLI update that moves it
+degrades to a clear "background reflection unavailable" rather than misfiring;
+the tmux backend is unaffected either way.
 
 ## Install
 
@@ -74,30 +112,66 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Two verbs, both on MCP + CLI + HTTP:
+Four verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
-- `reflection_send` — paste any text/slash command into a pane and submit it.
-  Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`; modal
-  commands (`/mcp`, `/status`, bare `/model`, …) are refused. A submitted slash
-  command is trailed by a `followup` prompt to keep the session alive.
+- `reflection_send` — type any text/slash command into your own prompt and submit
+  it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
+  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused. A submitted
+  slash command is trailed by a `followup` prompt to keep the session alive.
 - `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
+- `reflection_mode` — put your own session back into bypass-permissions mode.
+- `reflection_whoami` — report which session reflection resolves you to.
 
-Example (the normal case — no pane, no pid, nothing agent-specific to know):
+The normal call carries nothing agent-specific, on either hosting kind:
 
     reflection(verb="compact")
     reflection(verb="send", args={text: "/model opus"})
 
-Manual override (a human at a shell, or deliberately targeting another pane):
+The guard tables live in `guards.py` rather than in either backend, because what
+may be injected is a property of the agent TUI and not of the transport — it
+would be a nasty surprise if `/clear` were guarded on one path and not the other.
 
-    reflection(verb="compact", args={pane: "%32"})
+## Permission mode after a plan approval
 
-## Not tmux-hosted at all
+Approving a plan does not restore the mode a session was launched with. It
+restores the mode the session was in immediately *before* it entered plan mode,
+and an approval arriving from the phone carries a pre-plan mode of `auto` — so
+the session lands in auto, where a classifier gates every action.
 
-An agent with no tmux pane at all (an IDE extension session, a claude.ai web
-session, an SDK-driven session with no terminal) has nothing for `reflection` to
-inject into — there is currently no non-tmux mechanism to push input into a
-running Claude Code session from an external process. `reflection` returns a
-clear error in this case rather than guessing.
+No hook output can fix this: the hook contract exposes per-call allow/deny and
+permission *rules*, but the session mode is internal state with no external
+setter. `reflection_mode` therefore does what a human would — presses the
+Shift+Tab permission-mode cycle — driven from a `PostToolUse` hook matching
+`ExitPlanMode` (which fires only when the tool actually executed, so an approval
+and never a rejection).
+
+It never counts presses. The cycle is `default → acceptEdits → plan →
+bypassPermissions → auto → default`, `bypassPermissions` and `auto` appear only
+when available in that session, and overshooting parks the session in *plan
+mode*. So it reads the mode off the TUI footer, presses once, and reads again;
+if bypass is never offered it walks back to where it started and says so. A
+footer it cannot read means a modal is covering it — that refuses without
+pressing anything, for the same reason the modal guard exists.
+
+Footer strings are TUI copy and can move under a CLI update; they fail safe,
+since an unrecognised footer reads as unknown and unknown does not act.
+
+One bounded gap, background sessions only: `default` paints no indicator, and
+that backend reads an append-only byte stream rather than a rendered screen, so
+a session sitting in `default` can read back as whatever mode last painted one.
+Output is discarded before each keypress, which fixes every read during a walk;
+only the first read can still be stale, and the worst outcome is that such a
+session is left alone rather than switched. Nothing repaints the footer on demand
+— an empty bracketed paste and a cursor key were both tried — so closing it
+properly means rendering the stream through a terminal emulator. The tmux backend
+is unaffected, and that is the path a phone-approved plan actually takes.
+
+## Sessions reflection cannot reach
+
+A session with neither a tmux pane nor a daemon-hosted pty — an IDE extension
+session, a claude.ai web session, an SDK-driven session with no terminal — has no
+input channel an external process can write to. `reflection` returns a clear
+error rather than guessing.
 
 ## Iterating
 

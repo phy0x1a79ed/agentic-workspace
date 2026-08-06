@@ -425,30 +425,42 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0):
     return {"tools": [t.model_dump(by_alias=True) for t in tools]}
 
 
-_REFLECTION_FLAT_NAMES = {"reflection_send", "reflection_compact"}
+# The expanded surface names a verb `<domain>_<verb>`, and service names cannot
+# contain an underscore, so this prefix is exactly reflection's verbs — including
+# ones added later, which a hand-maintained list would silently miss.
+_REFLECTION_FLAT_PREFIX = "reflection_"
 
 
-def _default_reflection_pane(name: str, args: dict, pane_header: str | None) -> None:
-    """Fill in `pane` for a reflection call from the caller's own tmux pane.
+def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> None:
+    """Stamp the calling session's own pid onto a reflection call.
 
-    `awm-mcp` forwards the calling agent's `$TMUX_PANE` as `X-Awm-Tmux-Pane`
-    (absent outside tmux). Reflection is the only domain whose contract with
-    the model requires zero pid/pane awareness from the agent — normal calls
-    arrive with no `pane` at all, and this is the one place that fills it in
-    before the call ever reaches `catalog.dispatch`. An explicit `pane` the
-    caller already supplied is never overwritten (manual/override use, e.g. a
-    human at a shell with no `awm-mcp` proxy in front of it, keeps working).
+    `awm-mcp` runs as a stdio child of the session that calls it, so it forwards
+    its parent pid as `X-Awm-Session-Pid`; that identifies the caller regardless
+    of whether it is hosted in a tmux pane or as a background job. Reflection is
+    the only domain whose contract with the model requires zero awareness of any
+    of this — calls arrive carrying nothing about who is making them, and this is
+    the one place identity is attached before dispatch.
+
+    The value is always *overwritten*, and stripped entirely when no header is
+    present, so `_caller_pid` cannot be supplied from the model side. That is the
+    point: reflection injects into the caller's own prompt, so being able to name
+    a different target would turn it into a way to type into other agents.
     Scoped to reflection only — no other service's args are touched. Mutates
     ``args`` in place (mirrors how the flat/domain shapes already nest it).
     """
-    if not pane_header:
-        return
     if name == "reflection":
         inner = args.get("args")
-        if isinstance(inner, dict) and "pane" not in inner:
-            inner["pane"] = pane_header
-    elif name in _REFLECTION_FLAT_NAMES and "pane" not in args:
-        args["pane"] = pane_header
+        if not isinstance(inner, dict):
+            inner = {}
+            args["args"] = inner
+    elif name.startswith(_REFLECTION_FLAT_PREFIX):
+        inner = args
+    else:
+        return
+    if pid_header and pid_header.isdigit():
+        inner["_caller_pid"] = int(pid_header)
+    else:
+        inner.pop("_caller_pid", None)
 
 
 @app.post("/invoke")
@@ -463,7 +475,7 @@ async def invoke_tool(payload: dict, request: Request):
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
     as_ = request.headers.get("X-Awm-As")
-    _default_reflection_pane(name, args, request.headers.get("X-Awm-Tmux-Pane"))
+    _stamp_reflection_caller(name, args, request.headers.get("X-Awm-Session-Pid"))
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:

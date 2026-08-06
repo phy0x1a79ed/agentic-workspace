@@ -4,19 +4,21 @@ Boots the service as a gateway-registered process and runs the shared
 :class:`awm.gatewayclient.ServiceAdapter` loop (register → ready → serve →
 reconnect). The service owns no database, so there is no ``on_start``.
 
-Surface: both verbs project onto MCP + CLI + HTTP — the MCP surface is the whole
-point (an agent calls ``reflection(verb="compact", args={pane})`` on itself).
+Surface: every verb projects onto MCP + CLI + HTTP — the MCP surface is the whole
+point (an agent calls ``reflection(verb="compact")`` on itself, with no arguments).
 
-- ``send``    — paste any text/slash command into a tmux pane and submit it.
+- ``send``    — type any text/slash command into your own prompt and submit it.
 - ``compact`` — sugar for ``send`` with ``text="/compact"``.
+- ``mode``    — put your own session back into bypass-permissions mode.
 
-This process does not share the caller's environment, so the target pane can't
-be read directly here — but the calling agent never needs to know or pass it
-either. The per-session ``awm-mcp`` proxy sits inside the caller's own tmux pane
-and forwards ``$TMUX_PANE`` as a header; the gateway fills it in as the default
-``pane`` before the call reaches this service. ``pane`` remains an accepted
-argument only as a manual override (a human at a shell, or deliberately
-targeting another pane). See ``awm.reflection.tmux_inject`` for the mechanics.
+Reflection acts on the caller and on nobody else, so nothing here takes a target.
+This process does not share the caller's environment, but it does not need to:
+the per-session ``awm-mcp`` proxy is a stdio child of the session calling it, so
+the gateway stamps that proxy's parent pid onto the call as the caller's identity
+before it arrives. ``awm.reflection.session_target`` turns that pid into either a
+tmux pane or a background session's PTY socket, and the matching backend does the
+typing. A caller the gateway cannot identify is refused rather than served with
+somebody else's session.
 
 Run via ``run.sh`` (which the hub spawns and respawns):
     python -m awm.reflection.hub_adapter
@@ -30,7 +32,13 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.reflection import tmux_inject
+from awm.reflection import (
+    daemon_inject,
+    inject,
+    permission_mode,
+    session_target,
+    tmux_inject,
+)
 
 log = logging.getLogger("awm.reflection.hub_adapter")
 
@@ -41,26 +49,23 @@ API_MANIFEST: dict[str, Any] = {
             "name": "send",
             "tool": "reflection_send",
             "description": (
-                "Paste a command/text into a terminal agent's own tmux pane and "
-                "submit it (no Escape, so it QUEUES behind the current turn). Use "
-                "for self-directed slash commands like /compact or /model opus. A "
-                "submitted slash command is auto-trailed by a follow-up prompt "
+                "Type a command/text into YOUR OWN prompt and submit it (no Escape, "
+                "so it QUEUES behind the current turn). Use for self-directed slash "
+                "commands like /compact or /model opus. Works the same whether your "
+                "session runs in a terminal or as a background job — you do not need "
+                "to know which, and there is no way to aim this at another session. "
+                "A submitted slash command is auto-trailed by a follow-up prompt "
                 "(override with `followup`) so the session has a next turn once "
                 "the command finishes — a bare command would otherwise go idle. "
                 "The follow-up is DEFERRED (injected after the command completes, "
                 "never queued behind it) so it can't run ahead of the command. "
                 "Modal commands (/mcp, /status, /model with no arg, …) are refused "
-                "— they trap input and freeze the session. "
-                "Call with no `pane` — your own tmux pane is detected automatically."
+                "— they trap input and freeze the session."
             ),
             "timeout": 60,
             "params": [
                 {"name": "text", "type": "string", "required": True,
                  "description": "The line to inject, e.g. '/compact' or '/model opus'."},
-                {"name": "pane", "type": "string",
-                 "description": "Advanced override: a specific tmux pane id to "
-                                "target instead of your own (e.g. to drive a "
-                                "different session). Leave unset for the normal case."},
                 {"name": "enter", "type": "boolean",
                  "description": "Press Enter to submit after pasting (default true)."},
                 {"name": "followup", "type": "string",
@@ -71,37 +76,55 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Wait this many ms before injecting (default 0)."},
                 {"name": "confirm", "type": "boolean",
                  "description": "Required to send destructive commands (/clear, /quit, /exit)."},
-                {"name": "socket", "type": "string",
-                 "description": "tmux socket path (tmux -S); defaults to the standard per-uid socket."},
             ],
         },
         {
             "name": "compact",
             "tool": "reflection_compact",
             "description": (
-                "Compact your own conversation: injects /compact into your tmux "
-                "pane; it queues and runs the instant the current turn ends. A "
+                "Compact your own conversation: injects /compact into your own "
+                "prompt; it queues and runs the instant the current turn ends. A "
                 "resume prompt is then injected AFTER compaction completes (a "
                 "detached watcher waits for it — the resume is never queued behind "
                 "/compact, so it always lands on the freshly-compacted context) so "
                 "the session resumes instead of going idle. Returns immediately "
-                "with followup_deferred=true. Call with no arguments — your own "
-                "tmux pane is detected automatically."
+                "with followup_deferred=true. Call with no arguments; works the "
+                "same in a terminal session and in a background one."
             ),
             "timeout": 60,
             "params": [
-                {"name": "pane", "type": "string",
-                 "description": "Advanced override: a specific tmux pane id to "
-                                "target instead of your own. Leave unset for the "
-                                "normal case."},
                 {"name": "followup", "type": "string",
                  "description": "Prompt queued after /compact to resume work "
                                 "(default 'Continue with what you were doing.')."},
                 {"name": "delay_ms", "type": "integer",
                  "description": "Wait this many ms before injecting (default 0)."},
-                {"name": "socket", "type": "string",
-                 "description": "tmux socket path (tmux -S); defaults to the standard per-uid socket."},
             ],
+        },
+        {
+            "name": "mode",
+            "tool": "reflection_mode",
+            "description": (
+                "Put your own session back into bypass-permissions mode. Approving "
+                "a plan drops the session into whatever mode it was in before "
+                "planning — from a phone that is 'auto', where a classifier gates "
+                "every action. This cycles the permission mode (the Shift+Tab "
+                "cycle) until the session reads as bypass permissions, checking "
+                "after each step rather than assuming a starting point. Already in "
+                "bypass is a no-op. Acts only on your own session."
+            ),
+            "timeout": 60,
+            "params": [],
+        },
+        {
+            "name": "whoami",
+            "tool": "reflection_whoami",
+            "description": (
+                "Report which session reflection resolves you to, and how it would "
+                "reach you (a tmux pane, or a background session's PTY). Useful "
+                "when a reflection call refuses and you want to see why."
+            ),
+            "timeout": 30,
+            "params": [],
         },
     ],
     "emitters": [],
@@ -122,37 +145,68 @@ def _int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _caller_pid(args: dict) -> Any:
+    """The calling session's pid, stamped by the gateway from an observed header.
+
+    Never a model-supplied value: the gateway overwrites this key on every
+    reflection call and strips it when it has no header to stamp.
+    """
+    return args.get("_caller_pid")
+
+
+# Every failure mode that means "we could not do this to you" surfaces the same
+# way — a result with ok=false and a readable reason, not an exception. The
+# distinction the caller cares about is whether their command ran, not which
+# layer declined.
+_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
+             daemon_inject.DaemonError)
+
+
 def _handle_send(args: dict) -> dict:
     try:
-        return tmux_inject.send(
+        return inject.send(
             args["text"],
-            pane=args.get("pane"),
+            caller_pid=_caller_pid(args),
             enter=_bool(args.get("enter"), True),
             delay_ms=_int(args.get("delay_ms"), 0),
             confirm=_bool(args.get("confirm"), False),
             followup=args.get("followup"),
-            socket=args.get("socket"),
         )
-    except tmux_inject.TmuxError as exc:
+    except _FAILURES as exc:
         return {"ok": False, "error": str(exc)}
 
 
 def _handle_compact(args: dict) -> dict:
     try:
-        return tmux_inject.send(
+        return inject.send(
             "/compact",
-            pane=args.get("pane"),
+            caller_pid=_caller_pid(args),
             delay_ms=_int(args.get("delay_ms"), 0),
             followup=args.get("followup"),
-            socket=args.get("socket"),
         )
-    except tmux_inject.TmuxError as exc:
+    except _FAILURES as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _handle_mode(args: dict) -> dict:
+    try:
+        return permission_mode.ensure_bypass(caller_pid=_caller_pid(args))
+    except _FAILURES as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _handle_whoami(args: dict) -> dict:
+    try:
+        return {"ok": True, **inject.describe_caller(_caller_pid(args))}
+    except _FAILURES as exc:
         return {"ok": False, "error": str(exc)}
 
 
 HANDLERS = {
     "send": _handle_send,
     "compact": _handle_compact,
+    "mode": _handle_mode,
+    "whoami": _handle_whoami,
 }
 
 
