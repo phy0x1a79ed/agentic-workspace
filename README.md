@@ -392,7 +392,9 @@ Operational notes:
   legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
   globally.
 - **Off-site backup.** The `dvc` service mirrors the whole workspace to the
-  chinook Globus collection daily (`awm dvc mirror`). It runs with
+  chinook Globus collection daily (a timer running `awm-dvc-mirror`, the console
+  script that waits for the transfer; `awm dvc mirror` is the agent-facing verb
+  and returns without waiting). It runs with
   `delete_destination_extra`, so it is **disaster recovery, not an archive** — a
   local deletion propagates on the next run. DVC cache-checkouts are excluded as
   rebuildable, which is only true because `data/.dvc_cache` itself is *not*

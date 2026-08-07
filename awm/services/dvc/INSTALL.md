@@ -70,26 +70,41 @@ starts losing data silently. Keep the pairing intact.
 
 ## Scheduling the daily mirror
 
-A user systemd unit runs it. `ExecStart` should invoke the CLI, not a script
-path — the awm checkout it would point into is a deploy target that gets
-`reset --hard`, and a script committed there does not survive:
+A user systemd unit runs it, via the `awm-dvc-mirror` console script that
+`install.sh` puts in the env's `bin/`. Not a path into the awm checkout — that
+is a deploy target which gets `reset --hard`, and it has already eaten one
+backup script whole:
 
     # ~/.config/systemd/user/agentic-workspace-backup.service
-    ExecStart=/path/to/envs/awm/bin/awm dvc mirror --wait 86400
+    [Service]
+    Type=oneshot
+    Environment=AWM_WORKSPACE=/path/to/agentic_workspace
+    ExecStart=/path/to/envs/awm/bin/awm-dvc-mirror
 
-    systemctl --user enable --now agentic-workspace-backup.timer
+`awm-dvc-mirror` submits, then blocks to a terminal state and exits non-zero if
+the transfer did not succeed — which is the whole point of running it from a
+timer. **Do not use `awm dvc mirror` here.** The service verb returns a task id
+without waiting (correct for an agent, useless for a scheduled job: the unit
+would report success on a failed backup), and the generated service CLI
+dispatches through `/invoke` with a hard 600 s client ceiling, so no amount of
+waiting on that path can cover a multi-hour transfer.
 
 `mirror` refuses to stack a second destructive mirror on one still in flight
-(pass `force=true` to override), so a slow run overlapping the next timer tick is
-safe rather than a race.
+(`--force` overrides), so a slow run overlapping the next timer tick is safe
+rather than a race — and the console script treats that refusal as success, so
+it does not page anyone.
 
 ## Restoring a scope
 
     awm dvc status  --scope projects/fabfos/dev      # local only, no network
     awm dvc pull    --scope projects/fabfos/dev      # returns a task_id
-    awm dvc task    --task-id <id> --wait 3600
+    awm dvc task    --task-id <id>                   # poll; add --wait <s> to block
     # phase 'manifests' means call pull again — the leaves are now knowable
     cd projects/fabfos/dev && dvc checkout            # materialize into the worktree
+
+`--wait` on the CLI is bounded by that surface's 600 s `/invoke` ceiling
+regardless of what you pass; over MCP it is bounded by the verb's own 3600 s
+timeout. For anything longer, poll.
 
 `pull` is safe to repeat: each call re-resolves and moves whatever is still
 missing. `dvc checkout` is required, not optional — a pulled object is a fresh
