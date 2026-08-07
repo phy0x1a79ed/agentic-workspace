@@ -110,6 +110,15 @@ timeout. For anything longer, poll.
 missing. `dvc checkout` is required, not optional — a pulled object is a fresh
 inode that nothing has linked into the worktree yet.
 
+**One unrecoverable manifest stalls the whole scope.** The two phases are
+ordered, not merely preferred: while *any* `.dir` manifest is unresolved, `pull`
+fetches manifests and nothing else, because the leaves are not yet nameable. So
+a pin whose manifest is absent both locally and on chinook — a dangling pin the
+last mirror could not have captured — pins the scope in phase `manifests`
+forever, and the leaves it *could* restore never move. `status` shows this as a
+nonzero `unresolved_manifests` that a completed `pull` does not clear. Drop the
+dead pin, or source it from another node; there is no way to restore around it.
+
 ## Why chinook is not a DVC remote
 
 DVC's remote contract is per-file `exists` / `get_file` / `put_file`. A Globus
