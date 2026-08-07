@@ -234,6 +234,14 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 - PRs created from feature branches into `main` / `release` as appropriate.
 - See `.awm/skills/tools/git.md` for the worktree-bare flow in detail.
 
+**Never commit in the workspace root checkout.** On a node that deploys rather than
+authors awm, `<workspace>/` is a deploy *target*: it is fetched and `reset --hard` onto
+upstream `release`, so a commit made there is silently discarded by the next deploy — and
+a file left untracked there survives only until someone runs `git clean`. Nothing warns
+you; the work is simply gone. All work belongs in a scope worktree under `projects/`,
+pushed to a branch. Check with `git -C <workspace> reflog` before trusting a commit there:
+a `reset: moving to …` entry is the tell.
+
 ## CLI Quick Reference
 
 `awm <command> --help` for full options on any of these. The MCP tools above are usually more ergonomic from inside an agent — the CLI is for shell-level work.
