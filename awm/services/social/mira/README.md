@@ -12,7 +12,6 @@ no UI here.
 |---|---|---|
 | `awm-display` | `Xvfb :20` virtual framebuffer | — |
 | `awm-wm` | `openbox` — maps/focuses windows on `:20` | — |
-| `awm-slack` | Slack desktop (snap), CDP enabled | 9223 |
 | `awm-opera-teams` | Opera (snap): Teams web + Slack-web + SharePoint | 9224 |
 | `awm-mira-api` | the API daemon — REST + WS, drives both Opera tabs over CDP | **172.16.0.24:7822** |
 | `awm-vnc` | `x11vnc` for the one-time login (**on-demand**, not enabled) | 5920 |
@@ -21,7 +20,7 @@ All GUI units force the X11 Ozone backend (`--ozone-platform=x11`) and unset
 `WAYLAND_DISPLAY` — otherwise Chromium/Electron auto-detect the host's wayland
 socket and render to the real GNOME session instead of `:20`.
 
-`awm-slack-creds` (in `~/.local/bin`) attaches to a CDP port and prints
+`awm-slack-creds` (in `~/.local/bin`) attaches to the Opera CDP port and prints
 `{"token","cookie","team","url"}` — the live `xoxc-` session token + `d` cookie.
 The awm host calls it over ssh as the connector's `creds_cmd`; no secret hits disk.
 (This is the legacy Slack-only path; the API daemon below supersedes it and adds
@@ -135,7 +134,7 @@ From the awm host (where this repo lives):
     rsync -a awm/services/social/mira/ mira:awm-social-mira/
     ssh mira 'bash ~/awm-social-mira/install-mira.sh'
 
-One-time prereqs (already done on this mira): `sudo snap install slack opera`,
+One-time prereqs (already done on this mira): `sudo snap install opera`,
 `sudo apt-get install -y x11vnc openbox scrot python3.12-venv`,
 `loginctl enable-linger tony`.
 
@@ -154,15 +153,12 @@ restarts/reboots (`~/snap/slack`, `~/snap/opera`).
     # openbox has no taskbar: Alt+Tab cycles windows, right-click desktop = menu.
     ssh mira 'systemctl --user stop awm-vnc'     # when done
 
-Recommended path is the **Opera tabs** (both render on `:20` and are VNC-visible).
-The Slack *desktop* app is installed and on `:9223` too, but its headless OAuth
-deep-link is fiddlier. The extractor tries the desktop (`:9223`) first, then falls
-back to the app.slack.com tab in Opera (`:9224`) automatically — so logging in to
-just the Opera Slack tab is enough.
+Every session lives in **Opera tabs** — they render on `:20`, so they are all
+VNC-visible, and one login per tab is all that is needed.
 
 ## Verify
 
-    ssh mira ~/.local/bin/awm-slack-creds         # tries desktop, then Opera
+    ssh mira ~/.local/bin/awm-slack-creds         # the app.slack.com tab, :9224
 
 Should print one JSON line (`{"token","cookie","team","url"}`). Plug into
 `social.toml`:

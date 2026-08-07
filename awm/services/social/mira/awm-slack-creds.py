@@ -2,9 +2,9 @@
 """Extract a live Slack web-session credential pair from a running client on mira.
 
 The social service can't use a token scraped from a laptop browser — it dies when
-that browser session ends. Instead a Slack client runs permanently on the mira host
-(the desktop Electron app, or Slack-web in a browser) launched with
-``--remote-debugging-port``. This script attaches to that client over the Chrome
+that browser session ends. Instead Slack-web runs permanently on the mira host, in
+a dedicated browser launched with ``--remote-debugging-port``. This script
+attaches to that client over the Chrome
 DevTools Protocol and reads the two secrets the web API needs, *live*, from the
 running app:
 
@@ -98,9 +98,10 @@ def _token_for(local_config: dict, team_hint: str) -> tuple[str, str, str]:
     return candidates[0][1], candidates[0][0], candidates[0][2]
 
 
-# Default search order: the Slack desktop app first, then the app.slack.com tab in
-# the dedicated Opera — so one invocation works wherever the user happened to log in.
-_DEFAULT_CANDIDATES = ((9223, "slack"), (9224, "app.slack.com"))
+# The app.slack.com tab in the dedicated Opera (`awm-opera-teams`) is the one
+# logged-in Slack session on mira. Kept as a list so another client can be added
+# back without reshaping the caller.
+_DEFAULT_CANDIDATES = ((9224, "app.slack.com"),)
 
 
 def _extract(port: int, match: str, team: str) -> tuple[dict | None, str]:
@@ -137,7 +138,7 @@ def _extract(port: int, match: str, team: str) -> tuple[dict | None, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=None,
-                    help="CDP port; default tries 9223 (Slack desktop) then 9224 (Opera)")
+                    help="CDP port; defaults to 9224 (the app.slack.com tab in Opera)")
     ap.add_argument("--match", default=None,
                     help="substring to pick the client's page target")
     ap.add_argument("--team", default="hallam-lab",

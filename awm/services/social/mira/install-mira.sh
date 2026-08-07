@@ -6,7 +6,7 @@
 #   rsync -a awm/services/social/mira/ mira:awm-social-mira/
 #   ssh mira 'bash ~/awm-social-mira/install-mira.sh'
 #
-# Prereqs (installed once, by hand): snap packages `slack` + `opera`, apt
+# Prereqs (installed once, by hand): snap package `opera`, apt
 # `x11vnc openbox scrot`, and `loginctl enable-linger tony` so the user manager
 # runs headless.
 set -euo pipefail
@@ -39,11 +39,24 @@ chmod +x "$BIN/awm-slack-creds"
 
 echo "== systemd user units =="
 cp "$HERE"/systemd/*.service "$UNITS/"
+# Retired units. Copying is a glob, so a unit only stops being installed once it
+# is removed here as well as from systemd/ — otherwise the old file lingers and
+# an already-enabled copy keeps running. awm-slack: the Slack *desktop* app,
+# replaced by the app.slack.com tab in Opera. Electron's single-instance lock
+# made every launch exit 0 into the incumbent, which Restart=always then read as
+# a crash — 442k restarts before it was caught.
+for retired in awm-slack.service; do
+    if [ -e "$UNITS/$retired" ] || systemctl --user is-enabled "$retired" >/dev/null 2>&1; then
+        echo "   retiring $retired"
+        systemctl --user disable --now "$retired" >/dev/null 2>&1 || true
+        rm -f "$UNITS/$retired"
+        systemctl --user reset-failed "$retired" >/dev/null 2>&1 || true
+    fi
+done
 systemctl --user daemon-reload
 # Display + WM + clients run always; VNC is on-demand only (not enabled).
 systemctl --user enable --now awm-display.service
 systemctl --user enable --now awm-wm.service
-systemctl --user enable --now awm-slack.service
 systemctl --user enable --now awm-opera-teams.service
 # The API daemon needs the awm bearer token + TLS certs in ~/.awm; it serves on
 # 172.16.0.24:7822 over the awm-network. Started last (Opera must be up first).
