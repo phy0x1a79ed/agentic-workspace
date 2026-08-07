@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """dvc_chinook.py — hash-selective sync of DVC cache objects against chinook.
 
+SUPERSEDED by the `dvc` service (awm/services/dvc/) — `awm dvc status|resolve|
+pull|push`. Kept as the reference the port was verified against; it is not
+maintained. The service differs in two ways that matter: it submits and returns
+a task id instead of blocking for the length of a transfer, and it reads its
+endpoints from $AWM_DIR/dvc.toml rather than baking one node's UUIDs into the
+source. Do not extend this file.
+
 WHY THIS EXISTS
 backup_to_chinook.sh mirrors the whole workspace up to chinook nightly, which
 covers the *push* direction. It has no inverse: there is no way to bring back

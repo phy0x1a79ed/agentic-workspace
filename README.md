@@ -391,9 +391,17 @@ Operational notes:
   then the known mamba envs. When it isn't found every path degrades to the
   legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
   globally.
-- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
-  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
-  are content-addressed and never mutated in place.
+- **Off-site backup.** The `dvc` service mirrors the whole workspace to the
+  chinook Globus collection daily (`awm dvc mirror`). It runs with
+  `delete_destination_extra`, so it is **disaster recovery, not an archive** — a
+  local deletion propagates on the next run. DVC cache-checkouts are excluded as
+  rebuildable, which is only true because `data/.dvc_cache` itself is *not*
+  excluded; keep that pairing intact. `awm dvc pull --scope <s>` is the selective
+  inverse — it resolves one scope's `.dvc` pins to their objects and fetches back
+  only those, since the mirror alone offers no way to restore less than
+  everything. See `awm/services/dvc/INSTALL.md`.
+  (`awm/gateway/scripts/data-backup.sh` is the retired git-annex-era predecessor
+  and points at an endpoint that no longer exists.)
 
 ## Destructive operations
 

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-dvc"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM dvc service: DVC cache sync against the chinook Globus collection — the daily full-workspace mirror, plus a hash-selective per-scope pull/push inverse."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/dvc/.
+[tool.setuptools.packages.find]
+include = ["awm.dvc*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

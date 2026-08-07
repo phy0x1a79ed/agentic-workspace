@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 #
 # backup_to_chinook.sh — daily full-mirror backup of agentic_workspace to
-# chinook over Globus, run by the agentic-workspace-backup systemd unit.
+# chinook over Globus.
+#
+# SUPERSEDED by the `dvc` service: `awm dvc mirror`, which builds a verified-
+# identical transfer document (same 268 exclusions, same 950 items) and adds
+# what a script in this directory cannot have — config that is not hardcoded to
+# one node, and a refusal to stack a second destructive mirror on one still in
+# flight. Kept only until the agentic-workspace-backup systemd unit's ExecStart
+# is repointed at the CLI; see awm/services/dvc/INSTALL.md. Do not extend this.
 #
 # Mirrors $WS_ROOT to the destination collection with delete_destination_extra
 # (deleted locally => deleted remotely, so the remote doesn't accumulate), while
