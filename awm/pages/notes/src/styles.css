@@ -34,6 +34,7 @@
   --nt-input-bg: #fbfcf8;
   --nt-chip-bg: #eef1e8;
   --nt-code-bg: #e7ebdf;
+  --nt-paper: #ffffff;
   --nt-shadow: 0 1px 2px rgba(30, 40, 25, 0.06), 0 8px 24px rgba(30, 40, 25, 0.05);
 }
 
@@ -60,6 +61,7 @@
     --nt-input-bg: #10120b;
     --nt-chip-bg: #20241a;
     --nt-code-bg: #20241a;
+    --nt-paper: #1b1e15;
     --nt-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
   }
 }
@@ -76,6 +78,7 @@
   --nt-select: rgba(47,107,79,0.22);
   --nt-live: #c2562f; --nt-live-soft: rgba(194,86,47,0.14); --nt-danger: #b23b2e;
   --nt-input-bg: #fbfcf8; --nt-chip-bg: #eef1e8; --nt-code-bg: #e7ebdf;
+  --nt-paper: #ffffff;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -87,6 +90,7 @@
   --nt-select: rgba(116,192,150,0.30);
   --nt-live: #ec8a5e; --nt-live-soft: rgba(236,138,94,0.16); --nt-danger: #e2705a;
   --nt-input-bg: #10120b; --nt-chip-bg: #20241a; --nt-code-bg: #20241a;
+  --nt-paper: #1b1e15;
 }
 
 * { box-sizing: border-box; }
@@ -420,7 +424,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
 
 .preview {
   flex: 1 1 auto; overflow-y: auto;
-  background: var(--nt-surface);
+  background: var(--nt-paper);
   padding: 1.7rem clamp(1.1rem, 6vw, 4rem);
 }
 .preview-empty { color: var(--nt-faint); font-style: italic; font-family: var(--nt-sans); }
