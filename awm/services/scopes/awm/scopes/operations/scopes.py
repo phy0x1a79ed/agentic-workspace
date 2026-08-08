@@ -172,8 +172,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
         ],
     },
     {
-        "name": "data_gc",
-        "tool": "data_gc",
+        "name": "scope_data_gc",
+        "tool": "scope_data_gc",
         "description": (
             "Reclaim shared-cache space by deleting objects no listed project "
             "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
@@ -313,7 +313,7 @@ SCOPE_HANDLERS = {
     "scope_repair": _handle_scope_repair,
     "scope_data_status": _handle_scope_data_status,
     "scope_data_mount": _handle_scope_data_mount,
-    "data_gc": _handle_data_gc,
+    "scope_data_gc": _handle_data_gc,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,
