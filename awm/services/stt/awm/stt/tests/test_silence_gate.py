@@ -41,7 +41,7 @@ def _fake_segments(text):
     """A stand-in for ``_transcribe_segments``: one segment carrying ``text``
     (or no segments when ``text`` is empty)."""
 
-    def f(pcm_bytes, vad_filter=False):
+    def f(pcm_bytes, vad_filter=False, initial_prompt=None):
         return [(text, 0.0, 1.0)] if text else []
 
     return f
@@ -141,6 +141,86 @@ async def test_no_metrics_when_off(monkeypatch):
         monkeypatch, cut_text="add a login button", committed_prefix="please",
     )
     assert _types(sent, "metric") == []
+
+
+# ---- no-speech hallucination gate ----
+
+def test_hallucination_gate():
+    # Pure punctuation / ellipsis is always a hallucination, regardless of the
+    # model's no_speech_prob.
+    assert reg._is_hallucination("...", 0.0)
+    assert reg._is_hallucination("…", 0.0)
+    assert reg._is_hallucination(".", 0.0)
+    assert reg._is_hallucination("", 0.0)
+    # Stock subtitle phrases count ONLY when whisper is also unsure it's speech.
+    assert reg._is_hallucination("Thank you.", 0.9)
+    assert reg._is_hallucination("Thanks for watching", 0.8)
+    assert not reg._is_hallucination("Thank you.", 0.1)  # confidently spoken → keep
+    # Real content is never dropped.
+    assert not reg._is_hallucination("aggregate resolving", 0.9)
+    assert not reg._is_hallucination("the first component", 0.0)
+
+
+# ---- dictation mode: one commit per window, no composer/submit ----
+
+async def test_dictation_cut_emits_single_commit(monkeypatch):
+    # Dictation mode: a silence-cut emits exactly ONE `commit` frame carrying the
+    # whole window (committed prefix + re-passed tail), and NO composer/submit —
+    # this is what stops the duplication the cumulative composer path caused.
+    monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments("aggregate resolving"))
+    agent = reg.SttAgent("u", Path("/tmp"))
+    agent.continuous = True
+    agent.dictation = True
+    agent.convo = None  # dictation never builds a convo accumulator
+    sent: list[dict] = []
+
+    async def cap(payload):
+        sent.append(payload)
+
+    agent.broadcast_json = cap  # type: ignore[assignment]
+    agent.committed_text = "the first component is"
+
+    joined = b"\x00" * 64000
+    await agent._silence_cut(joined, joined, "the first component is")
+    await asyncio.sleep(0.2)  # let the dispatched re-pass finish
+
+    commits = _types(sent, "commit")
+    assert len(commits) == 1, f"expected exactly one commit, got {commits}"
+    assert commits[0]["text"] == "the first component is aggregate resolving"
+    # No convo/composer/submit machinery in dictation mode.
+    assert not _types(sent, "composer")
+    assert not _types(sent, "submit")
+    assert not _types(sent, "stt_result")
+    # Window was reset for the next piece.
+    assert agent.committed_bytes == 64000
+    assert agent.committed_text == ""
+
+
+async def test_dictation_end_flushes_final_window(monkeypatch):
+    # Stopping dictation flushes the final in-progress window (spoken with no
+    # trailing pause, so no silence-cut fired) as one last commit — no lost words.
+    monkeypatch.setattr(reg, "_transcribe_segments", _fake_segments("final words"))
+    agent = reg.SttAgent("u", Path("/tmp"))
+    ws = object()
+    agent.recording_client = ws
+    agent.continuous = True
+    agent.dictation = True
+    agent.convo = None
+    agent.committed_text = "some"
+    agent.committed_bytes = 0
+    agent.pcm_chunks = [b"\x00" * 32000]  # 1s uncommitted tail
+    sent: list[dict] = []
+
+    async def cap(payload):
+        sent.append(payload)
+
+    agent.broadcast_json = cap  # type: ignore[assignment]
+
+    await agent.handle_end(ws)
+    commits = _types(sent, "commit")
+    assert len(commits) == 1
+    assert commits[0]["text"] == "some final words"
+    assert agent.dictation is False and agent.continuous is False
 
 
 # ---- the loop-owned auto-submit (the guarantee) ----
