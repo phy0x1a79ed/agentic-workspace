@@ -76,12 +76,19 @@ DATA_SUBDIR = "data"
 # to hold the same file store it once.
 CACHE_DIRNAME = ".dvc_cache"
 
-# Never hashed into the cache, therefore never carried off-site by the nightly
-# mirror. This is the load-bearing exclusion list: anything that reaches the
-# cache is in the backup, and a secret added once cannot be unadded.
+# Default exclusions, written once at conversion. The structural entries earn
+# their place -- `**/.git/` stops a vendored checkout becoming thousands of
+# objects, `.awm/` keeps scope metadata out of the cache. Everything reaching
+# the cache is in the sync, and the sync is append-only, so an object added
+# once cannot be unadded.
 _DVCIGNORE = """\
-# AWM-managed. Paths here are never hashed into the DVC cache, so they never
-# reach the shared store and never leave this machine via the nightly mirror.
+# AWM-managed defaults. Paths here are never hashed into the cache, and an
+# exclusion has to be in place BEFORE the first `dvc add` -- content added once
+# is in the shared cache, and the cache is what the nightly sync carries.
+#
+# The secrets block is a convenience, not a control: a scope that chooses to
+# track a secret gets it cached and synced like anything else. What a scope
+# tracks is the scope's decision.
 
 # --- secrets ---------------------------------------------------------------
 secrets/
