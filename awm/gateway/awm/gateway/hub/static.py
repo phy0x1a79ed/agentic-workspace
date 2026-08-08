@@ -145,12 +145,10 @@ def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
     here, so the mask can't be bypassed by requesting the link's (unmasked) name.
 
     Semantics are gitignore's: a leading ``!`` negates (re-exposes), and **the
-    last matching glob wins**. That gives a broad deny an escape hatch — the
-    canonical case is a content-addressed store living inside an otherwise
-    masked directory (``**/.git/**`` then ``!**/.git/annex/objects/**``, so a
-    git-annex symlink resolves to servable bytes) — while any secret-shaped glob
-    listed *after* the negation still re-masks. Order is therefore meaningful;
-    keep secret patterns last."""
+    last matching glob wins**. That gives a broad deny an escape hatch for a
+    servable subtree inside an otherwise masked directory, while any
+    secret-shaped glob listed *after* the negation still re-masks. Order is
+    therefore meaningful; keep secret patterns last."""
     if not deny:
         return False
     try:

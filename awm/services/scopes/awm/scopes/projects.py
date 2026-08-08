@@ -116,7 +116,14 @@ def create_project(req: ProjectCreateRequest) -> ProjectCreateResponse:
         mode = "fork"
 
     if mode == "fresh":
-        _run(["git", "init", "--bare", str(bare_dir)], check=True)
+        # `-b main` is load-bearing, not cosmetic. Without it `git init --bare`
+        # takes git's own default (still `master` where init.defaultBranch is
+        # unset), while the seed commit below is pushed to `main` — leaving HEAD
+        # a symref to a branch that does not exist. `detect_default_branch` then
+        # reports `master`, `worktree add` dies with `Not a valid object name:
+        # 'HEAD'`, and project creation fails on a blank repo. It also breaks
+        # `dvc import`, which resolves a source repo through `origin/HEAD`.
+        _run(["git", "init", "--bare", "-b", "main", str(bare_dir)], check=True)
 
         if shutil.which("gh"):
             _run(["gh", "repo", "create", f"{GITHUB_USER}/{req.name}", "--private"],
