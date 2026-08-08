@@ -35,7 +35,7 @@ from awm.config import (
     VAGRANT_PROJECT,
 )
 from awm.scopes.git_utils import run_git, detect_default_branch
-from awm.scopes import data_annex
+from awm.scopes import data_dvc
 from awm.scopes.dao import ScopesDAO
 from awm.scopes.identity import (
     agent_id_for_scope,
@@ -70,31 +70,42 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
                       force: bool = False) -> dict:
     """Remove a scope's worktree and branch.
 
-    This is the irreversible direction, and the only place in the service that
-    can destroy data that exists nowhere else. Before anything is deleted the
-    scope's data clone is published to the canonical repo and checked; if
-    content would still be lost the teardown is **refused** rather than
-    silently completing. ``force=True`` overrides the refusal.
+    Deleting a worktree unlinks names, never bytes: a scope's data is hardlinks
+    into the shared cache and its pins are commits on a branch, so the cache
+    object survives on its own link.
 
-    Note this also runs as a *pre-clean* from :func:`create_scope` over a stale
-    directory — so creation can now refuse where it previously steamrolled. That
-    is the intended trade: a leftover directory holding the only copy of
-    something is exactly the case worth stopping for.
+    What does not survive is work that was never committed — and that is now the
+    *same* hazard for data as for code. An un-added chunk or an un-committed pin
+    dies with the worktree exactly as un-committed source does, so the guard is
+    simply ``git status``, which covers both at once. That is the whole point of
+    collapsing them onto one lever. ``force=True`` overrides it.
+
+    :func:`chmod_dirs_writable` is the fallback after ``worktree remove`` fails:
+    ``rmtree`` needs write permission on containing directories. It deliberately
+    never touches *files* — a materialised file shares its inode with the shared
+    cache object, so ``chmod +w`` on it would unprotect that object for every
+    other scope and project on the machine.
     """
-    guard = data_annex.prepare_teardown(
-        worktree_dir, project=project, scope=scope, force=force,
-    )
-    if guard.get("result") == "refused":
-        raise RuntimeError(
-            f"Refusing to remove {worktree_dir}: {guard.get('detail')}"
-        )
+    guard: dict = {"result": "ok", "path": str(worktree_dir)}
+    if worktree_dir.is_dir():
+        st = run_git(["git", "-C", str(worktree_dir), "status", "--porcelain"])
+        pending = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
+        if pending:
+            guard = {"result": "dirty", "path": str(worktree_dir),
+                     "pending": len(pending), "sample": pending[:5]}
+            if not force:
+                raise RuntimeError(
+                    f"Refusing to remove {worktree_dir}: {len(pending)} uncommitted "
+                    f"change(s) would be lost (e.g. {', '.join(p.strip() for p in pending[:3])}). "
+                    f"Commit them — `dvc add` any new data chunk first — or pass force=true."
+                )
+            guard["detail"] = f"forced: {len(pending)} uncommitted change(s) discarded"
 
     r = run_git(["git", "-C", str(bare_dir), "worktree", "remove", str(worktree_dir), "--force"])
     if r.returncode != 0 and worktree_dir.exists():
-        # git-annex marks object files and their parent dirs read-only, so an
-        # un-chmod'ed rmtree dies partway through and leaves a stub whose name
-        # then collides with the next `worktree add`.
-        data_annex.chmod_writable(worktree_dir)
+        # Directories only — see chmod_dirs_writable. Unlinking a hardlink
+        # cannot harm the cache object; only `dvc gc` removes those.
+        data_dvc.chmod_dirs_writable(worktree_dir)
         shutil.rmtree(worktree_dir, ignore_errors=True)
     meta_dir = bare_dir / "worktrees" / worktree_dir.name
     if meta_dir.exists():
@@ -116,25 +127,32 @@ def _default_context(project: str, scope: str) -> str:
         f"2. Read `.awm/history.md` for session history, open issues, and resolved items\n\n"
         f"## Work\n\n"
         f"- Code is in the current directory (this IS the git worktree)\n"
-        f"- Project data is at `.awm/data/`\n"
+        f"- Project data is at `data/` (`.awm/data` is a symlink to it)\n"
         f"- Reference protocols (git, mamba, etc.) are on disk at `.awm/skills/` if you need them\n"
         f"- Do NOT edit `.awm/history.md` — use MCP tools\n\n"
         f"## Data\n\n"
-        f"`.awm/data/` may be a **git-annex clone on your own data branch** "
-        f"(`scope_data_status project={project} scope={scope}` says which). When it is:\n\n"
-        f"- Your writes are **yours only** until you promote them — a sibling scope "
-        f"cannot see or clobber them.\n"
-        f"- Large files already in the repo are **read-only symlinks** into a content "
-        f"store. To change one, write a new file rather than opening the existing "
-        f"path for writing (or `git annex unlock` it first).\n"
-        f"- Write outputs with ordinary tools, then snapshot: "
-        f"`scope_data_snapshot project={project} scope={scope}` — bulk goes to the "
-        f"content store, small text to ordinary git.\n"
-        f"- Publish to the project when the work is good: "
-        f"`scope_data_promote project={project} scope={scope}`. It is all-or-nothing; "
-        f"a conflict with another scope is reported, never silently merged.\n"
-        f"- If it is still the legacy shared directory, nothing above applies — it "
-        f"behaves exactly as it always has.\n\n"
+        f"Data may be **versioned with DVC** "
+        f"(`scope_data_status project={project} scope={scope}` says which). When it is, "
+        f"the thing to internalise is that **there is only one lever**: a commit records "
+        f"your code and the exact data it was built against, together.\n\n"
+        f"- `data/<chunk>` holds the files; `data/<chunk>.dvc` is a ~110-byte **pin** "
+        f"tracked in this repo. The bytes live once in a workspace-shared cache.\n"
+        f"- To save data you wrote: `dvc add data/<chunk>`, then commit the changed "
+        f"`.dvc` pin **alongside your code**. That is the whole snapshot-and-publish "
+        f"story — there is no separate data verb, no data branch, no promote.\n"
+        f"- To take a sibling's data: merge their branch. The pin comes with it and "
+        f"the files are checked out for you.\n"
+        f"- Materialised files are **read-only** — they are hardlinks to the shared "
+        f"cache, so editing in place would corrupt it for every other scope. Write a "
+        f"new file, or `dvc unprotect <path>` first.\n"
+        f"- **Delete superseded data.** That is the point of versioning: an old version "
+        f"stays reachable from the commit that pinned it, so you never need two live "
+        f"copies to answer 'which one is current?'.\n"
+        f"- You need not hold every chunk on disk — `scope_data_mount` picks which ones "
+        f"materialise here. Unmounted chunks stay pinned and backed up regardless.\n"
+        f"- Never run a bare `dvc gc`: the cache is shared by every project.\n"
+        f"- If data is still the legacy shared directory, none of the above applies — "
+        f"it behaves exactly as it always has.\n\n"
         f"## Debrief\n\n"
         f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
         f"the end-of-session protocol that commits, journals, and refreshes.\n"
@@ -495,45 +513,52 @@ def _heal_worktree(worktree_dir: Path, *, project: str, scope: str, dry_run: boo
             actions["opencode_config"] = "would-rewrite"
 
     # Data view. Idempotent by construction, which is what makes heal the
-    # migration path for the scopes that pre-date the annex layer: a scope
-    # still on the legacy shared symlink gets converted the first time its
-    # project's canonical data dir becomes an annex repo.
+    # migration path for scopes that pre-date this layer: one still on the
+    # legacy shared symlink is brought to whatever its checkout now says the
+    # first time heal runs over it.
     actions["data"] = _heal_data(awm_dir, project=project, scope=scope, dry_run=dry_run)
 
     return actions
 
 
+# `.awm/data` shapes heal has to recognise. Named explicitly rather than guessed
+# at with a chain of `if exists`, because the transition heal reports is only
+# meaningful if the starting point was identified rather than assumed.
+def _classify_data_path(dest: Path) -> str:
+    if dest.is_symlink():
+        target = os.readlink(str(dest))
+        return "compat-symlink" if target in ("../data", "..\\data") else "legacy-symlink"
+    if not dest.exists():
+        return "absent"
+    return "plain-dir"
+
+
 def _heal_data(awm_dir: Path, *, project: str, scope: str, dry_run: bool) -> str | None:
-    """Bring ``.awm/data`` to whatever this project's data mode currently is."""
+    """Bring ``.awm/data`` to whatever this scope's checkout now implies.
+
+    Three shapes are live at once — a legacy shared symlink, the compat symlink,
+    and nothing at all — so this reports the transition it made rather than
+    assuming a starting point.
+    """
     dest = awm_dir / "data"
-    # A `.awm/data -> ../data` symlink means this scope is on the DVC data
-    # layer, which this annex layer does not manage. Checked here as well as in
-    # provision_scope_data so the DRY RUN does not advertise a conversion that
-    # the real run correctly refuses -- a dry run that misreports is worse than
-    # no dry run.
-    if dest.is_symlink() and os.readlink(str(dest)) in ("../data", "..\\data"):
-        return None
-    wants_annex = data_annex.is_annex_project(project) and data_annex.annex_available()
-    is_clone = data_annex.is_annex_repo(dest) if dest.exists() and not dest.is_symlink() else False
+    before = _classify_data_path(dest)
+    wants_dvc = data_dvc.is_dvc_project(awm_dir.parent)
 
     if dry_run:
-        if wants_annex and not is_clone:
-            return "would-clone" if not dest.exists() else "would-convert-symlink"
-        if not wants_annex and not dest.exists():
+        if wants_dvc and before != "compat-symlink":
+            return f"would-convert:{before}->dvc"
+        if not wants_dvc and before == "absent":
             return "would-symlink"
         return None
 
-    before = (dest.is_symlink(), is_clone, dest.exists())
-    report = data_annex.provision_scope_data(project, scope, awm_dir)
+    report = data_dvc.provision_scope_data(project, scope, awm_dir)
     mode = report.get("mode")
     if mode == "unknown":
         return f"error:{report.get('detail', '')[:120]}"
-    after_clone = mode == "annex"
-    if after_clone and not before[1]:
-        return "cloned" if not before[0] else "converted-from-symlink"
-    if mode == "symlink" and not before[2]:
-        return "symlinked"
-    return None
+    after = _classify_data_path(dest)
+    if after == before:
+        return None
+    return f"{before}->{after}"
 
 
 def _resolve_worktree(project: str, scope: str, recorded: str | None) -> Path:
@@ -658,10 +683,12 @@ def _scaffold_awm_dir(
     awm_dir.mkdir(parents=True, exist_ok=True)
     _ensure_awm_gitignored(repo_dir)
 
-    # `.awm/data` is either a git-annex clone (isolated + versioned) or the
-    # legacy shared symlink — decided by whether this project's canonical data
-    # dir has been converted. Same path either way, so no caller changes.
-    data_report = data_annex.provision_scope_data(project, scope, awm_dir)
+    # The scope's data view. For a DVC-backed project this is wiring plus a
+    # checkout of what the branch already pins — the base branch threaded into
+    # `worktree add` above carries the data with it, which is the bug that
+    # started this whole exercise, fixed by construction rather than by a
+    # second code path. Unconverted projects keep the legacy shared symlink.
+    data_report = data_dvc.provision_scope_data(project, scope, awm_dir)
     if data_report.get("mode") == "unknown":
         log.warning("scope %s/%s: %s", project, scope, data_report.get("detail"))
 
@@ -1006,22 +1033,17 @@ def _summarize(results: list[dict]) -> dict:
     return summary
 
 
-def _peripheral_worktrees(project: str, peripherals: list[str]) -> list[tuple[str, Path]]:
-    return [(p, _peripheral_record(project, p)["worktree"]) for p in peripherals]
-
-
 def gather_scope(project: str, hub: str, peripherals: list[str],
-                 strategy: str = "merge", data: bool = False) -> ScatterGatherResponse:
+                 strategy: str = "merge") -> ScatterGatherResponse:
     """Fan-in: merge each peripheral's branch into the hub's branch.
 
     Runs in the hub's worktree. The hub worktree must be clean and on the hub
     branch (the whole fan-in needs a clean hub). A per-peripheral conflict is
     aborted and reported; the batch continues. Local-only — no push.
 
-    With ``data=True`` the same fan-in runs over each scope's ``.awm/data``
-    annex clone. That leg **cannot** stay local-only: peripheral clones have
-    their own object stores, so each one's content and location log are
-    published to the canonical data repo before the hub merges from it.
+    There is no separate data leg, and its absence is the point: a peripheral's
+    data pins ride its code branch, so **merging the branch merges the data**
+    and the post-merge hook materialises it. One batch, still local-only.
     """
     validate_name(project, kind="project name")
     validate_name(hub, kind="scope name")
@@ -1070,32 +1092,24 @@ def gather_scope(project: str, hub: str, peripherals: list[str],
             f"Gather {p_branch} into {hub_branch}",
         ))
 
-    data_results = None
-    if data:
-        data_results = data_annex.gather_data(
-            project, hub, hub_worktree, _peripheral_worktrees(project, peripherals),
-        )
-
     return ScatterGatherResponse(
         project=project, hub=hub, hub_branch=hub_branch, direction="gather",
         results=results, summary=_summarize(results),
-        data_results=data_results,
-        data_summary=_summarize(data_results) if data_results is not None else None,
+        data_results=None, data_summary=None,
     )
 
 
 def scatter_scope(project: str, hub: str, peripherals: list[str],
-                  strategy: str = "merge", data: bool = False) -> ScatterGatherResponse:
+                  strategy: str = "merge") -> ScatterGatherResponse:
     """Fan-out: merge the hub's branch into each peripheral's branch.
 
     Each merge runs in that peripheral's own worktree. A dirty or off-branch
     peripheral is skipped (one dirty sibling must not abort the batch); a
     conflict is aborted and reported. Local-only — no push.
 
-    With ``data=True`` the same fan-out runs over the ``.awm/data`` annex
-    clones. The hub publishes its data branch, location log and content to the
-    canonical repo first, since each peripheral clone has its own object store
-    and cannot read the hub's.
+    As with :func:`gather_scope` there is no separate data leg any more: the
+    hub's data pins ride its branch, so the same merge carries them, and each
+    peripheral's post-merge hook materialises what it mounts.
     """
     validate_name(project, kind="project name")
     validate_name(hub, kind="scope name")
@@ -1139,23 +1153,15 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
             f"Scatter {hub_branch} into {p_branch}",
         ))
 
-    data_results = None
-    if data:
-        data_results = data_annex.scatter_data(
-            project, hub, hub_rec["worktree"],
-            _peripheral_worktrees(project, peripherals),
-        )
-
     return ScatterGatherResponse(
         project=project, hub=hub, hub_branch=hub_branch, direction="scatter",
         results=results, summary=_summarize(results),
-        data_results=data_results,
-        data_summary=_summarize(data_results) if data_results is not None else None,
+        data_results=None, data_summary=None,
     )
 
 
 # ---------------------------------------------------------------------------
-# Data (git-annex) surface
+# Data surface
 # ---------------------------------------------------------------------------
 
 def _scope_worktree(project: str, scope: str) -> Path:
@@ -1163,61 +1169,60 @@ def _scope_worktree(project: str, scope: str) -> Path:
     return _resolve_worktree(project, scope, rec["worktree"] if rec else None)
 
 
-def data_snapshot(project: str, scope: str, message: str | None = None) -> dict:
-    """Commit whatever the scope has written under ``.awm/data``."""
+def data_status(project: str, scope: str) -> dict:
+    """Report a scope's data view: mode, the commit that pins it, and drift.
+
+    This is the only surviving data verb, and the shrinkage is the result rather
+    than a casualty of it. ``data_snapshot`` was ``git commit`` on a second
+    history; ``data_promote`` was a push into a canonical data branch;
+    ``project_data_init`` converted a directory into a repo. With the pin living
+    in the code repo, the first two *are* ``git commit`` and ``git merge``, and
+    the third is ``dvc add`` on whatever you want tracked. Keeping thin wrappers
+    around git would only re-create the two-lever confusion this replaced.
+    """
+    validate_name(project, kind="project name")
+    validate_name(scope, kind="scope name")
+    return data_dvc.data_status(project, scope, _scope_worktree(project, scope))
+
+
+def data_gc(projects: list[str], dry_run: bool = True,
+            keep: str = "all-commits") -> dict:
+    """Reclaim cache objects no listed project references. Dry by default.
+
+    Deliberately takes a *list* of projects and has no "just this one" mode: the
+    cache is shared workspace-wide, so collecting against an incomplete set is
+    how you delete another project's data. See ``data_dvc.collect_garbage``.
+    """
+    repos: list[Path] = []
+    for proj in projects:
+        validate_name(proj, kind="project name")
+        for wt in sorted((PROJECTS_DIR / proj).glob("*")):
+            if wt.is_dir() and data_dvc.is_dvc_repo(wt):
+                repos.append(wt)
+    return data_dvc.collect_garbage(repos, dry_run=dry_run, keep=keep)
+
+
+def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dict:
+    """Choose which chunks this scope materialises on disk.
+
+    Mounting is deliberately **not** a property of the commit. Every chunk the
+    branch pins stays pinned, hashed and backed up regardless of this setting —
+    the list only decides what costs inodes and checkout time *here*. That is
+    what lets a figure scope pin a 30 GB cold archive it never reads while a
+    sibling working on it has it materialised, from the same commit.
+
+    Passing no chunks clears the list, which means "materialise everything".
+    """
     validate_name(project, kind="project name")
     validate_name(scope, kind="scope name")
     worktree = _scope_worktree(project, scope)
-    clone = data_annex.scope_clone(project, scope, worktree)
-    if clone is None:
-        return {"project": project, "scope": scope, "result": "skipped",
-                "detail": f"{worktree}/.awm/data is not an annex clone"}
-    out = data_annex.snapshot_data(
-        clone, message or f"awm: {project}/{scope} data snapshot")
-    return {"project": project, "scope": scope, **out}
-
-
-def data_promote(project: str, scope: str, message: str | None = None) -> dict:
-    """Promote a scope's data branch into the project's canonical data branch."""
-    validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
-    return data_annex.promote_data(
-        project, scope, _scope_worktree(project, scope), message=message)
-
-
-def data_status(project: str, scope: str) -> dict:
-    """Report a scope's data view: mode, branch, revision, drift, dirt."""
-    validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
-    return data_annex.data_status(project, scope, _scope_worktree(project, scope))
-
-
-def project_data_init(project: str, dry_run: bool = False) -> dict:
-    """Convert ``data/<project>`` from a naked directory into a git-annex repo.
-
-    This is the per-project opt-in: once it succeeds, every scope created or
-    healed afterwards gets an isolated clone instead of the shared symlink.
-
-    Refuses while any scope of the project is active, because ``git annex add``
-    moves file content into the object store and leaves a read-only symlink
-    behind — which breaks any job holding those paths open.
-    """
-    validate_name(project, kind="project name")
-    if not dry_run:
-        dao = ScopesDAO()
-        busy = dao.query_all(
-            "SELECT a.scope FROM agents a JOIN projects p ON p.id = a.project_id "
-            "WHERE p.name=? AND a.status='active'",
-            (project,),
-        )
-        if busy:
-            names = ", ".join(r["scope"] for r in busy)
-            raise RuntimeError(
-                f"Refusing to convert {project} data while {len(busy)} scope(s) are "
-                f"active ({names}). Annexing rewrites the tree into read-only "
-                f"symlinks and would break a running job. Retire them or wait."
-            )
-    return data_annex.init_project_data(project, dry_run=dry_run)
+    awm_dir = worktree / ".awm"
+    if chunks:
+        data_dvc.write_mounts(awm_dir, chunks)
+    else:
+        (awm_dir / data_dvc.MOUNTS_FILE).unlink(missing_ok=True)
+    report = data_dvc.provision_scope_data(project, scope, awm_dir)
+    return {"project": project, "scope": scope, **report}
 
 
 def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionResponse:
