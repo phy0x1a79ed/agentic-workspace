@@ -30,6 +30,12 @@ if [ -z "$GBIN" ]; then
 fi
 
 PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
+
+# The nightly used to be `awm-dvc-mirror`, and a systemd unit still pointing at
+# that name must fail loudly rather than keep running a mirror that no longer
+# exists. pip removes the old script on reinstall, but an env installed from an
+# older tree can carry it, so make the removal explicit.
+rm -f "$(dirname "$PYBIN")/awm-dvc-mirror"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\nAWM_DVC_GLOBUS_BIN=%s\n' \
     "$PYBIN" "$(dirname "$PYBIN")" "$GBIN" > ./.runtime-env
 

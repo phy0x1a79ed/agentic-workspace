@@ -13,16 +13,16 @@ another's backup tree. Shape::
     prefix          = "/Workspace_backups/Tony_Liu/altair"    # this node's tree on chinook
     globus_bin      = "/home/tony/lib/miniforge3/envs/globus/bin/globus"
 
-``prefix`` is load-bearing in both directions: ``mirror`` writes the workspace
-there, and ``pull`` reads objects back from exactly that tree. They must name
-the same place or a restore silently finds nothing — so they read one value,
-rather than the two hand-synced copies the predecessor scripts carried.
+``prefix`` is load-bearing in both directions: ``sync`` writes the cache there,
+and ``pull`` reads objects back from exactly that tree. They must name the same
+place or a restore silently finds nothing — so they read one value, rather than
+the two hand-synced copies the predecessor scripts carried.
 
 Env vars of the same names (``AWM_DVC_LOCAL_ENDPOINT``, ``AWM_DVC_REMOTE_ENDPOINT``,
 ``AWM_DVC_PREFIX``, ``AWM_DVC_GLOBUS_BIN``) override the file, so a round trip can
-be exercised against a scratch prefix without touching the mirrored path — which
-matters more than usual here, because the mirror runs with
-``delete_destination_extra``.
+be exercised against a scratch prefix. Make any such prefix a *sibling* of the
+real one, never a child: nothing prunes chinook any more, so scratch writes
+under the live tree stay there forever.
 """
 
 from __future__ import annotations
@@ -38,6 +38,14 @@ from awm import config
 CONFIG_FILE: Path = config.AWM_DIR / "dvc.toml"
 
 WORKSPACE_ROOT: Path = config.WORKSPACE_ROOT
+
+# The one place bytes live on this machine. Every project's `.dvc/config.local`
+# is pointed here by the scopes service, so the same content referenced by five
+# projects is stored once — and syncing this one directory therefore covers
+# every project's data. Kept as a constant rather than a config field: it is a
+# workspace layout fact, identical on every node, and a per-node override would
+# just be a way for `sync` and `pull` to disagree about where the cache is.
+SHARED_CACHE: Path = WORKSPACE_ROOT / "data" / ".dvc_cache"
 
 
 class DvcConfigError(Exception):

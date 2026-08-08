@@ -1,9 +1,9 @@
 """Hash-selective pull/push of DVC cache objects against chinook.
 
-The nightly ``mirror`` covers the push direction for the whole workspace, but has
-no inverse: restoring by re-mirroring is all-or-nothing against an 86 GB / 53k-
-object cache, which is the wrong tool for "this scope is missing three pins".
-This module is that inverse — resolve one scope's pins to their exact object set,
+The nightly ``sync`` covers the push direction for the whole cache, but has no
+inverse: restoring by re-syncing is all-or-nothing against a 91 GB / 53k-object
+store, which is the wrong tool for "this scope is missing three pins". This
+module is that inverse — resolve one scope's pins to their exact object set,
 diff against the local cache, and move only the difference.
 
 **Pull is idempotent and self-advancing, not blocking.** A cold restore needs
@@ -33,8 +33,7 @@ def transfer_items(
     """One transfer item per object, addressed by explicit path.
 
     Never ``filter_rules``: Globus filters match an item's *name* at any depth,
-    which cannot express "this exact object" — the same limitation that forces
-    :mod:`awm.dvc.mirror` to partition by path.
+    which cannot express "this exact object".
     """
     rel_cache = cache.relative_to(WORKSPACE_ROOT)
     items = []
@@ -73,9 +72,8 @@ def _submit(
         # previously interrupted task left truncated. Checksum-level would mean
         # hashing both sides of an 86 GB store to learn nothing.
         sync_level=1,
-        # Never. A restore must not be able to prune either side — and chinook is
-        # already pruned destructively by the mirror, which is the one job that
-        # gets to do that.
+        # Never. Nothing in this service prunes chinook: it is a remote, not a
+        # mirror, and a restore least of all gets to delete.
         delete_destination_extra=False,
     )
 

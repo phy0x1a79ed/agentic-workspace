@@ -9,14 +9,16 @@ On the collapsed MCP surface this is a single ``dvc`` domain tool
 (``dvc(verb="status")``, ``verb="pull"``, …); CLI and HTTP stay expanded as
 ``dvc_<verb>`` (``awm dvc pull``, ``POST /invoke {name:"dvc_pull"}``).
 
-Two jobs, one config:
-  - ``mirror`` — the daily full-workspace backup (destructive mirror).
+Three jobs, one config:
+  - ``sync`` — the daily append-only push of the whole shared cache.
   - ``status`` / ``resolve`` / ``pull`` / ``push`` — the hash-selective inverse,
     moving only the objects one scope actually pins.
+  - ``coverage`` — what the two remotes between them do *not* hold.
 
-Both address the same tree on chinook, so they read one ``prefix`` from
-``$AWM_DIR/dvc.toml``. They must agree: ``pull`` reads back exactly what
-``mirror`` wrote, and a mismatch means a restore silently finds nothing.
+The byte-moving verbs address the same tree on chinook, so they read one
+``prefix`` from ``$AWM_DIR/dvc.toml``. They must agree: ``pull`` reads back
+exactly what ``sync`` wrote, and a mismatch means a restore silently finds
+nothing.
 
 Every verb that moves bytes **submits and returns a task id** rather than
 blocking — a Globus task runs for minutes to hours. Poll with ``task``.
@@ -33,7 +35,8 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.dvc import mirror as mirrormod
+from awm.dvc import coverage as coveragemod
+from awm.dvc import sync as syncmod
 from awm.dvc import transfer
 from awm.dvc.config import load as load_config
 from awm.dvc.globus import task_status, wait
@@ -110,16 +113,16 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 600.0,
         },
         {
-            "name": "mirror",
-            "tool": "dvc_mirror",
+            "name": "sync",
+            "tool": "dvc_sync",
             "description": (
-                "Submit the daily full-workspace mirror to chinook and return its "
-                "task_id. DESTRUCTIVE ON THE REMOTE: runs with "
-                "delete_destination_extra, so anything deleted locally is deleted "
-                "there on the next run — this is disaster recovery, not an archive. "
-                "DVC cache-checkouts are excluded as rebuildable from data/.dvc_cache "
-                "(which is itself mirrored). Refuses if a previous mirror is still "
-                "running unless force=true."
+                "Submit the daily sync of the shared DVC cache (data/.dvc_cache) to "
+                "chinook and return its task_id. APPEND-ONLY: never deletes on the "
+                "remote, so chinook accumulates objects and a local `dvc gc` stays "
+                "recoverable. Covers every project's data at once, because every "
+                "project shares that one cache. Declines if a previous sync is still "
+                "running unless force=true. Nothing else in the workspace is backed "
+                "up by this — see coverage."
             ),
             "params": [
                 {
@@ -132,11 +135,32 @@ API_MANIFEST: dict[str, Any] = {
                     "name": "force",
                     "type": "boolean",
                     "required": False,
-                    "description": "Submit even if a previous mirror task is still running.",
+                    "description": "Submit even if a previous sync task is still running.",
                 },
             ],
-            # Partitioning a ~100k-file tree is a full local walk.
-            "timeout": 1800.0,
+            "timeout": 300.0,
+        },
+        {
+            "name": "coverage",
+            "tool": "dvc_coverage",
+            "description": (
+                "Report what would be lost if this machine died: per scope worktree, "
+                "uncommitted and untracked files, branches with no upstream or ahead "
+                "of one, and pins whose objects are absent from the shared cache. "
+                "Read-only, no network. Code is covered by GitHub and data by the "
+                "cache sync; everything else is disposable by decision, and this is "
+                "how that decision is checked."
+            ),
+            "params": [
+                {
+                    "name": "all",
+                    "type": "boolean",
+                    "required": False,
+                    "description": "Include scopes with nothing at risk (default: only at-risk ones).",
+                },
+            ],
+            # A `git status` per worktree across the whole workspace.
+            "timeout": 900.0,
         },
         {
             "name": "task",
@@ -178,9 +202,10 @@ HANDLERS = {
     "resolve": lambda a: transfer.resolve(a["scope"]),
     "pull":    lambda a: transfer.pull(a["scope"], dry_run=bool(a.get("dry_run"))),
     "push":    lambda a: transfer.push(a["scope"], dry_run=bool(a.get("dry_run"))),
-    "mirror":  lambda a: mirrormod.mirror(
+    "sync":    lambda a: syncmod.sync(
                    dry_run=bool(a.get("dry_run")), force=bool(a.get("force"))
                ),
+    "coverage": lambda a: coveragemod.report(at_risk_only=not bool(a.get("all"))),
     "task":    _task,
 }
 

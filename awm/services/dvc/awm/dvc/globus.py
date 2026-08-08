@@ -2,10 +2,9 @@
 
 Submission goes through ``globus api transfer post /transfer`` rather than the
 ``globus transfer`` subcommand, because the subcommand cannot express a
-multi-item transfer document with per-item recursion flags — which is exactly
-what both callers need (:mod:`awm.dvc.mirror` partitions the tree into a mix of
-recursive dirs and single files; :mod:`awm.dvc.transfer` names individual cache
-objects).
+multi-item transfer document with per-item recursion flags — which is what
+:mod:`awm.dvc.transfer` needs to name tens of thousands of individual cache
+objects in one task.
 
 **Submit, don't block.** A Globus task takes seconds to start and minutes-to-
 hours to finish. Handlers here return the ``task_id`` immediately and leave
