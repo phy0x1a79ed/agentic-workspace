@@ -5,6 +5,12 @@ from awm.scopes import scopes
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
+#
+# Several verbs carry an explicit `timeout`. The hub's 30 s default was set when
+# a scope's data was a symlink; provisioning now runs a real `dvc checkout`, so
+# the verbs that touch data need budgets measured in minutes. The work completes
+# either way -- it runs in the service, not the RPC -- but a timed-out call
+# reports failure for something that succeeded, which is worse than slow.
 SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
@@ -21,6 +27,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
         ],
+        # a cold `dvc checkout` of everything the base branch pins.
+        "timeout": 1800.0,
     },
     {
         "name": "scope_search",
@@ -62,6 +70,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": True},
             {"name": "force", "type": "boolean", "required": False},
         ],
+        # rmtree over a fully materialised data tree.
+        "timeout": 600.0,
     },
     {
         "name": "scope_heal",
@@ -79,6 +89,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "project", "type": "string", "required": False},
             {"name": "dry_run", "type": "boolean", "required": False},
         ],
+        # may provision every scope in a project.
+        "timeout": 1800.0,
     },
     {
         "name": "scope_repair",
@@ -118,6 +130,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "strategy", "type": "string", "required": False},
             {"name": "data", "type": "boolean", "required": False},
         ],
+        # each merge fires a post-merge `dvc checkout`.
+        "timeout": 900.0,
     },
     {
         "name": "scope_scatter",
@@ -137,6 +151,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "strategy", "type": "string", "required": False},
             {"name": "data", "type": "boolean", "required": False},
         ],
+        # each merge fires a post-merge `dvc checkout`.
+        "timeout": 900.0,
     },
     {
         "name": "scope_data_status",
@@ -152,6 +168,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
         ],
+        # `dvc status` walks every pin.
+        "timeout": 300.0,
     },
     {
         "name": "scope_data_mount",
@@ -170,6 +188,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "scope", "type": "string", "required": True},
             {"name": "chunks", "type": "array", "required": False},
         ],
+        # changing the mount list re-checks-out.
+        "timeout": 900.0,
     },
     {
         "name": "scope_data_gc",
@@ -189,6 +209,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "dry_run", "type": "boolean", "required": False},
             {"name": "keep", "type": "string", "required": False},
         ],
+        # walks all history of every named project.
+        "timeout": 1800.0,
     },
     {
         "name": "awm_refresh",
