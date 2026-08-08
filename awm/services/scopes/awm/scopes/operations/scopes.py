@@ -128,7 +128,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "hub", "type": "string", "required": True},
             {"name": "peripherals", "type": "array", "required": True},
             {"name": "strategy", "type": "string", "required": False},
-            {"name": "data", "type": "boolean", "required": False},
         ],
         # each merge fires a post-merge `dvc checkout`.
         "timeout": 900.0,
@@ -149,7 +148,6 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "hub", "type": "string", "required": True},
             {"name": "peripherals", "type": "array", "required": True},
             {"name": "strategy", "type": "string", "required": False},
-            {"name": "data", "type": "boolean", "required": False},
         ],
         # each merge fires a post-merge `dvc checkout`.
         "timeout": 900.0,
@@ -308,7 +306,6 @@ def _handle_scope_gather(args: dict) -> dict:
     result = scopes.gather_scope(
         args["project"], args["hub"], args["peripherals"],
         strategy=args.get("strategy", "merge"),
-        data=bool(args.get("data", False)),
     )
     return result.model_dump()
 
@@ -317,7 +314,6 @@ def _handle_scope_scatter(args: dict) -> dict:
     result = scopes.scatter_scope(
         args["project"], args["hub"], args["peripherals"],
         strategy=args.get("strategy", "merge"),
-        data=bool(args.get("data", False)),
     )
     return result.model_dump()
 
