@@ -273,16 +273,15 @@ class TestDenyMask:
 
 class TestDenyNegation:
     """Globs are gitignore-shaped: a leading ``!`` re-exposes and the LAST
-    matching glob wins. The motivating case is a git-annex working tree, where
-    every large file is a symlink into ``.git/annex/objects/`` — masking
-    ``**/.git/**`` on the resolved path would 404 the entire data tree."""
+    matching glob wins. It exists so a servable subtree can be carved out of a
+    broad deny — the case that bites is a symlink whose *resolved* target lands
+    inside the masked directory, which 404s the link along with it."""
 
-    def _annex_tree(self, tmp_path):
-        """A miniature annex layout: a content-addressed object plus the
-        working-tree symlink that points at it."""
-        obj_dir = tmp_path / ".git" / "annex" / "objects" / "XG" / "KJ"
+    def _store_tree(self, tmp_path):
+        """A content-addressed object inside a masked dir, plus a link to it."""
+        obj_dir = tmp_path / ".git" / "objstore" / "XG" / "KJ"
         obj_dir.mkdir(parents=True)
-        obj = obj_dir / "SHA256E-s7--deadbeef.svg"
+        obj = obj_dir / "deadbeef.svg"
         obj.write_text("<svg/>")
         (tmp_path / "figures").mkdir()
         link = tmp_path / "figures" / "fig.svg"
@@ -292,17 +291,17 @@ class TestDenyNegation:
             pytest.skip("symlinks unsupported on this platform")
         return obj
 
-    def test_annex_symlink_served_through_negation(self, tmp_path):
-        self._annex_tree(tmp_path)
+    def test_symlink_into_a_masked_dir_is_served_through_a_negation(self, tmp_path):
+        self._store_tree(tmp_path)
         rec = _rec("/files", tmp_path,
-                   deny=("**/.git/**", "!**/.git/annex/objects/**"))
+                   deny=("**/.git/**", "!**/.git/objstore/**"))
         resp = _run(serve_static(_request("/files/figures/fig.svg"), rec))
         assert resp.status_code == 200
         assert _read(resp) == b"<svg/>"
 
-    def test_annex_symlink_404s_without_negation(self, tmp_path):
-        # The regression this negation exists to fix.
-        self._annex_tree(tmp_path)
+    def test_the_same_symlink_404s_without_the_negation(self, tmp_path):
+        # Matching is on the resolved path, which is what makes the link 404.
+        self._store_tree(tmp_path)
         rec = _rec("/files", tmp_path, deny=("**/.git/**",))
         resp = _run(serve_static(_request("/files/figures/fig.svg"), rec))
         assert resp.status_code == 404
@@ -311,21 +310,21 @@ class TestDenyNegation:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".git" / "config").write_text("url = https://token@github")
         rec = _rec("/files", tmp_path,
-                   deny=("**/.git/**", "!**/.git/annex/objects/**"))
+                   deny=("**/.git/**", "!**/.git/objstore/**"))
         resp = _run(serve_static(_request("/files/.git/config"), rec))
         assert resp.status_code == 404
 
     def test_later_secret_glob_re_masks_after_negation(self, tmp_path):
         # Last-match-wins: a secret-shaped glob listed AFTER the negation still
-        # hides an annexed object that carries that extension.
-        obj_dir = tmp_path / ".git" / "annex" / "objects" / "aa" / "bb"
+        # hides a re-exposed object that carries that extension.
+        obj_dir = tmp_path / ".git" / "objstore" / "aa" / "bb"
         obj_dir.mkdir(parents=True)
-        (obj_dir / "SHA256E-s3--cafe.pem").write_text("KEY")
+        (obj_dir / "cafe.pem").write_text("KEY")
         rec = _rec("/files", tmp_path, deny=(
-            "**/.git/**", "!**/.git/annex/objects/**", "**/*.pem",
+            "**/.git/**", "!**/.git/objstore/**", "**/*.pem",
         ))
         resp = _run(serve_static(_request(
-            "/files/.git/annex/objects/aa/bb/SHA256E-s3--cafe.pem"), rec))
+            "/files/.git/objstore/aa/bb/cafe.pem"), rec))
         assert resp.status_code == 404
         assert b"KEY" not in _read(resp)
 

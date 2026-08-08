@@ -37,15 +37,11 @@ Why `.awm/data/lib/` rather than the scope root:
 - Lives with project data, so it's cleaned up appropriately with the scope
 - Consistent with the layout documented in `.awm/context.md`
 
-**If the project's data is git-annex backed** (check with
-`scope_data_status project=<p> scope=<s>`), the checkout is *deliberately not*
-versioned by the data repo — you never annex a tree of git repos, because the
-inner `.git` becomes thousands of annexed objects and the checkout stops being
-a checkout. Conversion and `project_data_init` detect nested repos, exclude
-their trees, and pin them by URL + commit in `VENDORED.tsv`. So after cloning,
-re-run `project_data_init project=<p>` (or just record the pin yourself) so the
-checkout is reproducible. Pinning is what makes it recoverable — not a copy of
-its bytes.
+**Never `dvc add` a tree of git repos.** The layer's `.dvcignore` excludes
+`**/.git/` for this reason: hashing an inner `.git` turns one checkout into
+thousands of cache objects and the checkout stops being a checkout. Record the
+URL + commit instead — pinning is what makes a vendored checkout recoverable,
+not a copy of its bytes.
 
 If the user wants reproducibility, pin to a specific tag or commit immediately after cloning:
 

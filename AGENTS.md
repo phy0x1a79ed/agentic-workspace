@@ -108,50 +108,49 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **Never hand-roll a long-lived background task either — use `gatewayclient.spawn_supervised`.** `self._x_task = asyncio.create_task(self._x())` and then never reading `_x_task` leaves a service running, apparently healthy, with that whole capability silently absent if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a *return* as a defect too, so a supervised loop must never exit — check the shutdown flag and skip the tick instead of breaking out.
 - **A slow `on_start` is a bug now, not just a smell.** See the ready-ASAP contract above: the gateway reaps a lease-holder that stays unready, so startup work that takes real time belongs in a task, and anything a caller needs must be behind the adapter's init gate rather than raced against it.
 
-## Project data layer (`awm.scopes.data_annex`)
+## Project data layer (`awm.scopes.data_dvc`)
 
-`.awm/data` used to be one line in `_scaffold_awm_dir`: a symlink to
-`data/<project>/`, shared by every scope. It is now produced by
-`data_annex.provision_scope_data`, which returns either that same symlink or a
-**git-annex clone** — the *only* entry point, deliberately, so there is one
-place that decides.
+Data is versioned by the same commit that versions the code: `data/<chunk>.dvc`
+is a tracked ~110-byte pin, the bytes live once in `<workspace>/data/.dvc_cache`,
+and `provision_scope_data` is the *only* entry point — one place decides between
+DVC wiring and the legacy shared symlink.
 
-Design facts worth knowing before you touch it:
+**awm wires, DVC operates.** Wiring is the cache path, the merge driver, the
+hooks, and the mount list; `dvc add` / `dvc checkout` / `git commit` /
+`git merge` are used unwrapped. Design facts worth knowing before you touch it:
 
-- **The opt-in is the canonical repo's existence.** `is_annex_project(p)` is
-  "is `data/<p>` a git-annex repo?" There is no config table and no flag to
-  keep in sync; `project_data_init` flips a project by converting the directory.
-  `AWM_DATA_ANNEX=0` is the global kill switch.
-- **A clone, not a submodule.** A submodule inside a *secondary* git worktree
-  makes git write a relative `core.worktree` that git-annex resolves from a
-  different base — every annex command then dies with
-  `changeWorkingDirectory: does not exist`. A plain clone has an ordinary
-  `.git` and is immune. `projects/annex-poc/` preserves the reproduction.
-- **The canonical repo keeps a working tree** on `main`, and promotion pushes
-  into it with `receive.denyCurrentBranch=updateInstead`. That is what keeps
-  every existing absolute path into `data/<project>/` resolving — including the
-  TTS model lookup and scadc's ~171 absolute symlinks.
-- **Merges use plain `git merge`, never `git annex sync`.** git-annex only
-  auto-resolves conflicting content into `file.variant-<key>` under its own
-  merge machinery; under plain merge a conflict is an ordinary unmerged path.
-  Keeping both sides must stay an explicit decision. `publish_data` therefore
-  does fetch → `git annex merge` → explicit push by hand rather than calling
-  sync.
-- **The location log rides the `git-annex` branch and is never rolled back.**
-  Pushing only the data branch leaves peers seeing *0 copies* for content that
-  is physically present. And reverting the log *is* the data-loss operation —
-  it produces that same symptom while the bytes sit on disk. The transaction
-  boundary in `merge_data` is the data branch ref, nothing else.
-- **git-annex is not on the daemon's PATH.** `annex_bin()` resolves it
-  (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
-  on PATH for *every* git call, since git-annex's own hooks re-invoke
-  `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
-- **Teardown is the dangerous direction.** `_cleanup_worktree` calls
-  `prepare_teardown` first, which publishes, refuses when content would be lost,
-  and chmods the tree writable (annex marks objects *and their parent dirs*
-  read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
-  collides with the next `worktree add`). `create_scope` pre-cleans through the
-  same path, so creation can now refuse where it previously steamrolled.
+- **The opt-in is the checkout.** `is_dvc_repo(p)` is "does this worktree track
+  a `.dvc/config`?" There is no config table, no flag to keep in sync, and no
+  conversion verb — a project that has one gets wired on its next scope creation
+  or heal; one that does not keeps the shared symlink. `AWM_DATA_DVC=0` is the
+  global kill switch.
+- **The cache path goes in `config.local`, absolute, never the tracked config.**
+  A tracked relative path resolves against a different base in a non-scope
+  checkout, and DVC then silently starts a *second* cache there rather than
+  erroring. `config.local` is untracked, so it is per-machine by construction.
+- **`cache.type = hardlink,symlink`.** One physical copy per machine; a
+  materialised file is a hardlink to the cache object. That is why nothing here
+  ever `chmod +w`s a *file*: the write bit belongs to an inode every other scope
+  and every historical commit reads through. `chmod_dirs_writable` touches
+  directories only, and exists solely as the rmtree fallback.
+- **Hooks go in the common git dir, by hand.** `dvc install` builds its hooks
+  path as `<root>/.git/hooks`, and in a secondary worktree `.git` is a *file* —
+  every awm scope is a secondary worktree. post-commit exists as well as
+  post-merge because a *conflicted* merge fires no post-merge hook at all, which
+  is exactly when a human has just hand-edited a pin. Both are shared across
+  worktrees, so `[ -d .dvc ] || exit 0` is load-bearing.
+- **git ignores a hook's exit status.** A failing `dvc checkout` removes the old
+  files before discovering it cannot install the new ones, and cannot fail the
+  merge — so it leaves a sentinel that `data_status` and provisioning surface.
+- **An absent mount list means "everything"; an empty one means "nothing."**
+  Collapsing the two drags every cold chunk in the project onto disk.
+- **`gc` is a guard, not a wrapper.** The cache is shared workspace-wide, so
+  `data_gc` must be told every project whose data survives, defaults to dry-run,
+  and refuses `all-branches`. Note dvc's own output says "Removed N objects"
+  even for a dry run — trust the `dry_run` field in the reply.
+- **Teardown guards uncommitted work, not content.** Deleting a worktree unlinks
+  names, never bytes. What dies is what was never committed — and under one
+  lever that is `git status`, covering data and code at once.
 
 ## Frontend component system
 

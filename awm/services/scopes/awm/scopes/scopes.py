@@ -1172,13 +1172,13 @@ def _scope_worktree(project: str, scope: str) -> Path:
 def data_status(project: str, scope: str) -> dict:
     """Report a scope's data view: mode, the commit that pins it, and drift.
 
-    This is the only surviving data verb, and the shrinkage is the result rather
-    than a casualty of it. ``data_snapshot`` was ``git commit`` on a second
-    history; ``data_promote`` was a push into a canonical data branch;
-    ``project_data_init`` converted a directory into a repo. With the pin living
-    in the code repo, the first two *are* ``git commit`` and ``git merge``, and
-    the third is ``dvc add`` on whatever you want tracked. Keeping thin wrappers
-    around git would only re-create the two-lever confusion this replaced.
+    Three verbs remain — this, ``data_mount``, ``data_gc`` — and the shrinkage is
+    the result rather than a casualty of it. Snapshotting was ``git commit`` on a
+    second history; promoting was a push into a canonical data branch; converting
+    a project turned a directory into a repo. With the pin living in the code
+    repo, the first two *are* ``git commit`` and ``git merge``, and the third is
+    ``dvc add`` on whatever you want tracked. Thin wrappers around git would only
+    re-create the two-lever confusion this replaced.
     """
     validate_name(project, kind="project name")
     validate_name(scope, kind="scope name")

@@ -30,44 +30,68 @@ projects/{project}/
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
-      data/                      # project data — annex clone, or symlink to data/{project}/
+      data -> ../data            # compat symlink; the real data/ is repo content
       skills -> ../../../awm/skills/    # symlink to skill catalog
-    [code files...]              # the actual repo content
+    [code files...]              # the actual repo content, including data/
 ```
 
-Scopes access project data via `.awm/data/` — that path never changes. What sits
-behind it depends on whether the project's data has been converted:
+### Data
 
-| Mode | What `.awm/data` is | Concurrency |
-|---|---|---|
-| **annex** (converted) | a git-annex clone of `data/{project}/`, checked out on branch `scope/{scope}` | isolated + versioned; reconcile by an explicit merge |
-| **shared** (not yet converted) | a symlink to `data/{project}/` | none — every scope writes the same files |
+**Data is versioned by the same commit that versions the code.** A DVC-backed
+project keeps its data at `<scope>/data/<chunk>` and a tracked ~110-byte *pin*
+beside it at `<scope>/data/<chunk>.dvc`. The bytes live once, in a
+content-addressed cache shared by every scope and project on the machine
+(`<workspace>/data/.dvc_cache`). `.awm/data` is a symlink to `../data` and
+exists only so older call sites keep working.
 
-### Data concurrency (annex mode)
+There is one lever. A commit records your code and the exact data it was built
+against, together; merging a branch brings its data with it. So:
 
-Code gets isolation from worktrees; annex mode gives data the same thing. Your
-writes are yours until you publish them, and publishing is transactional.
+- **To save data you wrote:** `dvc add data/<chunk>`, then commit the changed
+  `.dvc` pin alongside your code. There is no data verb, no data branch, no
+  promote.
+- **To take a sibling's data:** merge their branch. A post-merge hook checks the
+  files out for you.
+- **Isolation is branch isolation.** Your pins are yours until someone merges
+  them; a sibling scope cannot see or clobber your work in progress.
 
 | Verb | What it does |
 |---|---|
-| `scope(verb="data_status", …)` | which mode you're in, your data branch/revision, drift from the project's canonical branch |
-| `scope(verb="data_snapshot", …)` | commit what you've written — bulk to the content store, small text to ordinary git |
-| `scope(verb="data_promote", …)` | publish your data branch into the project's canonical branch. All-or-nothing: a conflict, or another scope promoting first, returns cleanly and changes nothing |
-| `project(verb="data_init", …)` | convert a project's `data/{project}/` to annex. The per-project opt-in; refuses while any scope is active |
-| `scope(verb="gather"/"scatter", args={…, data:true})` | fan data in/out alongside the code merge |
+| `scope(verb="data_status", …)` | mode, the commit that pins the data, which chunks it pins, which are materialised, and whether the workspace still matches |
+| `scope(verb="data_mount", …)` | choose which chunks materialise on disk here. Unmounted chunks stay pinned and backed up — this only decides what costs inodes |
+| `scope(verb="data_gc", …)` | reclaim cache space. Dry run by default, and it needs *every* project whose data must survive: the cache is shared |
+| `dvc(verb="sync"/"pull"/"coverage")` | the off-site half — see § *Off-site backup* |
 
-Two things behave differently in annex mode, and only these two:
+Two mechanical facts, and only these two:
 
-1. **Large files already in the repo are read-only symlinks** into a content
-   store. Write a new file rather than opening an existing one for writing (or
-   `git annex unlock` it first). Files under ~100 KB are ordinary git files and
-   are unaffected.
-2. **Secrets are excluded, not versioned.** Anything under a `secrets/` path,
-   any `.env`, and `.credentials.json` is deliberately never annexed — so it is
-   also never carried off-site by the nightly backup. It stays on local disk.
+1. **Materialised files are read-only hardlinks into the shared cache.** Editing
+   one in place would corrupt that object for every other scope and every
+   historical commit that pins it. Write a new file, or `dvc unprotect <path>`
+   first.
+2. **Never run a bare `dvc gc`.** It collects against one worktree's view of a
+   cache the whole workspace shares. Use `data_gc`, which makes you name what to
+   keep.
 
-Storage is not a reason to hesitate: content is hardlinked from the canonical
-store, so N scopes holding the same dataset cost one copy.
+Projects that have not been converted keep a plain `.awm/data` symlink to
+`data/{project}/` — shared, unversioned, every scope writing the same files.
+Nothing migrates them; a project gets wired the first time a scope is created or
+healed after its checkout carries a tracked `.dvc/config`.
+
+**Delete superseded data.** That is what versioning buys: an old version stays
+reachable from the commit that pinned it, so you never need two live copies to
+answer "which one is current?"
+
+### Off-site backup
+
+Two remotes cover this machine between them: **GitHub holds the code, chinook
+holds the cache.** A daily timer pushes `data/.dvc_cache` to the chinook Globus
+collection, append-only — nothing ever deletes there, which is what makes a
+local `dvc gc` recoverable.
+
+Nothing else is backed up. Work in a worktree that is neither committed-and-
+pushed nor DVC-pinned — scratch directories, run outputs, `.awm/` state — has no
+copy anywhere, deliberately. `dvc(verb="coverage")` lists exactly what that is
+per scope; run it before you assume something survived.
 
 ## Finding Projects
 
@@ -254,18 +278,18 @@ a `reset: moving to …` entry is the tell.
 | `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--project P] [--dry-run]` | Idempotent repair pass: enforce tier-3 = `.awm/` only, and bring `.awm/data` to the project's current data mode |
-| `awm scope data-status/data-snapshot/data-promote <p> <s>` | Per-scope data versioning (annex mode) |
-| `awm project data-init <p> [--dry-run]` | Convert a project's `data/<p>/` to git-annex |
+| `awm scope data-status <p> <s>` / `awm scope data-mount <p> <s> [--chunks ...]` | A scope's data view; which chunks materialise here |
+| `awm scope data-gc --projects <p> ... [--dry-run false]` | Reclaim shared-cache space — names every project to keep |
+| `awm dvc sync` / `awm dvc pull --scope <path>` / `awm dvc coverage` | Off-site: push the cache, restore one scope, audit what is uncovered |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write outputs to `.awm/data/`** — then `scope(verb="data_snapshot")` and, when
-   the work is good, `scope(verb="data_promote")`. In shared mode those are no-ops
-   and outputs are visible to siblings immediately; in annex mode they are how your
-   work becomes visible at all. See § *Data concurrency* above.
+2. **Write outputs to `data/`, then `dvc add` and commit the pin** alongside the
+   code that produced them. On an unconverted project `data/` is the shared
+   directory and outputs are visible to siblings immediately. See § *Data* above.
 3. **Don't edit `.awm/history.md`** — auto-generated. Use MCP tools.
 4. **Run the `debrief` skill** when ending a session — commit, log the session, refresh.
 5. **Check `.awm/skills/` for a procedure** before improvising an unfamiliar workflow — the writeups are on disk even though the search service is retired.

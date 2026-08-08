@@ -1,11 +1,12 @@
-# Installing the `dvc` service (DVC cache sync against chinook)
+# Installing the `dvc` service (the chinook remote for the shared DVC cache)
 
 A Python feature service in the `awm.dvc` namespace. It owns both directions of
 the workspace's relationship with the **chinook** Globus collection:
 
-- `mirror` — the daily full-workspace backup.
+- `sync` — the daily append-only push of `data/.dvc_cache`.
 - `status` / `resolve` / `pull` / `push` — the hash-selective inverse, moving
   only the cache objects one scope actually pins.
+- `coverage` — what the remotes between them do *not* hold.
 
 On the collapsed MCP surface these are verbs under one `dvc` domain tool
 (`dvc(verb="status")`, `verb="pull"`, …); CLI and HTTP stay expanded as `dvc_*`
@@ -46,31 +47,47 @@ would silently make one node write into another's backup tree.
     prefix          = "/Workspace_backups/<you>/<this node>"
     globus_bin      = "/path/to/envs/globus/bin/globus"   # optional; else resolved
 
-`prefix` is load-bearing in **both** directions: `mirror` writes the workspace
-there and `pull` reads objects back from exactly that tree. If they ever name
+`prefix` is load-bearing in **both** directions: `sync` writes the cache there
+and `pull` reads objects back from exactly that tree. If they ever name
 different places, a restore silently finds nothing rather than failing.
 
 Env vars override the file — `AWM_DVC_LOCAL_ENDPOINT`, `AWM_DVC_REMOTE_ENDPOINT`,
 `AWM_DVC_PREFIX`, `AWM_DVC_GLOBUS_BIN`. Use `AWM_DVC_PREFIX` to exercise a round
-trip against a scratch path: the real prefix is mirrored with
-`delete_destination_extra`, so test writes there are on a deletion timer.
+trip against a scratch path, and make it a **sibling** of the real prefix, never
+a child: nothing prunes chinook, so a scratch write under the live tree stays
+there forever.
 
-## The mirror is disaster recovery, not an archive
+## Append-only is the whole design
 
-`mirror` runs with `delete_destination_extra: true`. A file deleted locally is
-deleted on chinook at the next run. It protects against losing the machine, not
-against `rm`.
+`sync` runs with `delete_destination_extra: false` and never deletes on the
+remote. Chinook is the remote for the cache the way GitHub is the remote for the
+code: it accumulates, and history is what it holds.
 
-It excludes DVC cache-checkouts, which are hardlinks into `data/.dvc_cache` and
-fully rebuildable via `dvc checkout` — Globus cannot preserve hardlinks, so
-mirroring both inflates a ~188 GB workspace to ~665 GB on the wire. **That
-exclusion is only safe because `data/.dvc_cache` itself is mirrored.** If the
-cache is ever excluded too, the exclusions stop being recoverable and the backup
-starts losing data silently. Keep the pairing intact.
+That is not a nicety. The cache is shared by every project on the machine, so
+`dvc gc` is the operation most likely to be wrong, and under a delete-propagating
+mirror a wrong `gc` became permanent at the next nightly tick. Append-only is
+what makes it recoverable. It is asserted in `tests/test_sync.py` rather than
+merely written here, because the failure mode is invisible: a mirroring sync
+succeeds and looks identical in every report.
 
-## Scheduling the daily mirror
+The cost is that chinook accumulates every object ever pushed. A remote prune,
+run against the union of every project's history, is future work.
 
-A user systemd unit runs it, via the `awm-dvc-mirror` console script that
+## What is not backed up
+
+Only `data/.dvc_cache` travels. Code is covered by GitHub. Everything else in the
+workspace — scratch directories, run outputs, `.awm/` service databases — is
+covered by nothing, deliberately.
+
+    awm dvc coverage            # per scope: uncommitted, unpushed, unpinned
+
+That report is what makes the choice informed rather than silent, and it is the
+inventory a future LRU eviction pass has to consult before deleting anything
+local.
+
+## Scheduling the daily sync
+
+A user systemd unit runs it, via the `awm-dvc-sync` console script that
 `install.sh` puts in the env's `bin/`. Not a path into the awm checkout — that
 is a deploy target which gets `reset --hard`, and it has already eaten one
 backup script whole:
@@ -79,20 +96,23 @@ backup script whole:
     [Service]
     Type=oneshot
     Environment=AWM_WORKSPACE=/path/to/agentic_workspace
-    ExecStart=/path/to/envs/awm/bin/awm-dvc-mirror
+    ExecStart=/path/to/envs/awm/bin/awm-dvc-sync
 
-`awm-dvc-mirror` submits, then blocks to a terminal state and exits non-zero if
+`awm-dvc-sync` submits, then blocks to a terminal state and exits non-zero if
 the transfer did not succeed — which is the whole point of running it from a
-timer. **Do not use `awm dvc mirror` here.** The service verb returns a task id
+timer. **Do not use `awm dvc sync` here.** The service verb returns a task id
 without waiting (correct for an agent, useless for a scheduled job: the unit
 would report success on a failed backup), and the generated service CLI
 dispatches through `/invoke` with a hard 600 s client ceiling, so no amount of
 waiting on that path can cover a multi-hour transfer.
 
-`mirror` refuses to stack a second destructive mirror on one still in flight
-(`--force` overrides), so a slow run overlapping the next timer tick is safe
+`sync` declines to stack a second scan on one still in flight (`--force`
+overrides), so a slow run overlapping the next timer tick is wasted work avoided
 rather than a race — and the console script treats that refusal as success, so
 it does not page anyone.
+
+The console script was called `awm-dvc-mirror` before the mirror was retired;
+`install.sh` removes that name so a unit still pointing at it fails loudly.
 
 ## Restoring a scope
 
@@ -113,11 +133,11 @@ inode that nothing has linked into the worktree yet.
 **One unrecoverable manifest stalls the whole scope.** The two phases are
 ordered, not merely preferred: while *any* `.dir` manifest is unresolved, `pull`
 fetches manifests and nothing else, because the leaves are not yet nameable. So
-a pin whose manifest is absent both locally and on chinook — a dangling pin the
-last mirror could not have captured — pins the scope in phase `manifests`
-forever, and the leaves it *could* restore never move. `status` shows this as a
-nonzero `unresolved_manifests` that a completed `pull` does not clear. Drop the
-dead pin, or source it from another node; there is no way to restore around it.
+a pin whose manifest is absent both locally and on chinook — a dangling pin no
+sync could have captured — pins the scope in phase `manifests` forever, and the
+leaves it *could* restore never move. `status` shows this as a nonzero
+`unresolved_manifests` that a completed `pull` does not clear. Drop the dead pin,
+or source it from another node; there is no way to restore around it.
 
 ## Why chinook is not a DVC remote
 
@@ -132,4 +152,4 @@ materialization step.
 
     awm services list                                 # dvc → running
     awm dvc status --scope projects/fabfos/dev
-    awm dvc mirror --dry-run | head                   # builds the document, submits nothing
+    awm dvc sync --dry-run                            # builds the document, submits nothing
