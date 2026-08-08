@@ -18,10 +18,20 @@ import {
   EditorState,
   Annotation,
   Prec,
+  StateField,
+  StateEffect,
   type Extension,
   type ChangeSpec,
 } from '@codemirror/state';
-import { EditorView, keymap, placeholder, drawSelection } from '@codemirror/view';
+import {
+  EditorView,
+  keymap,
+  placeholder,
+  drawSelection,
+  Decoration,
+  WidgetType,
+  type DecorationSet,
+} from '@codemirror/view';
 import {
   defaultKeymap,
   history,
@@ -49,12 +59,79 @@ import {
  *  change listener does NOT re-report it as a local edit. */
 const Remote = Annotation.define<boolean>();
 
+// ---- dictation interim "chip" ----------------------------------------------
+// The in-flight dictation window is shown as a ghost chip at the caret — a pure
+// decoration, NOT document text, so it never persists, streams to collab, or
+// shows up in getText(). Each `partial` frame replaces the chip's text; each
+// `commit` frame clears it and inserts the finalized window as real text. This
+// is what makes "commit one piece at a time" honest: nothing lands in the note
+// until a whole window is committed, so a revised preview can't double-commit.
+
+class InterimWidget extends WidgetType {
+  constructor(readonly text: string) {
+    super();
+  }
+  eq(other: InterimWidget) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-dictation-chip';
+    span.setAttribute('aria-hidden', 'true');
+    span.textContent = this.text;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** Set/clear the interim chip. `null` (or empty text) clears it. */
+const setInterimEffect = StateEffect.define<{ text: string; pos: number } | null>();
+
+const interimField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(deco, tr) {
+    deco = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setInterimEffect)) {
+        const v = e.value;
+        deco =
+          v && v.text
+            ? Decoration.set([
+                Decoration.widget({
+                  widget: new InterimWidget(v.text),
+                  side: 1,
+                }).range(v.pos),
+              ])
+            : Decoration.none;
+      }
+    }
+    return deco;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+const dictationChipTheme = EditorView.theme({
+  '.cm-dictation-chip': {
+    opacity: '0.55',
+    fontStyle: 'italic',
+    borderRadius: '4px',
+    padding: '0 0.15em',
+    backgroundColor: 'var(--nt-accent-soft, rgba(120, 120, 255, 0.12))',
+    color: 'var(--nt-accent, inherit)',
+    whiteSpace: 'pre-wrap',
+  },
+});
+
 // ---- theme + syntax colours (mapped to the page-local --nt-* tokens) --------
 
 const theme = EditorView.theme({
   '&': {
     color: 'var(--nt-text)',
-    backgroundColor: 'var(--nt-surface)',
+    backgroundColor: 'var(--nt-paper)',
     height: '100%',
   },
   '&.cm-focused': { outline: 'none' },
@@ -165,8 +242,14 @@ export interface NoteEditor {
   setDoc(text: string): void;
   /** Fold authoritative text in as a minimal diff (collab merge). Remote. */
   applyText(next: string): void;
-  /** Insert at the caret (dictation) — a genuine LOCAL edit. */
+  /** Insert at the caret (dictation) — a genuine LOCAL edit. Clears any
+   *  interim chip first so the committed text replaces it in place. */
   insertAtCaret(raw: string): void;
+  /** Show/replace the dictation interim chip at the caret (ghost, not doc text).
+   *  Empty string clears it. */
+  setInterim(text: string): void;
+  /** Remove the interim chip. */
+  clearInterim(): void;
   getText(): string;
   focus(): void;
   /** Re-measure after being shown again (edit⇄preview toggle un-hides it). */
@@ -185,6 +268,8 @@ export function createNoteEditor(parent: HTMLElement, opts: NoteEditorOptions): 
     markdown({ base: markdownLanguage, codeLanguages: languages }),
     syntaxHighlighting(highlightStyle),
     theme,
+    interimField,
+    dictationChipTheme,
     placeholder(opts.placeholder ?? ''),
     // markdown()'s own keymap (list continuation) is installed by addKeymap;
     // give closeBrackets + history + defaults the remaining bindings.
@@ -236,8 +321,22 @@ export function createNoteEditor(parent: HTMLElement, opts: NoteEditorOptions): 
       let insert = raw;
       if (before && !/\s/.test(before) && !/^\s/.test(insert)) insert = ' ' + insert;
       // No Remote annotation → reported as a local edit, so it persists/streams.
-      view.dispatch(view.state.replaceSelection(insert));
+      // Clear the interim chip in the SAME transaction so the ghost never lingers
+      // beside the committed text for a frame.
+      view.dispatch({
+        ...view.state.replaceSelection(insert),
+        effects: setInterimEffect.of(null),
+      });
       view.focus();
+    },
+
+    setInterim(text: string) {
+      const pos = view.state.selection.main.head;
+      view.dispatch({ effects: setInterimEffect.of(text ? { text, pos } : null) });
+    },
+
+    clearInterim() {
+      view.dispatch({ effects: setInterimEffect.of(null) });
     },
 
     getText() {
