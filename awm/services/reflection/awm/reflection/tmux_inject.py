@@ -15,8 +15,10 @@ agent's in-flight turn (that is ``claude_backend.interrupt``'s job); we want the
 command to *queue* behind the current turn, not interrupt it.
 
 The service is a separate gateway-spawned process, so it does NOT share the
-caller's environment — the target pane arrives as an argument (the caller's
-``$TMUX_PANE``). Best-effort auto-detection is provided for the single-agent case.
+caller's environment — the target pane must be resolved from the caller's own
+identity and passed in. There is deliberately no fallback that *guesses* a pane:
+reflection acts on the caller and on nobody else, so an unresolvable caller is
+refused rather than served with someone else's session.
 """
 from __future__ import annotations
 
@@ -30,26 +32,19 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger("awm.reflection.tmux_inject")
 
-# Slash commands that irreversibly discard context / end the session. Refused
-# unless the caller passes confirm=true.
-DESTRUCTIVE = {"/clear", "/quit", "/exit"}
-
-# Slash commands that open a blocking modal / picker in the TUI (a settings pane,
-# a navigable list, …). Pasted input and Enter are SWALLOWED by the modal — a
-# follow-up prompt does not escape it, and for a navigable list an Enter drills
-# deeper — so reflection cannot drive them and would leave the session frozen
-# (only a hand-typed Escape recovers). Refused outright; run these by hand.
-# Empirically verified for /status and /mcp (both trap input; Esc-only exit).
-# Best-effort curated list — extend as new modal commands appear.
-INTERACTIVE = {
-    "/mcp", "/status", "/config", "/permissions", "/agents",
-    "/hooks", "/resume", "/theme", "/login", "/logout",
-    "/bashes", "/doctor", "/statusline", "/vim",
-}
-
-# Commands that act directly WITH an argument but open a picker modal when bare
-# (e.g. `/model opus` switches immediately; `/model` alone opens the chooser).
-_MODAL_WHEN_BARE = {"/model"}
+# What may be injected at all is a property of the agent TUI, not of tmux, so the
+# guard tables live in `guards` and both backends enforce the same ones. Re-exported
+# here because this module was their original home.
+from awm.reflection.guards import (  # noqa: E402,F401
+    DEFAULT_FOLLOWUP,
+    DESTRUCTIVE,
+    INTERACTIVE,
+    _MODAL_WHEN_BARE,
+    is_slash,
+    opens_modal,
+    refusal,
+    resume_text,
+)
 
 # Settle beat between the paste landing and the Enter that submits it, so the
 # TUI has focused the pasted input before we press return.
@@ -81,34 +76,6 @@ _FAST_POLL_S = 0.3       # poll cadence before the driving turn/compaction is
 _COMPACTING_MARKERS = ("Compacting conversation",)
 _BUSY_MARKERS = ("esc to interrupt",)
 _COMPACTED_MARKERS = ("Compacted",)   # "Compacted (ctrl+o to see full summary)"
-
-# A bare slash command (e.g. /compact) runs at end-of-turn and then leaves the
-# session idle with nothing to do — for an autonomous agent that is death. So a
-# self-directed slash command must be trailed by a real prompt that gives the
-# session a next turn once the command completes. This is the default when the
-# caller does not supply their own `followup`.
-DEFAULT_FOLLOWUP = "Continue with what you were doing."
-
-
-def is_slash(text: str) -> bool:
-    """True if ``text`` is a slash command (a TUI control command, not a prompt)."""
-    return text.strip().startswith("/")
-
-
-def opens_modal(text: str) -> bool:
-    """True if ``text`` opens a blocking modal/picker that traps pasted input.
-
-    Covers the curated :data:`INTERACTIVE` set plus arg-less forms in
-    :data:`_MODAL_WHEN_BARE` (``/model`` alone opens a chooser; ``/model opus``
-    acts directly).
-    """
-    parts = text.strip().split()
-    first = parts[0]
-    if first in INTERACTIVE:
-        return True
-    if first in _MODAL_WHEN_BARE and len(parts) == 1:
-        return True
-    return False
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -143,13 +110,21 @@ def _run(argv: list[str], runner: Runner, **kw: Any) -> subprocess.CompletedProc
 
 
 # ---------------------------------------------------------------------------
-# Pane discovery (best-effort — explicit `pane` is the norm)
+# Pane discovery
 # ---------------------------------------------------------------------------
 
 def list_panes(*, socket: Optional[str] = None,
                runner: Runner = subprocess.run) -> list[dict]:
-    """List every pane on the tmux server as ``{pane, pid, command, session}``."""
-    fmt = "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}"
+    """List every pane on the tmux server as ``{pane, pid, command, session}``.
+
+    Note there is no activity/recency field here on purpose. An earlier version
+    asked tmux for ``#{pane_activity}`` to rank candidate panes; that format does
+    not exist (tmux offers ``window_activity``, not a per-pane one), so it always
+    expanded to the empty string and every pane ranked identically. Ranking panes
+    by recency is not something to reach for again — the caller's identity says
+    which pane is theirs, and nothing else should get a vote.
+    """
+    fmt = ("#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{session_name}")
     proc = _run(_base_argv(socket) + ["list-panes", "-a", "-F", fmt],
                 runner, text=True)
     panes: list[dict] = []
@@ -207,21 +182,34 @@ def _subtree_has_agent(root_pid: int, kids: dict[int, list[int]]) -> bool:
     return False
 
 
-def autodetect_pane(*, socket: Optional[str] = None,
-                    runner: Runner = subprocess.run) -> str:
-    """Return the single tmux pane running an agent, or raise if ambiguous."""
-    panes = list_panes(socket=socket, runner=runner)
+def _subtree_contains(root_pid: int, target_pid: int,
+                      kids: dict[int, list[int]]) -> bool:
+    stack, seen = [root_pid], set()
+    while stack:
+        pid = stack.pop()
+        if pid == target_pid:
+            return True
+        if pid in seen:
+            continue
+        seen.add(pid)
+        stack.extend(kids.get(pid, []))
+    return False
+
+
+def pane_for_pid(pid: int, *, socket: Optional[str] = None,
+                 runner: Runner = subprocess.run) -> Optional[str]:
+    """Return the pane whose process subtree contains ``pid``, or ``None``.
+
+    This is how a caller's own pane is identified: an exact ancestry match
+    against a pid we were *given*, not a search for something that looks like an
+    agent. Exactly one pane can contain a given pid, so there is no ambiguity to
+    resolve and nothing to rank.
+    """
     kids = _ppid_children()
-    matches = [p for p in panes
-               if p["pid"].isdigit() and _subtree_has_agent(int(p["pid"]), kids)]
-    if len(matches) == 1:
-        return matches[0]["pane"]
-    if not matches:
-        raise TmuxError(
-            "could not auto-detect an agent pane; pass your $TMUX_PANE explicitly")
-    cand = ", ".join(f'{p["pane"]} ({p["session"]})' for p in matches)
-    raise TmuxError(
-        f"multiple agent panes found ({cand}); pass your $TMUX_PANE explicitly")
+    for p in list_panes(socket=socket, runner=runner):
+        if p["pid"].isdigit() and _subtree_contains(int(p["pid"]), pid, kids):
+            return p["pane"]
+    return None
 
 
 def _assert_pane_exists(pane: str, socket: Optional[str], runner: Runner) -> None:
@@ -232,20 +220,17 @@ def _assert_pane_exists(pane: str, socket: Optional[str], runner: Runner) -> Non
 def _assert_pane_has_agent(pane: str, socket: Optional[str], runner: Runner) -> None:
     """Refuse to inject into a pane whose process subtree has no agent.
 
-    Guards every path that can produce a `pane` value (explicit arg,
-    header-derived default, auto-detect) against the one case none of them
-    rules out: the pane id is real and exists, but nothing running there is a
-    `claude`/`opencode` process (a stale id repointed at a shell/editor, or an
-    outright wrong explicit `pane` argument). Reuses the same subtree walk
-    `autodetect_pane` already pays for.
+    Guards against the one case pane resolution cannot rule out on its own: the
+    pane id is real and exists, but nothing running there is a `claude`/`opencode`
+    process (a stale id now repointed at a shell or editor).
     """
     proc = _run(_base_argv(socket) + ["display-message", "-p", "-t", pane,
                                        "#{pane_pid}"], runner, text=True)
     pid_s = (proc.stdout or "").strip()
     if not pid_s.isdigit() or not _subtree_has_agent(int(pid_s), _ppid_children()):
         raise TmuxError(
-            f"pane {pane} is not running an agent (claude/opencode); refusing "
-            f"to inject — pass the correct pane or leave it unset for auto-detect")
+            f"pane {pane} is not running an agent (claude/opencode); "
+            f"refusing to inject")
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +407,13 @@ def _await_and_followup(text: str, followup: str, pane: str, *,
     if not ready:
         log.warning("reflection: command %r completion not observed within %ss; "
                     "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
+    # The resume goes to `pane` — the caller's own pane, carried through the whole
+    # wait (and re-resolved above only if that exact pane was destroyed). It is
+    # emphatically NOT re-derived here. A previous version re-scanned the server
+    # for "the current agent pane" at this point, on the theory that the agent may
+    # have moved; combined with a pane ranking that never worked, that delivered
+    # every deferred resume to the lowest-numbered agent pane on the host — i.e.
+    # into a *different agent's* prompt. Whoever called is who gets the resume.
     try:
         _paste_and_submit(followup, pane, enter=True, socket=socket, runner=runner)
     except TmuxError:
@@ -460,31 +452,15 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
     ``delay_ms`` waits before injecting; a leading ``/`` is safe thanks to
     bracketed paste.
     """
-    if not text or not text.strip():
-        raise ValueError("text is required")
-    first = text.strip().split()[0]
-    if first in DESTRUCTIVE and not confirm:
-        return {
-            "ok": False,
-            "refused": True,
-            "reason": f"{first!r} irreversibly discards context; "
-                      f"pass confirm=true to proceed.",
-            "guard": sorted(DESTRUCTIVE),
-        }
-    if opens_modal(text):
-        return {
-            "ok": False,
-            "refused": True,
-            "kind": "interactive",
-            "reason": f"{first!r} opens an interactive modal/picker that "
-                      f"swallows pasted input; reflection cannot navigate it and "
-                      f"it would freeze the session (only a hand-typed Esc "
-                      f"recovers). Run it by hand.",
-            "guard": sorted(INTERACTIVE),
-        }
+    refused = refusal(text, confirm=confirm)
+    if refused is not None:
+        return refused
 
     if pane is None:
-        pane = autodetect_pane(socket=socket, runner=runner)
+        raise TmuxError(
+            "could not determine which session is calling, so there is nothing "
+            "safe to inject into; reflection only ever acts on the caller "
+            "itself and will not guess a target")
     _assert_pane_exists(pane, socket, runner)
     _assert_pane_has_agent(pane, socket, runner)
 
@@ -503,8 +479,7 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
     followup_sent = None
     followup_deferred = False
     if submitted and is_slash(text):
-        followup_sent = (followup.strip() if followup and followup.strip()
-                         else DEFAULT_FOLLOWUP)
+        followup_sent = resume_text(followup)
         followup_deferred = True
         # Captured now (not inside the watcher thread) so a pane that vanishes
         # before the watcher even gets scheduled still has a session to fall

@@ -88,6 +88,147 @@ export const discardCheckout = (handle: string) =>
   drawio.fn<unknown>('discard', { handle });
 
 /**
+ * The URL that serves one page as a live SVG. The service owns the encoding
+ * and validates the page name, so an unknown page fails here rather than
+ * becoming a 404 discovered after the image has been placed.
+ */
+export const viewUrl = (save: string, page?: string | null) =>
+  drawio.fn<{ url: string; save: string; page: string | null }>(
+    'view_url', page ? { save, page } : { save });
+
+// --- autopublish links -----------------------------------------------------
+
+export interface Link {
+  id: string;
+  save: string;
+  target: string;
+  format: string;
+  page: string | null;
+  scale: number;
+  author: string;
+  created_at: number;
+  last_rev: string | null;
+  last_published_at: number | null;
+}
+
+/** What one link's render attempt did. `published: false` is a REPORTED
+ *  outcome on a resolved promise, not an exception — treating the absence of a
+ *  throw as success is how a link that never rendered looks fine. */
+export interface PublishResult {
+  id: string;
+  save: string;
+  target: string;
+  published: boolean;
+  reason?: string;
+  deleted?: boolean;
+  bytes?: number;
+  rev?: string | null;
+}
+
+export const autopublish = (
+  save: string, target: string, page?: string | null, format = 'svg',
+) => drawio.fn<Link & { first_publish: PublishResult }>('autopublish', {
+  save, target, format, ...(page ? { page } : {}),
+});
+
+export const autopublishList = (save?: string) =>
+  drawio.fn<{ links: Link[]; count: number }>(
+    'autopublish_list', save ? { save } : {});
+
+export const autopublishStop = (id: string) =>
+  drawio.fn<Link & { stopped: boolean }>('autopublish_stop', { id });
+
+export const autopublishNow = (id: string) =>
+  drawio.fn<{ results: PublishResult[]; count: number; published: number }>(
+    'autopublish_now', { id });
+
+// --- clipboard -------------------------------------------------------------
+
+/**
+ * A drawio-importable fragment holding one image cell.
+ *
+ * Pasting plain text that starts with `<` runs drawio's `isCompatibleString`
+ * → `importXml` → `importGraphModel` path, so this places as a cell with no
+ * Insert dialog. The two structural cells are drawio's own copy format.
+ *
+ * `imageAspect=1` is deliberate: the client patch forces aspect preservation
+ * for view images anyway, but that only re-runs when the source next changes —
+ * until then the pasted geometry is what the user sees.
+ */
+export function imageCellXml(url: string, width: number, height: number): string {
+  const style =
+    `shape=image;verticalLabelPosition=bottom;verticalAlign=top;` +
+    `imageAspect=1;aspect=fixed;image=${url};`;
+  return (
+    '<mxGraphModel><root>' +
+    '<mxCell id="0" /><mxCell id="1" parent="0" />' +
+    `<mxCell id="2" value="" style="${xmlAttr(style)}" vertex="1" parent="1">` +
+    `<mxGeometry x="0" y="0" width="${Math.round(width)}" ` +
+    `height="${Math.round(height)}" as="geometry" />` +
+    '</mxCell></root></mxGraphModel>'
+  );
+}
+
+function xmlAttr(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Resolve an origin-relative service URL against this page's origin — a
+ *  pasted cell has to work from a phone on the LAN, not just the host. */
+export const absolute = (url: string) => new URL(url, window.location.href).href;
+
+/** The rendered page's own dimensions, so a pasted cell is not an arbitrary box.
+ *  This is a real headless-Chrome render on a cold cache, hence slow and hence
+ *  worth surfacing when it fails. Falls back to a plausible default size. */
+export async function renderSize(
+  url: string,
+): Promise<{ width: number; height: number }> {
+  const fallback = { width: 480, height: 320 };
+  const response = await fetch(url, { headers: { Accept: 'image/svg+xml' } });
+  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+  const svg = new DOMParser()
+    .parseFromString(await response.text(), 'image/svg+xml')
+    .querySelector('svg');
+  if (!svg) return fallback;
+
+  const box = (svg.getAttribute('viewBox') ?? '').split(/[\s,]+/).map(Number);
+  let width = parseFloat(svg.getAttribute('width') ?? '');
+  let height = parseFloat(svg.getAttribute('height') ?? '');
+  if (!(width > 0) || !(height > 0)) {
+    width = box[2];
+    height = box[3];
+  }
+  if (!(width > 0) || !(height > 0)) return fallback;
+
+  // Scale down oversized renders but never up — a placed image that lands
+  // bigger than the canvas is worse than one you have to enlarge.
+  const max = 640;
+  const factor = Math.min(1, max / width, max / height);
+  return { width: width * factor, height: height * factor };
+}
+
+/**
+ * Put text on the clipboard, reporting whether it landed.
+ *
+ * The Clipboard API needs a secure context, which a plain-HTTP gateway is not
+ * — so failure is expected rather than exceptional here, and the caller shows
+ * the text for manual copying instead. A silent no-op would be worse than
+ * useless when the copy IS the feature.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A diagram path split into folders plus a leaf, which is how the tree is
  * built. The store's paths are already canonical POSIX, so this is a plain
  * split rather than any kind of normalization.

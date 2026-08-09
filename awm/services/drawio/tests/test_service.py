@@ -129,6 +129,35 @@ def test_urls_are_origin_relative(svc):
     assert "://" not in svc.url(SAVE)["url"]
 
 
+# --- the view URL ----------------------------------------------------------
+
+def test_view_url_covers_page_and_whole_document(svc):
+    whole = svc.view_url(SAVE)
+    assert whole["url"] == f"/drawio-app/view/{SAVE}"
+    assert whole["page"] is None
+
+    page = svc.view_url(SAVE, page="Page-1")
+    assert page["url"] == f"/drawio-app/view/{SAVE}/Page-1"
+    assert page["url"].startswith("/") and "://" not in page["url"]
+
+
+def test_view_url_refuses_an_unknown_page(svc):
+    """Better a refusal here than a 404 the user finds after placing the image."""
+    from awm.drawio.autopublish import AutoPublishError
+
+    with pytest.raises(AutoPublishError):
+        svc.view_url(SAVE, page="not-a-page")
+
+
+def test_view_url_encodes_the_page_name_whole(svc):
+    """A ``/`` would split into two path segments and a ``;`` would truncate the
+    drawio style string the URL ends up inside — both render a blank cell."""
+    svc.store.create("fig/odd.drawio", author="tester",
+                     xml=TEMPLATE.replace('name="Page-1"', 'name="a/b;c"'))
+    url = svc.view_url("fig/odd.drawio", page="a/b;c")["url"]
+    assert url.endswith("/a%2Fb%3Bc")
+
+
 def test_list_surfaces_open_checkouts_and_editors(svc):
     svc.checkout(SAVE, author="agent")
     svc.note_tab(SAVE, "tab-1")

@@ -60,10 +60,12 @@ declare -A DISTS=(
   [mic]="$WS/awm/services/mic::$WS/awm/services/mic/tests"
   [vpn]="$WS/awm/services/vpn::$WS/awm/services/vpn/tests"
   [compute]="$WS/awm/services/compute::$WS/awm/services/compute/tests"
+  [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
+  [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute)
+ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

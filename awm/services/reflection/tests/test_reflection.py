@@ -33,7 +33,7 @@ def _agent_present(monkeypatch):
 class FakeRunner:
     def __init__(self, returncode: int = 0, captures=None,
                 pane_pid: str = "4242", session: str = "sess0",
-                reresolved_pane: str = "%32"):
+                reresolved_pane: str = "%32", list_panes=None):
         self.calls: list[tuple[list, dict]] = []
         self.returncode = returncode
         # Scripted `capture-pane -p` snapshots served in order (last one repeats).
@@ -43,10 +43,16 @@ class FakeRunner:
         # What a `display-message -t <session>` re-resolve query returns —
         # the session's pane id after a hop (T5).
         self._reresolved_pane = reresolved_pane
+        # Rows for `list-panes -a`, as (pane, pid, command, session) tuples;
+        # each becomes one tab-separated stdout line.
+        self._list_panes = list(list_panes) if list_panes else []
 
     def __call__(self, argv, **kw):
         self.calls.append((argv, kw))
-        if "display-message" in argv:
+        if "list-panes" in argv:
+            stdout = "\n".join("\t".join(str(f) for f in row)
+                               for row in self._list_panes)
+        elif "display-message" in argv:
             fmt = argv[-1]
             if fmt == "#{pane_pid}":
                 stdout = self._pane_pid
@@ -516,3 +522,65 @@ def test_await_followup_fires_when_agent_self_resumes_after_compacting():
     # Fired on the third sample (first non-compacting after compacting) —
     # never consumed the fourth.
     assert len(caps) == 3
+
+
+# ---------------------------------------------------------------------------
+# T7: the deferred resume goes to the CALLER's pane and to nobody else.
+#
+# This is a regression guard for a real incident: the watcher used to re-scan
+# the tmux server for "the current agent pane" immediately before injecting the
+# resume, and the ranking it used to break ties between candidates read a tmux
+# format that does not exist — so every candidate tied and the first-listed pane
+# always won. Result: deferred resumes were delivered into whichever agent
+# happened to own the lowest-numbered pane, not the one that asked.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.smoke
+def test_await_followup_injects_into_the_calling_pane():
+    # Other agent panes exist on the server — including a lower-numbered one,
+    # which is exactly what used to win. The resume must still land on %32.
+    r = FakeRunner(
+        captures=[
+            "assistant working… esc to interrupt",
+            "Compacting conversation…",
+            "Compacted (ctrl+o to see full summary)\n❯ ",
+        ],
+        list_panes=[
+            ("%0", "111", "claude", "sess0"),
+            ("%32", "444", "claude", "sess4"),
+            ("%77", "555", "claude", "sess9"),
+        ],
+    )
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32",
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
+    assert any("%32" in argv for argv in pastes)
+    assert not any("%0" in argv or "%77" in argv for argv in pastes)
+
+
+@pytest.mark.smoke
+def test_await_followup_never_scans_for_a_pane_to_inject_into():
+    # Stronger form of the above, independent of which panes happen to exist:
+    # resolving the resume target must not involve enumerating the server at
+    # all. If this starts failing, someone reintroduced a global pane scan.
+    r = FakeRunner(
+        captures=[
+            "assistant working… esc to interrupt",
+            "Compacting conversation…",
+            "Compacted (ctrl+o to see full summary)\n❯ ",
+        ],
+        list_panes=[("%0", "111", "claude", "sess0")],
+    )
+    tmux_inject._await_and_followup(
+        "/compact", "resume", "%32",
+        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
+    assert "list-panes" not in r.verbs()
+
+
+@pytest.mark.smoke
+def test_send_refuses_when_the_caller_cannot_be_identified():
+    # No pane means no known caller. Refuse loudly rather than picking someone.
+    with pytest.raises(tmux_inject.TmuxError, match="only ever acts on the caller"):
+        tmux_inject.send("/compact", pane=None, runner=FakeRunner(),
+                         spawn=_noop_spawn)

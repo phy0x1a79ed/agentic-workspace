@@ -5,6 +5,12 @@ from awm.scopes import scopes
 
 
 # Manifest function descriptors (serializable dicts for API_MANIFEST["functions"])
+#
+# Several verbs carry an explicit `timeout`. The hub's 30 s default was set when
+# a scope's data was a symlink; provisioning now runs a real `dvc checkout`, so
+# the verbs that touch data need budgets measured in minutes. The work completes
+# either way -- it runs in the service, not the RPC -- but a timed-out call
+# reports failure for something that succeeded, which is worse than slow.
 SCOPE_MANIFEST_FUNCTIONS = [
     {
         "name": "scope_create",
@@ -21,6 +27,8 @@ SCOPE_MANIFEST_FUNCTIONS = [
             {"name": "branch_name", "type": "string", "required": False},
             {"name": "context", "type": "string", "required": False},
         ],
+        # a cold `dvc checkout` of everything the base branch pins.
+        "timeout": 1800.0,
     },
     {
         "name": "scope_search",
@@ -53,14 +61,17 @@ SCOPE_MANIFEST_FUNCTIONS = [
         "tool": "scope_delete",
         "description": (
             "Delete a scope and clean up its worktree and branch. Refuses when "
-            "the scope's .awm/data annex clone holds content that exists nowhere "
-            "else; pass force=true to accept that loss."
+            "the worktree has uncommitted changes -- which now covers data as "
+            "well as code, since a data chunk is committed via its .dvc pin; "
+            "pass force=true to discard them."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
             {"name": "force", "type": "boolean", "required": False},
         ],
+        # rmtree over a fully materialised data tree.
+        "timeout": 600.0,
     },
     {
         "name": "scope_heal",
@@ -69,14 +80,17 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "Idempotent repair pass over active scopes: enforce tier-3 = .awm/ "
             "only (strip @.awm/context.md imports, drop untracked AGENTS.md / "
             "CLAUDE.md, recreate context.md and the per-scope opencode config) "
-            "and bring .awm/data to the project's current data mode — cloning "
-            "the git-annex data repo for scopes still on the legacy shared "
-            "symlink. Pass dry_run=true to preview."
+            "and bring the scope's data view to whatever its checkout implies "
+            "— installing the DVC merge driver + hooks and materialising the "
+            "pinned chunks, or leaving an unconverted project on the legacy "
+            "shared symlink. Pass dry_run=true to preview."
         ),
         "params": [
             {"name": "project", "type": "string", "required": False},
             {"name": "dry_run", "type": "boolean", "required": False},
         ],
+        # may provision every scope in a project.
+        "timeout": 1800.0,
     },
     {
         "name": "scope_repair",
@@ -106,17 +120,17 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "branch (runs in the hub worktree, which must be clean and on the "
             "hub branch). Per-peripheral conflicts are aborted and reported; "
             "the batch continues. Local-only — no push. strategy='merge' only. "
-            "data=true also fans in each peripheral's .awm/data annex branch "
-            "(that leg publishes content to the canonical data repo first, so "
-            "it is NOT local-only)."
+            "A peripheral's data pins ride its code branch, so this merges "
+            "data too -- there is no separate data leg any more."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "hub", "type": "string", "required": True},
             {"name": "peripherals", "type": "array", "required": True},
             {"name": "strategy", "type": "string", "required": False},
-            {"name": "data", "type": "boolean", "required": False},
         ],
+        # each merge fires a post-merge `dvc checkout`.
+        "timeout": 900.0,
     },
     {
         "name": "scope_scatter",
@@ -126,76 +140,75 @@ SCOPE_MANIFEST_FUNCTIONS = [
             "branch (each merge runs in that peripheral's worktree). A dirty or "
             "off-branch peripheral is skipped; conflicts are aborted and "
             "reported; the batch continues. Local-only — no push. "
-            "strategy='merge' only. data=true also fans the hub's .awm/data "
-            "annex branch out to each peripheral (that leg publishes content "
-            "to the canonical data repo first, so it is NOT local-only)."
+            "strategy='merge' only. The hub's data pins ride its branch, so "
+            "this fans out data too -- there is no separate data leg any more."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "hub", "type": "string", "required": True},
             {"name": "peripherals", "type": "array", "required": True},
             {"name": "strategy", "type": "string", "required": False},
-            {"name": "data", "type": "boolean", "required": False},
         ],
+        # each merge fires a post-merge `dvc checkout`.
+        "timeout": 900.0,
     },
     {
         "name": "scope_data_status",
         "tool": "scope_data_status",
         "description": (
-            "Report a scope's .awm/data view: mode (annex clone | legacy shared "
-            "symlink | missing), data branch, revision, how far it has drifted "
-            "from the canonical data branch, and whether it has uncommitted "
-            "changes."
+            "Report a scope's data view: mode (dvc | legacy shared symlink | "
+            "missing), the commit that pins the data, which chunks it pins, "
+            "which of those are materialised on disk, and whether the workspace "
+            "still matches the pins. There is no separate data branch to drift "
+            "— the code revision IS the data revision."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
         ],
+        # `dvc status` walks every pin.
+        "timeout": 300.0,
     },
     {
-        "name": "scope_data_snapshot",
-        "tool": "scope_data_snapshot",
+        "name": "scope_data_mount",
+        "tool": "scope_data_mount",
         "description": (
-            "Commit whatever the scope has written under .awm/data. Bulk files "
-            "go to the annex content store, small text to ordinary git, "
-            "deletions are picked up."
+            "Choose which data chunks this scope materialises on disk, e.g. "
+            "['data/pipeline/model']. Every chunk the branch pins stays pinned, "
+            "hashed and backed up regardless — this only decides what costs "
+            "inodes and checkout time here, so a scope can pin a 30 GB archive "
+            "it never reads. Pass no chunks to materialise everything. "
+            "To COMMIT data, use ordinary git: `dvc add <path>` then commit the "
+            "generated .dvc pin alongside your code."
         ),
         "params": [
             {"name": "project", "type": "string", "required": True},
             {"name": "scope", "type": "string", "required": True},
-            {"name": "message", "type": "string", "required": False},
+            {"name": "chunks", "type": "array", "required": False},
         ],
+        # changing the mount list re-checks-out.
+        "timeout": 900.0,
     },
     {
-        "name": "scope_data_promote",
-        "tool": "scope_data_promote",
+        "name": "scope_data_gc",
+        "tool": "scope_data_gc",
         "description": (
-            "Promote a scope's data branch into the project's canonical data "
-            "branch. Snapshots, publishes content + location log, reconciles "
-            "with the canonical branch, then fast-forwards it. All-or-nothing: "
-            "a conflict or a concurrent promotion returns cleanly and changes "
-            "nothing."
+            "Reclaim shared-cache space by deleting objects no listed project "
+            "references. DRY RUN BY DEFAULT — pass dry_run=false to delete. "
+            "The cache is shared workspace-wide, so you must list EVERY project "
+            "whose data must survive; anything omitted is treated as garbage. "
+            "keep defaults to 'all-commits', which preserves content referenced "
+            "by historical commits; 'all-branches' would keep only branch tips "
+            "and is refused. Note dvc's own output says 'Removed N objects' "
+            "even for a dry run — trust the dry_run field in the reply."
         ),
         "params": [
-            {"name": "project", "type": "string", "required": True},
-            {"name": "scope", "type": "string", "required": True},
-            {"name": "message", "type": "string", "required": False},
-        ],
-    },
-    {
-        "name": "project_data_init",
-        "tool": "project_data_init",
-        "description": (
-            "Convert <workspace>/data/<project> from a naked directory into a "
-            "git-annex repo — the per-project opt-in for versioned, isolated, "
-            "transactional data. Idempotent. Refuses while any scope of the "
-            "project is active. Secrets and .env files are excluded so they are "
-            "never annexed and never leave this machine."
-        ),
-        "params": [
-            {"name": "project", "type": "string", "required": True},
+            {"name": "projects", "type": "array", "required": True},
             {"name": "dry_run", "type": "boolean", "required": False},
+            {"name": "keep", "type": "string", "required": False},
         ],
+        # walks all history of every named project.
+        "timeout": 1800.0,
     },
     {
         "name": "awm_refresh",
@@ -262,18 +275,16 @@ def _handle_scope_data_status(args: dict) -> dict:
     return scopes.data_status(args["project"], args["scope"])
 
 
-def _handle_scope_data_snapshot(args: dict) -> dict:
-    return scopes.data_snapshot(args["project"], args["scope"], args.get("message"))
-
-
-def _handle_scope_data_promote(args: dict) -> dict:
-    return scopes.data_promote(args["project"], args["scope"], args.get("message"))
-
-
-def _handle_project_data_init(args: dict) -> dict:
-    return scopes.project_data_init(
-        args["project"], dry_run=bool(args.get("dry_run", False)),
+def _handle_data_gc(args: dict) -> dict:
+    return scopes.data_gc(
+        args["projects"],
+        dry_run=bool(args.get("dry_run", True)),
+        keep=args.get("keep", "all-commits"),
     )
+
+
+def _handle_scope_data_mount(args: dict) -> dict:
+    return scopes.data_mount(args["project"], args["scope"], args.get("chunks"))
 
 
 def _handle_scope_repair(args: dict) -> dict:
@@ -295,7 +306,6 @@ def _handle_scope_gather(args: dict) -> dict:
     result = scopes.gather_scope(
         args["project"], args["hub"], args["peripherals"],
         strategy=args.get("strategy", "merge"),
-        data=bool(args.get("data", False)),
     )
     return result.model_dump()
 
@@ -304,7 +314,6 @@ def _handle_scope_scatter(args: dict) -> dict:
     result = scopes.scatter_scope(
         args["project"], args["hub"], args["peripherals"],
         strategy=args.get("strategy", "merge"),
-        data=bool(args.get("data", False)),
     )
     return result.model_dump()
 
@@ -321,9 +330,8 @@ SCOPE_HANDLERS = {
     "scope_heal": _handle_scope_heal,
     "scope_repair": _handle_scope_repair,
     "scope_data_status": _handle_scope_data_status,
-    "scope_data_snapshot": _handle_scope_data_snapshot,
-    "scope_data_promote": _handle_scope_data_promote,
-    "project_data_init": _handle_project_data_init,
+    "scope_data_mount": _handle_scope_data_mount,
+    "scope_data_gc": _handle_data_gc,
     "scope_sync": _handle_scope_sync,
     "scope_gather": _handle_scope_gather,
     "scope_scatter": _handle_scope_scatter,

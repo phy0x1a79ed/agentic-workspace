@@ -422,6 +422,7 @@
       });
     }
     dictation = createDictation({
+      onInterim: (t) => editor?.setInterim(t),
       onCommit: (t) => editor?.insertAtCaret(t),
       onState: (s) => (dictState = s),
       onLevel: (v) => (micLevel = v),

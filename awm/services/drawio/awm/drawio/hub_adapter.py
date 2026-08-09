@@ -213,6 +213,15 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Render a checkout's working copy instead."},
                 {"name": "allow_broken", "type": "boolean",
                  "description": "Export even with unresolvable image references."},
+                {"name": "swap", "type": "array",
+                 "description": (
+                     "Colour replacements, each 'from:to' in bare hex, e.g. "
+                     "'ff00ff:00aa55'. Same syntax view_url takes."
+                 )},
+                {"name": "crop", "type": "string",
+                 "description": (
+                     "Name of a shape to crop the render to. SVG only."
+                 )},
             ],
             "timeout": 300,
         },
@@ -228,6 +237,48 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "save", "type": "string"},
                 {"name": "handle", "type": "string",
                  "description": "Checkout handle; opens the working copy instead."},
+            ],
+        },
+        {
+            "name": "view_url",
+            "tool": "drawio_view_url",
+            "description": (
+                "The URL that serves one page (or the whole document) as a "
+                "live SVG. Place it in ANOTHER diagram — Insert > Image > URL, "
+                "or paste a cell carrying it — and that image re-renders "
+                "whenever the source page changes, so one diagram can embed "
+                "another's page without a copy going stale. Fails here if the "
+                "page name is wrong, rather than 404ing after it is placed. "
+                "The URL carries the variables: 'swap' recolours the render and "
+                "'crop' trims it to a named shape, so ONE source page can be "
+                "placed in several colours and framings instead of keeping a "
+                "near-duplicate page for each. Those parameters survive export "
+                "— the exporter renders the referenced page and embeds it."
+            ),
+            "params": [
+                {"name": "save", "type": "string", "required": True,
+                 "description": "Diagram path, e.g. 'scadc/biomass-map'."},
+                {"name": "page", "type": "string",
+                 "description": (
+                     "Page NAME to serve (default: the whole document). Named, "
+                     "not indexed, so reordering tabs cannot repoint it."
+                 )},
+                {"name": "swap", "type": "array",
+                 "description": (
+                     "Colour replacements, each 'from:to' in bare hex — e.g. "
+                     "'ff00ff:00aa55'. Draw the variable region in a mask "
+                     "colour (#ff00ff is the convention) and swap it per "
+                     "placement. Replacements are simultaneous, never chained. "
+                     "Reaches style colours, label colours and referenced SVGs; "
+                     "NOT raster images, which cannot be masked."
+                 )},
+                {"name": "crop", "type": "string",
+                 "description": (
+                     "Label (or cell id) of a shape to crop the render to. Draw "
+                     "a rectangle around the region, name it, and pass the "
+                     "name; the rectangle itself is removed from the output."
+                 )},
+                {"name": "scale", "type": "number", "description": "Default 1.0."},
             ],
         },
         {
@@ -272,6 +323,16 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "format", "type": "string",
                  "description": "svg (default), pdf, png, or jpg."},
                 {"name": "scale", "type": "number", "description": "Default 1.0."},
+                {"name": "swap", "type": "array",
+                 "description": (
+                     "Colour replacements, each 'from:to' in bare hex — the "
+                     "same syntax view_url takes, so a published file is the "
+                     "bytes that link serves."
+                 )},
+                {"name": "crop", "type": "string",
+                 "description": (
+                     "Name of a shape to crop the render to. SVG links only."
+                 )},
             ],
             "timeout": 300,
         },
@@ -535,6 +596,20 @@ def _author(as_: str | None) -> str:
     return as_ or "agent"
 
 
+def _as_list(value) -> list[str]:
+    """Accept ``swap`` as a list or as one comma-separated string.
+
+    The CLI and the HTTP query surface hand a repeatable parameter over as a
+    scalar as often as a list, and a swap that silently did not apply because it
+    arrived as the wrong shape would be indistinguishable from one that matched
+    nothing."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        return [part for part in value.split(",") if part.strip()]
+    return [str(part) for part in value]
+
+
 HANDLERS: dict[str, Any] = {
     "list": lambda a: _svc().list(),
     "info": lambda a: _svc().info(a["save"]),
@@ -554,14 +629,18 @@ HANDLERS: dict[str, Any] = {
     "export": lambda a: _svc().export(
         a.get("save"), fmt=a.get("format") or "pdf", out=a.get("out"),
         page=a.get("page"), scale=float(a.get("scale") or 1.0),
-        allow_broken=bool(a.get("allow_broken")), handle=a.get("handle")),
+        allow_broken=bool(a.get("allow_broken")), handle=a.get("handle"),
+        swaps=_as_list(a.get("swap")), crop=a.get("crop")),
     "url": lambda a: _svc().url(a.get("save"), handle=a.get("handle")),
+    "view_url": lambda a: _svc().view_url(
+        a["save"], page=a.get("page"), swaps=_as_list(a.get("swap")),
+        crop=a.get("crop"), scale=a.get("scale")),
     "remove": lambda a, as_=None: _svc().remove(a["save"], author=_author(as_)),
 
     "autopublish": lambda a, as_=None: _pub().create(
         a["save"], a["target"], page=a.get("page"),
         fmt=a.get("format") or "svg", scale=float(a.get("scale") or 1.0),
-        author=_author(as_)),
+        author=_author(as_), swaps=_as_list(a.get("swap")), crop=a.get("crop")),
     "autopublish_list": lambda a: _pub().list(a.get("save")),
     "autopublish_stop": lambda a: _pub().stop(a["id"]),
     "autopublish_now": lambda a: _pub().now(a.get("id"), a.get("save")),
@@ -655,6 +734,13 @@ def _on_start() -> None:
     VIEW = ViewServer(store)
     store.subscribe(VIEW.renderer.prune_for_commit)
     ViewNotifier(_emit).attach(store)
+
+    # Every path that inlines — the export verb, an autopublish link, a nested
+    # page view — resolves embedded page views through the renderer that is
+    # already running, so a nested render shares its cache instead of building
+    # a second store to answer the same question.
+    export.set_view_resolver_factory(
+        lambda: view_mod.ViewResolver(VIEW.renderer))
 
     asyncio.create_task(mount.hold_mount())
     asyncio.create_task(VIEW.hold_mount())

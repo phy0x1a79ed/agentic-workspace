@@ -28,8 +28,14 @@ def pushed(monkeypatch):
     class _S:
         push_enabled = True
         validity_hours = 24.0
+        mint_cadence_hours = 12.0
         discord_account = "discord-bot"
         discord_channel = "1522674357762261112"
+        # 1 attempt / 0 backoff: existing tests exercise a single send, same
+        # as before retries existed. Tests of the retry behavior itself
+        # override these via monkeypatch.setattr(service, "_settings", ...).
+        push_retry_attempts = 1
+        push_retry_backoff_seconds = 0.0
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
 
@@ -48,6 +54,13 @@ def pushed(monkeypatch):
 def node_env(monkeypatch):
     monkeypatch.setenv("AWM_NODE_NAME", "altair")
     monkeypatch.setenv("AWM_EDGE_URL", "https://10.74.81.213:12100")
+
+
+@pytest.fixture(autouse=True)
+def reset_push_status():
+    """_push_status is module-level state; start each test with it unknown."""
+    from awm.auth import service
+    service._push_status.update(ok=None, at=None, error=None)
 
 
 async def test_the_message_names_the_node(pushed):
@@ -158,3 +171,83 @@ def test_autologin_link_shape(monkeypatch):
     monkeypatch.setenv("AWM_EDGE_URL", "https://mira:12100")
     assert service._autologin_link("abc") == \
         "https://mira:12100/__auth/link?p=abc"
+
+
+# ---------------------------------------------------------------------------
+# Retry behavior
+# ---------------------------------------------------------------------------
+
+
+class _RetrySettings:
+    push_enabled = True
+    validity_hours = 24.0
+    discord_account = "discord-bot"
+    discord_channel = "1522674357762261112"
+    push_retry_attempts = 3
+    push_retry_backoff_seconds = 0.0  # keep tests fast
+
+
+async def test_a_transient_failure_is_retried_until_it_succeeds(monkeypatch):
+    from awm.auth import service
+
+    monkeypatch.setattr(service, "_settings", lambda: _RetrySettings())
+
+    calls = 0
+
+    async def _flaky(*a, **k):
+        nonlocal calls
+        calls += 1
+        if calls < 2:
+            raise RuntimeError("peer unreachable")
+        return {"ok": True}
+
+    import awm.gatewayclient as gc
+    monkeypatch.setattr(gc, "call_maybe_peer", _flaky)
+    monkeypatch.setattr(gc, "peer_env", lambda var: None)
+
+    await service._push_password_to_discord(PASSWORD, 0.0)
+
+    assert calls == 2
+    assert service._push_status["ok"] is True
+    assert service._push_status["error"] is None
+    assert service._push_status["at"] is not None
+
+
+async def test_a_persistent_failure_gives_up_after_max_attempts(monkeypatch):
+    from awm.auth import service
+
+    monkeypatch.setattr(service, "_settings", lambda: _RetrySettings())
+
+    calls = 0
+
+    async def _boom(*a, **k):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("social is down")
+
+    import awm.gatewayclient as gc
+    monkeypatch.setattr(gc, "call_maybe_peer", _boom)
+    monkeypatch.setattr(gc, "peer_env", lambda var: None)
+
+    await service._push_password_to_discord(PASSWORD, 0.0)   # must not raise
+
+    assert calls == _RetrySettings.push_retry_attempts
+    assert service._push_status["ok"] is False
+    assert "social is down" in service._push_status["error"]
+    assert service._push_status["at"] is not None
+
+
+async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
+    from awm.auth import service, store
+
+    # h_status also reads the credential store; stub it so this stays a unit
+    # test of the push-status wiring, not a DB integration test.
+    monkeypatch.setattr(store, "latest", lambda: None)
+    monkeypatch.setattr(store, "valid_generations", lambda: [])
+
+    await service._push_password_to_discord(PASSWORD, 0.0)
+
+    status = service.h_status({})
+    assert status["push_last_ok"] is True
+    assert status["push_last_error"] is None
+    assert status["push_last_attempt_at"] is not None

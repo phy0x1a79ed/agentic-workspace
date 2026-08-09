@@ -24,11 +24,12 @@ cd projects/<project>/<scope>/
 
 The worktree is the agent's CWD. All git operations target `feat/<scope>` in place — no branch switching. Data is reachable via `.awm/data/` and skill catalogs via `.awm/skills/`.
 
-`.awm/data/` is either a **git-annex clone on branch `scope/<scope>`** (isolated
-+ versioned; publish with `scope_data_snapshot` then `scope_data_promote`) or —
-for projects whose data hasn't been converted — a plain symlink to
-`data/<project>/` shared by every scope. `scope_data_status project=<p>
-scope=<s>` reports which. See WORKSPACE.md § *Data concurrency*.
+Data is versioned by the commit that versions the code: `data/<chunk>` holds the
+files and the tracked `data/<chunk>.dvc` pin records them, so `dvc add` plus an
+ordinary commit is the whole save-and-publish story. Projects that have not been
+converted keep a plain `.awm/data` symlink to `data/<project>/`, shared by every
+scope. `scope_data_status project=<p> scope=<s>` reports which. See
+WORKSPACE.md § *Data*.
 
 For end-of-session logging, follow `skill_get path="awm/debrief.md"`.
 

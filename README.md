@@ -339,61 +339,67 @@ live on your host) to pick up changes.
 
 ## Project data — versioning and concurrency
 
-Project data lives at `<workspace>/data/<project>/` and every scope reaches it
-at `.awm/data/`. Both of those paths are permanent; what changed is what sits
-behind them.
+Data is versioned by the same commit that versions the code. A project opts in
+by being a DVC repo — a tracked `.dvc/config` in its checkout — and from then on:
 
-By default `.awm/data` is a symlink and every scope in a project writes the same
-files — no history, no isolation, and two scopes writing the same path destroy
-each other's work. Converting a project's data to **git-annex** gives it the
-same model code already has from worktrees:
-
-```bash
-awm project data-init <project> --dry-run   # preview: file count, vendored checkouts found
-awm project data-init <project>             # convert (refuses while any scope is active)
-awm scope heal --project <project>          # give existing scopes their clones
+```
+projects/<project>/<scope>/data/<chunk>        the files (hardlinks into the cache)
+projects/<project>/<scope>/data/<chunk>.dvc    the pin — TRACKED, ~110 bytes
+<workspace>/data/.dvc_cache/                   the bytes, once, for every project
 ```
 
-After conversion each scope's `.awm/data` is a clone on its own branch
-`scope/<scope>`, and `<workspace>/data/<project>/` stays a normal checked-out
-working tree on `main` — so every absolute path and symlink that pointed there
-still resolves.
+There is **one lever**. `dvc add data/<chunk>` writes the pin; committing it
+alongside your code records both together. Merging a branch brings its pins with
+it and a post-merge hook checks the files out, so a code merge *is* the data
+promote. Isolation is branch isolation — there is no data branch, no promote
+verb, and no separate `--data` leg on gather/scatter.
 
 ```bash
-awm scope data-status  <project> <scope>    # mode, branch, revision, drift, dirt
-awm scope data-snapshot <project> <scope>   # commit what this scope wrote
-awm scope data-promote  <project> <scope>   # publish into the project's canonical branch
-awm scope gather <project> <hub> --peripherals a --peripherals b --data
+awm scope data-status <project> <scope>              # mode, pinning commit, what is materialised
+awm scope data-mount  <project> <scope> --chunks ... # what materialises on disk here
+awm scope data-gc --projects a --projects b          # reclaim cache space (dry run by default)
 ```
 
-`data-promote` is all-or-nothing. It snapshots, publishes content and the
-location log, reconciles against the canonical branch, then **fast-forwards**
-it — so two scopes promoting at once produce one winner and one clean
-rejection, never a clobber. A content conflict is reported as a conflict and
-rolls back to the exact pre-merge revision; nothing is auto-merged into
-`file.variant-<key>` behind your back.
+awm wires; DVC operates. Wiring is the absolute cache path in the untracked
+`.dvc/config.local`, `cache.type = hardlink,symlink` in the tracked config, the
+`dvc` merge driver and the post-merge/post-commit hooks in the common git dir,
+and the per-scope mount list. Everything else is `dvc add` / `dvc checkout` /
+`git commit` / `git merge`, unwrapped.
 
 Operational notes:
 
-- **Storage.** Content is hardlinked from the canonical store, so N scopes
-  holding the same dataset cost one copy. This requires `data/` and `projects/`
-  on the same filesystem; if they aren't, git-annex silently falls back to real
-  copies.
-- **Read-only files.** Anything above ~100 KB becomes a symlink into the content
-  store and is not writable in place. Small text stays an ordinary git file.
-- **Secrets are excluded, never annexed.** `secrets/` paths, `.env*`,
-  `.credentials.json` and `.nextflow/secrets` are gitignored in the canonical
-  repo, so they are never committed and never reach the off-site mirror. They
-  stay on local disk untouched.
-- **Vendored git checkouts are pinned, not annexed.** Conversion finds nested
-  repos, excludes their trees, and records URL + commit in `VENDORED.tsv`.
-- **git-annex is optional.** It is resolved from `AWM_ANNEX_BIN`, then PATH,
-  then the known mamba envs. When it isn't found every path degrades to the
-  legacy shared symlink rather than failing. `AWM_DATA_ANNEX=0` forces that
-  globally.
-- **Off-site backup.** `awm/gateway/scripts/data-backup.sh` mirrors the whole
-  `data/` tree to Globus nightly. Safe as a dumb mirror because annex objects
-  are content-addressed and never mutated in place.
+- **Storage.** One physical copy per machine. `data/` and `projects/` must be on
+  the same filesystem or the hardlinks degrade to real copies.
+- **Materialised files are read-only** — they share an inode with the cache
+  object every other scope and every historical commit reads through. Write a new
+  file, or `dvc unprotect <path>` first. Never `chmod +w` one.
+- **Never run a bare `dvc gc`.** It collects against one worktree's view of a
+  cache the whole workspace shares. `awm scope data-gc` makes you name every
+  project to keep, defaults to dry-run, and refuses `all-branches`.
+- **Unconverted projects are untouched** and keep the legacy shared symlink at
+  `.awm/data`. Nothing migrates them; a project is wired the first time a scope
+  is created or healed after its checkout carries a tracked `.dvc/config`.
+- **dvc is optional.** It is resolved from `AWM_DVC_BIN`, then PATH, then the
+  known mamba envs; absent, every path degrades to the shared symlink rather than
+  failing. `AWM_DATA_DVC=0` forces that globally.
+
+## Off-site backup
+
+Chinook is the remote for the cache the way GitHub is the remote for the code.
+A daily timer runs `awm-dvc-sync`, which pushes `data/.dvc_cache` to the chinook
+Globus collection and blocks until the transfer reaches a terminal state. It is
+**append-only**: nothing this service does deletes on the remote, which is what
+makes a local `dvc gc` recoverable rather than permanent.
+
+`awm dvc pull --scope <path>` is the selective inverse — it resolves one scope's
+pins to their exact objects and fetches only those, then `dvc checkout`
+materialises them. See `awm/services/dvc/INSTALL.md`.
+
+**What is not backed up.** Only the cache travels. Code is covered by GitHub;
+anything in a worktree that is neither committed-and-pushed nor DVC-pinned —
+scratch directories, run outputs, `.awm/` service state — is covered by nothing,
+deliberately. `awm dvc coverage` lists exactly what that is, per scope, so the
+decision stays visible.
 
 ## Destructive operations
 

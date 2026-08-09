@@ -44,7 +44,7 @@ Foundation facts for anyone touching this:
 - **Services are OUT-OF-PROC**, spawned + PID-journaled by the supervisor; the control-WS lease is liveness. Each service is a self-contained `run.sh` (the only thing the gateway runs — `bash run.sh`) plus a tiny `hub_adapter.py` built on **`awm.gatewayclient.ServiceAdapter`** (the reusable register→ready→serve→dispatch→reconnect base). `awm.gatewayclient` also carries `call`/`call_sync`/`RefCache` for the service→service direction. The `/svc/*` control plane is unauthenticated (loopback only). `awm/services/discord/` is the worked example to copy.
 - **Install/iterate each module via its own `install.sh`, never hand-rolled `pip`.** `awm/gateway/install.sh` is the composition root — it installs `config` + `persistence` and every feature dist `--no-deps`, then the gateway itself (resolving third-party deps). Imported-source components (`config`, `persistence`, `gatewayclient`, `agentcore`, `ui_components`) have no `install.sh`. Override the target env with `AWM_ENV`.
 - **Registration contract.** A service declares its API as a serializable `ready.api` manifest (`functions`/`emitters`/`subscriptions`); that threads into the MCP/CLI/HTTP generation layer (manifest → `Operation` → the `operations.py` compiler; dispatch is catalog-owned). The hub-mediated service↔service comms model — `call` request/reply, `emit`/`sub` pub/sub, `Bridge` streaming, all identity-aware via `as_`, never direct sockets — is documented in `awm/gateway/awm/gateway/catalog.py`. The catalog is the single live source the gateway renders to all three surfaces; `/tools` and `/invoke` read from it. A manifest function may carry an optional `"tool"` key to set its exact MCP-surface name, decoupling the projected label from the internal op `name` used for RPC dispatch — so the surface reads as clean `<domain>_<verb>` (`scope_create`, `agent_spawn`, `scope_resolve`) while internal names (incl. the frozen `IDENTITY_CONTRACT` camelCase RPCs) are unchanged. `_tool_name` honors it; `list_tools` warn-and-skips duplicate projected names (override names must be globally unique).
-- **Dual `/tools` projection — expanded vs collapsed-by-domain.** `catalog.list_tools()` is the **expanded** per-verb surface (~71 tools); the CLI generator (`register_service_cli_commands`) and the flat `/invoke` by-name dispatch both depend on it, so it stays. Alongside it, `catalog.list_domain_tools()` folds that same surface **by domain** — the projected name split on the first underscore (`scope_create` → domain `scope` / verb `create`; native ops fold by `cli_group`/`cli_command`) — into one generic `{verb, args}` tool per domain (~8–10 total). `GET /tools?view=domains` returns the collapsed view; the **MCP stdio proxy requests it** (so every MCP client, including non-deferring spawned agents + OpenCode, carries the tiny surface), while the default `GET /tools` and the CLI/HTTP surfaces stay expanded. `dispatch()` gained a domain branch *ahead* of the flat branches: when `name` is a known domain and `args` carries `verb`, it routes to `_dispatch_domain` — `verb="describe"` is answered from the catalog (no service round-trip; `describe` is a **reserved verb** on every domain), a native verb runs its `Operation`, and a service verb is resolved back to its internal fn via the existing `_find_service_fn(f"{domain}_{verb}")` reverse lookup (so a name≠tool divergence like `scope_refresh`→`awm_refresh` still routes) and RPC'd with `as_` threaded as before. The collapse is **purely additive** in the gateway — flat dispatch, the default `/tools`, and all CLI/HTTP generation are untouched, so it's reversible by reverting the proxy's `?view=domains` request. A domain's verbs must be unique (folding warn-and-skips dups, first-wins) — keep new `"tool"` overrides under a real `<domain>_<verb>` shape (a bare single-token override becomes its own junk single-verb domain). A manifest function may carry `"surfaces": ["cli","http"]` (default = all three when omitted) to keep a verb **off the MCP surface**: `_domain_catalog` skips non-`mcp` functions and `_dispatch_domain` rejects them, so `writing(verb="add")` is unknown/404 over MCP while the CLI's flat `/invoke {name:"writing_add"}` (via `_find_service_fn`, unfiltered) still works — the mechanism behind CLI-only write verbs (`awm/services/writing`). A function's `"timeout"` is now honored on the `/invoke`/domain path too (via `_rpc_call` → `_fn_timeout`), not only the `/svc/<name>/fn/<fn>` proxy; the generated service CLI dispatch uses a 600s client ceiling so a slow verb isn't client-aborted at 30s.
+- **Dual `/tools` projection — expanded vs collapsed-by-domain.** `catalog.list_tools()` is the **expanded** per-verb surface (~71 tools); the CLI generator (`register_service_cli_commands`) and the flat `/invoke` by-name dispatch both depend on it, so it stays. Alongside it, `catalog.list_domain_tools()` folds that same surface **by domain** — the projected name split on the first underscore (`scope_create` → domain `scope` / verb `create`; native ops fold by `cli_group`/`cli_command`) — into one generic `{verb, args}` tool per domain (~8–10 total). `GET /tools?view=domains` returns the collapsed view; the **MCP stdio proxy requests it** (so every MCP client, including non-deferring spawned agents + OpenCode, carries the tiny surface), while the default `GET /tools` and the CLI/HTTP surfaces stay expanded. Adding **`&peers=1`** widens that same collapse to the fleet — still one tool per domain name, but peer-only domains appear and the envelope's third key `peer` chooses the node (see FEDERATION.md § *Cross-peer calls*). It is opt-in for a reason: the plain view is what a *peer* fetches from this node's edge, and it must stay local-only or the fleet advertises transitive peers nobody can dial. `dispatch()` gained a domain branch *ahead* of the flat branches: when `name` is a known domain and `args` carries `verb`, it routes to `_dispatch_domain` — `verb="describe"` is answered from the catalog (no service round-trip; `describe` is a **reserved verb** on every domain), a native verb runs its `Operation`, and a service verb is resolved back to its internal fn via the existing `_find_service_fn(f"{domain}_{verb}")` reverse lookup (so a name≠tool divergence like `scope_refresh`→`awm_refresh` still routes) and RPC'd with `as_` threaded as before. The collapse is **purely additive** in the gateway — flat dispatch, the default `/tools`, and all CLI/HTTP generation are untouched, so it's reversible by reverting the proxy's `?view=domains` request. A domain's verbs must be unique (folding warn-and-skips dups, first-wins) — keep new `"tool"` overrides under a real `<domain>_<verb>` shape (a bare single-token override becomes its own junk single-verb domain). A manifest function may carry `"surfaces": ["cli","http"]` (default = all three when omitted) to keep a verb **off the MCP surface**: `_domain_catalog` skips non-`mcp` functions and `_dispatch_domain` rejects them, so `writing(verb="add")` is unknown/404 over MCP while the CLI's flat `/invoke {name:"writing_add"}` (via `_find_service_fn`, unfiltered) still works — the mechanism behind CLI-only write verbs (`awm/services/writing`). A function's `"timeout"` is now honored on the `/invoke`/domain path too (via `_rpc_call` → `_fn_timeout`), not only the `/svc/<name>/fn/<fn>` proxy; the generated service CLI dispatch uses a 600s client ceiling so a slow verb isn't client-aborted at 30s.
 - **Server-side verb gating for placed agents.** Because the placement toolset collapsed onto the single `agent` domain tool (`mcp__awm__agent`), claude's `--allowedTools` can no longer scope *which* placement verb a placed agent calls (one tool, all verbs) — and the default OpenCode harness ignores `--allowedTools` entirely. So the agents service gates **server-side**: `placement.VERB_PROFILES` is the per-mode verb allowlist, recorded as `allowed_verbs` on the `agent_instances` row at spawn, and `placement.ensure_verb_allowed(as_, verb)` (called in the `hub_adapter` relay wrappers, keyed on the `X-Awm-As` identity) rejects a disallowed verb regardless of harness (`task_fail` always allowed). `--allowedTools` now carries only filesystem built-ins + `mcp__awm__agent`. This is **defense-in-depth / a guardrail, not a trust boundary** — `X-Awm-As` is plaintext + spoofable on the unauthenticated loopback bus (an agent with `Bash` can curl `/invoke` and forge any identity); the real fix (a per-placement bearer secret, the `placement_token` already exists) is a deferred follow-up.
 - **The gateway's own control plane runs through the same compiler.** Its status/restart/mcp-sync, hub list/deregister, and services-lifecycle ops are declared once as `GATEWAY_OPERATIONS` (a list of `operations.Operation` in `awm/gateway/awm/gateway/gateway_ops.py`); the three generators in `operations.py` (`operations_to_mcp_tools`, `register_fastapi_routes`, `register_cli_commands`) project them onto MCP (via `catalog.list_tools`/`dispatch`), HTTP (`server.py` startup), and CLI (`cli.py`). A new gateway control op is one `Operation`, never a hand-rolled CLI command + HTTP route + native MCP tool in three places.
 - **Concurrency.** One server loop owns all async hub state; blocking work is offloaded (`run_in_threadpool` / `run_in_executor`); `asyncio.run()` is banned inside the daemon (survives only in the CLI/MCP-proxy/entrypoint processes). `catalog.dispatch` is async, `/tools` is sync.
@@ -108,50 +108,49 @@ All unauthenticated — the gateway binds loopback only. `kind=static` serves ca
 - **Never hand-roll a long-lived background task either — use `gatewayclient.spawn_supervised`.** `self._x_task = asyncio.create_task(self._x())` and then never reading `_x_task` leaves a service running, apparently healthy, with that whole capability silently absent if the task raised on its first line. The wrapper logs at ERROR and respawns. It treats a *return* as a defect too, so a supervised loop must never exit — check the shutdown flag and skip the tick instead of breaking out.
 - **A slow `on_start` is a bug now, not just a smell.** See the ready-ASAP contract above: the gateway reaps a lease-holder that stays unready, so startup work that takes real time belongs in a task, and anything a caller needs must be behind the adapter's init gate rather than raced against it.
 
-## Project data layer (`awm.scopes.data_annex`)
+## Project data layer (`awm.scopes.data_dvc`)
 
-`.awm/data` used to be one line in `_scaffold_awm_dir`: a symlink to
-`data/<project>/`, shared by every scope. It is now produced by
-`data_annex.provision_scope_data`, which returns either that same symlink or a
-**git-annex clone** — the *only* entry point, deliberately, so there is one
-place that decides.
+Data is versioned by the same commit that versions the code: `data/<chunk>.dvc`
+is a tracked ~110-byte pin, the bytes live once in `<workspace>/data/.dvc_cache`,
+and `provision_scope_data` is the *only* entry point — one place decides between
+DVC wiring and the legacy shared symlink.
 
-Design facts worth knowing before you touch it:
+**awm wires, DVC operates.** Wiring is the cache path, the merge driver, the
+hooks, and the mount list; `dvc add` / `dvc checkout` / `git commit` /
+`git merge` are used unwrapped. Design facts worth knowing before you touch it:
 
-- **The opt-in is the canonical repo's existence.** `is_annex_project(p)` is
-  "is `data/<p>` a git-annex repo?" There is no config table and no flag to
-  keep in sync; `project_data_init` flips a project by converting the directory.
-  `AWM_DATA_ANNEX=0` is the global kill switch.
-- **A clone, not a submodule.** A submodule inside a *secondary* git worktree
-  makes git write a relative `core.worktree` that git-annex resolves from a
-  different base — every annex command then dies with
-  `changeWorkingDirectory: does not exist`. A plain clone has an ordinary
-  `.git` and is immune. `projects/annex-poc/` preserves the reproduction.
-- **The canonical repo keeps a working tree** on `main`, and promotion pushes
-  into it with `receive.denyCurrentBranch=updateInstead`. That is what keeps
-  every existing absolute path into `data/<project>/` resolving — including the
-  TTS model lookup and scadc's ~171 absolute symlinks.
-- **Merges use plain `git merge`, never `git annex sync`.** git-annex only
-  auto-resolves conflicting content into `file.variant-<key>` under its own
-  merge machinery; under plain merge a conflict is an ordinary unmerged path.
-  Keeping both sides must stay an explicit decision. `publish_data` therefore
-  does fetch → `git annex merge` → explicit push by hand rather than calling
-  sync.
-- **The location log rides the `git-annex` branch and is never rolled back.**
-  Pushing only the data branch leaves peers seeing *0 copies* for content that
-  is physically present. And reverting the log *is* the data-loss operation —
-  it produces that same symptom while the bytes sit on disk. The transaction
-  boundary in `merge_data` is the data branch ref, nothing else.
-- **git-annex is not on the daemon's PATH.** `annex_bin()` resolves it
-  (`AWM_ANNEX_BIN` → PATH → known mamba envs) and `_env()` puts its directory
-  on PATH for *every* git call, since git-annex's own hooks re-invoke
-  `git annex`. Absent binary ⇒ fall back to the symlink, never fail.
-- **Teardown is the dangerous direction.** `_cleanup_worktree` calls
-  `prepare_teardown` first, which publishes, refuses when content would be lost,
-  and chmods the tree writable (annex marks objects *and their parent dirs*
-  read-only, so an un-chmod'ed `rmtree` dies partway and leaves a stub that
-  collides with the next `worktree add`). `create_scope` pre-cleans through the
-  same path, so creation can now refuse where it previously steamrolled.
+- **The opt-in is the checkout.** `is_dvc_repo(p)` is "does this worktree track
+  a `.dvc/config`?" There is no config table, no flag to keep in sync, and no
+  conversion verb — a project that has one gets wired on its next scope creation
+  or heal; one that does not keeps the shared symlink. `AWM_DATA_DVC=0` is the
+  global kill switch.
+- **The cache path goes in `config.local`, absolute, never the tracked config.**
+  A tracked relative path resolves against a different base in a non-scope
+  checkout, and DVC then silently starts a *second* cache there rather than
+  erroring. `config.local` is untracked, so it is per-machine by construction.
+- **`cache.type = hardlink,symlink`.** One physical copy per machine; a
+  materialised file is a hardlink to the cache object. That is why nothing here
+  ever `chmod +w`s a *file*: the write bit belongs to an inode every other scope
+  and every historical commit reads through. `chmod_dirs_writable` touches
+  directories only, and exists solely as the rmtree fallback.
+- **Hooks go in the common git dir, by hand.** `dvc install` builds its hooks
+  path as `<root>/.git/hooks`, and in a secondary worktree `.git` is a *file* —
+  every awm scope is a secondary worktree. post-commit exists as well as
+  post-merge because a *conflicted* merge fires no post-merge hook at all, which
+  is exactly when a human has just hand-edited a pin. Both are shared across
+  worktrees, so `[ -d .dvc ] || exit 0` is load-bearing.
+- **git ignores a hook's exit status.** A failing `dvc checkout` removes the old
+  files before discovering it cannot install the new ones, and cannot fail the
+  merge — so it leaves a sentinel that `data_status` and provisioning surface.
+- **An absent mount list means "everything"; an empty one means "nothing."**
+  Collapsing the two drags every cold chunk in the project onto disk.
+- **`gc` is a guard, not a wrapper.** The cache is shared workspace-wide, so
+  `data_gc` must be told every project whose data survives, defaults to dry-run,
+  and refuses `all-branches`. Note dvc's own output says "Removed N objects"
+  even for a dry run — trust the `dry_run` field in the reply.
+- **Teardown guards uncommitted work, not content.** Deleting a worktree unlinks
+  names, never bytes. What dies is what was never committed — and under one
+  lever that is `git status`, covering data and code at once.
 
 ## Frontend component system
 
@@ -192,7 +191,7 @@ awm dev shadow --port 7821 pages/<name>     # overlays dist/ at /ui/<name> on :7
 
 ## Federation
 
-**`FEDERATION.md` is the reference** — read it before touching anything cross-node. The one-line shape: the loopback gateway stays open and unauthenticated, and a peer's services are reached **directly on that peer's `httpsfront` edge** over CA-verified TLS with a bearer fetched by ssh — never relayed through a gateway, never replicating a database. The gateway is a *directory* (`peer_resolve`), not a router.
+**`FEDERATION.md` is the reference** — read it before touching anything cross-node. The one-line shape: the loopback gateway stays open and unauthenticated, and a peer's services are reached **directly on that peer's `httpsfront` edge** over CA-verified TLS with a bearer fetched by ssh — never relayed through a gateway, never replicating a database. The gateway is a *directory* (`peer_resolve`, `peer_providers`), not a router: a call that belongs to a peer comes back as that peer's address for the caller to dial, never forwarded.
 
 Two things bite agents who assume otherwise. First, this is **not** the retired v0 federation (cr-sqlite replication, leader election, a `peers`/`peer_sync_state` registry) — that really is gone, and git history for the deletion is not a guide to the current system. Second, a **singleton is re-homed per node**, not per call: `AWM_TWOFA_PEER` / `AWM_SOCIAL_PEER` / `AWM_SSH_SLOT_PEER` in `<workspace>/.awm/env` name the node that owns each singleton, and `gatewayclient.call_maybe_peer` / `call_sync_maybe_peer` / `subscribe_maybe_peer` are the single branch point so a consumer can never half-route. Use them even from sync code; a hand-rolled local POST is how one consumer ends up borrowing while another does not.
 
@@ -208,6 +207,7 @@ The Service Hub section above carries the *external* contract; this maps each pi
 - **Service translator + bridge** — `hub/proxy.py::proxy_service_http` / `open_session_via_http` / `proxy_session_ws` / `proxy_service_emit_ws`.
 - **Supervisor + PID journal + bootstrap** — `hub/supervisor.py::reconcile_journaled_services` / `bootstrap` / `spawn_service` / `kill_pid_group` / `supervise_disconnect`; state at `<AWM_DIR>/state/services.json`. Injects only the three env vars and runs `bash run.sh`.
 - **Catalog (manifest → MCP/CLI/HTTP)** — `catalog.py` (`_tool_name`, `list_tools`/`dispatch` for the expanded surface; `list_domain_tools`/`_describe_domain`/`_dispatch_domain` for the collapsed `?view=domains` surface; `/tools`/`/invoke`).
+- **Federation directory** — `peers.py` (name → edge address) + `peer_catalog.py` (name → domains it provides, plus the default-provider rules and the `PeerRedirect` dispatch raises instead of relaying).
 - **Gateway control ops** — `gateway_ops.py` (`GATEWAY_OPERATIONS`); generators in `operations.py`.
 - **CLI** — the `gateway` + `services` groups are **generated** from `GATEWAY_OPERATIONS` by `register_cli_commands`, with a few hand-authored commands attached; `awm dev shadow` (search `dev_app`) and the page-shadow helpers (`_shadow_page_target`, `_read_prefix_txt`, `_post_page_register`) live in `cli.py`.
 - **Frontend** — one root `awm/vite.config.ts` (the `@awm/*` alias + tree-shake rule), one `awm/scripts/build.sh` (the per-page build loop), `awm/package.json` (central third-party deps + `npm run build`). Components at `awm/ui_components/<name>/`, pages at `awm/pages/<name>/`.
@@ -235,7 +235,9 @@ awm/gateway/scripts/run-tests.sh scopes gateway
 PYTEST_ARGS="-x -q" awm/gateway/scripts/run-tests.sh
 ```
 
-The script reports pass/fail per dist and exits non-zero if any failed. Known dists: `gateway scopes agents artifacts skills social`. Cross-dist imports inside a test must be **lazy** (inside a fixture/function), never at module top level — a top-level cross-dist import re-triggers the namespace-shadowing problem the per-dist runner exists to avoid.
+The script reports pass/fail per dist and exits non-zero if any failed. Cross-dist imports inside a test must be **lazy** (inside a fixture/function), never at module top level — a top-level cross-dist import re-triggers the namespace-shadowing problem the per-dist runner exists to avoid.
+
+A dist whose tests exist but which is missing from the runner's `DISTS` map is reported as `unknown dist` and silently never runs — `reflection` sat that way for months. When adding a service with tests, add it to both `DISTS` and `ORDER`.
 
 ## Agent rules
 

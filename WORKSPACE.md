@@ -30,44 +30,68 @@ projects/{project}/
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
-      data/                      # project data — annex clone, or symlink to data/{project}/
+      data -> ../data            # compat symlink; the real data/ is repo content
       skills -> ../../../awm/skills/    # symlink to skill catalog
-    [code files...]              # the actual repo content
+    [code files...]              # the actual repo content, including data/
 ```
 
-Scopes access project data via `.awm/data/` — that path never changes. What sits
-behind it depends on whether the project's data has been converted:
+### Data
 
-| Mode | What `.awm/data` is | Concurrency |
-|---|---|---|
-| **annex** (converted) | a git-annex clone of `data/{project}/`, checked out on branch `scope/{scope}` | isolated + versioned; reconcile by an explicit merge |
-| **shared** (not yet converted) | a symlink to `data/{project}/` | none — every scope writes the same files |
+**Data is versioned by the same commit that versions the code.** A DVC-backed
+project keeps its data at `<scope>/data/<chunk>` and a tracked ~110-byte *pin*
+beside it at `<scope>/data/<chunk>.dvc`. The bytes live once, in a
+content-addressed cache shared by every scope and project on the machine
+(`<workspace>/data/.dvc_cache`). `.awm/data` is a symlink to `../data` and
+exists only so older call sites keep working.
 
-### Data concurrency (annex mode)
+There is one lever. A commit records your code and the exact data it was built
+against, together; merging a branch brings its data with it. So:
 
-Code gets isolation from worktrees; annex mode gives data the same thing. Your
-writes are yours until you publish them, and publishing is transactional.
+- **To save data you wrote:** `dvc add data/<chunk>`, then commit the changed
+  `.dvc` pin alongside your code. There is no data verb, no data branch, no
+  promote.
+- **To take a sibling's data:** merge their branch. A post-merge hook checks the
+  files out for you.
+- **Isolation is branch isolation.** Your pins are yours until someone merges
+  them; a sibling scope cannot see or clobber your work in progress.
 
 | Verb | What it does |
 |---|---|
-| `scope(verb="data_status", …)` | which mode you're in, your data branch/revision, drift from the project's canonical branch |
-| `scope(verb="data_snapshot", …)` | commit what you've written — bulk to the content store, small text to ordinary git |
-| `scope(verb="data_promote", …)` | publish your data branch into the project's canonical branch. All-or-nothing: a conflict, or another scope promoting first, returns cleanly and changes nothing |
-| `project(verb="data_init", …)` | convert a project's `data/{project}/` to annex. The per-project opt-in; refuses while any scope is active |
-| `scope(verb="gather"/"scatter", args={…, data:true})` | fan data in/out alongside the code merge |
+| `scope(verb="data_status", …)` | mode, the commit that pins the data, which chunks it pins, which are materialised, and whether the workspace still matches |
+| `scope(verb="data_mount", …)` | choose which chunks materialise on disk here. Unmounted chunks stay pinned and backed up — this only decides what costs inodes |
+| `scope(verb="data_gc", …)` | reclaim cache space. Dry run by default, and it needs *every* project whose data must survive: the cache is shared |
+| `dvc(verb="sync"/"pull"/"coverage")` | the off-site half — see § *Off-site backup* |
 
-Two things behave differently in annex mode, and only these two:
+Two mechanical facts, and only these two:
 
-1. **Large files already in the repo are read-only symlinks** into a content
-   store. Write a new file rather than opening an existing one for writing (or
-   `git annex unlock` it first). Files under ~100 KB are ordinary git files and
-   are unaffected.
-2. **Secrets are excluded, not versioned.** Anything under a `secrets/` path,
-   any `.env`, and `.credentials.json` is deliberately never annexed — so it is
-   also never carried off-site by the nightly backup. It stays on local disk.
+1. **Materialised files are read-only hardlinks into the shared cache.** Editing
+   one in place would corrupt that object for every other scope and every
+   historical commit that pins it. Write a new file, or `dvc unprotect <path>`
+   first.
+2. **Never run a bare `dvc gc`.** It collects against one worktree's view of a
+   cache the whole workspace shares. Use `data_gc`, which makes you name what to
+   keep.
 
-Storage is not a reason to hesitate: content is hardlinked from the canonical
-store, so N scopes holding the same dataset cost one copy.
+Projects that have not been converted keep a plain `.awm/data` symlink to
+`data/{project}/` — shared, unversioned, every scope writing the same files.
+Nothing migrates them; a project gets wired the first time a scope is created or
+healed after its checkout carries a tracked `.dvc/config`.
+
+**Delete superseded data.** That is what versioning buys: an old version stays
+reachable from the commit that pinned it, so you never need two live copies to
+answer "which one is current?"
+
+### Off-site backup
+
+Two remotes cover this machine between them: **GitHub holds the code, chinook
+holds the cache.** A daily timer pushes `data/.dvc_cache` to the chinook Globus
+collection, append-only — nothing ever deletes there, which is what makes a
+local `dvc gc` recoverable.
+
+Nothing else is backed up. Work in a worktree that is neither committed-and-
+pushed nor DVC-pinned — scratch directories, run outputs, `.awm/` state — has no
+copy anywhere, deliberately. `dvc(verb="coverage")` lists exactly what that is
+per scope; run it before you assume something survived.
 
 ## Finding Projects
 
@@ -101,10 +125,12 @@ Every scope agent runs this on session start (the `.awm/context.md` for newly-cr
 
 The MCP server (`awm-mcp`) is registered at `<workspace>/.mcp.json` and auto-discovered by Claude Code, OpenCode, and other MCP clients. The surface is **projected live** from whatever feature services are currently registered and **collapsed by domain**: instead of one tool per `<domain>_<verb>` (dozens of them), your client sees **one generic tool per domain** — `scope`, `project`, `agent`, `services`, … — each called with `{ "verb": "<name>", "args": { … } }`. This keeps the tool surface tiny for clients that can't defer schemas (spawned agents, OpenCode).
 
-**The catalog is self-describing — discover it, don't memorize it.** This file deliberately does **not** enumerate the domains or their verbs. The set grows every time a service registers (`social`, `2fa`, `mic`, `vpn`, `ssh`, `reflection`, `writing`, … all arrived this way), so any list written here would only drift and go stale. Find what's actually available at runtime instead — two moves:
+**The catalog is self-describing — discover it, don't memorize it.** This file deliberately does **not** enumerate the domains or their verbs. The set grows every time a service registers (`social`, `2fa`, `mic`, `vpn`, `ssh`, `reflection`, `writing`, … all arrived this way), so any list written here would only drift and go stale. Find what's actually available at runtime instead — three moves:
 
 1. **Which domains exist** — the domain tools your MCP client exposes *are* the live catalog. In clients that defer tool schemas a domain may show as a bare name until loaded, so surface one by keyword with `ToolSearch` (e.g. search `social`, `2fa`), or list the running services with `services(verb="list")` — each service is a domain.
 2. **What a domain can do** — call it with `verb="describe"` (optionally `args={"verb":"<name>"}` to narrow to one verb) for its verbs and full parameter schemas, answered instantly from the catalog with no service round-trip. Example: `scope(verb="describe")` → `create / search / complete / refresh / post / fetch / …`; then `scope(verb="search", args={"query":"…"})` runs it. `describe` is a reserved verb on every domain.
+
+3. **Which node it runs on** — the envelope's third key, `peer`, alongside `verb` and `args`. Every domain tool appears **once** no matter how many peers the fleet has; omitting `peer` uses that domain's default provider (this node normally, a singleton's owner for a singleton, the sole peer for a domain no local service provides), and `providersOf(tool="<domain>")` — a reserved top-level tool, mirrored on the CLI as `awm peer providers` — reports the valid values and which is the default. A misdirected `peer` is refused naming the options, never quietly run locally. See `FEDERATION.md` § *Cross-peer calls*.
 
 So the reflex when a task *looks* like it needs a human — send a message, approve a login/2FA, capture audio, bounce a VPN — is to `describe` a plausible domain or `ToolSearch` first: the capability is often already a tool (see `~/.claude/CLAUDE.md` § *Reach for a tool before handing work back*). Server-side, a placed agent's mode restricts which verbs it may call regardless of harness (see AGENTS.md), so a disallowed verb is rejected, not silently honored.
 
@@ -112,7 +138,7 @@ One domain is worth singling out because it changes *how you search*, not just w
 
 Another domain changes *how you decide*, not how you search: **`precedence`** — a searchable archive of past **user-adjustment decisions** (the free-text triple *situation + decision-point + what-was-decided*), so you act on a preference the user already expressed instead of re-asking. Reach for it **before re-asking the user a preference-shaped question, and whenever the user corrects or overrides a choice you made**: `precedence(verb="search", args={…})` — query any subset of the triple (`context` / `question` / `decision`) or `query` for keywords; pass `explore=0` for the single most-trusted hit — then act on the stored decision rather than re-litigating it. When the user *does* make or adjust such a decision, contribute it back so the archive compounds: `precedence(verb="add")` for a new one, `verb="note"` / `verb="vote"` to amend or rate an existing entry. (Curation verbs live on CLI/HTTP only; `precedence(verb="describe")` gives exact schemas.)
 
-A third changes *how you manage context*: **`reflection`** acts on your own tmux pane. `reflection(verb="compact", args={pane: "<your $TMUX_PANE>", followup: "<next task>"})` queues a `/compact` behind your current turn plus a follow-up prompt, so the session compacts at end-of-turn and resumes with fresh context instead of going idle — the answer to a filling context mid-task, not a reason to stop. Find your pane with `echo $TMUX_PANE` and pass it explicitly (the service runs out-of-process and can't read your env; auto-detect is reliable only with a single agent pane). Outside tmux (bare terminal, IDE, web) it's a clean no-op. Compact at a clean seam — a phase boundary, a finished chunk, crossing from planning into execution — and pass a `followup` naming the next task so the fresh context resumes pointed at the right work.
+A third changes *how you manage context*: **`reflection`** acts on your own session. `reflection(verb="compact", args={followup: "<next task>"})` queues a `/compact` behind your current turn plus a follow-up prompt, so the session compacts at end-of-turn and resumes with fresh context instead of going idle — the answer to a filling context mid-task, not a reason to stop. It works the same whether you are in a terminal or running as a background job, and it can only ever act on *you*: nothing in the surface takes a target, because your identity is observed from the `awm-mcp` proxy in front of you rather than passed as an argument. A caller it cannot identify (a plain shell) is refused rather than served with somebody else's session. Compact at a clean seam — a phase boundary, a finished chunk, crossing from planning into execution — and pass a `followup` naming the next task so the fresh context resumes pointed at the right work.
 
 The **CLI and HTTP surfaces stay expanded** — `awm scope create`, `POST /invoke {name:"scope_create"}`, one command/route per verb — so only the MCP projection collapses; see the CLI note below.
 
@@ -234,6 +260,14 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 - PRs created from feature branches into `main` / `release` as appropriate.
 - See `.awm/skills/tools/git.md` for the worktree-bare flow in detail.
 
+**Never commit in the workspace root checkout.** On a node that deploys rather than
+authors awm, `<workspace>/` is a deploy *target*: it is fetched and `reset --hard` onto
+upstream `release`, so a commit made there is silently discarded by the next deploy — and
+a file left untracked there survives only until someone runs `git clean`. Nothing warns
+you; the work is simply gone. All work belongs in a scope worktree under `projects/`,
+pushed to a branch. Check with `git -C <workspace> reflog` before trusting a commit there:
+a `reset: moving to …` entry is the tell.
+
 ## CLI Quick Reference
 
 `awm <command> --help` for full options on any of these. The MCP tools above are usually more ergonomic from inside an agent — the CLI is for shell-level work.
@@ -246,18 +280,18 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 | `awm project create <name>` | Create a project (optionally `--clone` / `--fork`) |
 | `awm scope create <p> <s>` / `awm scope list` / `awm scope complete <p> <s>` | Scope worktree management |
 | `awm scope heal [--project P] [--dry-run]` | Idempotent repair pass: enforce tier-3 = `.awm/` only, and bring `.awm/data` to the project's current data mode |
-| `awm scope data-status/data-snapshot/data-promote <p> <s>` | Per-scope data versioning (annex mode) |
-| `awm project data-init <p> [--dry-run]` | Convert a project's `data/<p>/` to git-annex |
+| `awm scope data-status <p> <s>` / `awm scope data-mount <p> <s> [--chunks ...]` | A scope's data view; which chunks materialise here |
+| `awm scope data-gc --projects <p> ... [--dry-run false]` | Reclaim shared-cache space — names every project to keep |
+| `awm dvc sync` / `awm dvc pull --scope <path>` / `awm dvc coverage` | Off-site: push the cache, restore one scope, audit what is uncovered |
 | `awm session log <p> <s> --summary ... --decision ...` | Record a session entry |
 | `awm gateway register / list / deregister` | Service Hub control plane (awm-internal — see AGENTS.md) |
 
 ## Agent Rules
 
 1. **Raw data is immutable** — never modify files in `data/{project}/raw/`.
-2. **Write outputs to `.awm/data/`** — then `scope(verb="data_snapshot")` and, when
-   the work is good, `scope(verb="data_promote")`. In shared mode those are no-ops
-   and outputs are visible to siblings immediately; in annex mode they are how your
-   work becomes visible at all. See § *Data concurrency* above.
+2. **Write outputs to `data/`, then `dvc add` and commit the pin** alongside the
+   code that produced them. On an unconverted project `data/` is the shared
+   directory and outputs are visible to siblings immediately. See § *Data* above.
 3. **Don't edit `.awm/history.md`** — auto-generated. Use MCP tools.
 4. **Run the `debrief` skill** when ending a session — commit, log the session, refresh.
 5. **Check `.awm/skills/` for a procedure** before improvising an unfamiliar workflow — the writeups are on disk even though the search service is retired.
