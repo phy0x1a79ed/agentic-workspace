@@ -314,7 +314,7 @@ beats accepting it blind on the new one.
 ## TLS
 
 Peer edges present certs signed by the shared **remote-audio root CA** (the same
-root `mic`/`httpsfront` already use). Cross-peer TLS is **CA-verified, never
+root `httpsfront` already uses). Cross-peer TLS is **CA-verified, never
 `verify=False`** — a bearer over an unverified connection could be captured. The
 CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
@@ -335,10 +335,11 @@ minted their own leaf. That is not urgent (they hold the *same* root), but it me
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
 one key-holder and the rest trust consumers.
 
-`mic` keeps its own copy of that code, shares the root, and is **enabled by default
-on every node** — so left unfixed it would win the boot race, put a key back, and
-swap the root before httpsfront's guard ever ran. A test in `mic`'s suite reads both
-files and fails if the predicate diverges.
+`mic` used to keep its own copy of that code and is **enabled by default on every
+node**, so it could win the boot race, put a key back, and swap the root before
+httpsfront's guard ever ran. Its copy is gone: mic's page and audio moved onto the
+hub behind httpsfront, so it mints nothing. `httpsfront` is now the only service
+that touches the CA, and a test in its suite fails if a second copy reappears.
 
 ## Singletons vs per-node services
 

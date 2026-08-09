@@ -2,10 +2,10 @@
 # Canonical install for the awm-mic service (editable, into the `awm` env).
 #
 # Installs the component libraries it imports (config, gatewayclient) first,
-# then the service itself. The bridge is pure stdlib (no whisper/numpy), so the
-# dependency surface is small. System deps (pulseaudio-utils for pactl/pacat,
-# openssl) are NOT pip-installable — see INSTALL.md. Override the target env
-# with AWM_ENV=<name>.
+# then the service itself. mic is a thin pipe into `pacat` (no whisper/numpy),
+# so the dependency surface is small. The one system dep, pulseaudio-utils for
+# pacat, is NOT pip-installable — see INSTALL.md. Override the target env with
+# AWM_ENV=<name>.
 set -euo pipefail
 WS="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 ENV="${AWM_ENV:-awm}"

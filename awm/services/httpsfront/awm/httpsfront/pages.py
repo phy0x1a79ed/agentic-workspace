@@ -36,6 +36,7 @@ _STYLE = """
   ul.svc a:hover { border-color: #3b6fc4; }
   .top { display: flex; justify-content: space-between; align-items: baseline; }
   a.logout { font-size: 0.85rem; }
+  .recover { margin-top: 32px; font-size: 0.85rem; opacity: 0.7; }
 """
 
 
@@ -58,6 +59,10 @@ host with <code>awm auth password</code>; it is also posted to Discord
   <button id="b" type="submit">Sign in</button>
 </form>
 <div class="err" id="e"></div>
+<p class="recover">A new device has to trust this node's CA once, or the browser
+blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
+(Served unauthenticated on purpose — a device that doesn't trust us yet can't
+sign in to fetch it.)</p>
 <script>
 const f=document.getElementById('f'),p=document.getElementById('p'),
       b=document.getElementById('b'),e=document.getElementById('e');
