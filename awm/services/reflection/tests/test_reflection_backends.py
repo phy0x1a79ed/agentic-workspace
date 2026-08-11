@@ -392,37 +392,128 @@ def test_unknown_hosting_kind_refuses(tmp_path, monkeypatch):
         session_target.resolve(1234)
 
 
-def test_background_session_joins_the_roster_on_session_id(tmp_path, monkeypatch):
-    # The roster's own `pid` is the bg-pty-host process, not the REPL, and its
-    # key is a short id that does not reliably prefix the session id — so the
-    # join has to be on sessionId and nothing else.
-    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "111")
-    _write_session(tmp_path, 1234, procStart="111", kind="bg",
-                   sessionId="933ba47f-real")
+def _bg_roster(tmp_path, monkeypatch, workers, *, children=None, dead=()):
+    """Point resolve() at a fake roster and a fake process table.
+
+    ``children`` is the ppid → [children] map ancestry is checked against; the
+    default hangs REPL pid 1234 off host pid 49641, which is the real shape (the
+    roster's pid is the bg-pty-host, and the REPL is its child). ``dead`` names
+    pids that read as no longer running.
+    """
     roster = tmp_path / "roster.json"
-    roster.write_text(json.dumps({"workers": {
-        "unrelated": {"sessionId": "other", "pid": 1234,
+    roster.write_text(json.dumps({"workers": workers}))
+    monkeypatch.setattr(session_target, "ROSTER_PATH", roster)
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(session_target, "_proc_start",
+                        lambda pid: None if pid in dead else "111")
+    monkeypatch.setattr(session_target, "PROCESS_CHILDREN",
+                        lambda: {49641: [1234]} if children is None else children)
+
+
+def test_background_session_joins_the_roster_on_job_id(tmp_path, monkeypatch):
+    # jobId names the worker directly, and unlike sessionId it is fixed for the
+    # life of the job. The roster's own `pid` is the bg-pty-host, not the REPL,
+    # so it is no use as a key — it is what the match is *checked* against.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg",
+                   sessionId="933ba47f-real", jobId="f65fc961")
+    _bg_roster(tmp_path, monkeypatch, {
+        "unrelated": {"sessionId": "other", "pid": 777,
                       "ptySock": "/tmp/wrong.sock", "ptyAuth": "no"},
         "f65fc961": {"sessionId": "933ba47f-real", "pid": 49641,
                      "ptySock": "/tmp/right.sock", "ptyAuth": "yes",
                      "decModes": [2004]},
-    }}))
-    monkeypatch.setattr(session_target, "ROSTER_PATH", roster)
+    })
     t = session_target.resolve(1234)
     assert isinstance(t, session_target.DaemonTarget)
     assert t.sock == "/tmp/right.sock" and t.auth == "yes"
 
 
+def test_background_session_survives_a_session_id_that_drifted(tmp_path, monkeypatch):
+    # The observed failure: clearing a conversation rewrites the record with a
+    # new sessionId while the roster keeps the id the job was dispatched with.
+    # Joining on sessionId loses the session permanently; jobId still names it.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg",
+                   sessionId="05d84080-after-clear", jobId="f65fc961")
+    _bg_roster(tmp_path, monkeypatch, {
+        "f65fc961": {"sessionId": "8b5418bc-at-dispatch", "pid": 49641,
+                     "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
+    })
+    t = session_target.resolve(1234)
+    assert t.sock == "/tmp/right.sock"
+
+
+def test_background_session_without_a_job_id_still_joins_on_session_id(
+        tmp_path, monkeypatch):
+    # Records written by a CLI old enough not to carry jobId behave as before.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg",
+                   sessionId="933ba47f-real")
+    _bg_roster(tmp_path, monkeypatch, {
+        "f65fc961": {"sessionId": "933ba47f-real", "pid": 49641,
+                     "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
+    })
+    assert session_target.resolve(1234).sock == "/tmp/right.sock"
+
+
+def test_background_session_falls_back_to_the_host_that_contains_it(
+        tmp_path, monkeypatch):
+    # Neither key matches, but exactly one listed PTY host has this REPL in its
+    # subtree — an observed fact, and a narrower question than "is one of my
+    # ancestors listed" (the daemon supervisor is an ancestor of them all).
+    _write_session(tmp_path, 1234, procStart="111", kind="bg",
+                   sessionId="unknown", jobId="unknown")
+    _bg_roster(tmp_path, monkeypatch, {
+        "elsewhere": {"sessionId": "other", "pid": 777,
+                      "ptySock": "/tmp/wrong.sock", "ptyAuth": "no"},
+        "f65fc961": {"sessionId": "stale", "pid": 49641,
+                     "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
+    })
+    assert session_target.resolve(1234).sock == "/tmp/right.sock"
+
+
+def test_background_session_refuses_a_live_host_that_does_not_contain_it(
+        tmp_path, monkeypatch):
+    # The join key matched but the process tree says otherwise: that entry is
+    # somebody else's session, and typing into it is the one thing reflection
+    # must never do.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg",
+                   sessionId="933ba47f-real", jobId="f65fc961")
+    _bg_roster(tmp_path, monkeypatch, {
+        "f65fc961": {"sessionId": "933ba47f-real", "pid": 49641,
+                     "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
+    }, children={49641: [5555]})
+    with pytest.raises(session_target.ResolveError,
+                       match="does not contain pid 1234"):
+        session_target.resolve(1234)
+
+
+def test_background_session_tolerates_a_host_that_is_gone(tmp_path, monkeypatch):
+    # Nothing to contradict: a dead host cannot be asked what it contains, and
+    # the socket connect that follows fails with an accurate message of its own.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg", jobId="f65fc961")
+    _bg_roster(tmp_path, monkeypatch, {
+        "f65fc961": {"sessionId": "whatever", "pid": 49641,
+                     "ptySock": "/tmp/right.sock", "ptyAuth": "yes"},
+    }, children={}, dead=(49641,))
+    assert session_target.resolve(1234).sock == "/tmp/right.sock"
+
+
 def test_background_session_with_no_roster_entry_refuses(tmp_path, monkeypatch):
-    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
-    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "111")
-    _write_session(tmp_path, 1234, procStart="111", kind="bg", sessionId="gone")
-    roster = tmp_path / "roster.json"
-    roster.write_text(json.dumps({"workers": {}}))
-    monkeypatch.setattr(session_target, "ROSTER_PATH", roster)
+    _write_session(tmp_path, 1234, procStart="111", kind="bg", sessionId="gone",
+                   jobId="also-gone")
+    _bg_roster(tmp_path, monkeypatch, {}, children={})
     with pytest.raises(session_target.ResolveError, match="no daemon roster entry"):
         session_target.resolve(1234)
+
+
+def test_no_roster_entry_does_not_blame_the_pty_host(tmp_path, monkeypatch):
+    # The message an agent reads and acts on. It used to assert the PTY host had
+    # probably exited, which sent a reader looking at a process that was alive.
+    _write_session(tmp_path, 1234, procStart="111", kind="bg", jobId="f65fc961")
+    _bg_roster(tmp_path, monkeypatch, {}, children={})
+    with pytest.raises(session_target.ResolveError) as exc:
+        session_target.resolve(1234)
+    assert "may have exited" not in str(exc.value)
+    assert "f65fc961" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

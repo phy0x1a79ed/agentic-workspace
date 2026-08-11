@@ -17,7 +17,7 @@ From the pid, Claude Code's own per-session record at
 * ``kind: "interactive"`` — a terminal session. Find its tmux pane by walking
   process ancestry; injection is tmux paste/send-keys.
 * ``kind: "bg"`` — a background job under ``claude daemon``. Join the record's
-  ``sessionId`` against the daemon roster for the worker's PTY socket and input
+  ``jobId`` against the daemon roster for the worker's PTY socket and input
   token; injection speaks the daemon's socket protocol.
 
 Anything else refuses. There is no fallback that picks a plausible session:
@@ -37,6 +37,10 @@ log = logging.getLogger("awm.reflection.session_target")
 # Overridable for tests; both are user-private (mode 0600) in practice.
 SESSIONS_DIR = Path(os.path.expanduser("~/.claude/sessions"))
 ROSTER_PATH = Path(os.path.expanduser("~/.claude/daemon/roster.json"))
+
+# Seam for tests: ``None`` means read the live process table. Anything else is
+# called with no arguments and must return a ppid → [child pids] mapping.
+PROCESS_CHILDREN = None
 
 
 class ResolveError(RuntimeError):
@@ -118,13 +122,33 @@ def read_session_record(repl_pid: int) -> dict:
     return record
 
 
-def _roster_worker(session_id: str) -> dict:
-    """Return the daemon roster entry whose ``sessionId`` is ``session_id``.
+def _children() -> dict[int, list[int]]:
+    """ppid → [child pids] for the live process table, via the test seam."""
+    if PROCESS_CHILDREN is not None:
+        return PROCESS_CHILDREN()
+    from awm.reflection import tmux_inject
+    return tmux_inject._ppid_children()
 
-    Joined on ``sessionId`` and never on pid: the roster's ``pid`` is the
-    ``bg-pty-host`` process, not the REPL. The roster's *key* is a short id that
-    also does not reliably prefix the session id.
+
+def _roster_worker(record: dict, repl_pid: int) -> dict:
+    """Return the daemon roster entry hosting the background session ``record``.
+
+    Keyed on ``jobId``, which names the worker directly and is fixed for the life
+    of the job. ``sessionId`` is *not* stable: clearing a conversation replaces
+    it in place, rewriting the record while the roster keeps the id the job was
+    dispatched with — a session that did that could never be found again, and was
+    told its PTY host had died. The ``sessionId`` scan survives only as a
+    fallback for records written before ``jobId`` existed.
+
+    Whatever matched is then checked against process ancestry, which is the claim
+    that actually matters: the roster's ``pid`` is the ``bg-pty-host``, never the
+    REPL, so the caller must sit somewhere in that host's subtree. A live host
+    that does not contain the caller is a positive contradiction — the entry
+    belongs to somebody else — and refusing there is what keeps a looser join key
+    from ever widening who reflection can type into.
     """
+    from awm.reflection import tmux_inject
+
     try:
         roster = json.loads(ROSTER_PATH.read_text())
     except FileNotFoundError:
@@ -134,12 +158,41 @@ def _roster_worker(session_id: str) -> dict:
     except (OSError, ValueError) as exc:
         raise ResolveError(f"could not read the daemon roster: {exc}") from None
 
-    for worker in (roster.get("workers") or {}).values():
-        if worker.get("sessionId") == session_id:
-            return worker
-    raise ResolveError(
-        f"no daemon roster entry for session {session_id}; the background "
-        f"session's PTY host may have exited")
+    workers = roster.get("workers") or {}
+    job_id = str(record.get("jobId") or "")
+    session_id = str(record.get("sessionId") or "")
+    kids: Optional[dict[int, list[int]]] = None
+
+    worker = workers.get(job_id) if job_id else None
+    if worker is None:
+        worker = next((w for w in workers.values()
+                       if w.get("sessionId") == session_id and session_id), None)
+    if worker is None:
+        # Last resort, and last for a reason: the daemon supervisor is a common
+        # ancestor of every background session, so this asks the narrow question
+        # "which host contains me" rather than "which of my ancestors is listed".
+        kids = _children()
+        worker = next((w for w in workers.values()
+                       if isinstance(w.get("pid"), int)
+                       and tmux_inject._subtree_contains(w["pid"], repl_pid, kids)),
+                      None)
+    if worker is None:
+        raise ResolveError(
+            f"no daemon roster entry for job {job_id or '<unset>'} (session "
+            f"{session_id or '<unset>'}), and no listed PTY host contains pid "
+            f"{repl_pid}; the Claude Code daemon does not list this session")
+
+    host = worker.get("pid")
+    if isinstance(host, int) and _proc_start(host) is not None:
+        if kids is None:
+            kids = _children()
+        if not tmux_inject._subtree_contains(host, repl_pid, kids):
+            raise ResolveError(
+                f"the daemon roster entry for job {job_id or '<unset>'} names PTY "
+                f"host {host}, which is running but does not contain pid "
+                f"{repl_pid}; that entry describes a different session, so "
+                f"reflection will not inject into it")
+    return worker
 
 
 def resolve(repl_pid: int, *, socket: Optional[str] = None,
@@ -174,7 +227,7 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None,
                           name=name)
 
     if kind == "bg":
-        worker = _roster_worker(session_id)
+        worker = _roster_worker(record, repl_pid)
         sock = worker.get("ptySock")
         auth = worker.get("ptyAuth")
         if not sock or not auth:
