@@ -256,13 +256,21 @@ def build_app():
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Route
 
+    # One client for the life of the process, held in this closure rather than
+    # built by a lifespan handler and stashed on ``app.state``. The listener
+    # runs with uvicorn's lifespan protocol *off* (see ``serve_and_mount``), so
+    # a lifespan-built client is simply never created — and the failure lands
+    # far from the cause, as ``KeyError: 'client'`` on the first call, with GET
+    # /status still answering 200 because it never touches the client. A closure
+    # cannot be half-wired.
+    client = httpx.AsyncClient()
+
     async def _endpoint(request: Request) -> Response:
         try:
             message = await request.json()
         except Exception:  # noqa: BLE001
             return JSONResponse(_rpc_error(None, -32700, "parse error"),
                                 status_code=400)
-        client: httpx.AsyncClient = request.app.state.client
         # A batch is a list; MCP clients rarely send one, but answering it is
         # three lines and refusing it is a support question.
         if isinstance(message, list):
@@ -277,22 +285,11 @@ def build_app():
     async def _health(request: Request) -> Response:
         return JSONResponse(status())
 
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _lifespan(app):
-        app.state.client = httpx.AsyncClient()
-        try:
-            yield
-        finally:
-            await app.state.client.aclose()
-
     return Starlette(
         routes=[
             Route("/{path:path}", _health, methods=["GET"]),
             Route("/{path:path}", _endpoint, methods=["POST"]),
         ],
-        lifespan=_lifespan,
     )
 
 
@@ -316,10 +313,12 @@ async def serve_and_mount() -> None:
 
     config = uvicorn.Config(
         build_app(), host="127.0.0.1", port=0, log_level="warning",
-        # The app has no lifespan handlers, and leaving the protocol on means
-        # every teardown logs a CancelledError traceback at ERROR from uvicorn's
-        # lifespan receive() — recurring noise that reads like a fault in this
-        # service and is not one.
+        # The app deliberately has no lifespan handlers (build_app holds its
+        # client in a closure), and leaving the protocol on means every teardown
+        # logs a CancelledError traceback at ERROR from uvicorn's lifespan
+        # receive() — recurring noise that reads like a fault in this service
+        # and is not one. Keep the two facts together: turning this off while
+        # the app relies on a lifespan is what broke every call once already.
         lifespan="off",
     )
     server = uvicorn.Server(config)
