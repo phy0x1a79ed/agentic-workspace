@@ -36,6 +36,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
+from awm.gateway import mcp_caller
 from awm.gateway._path import resolve_bin
 
 server = Server("awm")
@@ -84,14 +85,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # reused proxy always reflects its own env. Absent for normal sessions.
         as_ = os.environ.get("AWM_AS")
         # This proxy is spawned by the calling session as a stdio child — one
-        # `claude` REPL, one `awm-mcp` child — so our parent pid *is* the caller.
-        # That is the identity the reflection service targets, and it is the same
-        # fact whether the session sits in a tmux pane or runs as a background
-        # job, which is what lets an agent reflect on itself without knowing how
-        # it happens to be hosted. Read at call time (see AWM_AS above); it is
-        # observed here rather than accepted as an argument, so a model cannot
-        # aim reflection at anyone but itself.
-        session_pid = str(os.getppid())
+        # `claude` REPL, one `awm-mcp` child — so our parent pid is normally the
+        # caller. That is the identity the reflection service targets, and it is
+        # the same fact whether the session sits in a tmux pane or runs as a
+        # background job, which is what lets an agent reflect on itself without
+        # knowing how it happens to be hosted. Read at call time (see AWM_AS
+        # above); it is observed here rather than accepted as an argument, so a
+        # model cannot aim reflection at anyone but itself. A wrapper in the
+        # configured command breaks the one-hop assumption, so walk up to the
+        # nearest ancestor that is a session (see mcp_caller).
+        session_pid = str(mcp_caller.resolve_caller_pid(os.getppid()))
         # Compatibility shim: a client holding a stale tool list may still name
         # ``<domain>@<peer>``. Those names are no longer advertised (the surface
         # carries one tool per domain with a ``peer`` argument instead), but

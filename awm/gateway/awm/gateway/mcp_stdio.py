@@ -49,6 +49,7 @@ import urllib.parse
 import urllib.request
 
 from awm import config
+from awm.gateway import mcp_caller
 
 SERVER_NAME = "awm"
 SERVER_VERSION = "0.1.0"
@@ -226,10 +227,12 @@ def _handle_tools_call(params: dict) -> dict:
         # time, so a reused proxy always reflects its own env.
         as_ = os.environ.get("AWM_AS")
         # We are spawned by the calling session as a stdio child, so our parent
-        # pid *is* the caller — the identity the reflection service targets,
-        # observed here rather than accepted as an argument so a model cannot
-        # aim reflection at anyone but itself.
-        session_pid = str(os.getppid())
+        # pid is normally the caller — the identity the reflection service
+        # targets, observed here rather than accepted as an argument so a model
+        # cannot aim reflection at anyone but itself. Normally, but not always:
+        # a wrapper in the configured command sits between us and the REPL, so
+        # walk up to the nearest ancestor that is one (see mcp_caller).
+        session_pid = str(mcp_caller.resolve_caller_pid(os.getppid()))
         # Compatibility shim for a client holding a stale tool list that still
         # names ``<domain>@<peer>``.
         if "@" in name:

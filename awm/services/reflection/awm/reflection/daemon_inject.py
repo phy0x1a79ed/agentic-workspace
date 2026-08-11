@@ -374,7 +374,9 @@ def _await_and_followup(text: str, followup: str,
                     "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
     # Re-read the roster: a background session that respawned mid-wait has a new
     # PTY socket and a new input token, and the ones we were handed at injection
-    # time are dead. Same session id, though — that is the durable identity.
+    # time are dead. Re-resolving by pid is what makes this safe: the session id
+    # may well have changed under us — a /clear mints a new one — so re-joining
+    # on it would find nothing.
     try:
         fresh = session_target.resolve(target.repl_pid)
     except session_target.ResolveError:

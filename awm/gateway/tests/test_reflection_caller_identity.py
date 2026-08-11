@@ -88,3 +88,75 @@ def test_other_domains_untouched():
     flat = {}
     _stamp_reflection_caller("scope_refresh", flat, "2488")
     assert "_caller_pid" not in flat
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_caller_pid` — which ancestor the header names in the first place
+# ---------------------------------------------------------------------------
+
+from awm.gateway.mcp_caller import resolve_caller_pid as _resolve_caller_pid
+
+
+def _sessions(tmp_path, *pids):
+    """A Claude Code sessions dir holding a record for each of `pids`."""
+    for pid in pids:
+        (tmp_path / f"{pid}.json").write_text("{}")
+    return str(tmp_path)
+
+
+def _chain(parent_of):
+    """A fake `/proc` ancestry: child pid -> parent pid."""
+    return lambda pid: parent_of.get(pid)
+
+
+def test_direct_child_resolves_to_the_parent(tmp_path):
+    # The ordinary case: `.mcp.json` runs the interpreter directly, so the REPL
+    # is our parent and the walk stops before it starts.
+    got = _resolve_caller_pid(
+        100, sessions_dir=_sessions(tmp_path, 100), ppid_of=_chain({100: 1}))
+    assert got == 100
+
+
+def test_walks_past_a_wrapper_process(tmp_path):
+    # The regression: `mamba run -n awm awm-mcp` puts pid 200 between the proxy
+    # and the REPL at 300. Naming 200 is what made reflection refuse.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path, 300), ppid_of=_chain({200: 300, 300: 1}))
+    assert got == 300
+
+
+def test_no_session_in_the_chain_returns_the_parent_unchanged(tmp_path):
+    # A genuine non-Claude caller must refuse exactly as it did before the walk
+    # existed — the walk may not invent an identity.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 300, 300: 1}))
+    assert got == 200
+
+
+def test_stops_at_the_nearest_session_not_an_outer_one(tmp_path):
+    # An agent nested inside another agent: 400 is our own REPL, 500 is the
+    # session that spawned it. Resolving to 500 would type into a *different*
+    # agent's prompt, so first-match is a safety property, not an optimisation.
+    got = _resolve_caller_pid(
+        200,
+        sessions_dir=_sessions(tmp_path, 400, 500),
+        ppid_of=_chain({200: 400, 400: 500, 500: 1}),
+    )
+    assert got == 400
+
+
+def test_walk_is_bounded(tmp_path):
+    # A pathological or cyclic chain must not spin; it falls back to the parent.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path, 999), ppid_of=lambda pid: pid + 1,
+        max_hops=4)
+    assert got == 200
+
+
+def test_stops_at_init(tmp_path):
+    # pid 1 is never a Claude session; walking into it (or past a vanished
+    # process, where ppid_of returns None) ends the walk.
+    assert _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path), ppid_of=_chain({200: 1})) == 200
+    assert _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path), ppid_of=lambda pid: None) == 200
