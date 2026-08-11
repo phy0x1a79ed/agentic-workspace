@@ -1,0 +1,228 @@
+# claude-science
+
+Claude Science — Anthropic's local science workbench — supervised by awm, put
+on the mesh behind awm's edge session, and wired to a curated slice of awm's own
+tool surface.
+
+Upstream is a single self-contained binary that runs a daemon, serves a web UI
+on loopback, and runs Claude's Python/R/shell in a bubblewrap sandbox. It is a
+desktop application that happens to run on a server. Everything here is about
+making that fact survive contact with a fleet.
+
+## What this replaces
+
+Three hand-written systemd units and a 300-line fork of `awm/services/httpsfront`
+living in `$HOME`, with an `ExecStartPre` that copied awm's TLS material to a
+second location. The fork had no auth gate, so its zero-click `/_signin` route
+handed workbench ownership to anything that could route to the port. Moving to
+the real front is a security fix first and tidiness second.
+
+## The contract
+
+**The daemon is adopted, not owned.** Every other awm service parents its child
+and lets the gateway's supervision cover the whole stack. This one deliberately
+does not: the workbench holds live conversations, sandbox binds, and analysis
+runs, and `awm gateway restart` happens on every deploy. So this service starts
+a daemon if none is running, adopts one that is, restarts one that has died —
+and leaves it running when the service stops. `stop` is an explicit verb.
+
+The practical guarantee: **restarting the gateway does not change the daemon's
+pid.** If it does, something is wrong.
+
+**Two ports, two origins.** Upstream serves generated-HTML previews from a
+second port so a page Claude wrote cannot read the session that wrote it. That
+boundary is a browser origin, so it survives only if we keep two of them. Hence
+two fronts rather than one, and no path-prefix mount.
+
+**Why not a gateway `kind=url` mount.** The binary has `--base-path` and the
+gateway proxies url mounts, so this looks like a one-liner. It is not: the
+gateway's url proxy strips `Cookie` on the second hop, forwards *no* headers at
+all on WebSocket upgrades (no `Cookie`, no `Origin`, no subprotocol), and
+comma-collapses duplicate `Set-Cookie`. The workbench authenticates with
+`operon_auth`/`operon_csrf` cookies and origin-checks its upgrades. It would
+fail in three places. Don't re-derive this.
+
+**Why not Docker.** The ~6 GB conda tree, the OAuth tokens and the conversation
+database all live in the data directory, which has to be a persistent volume
+either way — a container relocates that cost rather than removing it. Baking it
+into an image breaks the update path: the binary self-updates with sha256
+verification and rolls back by version, whereas an in-container update writes to
+a layer that vanishes on recreate. And the sandbox is bubblewrap: nested
+unprivileged user namespaces inside Docker on WSL2 are fragile, and upstream's
+own guidance (`--dangerously-no-sandbox` — "only use in already-isolated
+environments (CI, containers)") points at *disabling* the inner sandbox, which
+is a downgrade for a tool deliberately pointed at host data. A container would
+win for many disposable instances, or a node where `$HOME` is off limits.
+Neither applies here.
+
+## Registrations
+
+Four, from one process:
+
+| kind | name | prefix / port | what |
+|---|---|---|---|
+| `service` | `claude-science` | `/svc/claude-science` | the verbs, plus supervision |
+| — | (TLS front) | `0.0.0.0:12201` | the workbench UI, behind `awm_session` |
+| — | (TLS front) | `0.0.0.0:12202` | generated-HTML previews, separate origin |
+| `url` | `claude-science-mcp` | `/claude-science/mcp` | the MCP bridge's loopback listener |
+
+The two fronts are not gateway registrations — they are listeners this process
+owns, the same shape as `httpsfront`'s own. They die with the service; the
+daemon does not.
+
+## Install
+
+```
+./install.sh
+```
+
+Installs the Python bits (including `httpsfront`, whose cert minting, auth gate
+and reverse proxy the fronts are a *configuration* of), writes `.runtime-env`,
+and installs the workbench binary via upstream's own installer if it is absent.
+It does **not** build the binary and does **not** provision the data directory:
+the binary's own `update --to <version>` already downloads, sha256-verifies and
+atomically swaps, and the ~6 GB of Python/R environments are provisioned by the
+daemon on first run, in the background.
+
+Prerequisites the installer checks for, because the sandbox is not optional —
+the daemon refuses to start rather than run code unsandboxed:
+
+```
+sudo apt-get install -y bubblewrap socat      # bwrap >= 0.8.0
+```
+
+Then enable it on this node only, via the profile gate in `service.toml`:
+
+```
+# in <workspace>/.awm/env
+AWM_PROFILES=claude-science
+CLAUDE_SCIENCE_EXTRA_ORIGINS=https://172.25.181.70:12201
+```
+
+and `awm gateway restart`. Every other node needs nothing: with one provider,
+the domain resolves there from anywhere with no `peer=` argument.
+
+## Environment
+
+| Var | Default | Effect |
+|---|---|---|
+| `CLAUDE_SCIENCE_BIN` | `~/.local/bin/claude-science` | the binary to supervise |
+| `CLAUDE_SCIENCE_DATA_DIR` | `~/.claude-science` | the workbench's data dir |
+| `CLAUDE_SCIENCE_UPSTREAM_PORT` | `12203` | loopback UI port |
+| `CLAUDE_SCIENCE_SANDBOX_PORT` | `12204` | loopback preview port |
+| `CLAUDE_SCIENCE_FRONT_PORT` | `12201` | mesh TLS port, UI |
+| `CLAUDE_SCIENCE_SANDBOX_FRONT_PORT` | `12202` | mesh TLS port, previews |
+| `CLAUDE_SCIENCE_PUBLIC_HOST` | from `AWM_EDGE_URL` | host a browser reaches this node at |
+| `CLAUDE_SCIENCE_EXTRA_ORIGINS` | — | comma-separated extra allowed origins |
+| `CLAUDE_SCIENCE_MCP_ALLOW` | built-in list | JSON `{domain: [verb, …]}` for the bridge |
+| `CLAUDE_SCIENCE_HEALTH_INTERVAL_S` | `20` | supervision loop period |
+
+**The ports are not free choices.** On the production node awm runs inside WSL
+and only specific ports are forwarded by the Windows-side portproxy — 12100
+(the gateway front), 12201 and 12202. Moving a front to an unforwarded port
+takes the workbench off the mesh, and adding one needs an elevated run on the
+Windows side.
+
+**The public host is declared, not enumerated,** for the same reason
+`AWM_EDGE_URL` and `.sans` are: the mesh address belongs to the Windows host and
+is invisible from inside WSL. `--allow-origin` is matched exactly on
+scheme+host+port and gates WebSocket upgrades, so a missing origin shows up as a
+UI that loads and then silently has no socket.
+
+## The MCP connector
+
+The workbench can call a curated slice of awm's verbs. Add it in the workbench
+under **Settings > Connectors > Add connector > Remote**:
+
+- **Name**: `awm`
+- **URL**: `http://127.0.0.1:7819/claude-science/mcp` (the gateway's own
+  loopback, unauthenticated by design), or `https://<edge>:12100/claude-science/mcp`
+  with a **Headers helper command** emitting `Authorization: Bearer $(cat
+  $AWM_PEER_CRED)` if you want it to work from a workbench on another host.
+- **Transport**: Streamable HTTP.
+
+A *Local command* connector pointed at `awm-mcp` looks simpler and does not
+work: local connectors run **inside the analysis sandbox** under Claude's own
+network allowlist, and `awm-mcp` needs loopback HTTP to the gateway.
+
+**The allowlist is a security control.** awm has no per-caller mode and no
+read-only credential — anything on the loopback bus can call `ssh`, `compute`,
+`social`, gateway control and the agent write verbs, and the `agent` domain's
+own verb gate documents itself as *not* a trust boundary. So the bridge ships an
+explicit `{domain: verbs}` list, enforced on `tools/call` and not merely on
+`tools/list` (hiding a tool is not refusing it). It defaults to read/query verbs
+of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`, `artifact`,
+`precedence`. Widen it in `CLAUDE_SCIENCE_MCP_ALLOW`, deliberately.
+
+## Host file access
+
+Claude sees only what it is granted. Grants are consent rows plus live bind
+mounts, persisted and replayed at boot, and each carries a mode — `ro` or `rw`.
+Grant the workspace read-only, in the workbench under the folder Access control:
+
+| Path | Mode |
+|---|---|
+| `<workspace>/projects` | `ro` |
+| `<workspace>/data` | `ro` |
+| the workbench's own working directory | `rw` (outputs) |
+
+Three things that bite:
+
+- **Symlinks do not work.** A grant root must reach the path symlink-free, so a
+  curated directory of symlinks into the workspace is refused. Grant real
+  directories — which also means `.awm/data` (a symlink) is not grantable; grant
+  the real `data/` instead.
+- **Order matters.** Granting `ro` under an existing `rw` grant is refused
+  rather than silently downgrading the shared bind. Flip or remove the broader
+  grant first.
+- **There is no CLI or config key for grants** in this build, so this is a
+  one-time action in the UI per path. It is durable — grants replay at boot —
+  but `status` cannot read them back, so this table is the record.
+
+## Verify
+
+```bash
+# the service, from this node
+awm services list | grep claude-science          # enabled, running, ready
+awm claude-science status                        # daemon + install + fronts + bridge
+
+# the fronts, from anywhere on the mesh
+curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12201/   # 401/login
+curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12202/   # 401/login
+
+# the MCP bridge
+curl -s http://127.0.0.1:7819/claude-science/mcp                       # bridge status
+curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -c 400
+curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+       "params":{"name":"awm__ssh__connect","arguments":{}}}'           # refused
+
+# adoption: the deploy-safety guarantee
+awm claude-science status | grep pid ; awm gateway restart
+awm claude-science status | grep pid                                   # same pid
+
+# from another node — no peer= argument needed
+awm claude-science status
+```
+
+In a browser on the mesh: open `https://<edge-host>:12201/`, log in with the awm
+session, land in the workbench, and reload — the session persisting is what
+proves `X-Forwarded-Proto` and `X-Forwarded-Host` reached the daemon. Start a
+conversation (proves the WebSocket upgrade passed the origin check) and have
+Claude render an HTML preview (proves the `:12202` front).
+
+## Scope and caveats
+
+- **One instance, one node.** The profile gate is the only knob; a second node
+  needs its own binary, data dir and forwarded ports.
+- **`status` cannot read host grants back** — see above. The table in this file
+  is the source of truth for what should be granted.
+- **The binary self-updates by default.** `status` reports the running version;
+  `--no-auto-update` is a knob, not our default, and `update --to <version>`
+  both pins and rolls back.
+- **The fronts do not survive this process.** That is intended — they are
+  plumbing. If they are down and the daemon is up, the workbench is still
+  reachable on loopback and `status` will say which half is broken.
