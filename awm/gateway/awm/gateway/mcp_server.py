@@ -42,6 +42,68 @@ server = Server("awm")
 
 
 # ---------------------------------------------------------------------------
+# Caller identity
+# ---------------------------------------------------------------------------
+
+# Claude Code writes one record per live session at ``~/.claude/sessions/<repl-pid>.json``.
+# Existence alone is enough here: this only decides which ancestor to *name*, and
+# reflection re-reads the record and checks its ``procStart`` against the live
+# process before injecting anywhere (``session_target.read_session_record``). So a
+# stale record squatting a recycled pid fails closed there rather than being
+# mis-targeted here, and this stays a narrowing step, not an authority.
+_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+_MAX_ANCESTRY_HOPS = 8
+
+
+def _ppid_of(pid: int) -> int | None:
+    """``/proc/<pid>/stat`` field 4 (ppid), or ``None`` if the pid is gone.
+
+    Field 2 (comm) is parenthesised and may itself contain spaces and parens, so
+    everything up to the *last* ``)`` is skipped; after it, field N sits at index
+    N-3.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fp:
+            data = fp.read()
+    except OSError:
+        return None
+    try:
+        return int(data[data.rfind(")") + 2:].split()[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _resolve_caller_pid(start_pid: int, *, sessions_dir: str = _SESSIONS_DIR,
+                        ppid_of=_ppid_of,
+                        max_hops: int = _MAX_ANCESTRY_HOPS) -> int:
+    """The nearest ancestor that is a Claude Code session — usually our parent.
+
+    The proxy is normally a direct stdio child of the REPL, so hop zero hits and
+    this costs one ``exists``. That stops holding the moment something wraps the
+    launch: an ``.mcp.json`` spelling the command ``mamba run -n awm awm-mcp``
+    instead of the absolute interpreter path leaves the wrapper sitting between us
+    and the REPL, and naming the wrapper made reflection refuse with "the caller
+    does not look like a Claude Code session" — a session losing self-compaction
+    because of how its config spells a command, with nothing in the message
+    pointing at the cause.
+
+    Walking up fixes that without widening what a model can reach. The chain comes
+    from ``/proc`` and never from an argument, and the walk stops at the *first*
+    session it meets, so an agent nested inside another resolves to its own REPL
+    and never to its parent's. A chain containing no session returns ``start_pid``
+    unchanged, so a genuine non-Claude caller refuses exactly as it did before.
+    """
+    pid: int | None = start_pid
+    for _ in range(max_hops):
+        if pid is None or pid <= 1:
+            break
+        if os.path.exists(os.path.join(sessions_dir, f"{pid}.json")):
+            return pid
+        pid = ppid_of(pid)
+    return start_pid
+
+
+# ---------------------------------------------------------------------------
 # MCP protocol handlers
 # ---------------------------------------------------------------------------
 
@@ -83,15 +145,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # need no model-supplied token). Read at call time, not import time, so a
         # reused proxy always reflects its own env. Absent for normal sessions.
         as_ = os.environ.get("AWM_AS")
-        # This proxy is spawned by the calling session as a stdio child — one
-        # `claude` REPL, one `awm-mcp` child — so our parent pid *is* the caller.
-        # That is the identity the reflection service targets, and it is the same
-        # fact whether the session sits in a tmux pane or runs as a background
-        # job, which is what lets an agent reflect on itself without knowing how
-        # it happens to be hosted. Read at call time (see AWM_AS above); it is
-        # observed here rather than accepted as an argument, so a model cannot
-        # aim reflection at anyone but itself.
-        session_pid = str(os.getppid())
+        # This proxy is spawned by the calling session as a stdio child, so the
+        # caller is the nearest Claude Code session above us — our parent when
+        # nothing wraps the launch, and the pid `_resolve_caller_pid` walks up to
+        # when something does. That is the identity the reflection service
+        # targets, and it is the same fact whether the session sits in a tmux
+        # pane or runs as a background job, which is what lets an agent reflect
+        # on itself without knowing how it happens to be hosted. Read at call
+        # time (see AWM_AS above); it is observed here rather than accepted as an
+        # argument, so a model cannot aim reflection at anyone but itself.
+        session_pid = str(_resolve_caller_pid(os.getppid()))
         # Compatibility shim: a client holding a stale tool list may still name
         # ``<domain>@<peer>``. Those names are no longer advertised (the surface
         # carries one tool per domain with a ``peer`` argument instead), but
