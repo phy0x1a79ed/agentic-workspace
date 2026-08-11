@@ -29,6 +29,20 @@ and leaves it running when the service stops. `stop` is an explicit verb.
 The practical guarantee: **restarting the gateway does not change the daemon's
 pid.** If it does, something is wrong.
 
+**Detaching is not what buys that — the cgroup is.** `serve --detached` already
+gives the daemon its own session and `PPID 1`, which defeats every signal-based
+teardown. It does nothing about `systemctl restart awm`, which kills by
+*control group*, and a cgroup is inherited by every descendant however it
+detaches. So a daemon this service spawned died on exactly the deploy action it
+was supposed to survive, while one adopted from its own unit sailed through —
+the bug was invisible until this service became the thing doing the spawning.
+The launch therefore goes through `systemd-run --user` into a transient
+`claude-science-daemon.service` under the *user* manager, a cgroup `awm.service`
+does not own. `status` reports `daemon.user_unit`; a null there means this node
+has no user manager (a container, a bare dev box) and the daemon will not
+survive an awm restart. The unit is transient, so a reboot leaves nothing
+behind and this service starts a fresh daemon as it would on any cold node.
+
 **Two ports, two origins.** Upstream serves generated-HTML previews from a
 second port so a page Claude wrote cannot read the session that wrote it. That
 boundary is a browser origin, so it survives only if we keep two of them. Hence

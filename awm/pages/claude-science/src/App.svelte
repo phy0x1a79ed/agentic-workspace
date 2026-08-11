@@ -109,6 +109,15 @@
             —
           {/if}
         </dd>
+        <dt>survives deploys</dt>
+        <dd>
+          {#if daemon?.user_unit}
+            yes — <span class="dim">{daemon.user_unit}</span>
+          {:else}
+            <span class="warn">no — no user systemd manager here, so an
+            <code>awm</code> restart takes the daemon with it</span>
+          {/if}
+        </dd>
         {#if daemon?.error}<dt>error</dt><dd class="error">{daemon.error}</dd>{/if}
       </dl>
       <div class="row">
@@ -207,6 +216,7 @@
   .steps li[data-ok='true']::before { content: '✓'; color: var(--ok, #4ade80); }
 
   .dim { color: var(--text-dim, #9a9a9a); }
+  .warn { color: var(--warn, #fbbf24); }
   .hint { color: var(--text-dim, #9a9a9a); font-size: 0.85rem; }
   .error { color: var(--error, #f87171); }
   .log {

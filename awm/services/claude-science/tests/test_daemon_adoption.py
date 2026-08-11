@@ -84,6 +84,86 @@ def _never_called(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
+# Where the daemon is launched — the half of "outlives us" that detaching
+# does not buy. See daemon._user_manager_env.
+# ---------------------------------------------------------------------------
+
+def _capture_launch(monkeypatch, *, has_user_manager: bool):
+    """Drive one start() against a dead daemon and return the argv it launched."""
+    calls: list[list[str]] = []
+
+    class _Ok:
+        stdout, stderr, returncode = "", "", 0
+
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(
+        daemon, "_user_manager_env",
+        (lambda: {"XDG_RUNTIME_DIR": "/run/user/1000",
+                  "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"})
+        if has_user_manager else (lambda: None),
+    )
+
+    # Dead before the launch, alive after it — so start() takes the spawn path
+    # and then its poll succeeds.
+    states = iter([{"running": False}])
+
+    def _status():
+        return next(states, {"running": True, "pid": 999, "port": 12203})
+
+    monkeypatch.setattr(daemon, "status_json", _status)
+
+    def _run(argv, **kwargs):
+        calls.append(list(argv))
+        return _Ok()
+
+    monkeypatch.setattr(daemon.subprocess, "run", _run)
+    daemon.Supervisor(main_front_port=12201, sandbox_front_port=12202).start()
+    return calls
+
+
+def test_launch_goes_into_a_user_manager_unit_when_there_is_one(monkeypatch):
+    """`systemctl restart awm` kills by cgroup, and a cgroup is inherited by
+    every descendant however it detaches — so the daemon has to be started into
+    a cgroup awm.service does not own, or it dies on the deploy it is meant to
+    survive."""
+    launch = _capture_launch(monkeypatch, has_user_manager=True)[-1]
+    assert launch[0] == "systemd-run"
+    assert "--user" in launch
+    assert f"--unit={daemon.TRANSIENT_UNIT}" in launch
+    # systemd manages it as Type=simple; self-detaching would orphan it out of
+    # the very unit that is the point of this path.
+    assert "--detached" not in launch
+    assert "--property=Restart=no" in launch, "systemd must not race our supervision"
+
+
+def test_the_name_is_cleared_before_it_is_claimed(monkeypatch):
+    """A unit still deactivating from the stop half of a restart holds the name
+    and makes systemd-run refuse."""
+    calls = _capture_launch(monkeypatch, has_user_manager=True)
+    cleanup = [c for c in calls if c[:2] == ["systemctl", "--user"]]
+    assert [c[2] for c in cleanup] == ["stop", "reset-failed"]
+
+
+def test_without_a_user_manager_it_falls_back_to_the_binarys_own_detach(monkeypatch):
+    """A container or a dev box has no user manager, and the service still has
+    to come up there — just without the cgroup guarantee."""
+    launch = _capture_launch(monkeypatch, has_user_manager=False)[-1]
+    assert launch[0] == str(daemon.BIN)
+    assert "--detached" in launch
+
+
+def test_status_says_which_of_the_two_it_would_be(monkeypatch):
+    """The difference is whether the daemon survives a deploy, so it is status,
+    not a log line."""
+    monkeypatch.setattr(daemon, "_user_manager_env", lambda: None)
+    monkeypatch.setattr(daemon, "status_json", _running)
+    sup = daemon.Supervisor(main_front_port=12201, sandbox_front_port=12202)
+    assert sup.snapshot()["user_unit"] is None
+    monkeypatch.setattr(daemon, "_user_manager_env", lambda: {"X": "y"})
+    assert sup.snapshot()["user_unit"] == f"{daemon.TRANSIENT_UNIT}.service"
+
+
+# ---------------------------------------------------------------------------
 # Origins
 # ---------------------------------------------------------------------------
 

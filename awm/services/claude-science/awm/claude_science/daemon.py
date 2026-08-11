@@ -77,6 +77,11 @@ START_TIMEOUT_S = float(os.environ.get("CLAUDE_SCIENCE_START_TIMEOUT_S", "90"))
 #: happened". Checked rather than reproduced: the daemon owns this work.
 _PROVISION_MARKERS = ("conda", "seed-assets")
 
+#: Transient user-manager unit the daemon is launched into where one is
+#: available. See :func:`_user_manager_env` for why it is not simply spawned.
+TRANSIENT_UNIT = os.environ.get("CLAUDE_SCIENCE_TRANSIENT_UNIT",
+                                "claude-science-daemon")
+
 
 def installed() -> bool:
     return BIN.is_file() and os.access(BIN, os.X_OK)
@@ -148,6 +153,35 @@ def front_origin(port: int) -> str:
     return f"https://{_origin_host()}:{port}"
 
 
+def _user_manager_env() -> dict[str, str] | None:
+    """Env for reaching this user's systemd manager, or ``None`` if there is none.
+
+    Detaching is not enough to make the daemon outlive an awm restart, and this
+    is the correction to that assumption. ``serve --detached`` already puts the
+    daemon in its own session with ``PPID 1``, which defeats every *signal*-
+    based teardown — but on a node where awm runs under systemd, ``systemctl
+    restart awm`` kills by **cgroup** (``KillMode=control-group``, the default),
+    and a cgroup is inherited by every descendant no matter how it detaches. So
+    a daemon we spawned died on the deploy action it was supposed to survive,
+    while the daemon we *adopted* from its own unit sailed through — the bug was
+    invisible until this service became the one doing the spawning.
+
+    Launching into a transient unit of the *user* manager puts the daemon in a
+    cgroup awm.service does not own, which is the actual property wanted. The
+    unit is transient, so it does not survive a reboot — after one, this service
+    starts a fresh daemon exactly as it would on any cold node.
+    """
+    if not shutil.which("systemd-run"):
+        return None
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    if not Path(runtime, "bus").is_socket():
+        return None
+    return {
+        "XDG_RUNTIME_DIR": runtime,
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
+    }
+
+
 def allowed_origins(main_front_port: int) -> list[str]:
     """Exact origins the daemon accepts WebSocket upgrades and writes from.
 
@@ -193,6 +227,12 @@ class Supervisor:
             "version": st.get("version"),
             "port": st.get("port"),
             "sandbox_port": SANDBOX_PORT,
+            # Which cgroup the daemon would be launched into. The difference
+            # between this being a unit name and being null is the difference
+            # between surviving `systemctl restart awm` and not, so it belongs
+            # in status rather than in a log line nobody reads.
+            "user_unit": (f"{TRANSIENT_UNIT}.service"
+                          if _user_manager_env() else None),
             "adopted": self.adopted,
             "restarts_by_us": self.restarts,
             "supervised_since": self.started_at,
@@ -227,7 +267,7 @@ class Supervisor:
 
         origins = allowed_origins(self.main_front_port)
         args = [
-            "serve", "--detached", "--no-browser",
+            "serve", "--no-browser",
             "--host", "127.0.0.1",
             "--port", str(PORT),
             "--sandbox-port", str(SANDBOX_PORT),
@@ -241,12 +281,40 @@ class Supervisor:
             # address this process cannot see.
             "OPERON_SANDBOX_ORIGIN": front_origin(self.sandbox_front_port),
         }
-        log.info("claude-science: launching detached daemon on :%d (preview :%d) "
-                 "origins=%s", PORT, SANDBOX_PORT, origins)
+        serve = [str(BIN), *args, "--data-dir", str(DATA_DIR)]
+        bus = _user_manager_env()
+        if bus:
+            # A unit left over from a daemon that has already exited — or one
+            # still deactivating from the `stop` half of a restart — would make
+            # systemd-run refuse the name. Clearing it is routine, not an error
+            # path: `stop` blocks until the job finishes, `reset-failed` clears
+            # a failed corpse, and both are no-ops when there is nothing there.
+            for verb in ("stop", "reset-failed"):
+                subprocess.run(
+                    ["systemctl", "--user", verb, TRANSIENT_UNIT],
+                    capture_output=True, text=True, timeout=30,
+                    env={**os.environ, **bus},
+                )
+            launch = [
+                "systemd-run", "--user", "--quiet", "--collect",
+                f"--unit={TRANSIENT_UNIT}", "--property=Restart=no",
+                *(f"--setenv={k}={v}" for k, v in env_note.items()),
+                "--", *serve,
+            ]
+            how = f"into user unit {TRANSIENT_UNIT}.service"
+        else:
+            # No user manager (a container, a dev box): fall back to the
+            # binary's own detach. It still survives signals, just not a
+            # cgroup-scoped kill of whatever launched us.
+            launch = [str(BIN), *args, "--detached", "--data-dir", str(DATA_DIR)]
+            how = "detached (no user systemd manager)"
+
+        log.info("claude-science: launching daemon %s on :%d (preview :%d) "
+                 "origins=%s", how, PORT, SANDBOX_PORT, origins)
         proc = subprocess.run(
-            [str(BIN), *args, "--data-dir", str(DATA_DIR)],
-            capture_output=True, text=True, timeout=START_TIMEOUT_S,
-            env={**os.environ, **env_note, "HOME": str(Path.home())},
+            launch, capture_output=True, text=True, timeout=START_TIMEOUT_S,
+            env={**os.environ, **env_note, **(bus or {}),
+                 "HOME": str(Path.home())},
         )
         if proc.returncode != 0:
             raise RuntimeError(

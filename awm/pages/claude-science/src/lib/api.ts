@@ -23,6 +23,12 @@ export interface DaemonState {
   sandbox_port: number | null;
   /** True if the daemon was already up when the service arrived. */
   adopted: boolean | null;
+  /**
+   * The user-manager unit a launch would go into, or null when there is no
+   * user systemd manager here. Null means the daemon does not survive a
+   * `systemctl restart awm` — worth showing, not just logging.
+   */
+  user_unit: string | null;
   restarts_by_us: number;
   supervised_since: number | null;
   error?: string | null;
