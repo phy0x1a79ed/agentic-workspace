@@ -94,7 +94,7 @@ def test_other_domains_untouched():
 # `_resolve_caller_pid` — which ancestor the header names in the first place
 # ---------------------------------------------------------------------------
 
-from awm.gateway.mcp_server import _resolve_caller_pid
+from awm.gateway.mcp_caller import resolve_caller_pid as _resolve_caller_pid
 
 
 def _sessions(tmp_path, *pids):

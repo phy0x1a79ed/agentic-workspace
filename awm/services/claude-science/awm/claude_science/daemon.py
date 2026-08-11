@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -128,6 +129,21 @@ def status_json() -> dict[str, Any]:
     except json.JSONDecodeError:
         head = (proc.stdout or proc.stderr or "").strip()[:200]
         return {"running": False, "error": f"unparseable status output: {head!r}"}
+
+
+def port_listening(port: int, *, timeout: float = 1.0) -> bool:
+    """True if anything accepts a loopback TCP connection on ``port``.
+
+    Corroboration for :func:`status_json`, not a replacement. It answers only
+    "is something serving there", which is precisely the question worth asking
+    before killing a daemon: a listener that accepts connections is not a
+    process that has died, whatever the probe just said.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def _origin_host() -> str:
@@ -371,8 +387,35 @@ class Supervisor:
         """
         if not installed():
             return {"action": "skipped", "reason": "binary not installed"}
-        if status_json().get("running"):
+        st = status_json()
+        if st.get("running"):
             return {"action": "ok"}
+
+        # `status_json` never raises, so a timed-out subprocess, an OSError and
+        # unparseable output all arrive here indistinguishable from a daemon
+        # that is genuinely down — running=False, plus an `error`. Those are
+        # "could not find out", and respawning on them is destructive: `start`
+        # stops the unit before launching, so an inconclusive probe kills a
+        # healthy workbench and takes the live conversation with it. That is the
+        # exact failure this service exists to prevent, and it happened once —
+        # the probe said dead while the daemon was still answering HTTP 200s on
+        # either side of the tick. Wait for a probe that actually knows.
+        if st.get("error"):
+            log.warning("claude-science: liveness probe inconclusive (%s); "
+                        "not respawning", st["error"])
+            return {"action": "skipped",
+                    "reason": f"probe inconclusive: {st['error']}"}
+
+        # A clean not-running that the socket contradicts is not evidence of
+        # death either — something is serving on that port, and killing it is
+        # the same destructive move. Believe the socket, and say so loudly:
+        # a persistent disagreement is a real fault, just not one to resolve by
+        # stopping the daemon.
+        if port_listening(PORT):
+            log.warning("claude-science: status reports not-running but :%d "
+                        "still accepts connections; not respawning", PORT)
+            return {"action": "skipped", "reason": "port still listening"}
+
         # Only respawn something we are allowed to own. A daemon that was
         # adopted and has since exited was somebody else's to stop — but it is
         # also now nobody's, so bringing it back is the useful behaviour.

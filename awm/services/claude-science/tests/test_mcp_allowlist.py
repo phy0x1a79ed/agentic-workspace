@@ -182,3 +182,46 @@ def test_an_empty_allowlist_is_honoured(monkeypatch):
     """Wiring the connector but exposing nothing is a legitimate posture."""
     monkeypatch.setenv("CLAUDE_SCIENCE_MCP_ALLOW", "{}")
     assert mcp_bridge._load_allowlist() == {}
+
+
+# ---------------------------------------------------------------------------
+# The app as it is actually served
+# ---------------------------------------------------------------------------
+#
+# Every test above drives `handle_rpc` directly, which leaves the seam between
+# the ASGI app and the uvicorn config it is served under untested — and that is
+# exactly where this shipped broken: the app built its httpx client in a
+# lifespan handler while the listener ran with `lifespan="off"`, so the client
+# was never created and every POST 500'd with KeyError('client') on both nodes.
+# GET kept answering 200 throughout, because the status route needs no client.
+# These go through the real app so a POST is never again unproven.
+
+def _client():
+    """A client that deliberately never enters the app's lifespan.
+
+    `TestClient` only runs lifespan when used as a context manager, so driving
+    it this way reproduces exactly how the listener serves the app —
+    `lifespan="off"`. Anything the app needs must therefore exist without one.
+    """
+    from starlette.testclient import TestClient
+    return TestClient(mcp_bridge.build_app())
+
+
+def test_the_served_app_answers_a_post():
+    """The regression test: a POST must reach handle_rpc, not 500 on wiring."""
+    r = _client().post("/", json={"jsonrpc": "2.0", "id": 1,
+                                  "method": "tools/list"})
+    assert r.status_code == 200, r.text
+    assert r.json()["result"]["tools"], "the served app listed no tools"
+
+
+def test_the_served_app_refuses_a_non_allowlisted_verb():
+    """The security control has to hold on the path the connector actually
+    takes, not only in-process."""
+    r = _client().post("/", json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": mcp_bridge.tool_name("ssh", "connect"),
+                   "arguments": {}},
+    })
+    assert r.status_code == 200, r.text
+    assert "allowlist" in r.json()["error"]["message"]

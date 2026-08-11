@@ -84,6 +84,13 @@ The two fronts are not gateway registrations — they are listeners this process
 owns, the same shape as `httpsfront`'s own. They die with the service; the
 daemon does not.
 
+A fifth thing appears without this process doing anything: the control panel at
+`/ui/claude-science`, which the gateway mounts on any node where the page has
+been *built*. Page discovery keys on a built `dist/` and has no profile gate, so
+a node that deploys the tree without running the service still mounts the panel
+— and it will be dead, because the page calls the local `/svc/claude-science`
+with no peer selector.
+
 **The verb surface is `science`, not `claude-science`.** The gateway folds the
 MCP surface by splitting a projected tool name on its *first* underscore, so
 `claude_science_status` would land as domain `claude`, verb `science_status` —
@@ -112,16 +119,55 @@ the daemon refuses to start rather than run code unsandboxed:
 sudo apt-get install -y bubblewrap socat      # bwrap >= 0.8.0
 ```
 
-Then enable it on this node only, via the profile gate in `service.toml`:
+**On Ubuntu 24.04 the package alone is not enough.**
+`kernel.apparmor_restrict_unprivileged_userns=1` transitions any unconfined
+process that creates a user namespace into the `unprivileged_userns` profile,
+which carries `audit deny capability` — so bwrap cannot write its uid map and
+every sandbox dies with `setting up uid map: Permission denied`. Grant that one
+binary the permission rather than relaxing the sysctl host-wide: an
+`/etc/apparmor.d/bwrap` shim of the shape Ubuntu ships for Electron apps
+(`/etc/apparmor.d/obsidian` is the model — `flags=(unconfined)` plus a bare
+`userns,`), then `apparmor_parser -r`. Prove it before deploying —
+`bwrap --ro-bind / / --dev /dev --unshare-all /bin/true` must exit 0 — because
+otherwise it surfaces much later as a daemon that will not start.
+
+Then opt this node in, via the profile gate in `service.toml`. Deployments are
+**per-node and independent**, so every node that wants a workbench does this for
+itself:
 
 ```
 # in <workspace>/.awm/env
 AWM_PROFILES=claude-science
-CLAUDE_SCIENCE_EXTRA_ORIGINS=https://172.25.181.70:12201
+# every browser-reachable origin besides the one derived from AWM_EDGE_URL —
+# capella: https://172.25.181.70:12201 (the WSL interface)
+# altair:  https://192.168.100.142:12201,https://127.0.0.1:12201
+CLAUDE_SCIENCE_EXTRA_ORIGINS=...
 ```
 
-and `awm gateway restart`. Every other node needs nothing: with one provider,
-the domain resolves there from anywhere with no `peer=` argument.
+**On a trust-consumer node, provision the fronts' leaf by hand.** The fronts
+mint their own certificate under `<service>/.certs/`, which works only where the
+CA *key* is (capella). Anywhere else they come up `serving: false` with a
+`TrustConsumerError` naming the exact SAN set they need — a node holding
+`ca.pem` without `ca-key.pem` must not mint, because minting would replace the
+fleet's trust root and surface as a certificate error on every peer. The node's
+`httpsfront` already holds a leaf for the same host with the same
+auto-enumerated SANs, so copy that pair across rather than minting a second one
+elsewhere and moving a private key over the network:
+
+```
+cp -p awm/services/httpsfront/.certs/{cert,key,ca}.pem \
+      awm/services/claude-science/.certs/
+```
+
+Both are gitignored host state, so a deploy's `git clean -fd` leaves them alone.
+Nothing re-cuts a consumer's leaf when it expires — check `fronts[*].san` and
+the expiry if the fronts ever stop serving.
+
+Then deploy. **Export the profile into the deploy shell as well** —
+`AWM_PROFILES=claude-science awm deploy`. The CLI does not read `.awm/env`
+(only the gateway does), so deploy's verification set is computed without the
+profile and silently omits this service: it reports success without ever having
+checked the workbench came back.
 
 ## Environment
 
@@ -138,17 +184,23 @@ the domain resolves there from anywhere with no `peer=` argument.
 | `CLAUDE_SCIENCE_MCP_ALLOW` | built-in list | JSON `{domain: [verb, …]}` for the bridge |
 | `CLAUDE_SCIENCE_HEALTH_INTERVAL_S` | `20` | supervision loop period |
 
-**The ports are not free choices.** On the production node awm runs inside WSL
-and only specific ports are forwarded by the Windows-side portproxy — 12100
-(the gateway front), 12201 and 12202. Moving a front to an unforwarded port
-takes the workbench off the mesh, and adding one needs an elevated run on the
-Windows side.
+**The ports are free choices in the code, but not on every node.** capella runs
+awm inside WSL, where only specific ports are forwarded by the Windows-side
+portproxy — 12100 (the gateway front), 12201 and 12202. Moving a front to an
+unforwarded port takes the workbench off the mesh there, and adding one needs an
+elevated run on the Windows side. A native-Linux node has no such constraint;
+the defaults are then just defaults, and two nodes both on `:12201` are
+distinguished by address alone.
 
 **The public host is declared, not enumerated,** for the same reason
-`AWM_EDGE_URL` and `.sans` are: the mesh address belongs to the Windows host and
-is invisible from inside WSL. `--allow-origin` is matched exactly on
-scheme+host+port and gates WebSocket upgrades, so a missing origin shows up as a
-UI that loads and then silently has no socket.
+`AWM_EDGE_URL` and `.sans` are: on a WSL node the mesh address belongs to the
+Windows host and is invisible from inside. It defaults to the host in
+`AWM_EDGE_URL`, which is right on every node that declares one.
+`--allow-origin` is matched exactly on scheme+host+port and gates WebSocket
+upgrades, so a missing origin shows up as a UI that loads and then silently has
+no socket. The list is built **once, at daemon launch**, and this service adopts
+a running daemon rather than relaunching it — so a newly-added origin needs an
+explicit `awm science restart`, not a service or gateway restart.
 
 ## The MCP connector
 
@@ -225,8 +277,8 @@ curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
 awm science status | grep pid ; awm gateway restart
 awm science status | grep pid                                   # same pid
 
-# from another node — no peer= argument needed
-awm science status
+# from a node that runs its own — resolves local, never a peer's
+awm peer providers science          # default: local
 ```
 
 In a browser on the mesh: open `https://<edge-host>:12201/`, log in with the awm
@@ -237,8 +289,15 @@ Claude render an HTML preview (proves the `:12202` front).
 
 ## Scope and caveats
 
-- **One instance, one node.** The profile gate is the only knob; a second node
-  needs its own binary, data dir and forwarded ports.
+- **One instance per node, and they share nothing.** Each deployment has its own
+  binary, data dir, conversations and grants; there is no sync and no notion of
+  a primary. The profile gate is the whole opt-in.
+- **Two providers cost a third node its default.** `science` resolves to *local*
+  on any node that runs it, but a node running it nowhere and booking two
+  providers gets no default at all and must pass `peer=` — the catalog refuses
+  to guess. So standing up a second instance is what breaks bare `awm science
+  status` on the nodes that have none. Give a node its own instance, or name the
+  peer.
 - **`status` cannot read host grants back** — see above. The table in this file
   is the source of truth for what should be granted.
 - **The binary self-updates by default.** `status` reports the running version;
