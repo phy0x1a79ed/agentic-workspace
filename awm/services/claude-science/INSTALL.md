@@ -144,7 +144,26 @@ AWM_PROFILES=claude-science
 CLAUDE_SCIENCE_EXTRA_ORIGINS=...
 ```
 
-and deploy. **Export the profile into the deploy shell as well** —
+**On a trust-consumer node, provision the fronts' leaf by hand.** The fronts
+mint their own certificate under `<service>/.certs/`, which works only where the
+CA *key* is (capella). Anywhere else they come up `serving: false` with a
+`TrustConsumerError` naming the exact SAN set they need — a node holding
+`ca.pem` without `ca-key.pem` must not mint, because minting would replace the
+fleet's trust root and surface as a certificate error on every peer. The node's
+`httpsfront` already holds a leaf for the same host with the same
+auto-enumerated SANs, so copy that pair across rather than minting a second one
+elsewhere and moving a private key over the network:
+
+```
+cp -p awm/services/httpsfront/.certs/{cert,key,ca}.pem \
+      awm/services/claude-science/.certs/
+```
+
+Both are gitignored host state, so a deploy's `git clean -fd` leaves them alone.
+Nothing re-cuts a consumer's leaf when it expires — check `fronts[*].san` and
+the expiry if the fronts ever stop serving.
+
+Then deploy. **Export the profile into the deploy shell as well** —
 `AWM_PROFILES=claude-science awm deploy`. The CLI does not read `.awm/env`
 (only the gateway does), so deploy's verification set is computed without the
 profile and silently omits this service: it reports success without ever having
