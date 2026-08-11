@@ -66,6 +66,75 @@ def test_reconcile_does_nothing_when_the_binary_is_absent(sup, monkeypatch):
     assert sup.reconcile()["action"] == "skipped"
 
 
+# ---------------------------------------------------------------------------
+# "Could not find out" is not "dead"
+# ---------------------------------------------------------------------------
+#
+# `status_json` never raises, so a timed-out subprocess, an OSError and garbage
+# on stdout all reach `reconcile` looking exactly like a daemon that is down:
+# running=False plus an `error`. Respawning on that is destructive, because
+# `start` stops the unit before it launches — so an unlucky probe kills a
+# healthy workbench mid-conversation. It happened: the probe reported dead while
+# the daemon was answering HTTP 200s on either side of the same tick.
+
+@pytest.mark.parametrize("error", [
+    "status timed out after 30s",
+    "OSError: [Errno 12] Cannot allocate memory",
+    "unparseable status output: ''",
+])
+def test_reconcile_does_not_respawn_on_an_inconclusive_probe(sup, monkeypatch, error):
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json",
+                        lambda: {"running": False, "error": error})
+    monkeypatch.setattr(daemon.subprocess, "run", _never_called)
+    monkeypatch.setattr(daemon, "port_listening", _never_called)
+
+    out = sup.reconcile()
+    assert out["action"] == "skipped"
+    assert "inconclusive" in out["reason"]
+    assert sup.restarts == 0
+
+
+def test_reconcile_believes_the_socket_over_a_clean_not_running(sup, monkeypatch):
+    """Something is accepting connections on the daemon's port. Whatever
+    `status` said, that is not a process which has died — and stopping it is the
+    failure this service exists to prevent."""
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
+    monkeypatch.setattr(daemon, "port_listening", lambda port, **kw: True)
+    monkeypatch.setattr(daemon.subprocess, "run", _never_called)
+
+    out = sup.reconcile()
+    assert out["action"] == "skipped"
+    assert out["reason"] == "port still listening"
+    assert sup.restarts == 0
+
+
+def test_reconcile_still_respawns_a_daemon_that_is_really_gone(sup, monkeypatch):
+    """The guard must not cost us the behaviour it guards: a conclusive
+    not-running with nothing on the port is a genuine death."""
+    monkeypatch.setattr(daemon, "installed", lambda: True)
+    monkeypatch.setattr(daemon, "status_json", lambda: {"running": False})
+    monkeypatch.setattr(daemon, "port_listening", lambda port, **kw: False)
+    started = []
+    monkeypatch.setattr(daemon.Supervisor, "start",
+                        lambda self: started.append(True))
+
+    assert sup.reconcile()["action"] == "respawned"
+    assert started == [True]
+    assert sup.restarts == 1
+
+
+def test_port_listening_is_false_for_a_closed_port():
+    """A real socket check, so the helper cannot rot into always-true — which
+    would silently disable the respawn path above."""
+    import socket as _s
+    with _s.socket() as probe:          # bind and close to get a free port
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+    assert daemon.port_listening(free, timeout=0.5) is False
+
+
 def test_start_without_the_binary_says_so(sup, monkeypatch):
     monkeypatch.setattr(daemon, "installed", lambda: False)
     with pytest.raises(RuntimeError, match="not installed"):
