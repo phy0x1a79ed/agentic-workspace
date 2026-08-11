@@ -70,6 +70,13 @@ The two fronts are not gateway registrations — they are listeners this process
 owns, the same shape as `httpsfront`'s own. They die with the service; the
 daemon does not.
 
+**The verb surface is `science`, not `claude-science`.** The gateway folds the
+MCP surface by splitting a projected tool name on its *first* underscore, so
+`claude_science_status` would land as domain `claude`, verb `science_status` —
+the service's name cut in half. The manifest therefore projects `science_*`:
+`awm science status`, `mcp__awm__science {verb:"status"}`. The service, the
+prefix and the folder keep the full name.
+
 ## Install
 
 ```
@@ -184,7 +191,7 @@ Three things that bite:
 ```bash
 # the service, from this node
 awm services list | grep claude-science          # enabled, running, ready
-awm claude-science status                        # daemon + install + fronts + bridge
+awm science status                        # daemon + install + fronts + bridge
 
 # the fronts, from anywhere on the mesh
 curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12201/   # 401/login
@@ -201,11 +208,11 @@ curl -s -X POST http://127.0.0.1:7819/claude-science/mcp \
        "params":{"name":"awm__ssh__connect","arguments":{}}}'           # refused
 
 # adoption: the deploy-safety guarantee
-awm claude-science status | grep pid ; awm gateway restart
-awm claude-science status | grep pid                                   # same pid
+awm science status | grep pid ; awm gateway restart
+awm science status | grep pid                                   # same pid
 
 # from another node — no peer= argument needed
-awm claude-science status
+awm science status
 ```
 
 In a browser on the mesh: open `https://<edge-host>:12201/`, log in with the awm

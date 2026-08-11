@@ -33,7 +33,7 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.claude_science import daemon, front, mcp_bridge
 
@@ -45,11 +45,18 @@ SUPERVISOR = daemon.Supervisor(
 )
 
 
+#: Every function carries an explicit ``tool`` name under a ``science_`` prefix,
+#: which is what decides the domain this service appears as: the gateway folds
+#: the MCP surface by splitting the projected name on its **first** underscore.
+#: The obvious ``claude_science_status`` therefore lands as domain ``claude`` /
+#: verb ``science_status`` — one token, or the service's name gets cut in half.
+#: So the surface is ``awm science status`` and ``mcp__awm__science
+#: {verb:"status"}``, while the internal ``name`` stays short for RPC dispatch.
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
             "name": "status",
-            "tool": "claude_science_status",
+            "tool": "science_status",
             "description": (
                 "Report the Claude Science workbench: whether the daemon is "
                 "running and at what pid/version/port, whether this service "
@@ -62,7 +69,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "start",
-            "tool": "claude_science_start",
+            "tool": "science_start",
             "description": (
                 "Adopt the running workbench daemon, or launch one detached if "
                 "none is running. Idempotent. The daemon deliberately outlives "
@@ -73,7 +80,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "stop",
-            "tool": "claude_science_stop",
+            "tool": "science_stop",
             "description": (
                 "Stop the workbench daemon through its own socket, ending live "
                 "conversations. Idempotent. Stopping the *service* does not do "
@@ -84,7 +91,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "restart",
-            "tool": "claude_science_restart",
+            "tool": "science_restart",
             "description": (
                 "Stop the workbench daemon and start it again — e.g. to pick up "
                 "an update that has been staged. Interrupts live conversations."
@@ -94,7 +101,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "logs",
-            "tool": "claude_science_logs",
+            "tool": "science_logs",
             "description": "Tail the workbench daemon's log.",
             "params": [
                 {"name": "tail", "type": "number",
@@ -103,7 +110,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "url",
-            "tool": "claude_science_url",
+            "tool": "science_url",
             "description": (
                 "Mint a fresh single-use sign-in link for the workbench, valid "
                 "about three minutes. The loopback form the binary prints — "
@@ -114,7 +121,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "signin_url",
-            "tool": "claude_science_signin_url",
+            "tool": "science_signin_url",
             "description": (
                 "The mesh URL that signs a browser into the workbench in one "
                 "click. Behind awm's edge session, so it is only usable by "
@@ -124,7 +131,7 @@ API_MANIFEST: dict[str, Any] = {
         },
         {
             "name": "update_check",
-            "tool": "claude_science_update_check",
+            "tool": "science_update_check",
             "description": (
                 "Ask the binary whether a newer build is available. Reports "
                 "only; installing is a deliberate act (`claude-science update`)."
@@ -217,9 +224,10 @@ async def _health_loop() -> None:
             res = await asyncio.to_thread(SUPERVISOR.reconcile)
             if res.get("action") == "respawned":
                 log.warning("claude-science: workbench daemon respawned")
-        except asyncio.CancelledError:
-            return
         except Exception:  # noqa: BLE001 — never let the loop die
+            # CancelledError is a BaseException and so passes through, which is
+            # what the supervisor above wants: a *return* from here would read
+            # as a defect and be respawned, but a cancellation is a shutdown.
             log.exception("claude-science: supervision pass failed")
 
 
@@ -250,8 +258,13 @@ async def _on_start() -> None:
     except Exception:  # noqa: BLE001 — the workbench is still usable on loopback
         log.exception("claude-science: mesh fronts failed to start")
 
-    asyncio.create_task(mcp_bridge.serve_and_mount())
-    asyncio.create_task(_health_loop())
+    # Both are long-lived and both fail silently if left to a bare create_task
+    # whose handle nobody reads: a bridge that died on its first line looks
+    # exactly like one nobody has called yet, and a dead supervision loop looks
+    # exactly like a workbench that has not crashed. spawn_supervised logs at
+    # ERROR and respawns, so "absent" cannot masquerade as "quiet".
+    spawn_supervised("claude-science:mcp-bridge", mcp_bridge.serve_and_mount)
+    spawn_supervised("claude-science:health", _health_loop)
 
 
 async def main() -> None:
