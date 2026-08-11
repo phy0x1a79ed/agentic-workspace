@@ -35,7 +35,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.claude_science import daemon, front, mcp_bridge
+from awm.claude_science import api, daemon, front, mcp_bridge
 
 log = logging.getLogger("awm.claude_science.hub_adapter")
 
@@ -130,6 +130,54 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
+            "name": "connector",
+            "tool": "science_connector",
+            "description": (
+                "The workbench's local (stdio) MCP servers. With no arguments, "
+                "list them and say whether each one actually connects. Given a "
+                "name and command, register one — idempotent, and a no-op when "
+                "an identical entry is already there. Remote connectors are not "
+                "an option on any node in this fleet: the daemon requires a "
+                "public https URL and rejects every private address."
+            ),
+            "params": [
+                {"name": "name", "type": "string",
+                 "description": "Server name. Omit to list."},
+                {"name": "command", "type": "string",
+                 "description": "Absolute path to the executable. An absolute "
+                                "path is required to bypass the workbench's "
+                                "managed conda runtime."},
+                {"name": "args", "type": "array",
+                 "description": "Arguments (default none)."},
+                {"name": "env", "type": "object",
+                 "description": "Environment for the server process."},
+                {"name": "description", "type": "string",
+                 "description": "Shown in the workbench's connector list."},
+                {"name": "probe", "type": "boolean",
+                 "description": "Connect to each listed server to count its "
+                                "tools. Always done for one just registered; "
+                                "off by default when listing, as it is slow."},
+            ],
+            "timeout": 180,
+        },
+        {
+            "name": "grants",
+            "tool": "science_grants",
+            "description": (
+                "The host directories Claude may read or write inside the "
+                "workbench's sandbox. With no arguments, list them. Given a "
+                "path, grant it — idempotent. Symlinks are refused, as is a "
+                "read-only grant nested under an existing read-write one."
+            ),
+            "params": [
+                {"name": "path", "type": "string",
+                 "description": "Absolute host path. Omit to list."},
+                {"name": "mode", "type": "string",
+                 "description": "'ro' (default) or 'rw'."},
+            ],
+            "timeout": 120,
+        },
+        {
             "name": "update_check",
             "tool": "science_update_check",
             "description": (
@@ -190,6 +238,65 @@ async def _h_signin_url(args: dict) -> dict:
             "note": "requires an awm session; mints a workbench nonce server-side"}
 
 
+def _connector(args: dict) -> dict:
+    """List or register a local MCP server. Runs on a worker thread."""
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        name = (args.get("name") or "").strip()
+        if not name:
+            servers = api.list_local_servers(owner)
+            if args.get("probe"):
+                for srv in servers:
+                    srv.update(api.probe_tools(owner, srv["id"]))
+            return {"servers": servers, "probed": bool(args.get("probe"))}
+
+        command = (args.get("command") or "").strip()
+        if not command:
+            raise ValueError("command is required when registering a connector")
+
+        want = {"command": command,
+                "args": list(args.get("args") or []),
+                "env": dict(args.get("env") or {})}
+        have = api.stored_local_server(name)
+        unchanged = have is not None and all(
+            have.get(k) == v for k, v in want.items())
+
+        if unchanged:
+            server = {"id": f"{api.LOCAL_ID_PREFIX}{name}", "name": name}
+        else:
+            server = api.add_local_server(
+                owner, name=name, description=args.get("description"), **want)
+
+        # Registering and connecting are separate facts; report the second one
+        # explicitly rather than letting a clean 200 imply it.
+        return {"server": server, "changed": not unchanged,
+                **api.probe_tools(owner, server.get("id") or
+                                  f"{api.LOCAL_ID_PREFIX}{name}")}
+
+
+def _grants(args: dict) -> dict:
+    """List or add a host grant. Runs on a worker thread."""
+    with api.connect(SUPERVISOR.login_url()) as owner:
+        before = api.list_grants(owner)
+        path = (args.get("path") or "").strip()
+        if not path:
+            return {"grants": before}
+
+        mode = (args.get("mode") or "ro").strip()
+        if mode not in ("ro", "rw"):
+            raise ValueError(f"mode must be 'ro' or 'rw', not {mode!r}")
+        api.add_grant(owner, path=path, mode=mode)
+        after = api.list_grants(owner)
+        return {"grants": after, "changed": after != before}
+
+
+async def _h_connector(args: dict) -> dict:
+    return await asyncio.to_thread(_connector, args)
+
+
+async def _h_grants(args: dict) -> dict:
+    return await asyncio.to_thread(_grants, args)
+
+
 async def _h_update_check(args: dict) -> dict:
     return await asyncio.to_thread(SUPERVISOR.update_check)
 
@@ -202,6 +309,8 @@ HANDLERS = {
     "logs": _h_logs,
     "url": _h_url,
     "signin_url": _h_signin_url,
+    "connector": _h_connector,
+    "grants": _h_grants,
     "update_check": _h_update_check,
 }
 
