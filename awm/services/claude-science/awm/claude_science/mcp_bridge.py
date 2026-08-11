@@ -314,8 +314,14 @@ async def serve_and_mount() -> None:
     import uvicorn
     import websockets
 
-    config = uvicorn.Config(build_app(), host="127.0.0.1", port=0,
-                            log_level="warning")
+    config = uvicorn.Config(
+        build_app(), host="127.0.0.1", port=0, log_level="warning",
+        # The app has no lifespan handlers, and leaving the protocol on means
+        # every teardown logs a CancelledError traceback at ERROR from uvicorn's
+        # lifespan receive() — recurring noise that reads like a fault in this
+        # service and is not one.
+        lifespan="off",
+    )
     server = uvicorn.Server(config)
     task = asyncio.create_task(server.serve())
 
