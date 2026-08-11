@@ -42,7 +42,6 @@ import asyncio
 import html
 import logging
 import os
-import re
 import threading
 import time
 from typing import Any
@@ -51,7 +50,7 @@ from awm.httpsfront import certs, proxy
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 
-from awm.claude_science import daemon
+from awm.claude_science import api, daemon
 
 log = logging.getLogger("awm.claude_science.front")
 
@@ -64,9 +63,6 @@ PORT = int(os.environ.get("CLAUDE_SCIENCE_FRONT_PORT", "12201"))
 #: Mesh-facing TLS port for generated-HTML previews. A distinct browser origin
 #: from PORT, which is the whole point — see the module docstring.
 SANDBOX_PORT = int(os.environ.get("CLAUDE_SCIENCE_SANDBOX_FRONT_PORT", "12202"))
-
-#: The nonce inside `claude-science url` output.
-_NONCE_RE = re.compile(r"nonce=([a-f0-9]+)")
 
 _STATUS: dict[str, dict[str, Any]] = {}
 
@@ -102,13 +98,12 @@ async def _signin(request: Request) -> Response:
             "<h2>Sign-in unavailable</h2><p>Could not mint a login nonce. "
             "Is the workbench running?</p>", status_code=502)
 
-    match = _NONCE_RE.search(url)
-    if not match:
+    try:
+        nonce = html.escape(api.nonce_from(url))
+    except api.WorkbenchError:
         return HTMLResponse(
             "<h2>Sign-in unavailable</h2><p>No nonce in "
             "<code>claude-science url</code> output.</p>", status_code=502)
-
-    nonce = html.escape(match.group(1))
     dest = html.escape(request.query_params.get("dest", "/"))
     page = (
         "<!doctype html><meta charset=utf-8><title>Signing in…</title>"

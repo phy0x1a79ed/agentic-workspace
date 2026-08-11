@@ -202,21 +202,52 @@ no socket. The list is built **once, at daemon launch**, and this service adopts
 a running daemon rather than relaunching it — so a newly-added origin needs an
 explicit `awm science restart`, not a service or gateway restart.
 
-## The MCP connector
+## The MCP connector — not possible on 0.1.27/Linux
 
-The workbench can call a curated slice of awm's verbs. Add it in the workbench
-under **Settings > Connectors > Add connector > Remote**:
+**There is no way to give this workbench awm's tools.** Both connector kinds are
+closed, for different reasons, and neither has a setting that opens it. This is
+measured on 0.1.27, not inferred; re-measure it on a new build before believing
+it still holds.
 
-- **Name**: `awm`
-- **URL**: `http://127.0.0.1:7819/claude-science/mcp` (the gateway's own
-  loopback, unauthenticated by design), or `https://<edge>:12100/claude-science/mcp`
-  with a **Headers helper command** emitting `Authorization: Bearer $(cat
-  $AWM_PEER_CRED)` if you want it to work from a workbench on another host.
-- **Transport**: Streamable HTTP.
+**Remote is closed by address.** The daemon's URL guard (`safeFetch`) requires
+https *and* a public host, rejecting 10/8, 192.168/16, 172.16/12, 100.64/10,
+loopback, link-local and any name ending `.local` / `.internal` / `.lan` /
+`.home.arpa`. Every address this fleet has is on that list, so a remote
+connector cannot point at any node's gateway — TLS on the edge does not help,
+and there is no override or allowlist.
 
-A *Local command* connector pointed at `awm-mcp` looks simpler and does not
-work: local connectors run **inside the analysis sandbox** under Claude's own
-network allowlist, and `awm-mcp` needs loopback HTTP to the gateway.
+**Local is closed by sandbox.** A local (stdio) server does run on the host
+rather than in the analysis sandbox, but it gets a bwrap sandbox of its own with
+`--unshare-net`: an empty network namespace, no route anywhere, and outbound
+only through a proxy whose `NO_PROXY` covers every private range. From inside,
+`127.0.0.1:7819` is `Network is unreachable`. AF_UNIX is blocked by seccomp
+(`runtime/*/seccomp/*/unix-block.bpf`), so a unix-socket relay fails `connect()`
+with `EPERM` even when the socket is plainly visible — and `[sandbox.network]
+allow_unix_sockets` is macOS-only config that changes nothing here.
+
+Two facts are worth keeping anyway, because both cost a diagnosis to learn:
+
+- Registering a local server and *connecting* it are separate events. A server
+  whose command cannot run registers with a clean 200 and reports its failure
+  only in `/api/mcp-servers/:id/tool-permissions`, as an `error` string beside
+  an empty tool list. `science connector` probes and reports it; a status check
+  alone would call it healthy.
+- Most of `$HOME` is invisible inside the sandbox, so a server installed there
+  fails to exec with a bare `not found`. `[sandbox] user_read_paths` in
+  `<data-dir>/config.toml` is the fix, and altair keeps grants for the awm
+  interpreter and source tree so this is one less thing to rediscover.
+
+The one channel that does cross is the filesystem: a FIFO pair in a server's own
+`workspaces/_mcp-<name>/` directory round-trips fine, which is the same shape
+upstream uses for its own proxy (a socat under `sbx-bind-src/` publishing a unix
+socket as loopback TCP inside the namespace). Tunnelling awm through one would
+work and would deliberately defeat a boundary upstream built on purpose — a
+decision, not a workaround, and one a future build can break silently.
+
+**The HTTP bridge stays** at `/claude-science/mcp`, and its allowlist still
+governs it. Nothing in this fleet can consume it as a *connector*, but it is a
+working MCP-over-HTTP endpoint for awm — usable by any MCP client that is not
+this workbench.
 
 **The allowlist is a security control.** awm has no per-caller mode and no
 read-only credential — anything on the loopback bus can call `ssh`, `compute`,
@@ -231,7 +262,8 @@ of `scope`, `project`, `notes`, `drawio`, `graphify`, `dvc`, `artifact`,
 
 Claude sees only what it is granted. Grants are consent rows plus live bind
 mounts, persisted and replayed at boot, and each carries a mode — `ro` or `rw`.
-Grant the workspace read-only, in the workbench under the folder Access control:
+Grant the workspace read-only with `awm science grants --path <p> --mode ro`;
+called with no path the verb lists what a node already has.
 
 | Path | Mode |
 |---|---|
@@ -248,9 +280,14 @@ Three things that bite:
 - **Order matters.** Granting `ro` under an existing `rw` grant is refused
   rather than silently downgrading the shared bind. Flip or remove the broader
   grant first.
-- **There is no CLI or config key for grants** in this build, so this is a
-  one-time action in the UI per path. It is durable — grants replay at boot —
-  but `status` cannot read them back, so this table is the record.
+- **This was thought to be browser-only, and is not.** The daemon exposes the
+  same loopback API its own UI calls, and this service can already mint the
+  owner credential for it — `awm.claude_science.api` does the nonce exchange and
+  then authenticates as a **bearer**, which matters: the token works as a cookie
+  too, but that path additionally demands an `Origin` the daemon recognises and
+  a matching `x-operon-csrf` header, while bearer auth skips the CSRF hook
+  entirely. Grants are per-node host state, so they do not travel with a deploy;
+  that is why they are a verb rather than a config file.
 
 ## Verify
 
