@@ -1,19 +1,26 @@
 """An MCP endpoint over HTTP, exposing a curated slice of awm's verbs.
 
-The workbench takes custom connectors two ways, and the choice is forced by
-where each one runs. A *local command* connector is a stdio server that runs
-**inside the analysis sandbox**, under the same network allowlist as Claude's
-code — so pointing it at ``awm-mcp`` would put a process that needs loopback
-HTTP to the gateway, and that reads the workspace's env file, inside a
-bubblewrap jail designed to prevent exactly that. A *remote* connector is
-called by the app itself, outside the sandbox. That is the one that can work.
-
 awm has no MCP-over-HTTP transport — ``awm-mcp`` stdio is the only one — so
 this module is it: a minimal JSON-RPC endpoint speaking MCP's ``initialize`` /
 ``tools/list`` / ``tools/call``, translating each call into the gateway's own
 ``GET /tools`` and ``POST /invoke``. It registers as a ``kind=url`` mount, so
 httpsfront gives it TLS and the edge session and there is no second listener to
 secure.
+
+**This is not the Claude Science workbench's connector, and cannot be.** It was
+built to be one, on the reasoning that a *remote* connector is called by the app
+itself and so escapes the sandbox a *local* one runs in. Both halves of that
+turned out to be wrong on 0.1.27: a remote connector's URL must be https at a
+**public** host, which rejects every address in this fleet including loopback,
+and a local stdio server — while genuinely outside the analysis sandbox — gets a
+bwrap sandbox of its own with an empty network namespace, no route to the host,
+and AF_UNIX blocked by seccomp. There is no address, and no setting, that lets
+that workbench reach this endpoint. INSTALL.md § *The MCP connector* carries the
+measurements.
+
+What survives is an MCP-over-HTTP surface for awm that *other* clients can use,
+with the allowlist below as its access control. That is worth keeping; it is
+just not what it was written for.
 
 **The allowlist is the point.** awm has no per-caller mode and no read-only
 credential: anything that can reach the loopback bus gets the whole surface —
