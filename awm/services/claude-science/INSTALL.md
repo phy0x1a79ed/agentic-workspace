@@ -295,6 +295,8 @@ Three things that bite:
 # the service, from this node
 awm services list | grep claude-science          # enabled, running, ready
 awm science status                        # daemon + install + fronts + bridge
+awm science grants                        # host file access, as the daemon has it
+awm science connector                     # local MCP servers (none is expected)
 
 # the fronts, from anywhere on the mesh
 curl -sk -o /dev/null -w '%{http_code}\n' https://<edge-host>:12201/   # 401/login
@@ -328,15 +330,22 @@ Claude render an HTML preview (proves the `:12202` front).
 
 - **One instance per node, and they share nothing.** Each deployment has its own
   binary, data dir, conversations and grants; there is no sync and no notion of
-  a primary. The profile gate is the whole opt-in.
+  a primary. The profile gate is the whole opt-in. Conversations move between
+  nodes only by `claude-science import <data-dir|.db>`, which merges one way and
+  has no dry run and no undo — stop the daemon on *both* ends first (the source
+  so its WAL is checkpointed, the target because the merge writes to a database
+  it holds open) and copy the org directory aside before starting.
 - **Two providers cost a third node its default.** `science` resolves to *local*
   on any node that runs it, but a node running it nowhere and booking two
   providers gets no default at all and must pass `peer=` — the catalog refuses
   to guess. So standing up a second instance is what breaks bare `awm science
   status` on the nodes that have none. Give a node its own instance, or name the
   peer.
-- **`status` cannot read host grants back** — see above. The table in this file
-  is the source of truth for what should be granted.
+- **A stopped daemon is respawned within `HEALTH_INTERVAL_S`.** `science stop`
+  means it for about twenty seconds; the supervision loop has no notion of a
+  deliberate stop. To hold it down — for a data-dir merge, say — stop the
+  *service* first (`awm services stop claude-science`), which leaves the adopted
+  daemon running, then stop the daemon.
 - **The binary self-updates by default.** `status` reports the running version;
   `--no-auto-update` is a knob, not our default, and `update --to <version>`
   both pins and rolls back.
