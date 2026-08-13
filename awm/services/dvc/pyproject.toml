@@ -10,12 +10,14 @@ description = "AWM dvc service: the chinook Globus collection as an append-only 
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "awm-persistence",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest",
+    "pytest-asyncio",
 ]
 
 # The scheduled nightly sync. Not a CLI verb: the generated service CLI caps
@@ -31,3 +33,4 @@ namespaces = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

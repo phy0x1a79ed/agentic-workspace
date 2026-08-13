@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Canonical install for the awm-dvc service (editable, into the `awm` env).
 #
-# Installs the component libraries it imports (config, gatewayclient) and this
-# service, then resolves the `globus` CLI from its OWN env and bakes both that
+# Installs the component libraries it imports (config, persistence, gatewayclient)
+# and this service, then resolves the `globus` CLI from its OWN env and bakes both that
 # path and the target interpreter into a gitignored `.runtime-env` sidecar, so
 # the supervisor can respawn under systemd's minimal PATH (no `mamba`).
 #
@@ -19,6 +19,7 @@ GENV="${GLOBUS_ENV:-globus}"
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$WS/awm/service_components/config" --no-deps
+run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
 run "$WS/awm/services/dvc"
 
