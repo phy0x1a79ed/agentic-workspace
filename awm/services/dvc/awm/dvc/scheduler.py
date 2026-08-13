@@ -309,6 +309,47 @@ class Scheduler:
             )
             self._start_watch(run)
 
+    async def _record_skipped(
+        self, cfg: Any, run_id: str, job: str, task_id: str, doc: dict
+    ) -> list[dict]:
+        """Note the paths a task passed over, because SUCCEEDED does not mention them.
+
+        A backup whose whole source was unreadable ends SUCCEEDED with every
+        counter at zero — ``skip_source_errors`` is what makes one vanished file
+        survivable, and the same flag is what makes total failure look like
+        success. Verified on a real transfer, not reasoned about. So the row
+        keeps Globus's verdict verbatim and carries the count beside it.
+
+        A handful of skips is normal and logs at WARNING: a scan of a live tree
+        always races something being rewritten. Skips with *nothing* transferred
+        is the total-failure signature, and that is the ERROR.
+        """
+        try:
+            skipped = await asyncio.to_thread(globus.skipped_errors, cfg, task_id)
+        except Exception as exc:  # noqa: BLE001 — never lose a verdict over this
+            log.warning("dvc: could not read skipped errors for %s: %s", task_id, exc)
+            return []
+        if not skipped:
+            return []
+        codes: dict[str, int] = {}
+        for s in skipped:
+            code = str(s.get("error_code") or "?")
+            codes[code] = codes.get(code, 0) + 1
+        summary = ", ".join(f"{c}×{n}" for c, n in sorted(codes.items()))
+        first = skipped[0].get("source_path", "")
+        await asyncio.to_thread(
+            self.dao.set_note, run_id,
+            f"{len(skipped)} source path(s) skipped ({summary}); first: {first}",
+        )
+        moved = int(doc.get("files_transferred") or 0)
+        log.log(
+            logging.ERROR if moved == 0 else logging.WARNING,
+            "dvc: %s task %s skipped %d source path(s) [%s] having transferred "
+            "%d — first %s",
+            job, task_id, len(skipped), summary, moved, first,
+        )
+        return skipped
+
     async def _watch(self, run: dict) -> None:
         """Poll one Globus task to a verdict, recording before every emit."""
         run_id, job, task_id = run["id"], run["job"], run["task_id"]
@@ -346,18 +387,25 @@ class Scheduler:
             )
             if status in globus.TERMINAL:
                 ok = status == "SUCCEEDED"
+                skipped = await self._record_skipped(cfg, run_id, job, task_id, doc)
                 log.log(
                     logging.INFO if ok else logging.ERROR,
-                    "dvc: %s task %s %s (files=%s/%s bytes=%s faults=%s) %s",
+                    "dvc: %s task %s %s (files=%s/%s bytes=%s faults=%s%s) %s",
                     job, task_id, status, doc.get("files_transferred"),
                     doc.get("files"), doc.get("bytes_transferred"),
-                    doc.get("faults"), doc.get("nice_status") or "",
+                    doc.get("faults"),
+                    f" SKIPPED={len(skipped)}" if skipped else "",
+                    doc.get("nice_status") or "",
                 )
                 await self._emit(
                     "succeeded" if ok else "failed",
                     job=job, run_id=run_id, trigger=trigger, task_id=task_id,
                     started_at=started, doc=doc,
-                    message=str(doc.get("nice_status") or ""),
+                    message=(
+                        f"{len(skipped)} source path(s) skipped: "
+                        f"{skipped[0].get('error_code')}" if skipped
+                        else str(doc.get("nice_status") or "")
+                    ),
                 )
                 return
 

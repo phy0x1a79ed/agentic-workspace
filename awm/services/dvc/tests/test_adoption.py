@@ -44,6 +44,7 @@ def adopter(dvc_db, monkeypatch):
             "bytes_transferred": 8, "faults": 0, "nice_status": "",
         },
     )
+    monkeypatch.setattr(schedmod.globus, "skipped_errors", lambda cfg, tid: [])
     adapter = FakeAdapter()
     return schedmod.Scheduler(adapter=adapter, dao=dvc_db, jitter_s=0), adapter
 

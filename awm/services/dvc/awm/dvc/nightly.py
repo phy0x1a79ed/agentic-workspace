@@ -111,12 +111,30 @@ def main(argv: list[str] | None = None) -> int:
         args.timeout,
     )
 
+    from awm.dvc import globus as globus_mod
     from awm.dvc.globus import wait
 
     status = wait(cfg, task_id, timeout=args.timeout)
     # Recorded before anything is logged or returned: this process may be about
     # to be killed, and the row is the only thing that outlives it.
     jobs.record_status(runs.RunsDAO(), result["run_id"], status)
+
+    # SUCCEEDED with everything skipped is what a totally unreadable source
+    # looks like — the counters stay at zero and nothing else says so.
+    try:
+        skipped = globus_mod.skipped_errors(cfg, task_id)
+    except Exception as exc:  # noqa: BLE001
+        skipped = []
+        log.warning("could not read skipped errors: %s", exc)
+    if skipped:
+        runs.RunsDAO().set_note(
+            result["run_id"],
+            f"{len(skipped)} source path(s) skipped; first: "
+            f"{skipped[0].get('source_path', '')}",
+        )
+        log.warning("%d source path(s) skipped, first %s (%s)", len(skipped),
+                    skipped[0].get("source_path"), skipped[0].get("error_code"))
+
     log.info(
         "task %s: status=%s files=%s/%s bytes=%s faults=%s",
         task_id,
@@ -128,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if status.get("status") == "SUCCEEDED":
+        # Skips are normal — a live tree always races something. Skips with
+        # nothing transferred are not: that is a backup that did not happen.
+        if skipped and not int(status.get("files_transferred") or 0):
+            log.error("task %s transferred nothing and skipped %d path(s)",
+                      task_id, len(skipped))
+            return 1
         return 0
     if status.get("timed_out"):
         log.error(

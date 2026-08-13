@@ -35,6 +35,7 @@ def watched(dvc_db, monkeypatch):
     """A scheduler whose polls come from a scripted list and never sleep."""
     monkeypatch.setattr(schedmod, "WATCH_POLL_S", 0)
     monkeypatch.setattr(schedmod, "load_config", lambda: object())
+    monkeypatch.setattr(schedmod.globus, "skipped_errors", lambda cfg, tid: [])
     adapter = FakeAdapter()
     s = schedmod.Scheduler(adapter=adapter, dao=dvc_db, jitter_s=0)
 
@@ -143,6 +144,52 @@ async def test_the_row_is_updated_before_any_event_is_emitted(watched, dvc_db):
     await s._watch(run)
 
     assert seen == [7, 10]
+
+
+async def test_a_success_that_transferred_nothing_says_why(watched, dvc_db,
+                                                           monkeypatch):
+    """The failure this was written for, seen on a real transfer.
+
+    ``skip_source_errors`` is what stops one vanished file failing a 100k-file
+    backup. It is also what lets a wholly unreadable source finish SUCCEEDED
+    with every counter at zero. The verdict stays Globus's word; the note is
+    what stops it reading as a good night.
+    """
+    s, adapter, script = watched
+    monkeypatch.setattr(
+        schedmod.globus, "skipped_errors",
+        lambda cfg, tid: [
+            {"source_path": "/ws/keep/", "error_code": "PERMISSION_DENIED"},
+            {"source_path": "/ws/top.txt", "error_code": "PERMISSION_DENIED"},
+        ],
+    )
+    run = _live_run(dvc_db)
+    script([doc("SUCCEEDED", done=True, files_transferred=0)])
+
+    await s._watch(run)
+    row = dvc_db.get_run(run["id"])
+
+    assert row["status"] == "SUCCEEDED"  # verbatim from Globus, not overridden
+    assert "2 source path(s) skipped" in row["note"]
+    assert "PERMISSION_DENIED×2" in row["note"]
+    assert "skipped" in adapter.events[-1][1]["message"]
+
+
+async def test_a_few_skips_on_a_transfer_that_moved_data_are_still_recorded(
+    watched, dvc_db, monkeypatch
+):
+    """A live tree always races something; this is normal, and still visible."""
+    s, _, script = watched
+    monkeypatch.setattr(
+        schedmod.globus, "skipped_errors",
+        lambda cfg, tid: [{"source_path": "/ws/gone", "error_code": "NOT_FOUND"}],
+    )
+    run = _live_run(dvc_db)
+    script([doc("SUCCEEDED", done=True, files_transferred=9999)])
+
+    await s._watch(run)
+
+    assert "1 source path(s) skipped" in dvc_db.get_run(run["id"])["note"]
 
 
 async def test_an_unqueryable_task_eventually_gets_an_error_row(watched, dvc_db,

@@ -299,6 +299,11 @@ class RunsDAO(BaseDAO):
             (str(error)[:2000], now, run_id),
         )
 
+    def set_note(self, run_id: str, note: str) -> None:
+        self.execute(
+            "UPDATE dvc_runs SET note = ? WHERE id = ?", (str(note)[:2000], run_id)
+        )
+
     def mark_alerted(self, run_id: str) -> None:
         self.execute(
             "UPDATE dvc_runs SET alerted_at = ? WHERE id = ?", (time(), run_id)
