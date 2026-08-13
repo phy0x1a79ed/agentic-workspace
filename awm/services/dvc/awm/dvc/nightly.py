@@ -13,10 +13,17 @@ dispatches ``POST /invoke`` with a hard 600 s client ceiling, so no ``--wait``
 long enough to cover a multi-hour transfer can survive it, whatever the
 function's declared timeout says.
 
-So the scheduled path runs the same modules **in its own process**, with no
-gateway in the loop, and blocks to a terminal state. It shares
-:mod:`awm.dvc.sync`'s in-flight state file, so it and the service verb still
-decline to stack full-cache scans on each other.
+So this runs the same modules **in its own process**, with no gateway in the
+loop, and blocks to a terminal state. It goes through :mod:`awm.dvc.jobs` like
+every other entry point, so it takes the same single-flight slot, lands in the
+same run history, and cannot stack a second full-cache scan on the service's.
+
+SINCE THE SCHEDULE MOVED INTO THE SERVICE, THIS IS AN ESCAPE HATCH
+The nightly cadence is now the in-service scheduler. This stays as the one
+command that backs the cache up with the gateway down or broken — the mitigation
+for the independence a systemd timer had and an in-process loop does not. A run
+that outlives ``--timeout`` is left live on purpose: the service's adopt sweep
+picks it up and finishes recording it.
 
 Installed into the target env's ``bin/`` as a console script — deliberately not
 a file in the workspace checkout, which is a deploy target that gets
@@ -53,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
         help="submit even if a previous sync task is still running",
     )
     parser.add_argument(
+        "--job",
+        default="cache_sync",
+        help="which backup to run (default: cache_sync)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="build the transfer document, report it, submit nothing",
@@ -63,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(levelname)s %(name)s %(message)s", stream=sys.stderr
     )
 
-    from awm.dvc import sync as syncmod
+    from awm.dvc import jobs, runs
     from awm.dvc.config import DvcConfigError, load
 
     try:
@@ -73,13 +85,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        result = syncmod.sync(dry_run=args.dry_run, force=args.force)
+        result = jobs.run_job(
+            args.job, trigger="manual", dry_run=args.dry_run, force=args.force
+        )
     except Exception as exc:  # noqa: BLE001 — the exit code is the contract here
-        log.error("sync failed to submit: %s", exc)
+        log.error("%s failed to submit: %s", args.job, exc)
         return 1
 
     if args.dry_run:
-        log.info("dry run: %s -> %s", result["source"], result["destination"])
+        log.info("dry run: %s -> %s", result.get("source", args.job),
+                 result["destination"])
         return 0
 
     # The in-flight guard declining to stack a second scan is the guard working,
@@ -90,9 +105,8 @@ def main(argv: list[str] | None = None) -> int:
 
     task_id = result["task_id"]
     log.info(
-        "submitted %s (%s -> %s) — waiting up to %ds",
+        "submitted %s (-> %s) — waiting up to %ds",
         task_id,
-        result["source"],
         result["destination"],
         args.timeout,
     )
@@ -100,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     from awm.dvc.globus import wait
 
     status = wait(cfg, task_id, timeout=args.timeout)
+    # Recorded before anything is logged or returned: this process may be about
+    # to be killed, and the row is the only thing that outlives it.
+    jobs.record_status(runs.RunsDAO(), result["run_id"], status)
     log.info(
         "task %s: status=%s files=%s/%s bytes=%s faults=%s",
         task_id,
@@ -113,7 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     if status.get("status") == "SUCCEEDED":
         return 0
     if status.get("timed_out"):
-        log.error("task %s still running after %ds", task_id, args.timeout)
+        log.error(
+            "task %s still running after %ds — left live for the service to adopt",
+            task_id, args.timeout,
+        )
     else:
         log.error("task %s ended %s: %s", task_id, status.get("status"),
                   status.get("nice_status"))

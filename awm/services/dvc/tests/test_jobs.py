@@ -139,6 +139,29 @@ def test_seeding_creates_a_row_for_every_job_we_know_about(dvc_db):
     assert all(r["cron"] for r in dvc_db.list_jobs())
 
 
+def test_a_sync_in_flight_at_cutover_is_migrated_into_the_run_table(dvc_db):
+    """Deploying mid-transfer must not lose track of the running task."""
+    from awm import config as awm_config
+
+    state = awm_config.SERVICES_DIR / "dvc" / "last_sync.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text('{"task_id": "old-task"}')
+
+    jobs.ensure_seeded(dvc_db)
+
+    row = dvc_db.live_run(jobs.CACHE_SYNC)
+    assert row["task_id"] == "old-task"  # the adopt sweep will finish it
+    assert row["trigger"] == "adopted"
+    assert not state.exists()  # ...and it is never migrated twice
+
+
+def test_the_legacy_state_path_follows_a_redirected_services_dir(dvc_db):
+    """It renames a file, so reaching past a test's redirect is a real hazard."""
+    from awm import config as awm_config
+
+    assert jobs._legacy_state().is_relative_to(awm_config.SERVICES_DIR)
+
+
 def test_the_jobs_and_the_run_status_domain_agree():
     """`skipped`/`error` are ours; the verdicts are Globus's, spelled its way."""
     from awm.dvc import globus

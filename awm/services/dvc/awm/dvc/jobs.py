@@ -22,19 +22,35 @@ makes that visible; nothing here enforces it.
 
 from __future__ import annotations
 
+import json
 import logging
+import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
+from time import time
 from typing import Any, Callable
 
+from awm import config as awm_config
 from awm.dvc import backup as backupmod
 from awm.dvc import globus
 from awm.dvc import runs
 from awm.dvc import sync as syncmod
+from awm.persistence.databases import new_uuid
 
 log = logging.getLogger("awm.dvc.jobs")
 
 CACHE_SYNC = "cache_sync"
 WORKSPACE_BACKUP = "workspace_backup"
+
+def _legacy_state() -> Path:
+    """Where the cache sync used to remember its last task id, before the run table.
+
+    Resolved on every call rather than captured at import: ``SERVICES_DIR`` is a
+    module attribute that tests redirect into a tmp path, and a constant bound at
+    import time reaches past that redirect into the live workspace — where this
+    function *renames a file*.
+    """
+    return awm_config.SERVICES_DIR / "dvc" / "last_sync.json"
 
 
 @dataclass(frozen=True)
@@ -99,12 +115,49 @@ def spec_for(name: str) -> JobSpec:
         ) from None
 
 
+def _adopt_legacy_state(dao: runs.RunsDAO) -> None:
+    """Turn a leftover ``last_sync.json`` into a live run row, once.
+
+    Deploying this while a sync is genuinely in flight would otherwise lose
+    track of that task entirely: the old guard's only record is this file, and
+    the new one reads the run table. Seed a live row so the adopt sweep resolves
+    it to a verdict, then rename the file aside so this never runs twice.
+
+    Lives here rather than in ``runs.init`` because it has to name a job, and
+    :mod:`awm.dvc.runs` deliberately knows nothing about which jobs exist.
+    """
+    state = _legacy_state()
+    if not state.exists():
+        return
+    try:
+        task_id = str(json.loads(state.read_text()).get("task_id") or "")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        task_id = ""
+    if task_id and not dao.run_for_task(task_id):
+        try:
+            dao.execute(
+                "INSERT INTO dvc_runs (id, job, trigger, task_id, status, label, "
+                "started_at, submitted_at, note) "
+                "VALUES (?, ?, 'adopted', ?, 'running', ?, ?, ?, ?)",
+                (new_uuid(), CACHE_SYNC, task_id, syncmod.SYNC_LABEL, time(),
+                 time(), "migrated from last_sync.json"),
+            )
+            log.info("dvc: adopted in-flight task %s from last_sync.json", task_id)
+        except sqlite3.IntegrityError:
+            pass  # something already holds the slot; nothing to recover
+    try:
+        state.rename(state.with_suffix(".json.migrated"))
+    except OSError as exc:
+        log.warning("dvc: could not rename %s aside: %s", state, exc)
+
+
 def ensure_seeded(dao: runs.RunsDAO | None = None) -> None:
     """Create the ``dvc_jobs`` row for each job we know about, once."""
     runs.init()
     d = dao or runs.RunsDAO()
     for spec in JOBS.values():
         d.seed_job(spec.name, cron=spec.cron, catchup_window_s=spec.catchup_window_s)
+    _adopt_legacy_state(d)
 
 
 def _busy_note(spec: JobSpec, live: dict | None) -> str:

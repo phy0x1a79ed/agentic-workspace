@@ -3,10 +3,12 @@
 A Python feature service in the `awm.dvc` namespace. It owns both directions of
 the workspace's relationship with the **chinook** Globus collection:
 
-- `sync` — the daily append-only push of `data/.dvc_cache`.
+- `sync` — the append-only push of `data/.dvc_cache`.
 - `status` / `resolve` / `pull` / `push` — the hash-selective inverse, moving
   only the cache objects one scope actually pins.
 - `coverage` — what the remotes between them do *not* hold.
+- `jobs` / `runs` / `run` / `schedule` — the two nightly backups, which the
+  service now schedules and watches itself rather than a systemd timer.
 
 On the collapsed MCP surface these are verbs under one `dvc` domain tool
 (`dvc(verb="status")`, `verb="pull"`, …); CLI and HTTP stay expanded as `dvc_*`
@@ -73,46 +75,89 @@ succeeds and looks identical in every report.
 The cost is that chinook accumulates every object ever pushed. A remote prune,
 run against the union of every project's history, is future work.
 
-## What is not backed up
+## Two backup paths
 
-Only `data/.dvc_cache` travels. Code is covered by GitHub. Everything else in the
-workspace — scratch directories, run outputs, `.awm/` service databases — is
-covered by nothing, deliberately.
+Two jobs run nightly, and they are deliberately different.
+
+`cache_sync` pushes `data/.dvc_cache` and never deletes — the archive above.
+`workspace_backup` mirrors everything *else* in the workspace to a sibling root
+`<prefix>/workspace/`, and it **does** delete: a file removed locally is removed
+there on the next run. It protects you from losing the machine, not from `rm`.
+
+The mirror excludes every DVC-tracked checkout, because those are hardlinks into
+the cache and Globus cannot preserve hardlinks — mirroring both would upload the
+same bytes twice. **That exclusion is only recoverable while `cache_sync` also
+runs.** Disabling the archive and keeping the mirror is not a saving; it is data
+loss with no error message. Nothing enforces the pairing:
 
     awm dvc coverage            # per scope: uncommitted, unpushed, unpinned
 
-That report is what makes the choice informed rather than silent, and it is the
-inventory a future LRU eviction pass has to consult before deleting anything
-local.
+Every destination the mirror emits is under `workspace/`, so the transfer that
+deletes structurally cannot reach the archive beside it, whatever the exclusion
+logic gets wrong. `tests/test_backup.py` asserts that rather than trusting it.
 
-## Scheduling the daily sync
+Not covered by either: nothing, now, except what neither job can see — a branch
+that exists on no remote is backed up as bytes but is still not *pushed*.
 
-A user systemd unit runs it, via the `awm-dvc-sync` console script that
-`install.sh` puts in the env's `bin/`. Not a path into the awm checkout — that
-is a deploy target which gets `reset --hard`, and it has already eaten one
-backup script whole:
+## Scheduling
 
-    # ~/.config/systemd/user/agentic-workspace-backup.service
-    [Service]
-    Type=oneshot
-    Environment=AWM_WORKSPACE=/path/to/agentic_workspace
-    ExecStart=/path/to/envs/awm/bin/awm-dvc-sync
+The schedule lives in the service. It ticks inside the `dvc` process, so both
+jobs are started, watched to a verdict, and recorded in one place:
 
-`awm-dvc-sync` submits, then blocks to a terminal state and exits non-zero if
-the transfer did not succeed — which is the whole point of running it from a
-timer. **Do not use `awm dvc sync` here.** The service verb returns a task id
+    awm dvc jobs                          # cron, enabled, next due, last outcome
+    awm dvc runs --limit 10               # history: task id, status, counters
+    awm dvc run --job workspace_backup    # trigger one now, out of schedule
+    awm dvc schedule --job cache_sync --cron '0 4 * * *'
+    awm dvc schedule --job workspace_backup --enabled false
+
+Defaults are `0 4 * * *` for the cache archive and `30 5 * * *` for the mirror;
+a schedule you change is state and survives restarts. Specs are 5-field cron in
+local time, or `@every <n><s|m|h>` — the interval form is what makes a
+five-minute rehearsal possible without waiting for 04:00.
+
+`jobs` also reports the loop's own health. `stopped: true`, or a large
+`last_tick_age_s`, means nothing is firing — which is exactly how a backup
+silently stops happening, so check that before concluding all is well.
+
+A run declines rather than stacking a second whole-tree scan on one still in
+flight; the refusal is a `skipped` row with the task it stood down for, not
+silence. `--force` overrides it, and does *not* cancel the running transfer.
+
+Progress is on the `job.status` topic. Events sent while nobody is subscribed
+are lost, so read `runs` first and then tail.
+
+### The escape hatch, and what moving the schedule cost
+
+A systemd timer ran whether or not awm was healthy. An in-process loop does not:
+**no gateway means no backup.** That is a real widening of the failure surface.
+Three things mitigate it — a slot missed while the machine was down is caught up
+on the next start (inside a 20-hour window, so a week powered off does not fire
+a stale backup); the gateway is itself systemd-managed; and this still works
+with the gateway down:
+
+    /path/to/envs/awm/bin/awm-dvc-sync                    # the cache archive
+    /path/to/envs/awm/bin/awm-dvc-sync --job workspace_backup
+
+`install.sh` puts that console script in the env's `bin/` — not a path into the
+awm checkout, which is a deploy target that gets `reset --hard` and has already
+eaten one backup script whole. It submits, blocks to a terminal state, and exits
+non-zero if the transfer failed. It shares the run table with the service, so it
+takes the same single-flight slot and lands in the same history; a run that
+outlives `--timeout` is left live on purpose for the service to adopt.
+
+**Do not schedule `awm dvc sync` instead.** The service verb returns a task id
 without waiting (correct for an agent, useless for a scheduled job: the unit
 would report success on a failed backup), and the generated service CLI
-dispatches through `/invoke` with a hard 600 s client ceiling, so no amount of
-waiting on that path can cover a multi-hour transfer.
+dispatches through `/invoke` with a hard 600 s client ceiling.
 
-`sync` declines to stack a second scan on one still in flight (`--force`
-overrides), so a slow run overlapping the next timer tick is wasted work avoided
-rather than a race — and the console script treats that refusal as success, so
-it does not page anyone.
-
-The console script was called `awm-dvc-mirror` before the mirror was retired;
+The retiring `agentic-workspace-backup.timer` is disabled only after run history
+shows a scheduler-triggered success. Keep the `.service` unit: a oneshot with no
+timer never fires on its own, and it stays the one-command manual backup. The
+console script was called `awm-dvc-mirror` before the mirror was first retired;
 `install.sh` removes that name so a unit still pointing at it fails loudly.
+
+Nothing pages anyone. ERROR in `.awm/logs/services/dvc.log` is the only
+notification channel there is.
 
 ## Restoring a scope
 
@@ -153,3 +198,5 @@ materialization step.
     awm services list                                 # dvc → running
     awm dvc status --scope projects/fabfos/dev
     awm dvc sync --dry-run                            # builds the document, submits nothing
+    awm dvc run --job workspace_backup --dry-run      # ...and the mirror's
+    awm dvc jobs                                      # both jobs, and a live scheduler
