@@ -268,3 +268,55 @@ def test_a_dry_run_submits_nothing_and_returns_the_document(tmp_path, monkeypatc
 
 def pytest_fail(msg):
     raise AssertionError(msg)
+
+
+# --- symlinks ---------------------------------------------------------------
+#
+# The failure that wrote these: one `logs.latest` link, emitted as a
+# non-recursive item, wedged a whole-workspace transfer at the scan stage —
+# Globus resolved it, found a directory, and retried `IS_A_DIRECTORY` forever
+# with every counter at zero. `skip_source_errors` does not cover a malformed
+# item, only an unreadable source.
+
+
+def test_a_symlink_to_a_directory_is_never_emitted(tmp_path):
+    touch(tmp_path / "real" / "f")
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+
+    items = backup.partition(str(tmp_path), [], "/dest")
+
+    assert sources(items) == {f"{tmp_path}/real/"}
+
+
+def test_a_symlink_to_a_file_is_skipped_too(tmp_path):
+    """Its target is backed up on its own account; the link would duplicate."""
+    touch(tmp_path / "real.txt", "x")
+    (tmp_path / "alias.txt").symlink_to(tmp_path / "real.txt")
+
+    items = backup.partition(str(tmp_path), [], "/dest")
+
+    assert sources(items) == {f"{tmp_path}/real.txt"}
+
+
+def test_a_symlink_cannot_smuggle_an_excluded_tree_back_in(tmp_path):
+    """`.awm/data` points at the checkouts this job exists to leave alone."""
+    touch(tmp_path / "data" / "chunk" / "big.bin", "payload")
+    touch(tmp_path / "keep.txt")
+    (tmp_path / "awm").mkdir()
+    (tmp_path / "awm" / "data").symlink_to(tmp_path / "data")
+
+    items = backup.partition(str(tmp_path), [str(tmp_path / "data" / "chunk")],
+                             "/dest")
+
+    assert not any("awm/data" in s for s in sources(items))
+    assert f"{tmp_path}/keep.txt" in sources(items)
+
+
+def test_a_symlinked_dir_does_not_force_its_parent_to_be_walked(tmp_path):
+    """A parent holding only a link still goes as one recursive item."""
+    touch(tmp_path / "top" / "f")
+    (tmp_path / "top" / "link").symlink_to(tmp_path / "top")
+
+    items = backup.partition(str(tmp_path), [], "/dest")
+
+    assert sources(items) == {f"{tmp_path}/top/"}

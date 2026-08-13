@@ -131,7 +131,22 @@ def regenerable_paths(
 
 
 def partition(root: str, excluded: list[str], dest_prefix: str) -> list[dict]:
-    """Minimal set of transfer items covering ``root`` except ``excluded``."""
+    """Minimal set of transfer items covering ``root`` except ``excluded``.
+
+    **Symlinks are skipped, not followed and not emitted.** Following one is
+    unsafe here — ``.awm/data`` points at a project's ``data/`` directory, so
+    following it would drag the very checkouts this job excludes (and, through
+    a scope's link, the shared cache) into a mirror that deletes. Emitting one
+    is worse than useless: Globus resolves the link server-side, and a link to
+    a directory then fails the item with ``IS_A_DIRECTORY: recursive was set to
+    False for a directory``. That is **not** covered by ``skip_source_errors``,
+    which only forgives an unreadable *source* — a malformed item is retried
+    forever, so a single such link wedges the whole transfer at the scan stage
+    with every counter at zero. One ``logs.latest`` link did exactly that.
+
+    The cost is that a restore does not get the links back; the targets are
+    backed up on their own account.
+    """
     root = os.path.normpath(root)
     excluded_set = {os.path.normpath(p) for p in excluded}
 
@@ -153,7 +168,7 @@ def partition(root: str, excluded: list[str], dest_prefix: str) -> list[dict]:
             return
         for entry in entries:
             full = os.path.normpath(entry.path)
-            if full in excluded_set:
+            if full in excluded_set or entry.is_symlink():
                 continue
             dest = os.path.join(dest_prefix, os.path.relpath(full, root))
             if entry.is_dir(follow_symlinks=False):
