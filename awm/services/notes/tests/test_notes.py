@@ -234,6 +234,35 @@ def test_trash_drops_room(conn):
     assert rooms.live_content(n["id"]) is None
 
 
+def test_writes_survive_a_broken_embedding_stack(conn, monkeypatch):
+    """Embedding is an optional heavy extra (``awm-persistence[search]``). When
+    it is missing, notes must still be creatable, editable and — the symptom that
+    exposed this — renamable; only the vector index falls behind.
+
+    The failure mode this pins: a rename re-embeds whenever content_hash has
+    drifted from embedded_hash (which a room flush leaves it doing), so an
+    uninstalled model turned every retitle of an edited note into a 502.
+    """
+    def _boom(*a, **k):
+        raise ModuleNotFoundError("No module named 'sentence_transformers'")
+
+    monkeypatch.setattr(index, "embed_note", _boom)
+
+    n = notes.create(conn, path="a", content="body")
+    assert store.read(n["id"]) == "body"
+
+    # A flush leaves embedded_hash stale — the state a live note is normally in.
+    notes.collab_edit(n["id"], 0, "edited body")
+    rooms.flush_all(conn)
+    row = db.get_note(conn, n["id"])
+    assert row["content_hash"] != row["embedded_hash"]
+
+    # …and the rename still lands, on the row and in the keyword index.
+    notes.save(conn, n["id"], path="a/renamed")
+    assert notes.get(conn, n["id"])["path"] == "a/renamed"
+    assert notes.search(conn, query="renamed")["count"] == 1
+
+
 def test_vocab_crud(conn):
     assert notes.vocab_list(conn)["terms"] == []
     notes.vocab_add(conn, "scadc")
