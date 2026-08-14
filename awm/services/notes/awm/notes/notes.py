@@ -242,12 +242,10 @@ def collab_edit(note_id: str, base_version: int, content: str) -> dict[str, Any]
 
 def _embed(conn: sqlite3.Connection, note_id: str, text: str, chash: str) -> None:
     """Embed a note's content and stamp the embedded hash. Content-free notes
-    are skipped (nothing to embed) but still stamped so we don't retry them."""
-    if text.strip():
-        index.embed_note(conn, note_id, text)
-    else:
-        index.drop_embedding(conn, note_id)
-    conn.execute("UPDATE notes SET embedded_hash=? WHERE id=?", (chash, note_id))
+    are skipped (nothing to embed) but still stamped so we don't retry them.
+    Best-effort: see :func:`index.reembed` — a broken embedding stack leaves the
+    stamp stale rather than failing the caller's write."""
+    index.reembed(conn, note_id, text, chash)
 
 
 # ---------------------------------------------------------------------------
