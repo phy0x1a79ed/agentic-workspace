@@ -111,7 +111,12 @@ def _row_to_info(row: dict) -> ArtifactInfo:
 def _index_artifact(artifact_id: int) -> None:
     """Embed the artifact's text and upsert into this service's embeddings table.
 
-    Degrades gracefully when sentence-transformers / sqlite-vec are not installed.
+    Degrades gracefully when sentence-transformers / sqlite-vec are not
+    installed: the guard that does that work is the ``except Exception`` around
+    the upsert below, not this import — ``awm.persistence.embeddings`` always
+    imports, since the heavy modules load lazily inside its functions. Artifacts
+    has no staleness column, so a skipped embedding is not repairable later; that
+    is a deliberate trade for a service whose search has a real keyword path.
     """
     try:
         from awm.persistence.embeddings import upsert_embedding

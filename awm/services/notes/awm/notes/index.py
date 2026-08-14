@@ -15,8 +15,11 @@ from typing import Any
 
 from awm.persistence.embeddings import (  # noqa: F401  (re-exported)
     EMBEDDINGS_DDL,
+    EmbeddingsUnavailable,
+    degraded_marker,
     delete_embedding,
     embed_text,
+    probe,
     semantic_search,
     upsert_embedding,
 )

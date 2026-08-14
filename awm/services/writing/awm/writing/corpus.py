@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from . import config, db, index
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +130,12 @@ def search(
     - both → hybrid: filtered keyword hits first, then a semantic top-up (>0.3).
     - neither → most-recent-first listing.
     Duplicates excluded unless ``include_dups``.
+
+    If the semantic stack isn't installed on this node the semantic leg is
+    dropped and the payload carries a ``degraded`` block: a semantic-only search
+    falls back to keyword over the same string (and to a listing if that string
+    isn't valid FTS syntax), so the caller gets real samples plus an explicit
+    "could not rank by meaning" rather than a confident empty result.
     """
     allowed = _filtered_ids(
         conn, type=type, tag=tag, after=after, min_words=min_words,
@@ -135,30 +144,56 @@ def search(
     allowed_set = set(allowed)
 
     ordered: list[tuple[str, float | None]] = []
+    degraded: dict[str, Any] | None = None
     if query and semantic:
         kw = [i for i in _keyword_ids(conn, query) if i in allowed_set]
         ordered = [(i, None) for i in kw]
         seen = set(kw)
-        for h in index.search_semantic(conn, semantic, limit=200):
+        try:
+            hits = index.search_semantic(conn, semantic, limit=200)
+        except index.EmbeddingsUnavailable:
+            # The keyword leg already produced results; just say the top-up
+            # didn't happen.
+            degraded, hits = index.degraded_marker("writing", fallback="keyword"), []
+        for h in hits:
             sid = h["source_id"]
             if sid in seen or sid not in allowed_set or h["score"] <= 0.3:
                 continue
             ordered.append((sid, h["score"]))
             seen.add(sid)
     elif semantic:
-        scored = {h["source_id"]: h["score"]
-                  for h in index.search_semantic(conn, semantic, limit=300)}
-        ranked = sorted(((i, scored[i]) for i in allowed if i in scored),
-                        key=lambda t: t[1], reverse=True)
-        ordered = [(i, s) for i, s in ranked]
+        try:
+            scored = {h["source_id"]: h["score"]
+                      for h in index.search_semantic(conn, semantic, limit=300)}
+            ranked = sorted(((i, scored[i]) for i in allowed if i in scored),
+                            key=lambda t: t[1], reverse=True)
+            ordered = [(i, s) for i, s in ranked]
+        except index.EmbeddingsUnavailable:
+            # Try the same string as keywords. Unlike notes, this path hands the
+            # raw string to FTS5 with no sanitizer, so punctuation is a syntax
+            # error — fall through to the listing rather than turning a missing
+            # dependency into a query-syntax failure.
+            try:
+                ordered = [(i, None) for i in _keyword_ids(conn, semantic) if i in allowed_set]
+                fallback = "keyword"
+            except sqlite3.OperationalError:
+                ordered, fallback = [(i, None) for i in allowed[::-1]], "listing"
+            if not ordered:
+                ordered, fallback = [(i, None) for i in allowed[::-1]], "listing"
+            degraded = index.degraded_marker("writing", fallback=fallback)
     elif query:
         ordered = [(i, None) for i in _keyword_ids(conn, query) if i in allowed_set]
     else:
         ordered = [(i, None) for i in allowed[::-1]]  # most recent first
 
     ordered = ordered[: int(k)]
-    return {"count": len(ordered),
-            "results": [_meta(conn, sid, score=score) for sid, score in ordered]}
+    out: dict[str, Any] = {
+        "count": len(ordered),
+        "results": [_meta(conn, sid, score=score) for sid, score in ordered],
+    }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 def get(conn: sqlite3.Connection, sample_id: str, *, include_text: bool = True) -> dict[str, Any]:
@@ -261,10 +296,22 @@ def add(
     for spec in tag or []:
         facet, _, value = spec.partition(":")
         db.set_tag(conn, sid, facet, value)
-    index.embed_sample(conn, sid, text)
-    conn.execute("UPDATE samples SET embedded_hash=? WHERE id=?", (chash, sid))
+    deferred = False
+    try:
+        index.embed_sample(conn, sid, text)
+    except index.EmbeddingsUnavailable:
+        # The sample itself must land — it is the user's text. ``embedded_hash``
+        # stays stale on purpose, which is exactly what ``embed`` looks for once
+        # the stack is installed.
+        log.warning("writing: embedding unavailable, %s added unindexed", sid)
+        deferred = True
+    else:
+        conn.execute("UPDATE samples SET embedded_hash=? WHERE id=?", (chash, sid))
     conn.commit()
-    return get(conn, sid, include_text=False)
+    out = get(conn, sid, include_text=False)
+    if deferred:
+        out["embedding_deferred"] = True
+    return out
 
 
 def retag(
@@ -399,7 +446,18 @@ def dedup(conn: sqlite3.Connection, *, apply: bool = False) -> dict[str, Any]:
 
 
 def embed(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
-    """Embed new/changed samples (or all, with ``force``). Loads the model once."""
+    """Embed new/changed samples (or all, with ``force``). Loads the model once.
+
+    Raises :class:`index.EmbeddingsUnavailable` when the stack is missing rather
+    than reporting ``{"embedded": 0}`` — a backfill that silently does nothing
+    is worse than one that fails, because the caller stops looking.
+    """
+    p = index.probe()
+    if not p["available"]:
+        raise index.EmbeddingsUnavailable(
+            f"cannot embed: missing {', '.join(p['missing'])} — "
+            "run awm/services/writing/install.sh on this node"
+        )
     rows = db.all_samples(conn)
     todo = [r for r in rows if force or r["embedded_hash"] != r["content_hash"]]
     for r in todo:
@@ -447,5 +505,12 @@ def import_corpus(conn: sqlite3.Connection, *, corpus_dir: str | None = None) ->
         if prev is None or prev["content_hash"] != chash:
             changed += 1
     conn.commit()
-    embedded = embed(conn)["embedded"]
-    return {"ingested": len(kept), "changed": changed, "embedded": embedded}
+    # The text is the import; embedding is a follow-up. A stackless node still
+    # ingests the corpus and leaves every row stale for a later ``embed``.
+    try:
+        return {"ingested": len(kept), "changed": changed,
+                "embedded": embed(conn)["embedded"]}
+    except index.EmbeddingsUnavailable:
+        log.warning("writing: embedding unavailable, %d samples imported unindexed", len(kept))
+        return {"ingested": len(kept), "changed": changed,
+                "embedded": 0, "embedding_deferred": True}
