@@ -8,7 +8,7 @@ the workspace's relationship with the **chinook** Globus collection:
   only the cache objects one scope actually pins.
 - `coverage` — what the remotes between them do *not* hold.
 - `jobs` / `runs` / `run` / `schedule` — the two nightly backups, which the
-  service now schedules and watches itself rather than a systemd timer.
+  service schedules and watches itself.
 
 On the collapsed MCP surface these are verbs under one `dvc` domain tool
 (`dvc(verb="status")`, `verb="pull"`, …); CLI and HTTP stay expanded as `dvc_*`
@@ -170,9 +170,10 @@ without waiting (correct for an agent, useless for a scheduled job: the unit
 would report success on a failed backup), and the generated service CLI
 dispatches through `/invoke` with a hard 600 s client ceiling.
 
-The retiring `agentic-workspace-backup.timer` is disabled only after run history
-shows a scheduler-triggered success. Keep the `.service` unit: a oneshot with no
-timer never fires on its own, and it stays the one-command manual backup. The
+`agentic-workspace-backup.timer` is **disabled**, not deleted, and so is the
+`.service` unit it drove — a oneshot with no timer never fires on its own, and
+between them they are one `systemctl --user enable --now` away from taking the
+nightly archive back if the in-process scheduler ever has to be backed out. The
 console script was called `awm-dvc-mirror` before the mirror was first retired;
 `install.sh` removes that name so a unit still pointing at it fails loudly.
 
