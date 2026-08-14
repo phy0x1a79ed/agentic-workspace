@@ -284,3 +284,65 @@ def test_merge_folds_dups(conn):
     assert len(store.get(conn, a["id"])["notes"]) == 1
     with pytest.raises(ValueError):
         store.get(conn, b["id"])  # gone
+
+
+# ---------------------------------------------------------------------------
+# Degrading honestly when the embedding stack is absent
+#
+# Precedence degrades loudest of the three services: semantic recall *is* its
+# product, so a `count: 0` here would read as "no such precedent has ever been
+# set". These run without the stack, which is what the `needs_embed` tests above
+# can never observe.
+# ---------------------------------------------------------------------------
+
+
+def _unavailable(*a, **k):
+    from awm.precedence.index import EmbeddingsUnavailable
+    raise EmbeddingsUnavailable("sentence-transformers: not installed")
+
+
+def _seed(conn, monkeypatch):
+    from awm.precedence import index, store
+    monkeypatch.setattr(index, "embed_decision", _unavailable)
+    return store.add(conn, context="deploying a fix to the fleet",
+                     question="merge to release or cherry-pick?",
+                     decision="merge to release and push origin")
+
+
+def test_add_lands_without_the_stack_and_leaves_the_stamp_stale(conn, monkeypatch):
+    d = _seed(conn, monkeypatch)
+    assert d["embedding_deferred"] is True
+    row = conn.execute("SELECT content_hash, embedded_hash FROM decisions WHERE id=?",
+                       (d["id"],)).fetchone()
+    assert row["embedded_hash"] != row["content_hash"]
+
+
+def test_search_degrades_to_listing_not_to_empty(conn, monkeypatch):
+    from awm.precedence import index, store
+    _seed(conn, monkeypatch)
+    monkeypatch.setattr(index, "search_field", _unavailable)
+
+    res = store.search(conn, context="rolling something out across machines")
+    assert res["degraded"]["semantic"] == "unavailable"
+    assert res["degraded"]["fallback"] == "listing"
+    assert "precedence/install.sh" in res["degraded"]["fix"]
+    assert res["count"] >= 1, "a missing dependency must not read as an empty archive"
+
+    # Listing-mode hits were not shown because they were relevant, so they must
+    # not accrue impressions — one node's outage would skew the whole archive's
+    # explore/exploit term.
+    assert conn.execute("SELECT MAX(seen_count) FROM decisions").fetchone()[0] == 0
+
+    # A keyword leg still ranks, and says so.
+    kw = store.search(conn, context="anything", keyword="release")
+    assert kw["degraded"]["fallback"] == "keyword"
+    assert kw["count"] >= 1
+
+
+def test_embed_refuses_rather_than_reporting_zero(conn, monkeypatch):
+    from awm.precedence import index, store
+
+    monkeypatch.setattr(index, "probe",
+                        lambda: {"available": False, "missing": ["sqlite_vec"]})
+    with pytest.raises(index.EmbeddingsUnavailable):
+        store.embed(conn)

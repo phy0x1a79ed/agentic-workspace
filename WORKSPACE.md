@@ -83,15 +83,27 @@ answer "which one is current?"
 
 ### Off-site backup
 
-Two remotes cover this machine between them: **GitHub holds the code, chinook
-holds the cache.** A daily timer pushes `data/.dvc_cache` to the chinook Globus
-collection, append-only — nothing ever deletes there, which is what makes a
-local `dvc gc` recoverable.
+Two nightly jobs leave this machine, and they are deliberately different things.
+Both are scheduled inside the dvc service; `dvc(verb="jobs")` shows when each
+last ran and `dvc(verb="runs")` shows how it went.
 
-Nothing else is backed up. Work in a worktree that is neither committed-and-
-pushed nor DVC-pinned — scratch directories, run outputs, `.awm/` state — has no
-copy anywhere, deliberately. `dvc(verb="coverage")` lists exactly what that is
-per scope; run it before you assume something survived.
+- **The archive** pushes `data/.dvc_cache` to chinook, **append-only**. Nothing
+  ever deletes there, which is what makes a local `dvc gc` recoverable.
+- **The mirror** copies the rest of the workspace to a sibling remote root, and
+  it **deletes**: a file removed here is removed there on the next run. It skips
+  the cache and the materialised checkouts — those are hardlinks into the cache
+  the archive already holds, and Globus cannot preserve a hardlink.
+
+The two never touch each other's bytes, and that is structural rather than a
+rule: the mirror's every destination path sits under `…/workspace/`, so a
+delete-enabled transfer cannot reach the archive whatever its exclusion logic
+does. Neither is a substitute for pushing a branch — `dvc(verb="coverage")`
+still reports what exists on no remote.
+
+Two things a restore will not hand back. Symlinks are not followed and not
+recreated (following `.awm/data` would copy the whole cache through the
+mirror), and a directory deleted at the workspace *root* is covered by no
+transfer item, so it lingers remotely rather than being pruned.
 
 ## Finding Projects
 

@@ -27,6 +27,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -102,7 +103,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if "@" in name:
             base, _, peer_name = name.rpartition("@")
             data = await _peer_invoke(peer_name, base, arguments, as_)
-            return [TextContent(type="text", text=data["result"])]
+            return [TextContent(
+                type="text", text=await _localize(data["result"], peer_name, as_))]
         headers = {}
         if as_:
             headers["X-Awm-As"] = as_
@@ -127,6 +129,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             forwarded = {k: v for k, v in arguments.items() if k != "peer"}
             data = await _peer_invoke(
                 redirect["peer"], name, forwarded, as_, entry=redirect)
+            # The call ran elsewhere, so any file it produced is on that node.
+            # Local calls skip this entirely — their paths are already ours.
+            text = await _localize(data["result"], redirect["peer"], as_,
+                                   entry=redirect)
+            return [TextContent(type="text", text=text)]
         return [TextContent(type="text", text=data["result"])]
     except httpx.HTTPStatusError as e:
         # Core returned a structured error — surface its body.
@@ -222,6 +229,25 @@ async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
         break
     resp.raise_for_status()
     return resp.json()
+
+
+async def _localize(result: Any, peer_name: str, as_: str | None,
+                    entry: dict[str, Any] | None = None) -> Any:
+    """Pull down any file the peer's reply points at, so ``path`` is openable here.
+
+    Shared with the stdio proxy (``peer_files``) so this proxy — the documented
+    rollback — cannot silently lose the behaviour. Never raises.
+    """
+    from awm.gateway import peer_files
+
+    try:
+        return await peer_files.materialize_async(
+            result, peer_name, entry=entry, as_=as_)
+    except Exception as exc:  # noqa: BLE001 — a broken rewrite must not eat the reply
+        # stdout is the MCP framing; diagnostics go to stderr only.
+        print(f"awm-mcp: peer file materialization failed for {peer_name}: {exc}",
+              file=sys.stderr)
+        return result
 
 
 def _ensure_core_running() -> None:

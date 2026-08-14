@@ -154,6 +154,16 @@ restarts/reboots (`~/snap/slack`, `~/snap/opera`).
     # openbox has no taskbar: Alt+Tab cycles windows, right-click desktop = menu.
     ssh mira 'systemctl --user stop awm-vnc'     # when done
 
+**A SharePoint 403 usually needs no login at all.** `ls folders 403` from the
+OneDrive driver reads like a lapsed sign-in, but the tab's `FedAuth`/`rtFa`
+cookies expire long before the Teams login behind them does — and the page keeps
+rendering from cache, so it *looks* signed in while every `_api` call returns
+`UnauthorizedAccessException`. Navigating the tab to its own URL re-SSOs
+silently. Drive it over CDP (`Page.navigate` on the `sharepoint.com` target at
+`127.0.0.1:9224`), confirm with a fetch of
+`<site>/_api/web/currentuser`, and only reach for VNC if that lands on a sign-in
+page. The driver does not do this itself yet, so the 403 recurs.
+
 Recommended path is the **Opera tabs** (both render on `:20` and are VNC-visible).
 The Slack *desktop* app is installed and on `:9223` too, but its headless OAuth
 deep-link is fiddlier. The extractor tries the desktop (`:9223`) first, then falls

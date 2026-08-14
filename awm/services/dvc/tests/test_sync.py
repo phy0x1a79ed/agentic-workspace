@@ -1,4 +1,10 @@
-"""The sync carries the cache and only the cache, and never deletes on chinook."""
+"""The sync carries the cache and only the cache, and never deletes on chinook.
+
+The single-flight guard used to live here and is now a partial unique index in
+the run table — those cases moved to ``test_jobs.py``. What stays is the part
+that is genuinely this module's: what it puts in the transfer document, and the
+append-only flags it puts on it.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +31,6 @@ def submitted(monkeypatch, tmp_path):
     monkeypatch.setattr(sync, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(sync, "SHARED_CACHE", cache)
     monkeypatch.setattr("awm.dvc.config.load", lambda: CFG)
-    monkeypatch.setattr(sync, "_in_flight", lambda cfg: None)
-    monkeypatch.setattr(sync, "_write_state", lambda task_id: None)
 
     captured: dict = {}
 
@@ -95,20 +99,6 @@ def test_a_dry_run_submits_nothing_and_says_what_it_would_do(monkeypatch):
     assert result["dry_run"] is True
     assert result["append_only"] is True
     assert len(result["transfer_items"]) == 1
-
-
-def test_a_run_stacked_on_one_still_in_flight_is_declined_not_duplicated(monkeypatch):
-    def explode(*a, **k):
-        raise AssertionError("must not submit while one is in flight")
-
-    monkeypatch.setattr(sync.globus, "submit", explode)
-    monkeypatch.setattr("awm.dvc.config.load", lambda: CFG)
-    monkeypatch.setattr(sync, "_in_flight", lambda cfg: "previous-task")
-
-    result = sync.sync()
-
-    assert result["submitted"] is False
-    assert result["in_flight"] == "previous-task"
 
 
 def test_a_missing_cache_is_an_error_not_an_empty_backup(submitted, monkeypatch, tmp_path):

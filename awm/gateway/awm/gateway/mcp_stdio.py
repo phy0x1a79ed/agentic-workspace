@@ -47,6 +47,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 from awm import config
 from awm.gateway import mcp_caller
@@ -182,6 +183,25 @@ def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
     return resp.json()
 
 
+def _localize(result: Any, peer_name: str, as_: str | None,
+              entry: dict | None = None) -> Any:
+    """Pull down any file the peer's reply points at, so ``path`` is openable here.
+
+    Deferred import for the same reason as ``_peer_invoke``'s: this is the only
+    path that needs it, and it is already paying for an ssh. Never raises — a
+    reply with no files passes straight through.
+    """
+    from awm.gateway import peer_files  # noqa: PLC0415 — deferred on purpose
+
+    try:
+        return peer_files.materialize(result, peer_name, entry=entry, as_=as_)
+    except Exception as exc:  # noqa: BLE001 — a broken rewrite must not eat the reply
+        # stdout is the MCP framing; diagnostics go to stderr only.
+        print(f"awm-mcp: peer file materialization failed for {peer_name}: {exc}",
+              file=sys.stderr)
+        return result
+
+
 # ---------------------------------------------------------------------------
 # MCP method handlers
 # ---------------------------------------------------------------------------
@@ -238,7 +258,8 @@ def _handle_tools_call(params: dict) -> dict:
         if "@" in name:
             base, _, peer_name = name.rpartition("@")
             data = _peer_invoke(peer_name, base, arguments, as_)
-            return {"content": [{"type": "text", "text": data["result"]}],
+            return {"content": [{"type": "text",
+                                 "text": _localize(data["result"], peer_name, as_)}],
                     "isError": False}
         headers = {}
         if as_:
@@ -260,6 +281,10 @@ def _handle_tools_call(params: dict) -> dict:
             forwarded = {k: v for k, v in arguments.items() if k != "peer"}
             data = _peer_invoke(
                 redirect["peer"], name, forwarded, as_, entry=redirect)
+            # The call ran elsewhere, so any file it produced is on that node.
+            # Local calls skip this entirely — their paths are already ours.
+            text = _localize(data["result"], redirect["peer"], as_, entry=redirect)
+            return {"content": [{"type": "text", "text": text}], "isError": False}
         return {"content": [{"type": "text", "text": data["result"]}],
                 "isError": False}
     except _HTTPStatusError as e:

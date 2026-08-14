@@ -104,6 +104,7 @@
   let spellcheck: SpellController | null = null;
   let createTimer: ReturnType<typeof setTimeout> | null = null;
   let pathTimer: ReturnType<typeof setTimeout> | null = null;
+  let pathRetry: ReturnType<typeof setTimeout> | null = null;
   let creating = false;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let vpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -201,8 +202,20 @@
 
   async function savePath() {
     if (pathTimer) { clearTimeout(pathTimer); pathTimer = null; }
+    if (pathRetry) { clearTimeout(pathRetry); pathRetry = null; }
     if (current.id === null) return;
-    await notesApi.save(current.id, { path: current.path });
+    const id = current.id;
+    try {
+      await notesApi.save(id, { path: current.path });
+    } catch (err) {
+      // A refused rename must not fail silently: the new title lives only in the
+      // local draft until this lands, so say so in the status bar and keep
+      // retrying (the note stays renamed on screen meanwhile).
+      console.error('notes: title save failed', err);
+      saveState = 'offline';
+      pathRetry = setTimeout(() => { if (current.id === id) void savePath(); }, 5000);
+      return;
+    }
     await loadTree();
   }
 
@@ -479,6 +492,7 @@
   }
 
   onDestroy(() => {
+    if (pathRetry) clearTimeout(pathRetry);
     dictation?.destroy();
     collab?.leave();
     editor?.destroy();

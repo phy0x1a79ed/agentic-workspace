@@ -11,15 +11,66 @@ own DAO.
 
 ``sentence-transformers`` / ``sqlite-vec`` are imported lazily so a service
 that never searches doesn't pay for them (and the dist's ``search`` extra need
-not be installed).
+not be installed). When they *are* absent, every entry point here raises
+:class:`EmbeddingsUnavailable` rather than a bare ``ModuleNotFoundError``, so
+callers can tell "this node cannot search" apart from "this query found
+nothing" — see :func:`probe` for checking without walking a code path.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import sqlite3
 import struct
 from datetime import datetime, timezone
 from typing import Any
+
+# The two halves of the stack, and the one command that installs both.
+_SEARCH_MODULES = ("sentence_transformers", "sqlite_vec")
+_INSTALL_HINT = (
+    "the awm-persistence[search] extra is not installed in this environment — "
+    "run awm/services/<service>/install.sh on this node to add it"
+)
+
+
+class EmbeddingsUnavailable(RuntimeError):
+    """The semantic-search stack is not installed here.
+
+    Distinct from "the search returned nothing": a caller that catches this
+    knows its *capability* is missing, not that its query failed, and must say
+    so rather than reporting an empty result set.
+    """
+
+
+def probe() -> dict[str, Any]:
+    """Report whether the search stack is importable, without importing it.
+
+    Checking by *running* a search under-reports: :func:`semantic_search` loads
+    the model before it loads the vector extension, so a node missing both only
+    ever names the first, and the second failure surfaces as a fresh round of
+    identical-looking breakage after the first is fixed. This checks both.
+    """
+    missing = [m for m in _SEARCH_MODULES if importlib.util.find_spec(m) is None]
+    return {"available": not missing, "missing": missing}
+
+
+def degraded_marker(service: str, *, fallback: str) -> dict[str, Any]:
+    """The block a read attaches to its payload when it could not search.
+
+    A read that loses semantic ranking must not come back as a bare
+    ``count: 0`` — that reads as a confident "no such thing" when the truth is
+    "this node cannot answer that question". Callers attach this under a
+    ``degraded`` key (absent when healthy, so existing consumers are unaffected)
+    and still return whatever their keyword/fuzzy leg found. ``fallback`` names
+    what actually produced the results — ``keyword``, ``fuzzy``, ``listing``, or
+    ``none``.
+    """
+    return {
+        "semantic": "unavailable",
+        "missing": probe()["missing"],
+        "fallback": fallback,
+        "fix": f"run awm/services/{service}/install.sh on this node",
+    }
 
 # DDL for the per-service embeddings table. Each service that indexes installs
 # its own copy via ``init_service_db`` (register it alongside the service's own
@@ -47,12 +98,35 @@ _VEC_DIM = 384  # dimension for all-MiniLM-L6-v2
 
 
 def _get_model():
-    """Lazy-load the sentence-transformers model on first use."""
+    """Lazy-load the sentence-transformers model on first use.
+
+    Note the first call is slow even on a healthy node: it downloads ~90 MB of
+    model weights unless the HuggingFace cache is already warm. Verbs that can
+    trigger it declare a generous timeout for that reason.
+    """
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise EmbeddingsUnavailable(f"sentence-transformers: {_INSTALL_HINT}") from exc
         _model = SentenceTransformer(_MODEL_NAME)
     return _model
+
+
+def load_vec_extension(conn: sqlite3.Connection) -> None:
+    """Load the sqlite-vec extension onto ``conn`` so ``vec_*`` SQL works.
+
+    The single place that knows how; callers running their own vector SQL (a
+    pairwise-similarity scan, say) go through this rather than importing
+    ``sqlite_vec`` themselves, so they fail the same typed way.
+    """
+    try:
+        import sqlite_vec
+    except ImportError as exc:
+        raise EmbeddingsUnavailable(f"sqlite-vec: {_INSTALL_HINT}") from exc
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
 
 
 def _now_iso() -> str:
@@ -141,10 +215,7 @@ def semantic_search(
     query_vec = embed_text(query)
     query_blob = _vec_to_blob(query_vec)
 
-    # Load sqlite-vec extension on the caller's connection (lazy import).
-    import sqlite_vec
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
+    load_vec_extension(conn)
 
     # sqlite-vec uses vec_distance_cosine for similarity.
     if source_type:
