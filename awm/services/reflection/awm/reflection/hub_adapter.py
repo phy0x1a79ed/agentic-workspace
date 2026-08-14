@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
@@ -35,6 +36,7 @@ from awm.gatewayclient import ServiceAdapter
 from awm.reflection import (
     daemon_inject,
     inject,
+    pending,
     permission_mode,
     session_target,
     tmux_inject,
@@ -113,6 +115,20 @@ API_MANIFEST: dict[str, Any] = {
                 "bypass is a no-op. Acts only on your own session."
             ),
             "timeout": 60,
+            "params": [],
+        },
+        {
+            "name": "pending",
+            "tool": "reflection_pending",
+            "description": (
+                "List the deferred resumes this service still owes — one per "
+                "session that has a slash command in flight. A session that "
+                "compacted and then went idle forever is the visible symptom of "
+                "one of these being lost; this is how you tell whether the "
+                "promise is still being watched or vanished with a restart. "
+                "Reports on the whole node, not just the caller."
+            ),
+            "timeout": 30,
             "params": [],
         },
         {
@@ -202,12 +218,42 @@ def _handle_whoami(args: dict) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _handle_pending(args: dict) -> dict:
+    now = int(time.time() * 1000)
+    return {"ok": True, "pending": [
+        {"session": p.name or p.session_id, "pid": p.repl_pid,
+         "hosting": p.hosting, "command": p.text, "resume": p.followup,
+         "waiting_for_s": max(0, (now - p.injected_at_ms) // 1000)}
+        for p in pending.load_all()
+    ]}
+
+
 HANDLERS = {
     "send": _handle_send,
     "compact": _handle_compact,
     "mode": _handle_mode,
+    "pending": _handle_pending,
     "whoami": _handle_whoami,
 }
+
+
+def _on_start() -> None:
+    """Re-arm follow-ups promised by the process this one replaced.
+
+    A deferred resume is a thread, and the gateway restarts this service often
+    enough — deploys, crash-respawns, an operator `awm services restart` — that
+    "the thread survives" was never a safe assumption. Cheap and non-blocking:
+    a directory scan plus a thread per promise, and it must stay that way (see
+    the ready-ASAP contract — a slow `on_start` reads as a broken service).
+    """
+    try:
+        outcome = inject.replay_pending()
+    except Exception as exc:  # never let a bad record keep the service down
+        log.warning("reflection: could not replay pending resumes: %s", exc)
+        return
+    if outcome["pending"]:
+        log.info("reflection: %s pending resume(s) found on boot, %s re-armed",
+                 outcome["pending"], outcome["resumed"])
 
 
 async def main() -> None:
@@ -215,7 +261,8 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter("reflection", API_MANIFEST, HANDLERS).run()
+    await ServiceAdapter("reflection", API_MANIFEST, HANDLERS,
+                         on_start=_on_start).run()
 
 
 if __name__ == "__main__":

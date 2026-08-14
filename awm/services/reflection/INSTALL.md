@@ -17,10 +17,25 @@ moment to `/compact`).
 
 **Follow-up prompt (kept alive).** A bare slash command runs at end-of-turn and
 then leaves the session idle with nothing to do — for an autonomous agent that is
-death. So whenever `send` submits a slash command it also queues a **follow-up
-prompt** behind it (default `"Continue with what you were doing."`, override with
+death. So whenever `send` submits a slash command it also promises a **follow-up
+prompt** (default `"Continue with what you were doing."`, override with
 `followup`), giving the session a real turn once the command completes. Plain
 prompts are their own turn and get no follow-up.
+
+The follow-up is **deferred, not co-queued**: co-queuing lets an active agent run
+the resume first, on the old context, starving `/compact` of the idle slot it
+needs. Instead a watcher waits for the command to visibly finish and injects the
+resume then. Two consequences fall out of that, and both have bitten:
+
+- The watcher must not fire on the brief idle beat *before* compaction starts —
+  hence the reacted-then-settled test rather than the first idle sample.
+- The watcher is a thread, the wait can run for minutes, and the gateway
+  restarts this service routinely. So the promise is **written to disk before the
+  watcher starts** (`pending.py`) and replayed on boot; without that, a restart
+  inside the wait left the session idle forever with nobody able to tell. The
+  record carries the caller's `procStart`, and a replay whose pid no longer
+  matches is dropped rather than delivered — a pid outlives nothing.
+  `reflection_pending` lists what is currently owed.
 
 **Modal guard.** Some commands open a blocking modal/picker (`/mcp`, `/status`,
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
@@ -58,11 +73,15 @@ fallback that picks a plausible session, and adding one back would be a bug:
 > pane always won — delivering resumes into *other agents'* prompts. Rank panes
 > by nothing. The caller's identity is the only vote.
 
-Two joins are easy to get wrong and are load-bearing: the roster's `pid` is the
-`bg-pty-host` process rather than the REPL, and its key does not reliably prefix
-the session id — so a background session is matched on `sessionId` alone. And
-because session records are keyed by pid, `procStart` must agree with
-`/proc/<pid>/stat` before a record is trusted.
+Two joins are easy to get wrong and are load-bearing. A background session is
+matched on **`jobId`**, not `sessionId`: a `/clear` mints a new session id in
+place while the roster keeps the one the job was dispatched with, so joining on
+the session id lost such a session permanently — and told it its PTY host had
+exited, which sent readers chasing a live process. The match is then validated by
+asking whether the roster entry's `bg-pty-host` actually contains the caller,
+since that `pid` is the host and never the REPL. And because session records are
+keyed by pid, `procStart` must agree with `/proc/<pid>/stat` before a record is
+trusted.
 
 Callers with no proxy in front of them (a human at a plain shell) have no
 identity and are refused. `reflection_whoami` reports what the service resolved,
@@ -112,7 +131,7 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Four verbs, all on MCP + CLI + HTTP, none of which takes a target:
+Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
 - `reflection_send` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
@@ -120,6 +139,9 @@ Four verbs, all on MCP + CLI + HTTP, none of which takes a target:
   slash command is trailed by a `followup` prompt to keep the session alive.
 - `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
 - `reflection_mode` — put your own session back into bypass-permissions mode.
+- `reflection_pending` — list the deferred resumes still owed, node-wide. The
+  one verb that is not caller-scoped, because its whole job is to make a *lost*
+  promise visible from outside the session that lost it.
 - `reflection_whoami` — report which session reflection resolves you to.
 
 The normal call carries nothing agent-specific, on either hosting kind:
