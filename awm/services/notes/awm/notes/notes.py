@@ -248,6 +248,45 @@ def _embed(conn: sqlite3.Connection, note_id: str, text: str, chash: str) -> Non
     index.reembed(conn, note_id, text, chash)
 
 
+def reindex(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
+    """Re-embed notes whose content changed since their last embed.
+
+    The counterpart to :func:`_embed`'s best-effort failure: writes made while
+    the embedding stack was unavailable (or interrupted mid-flush) leave
+    ``embedded_hash`` stale, and nothing retries them until the note is next
+    edited — so those notes stay invisible to semantic search indefinitely.
+    ``force`` re-embeds every note, for a model change or a corrupted table.
+
+    Probes up front rather than discovering the same failure once per note, so
+    a stackless node gets one actionable error instead of N swallowed ones.
+    """
+    p = index.probe()
+    if not p["available"]:
+        raise index.EmbeddingsUnavailable(
+            f"cannot reindex: missing {', '.join(p['missing'])} — "
+            "run awm/services/notes/install.sh on this node"
+        )
+    # An open note's authoritative content is its in-memory room, not the file,
+    # so flush first — otherwise a reindex would embed a body the user has
+    # already edited past, and stamp it as current.
+    rooms.flush_all(conn)
+    embedded, failed = 0, 0
+    for r in db.list_notes(conn, include_trashed=False):
+        if not force and r["embedded_hash"] == r["content_hash"]:
+            continue
+        nid = r["id"]
+        if index.reembed(conn, nid, store.read(nid), r["content_hash"]):
+            embedded += 1
+        else:
+            failed += 1
+        conn.commit()   # per row: a mid-run failure keeps the progress made
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL "
+        "AND (embedded_hash IS NULL OR embedded_hash <> content_hash)"
+    ).fetchone()[0]
+    return {"embedded": embedded, "failed": failed, "stale_remaining": stale}
+
+
 # ---------------------------------------------------------------------------
 # Search — keyword (FTS5) / fuzzy (difflib) / semantic (embeddings)
 # ---------------------------------------------------------------------------
@@ -325,6 +364,11 @@ def search(
     precedence order keyword → fuzzy → semantic, de-duplicated by note id, with
     the score from the mode that first matched. With none supplied, returns the
     most-recently-modified notes.
+
+    When the semantic stack isn't installed on this node the semantic leg falls
+    back to fuzzy matching on the same string and the payload carries a
+    ``degraded`` block — never a silent empty result, which would read as "no
+    such note" rather than "this node cannot rank by meaning".
     """
     allowed = _allowed_ids(conn, include_trashed=include_trashed)
     allowed_set = set(allowed)
@@ -344,8 +388,18 @@ def search(
     if fuzzy:
         for nid, s in _fuzzy_ids(conn, fuzzy, allowed):
             _add(nid, s)
+    degraded: dict[str, Any] | None = None
     if semantic:
-        for h in index.search_semantic(conn, semantic, limit=200):
+        try:
+            hits = index.search_semantic(conn, semantic, limit=200)
+        except index.EmbeddingsUnavailable:
+            degraded = index.degraded_marker("notes", fallback="fuzzy")
+            # Fall back to the dependency-free difflib matcher over the same
+            # string — a genuinely useful substitute for "find the note I mean".
+            hits = []
+            for nid, s in _fuzzy_ids(conn, semantic, allowed):
+                _add(nid, s)
+        for h in hits:
             if h["score"] > 0.3:
                 _add(h["source_id"], h["score"])
 
@@ -364,7 +418,10 @@ def search(
         r = db.get_note(conn, nid)
         if r is not None:
             results.append(_row(conn, r, score=score, snippet=True))
-    return {"count": len(results), "results": results}
+    out: dict[str, Any] = {"count": len(results), "results": results}
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ Surface split (enforced by the gateway via the per-function ``surfaces`` field):
 - **read** verbs (``search``/``get``/``tree``/``vocab_list``) project onto MCP +
   CLI + HTTP — an agent can search your notes.
 - **write / maintenance** verbs (``create``/``save``/``trash``/``restore``/
-  ``purge``/``vocab_add``/``vocab_remove``) declare ``surfaces: [cli, http]`` so
+  ``purge``/``vocab_add``/``vocab_remove``/``reindex``) declare ``surfaces: [cli, http]`` so
   they stay off the agent MCP surface. The notes page still calls them directly
   over the unauthenticated ``/svc/notes/fn/<fn>`` proxy (that path is not the MCP
   catalog, so the gate doesn't touch it).
@@ -139,6 +139,17 @@ API_MANIFEST: dict[str, Any] = {
             "surfaces": _CLI_HTTP,
             "description": "Remove a custom dictation term.",
             "params": [{"name": "term", "type": "string", "required": True}],
+        },
+        {
+            "name": "reindex",
+            "tool": "notes_reindex",
+            "surfaces": _CLI_HTTP,
+            # The first embed in a fresh process downloads/loads the model, so
+            # the default 30s RPC budget is nowhere near enough.
+            "timeout": 600,
+            "description": "Re-embed notes whose content changed since their "
+                           "last embed (or all, with force).",
+            "params": [{"name": "force", "type": "boolean"}],
         },
         # ---- live collaboration (browser only; off the agent MCP surface) --
         {
@@ -278,6 +289,14 @@ def _handle_vocab_remove(args: dict) -> dict:
         conn.close()
 
 
+def _handle_reindex(args: dict) -> dict:
+    conn = dao.connect()
+    try:
+        return notes.reindex(conn, force=bool(args.get("force")))
+    finally:
+        conn.close()
+
+
 def _handle_collab_open(args: dict) -> dict:
     conn = dao.connect()
     try:
@@ -317,6 +336,7 @@ HANDLERS = {
     "purge": _handle_purge,
     "vocab_add": _handle_vocab_add,
     "vocab_remove": _handle_vocab_remove,
+    "reindex": _handle_reindex,
     "collab_open": _handle_collab_open,
     "collab_edit": _handle_collab_edit,
 }

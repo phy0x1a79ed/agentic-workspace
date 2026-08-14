@@ -19,7 +19,10 @@ from typing import Any
 
 from awm.persistence.embeddings import (  # noqa: F401  (EMBEDDINGS_DDL re-exported)
     EMBEDDINGS_DDL,
+    EmbeddingsUnavailable,
+    degraded_marker,
     embed_text,
+    probe,
     upsert_embedding,
     delete_embedding,
     semantic_search,
