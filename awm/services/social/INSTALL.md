@@ -157,10 +157,19 @@ root = "/teams/ubcMICB-gr-HallamLab/Shared Documents/Hallam_Lab_roadmaps/Tony-L_
 **Google Drive (OAuth2).** A Google App Password (the Gmail path) cannot reach
 Drive, so a bucket needs its own OAuth2 client. One-time, in the Google Cloud
 console: create a project, enable the **Drive API**, configure the OAuth consent
-screen (add the account as a test user), and create a **Desktop app** OAuth
-client. Then run the consent helper **once per account**:
+screen, and create a **Desktop app** OAuth client. **Publish the consent screen
+to Production.** Left in *Testing* it works for exactly seven days and then every
+call fails with `invalid_grant: Bad Request` — a bucket that worked and silently
+stopped a week later is this and nothing else, and re-minting the token without
+publishing just buys another week. Then run the consent helper **once per
+account**:
 
     python scripts/gdrive_auth.py --client-secrets /path/to/client_secret.json --bucket-name gdrive-phyber
+
+Consent needs a browser and the redirect comes back to a local port, so on a
+headless host forward one first (`ssh -L 8765:localhost:8765 <host>`) and add
+`--port 8765 --no-browser`. Re-minting for a client already in `social.toml`
+takes `--client-id` + `--client-secret-file` instead of the downloaded JSON.
 
 It prints a `refresh_token` (and a ready TOML snippet). Paste the
 `client_id`/`client_secret`/`refresh_token` into the section above (secrets
