@@ -96,8 +96,28 @@ Every destination the mirror emits is under `workspace/`, so the transfer that
 deletes structurally cannot reach the archive beside it, whatever the exclusion
 logic gets wrong. `tests/test_backup.py` asserts that rather than trusting it.
 
+Symlinks are skipped, not followed and not recreated — following `.awm/data`
+would drag the excluded checkouts back in, and *naming* a link to a directory
+wedges the whole transfer (see `partition`'s docstring). Their targets are
+backed up on their own account; a restore just does not get the links back.
+
 Not covered by either: nothing, now, except what neither job can see — a branch
 that exists on no remote is backed up as bytes but is still not *pushed*.
+
+### What a healthy mirror looks like
+
+The first full run moved **270.8 GB / 92 828 files in 6 hours**; later runs are
+incremental. Two things about that will look like failure and are not:
+
+- **A few hundred `FILE_NOT_FOUND` skips is normal.** A six-hour scan of a live
+  workspace always races something being deleted. They land in the run's `note`
+  and log at WARNING. The signature that matters is skips with *nothing*
+  transferred — that logs ERROR, and it means the source was unreadable, not
+  that the backup was empty.
+- **`files_transferred` flatlines for long stretches** near the end while the
+  transfer is busy with directory operations and skips. `globus task show`'s
+  `Subtasks Succeeded` is the counter that keeps moving; judging progress by
+  files reads as a stall twice over.
 
 ## Scheduling
 
