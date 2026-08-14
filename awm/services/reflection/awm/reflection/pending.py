@@ -39,6 +39,14 @@ PENDING_DIR: Optional[Path] = None
 # A promise older than this is not worth keeping: the watcher's own hard cap is
 # 900s, so anything past it would have given up on its own long ago, and
 # replaying it would resume a session that has since moved on by itself.
+#
+# Note what that assumes — that a watcher was alive to give up. It is false in
+# the one case replay exists for: if this service stays down longer than
+# MAX_AGE_MS, the boot sweep discards a promise nobody ever waited on and the
+# session stays idle, which is the original bug narrowed to long outages.
+# Raising the number is the wrong fix; asking the session's live status on
+# replay, and delivering to one still sitting idle whatever its age, is the
+# right one. Left open deliberately — restarts are seconds, not minutes.
 MAX_AGE_MS = 20 * 60 * 1000
 
 
