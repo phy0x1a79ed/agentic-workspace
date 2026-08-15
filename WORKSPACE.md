@@ -31,7 +31,7 @@ projects/{project}/
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       data -> ../data            # compat symlink; the real data/ is repo content
-      skills -> <workspace>/awm/skills/  # absolute symlink to skill catalog
+      skills -> <workspace>/skills/      # absolute symlink to skill catalog (SKILLS_DIR)
     [code files...]              # the actual repo content, including data/
 ```
 
@@ -227,64 +227,27 @@ This is the canonical, shared copy; each hub may mirror its own row into its `.a
 
 For the day-to-day workflow of authoring/iterating on a service, page, or component — what files you write, the build + shadow flow — see `README.md` § *Authoring a service* / § *Authoring a page*; the internal architecture behind it is in the awm-internal `AGENTS.md` (auto-loaded inside any `projects/awm/*` scope).
 
-## Dev protocol — parallel consumer/library scopes
+## Consuming another project's code
 
-Some projects **consume a shared-library project as a git submodule** and need to
-work the *library* (its transforms) and the *consumer* in lockstep, across several
-scopes at once. If every consumer scope pins the submodule to the **same** library
-branch, parallel library edits collide on that one branch. The dev protocol gives
-each consumer scope its **own** library branch + worktree, isolating library work
-exactly the way code worktrees isolate consumer work — and it's a **reusable
-template**, so a second consumer adopts it by filling slots.
+**Co-locate it in one repository; do not submodule it.** A consumer and the library
+it moves in lockstep with belong in one project, as directories — which is what
+`projects/metasmith/` is: the engine, the standard transform library, fabfos and
+ASPIRE, one history, no pins. A scope layer names the product (see *Nested names*).
 
-**The N-slot template.** The consumer side uses role-generic scope names; the library
-side names its parallel scopes **after the consumer**, so from inside the library
-project you can tell which consumer effort a scope serves:
+The workspace ran the other protocol for a year: each consumer scope carried its own
+library branch and worktree, and promoting one worker meant merging both sides and
+bumping a gitlink. It worked. What retired it is that every one of those steps was a
+place for the pin and the branch to disagree, and a stale gitlink is silent — nothing
+downstream reports that a consumer is building against a library commit nobody has
+worked on for a month. Co-location makes the whole class unrepresentable.
 
-| Role | consumer scope | ↔ library scope |
-|------|----------------|-----------------|
-| lead / integrator | `dev` | `<consumer>` (hub) |
-| parallel worker 1..3 | `dev1`, `dev2`, `dev3` | `<consumer>1`, `<consumer>2`, `<consumer>3` |
-
-`dev`↔`<consumer>` are the two **hubs**; `devN`↔`<consumer>N` are the **peripherals** —
-the same hub/peripheral shape as scatter/gather above, one pairing per project side.
-
-**Submodule tracking (push-free, local).** Each consumer scope's `src/<lib>` submodule:
-
-- carries an `awm` remote → the library project's local `.bare` (`origin` stays the
-  GitHub url so `clone --recurse-submodules` still works);
-- is checked out on its paired branch `feat/<consumer>N` with upstream set to
-  `awm/feat/<consumer>N`;
-- has `.gitmodules` `branch=` naming that same paired branch.
-
-Sync is **fully local, never through GitHub**: the library worktrees and the consumer
-submodule checkouts share one local `.bare` via the `awm` remote. Preferred workflow —
-**edit transforms in the library worktree** (`projects/<lib>/<consumer>N`); commits
-land straight in the shared bare; then in the consumer scope `git -C src/<lib> fetch
-awm` and bump the gitlink. Editing inside the submodule instead? `git push awm
-HEAD:feat/<consumer>N` targets the local bare — still no GitHub.
-
-**Merging a worker up is a parallel merge.** Promoting `devN` is two gathers, one per
-side: merge the library peripheral `feat/<consumer>N` into the library hub
-`feat/<consumer>`, **and** merge the consumer peripheral into the consumer hub `dev`,
-then bump the consumer hub's gitlink to the new library-hub tip. Drive each side with
-`scope(verb="gather", …)` (hub + its peripherals) as usual.
-
-Gotchas that bite this specifically: `git submodule update --remote` follows
-`.gitmodules` `branch=` on the **default** remote (origin=GitHub), not `awm` — so sync
-with explicit `fetch awm` / `push awm`, never `update --remote`. And `git worktree
-move` **refuses on a worktree containing submodules** — move the dir by hand, then
-`git worktree repair`, rename the `.bare/worktrees/<name>` admin dir to match, and fix
-each submodule's `.git` gitdir pointer + `core.worktree`.
-
-**Current instantiation — `fabfos` consuming `metasmith-libraries`:**
-
-| consumer `fabfos` scope | branch | ↔ `metasmith-libraries` scope | library branch |
-|---|---|---|---|
-| `dev` (lead) | `dev` | `fabfos` (hub) | `feat/fabfos` |
-| `dev1` | `feat/dev1` | `fabfos1` | `feat/fabfos1` |
-| `dev2` | `feat/dev2` | `fabfos2` | `feat/fabfos2` |
-| `dev3` | `feat/dev3` | `fabfos3` | `feat/fabfos3` |
+Nothing here consumes a submodule now. If one ever must, two facts cost a day each
+and are not discoverable from a failure message: `git submodule update --remote`
+follows `.gitmodules` `branch=` on the **default** remote, so a local-only sync has to
+be an explicit `fetch`/`push` against the sibling bare; and `git worktree move`
+**refuses on a worktree containing submodules**, so the move is by hand, followed by
+`git worktree repair`, renaming the `.bare/worktrees/<name>` admin dir, and fixing
+each submodule's `.git` gitdir pointer and `core.worktree`.
 
 ## Git Model
 
