@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from awm.reflection import daemon_inject, pending, session_target, tmux_inject
+from awm.reflection import daemon_inject, guards, pending, session_target, tmux_inject
 
 log = logging.getLogger("awm.reflection.inject")
 
@@ -33,6 +33,15 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
          followup: Optional[str] = None) -> dict:
     """Inject ``text`` into the calling session, whatever is hosting it."""
     target = _resolve(caller_pid)
+    # Ask the guards before announcing anything. The backends are still the
+    # authority and each enforces this itself — but they do so *after* this
+    # function has already logged "injecting …", which made the log claim a
+    # refused `/clear` had gone in. A log that overstates what happened is worse
+    # than no log on the one path where someone is trying to find out why a
+    # command did not run.
+    refused = guards.refusal(text, confirm=confirm)
+    if refused is not None:
+        return refused
     if isinstance(target, session_target.DaemonTarget):
         log.info("reflection: injecting %r into background session %s",
                  text, target.name or target.session_id)

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any
 
@@ -178,44 +179,66 @@ _FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
              daemon_inject.DaemonError)
 
 
+def _guarded(verb: str, fn):
+    """Wrap a handler so no failure leaves this service without saying so.
+
+    Every way a reflection call can fail used to end here as a plain result dict
+    and nothing else: no log line, no on-disk trace. So "reflection didn't
+    compact my session" was answerable only by reconstructing the moment from
+    ``/proc``, the daemon roster and Claude Code's per-session records — long
+    after the state that would have explained it had moved on.
+
+    Both kinds of failure funnel through this one seam, at levels that say which
+    is which. A transport or identity failure is a defect and logs at WARNING. A
+    guard refusal — a destructive command without ``confirm``, a modal one that
+    would freeze the session — is the service working as designed and logs at
+    INFO, but it still has to appear, because from the caller's side the two look
+    identical. Handling both here rather than inside each backend also means the
+    tmux and daemon paths cannot drift on it.
+    """
+    def run(args: dict) -> dict:
+        try:
+            result = fn(args)
+        except _FAILURES as exc:
+            log.warning("reflection: %s failed for caller pid %s: %s",
+                        verb, _caller_pid(args), exc)
+            return {"ok": False, "error": str(exc)}
+        if not result.get("ok"):
+            # Never log the rest of `args`: for `send`, `text` is the caller's
+            # own prompt content.
+            log.info("reflection: %s refused for caller pid %s: %s", verb,
+                     _caller_pid(args),
+                     result.get("reason") or result.get("error"))
+        return result
+    return run
+
+
 def _handle_send(args: dict) -> dict:
-    try:
-        return inject.send(
-            args["text"],
-            caller_pid=_caller_pid(args),
-            enter=_bool(args.get("enter"), True),
-            delay_ms=_int(args.get("delay_ms"), 0),
-            confirm=_bool(args.get("confirm"), False),
-            followup=args.get("followup"),
-        )
-    except _FAILURES as exc:
-        return {"ok": False, "error": str(exc)}
+    return inject.send(
+        args["text"],
+        caller_pid=_caller_pid(args),
+        enter=_bool(args.get("enter"), True),
+        delay_ms=_int(args.get("delay_ms"), 0),
+        confirm=_bool(args.get("confirm"), False),
+        followup=args.get("followup"),
+    )
 
 
 def _handle_compact(args: dict) -> dict:
-    try:
-        return inject.send(
-            "/compact",
-            caller_pid=_caller_pid(args),
-            delay_ms=_int(args.get("delay_ms"), 0),
-            followup=args.get("followup"),
-        )
-    except _FAILURES as exc:
-        return {"ok": False, "error": str(exc)}
+    return inject.send(
+        "/compact",
+        caller_pid=_caller_pid(args),
+        delay_ms=_int(args.get("delay_ms"), 0),
+        followup=args.get("followup"),
+    )
 
 
 def _handle_mode(args: dict) -> dict:
-    try:
-        return permission_mode.ensure_bypass(caller_pid=_caller_pid(args))
-    except _FAILURES as exc:
-        return {"ok": False, "error": str(exc)}
+    return permission_mode.ensure_bypass(caller_pid=_caller_pid(args))
 
 
 def _handle_whoami(args: dict) -> dict:
-    try:
-        return {"ok": True, **inject.describe_caller(_caller_pid(args))}
-    except _FAILURES as exc:
-        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **inject.describe_caller(_caller_pid(args))}
 
 
 def _handle_pending(args: dict) -> dict:
@@ -228,13 +251,13 @@ def _handle_pending(args: dict) -> dict:
     ]}
 
 
-HANDLERS = {
+HANDLERS = {verb: _guarded(verb, fn) for verb, fn in {
     "send": _handle_send,
     "compact": _handle_compact,
     "mode": _handle_mode,
     "pending": _handle_pending,
     "whoami": _handle_whoami,
-}
+}.items()}
 
 
 def _on_start() -> None:
@@ -245,7 +268,20 @@ def _on_start() -> None:
     "the thread survives" was never a safe assumption. Cheap and non-blocking:
     a directory scan plus a thread per promise, and it must stay that way (see
     the ready-ASAP contract — a slow `on_start` reads as a broken service).
+
+    An **overlay** must not do this. A shadow does not replace the base process,
+    it only takes the prefix — so the base is still running, still holding its
+    own watcher for every promise in that directory, and replaying here arms a
+    second one. Both then fire, and the session gets the resume twice. Observed
+    while shadowing this service to test it: the overlay's boot re-armed a
+    promise a live base was already waiting on. Injecting a prompt a session did
+    not ask for is the one thing this service must never do, so the base keeps
+    sole ownership of promises it made.
     """
+    if os.environ.get("AWM_SERVICE_OVERLAY"):
+        log.info("reflection: running as an overlay; leaving pending resumes to "
+                 "the base process that promised them")
+        return
     try:
         outcome = inject.replay_pending()
     except Exception as exc:  # never let a bad record keep the service down

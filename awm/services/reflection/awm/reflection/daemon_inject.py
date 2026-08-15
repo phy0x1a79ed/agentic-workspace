@@ -18,6 +18,16 @@ This is a private protocol, read out of the Claude Code bundle rather than a
 documented interface. It is version-checked on connect so that a CLI update which
 moves it degrades to a clear "background reflection unavailable" rather than
 misfiring; the tmux backend is unaffected either way.
+
+What this module can and cannot promise is worth stating plainly, because the
+gap is structural rather than a shortcoming to be closed later. Injection can
+confirm that the frames were written to a socket whose host identified itself as
+the calling session's and did not reject them. It can NOT confirm that the
+command ran: a slash command runs at end of turn, and the reflection call has to
+*return* for the caller's turn to end. At the moment of the return there is by
+construction nothing to observe yet. That is the whole reason the follow-up is
+deferred to a watcher instead of awaited here, and anything that later looks like
+a way to verify delivery inline is this constraint being forgotten.
 """
 from __future__ import annotations
 
@@ -60,6 +70,14 @@ _SETTLE_S = 0.15
 _HELLO_WAIT_S = 5.0
 _QUIET_S = 0.6
 
+# How long to keep listening after the last write before closing the socket. Long
+# enough for the host to say it threw the input away, short enough that it does
+# not show up as latency on a verb the caller is blocking on. It is bounded by the
+# cap rather than by the quiet period: a live session is streaming its own output
+# the whole time, so "quiet" is not something this window can rely on reaching.
+_ACCEPT_CHECK_S = 0.5
+_ACCEPT_QUIET_S = 0.15
+
 # Deferred follow-up, watching the session record's own `status` field rather
 # than scraping the screen. Same shape as the tmux watcher and the same hazard:
 # `/compact` runs at end of turn, so the sequence is busy → a brief idle → busy
@@ -82,7 +100,19 @@ _SETTLED_STATES = {"idle", "waiting"}
 
 
 class DaemonError(RuntimeError):
-    """The daemon PTY socket could not be reached, or spoke an unexpected shape."""
+    """The daemon PTY socket could not be reached, or spoke an unexpected shape.
+
+    ``wrote_input`` says whether a raw frame had already made it onto the wire
+    when this went wrong. It gates the retry above: re-pasting is only safe when
+    nothing landed, because ``send`` carries arbitrary text and running it twice
+    is worse than not running it at all. A rejected frame counts as *not*
+    written — being rejected is precisely the host saying it threw the bytes
+    away — so the common case still retries.
+    """
+
+    def __init__(self, *args, wrote_input: bool = False) -> None:
+        super().__init__(*args)
+        self.wrote_input = wrote_input
 
 
 Opener = Callable[[str], "_SocketLike"]
@@ -150,6 +180,7 @@ class Connection:
         self._reader = _FrameReader()
         self._sock = opener(target.sock)
         self._authed = False
+        self._raw_sent = False
         self.hello: dict = {}
         self.output = bytearray()
 
@@ -225,20 +256,50 @@ class Connection:
         try:
             self._sock.sendall(frame(kind, payload))
         except OSError as exc:
-            raise DaemonError(f"writing to the PTY socket failed: {exc}") from None
+            raise DaemonError(f"writing to the PTY socket failed: {exc}",
+                              wrote_input=self._raw_sent) from None
+        if kind == _RAW:
+            self._raw_sent = True
 
     # -- public ------------------------------------------------------------
 
     def handshake(self) -> None:
-        """Read the host's greeting and check we understand what it speaks."""
+        """Read the host's greeting, and check it is the right session's host.
+
+        The greeting names the REPL on the far end of the socket. Reflection
+        already knows which REPL it is acting for, so comparing the two is the
+        one place a wrong target can be caught before any keystroke is written —
+        and a wrong target is reachable: the roster hands out recycled
+        ``spare/*.pty.sock`` paths and its entries carry an attempt counter, so
+        "the socket you were told about now belongs to another job" is a state
+        the daemon reaches on its own, without anything being broken.
+
+        No greeting at all is a failure too. It used to pass, because the
+        unrecognised-message check was guarded on having *received* something —
+        so a socket that connected and then said nothing sailed through, and
+        authentication proceeded into a host that had never identified itself.
+        """
         self._pump(until_live=True)
+        if not self.hello:
+            raise DaemonError(
+                f"the background session's PTY host never greeted us on "
+                f"{self._target.sock}; the roster entry is stale, or that socket "
+                f"is no longer being served — refusing to type into it blind")
         version = self.hello.get("version")
-        if self.hello and "replPid" not in self.hello:
+        if "replPid" not in self.hello:
             raise DaemonError(
                 f"the background session's PTY host greeted us with an "
                 f"unrecognised message (version {version!r}); reflection cannot "
                 f"safely drive it — background reflection is unavailable until "
                 f"this is re-verified against the current Claude Code build")
+        greeted = self.hello.get("replPid")
+        if greeted != self._target.repl_pid:
+            raise DaemonError(
+                f"the PTY socket {self._target.sock} is hosting REPL {greeted}, "
+                f"not the calling session's REPL {self._target.repl_pid}; the "
+                f"roster entry is stale (the session was re-hosted, or a "
+                f"pre-warmed socket has since been handed to another job) — "
+                f"refusing to type into a different session")
 
     def authenticate(self) -> None:
         self._send(_CTL, json.dumps(
@@ -262,7 +323,27 @@ class Connection:
         self._send(_RAW, payload)
 
     def press_enter(self) -> None:
+        if not self._authed:
+            raise DaemonError("refusing to send input before authenticating")
         self._send(_RAW, _ENTER)
+
+    def check_not_rejected(self, *, cap: float = _ACCEPT_CHECK_S) -> None:
+        """Raise if the host says it discarded what we just wrote.
+
+        A **negative** check, and only that. An unauthenticated raw frame is
+        dropped silently apart from the ``auth-required`` control frame that
+        follows it — which the write path used to miss entirely, because it
+        closed the socket the instant the last byte went out and never read
+        again. Listening for a beat turns that class of silent no-op into a
+        failure the caller (and the retry above it) can act on.
+
+        It is not, and must not become, a check that the line was *accepted*.
+        There is no positive acknowledgement in this protocol, and the session is
+        mid-turn by design, so its prompt does not behave like an idle one. See
+        the module docstring for why waiting for evidence the command ran is not
+        something this call can do.
+        """
+        self._pump(quiet_for=_ACCEPT_QUIET_S, cap=cap)
 
     def send_keys(self, data: bytes) -> None:
         """Send raw key bytes (not text) — e.g. a Shift+Tab escape sequence."""
@@ -303,8 +384,68 @@ def _paste_and_submit(text: str, target: session_target.DaemonTarget, *,
         if enter:
             sleep(_SETTLE_S)
             conn.press_enter()
-            return True
-    return False
+        conn.check_not_rejected()
+        return bool(enter)
+
+
+def _deliver(text: str, target: session_target.DaemonTarget, *,
+             enter: bool, opener: Opener,
+             sleep: Callable[[float], None] = time.sleep,
+             resolve=None) -> tuple[bool, session_target.DaemonTarget]:
+    """Write ``text`` into the session, crossing one re-host on the way if need be.
+
+    Returns ``(submitted, target)`` — the target being whichever one the write
+    actually went to, which the caller needs for the pending record and the
+    watcher it is about to spawn.
+
+    The deferred-resume watcher has always re-read the roster before delivering,
+    because a session that respawned mid-wait has a new socket and a new token
+    and the ones handed over earlier are dead. The *initial* injection had no
+    such step: it used whatever the roster said when the verb was dispatched. For
+    a session being attached to and detached from a terminal — which is exactly
+    what re-homes its PTY — that can already be one event out of date by the time
+    the bytes are written, and the write then lands in a host nobody is reading.
+
+    So: one re-resolve, one retry, then give up. Re-resolving by pid rather than
+    by session id is what makes it safe — a session id is not stable (a ``/clear``
+    mints a new one), so re-joining on it would find nothing. And one attempt, not
+    a loop: the point is to cross a single re-host, not to grind against a session
+    that is genuinely unreachable.
+
+    This is only sound on top of the greeting check in :meth:`Connection.handshake`.
+    Without it, a retry against a re-resolved socket is just as capable of typing
+    into a stranger — twice.
+    """
+    resolve = resolve or session_target.resolve
+    try:
+        return _paste_and_submit(text, target, enter=enter, opener=opener,
+                                 sleep=sleep), target
+    except DaemonError as first:
+        if getattr(first, "wrote_input", False):
+            # Something already went onto the wire, so we cannot know whether it
+            # landed. `send` carries arbitrary text; running it twice is a worse
+            # outcome than not running it at all.
+            log.warning("reflection: reaching background session %s failed after "
+                        "input was already written (%s); not retrying, because a "
+                        "second attempt could deliver it twice",
+                        target.name or target.session_id, first)
+            raise
+        log.warning("reflection: first attempt to reach background session %s "
+                    "failed (%s); re-reading the roster and retrying once",
+                    target.name or target.session_id, first)
+        try:
+            fresh = resolve(target.repl_pid)
+        except session_target.ResolveError as exc:
+            raise DaemonError(
+                f"{first}; and the session could not be re-resolved to retry: "
+                f"{exc}") from None
+        if not isinstance(fresh, session_target.DaemonTarget):
+            raise DaemonError(
+                f"{first}; and on re-resolving, pid {target.repl_pid} is no "
+                f"longer a background session — reflection will not switch "
+                f"transports mid-call") from None
+        return _paste_and_submit(text, fresh, enter=enter, opener=opener,
+                                 sleep=sleep), fresh
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +533,7 @@ def _await_and_followup(text: str, followup: str,
     if not isinstance(fresh, session_target.DaemonTarget):
         fresh = target
     try:
-        _paste_and_submit(followup, fresh, enter=True, opener=opener, sleep=sleep)
+        _deliver(followup, fresh, enter=True, opener=opener, sleep=sleep)
     except DaemonError as exc:
         log.warning("reflection: could not inject resume into background "
                     "session %s: %s", target.name or target.session_id, exc)
@@ -438,8 +579,11 @@ def send(text: str, *, target: session_target.DaemonTarget, enter: bool = True,
         sleep(min(delay_ms, 25_000) / 1000.0)
 
     injected_at_ms = _now_ms()
-    submitted = _paste_and_submit(text, target, enter=enter, opener=opener,
-                                  sleep=sleep)
+    # A failure here propagates: the caller is told the command did not go in,
+    # and — because this sits *above* the record-and-spawn below — no promise is
+    # left behind for a resume to a command that was never injected.
+    submitted, target = _deliver(text, target, enter=enter, opener=opener,
+                                 sleep=sleep)
 
     followup_sent = None
     followup_deferred = False

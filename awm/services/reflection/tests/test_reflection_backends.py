@@ -98,7 +98,7 @@ def test_handshake_keeps_frames_that_share_a_read_with_live():
     # One read can carry the greeting, the `live` marker, and the first screen
     # paint. Stopping at `live` without finishing the batch drops the paint, and
     # it is not recoverable — the bytes are gone from the socket.
-    sock = FakeSock(ctl({"t": "hello", "replPid": 1}) + ctl({"t": "live"})
+    sock = FakeSock(ctl({"t": "hello", "replPid": 4242}) + ctl({"t": "live"})
                     + raw("⏵⏵ bypass permissions on"))
     conn = daemon_inject._connect(target(), opener=opener_for(sock),
                                   sleep=lambda _s: None)
@@ -106,7 +106,7 @@ def test_handshake_keeps_frames_that_share_a_read_with_live():
 
 
 def test_frame_reader_splits_a_coalesced_stream():
-    stream = ctl({"t": "hello", "replPid": 1}) + raw("xy") + ctl({"t": "live"})
+    stream = ctl({"t": "hello", "replPid": 4242}) + raw("xy") + ctl({"t": "live"})
     reader = daemon_inject._FrameReader()
     # Deliver it one byte at a time — a reader that assumes whole frames per
     # recv() would fall apart here, and real sockets do coalesce and split.
@@ -167,7 +167,7 @@ def test_unbracketed_when_the_session_does_not_report_the_mode():
 
 
 def test_ping_is_answered_with_a_pong():
-    sock = FakeSock(ctl({"t": "hello", "replPid": 1}) + ctl({"t": "ping"})
+    sock = FakeSock(ctl({"t": "hello", "replPid": 4242}) + ctl({"t": "ping"})
                     + ctl({"t": "live"}))
     daemon_inject._paste_and_submit("hi", target(), enter=False,
                                     opener=opener_for(sock), sleep=lambda _s: None)
@@ -176,7 +176,7 @@ def test_ping_is_answered_with_a_pong():
 
 
 def test_auth_required_is_surfaced_not_swallowed():
-    sock = FakeSock(ctl({"t": "hello", "replPid": 1}) + ctl({"t": "auth-required"}))
+    sock = FakeSock(ctl({"t": "hello", "replPid": 4242}) + ctl({"t": "auth-required"}))
     with pytest.raises(daemon_inject.DaemonError, match="input token"):
         daemon_inject._paste_and_submit("hi", target(), enter=False,
                                         opener=opener_for(sock), sleep=lambda _s: None)
@@ -636,3 +636,177 @@ def test_daemon_session_forget_clears_the_buffer():
     sess.forget()
     # Nothing new arrives, so the stale label must not resurface.
     assert permission_mode.classify(sess.read()) == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Identity: is this socket the caller's own session?
+# ---------------------------------------------------------------------------
+
+def test_a_socket_hosting_another_repl_refuses():
+    # The roster hands out recycled `spare/*.pty.sock` paths, so the socket it
+    # named can belong to a different job by the time we dial it. The greeting
+    # says whose it is; not checking meant typing a stranger's compact into a
+    # stranger's prompt and reporting success.
+    sock = FakeSock(ctl({"t": "hello", "replPid": 999, "version": "2.1.223"})
+                    + ctl({"t": "live"}))
+    with pytest.raises(daemon_inject.DaemonError, match="hosting REPL 999"):
+        daemon_inject._paste_and_submit("hi", target(), enter=False,
+                                        opener=opener_for(sock),
+                                        sleep=lambda _s: None)
+
+
+def test_a_host_that_never_greets_refuses():
+    # This used to pass straight through: the unrecognised-message check was
+    # guarded on having received *something*, so silence sailed past it and
+    # authentication proceeded into a host that never identified itself.
+    with pytest.raises(daemon_inject.DaemonError, match="never greeted"):
+        daemon_inject._paste_and_submit("hi", target(), enter=False,
+                                        opener=opener_for(FakeSock(b"")),
+                                        sleep=lambda _s: None)
+
+
+def test_enter_refuses_before_authentication():
+    conn = daemon_inject.Connection(target(), opener=opener_for(FakeSock(HELLO)),
+                                    sleep=lambda _s: None)
+    with pytest.raises(daemon_inject.DaemonError, match="before authenticating"):
+        conn.press_enter()
+
+
+# ---------------------------------------------------------------------------
+# Rejection observed after the write, not after the socket is closed
+# ---------------------------------------------------------------------------
+
+class RejectingSock(FakeSock):
+    """A host that greets normally, then discards the first raw frame it gets.
+
+    Modelled on the real failure: an unauthenticated raw frame is dropped
+    silently apart from the `auth-required` that follows it, and the write path
+    used to close the socket before that frame could arrive.
+    """
+
+    def sendall(self, data):
+        super().sendall(data)
+        if any(k == 0x00 for k, _ in daemon_inject._FrameReader().feed(data)):
+            self._inbound += ctl({"t": "auth-required"})
+
+
+def test_input_the_host_discarded_is_not_reported_as_sent():
+    sock = RejectingSock(HELLO)
+    with pytest.raises(daemon_inject.DaemonError, match="input token"):
+        daemon_inject._paste_and_submit("hi", target(), enter=False,
+                                        opener=opener_for(sock),
+                                        sleep=lambda _s: None)
+
+
+# ---------------------------------------------------------------------------
+# Crossing a re-host: one re-resolve, one retry
+# ---------------------------------------------------------------------------
+
+def _openers(mapping: dict):
+    """An opener that serves a different scripted socket per path."""
+    def opener(path):
+        if path not in mapping:
+            raise daemon_inject.DaemonError(f"cannot reach {path}")
+        return mapping[path]
+    return opener
+
+
+def test_a_re_homed_session_is_reached_on_the_retry():
+    # The session was attached/detached mid-call, so the roster entry we were
+    # dispatched with names a socket that is now somebody else's. Re-reading the
+    # roster and trying once more is what makes that survivable rather than a
+    # silent no-op.
+    fresh_sock = FakeSock(HELLO)
+    opener = _openers({"/tmp/fresh.sock": fresh_sock})
+    moved = target(sock="/tmp/fresh.sock", auth="tok2")
+
+    submitted, used = daemon_inject._deliver(
+        "/compact", target(), enter=True, opener=opener,
+        sleep=lambda _s: None, resolve=lambda _pid: moved)
+
+    assert submitted is True
+    assert used.sock == "/tmp/fresh.sock", "the retry must use the fresh address"
+    assert any(k == 0x00 for k, _ in fresh_sock.frames())
+
+
+def test_the_retry_is_tried_once_and_then_gives_up():
+    # One attempt, not a loop: the point is to cross a single re-host, not to
+    # grind against a session that is genuinely unreachable.
+    attempts = []
+
+    def opener(path):
+        attempts.append(path)
+        raise daemon_inject.DaemonError(f"cannot reach {path}")
+
+    with pytest.raises(daemon_inject.DaemonError):
+        daemon_inject._deliver("/compact", target(), enter=True, opener=opener,
+                               sleep=lambda _s: None,
+                               resolve=lambda _pid: target(sock="/tmp/b.sock"))
+    assert attempts == ["/tmp/fake.sock", "/tmp/b.sock"]
+
+
+def test_a_session_that_vanished_reports_both_halves():
+    def resolve(_pid):
+        raise session_target.ResolveError("calling process 4242 is gone")
+
+    with pytest.raises(daemon_inject.DaemonError) as exc:
+        daemon_inject._deliver("/compact", target(), enter=True,
+                               opener=_openers({}), sleep=lambda _s: None,
+                               resolve=resolve)
+    # Both why the first attempt failed and why there was no second one.
+    assert "cannot reach /tmp/fake.sock" in str(exc.value)
+    assert "could not be re-resolved" in str(exc.value)
+
+
+def test_no_resume_is_promised_for_a_command_that_never_went_in(monkeypatch):
+    # The pending record is a promise to inject a resume once the command
+    # finishes. Writing one for a command that failed to go in leaves a watcher
+    # waiting on something that will never happen, and eventually types a bare
+    # "continue" into an untouched session.
+    recorded = []
+    monkeypatch.setattr(daemon_inject.pending, "record", recorded.append)
+    monkeypatch.setattr(daemon_inject.session_target, "resolve",
+                        lambda _pid: target())
+
+    with pytest.raises(daemon_inject.DaemonError):
+        daemon_inject.send("/compact", target=target(), opener=_openers({}),
+                           sleep=lambda _s: None, spawn=lambda fn: None)
+    assert recorded == []
+
+
+def test_a_failure_after_input_was_written_is_not_retried():
+    # `send` carries arbitrary text, so re-pasting when we cannot know whether
+    # the first copy landed is a worse outcome than failing. Only failures that
+    # provably wrote nothing are retried.
+    class DiesAfterTheFirstRawFrame(FakeSock):
+        def sendall(self, data):
+            kinds = [k for k, _ in daemon_inject._FrameReader().feed(data)]
+            if 0x00 in kinds and self.sent and any(
+                    0x00 in [k for k, _ in daemon_inject._FrameReader().feed(b)]
+                    for b in self.sent):
+                raise OSError("broken pipe")
+            super().sendall(data)
+
+    attempts = []
+
+    def opener(path):
+        attempts.append(path)
+        return DiesAfterTheFirstRawFrame(HELLO)
+
+    with pytest.raises(daemon_inject.DaemonError, match="writing to the PTY"):
+        daemon_inject._deliver("do something twice", target(), enter=True,
+                               opener=opener, sleep=lambda _s: None,
+                               resolve=lambda _pid: target(sock="/tmp/b.sock"))
+    assert attempts == ["/tmp/fake.sock"], "must not retry once input is on the wire"
+
+
+def test_a_rejected_frame_still_retries():
+    # Rejection is the host saying it threw the bytes away, so nothing landed
+    # and the retry is safe — this is the common re-host case.
+    socks = {"/tmp/fake.sock": RejectingSock(HELLO),
+             "/tmp/fresh.sock": FakeSock(HELLO)}
+    submitted, used = daemon_inject._deliver(
+        "/compact", target(), enter=True, opener=_openers(socks),
+        sleep=lambda _s: None,
+        resolve=lambda _pid: target(sock="/tmp/fresh.sock"))
+    assert submitted is True and used.sock == "/tmp/fresh.sock"
