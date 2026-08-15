@@ -118,6 +118,26 @@ def _project_worktrees(project: str) -> list[Path]:
     return out
 
 
+def _live_worktrees_under(bare_dir: Path, path: Path) -> list[Path]:
+    """Registered worktrees of ``bare_dir`` that live *beneath* ``path``.
+
+    Non-empty means ``path`` is a container for nested scopes rather than a scope
+    — ``projects/metasmith/fabfos`` holding ``fabfos/dev`` — and nothing may
+    remove it wholesale.
+    """
+    r = run_git(["git", "-C", str(bare_dir), "worktree", "list", "--porcelain"])
+    if r.returncode != 0:
+        return []
+    out: list[Path] = []
+    for line in r.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        wt = Path(line[len("worktree "):])
+        if wt != path and wt.is_relative_to(path):
+            out.append(wt)
+    return out
+
+
 def _scope_branch(project: str, scope: str, worktree: Path | None = None) -> str:
     """The branch a scope is actually on.
 
@@ -195,10 +215,30 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
     never touches *files* — a materialised file shares its inode with the shared
     cache object, so ``chmod +w`` on it would unprotect that object for every
     other scope and project on the machine.
+
+    Nesting adds a shape this has to refuse outright: ``projects/<p>/fabfos`` is
+    not a scope, it is the *directory* the scope ``fabfos/dev`` lives in. It has
+    no worktree of its own, so every check below reads it as "a stale leftover" —
+    the dirty guard finds no repo, ``worktree remove`` declines, and the rmtree
+    fallback takes the live scopes beneath it with the directory.
     """
     guard: dict = {"result": "ok", "path": str(worktree_dir)}
     admin_dir = _worktree_admin_dir(bare_dir, worktree_dir)
-    if worktree_dir.is_dir():
+
+    contained = _live_worktrees_under(bare_dir, worktree_dir)
+    if contained:
+        raise RuntimeError(
+            f"Refusing to remove {worktree_dir}: it is not a scope, it contains "
+            f"{len(contained)} live worktree(s) "
+            f"({', '.join(p.name for p in contained[:3])}). Delete the nested "
+            f"scopes individually; the directory goes when the last one does."
+        )
+
+    # Only probe a directory that is genuinely the top of a worktree. Run inside
+    # anything else and git walks *up* to the first enclosing repo — the
+    # workspace root, typically — and answers about that instead, so a stale
+    # directory full of real files reads back as clean.
+    if worktree_dir.is_dir() and admin_dir is not None:
         st = run_git(["git", "-C", str(worktree_dir), "status", "--porcelain"])
         pending = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
         if pending:
@@ -880,11 +920,13 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
                 f"Scope '{req.scope}' already has an active session in project '{req.project}'"
             )
 
+    # Before anything destructive: the stale-directory cleanup below removes a
+    # tree, and a request that was never going to succeed must not get that far.
+    _assert_branch_available(bare_dir, feature_branch)
+
     if repo_dir.exists():
         _cleanup_worktree(bare_dir, repo_dir, feature_branch,
                           project=req.project, scope=req.scope)
-
-    _assert_branch_available(bare_dir, feature_branch)
 
     r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
                  str(repo_dir), "-b", feature_branch, from_branch])
