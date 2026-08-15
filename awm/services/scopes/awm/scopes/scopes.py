@@ -332,6 +332,7 @@ def _default_context(project: str, scope: str) -> str:
         f"## Debrief\n\n"
         f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
         f"the end-of-session protocol that commits, journals, and refreshes.\n"
+        f"When a plan drives the work, its last task is the debrief — run it there.\n"
     )
 
 
