@@ -126,6 +126,29 @@ Enumerate live instead:
 What a given project is *for* lives in that project's own worktree — its `AGENTS.md`,
 `README.md`, and per-scope `.awm/context.md` — not in this file.
 
+### Retiring a project
+
+**Archive it; never delete it.** A retired project is renamed
+`<name>-ARCHIVED-<YYYYMMDD>`, gets an `ARCHIVED.md` at its top naming where the content
+went and where its bundle is, and is then `chmod -R a-w`. Retire each of its scopes
+(`scope complete`, no cleanup) so the worktrees stay on disk as read-only record.
+
+Three things about that are not obvious:
+
+- **Bundle first, and verify.** `git bundle create <f> --all` then `git bundle verify`,
+  and check every live ref tip is an object in the bundle. A local branch that exists on
+  no remote — the usual reason a project is being retired rather than abandoned — has no
+  other backup, and the bundle belongs somewhere DVC-pinned so the append-only archive
+  job carries it off-site.
+- **The listing shows it twice, and that is not a bug.** `project search` unions the
+  scope database with the on-disk `<name>/.bare` directories, so an archived project
+  appears under its database name with zero active scopes *and* under its new directory
+  name with none at all. Neither is active; `active_only` drops both.
+- **The shared cache does not know it is archived.** `data_gc` keeps only what the
+  projects you *name* pin, so once a project is retired, objects reachable only from its
+  pins are collectable by any gc that omits it. Migrate the chunks that matter before
+  archiving, and treat the rest as gone.
+
 ## Startup Ritual
 
 Every scope agent runs this on session start (the `.awm/context.md` for newly-created scopes embeds the boilerplate; agents in long-lived scopes can re-run it any time to refresh):
