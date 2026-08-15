@@ -107,6 +107,51 @@ class TestSupersede:
         assert [g.id for g in found] == [second.id]
         assert second.level == "workspace"
 
+    def test_revision_inherits_unstated_disposition_fields(self, scopes_workspace):
+        """Restating only the objective must not drop the stop line out of the
+        in-force set — that is the same silent loss this feature targets, by a
+        different route."""
+        from awm.scopes import goals
+        first = goals.set_goal(
+            objective="obtain a useful AAM", author=USER, level="scope",
+            project="fabfos", scope="nosco",
+            fallback="map parts of reactions", stop_line="wrong chemistry stops",
+            noise="coverage caveats")
+        second = goals.set_goal(objective="obtain a useful AAM, faster",
+                                author=USER, supersedes=first.id)
+        assert second.fallback == "map parts of reactions"
+        assert second.stop_line == "wrong chemistry stops"
+        assert second.noise == "coverage caveats"
+        assert second.missing == []
+
+    def test_revision_can_override_one_field_and_keep_the_rest(self, scopes_workspace):
+        from awm.scopes import goals
+        first = goals.set_goal(
+            objective="v1", author=USER, level="workspace",
+            fallback="old ladder", stop_line="old stop", noise="old noise")
+        second = goals.set_goal(objective="v2", author=USER,
+                                supersedes=first.id, fallback="new ladder")
+        assert second.fallback == "new ladder"
+        assert second.stop_line == "old stop"
+
+    def test_an_explicit_empty_string_clears_a_field(self, scopes_workspace):
+        """None means carry forward; "" means the user retracted it."""
+        from awm.scopes import goals
+        first = goals.set_goal(objective="v1", author=USER, level="workspace",
+                               noise="stop mentioning coverage")
+        second = goals.set_goal(objective="v2", author=USER,
+                                supersedes=first.id, noise="")
+        assert second.noise == ""
+        assert "noise" in second.missing
+
+    def test_a_fresh_goal_does_not_inherit_from_anywhere(self, scopes_workspace):
+        from awm.scopes import goals
+        goals.set_goal(objective="v1", author=USER, level="workspace",
+                       stop_line="a stop")
+        fresh = goals.set_goal(objective="unrelated", author=USER,
+                               level="workspace")
+        assert fresh.stop_line == ""
+
     def test_chain_of_three_collapses_to_the_last(self, scopes_workspace):
         from awm.scopes import goals
         a = goals.set_goal(objective="v1", author=USER, level="workspace")

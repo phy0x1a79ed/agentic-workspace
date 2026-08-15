@@ -182,8 +182,8 @@ def get_goal(goal_id: str) -> Goal | None:
 
 def set_goal(*, objective: str, author: str, level: str | None = None,
              project: str | None = None, scope: str | None = None,
-             fallback: str = "", stop_line: str = "", noise: str = "",
-             supersedes: str | None = None) -> Goal:
+             fallback: str | None = None, stop_line: str | None = None,
+             noise: str | None = None, supersedes: str | None = None) -> Goal:
     """Record a goal, optionally as a revision of an existing one.
 
     A partial goal is recorded rather than refused — the missing disposition
@@ -194,6 +194,12 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
     With ``supersedes`` and no ``level``, the revision lands on the *same
     channel* as the record it replaces, so a restatement can never silently
     change level. Pass ``level`` explicitly to move one.
+
+    A revision **inherits** every disposition field it does not mention. A
+    caller restating only the objective would otherwise drop the stop line out
+    of the in-force set without saying so — the same silent-loss failure this
+    whole feature targets, by a different route. ``None`` means "unspecified,
+    carry it forward"; an explicit ``""`` clears the field.
     """
     objective = (objective or "").strip()
     if not objective:
@@ -214,8 +220,12 @@ def set_goal(*, objective: str, author: str, level: str | None = None,
     else:
         raise GoalError("a goal needs a level (or a goal to supersede)")
 
-    meta = {"fallback": fallback or "", "stop_line": stop_line or "",
-            "noise": noise or ""}
+    given = {"fallback": fallback, "stop_line": stop_line, "noise": noise}
+    meta = {
+        field: (getattr(prior, field) if (value is None and prior is not None)
+                else (value or ""))
+        for field, value in given.items()
+    }
     if supersedes:
         meta["supersedes"] = supersedes
 

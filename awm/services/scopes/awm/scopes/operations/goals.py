@@ -30,7 +30,10 @@ GOAL_MANIFEST_FUNCTIONS = [
             "current campaign). Pass supersedes=<goal id> to revise: that writes "
             "a NEW record and keeps the old one — there is no edit in place — and "
             "the revision stays on the superseded goal's level unless you pass "
-            "level explicitly. A partial goal is recorded rather than refused; "
+            "level explicitly. A revision INHERITS every disposition field it "
+            "does not mention, so restating just the objective never silently "
+            "drops the stop line; pass an empty string to clear one. A partial "
+            "goal is recorded rather than refused; "
             "the response lists which disposition fields are still missing. Pass "
             "all structured params BEFORE the free-text objective, which must be "
             "the LAST argument."
@@ -111,9 +114,11 @@ def _handle_goal_set(args: dict) -> dict:
         level=args.get("level"),
         project=args.get("project"),
         scope=args.get("scope"),
-        fallback=args.get("fallback") or "",
-        stop_line=args.get("stop_line") or "",
-        noise=args.get("noise") or "",
+        # Absent means "carry it forward from the superseded record"; only an
+        # explicit "" clears a field. Do not collapse these to "".
+        fallback=args.get("fallback"),
+        stop_line=args.get("stop_line"),
+        noise=args.get("noise"),
         supersedes=args.get("supersedes"),
     )
     return {"goal": goal.to_dict()}
