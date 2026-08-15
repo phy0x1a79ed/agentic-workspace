@@ -22,15 +22,22 @@ misfiring; the tmux backend is unaffected either way.
 What this module can and cannot promise is worth stating plainly, because the
 gap is structural rather than a shortcoming to be closed later. Injection can
 confirm that the frames were written to a socket whose host identified itself as
-the calling session's, that the host did not reject them, and — by reading the
-pty stream back — that the text is on screen in the prompt. It can NOT confirm
-that the command ran: a slash command runs at end of turn, and the reflection
-call has to *return* for the caller's turn to end. At the moment of the return
-there is by construction nothing to observe yet. That is the whole reason the
-follow-up is deferred to a watcher instead of awaited here, and anything that
-later looks like a way to verify *execution* inline is this constraint being
-forgotten. Verifying the keystrokes landed is a different and achievable claim;
-do not let the two blur together.
+the calling session's, and that the host did not reject them. It can NOT confirm
+that the text is on screen: reading the pty back gives the TUI's repaint deltas,
+and the TUI repaints the composer only when it chooses to — the same paste
+painted in 21ms into an empty composer and not at all within five seconds into a
+busy session whose composer already held text, having arrived both times. And it
+can NOT confirm that the command ran: a slash command runs at end of turn, and
+the reflection call has to *return* for the caller's turn to end, so at the
+moment of the return there is by construction nothing to observe yet. That is the
+whole reason the follow-up is deferred to a watcher instead of awaited here, and
+anything that later looks like a way to verify *execution* inline is this
+constraint being forgotten.
+
+What *is* checkable is what the session did with the keystrokes, and that is not
+this module's business — it lives in the session's own status record, which
+:mod:`awm.reflection.inject` reads after the commit and which says the same thing
+whichever pty the session is hosted on.
 
 This module knows the protocol and nothing else. Which session to reach is
 :mod:`awm.reflection.session_target`'s job, retrying is
@@ -68,8 +75,10 @@ _BRACKETED_PASTE_MODE = 2004
 _ENTER = b"\r"
 
 # Settle beat between the paste landing and the Enter that submits it — the same
-# beat, and for the same reason, as the tmux path's.
-_SETTLE_S = 0.15
+# beat, and for the same reason, as the tmux path's. Matched to
+# ``permission_mode._REDRAW_S``, which is the one window in this service that has
+# shipped without misfiring.
+_SETTLE_S = 0.35
 
 # How long to wait for the host's replay to finish and the session to go live
 # before authenticating. The replay is the scrollback; we do not need it, we just
@@ -82,8 +91,12 @@ _QUIET_S = 0.6
 # not show up as latency on a verb the caller is blocking on. It is bounded by the
 # cap rather than by the quiet period: a live session is streaming its own output
 # the whole time, so "quiet" is not something this window can rely on reaching.
-_ACCEPT_CHECK_S = 0.5
-_ACCEPT_QUIET_S = 0.15
+#
+# The quiet period cannot usefully go below the recv timeout in ``_pump`` — a gap
+# is only noticed when a read times out — so 0.15 was 0.3 in all but name. Saying
+# 0.3 keeps the constant honest about what it can express.
+_ACCEPT_CHECK_S = 1.0
+_ACCEPT_QUIET_S = 0.3
 
 # Ctrl-U: kill the prompt line. Only ever sent before a *retry*, to wipe whatever
 # a failed attempt left in the box so the next paste cannot concatenate onto it.
@@ -349,6 +362,16 @@ class Connection:
     # -- the lane verbs ----------------------------------------------------
     # The same four :mod:`awm.reflection.inject` drives the tmux lane through.
     # It must not be able to tell which one it is holding.
+
+    # A negative read-back here proves NOTHING, and treating it as proof is what
+    # broke self-compaction on 2026-08-15. This is a byte stream of the TUI's
+    # repaint deltas, not a rendered screen, and the TUI repaints the composer
+    # only when it decides to: measured on a scratch session, a short paste into
+    # an empty composer painted in 21ms every time, while a long paste into a
+    # composer that already held text produced no paint at all inside five
+    # seconds. The bytes were still delivered. So the sender may use this to
+    # corroborate a write, never to veto one.
+    read_back_is_evidence = False
 
     @property
     def label(self) -> str:

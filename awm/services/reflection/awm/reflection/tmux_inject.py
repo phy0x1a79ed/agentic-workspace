@@ -225,6 +225,11 @@ class _TmuxWriter:
         self._runner = runner
         self._sleep = sleep
 
+    # `capture-pane` renders the pane's *current* state, so a probe that is not
+    # in the read-back is genuinely not on screen. That makes a negative read
+    # here real evidence — see the daemon lane, where it is not.
+    read_back_is_evidence = True
+
     @property
     def label(self) -> str:
         return f"pane {self._lane.pane}"
