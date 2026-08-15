@@ -12,23 +12,34 @@ The pipe is: **detect** (``session_target``) → **send** (here) → **wait**
 and the lane is the value that flows between the first two.
 
 Delivery is a short transaction rather than a blind write. Up to three times:
-detect the lane *fresh*, write the text, read the lane back to confirm the text
-is actually on screen, and only then commit with Enter. Detection sits inside the
-loop, immediately before the write, because the window between deciding an
-address and using it is exactly where a session being attached or backgrounded
-re-homes its pty out from under us — and that window should be as close to zero
-as it can be made.
+detect the lane *fresh*, sample the session's status, write the text, commit with
+Enter, and then confirm from the session's own record that it took the line.
+Detection sits inside the loop, immediately before the write, because the window
+between deciding an address and using it is exactly where a session being
+attached or backgrounded re-homes its pty out from under us — and that window
+should be as close to zero as it can be made.
 
-Enter is the commit point and the retry boundary. A failure *before* it means
-nothing was submitted, so trying again is free; a failure *after* it may already
-be running, and ``send`` carries arbitrary text, so nothing retries past it.
-Attempts two and three clear the prompt first, which is what makes a retry
-idempotent: a half-landed paste from the previous attempt is wiped rather than
-concatenated onto. Attempt one does not clear, so an ordinary successful send
-never destroys anything a human may have been mid-way through typing.
+The confirmation deliberately comes *after* the commit. It used to come before:
+the text was read back off the lane and Enter was withheld unless it was visible.
+That works on tmux, whose ``capture-pane`` renders current state, and does not
+work at all on the daemon lane, which is a stream of the TUI's repaint deltas —
+the TUI repaints the composer when it feels like it, and a paste it chose not to
+paint was read as a paste that never arrived. Background sessions were written to
+correctly and then never submitted. What can be checked on both lanes is what the
+*session* did, and that only exists once Enter is on the wire.
 
-None of this establishes that the command *ran*. It establishes that the
-keystrokes reached the TUI. The difference is structural and permanent — see
+Enter is still the retry boundary, but the record now says which side of it we
+are on. A session that was settled when we wrote and never moved consumed
+nothing, so a retry is provably free; a session that was mid-turn queued the line
+and there is nothing to observe, so nothing is claimed. Attempts two and three
+clear the prompt first, which is what makes a retry idempotent: a half-landed
+paste from the previous attempt is wiped rather than concatenated onto. Attempt
+one does not clear, so an ordinary successful send never destroys anything a
+human may have been mid-way through typing — and a final give-up clears on the
+way out, because by then the only thing in the box is ours.
+
+None of this establishes that the command *ran*. It establishes that the session
+consumed the keystrokes. The difference is structural and permanent — see
 ``daemon_inject``'s module docstring.
 """
 from __future__ import annotations
@@ -37,7 +48,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from awm.reflection import (
     daemon_inject,
@@ -66,6 +77,34 @@ _PROBE_CHARS = 16
 # string with none in it is harmless.
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.")
 
+# Pause between attempts. This loop used to run flat out, so three attempts at a
+# session that was briefly unreachable were spent inside 2.4 seconds and the
+# whole retry budget bought nothing that one attempt would not have.
+RETRY_BACKOFF_S = 0.5
+
+# How long the session's own record gets to show that it took our Enter, and how
+# often to look. Measured on a scratch background session: `statusUpdatedAt`
+# moved 102ms after the submit. Three seconds is thirty times that, and it is the
+# cap `permission_mode`'s read has shipped with.
+CONFIRM_WAIT_S = 3.0
+CONFIRM_POLL_S = 0.05
+
+# How a submit came to be believed. Reported to the caller, because "we could not
+# tell" and "it went in" are different answers and the caller acts on them
+# differently.
+CONFIRMED_RECORD = "record"        # the session's record moved: it took the line
+CONFIRMED_QUEUED = "queued"        # mid-turn at write time; queued, unobservable
+CONFIRMED_BLOCKED = "blocked"      # a modal had the keyboard; probably swallowed
+CONFIRMED_UNREADABLE = "unreadable"  # record unreadable throughout; no claim
+NOT_SUBMITTED = "none"             # `enter` was false, so nothing was submitted
+
+
+class Delivery(NamedTuple):
+    """What a delivery achieved: whether it submitted, where, and on what evidence."""
+    submitted: bool
+    lane: Any
+    confirmed: str
+
 
 class DeliveryError(RuntimeError):
     """Every attempt to put the text into the calling session failed."""
@@ -84,7 +123,23 @@ class CommitFailed(DeliveryError):
 
 
 class NotVerified(RuntimeError):
-    """The text was written but did not show up in the lane's read-back."""
+    """The text was written but did not show up in the lane's read-back.
+
+    Only raised on a lane whose read-back renders current state, where "not on
+    screen" means what it says. See ``read_back_is_evidence``.
+    """
+
+
+class NotSubmitted(RuntimeError):
+    """Enter was pressed and the session's own record proves it consumed nothing.
+
+    Retryable, and the only thing past the commit point that is. The guarantee is
+    positive rather than assumed: a session that never left ``idle`` and whose
+    status timestamp never moved did not start a turn, so there is no command
+    half-running that a repeat could double-submit. That is a stronger licence to
+    retry than the old pre-Enter boundary had, which only knew that *we* had not
+    pressed Enter yet.
+    """
 
 
 def _resolve(caller_pid: Optional[int]):
@@ -124,10 +179,64 @@ def _landed(before: str, after: str, probe: str) -> bool:
     daemon — so a session that compacted an hour ago still has ``/compact`` on
     screen, and a presence check would call the write verified without a single
     byte having landed. An increase in the count cannot be faked that way.
+
+    A *false* here is only meaningful on a lane that renders. On the daemon lane
+    it means "the TUI did not choose to repaint", which it frequently does not,
+    and reading that as failure is what stopped background sessions compacting
+    themselves. The caller checks ``read_back_is_evidence`` before acting on it.
     """
     if not probe:
         return True
     return _flatten(after).count(probe) > _flatten(before).count(probe)
+
+
+def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
+                    sleep: Callable[[float], None] = time.sleep,
+                    clock: Callable[[], float] = time.monotonic,
+                    read_status=None) -> str:
+    """Did the session take the Enter we just pressed? Ask its own record.
+
+    This is the transport-independent half, and deliberately the *same* signal
+    the watcher waits on: Claude Code writes ``status``/``statusUpdatedAt`` about
+    itself whichever pty it is hosted on, so tmux and daemon sessions are
+    confirmed by one code path that cannot drift between them.
+
+    The record is written on **transitions**, not on activity, which decides the
+    whole shape here. A session that was settled when we wrote has to move to run
+    our line, so its timestamp advancing is proof it did — and a timestamp that
+    has moved stays moved, so a fast turn cannot slip between two polls. A
+    session that was already mid-turn *queues* the line instead, and queuing
+    moves nothing; there is nothing to observe and this says so rather than
+    inventing an answer. Returns :data:`NOT_SUBMITTED` only for the proven
+    negative: settled throughout, timestamp never moved.
+    """
+    read_status = read_status or watcher.read_status
+    if before is None:
+        # No reference to compare against, so "did it move?" has no answer. Not
+        # the same thing as the session being busy, and not the same thing as a
+        # failure either.
+        return CONFIRMED_UNREADABLE
+    if before[0] == "waiting":
+        # A blocking dialog owns the keyboard, so the paste was most likely eaten
+        # by it rather than queued behind a turn — the same failure
+        # `guards.INTERACTIVE` refuses on the way in. Named apart from `queued`
+        # because the two want opposite things from whoever reads the result.
+        return CONFIRMED_BLOCKED
+    if before[0] not in watcher.SETTLED:
+        return CONFIRMED_QUEUED
+    deadline = clock() + CONFIRM_WAIT_S
+    ever_read = False
+    while clock() < deadline:
+        sample = read_status(repl_pid)
+        if sample is not None:
+            ever_read = True
+            if sample[1] > before[1]:
+                return CONFIRMED_RECORD
+        sleep(CONFIRM_POLL_S)
+    # An unreadable record is not a negative — it is rewritten on every attach
+    # and backgrounding, and the watcher rides through the same gap rather than
+    # calling the session gone.
+    return NOT_SUBMITTED if ever_read else CONFIRMED_UNREADABLE
 
 
 # ---------------------------------------------------------------------------
@@ -144,28 +253,38 @@ def _open_lane(lane, **kw):
 
 
 _LANE_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-                  daemon_inject.DaemonError, NotVerified, OSError)
+                  daemon_inject.DaemonError, NotVerified, NotSubmitted, OSError)
 
 
 def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
-             detect, **kw) -> tuple[bool, Any]:
-    """One detect → write → verify → commit transaction. Raises on any failure."""
+             detect, read_status=None, **kw) -> Delivery:
+    """One detect → write → commit → confirm transaction. Raises on any failure.
+
+    The confirmation is the last step, not the third. It used to sit between the
+    write and the commit, gating Enter on the text being visible in the lane's
+    read-back — which the daemon lane cannot answer, so background sessions were
+    written to correctly and then never submitted. What the write can be checked
+    against is what the *session* did with it, and that is only observable once
+    Enter is on the wire.
+    """
     lane = detect(repl_pid)
+    # Sampled before anything is typed, because it is the reference the
+    # confirmation compares against: "did this move?" needs a from.
+    was = (read_status or watcher.read_status)(repl_pid)
     with _open_lane(lane, **kw) as writer:
         if clear_first:
             writer.clear()
         before = writer.read_back()
         writer.write(text)
         after = writer.read_back()
-        if not _landed(before, after, _probe(text)):
+        if (not _landed(before, after, _probe(text))
+                and writer.read_back_is_evidence):
             raise NotVerified(
                 f"the text was written to {writer.label} but never showed up "
                 f"there; the session is not reading its pty, or the paste was "
                 f"swallowed by a modal")
         if not enter:
-            return False, lane
-        # Past this line nothing may be retried, so anything that goes wrong in
-        # it is re-raised as the one error the retry loop does not catch.
+            return Delivery(False, lane, NOT_SUBMITTED)
         try:
             writer.commit()
         except Exception as exc:
@@ -173,28 +292,58 @@ def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
                 f"the text reached {writer.label} and Enter was sent, but the "
                 f"submit did not complete cleanly ({exc}); not retrying, "
                 f"because it may already be running") from None
-    return True, lane
+    confirmed = _confirm_submit(repl_pid, was, read_status=read_status,
+                                sleep=kw.get("sleep", time.sleep))
+    if confirmed == NOT_SUBMITTED:
+        raise NotSubmitted(
+            f"Enter was sent to {lane.kind} session {lane.name or lane.session_id} "
+            f"but it stayed settled with its status unchanged for "
+            f"{CONFIRM_WAIT_S}s, so it consumed nothing — the paste did not "
+            f"reach its prompt")
+    return Delivery(True, lane, confirmed)
+
+
+def _wipe_prompt(repl_pid: int, detect, **kw) -> None:
+    """Best-effort: leave nothing of a failed send in the session's prompt.
+
+    A give-up used to leave exactly one unsubmitted paste in the box — the last
+    attempt's, since only attempts two and three clear on the way *in*. Whatever
+    types next then concatenates onto it, or a stray Enter submits it minutes
+    later with nobody expecting it. By the time we are here the only thing that
+    can be in there is ours, so clearing it is safe in a way that clearing on the
+    way in is not.
+    """
+    try:
+        with _open_lane(detect(repl_pid), **kw) as writer:
+            writer.clear()
+    except Exception as exc:  # noqa: BLE001 - a cleanup must not mask the failure
+        log.warning("reflection: could not clear the prompt of pid %s after a "
+                    "failed send; an unsubmitted paste may be left in it: %s",
+                    repl_pid, exc)
 
 
 def deliver(repl_pid: int, text: str, *, enter: bool = True,
             attempts: int = ATTEMPTS, detect=None, what: str = "text",
-            **kw) -> tuple[bool, Any]:
+            **kw) -> Delivery:
     """Put ``text`` into session ``repl_pid``, or raise :class:`DeliveryError`.
 
-    Returns ``(submitted, lane)`` — the lane being whichever one the write
-    actually went to, which the caller needs for its result and its promise.
+    Returns a :class:`Delivery` — whether it submitted, the lane the write went
+    to (which the caller needs for its result and its promise), and what the
+    submit was confirmed by.
 
     Every attempt and every failure is logged. A send that only worked on the
     third try is the system telling you something about this host, and it should
     be readable later without anyone re-deriving it from timestamps.
     """
     detect = detect or session_target.resolve
+    sleep = kw.get("sleep", time.sleep)
     failures: list[str] = []
     for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            sleep(RETRY_BACKOFF_S)
         try:
-            submitted, lane = _attempt(repl_pid, text, enter=enter,
-                                       clear_first=attempt > 1, detect=detect,
-                                       **kw)
+            result = _attempt(repl_pid, text, enter=enter,
+                              clear_first=attempt > 1, detect=detect, **kw)
         except CommitFailed as exc:
             log.error("reflection: %s reached pid %s on attempt %s/%s but the "
                       "submit did not complete: %s", what, repl_pid, attempt,
@@ -207,15 +356,17 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
             continue
         if attempt > 1:
             log.warning("reflection: delivered %s to pid %s on attempt %s/%s "
-                        "via the %s lane (earlier attempts failed — %s)", what,
-                        repl_pid, attempt, attempts, lane.kind,
-                        "; ".join(failures))
+                        "via the %s lane, confirmed by %s (earlier attempts "
+                        "failed — %s)", what, repl_pid, attempt, attempts,
+                        result.lane.kind, result.confirmed, "; ".join(failures))
         else:
-            log.info("reflection: delivered %s to pid %s via the %s lane", what,
-                     repl_pid, lane.kind)
-        return submitted, lane
+            log.info("reflection: delivered %s to pid %s via the %s lane, "
+                     "confirmed by %s", what, repl_pid, result.lane.kind,
+                     result.confirmed)
+        return result
     log.error("reflection: giving up on delivering %s to pid %s after %s "
               "attempts — %s", what, repl_pid, attempts, "; ".join(failures))
+    _wipe_prompt(repl_pid, detect, **kw)
     raise DeliveryError(
         f"could not deliver {what} to the calling session after {attempts} "
         f"attempts: " + "; ".join(failures))
@@ -258,8 +409,9 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     # A failure propagates: the caller is told the command did not go in, and —
     # because this sits above the record-and-spawn below — no promise is left
     # behind for a resume to a command that was never injected.
-    submitted, lane = deliver(caller_pid, text, enter=enter,
-                              what="the requested command", **kw)
+    result = deliver(caller_pid, text, enter=enter,
+                     what="the requested command", **kw)
+    submitted, lane = result.submitted, result.lane
 
     followup_sent = None
     followup_deferred = False
@@ -276,12 +428,18 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
         pending.record(promise)
         resume_watch(promise, spawn=spawn, **kw)
 
-    result = {"ok": True, "session": lane.name or lane.session_id,
-              "hosting": lane.hosting, "text": text, "submitted": submitted,
-              "followup": followup_sent, "followup_deferred": followup_deferred}
+    out = {"ok": True, "session": lane.name or lane.session_id,
+           "hosting": lane.hosting, "text": text, "submitted": submitted,
+           # What the submit rests on. `queued` is the honest answer for the
+           # commonest call of all — a session compacting itself is by
+           # definition mid-turn, so its line waits behind the turn that asked
+           # for it and its record will not move until that turn ends. The
+           # deferred watcher is what notices; this verb cannot.
+           "confirmed": result.confirmed,
+           "followup": followup_sent, "followup_deferred": followup_deferred}
     if isinstance(lane, session_target.TmuxLane):
-        result["pane"] = lane.pane
-    return result
+        out["pane"] = lane.pane
+    return out
 
 
 def _await_and_resume(item: pending.Pending, **kw) -> None:
@@ -308,8 +466,20 @@ def _await_and_resume(item: pending.Pending, **kw) -> None:
         deliver(item.repl_pid, item.followup, enter=True,
                 what="the deferred resume", **kw)
     except DeliveryError as exc:
-        log.warning("reflection: could not deliver the deferred resume to "
-                    "session %s: %s", who, exc)
+        # Put the promise back. Clearing before delivering is right — it is what
+        # stops a boot replay re-delivering a resume that already landed — but
+        # the old code stopped there, so the one state worth seeing (a resume
+        # owed to a session that could not be reached) was the one state
+        # `pending` could not show. The timestamp deliberately stays as it was:
+        # it is the watcher's reference for "the session reacted after this
+        # moment", and a fresh one would make a replayed watcher wait out its
+        # full cap for a reaction that already happened. The cost is that
+        # `pending.MAX_AGE_MS` may bin it on a later boot — which is the same
+        # cutoff, and the same open question, that module already documents.
+        pending.record(item)
+        log.error("reflection: could not deliver the deferred resume to session "
+                  "%s; it is left pending and this session will sit idle until "
+                  "something resumes it: %s", who, exc)
 
 
 def resume_watch(item: pending.Pending, *,

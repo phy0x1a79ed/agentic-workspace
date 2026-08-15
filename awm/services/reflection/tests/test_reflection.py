@@ -95,9 +95,26 @@ class FakePane:
         return [tok for argv in self.calls for tok in argv]
 
 
-def send(text, pane: FakePane, **kw):
+def send(text, pane: FakePane, *, status=("idle", 1000), **kw):
+    """Deliver through the real tmux writer, against a fake pane.
+
+    ``status`` stands in for the session's own record, which is what the sender
+    now confirms a submit against. The pane fake cannot write one, and the tmux
+    lane has no more claim on that signal than the daemon lane does — the point
+    of reading the record is that neither transport owns it.
+    """
+    moved = {"at": status[1]}
+
+    def read_status(_pid):
+        if status is None:
+            return None
+        out = (status[0], moved["at"])
+        if pane.submitted:
+            moved["at"] = status[1] + 1
+        return out
+
     return inject.deliver(4242, text, detect=lambda _p: LANE, runner=pane,
-                          sleep=lambda _s: None, **kw)
+                          sleep=lambda _s: None, read_status=read_status, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +124,10 @@ def send(text, pane: FakePane, **kw):
 @pytest.mark.smoke
 def test_a_command_lands_in_the_prompt_and_is_submitted():
     pane = FakePane()
-    submitted, lane = send("/compact", pane)
-    assert submitted is True
-    assert lane is LANE
+    result = send("/compact", pane)
+    assert result.submitted is True
+    assert result.lane is LANE
+    assert result.confirmed == inject.CONFIRMED_RECORD
     assert pane.submitted == ["/compact"]
 
 
@@ -145,8 +163,8 @@ def test_the_text_goes_in_on_stdin_not_as_an_argument():
 
 def test_enter_false_leaves_the_text_in_the_prompt_unsubmitted():
     pane = FakePane()
-    submitted, _ = send("half a thought", pane, enter=False)
-    assert submitted is False
+    result = send("half a thought", pane, enter=False)
+    assert result.submitted is False
     assert pane.submitted == []
     assert pane.prompt == "half a thought"
 
@@ -177,7 +195,8 @@ def test_a_retry_wipes_the_prompt_with_ctrl_u():
     pane = FakePane(swallow_paste=True)
     with pytest.raises(inject.DeliveryError):
         send("/compact", pane)
-    assert pane.flat().count(tmux_inject._CLEAR_KEY) == 2
+    assert pane.flat().count(tmux_inject._CLEAR_KEY) == 3, \
+        "attempts 2 and 3 wipe on the way in; the give-up wipes on the way out"
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +225,8 @@ def test_the_pane_is_re_checked_on_every_attempt():
     pane = FakePane(swallow_paste=True)
     with pytest.raises(inject.DeliveryError):
         send("/compact", pane)
-    assert pane.verbs().count("display-message") == 6, \
-        "two assertions per attempt, three attempts"
+    assert pane.verbs().count("display-message") == 8, \
+        "two assertions per attempt, three attempts, plus the give-up wipe"
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +288,7 @@ def test_a_destructive_command_needs_confirmation(cmd):
 
 def test_a_destructive_command_goes_through_with_confirmation():
     pane = FakePane()
-    submitted, _ = send("/clear", pane, confirm=True)
-    assert submitted is True
+    assert send("/clear", pane, confirm=True).submitted is True
 
 
 def test_empty_text_is_a_caller_bug_not_a_refusal():

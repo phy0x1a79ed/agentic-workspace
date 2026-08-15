@@ -14,7 +14,8 @@ import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import daemon_inject, permission_mode, session_target
+from awm.reflection import (daemon_inject, permission_mode, session_target,
+                            tmux_inject)
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +201,22 @@ def test_unrecognised_greeting_refuses():
     sock = FakeSock(ctl({"t": "hello", "somethingElse": True, "version": "9.9.9"}))
     with pytest.raises(daemon_inject.DaemonError, match="unrecognised"):
         paste_and_submit("hi", target(), enter=False, opener=opener_for(sock))
+
+
+def test_this_lane_does_not_claim_its_read_back_is_evidence():
+    # The two lanes hand back different KINDS of thing, and this flag is the only
+    # place the difference is written down. `capture-pane` renders the current
+    # screen; this is a byte stream of the TUI's repaint deltas, and the TUI
+    # repaints the composer when it feels like it — measured on a live background
+    # session, an identical paste painted in 21ms into an empty composer and not
+    # at all within five seconds into one that already held text, both times
+    # having been delivered. A sender that reads silence here as failure withholds
+    # Enter from a session that got the paste, which is what killed background
+    # self-compaction on 2026-08-15.
+    sock = FakeSock(ctl({"t": "hello", "replPid": 4242}))
+    with daemon_inject.open_lane(target(), opener=opener_for(sock)) as conn:
+        assert conn.read_back_is_evidence is False
+    assert tmux_inject._TmuxWriter.read_back_is_evidence is True
 
 
 # ---------------------------------------------------------------------------

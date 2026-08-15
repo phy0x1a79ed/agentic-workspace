@@ -14,6 +14,7 @@ test here that needed a transport would be a sign that they had come apart again
 """
 from __future__ import annotations
 
+import logging
 import time
 from contextlib import contextmanager
 
@@ -130,6 +131,25 @@ def test_the_promise_is_cleared_once_the_resume_is_delivered(lane, monkeypatch):
     inject._await_and_resume(_promise())
     assert lane == ["resume"]
     assert pending.load_all() == [], "a delivered resume must not be replayed"
+
+
+def test_an_undeliverable_resume_stays_pending_and_shouts(lane, monkeypatch,
+                                                          caplog):
+    # The one state worth seeing was the one state `pending` could not show. The
+    # promise is cleared before delivery on purpose — that is what stops a boot
+    # replay re-delivering a resume that already landed — but when the delivery
+    # then fails, a session is owed a resume nobody is waiting to give it. It
+    # went out as a WARNING and vanished from disk; it is now an ERROR and stays.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(inject, "_open_lane",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            inject.tmux_inject.TmuxError("pane is gone")))
+    pending.record(_promise())
+    with caplog.at_level(logging.ERROR, logger="awm.reflection.inject"):
+        inject._await_and_resume(_promise())
+    assert [i.followup for i in pending.load_all()] == ["resume"]
+    assert any("sit idle" in r.getMessage() for r in caplog.records)
 
 
 def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch):
