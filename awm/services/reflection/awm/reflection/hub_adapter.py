@@ -176,7 +176,7 @@ def _caller_pid(args: dict) -> Any:
 # distinction the caller cares about is whether their command ran, not which
 # layer declined.
 _FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-             daemon_inject.DaemonError)
+             daemon_inject.DaemonError, inject.DeliveryError)
 
 
 def _guarded(verb: str, fn):

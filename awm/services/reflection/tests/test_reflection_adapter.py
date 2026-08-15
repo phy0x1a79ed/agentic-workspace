@@ -96,22 +96,21 @@ def test_a_refused_command_is_never_logged_as_injected(caplog, monkeypatch):
     # destructive command had gone in when nothing had. On the one path where
     # someone is trying to find out why a command did not run, a log that
     # overstates what happened is worse than no log at all.
-    from awm.reflection import inject, session_target as stgt
-
-    target = stgt.DaemonTarget(sock="/tmp/x.sock", auth="t", session_id="sid",
-                               repl_pid=1, name="test")
-    monkeypatch.setattr(inject.session_target, "resolve", lambda _pid: target)
+    from awm.reflection import inject
 
     def must_not_run(*a, **k):
-        raise AssertionError("the backend must not be reached for a refusal")
+        raise AssertionError("nothing may be reached for a refusal")
 
-    monkeypatch.setattr(inject.daemon_inject, "send", must_not_run)
+    # A refusal must not even *detect* the caller, let alone open their lane —
+    # so both seams below the guard are booby-trapped.
+    monkeypatch.setattr(inject.session_target, "resolve", must_not_run)
+    monkeypatch.setattr(inject, "_open_lane", must_not_run)
 
     with caplog.at_level(logging.INFO, logger="awm.reflection.inject"):
         res = inject.send("/clear", caller_pid=1)
 
     assert res["refused"] is True
-    assert not any("injecting" in r.getMessage() for r in caplog.records)
+    assert not any("deliver" in r.getMessage() for r in caplog.records)
 
 
 def test_an_overlay_does_not_re_arm_the_bases_promises(monkeypatch):
