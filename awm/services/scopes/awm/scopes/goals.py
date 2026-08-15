@@ -362,7 +362,10 @@ def render(goals: list[Goal], project: str | None = None,
         if g.fallback:
             out.append(f"- When the ideal is unreachable: {g.fallback}")
         if g.stop_line:
-            out.append(f"- Incomplete is acceptable — say so. A stop is: {g.stop_line}")
+            # A neutral label: the field's own text often carries the
+            # incomplete-vs-wrong framing already, and a fuller prefix reads as
+            # a stutter against it.
+            out.append(f"- Incomplete vs wrong: {g.stop_line}")
         if g.noise:
             out.append(f"- Not worth raising: {g.noise}")
         if g.missing:

@@ -246,6 +246,9 @@ class TestDisposition:
         assert "wrong chemistry" in g.stop_line
         assert "coverage caveats" in g.noise
         assert g.missing == []
+        _, text = goals.read_rendered("fabfos", "nosco")
+        for value in (g.fallback, g.stop_line, g.noise):
+            assert value in text, "every disposition field must reach the render"
 
     def test_a_partial_goal_is_recorded_and_reports_what_is_missing(self, scopes_workspace):
         """Refusing to record until all four fields are stated would be the same
