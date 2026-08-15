@@ -138,6 +138,27 @@ def _live_worktrees_under(bare_dir: Path, path: Path) -> list[Path]:
     return out
 
 
+def _prune_empty_parents(stop_at: Path, path: Path) -> None:
+    """Remove now-empty container directories left by a nested scope's removal,
+    up to but never including ``stop_at`` (the project directory).
+
+    A container exists only to hold the scopes beneath it, so once the last one
+    goes the directory is noise. ``rmdir`` is the whole safety argument: it
+    refuses a directory that still has anything in it.
+    """
+    stop_at = stop_at.resolve()
+    try:
+        current = path.resolve()
+    except OSError:
+        return
+    while current != stop_at and stop_at in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            return  # not empty, or gone — either way, stop
+        current = current.parent
+
+
 def _scope_branch(project: str, scope: str, worktree: Path | None = None) -> str:
     """The branch a scope is actually on.
 
@@ -265,6 +286,7 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
     # established are dead, so this can never reach a live sibling.
     run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
     run_git(["git", "-C", str(bare_dir), "branch", "-D", feature_branch])
+    _prune_empty_parents(bare_dir.parent, worktree_dir.parent)
     return guard
 
 

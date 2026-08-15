@@ -149,6 +149,19 @@ class TestContainerDirectoryIsNotAScope:
         assert (project / "fabfos" / "dev" / ".git").exists(), \
             "the refused request destroyed a live nested scope"
 
+    def test_removing_the_last_nested_scope_takes_its_container(self, project):
+        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev", "fabfos/dev")
+        assert not (project / "fabfos").exists()
+        assert project.exists(), "pruning must stop at the project directory"
+
+    def test_a_container_with_a_scope_left_in_it_stays(self, project):
+        nested_b = project / "fabfos" / "bench"
+        _git(project / ".bare", "worktree", "add", "-b", "fabfos/bench",
+             str(nested_b), "main")
+        _cleanup_worktree(project / ".bare", project / "fabfos" / "dev", "fabfos/dev")
+        assert (project / "fabfos").is_dir()
+        assert nested_b.exists()
+
     def test_cleanup_still_removes_a_stale_directory(self, project):
         """The container guard must not block the case it shares a shape with:
         a leftover directory with no live worktree beneath it."""
