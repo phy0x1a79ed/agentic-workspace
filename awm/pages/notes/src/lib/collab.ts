@@ -66,12 +66,19 @@ const PROBE_MIN_MS = 4000;
 
 const rid = () => Math.random().toString(36).slice(2, 10);
 
-/** Is this failure the link's fault? The client throws for a 404 or a 500 too,
- *  and letting one genuinely-broken note flap the connection indicator forever
- *  is worse than missing a real outage for one keystroke. Network-shaped only:
- *  a raw fetch failure, or the gateway reporting no upstream. */
+/** Is this failure the link's fault? Letting one genuinely-broken note flap the
+ *  connection indicator forever is worse than missing a real outage for one
+ *  keystroke, so this is deliberately narrow.
+ *
+ *  Read the gateway's codes before widening it: `hub/proxy.py` wraps **every**
+ *  service-side error envelope as a **502**, so `{"error":"no such note"}` from
+ *  a perfectly healthy service arrives as 502 — it is an application error here,
+ *  not a dead upstream. The transport-shaped ones are 503 (the service's control
+ *  channel is not open) and 504 (it never replied). A *stopped* service is a 404
+ *  and is deliberately absent: its socket has already closed, and the close is
+ *  what drives the pill red. */
 function isLinkError(e: unknown): boolean {
-  if (e instanceof HttpError) return e.status === 0 || e.status >= 502;
+  if (e instanceof HttpError) return e.status === 0 || e.status === 503 || e.status === 504;
   return e instanceof TypeError;   // fetch() rejects with TypeError on network failure
 }
 
