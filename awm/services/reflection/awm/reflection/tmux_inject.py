@@ -35,6 +35,7 @@ log = logging.getLogger("awm.reflection.tmux_inject")
 # What may be injected at all is a property of the agent TUI, not of tmux, so the
 # guard tables live in `guards` and both backends enforce the same ones. Re-exported
 # here because this module was their original home.
+from awm.reflection import pending  # noqa: E402
 from awm.reflection.guards import (  # noqa: E402,F401
     DEFAULT_FOLLOWUP,
     DESTRUCTIVE,
@@ -320,6 +321,7 @@ def _pane_phase(snapshot: str) -> str:
 def _await_and_followup(text: str, followup: str, pane: str, *,
                         socket: Optional[str], runner: Runner,
                         session: Optional[str] = None,
+                        repl_pid: Optional[int] = None,
                         sleep: Callable[[float], None] = time.sleep,
                         clock: Callable[[], float] = time.monotonic) -> None:
     """Block until the injected command has finished, then submit ``followup``.
@@ -366,6 +368,8 @@ def _await_and_followup(text: str, followup: str, pane: str, *,
                 log.warning("reflection: pane %s (session %s) vanished while "
                             "awaiting completion; no resume injected",
                             pane, session)
+                if repl_pid:
+                    pending.clear(repl_pid)
                 return
             log.info("reflection: pane %s vanished, resumed watching session "
                      "%s on pane %s", pane, session, new_pane)
@@ -414,6 +418,12 @@ def _await_and_followup(text: str, followup: str, pane: str, *,
     # have moved; combined with a pane ranking that never worked, that delivered
     # every deferred resume to the lowest-numbered agent pane on the host — i.e.
     # into a *different agent's* prompt. Whoever called is who gets the resume.
+    #
+    # Forget the promise before delivering on it: a restart in the gap can then
+    # only lose this resume, never let a boot-time replay inject a second one
+    # into a session that has already moved on. See `pending`.
+    if repl_pid:
+        pending.clear(repl_pid)
     try:
         _paste_and_submit(followup, pane, enter=True, socket=socket, runner=runner)
     except TmuxError:
@@ -425,9 +435,29 @@ def _default_spawn(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="reflection-followup", daemon=True).start()
 
 
+def resume_watch(item: "pending.Pending", pane: str, *,
+                 socket: Optional[str] = None,
+                 runner: Runner = subprocess.run,
+                 spawn: Callable[[Callable[[], None]], Any] = _default_spawn
+                 ) -> None:
+    """Pick a promised follow-up back up after a service restart.
+
+    Only the *waiting* half is replayed; the command went in before the restart
+    and must not be sent twice. The pane is re-resolved from the caller's pid by
+    the replay driver, so a session that moved panes while this service was down
+    is still found.
+    """
+    session = pane_session(pane, socket=socket, runner=runner)
+    spawn(lambda: _await_and_followup(item.text, item.followup, pane,
+                                      socket=socket, runner=runner,
+                                      session=session, repl_pid=item.repl_pid))
+
+
 def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
          delay_ms: int = 0, confirm: bool = False,
          followup: Optional[str] = None,
+         repl_pid: Optional[int] = None, session_id: str = "",
+         name: Optional[str] = None,
          socket: Optional[str] = None,
          runner: Runner = subprocess.run,
          spawn: Callable[[Callable[[], None]], Any] = _default_spawn) -> dict:
@@ -485,9 +515,19 @@ def send(text: str, *, pane: Optional[str] = None, enter: bool = True,
         # before the watcher even gets scheduled still has a session to fall
         # back on.
         session = pane_session(pane, socket=socket, runner=runner)
+        if repl_pid:
+            # Written down before the watcher starts — the watcher is a thread in
+            # this process and the gateway restarts this process out from under it.
+            from awm.reflection import session_target
+            pending.record(pending.Pending(
+                repl_pid=repl_pid,
+                proc_start=session_target._proc_start(repl_pid) or "",
+                session_id=session_id, text=text, followup=followup_sent,
+                injected_at_ms=int(time.time() * 1000), name=name,
+                hosting="tmux"))
         spawn(lambda: _await_and_followup(text, followup_sent, pane,
                                           socket=socket, runner=runner,
-                                          session=session))
+                                          session=session, repl_pid=repl_pid))
 
     return {"ok": True, "pane": pane, "text": text,
             "submitted": submitted, "followup": followup_sent,

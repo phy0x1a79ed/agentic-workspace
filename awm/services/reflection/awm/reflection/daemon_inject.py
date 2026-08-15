@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-from awm.reflection import session_target
+from awm.reflection import pending, session_target
 from awm.reflection.guards import is_slash, refusal, resume_text
 
 log = logging.getLogger("awm.reflection.daemon_inject")
@@ -355,6 +355,7 @@ def _await_and_followup(text: str, followup: str,
             log.warning("reflection: background session %s vanished while "
                         "awaiting completion; no resume injected",
                         target.name or target.session_id)
+            pending.clear(target.repl_pid)
             return
         status, updated_ms = sample
         if updated_ms > injected_at_ms:
@@ -372,6 +373,13 @@ def _await_and_followup(text: str, followup: str,
     if not ready:
         log.warning("reflection: command %r completion not observed within %ss; "
                     "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
+    # Forget the promise BEFORE delivering on it, not after. The two orderings
+    # trade opposite failure modes across a restart in the gap: clearing after
+    # would let a boot-time replay re-deliver a resume that already landed,
+    # injecting a stray prompt into a session that is busy working — whereas
+    # clearing first can only lose a resume if the process dies inside the
+    # sub-second paste, and that is the same hole every other step has.
+    pending.clear(target.repl_pid)
     # Re-read the roster: a background session that respawned mid-wait has a new
     # PTY socket and a new input token, and the ones we were handed at injection
     # time are dead. Re-resolving by pid is what makes this safe: the session id
@@ -392,6 +400,23 @@ def _await_and_followup(text: str, followup: str,
 
 def _default_spawn(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="reflection-followup-bg", daemon=True).start()
+
+
+def resume_watch(item: pending.Pending, target: session_target.DaemonTarget, *,
+                 opener: Opener = _open_unix,
+                 spawn: Callable[[Callable[[], None]], object] = _default_spawn
+                 ) -> None:
+    """Pick a promised follow-up back up after a service restart.
+
+    Only the *waiting* half is replayed — the command itself was injected before
+    the restart and must not be sent again. Carrying the original
+    ``injected_at_ms`` through is what keeps the "has it reacted yet?" test
+    meaningful: the session's status timestamp is compared against when the
+    command actually went in, not against when this process happened to boot.
+    """
+    spawn(lambda: _await_and_followup(item.text, item.followup, target,
+                                      opener=opener,
+                                      injected_at_ms=item.injected_at_ms))
 
 
 def send(text: str, *, target: session_target.DaemonTarget, enter: bool = True,
@@ -421,6 +446,13 @@ def send(text: str, *, target: session_target.DaemonTarget, enter: bool = True,
     if submitted and is_slash(text):
         followup_sent = resume_text(followup)
         followup_deferred = True
+        # Written down before the watcher starts: the watcher is a thread in this
+        # process, and the gateway restarts this process out from under it.
+        pending.record(pending.Pending(
+            repl_pid=target.repl_pid,
+            proc_start=session_target._proc_start(target.repl_pid) or "",
+            session_id=target.session_id, text=text, followup=followup_sent,
+            injected_at_ms=injected_at_ms, name=target.name, hosting="background"))
         spawn(lambda: _await_and_followup(text, followup_sent, target,
                                           opener=opener,
                                           injected_at_ms=injected_at_ms,

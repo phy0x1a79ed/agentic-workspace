@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from awm.reflection import daemon_inject, session_target, tmux_inject
+from awm.reflection import daemon_inject, pending, session_target, tmux_inject
 
 log = logging.getLogger("awm.reflection.inject")
 
@@ -43,11 +43,61 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
              text, target.pane, target.name or target.session_id)
     result = tmux_inject.send(text, pane=target.pane, enter=enter,
                               delay_ms=delay_ms, confirm=confirm,
-                              followup=followup)
+                              followup=followup, repl_pid=target.repl_pid,
+                              session_id=target.session_id, name=target.name)
     if result.get("ok"):
         result.setdefault("session", target.name or target.session_id)
         result.setdefault("hosting", "tmux")
     return result
+
+
+def replay_pending() -> dict[str, Any]:
+    """Re-arm the watchers for follow-ups this service promised and did not deliver.
+
+    Called once on boot. The gateway drains and respawns its services routinely —
+    a restart, a deploy, a crash-respawn — and each of those takes every in-flight
+    watcher thread with it. Without this pass a session that compacted at the
+    wrong moment is simply left idle forever, with the caller already told the
+    resume was on its way and nothing anywhere logging that it never came.
+
+    Re-resolving from the pid rather than from the stored address is deliberate:
+    a background session that respawned has a new PTY socket and token, and an
+    interactive one may have moved panes. What is checked against the stored
+    record is the caller's ``procStart`` — a pid outlives nothing, and a promise
+    replayed against whatever inherited the number would type into a stranger.
+    """
+    items = pending.load_all()
+    resumed = 0
+    for item in items:
+        live = session_target._proc_start(item.repl_pid)
+        if live is None:
+            log.info("reflection: session %s (pid %s) is gone; dropping its "
+                     "pending resume", item.name or item.session_id, item.repl_pid)
+            pending.clear(item.repl_pid)
+            continue
+        if item.proc_start and item.proc_start != live:
+            log.warning("reflection: pid %s was recycled since its resume was "
+                        "promised (started %s, now %s); dropping it rather than "
+                        "injecting into whatever holds that pid now",
+                        item.repl_pid, item.proc_start, live)
+            pending.clear(item.repl_pid)
+            continue
+        try:
+            target = session_target.resolve(item.repl_pid)
+        except session_target.ResolveError as exc:
+            log.warning("reflection: cannot reach session %s to deliver its "
+                        "pending resume: %s", item.name or item.session_id, exc)
+            pending.clear(item.repl_pid)
+            continue
+        log.info("reflection: re-arming the deferred resume for session %s "
+                 "(%r was injected before this service restarted)",
+                 item.name or item.session_id, item.text)
+        if isinstance(target, session_target.DaemonTarget):
+            daemon_inject.resume_watch(item, target)
+        else:
+            tmux_inject.resume_watch(item, target.pane)
+        resumed += 1
+    return {"pending": len(items), "resumed": resumed}
 
 
 def describe_caller(caller_pid: Optional[int]) -> dict[str, Any]:
