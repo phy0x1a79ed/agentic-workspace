@@ -7,62 +7,25 @@ window took the watcher with it and left the session idle forever, with the
 caller already told the resume was on its way. That is what is covered here: the
 promise is written down before the watcher starts, replayed on boot, and only
 ever replayed at the session that actually earned it.
+
+None of this fakes a socket or a pane any more. Promising, waiting and replaying
+became transport-free when the two backend watchers were folded into one, and a
+test here that needed a transport would be a sign that they had come apart again.
 """
 from __future__ import annotations
 
-import json
-import struct
 import time
+from contextlib import contextmanager
 
 import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import daemon_inject, inject, pending, session_target
+from awm.reflection import inject, pending, session_target, watcher
 
 
-# ---------------------------------------------------------------------------
-# Fakes (the daemon-socket seam, same shape as test_reflection_backends)
-# ---------------------------------------------------------------------------
-
-def _frame(kind: int, payload: bytes) -> bytes:
-    return struct.pack(">I", len(payload)) + bytes([kind]) + payload
-
-
-def _ctl(obj: dict) -> bytes:
-    return _frame(0x01, json.dumps(obj).encode())
-
-
-HELLO = _ctl({"t": "hello", "replPid": 4242, "version": "2.1.223"}) + _ctl({"t": "live"})
-
-
-class FakeSock:
-    def __init__(self, inbound: bytes = b""):
-        self._inbound = bytearray(inbound)
-        self.sent: list[bytes] = []
-
-    def settimeout(self, t):
-        pass
-
-    def recv(self, n):
-        if not self._inbound:
-            raise TimeoutError()
-        chunk = bytes(self._inbound[:n])
-        del self._inbound[:n]
-        return chunk
-
-    def sendall(self, data):
-        self.sent.append(data)
-
-    def close(self):
-        pass
-
-    def payloads(self) -> list[bytes]:
-        reader = daemon_inject._FrameReader()
-        out = []
-        for blob in self.sent:
-            out.extend(reader.feed(blob))
-        return [p for k, p in out if k == 0x00]
+LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
+                               name="test")
 
 
 def _promise(**over) -> pending.Pending:
@@ -74,27 +37,33 @@ def _promise(**over) -> pending.Pending:
     """
     base = dict(repl_pid=4242, proc_start="999", session_id="sid-1",
                 text="/compact", followup="resume",
-                injected_at_ms=int(time.time() * 1000), name="test")
+                injected_at_ms=int(time.time() * 1000), name="test",
+                hosting="tmux")
     base.update(over)
     return pending.Pending(**base)
 
 
-def _target(**over) -> session_target.DaemonTarget:
-    base = dict(sock="/tmp/fake.sock", auth="tok", session_id="sid-1",
-                repl_pid=4242, name="test", cli_version="2.1.223",
-                dec_modes=(2004,))
-    base.update(over)
-    return session_target.DaemonTarget(**base)
+class Writer:
+    """A lane that accepts anything and shows what was written."""
 
+    label = "the fake lane"
 
-class _Clock:
-    def __init__(self, step=1.0):
-        self.t, self.step = 0.0, step
+    def __init__(self, seen):
+        self.seen = seen
+        self._screen = ""
 
-    def __call__(self):
-        v = self.t
-        self.t += self.step
-        return v
+    def read_back(self):
+        return self._screen
+
+    def clear(self):
+        self._screen = ""
+
+    def write(self, text):
+        self.seen.append(text)
+        self._screen += text
+
+    def commit(self):
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -103,19 +72,32 @@ def _pending_dir(tmp_path, monkeypatch):
     yield tmp_path / "pending"
 
 
+@pytest.fixture
+def lane(monkeypatch):
+    """Wire the sender to a fake lane and return the list of texts written."""
+    seen: list[str] = []
+
+    @contextmanager
+    def open_lane(_lane, **_kw):
+        yield Writer(seen)
+
+    monkeypatch.setattr(inject, "_open_lane", open_lane)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: LANE)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
+    return seen
+
+
 # ---------------------------------------------------------------------------
 # Recording the promise
 # ---------------------------------------------------------------------------
 
-def test_a_deferred_resume_is_written_down_before_the_watcher_starts(monkeypatch):
+def test_a_deferred_resume_is_written_down_before_the_watcher_starts(lane):
     # The ordering is the whole point: if the record were written by the watcher
     # thread, a restart could land between the paste and the first write and the
     # promise would exist nowhere at all.
-    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
     written = []
-    daemon_inject.send("/compact", target=_target(), opener=lambda _p: FakeSock(HELLO),
-                       sleep=lambda _s: None,
-                       spawn=lambda fn: written.append(pending.load_all()))
+    inject.send("/compact", caller_pid=4242,
+                spawn=lambda fn: written.append(pending.load_all()))
     assert len(written) == 1
     [item] = written[0]
     assert item.repl_pid == 4242
@@ -124,39 +106,38 @@ def test_a_deferred_resume_is_written_down_before_the_watcher_starts(monkeypatch
     assert item.proc_start == "999"
 
 
-def test_a_plain_prompt_promises_nothing(monkeypatch):
-    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
-    daemon_inject.send("just a prompt", target=_target(),
-                       opener=lambda _p: FakeSock(HELLO), sleep=lambda _s: None,
-                       spawn=lambda fn: None)
+def test_a_plain_prompt_promises_nothing(lane):
+    inject.send("just a prompt", caller_pid=4242, spawn=lambda fn: None)
     assert pending.load_all() == []
 
 
-def test_the_promise_is_cleared_once_the_resume_is_delivered(monkeypatch):
-    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: _target())
+def test_no_promise_survives_a_command_that_never_went_in(monkeypatch):
+    # The record-and-spawn sits *below* the delivery, so a send that failed
+    # leaves nothing behind for a resume to a command that was never injected.
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: LANE)
+    monkeypatch.setattr(inject, "_open_lane",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            inject.tmux_inject.TmuxError("pane is gone")))
+    with pytest.raises(inject.DeliveryError):
+        inject.send("/compact", caller_pid=4242, spawn=lambda fn: None)
+    assert pending.load_all() == []
+
+
+def test_the_promise_is_cleared_once_the_resume_is_delivered(lane, monkeypatch):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
     pending.record(_promise())
-    seq = [("busy", 1100), ("idle", 1500), ("idle", 1600), ("idle", 1700)]
-    monkeypatch.setattr(daemon_inject, "_status",
-                        lambda _pid: seq.pop(0) if seq else ("idle", 9999))
-    sock = FakeSock(HELLO * 40)
-    daemon_inject._await_and_followup(
-        "/compact", "resume", _target(), opener=lambda _p: sock,
-        injected_at_ms=1000, sleep=lambda _s: None, clock=_Clock(),
-        now_ms=lambda: 1000)
-    assert any(b"resume" in p for p in sock.payloads())
+    inject._await_and_resume(_promise())
+    assert lane == ["resume"]
     assert pending.load_all() == [], "a delivered resume must not be replayed"
 
 
-def test_a_vanished_session_clears_its_promise(monkeypatch):
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: _target())
+def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.VANISHED)
     pending.record(_promise())
-    assert len(pending.load_all()) == 1
-    monkeypatch.setattr(daemon_inject, "_status", lambda _pid: None)
-    daemon_inject._await_and_followup(
-        "/compact", "resume", _target(), opener=lambda _p: FakeSock(HELLO),
-        injected_at_ms=1000, sleep=lambda _s: None, clock=_Clock(),
-        now_ms=lambda: 1000)
+    inject._await_and_resume(_promise())
+    assert lane == [], "there is nobody left to resume"
     assert pending.load_all() == []
 
 
@@ -184,11 +165,10 @@ def test_replay_re_arms_the_watcher_without_re_running_the_command(monkeypatch):
     # the session sat idle forever. Replay must pick the *wait* back up — and
     # must not paste `/compact` a second time.
     monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: _target())
     pending.record(_promise())
     armed = []
-    monkeypatch.setattr(daemon_inject, "resume_watch",
-                        lambda item, tgt, **kw: armed.append(item))
+    monkeypatch.setattr(inject, "resume_watch",
+                        lambda item, **kw: armed.append(item))
     assert inject.replay_pending() == {"pending": 1, "resumed": 1}
     assert [i.text for i in armed] == ["/compact"]
     assert [i.followup for i in armed] == ["resume"]
@@ -199,14 +179,17 @@ def test_replay_re_arms_the_watcher_without_re_running_the_command(monkeypatch):
 def test_replay_carries_the_original_injection_time(monkeypatch):
     # The "has the session reacted yet?" test compares the session's status
     # timestamp against when the command went in. Re-stamping it at boot would
-    # make a session that already finished compacting look like it never started.
+    # make a session that already finished compacting look like it never started
+    # — and on this path the command ALWAYS ran before the restart, so it is the
+    # one place that mistake is guaranteed rather than merely possible.
     monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: _target())
-    stamp = int(time.time() * 1000) - 60_000      # injected a minute before the restart
+    stamp = int(time.time() * 1000) - 60_000   # injected a minute before the restart
     pending.record(_promise(injected_at_ms=stamp))
     seen = []
-    monkeypatch.setattr(daemon_inject, "_await_and_followup",
-                        lambda *a, **kw: seen.append(kw["injected_at_ms"]))
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda pid, **kw: seen.append(kw["injected_at_ms"])
+                        or watcher.VANISHED)
+    monkeypatch.setattr(inject, "_default_spawn", lambda fn: fn())
     inject.replay_pending()
     assert seen == [stamp]
 
@@ -215,8 +198,8 @@ def test_replay_refuses_a_recycled_pid(monkeypatch):
     # A pid outlives nothing. If the number was reused, the record describes a
     # process that is gone and the resume would land in a stranger's prompt.
     monkeypatch.setattr(session_target, "_proc_start", lambda pid: "different")
-    monkeypatch.setattr(session_target, "resolve",
-                        lambda pid, **kw: pytest.fail("must not resolve"))
+    monkeypatch.setattr(inject, "resume_watch",
+                        lambda item, **kw: pytest.fail("must not re-arm"))
     pending.record(_promise())
     assert inject.replay_pending() == {"pending": 1, "resumed": 0}
     assert pending.load_all() == []
@@ -229,12 +212,30 @@ def test_replay_drops_a_session_that_is_simply_gone(monkeypatch):
     assert pending.load_all() == []
 
 
-def test_replay_drops_a_session_it_can_no_longer_reach(monkeypatch):
-    # E.g. the daemon roster no longer lists it. Keeping the record would retry
-    # the same refusal on every boot forever.
+def test_replay_keeps_a_promise_it_cannot_currently_reach(monkeypatch):
+    # Behaviour change, and deliberate. Replay used to resolve the lane at boot
+    # and bin the promise if that failed — but the lane is not needed until the
+    # command finishes, potentially minutes later, and a session that happens to
+    # be mid-re-host at boot resolves fine a moment afterwards. Binning it there
+    # threw away exactly the resume this mechanism exists to save.
     monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: (_ for _ in ()).throw(
-        session_target.ResolveError("gone from the roster")))
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: (
+        _ for _ in ()).throw(session_target.ResolveError("mid re-host")))
+    armed = []
+    monkeypatch.setattr(inject, "resume_watch", lambda item, **kw: armed.append(item))
     pending.record(_promise())
-    assert inject.replay_pending() == {"pending": 1, "resumed": 0}
-    assert pending.load_all() == []
+    assert inject.replay_pending() == {"pending": 1, "resumed": 1}
+    assert len(armed) == 1
+    assert len(pending.load_all()) == 1
+
+
+def test_replay_is_the_same_code_for_both_lanes(monkeypatch):
+    # There is one `resume_watch`, and it takes no transport. A background
+    # promise and a tmux one go through it identically.
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
+    armed = []
+    monkeypatch.setattr(inject, "resume_watch", lambda item, **kw: armed.append(item))
+    pending.record(_promise(repl_pid=1, hosting="tmux"))
+    pending.record(_promise(repl_pid=2, hosting="background"))
+    inject.replay_pending()
+    assert sorted(i.hosting for i in armed) == ["background", "tmux"]

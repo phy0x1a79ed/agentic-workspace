@@ -32,9 +32,13 @@ from awm.reflection import daemon_inject, session_target, tmux_inject
 log = logging.getLogger("awm.reflection.permission_mode")
 
 # How the TUI footer names each permission mode. These are TUI copy and can move
-# under a CLI update — the same fragility class as the busy/compacting markers in
-# `tmux_inject`, and they fail the same safe way: an unrecognised footer reads as
-# "unknown", which refuses rather than pressing keys blindly.
+# under a CLI update. They are now the *only* screen scraping left in the service —
+# the completion watcher used to read the pane for "esc to interrupt" and
+# "Compacting conversation" and now reads the session's own status field instead —
+# and they survive here because there is no structured equivalent to read: the mode
+# is internal state with no external setter and no record field. They at least fail
+# safe: an unrecognised footer reads as "unknown", which refuses rather than
+# pressing keys blindly.
 _MODE_MARKERS: dict[str, tuple[str, ...]] = {
     "bypassPermissions": ("bypass permissions",),
     "acceptEdits": ("accept edits on",),
@@ -100,7 +104,7 @@ def classify(screen: str) -> str:
 class _TmuxSession:
     """Read the footer and press Shift+Tab in a tmux pane."""
 
-    def __init__(self, target: session_target.TmuxTarget, *,
+    def __init__(self, target: session_target.TmuxLane, *,
                  socket: Optional[str] = None, runner=None) -> None:
         self._target = target
         self._socket = socket
@@ -134,7 +138,7 @@ class _TmuxSession:
 class _DaemonSession:
     """Read the footer and press Shift+Tab over a background session's PTY."""
 
-    def __init__(self, target: session_target.DaemonTarget, *,
+    def __init__(self, target: session_target.DaemonLane, *,
                  opener=daemon_inject._open_unix,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self._target = target
@@ -167,7 +171,7 @@ class _DaemonSession:
 
 
 def _open(target, *, socket=None, runner=None, opener=None, sleep=time.sleep):
-    if isinstance(target, session_target.DaemonTarget):
+    if isinstance(target, session_target.DaemonLane):
         kw = {"sleep": sleep}
         if opener is not None:
             kw["opener"] = opener

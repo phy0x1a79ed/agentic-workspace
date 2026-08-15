@@ -47,18 +47,23 @@ class ResolveError(RuntimeError):
     """The caller could not be identified, so there is nothing safe to target."""
 
 
+# Two lanes, and the caller chooses neither: which one comes back is a fact about
+# how the session happens to be hosted right now. `kind` names the transport (for
+# logs and for dispatch); `hosting` is the word the API has always used for it and
+# is what reaches callers.
 @dataclass(frozen=True)
-class TmuxTarget:
+class TmuxLane:
     """An interactive session living in a tmux pane."""
     pane: str
     session_id: str
     repl_pid: int
     name: Optional[str] = None
     kind: str = "tmux"
+    hosting: str = "tmux"
 
 
 @dataclass(frozen=True)
-class DaemonTarget:
+class DaemonLane:
     """A background session whose PTY is hosted by the Claude Code daemon."""
     sock: str
     auth: str
@@ -68,6 +73,7 @@ class DaemonTarget:
     cli_version: Optional[str] = None
     dec_modes: tuple[int, ...] = ()
     kind: str = "daemon"
+    hosting: str = "background"
 
 
 def _proc_start(pid: int) -> Optional[str]:
@@ -196,7 +202,7 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
 
 
 def resolve(repl_pid: int, *, socket: Optional[str] = None,
-            runner=None) -> TmuxTarget | DaemonTarget:
+            runner=None) -> TmuxLane | DaemonLane:
     """Resolve a caller's REPL pid to its injection target.
 
     ``socket``/``runner`` are only consulted on the tmux path (they are the tmux
@@ -212,6 +218,22 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None,
     session_id = record.get("sessionId") or ""
     name = record.get("name")
 
+    parked = record.get("parkedJobId")
+    if parked:
+        # A parked launcher is a terminal that *used* to hold a conversation and
+        # has since handed it to a background job. Its pane is now the fleet
+        # view, whose new-session box happily accepts a paste — so this resolves
+        # perfectly well and delivers into a text field nobody asked us to type
+        # in. Refused by name rather than followed to the job: the job has its
+        # own REPL and its own pid, and reflection acts on the caller it was
+        # given, never on a session it decided was the real one.
+        raise ResolveError(
+            f"session {name or session_id} (pid {repl_pid}) has parked its "
+            f"conversation as background job {parked}; that terminal is now "
+            f"showing the fleet view, and typing into it would land in the "
+            f"new-session box rather than in any conversation. Reflection acts "
+            f"only on the caller, so call it from the parked job itself")
+
     if kind == "interactive":
         kw = {"socket": socket}
         if runner is not None:
@@ -223,7 +245,7 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None,
                 f"an interactive terminal session, but no tmux pane on this server "
                 f"contains it; reflection can only reach terminal sessions that "
                 f"run under tmux")
-        return TmuxTarget(pane=pane, session_id=session_id, repl_pid=repl_pid,
+        return TmuxLane(pane=pane, session_id=session_id, repl_pid=repl_pid,
                           name=name)
 
     if kind == "bg":
@@ -235,7 +257,7 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None,
                 f"the daemon roster entry for session {session_id} has no PTY "
                 f"socket or input token; reflection cannot reach it")
         modes = worker.get("decModes") or []
-        return DaemonTarget(
+        return DaemonLane(
             sock=sock, auth=auth, session_id=session_id, repl_pid=repl_pid,
             name=name, cli_version=worker.get("cliVersion"),
             dec_modes=tuple(int(m) for m in modes if isinstance(m, int)),
