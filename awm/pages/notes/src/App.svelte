@@ -4,7 +4,7 @@
   import { buildTree } from './lib/tree';
   import { renderMarkdown } from './lib/markdown';
   import { createDictation, type DictationState } from './lib/dictation';
-  import { createCollab } from './lib/collab';
+  import { createCollab, type LinkState, type SyncState } from './lib/collab';
   import { createNoteEditor, type NoteEditor } from './lib/editor';
   import { createSpellchecker, type SpellController } from './lib/spellcheck';
   import {
@@ -27,14 +27,21 @@
   let tree = $state<Tree>({ active: [], trashed: [] });
   let current = $state<Open>(blank());
   let mode = $state<'edit' | 'preview'>('edit');
+  // Content state — what the SERVER has, versus what only this browser has.
   // 'new'        — blank note, nothing typed yet
-  // 'editing'    — transient, mid-keystroke
   // 'savedLocal' — buffered to the local draft, server not yet confirmed
   // 'saving'     — an edit is in flight to the server
   // 'synced'     — the server has confirmed our latest text
   // 'offline'    — a send failed; edits are safe in the local draft
-  let saveState = $state<'new' | 'editing' | 'savedLocal' | 'saving' | 'synced' | 'offline'>('new');
-  let collabLive = $state(false);
+  let saveState = $state<'new' | 'savedLocal' | 'saving' | 'synced' | 'offline'>('new');
+  // Transport state — kept separate from saveState on purpose. Collapsing the
+  // two is what let the status bar read a confident "Synced" at a server that
+  // had been unreachable for an hour: nothing was being sent, so nothing failed.
+  let link = $state<LinkState>('idle');
+  // A refused title rename. Its own flag rather than borrowing 'offline',
+  // because a *content* sync succeeding must not erase the warning — nor the
+  // local draft, which is the only place the un-persisted title lives.
+  let pathFailed = $state(false);
 
   // Panel open-state + widths are read synchronously from the cookie at init
   // (see `initial` below) so panels mount in their final state — no reload flash
@@ -155,8 +162,12 @@
     writeDraft(current.id, current.path, current.content);
     const hasBody = current.content.trim().length > 0 || current.path.trim().length > 0;
     if (current.id === null) {
-      saveState = hasBody ? 'savedLocal' : 'new';
-      scheduleCreate();
+      // Don't downgrade a failed create back to 'savedLocal' — it would strobe
+      // the label between "Saving…" and "Saved locally" as you type at a dead
+      // service. 'offline' is sticky until a create actually lands.
+      if (!hasBody) saveState = 'new';
+      else if (saveState !== 'offline') saveState = 'savedLocal';
+      scheduleCreate(saveState === 'offline' ? 5000 : 500);
     } else {
       // Buffered locally; collab.onSync will advance this to saving → synced.
       saveState = 'savedLocal';
@@ -164,9 +175,9 @@
     }
   }
 
-  function scheduleCreate() {
+  function scheduleCreate(delay = 500) {
     if (createTimer) clearTimeout(createTimer);
-    createTimer = setTimeout(() => void createNote(), 500);
+    createTimer = setTimeout(() => void createNote(), delay);
   }
 
   async function createNote() {
@@ -175,7 +186,7 @@
     const hasBody = current.content.trim().length > 0 || current.path.trim().length > 0;
     if (!hasBody) return;               // nothing to persist yet — stay ephemeral
     creating = true;
-    saveState = 'saving';
+    if (saveState !== 'offline') saveState = 'saving';   // a retry stays quiet
     try {
       const n = await notesApi.create(current.path, current.content);
       migrateBlankDraft(n.id);          // carry the local safety copy onto the real id
@@ -187,8 +198,16 @@
       // null) can't route through savePath, so persist the latest path now.
       if (current.path !== n.path) await notesApi.save(n.id, { path: current.path });
       saveState = 'synced';
-      clearDraft(current.id);   // persisted + joined — the safety copy has served
+      if (!pathFailed) clearDraft(current.id);  // persisted + joined
       await loadTree();
+    } catch (err) {
+      // A note that doesn't exist yet has no room to join, so the link pill has
+      // nothing to report — the save state is the only honest signal there is.
+      // Without this the first note of a session, typed at a stopped service,
+      // reads "Saving…" forever (and the throw aborted flush() mid-switch).
+      console.error('notes: create failed', err);
+      saveState = 'offline';    // the text is in the local draft
+      createTimer = setTimeout(() => void createNote(), 5000);
     } finally {
       creating = false;
     }
@@ -212,10 +231,11 @@
       // local draft until this lands, so say so in the status bar and keep
       // retrying (the note stays renamed on screen meanwhile).
       console.error('notes: title save failed', err);
-      saveState = 'offline';
+      pathFailed = true;
       pathRetry = setTimeout(() => { if (current.id === id) void savePath(); }, 5000);
       return;
     }
+    pathFailed = false;
     await loadTree();
   }
 
@@ -253,6 +273,7 @@
     editor?.setDoc(content);   // load into the editor (remote → no local emit)
     mode = 'edit';
     results = null; query = '';
+    pathFailed = false;
     if (useDraft) { saveState = 'savedLocal'; } else { saveState = 'synced'; clearDraft(id); }
     setOpen(n.id);
     await collab?.join(n.id, content);
@@ -267,6 +288,7 @@
     editor?.setDoc('');
     mode = 'edit';
     saveState = 'new';
+    pathFailed = false;
     setOpen(null);
     await focusEditor();
   }
@@ -274,14 +296,14 @@
   async function trashNote(id: string) {
     await notesApi.trash(id);
     clearDraft(id);
-    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; setOpen(null); }
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; pathFailed = false; setOpen(null); }
     await loadTree();
   }
   async function restoreNote(id: string) { await notesApi.restore(id); await loadTree(); }
   async function purgeNote(id: string) {
     await notesApi.purge(id);
     clearDraft(id);
-    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; setOpen(null); }
+    if (id === current.id) { collab?.leave(); current = blank(); editor?.setDoc(''); saveState = 'new'; pathFailed = false; setOpen(null); }
     await loadTree();
   }
 
@@ -351,11 +373,15 @@
   }
 
   /** Sync-state transitions reported by collab.ts (the fix for the status
-   *  sticking on a buffered state — a solo editor now reaches 'synced'). */
-  function onCollabSync(s: 'saving' | 'synced' | 'offline') {
+   *  sticking on a buffered state — a solo editor now reaches 'synced').
+   *  `id` is checked because a slow send can land after the user switched
+   *  notes, and clearing the draft would then drop the *other* note's copy. */
+  function onCollabSync(s: SyncState, id: string) {
+    if (id !== current.id) return;
     if (s === 'synced') {
       saveState = 'synced';
-      clearDraft(current.id);       // server has it now — drop the safety copy
+      // Not while a rename is still unsaved: the draft holds the new title.
+      if (!pathFailed) clearDraft(id);
     } else if (s === 'saving') {
       saveState = 'saving';
     } else {
@@ -442,8 +468,8 @@
     });
     collab = createCollab({
       onText: (t) => applyCollabText(t),
-      onStatus: (live) => (collabLive = live),
-      onSync: (s) => onCollabSync(s),
+      onLink: (s) => (link = s),
+      onSync: (s, id) => onCollabSync(s, id),
     });
 
     // Panel open-state/widths were already read synchronously at init (no reload
@@ -494,7 +520,7 @@
   onDestroy(() => {
     if (pathRetry) clearTimeout(pathRetry);
     dictation?.destroy();
-    collab?.leave();
+    collab?.destroy();       // leaves the room AND drops the wake-up listeners
     editor?.destroy();
     spellcheck?.destroy();
     window.removeEventListener('hashchange', onHashChange);
@@ -506,14 +532,40 @@
     if (vpTimer) clearTimeout(vpTimer);
   });
 
-  const saveLabel = $derived(
-    saveState === 'saving' ? 'Saving…'
-    : saveState === 'synced' ? 'Synced'
-    : saveState === 'savedLocal' ? 'Saved locally'
-    : saveState === 'offline' ? 'Offline · saved locally'
-    : saveState === 'editing' ? 'Editing…'
-    : 'New note',
+  // ---- status indicators -------------------------------------------------
+  //
+  // Two truths, two indicators. The pill reports the transport; the save state
+  // reports where the text lives. Read together they answer "is my writing
+  // safe?" — which neither can answer alone.
+
+  const linkLabel = $derived(
+    link === 'live' ? 'Live' : link === 'down' ? 'Disconnected' : 'Connecting…',
   );
+  const linkTitle = $derived(
+    link === 'live' ? 'Live — changes sync between open tabs'
+    : link === 'down' ? 'No connection to the notes service — edits are kept in this browser'
+    : 'Reconnecting to the notes service…',
+  );
+
+  // First match wins. Two deliberate calls in the ladder:
+  //  • 'savedLocal' renders as "Saving…", not "Saved locally" — it is set on
+  //    every keystroke and cleared ~180ms later, so the orange would strobe as
+  //    you type. Reserving the phrase for genuinely-unsent work is what makes it
+  //    mean something.
+  //  • Disconnected-with-everything-sent stays "Synced", but muted rather than
+  //    green: it is true, the red pill carries the connection fact, and the grey
+  //    stops it reading as "all good".
+  const save = $derived.by((): { label: string; tone: 'ok' | 'muted' | 'grey' | 'warn' } => {
+    if (saveState === 'new') return { label: 'New note', tone: 'grey' };
+    if (pathFailed) return { label: 'Title not saved', tone: 'warn' };
+    const unsent = saveState === 'savedLocal' || saveState === 'saving';
+    if (saveState === 'offline' || (link === 'down' && unsent)) {
+      return { label: 'Saved locally', tone: 'warn' };
+    }
+    if (link === 'down') return { label: 'Synced', tone: 'grey' };
+    if (unsent) return { label: 'Saving…', tone: 'muted' };
+    return { label: 'Synced', tone: 'ok' };
+  });
 </script>
 
 <div class="app" class:ready={panelsReady} class:resizing={resizing !== null}
@@ -697,13 +749,15 @@
         <span class="filepath muted">Not saved yet · a file is created when you type</span>
       {/if}
       <span class="status-right">
-        {#if current.id && collabLive}
-          <span class="live-pill" title="Live — changes sync between open tabs">
-            <span class="live-dot"></span>Live
+        <!-- `link !== 'idle'` is not redundant with `current.id`: between a
+             leave and the next join, current.id still names the OLD note. -->
+        {#if current.id && link !== 'idle'}
+          <span class="link-pill" data-link={link} title={linkTitle}>
+            <span class="link-dot"></span>{linkLabel}
           </span>
         {/if}
         <span class="wc">{words} {words === 1 ? 'word' : 'words'}</span>
-        <span class="save-state" data-state={saveState}>{saveLabel}</span>
+        <span class="save-state" data-tone={save.tone}>{save.label}</span>
       </span>
     </div>
   </main>
