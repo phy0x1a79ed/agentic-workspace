@@ -26,14 +26,17 @@ Agents land directly in the git worktree. All AWM metadata lives in a `.awm/` do
 ```
 projects/{project}/
   .bare/                         # bare git repo
-  {scope}/                       # git worktree — agent CWD
+  {scope}/                       # git worktree — agent CWD; {scope} may nest
     .awm/                        # AWM metadata (gitignored)
       context.md                 # scope instructions (auto-loaded)
       history.md                 # auto-generated: open/resolved session history
       data -> ../data            # compat symlink; the real data/ is repo content
-      skills -> ../../../awm/skills/    # symlink to skill catalog
+      skills -> <workspace>/awm/skills/  # absolute symlink to skill catalog
     [code files...]              # the actual repo content, including data/
 ```
+
+Both symlinks are depth-independent, which is what lets `{scope}` nest: `data`
+is relative to its own worktree and `skills` is absolute (`SKILLS_DIR`).
 
 ### Data
 
@@ -172,7 +175,7 @@ Session execution traces — what happened, outcome, deviations, suggestions —
 
 ## Scope Naming Convention
 
-New scopes use a prefix family to signal what kind of work they own. Names are flat (slashes are rejected — see `awm/services/scopes/awm/scopes/_validation.py`), so the family is encoded as a hyphen-prefix.
+New scopes use a prefix family to signal what kind of work they own, encoded as a hyphen-prefix.
 
 | Prefix | Family | What it owns |
 |--------|--------|-------------|
@@ -182,6 +185,25 @@ New scopes use a prefix family to signal what kind of work they own. Names are f
 | `infra-*`| infrastructure | Cross-cutting toolchain that other scopes consume — codegen, dev surfaces, test runners, the service hub itself. |
 
 Older scopes (`dev`, `sentry`, `vagrant-*`, `voice`, `web-ui`) predate this convention and keep their flat keyword names. The prefix family applies to scopes created from this point forward.
+
+**Nested names.** A scope name may contain `/`: `fabfos/dev` is a scope whose
+worktree is `projects/metasmith/fabfos/dev`. Use it when one project holds
+several products and a flat list stops saying which is which — a hyphen-prefix
+family is the lighter answer and stays preferred within a single product. Three
+consequences are worth knowing before reaching for it:
+
+- The **branch is named after the scope**, not `feat/<scope>` — pass
+  `branch_name` at create time. `feat/fabfos/dev` would work equally well, but
+  the prefix buys nothing once the name already says where the work lives.
+- **Git stores refs as paths**, so a nested branch permanently forbids a bare
+  branch of its first segment: with `fabfos/dev` in the repo, no ref may be
+  named `fabfos`, and vice versa. `scope_create` refuses the collision by name
+  rather than passing git's error through.
+- **A project name never nests.** A slashed project would put a second `.bare`
+  one level down, which is the opposite of the shared-bare layout.
+
+References stay `project/scope` and split on the *first* slash, so
+`metasmith/fabfos/dev` resolves to project `metasmith`, scope `fabfos/dev`.
 
 **Composition scopes.** A couple of `feat-*` scopes are *standing* composition scopes — one per feature family — that own the cross-service wiring + integration playbooks for that family and run their **own isolated dev sandbox** (port pinned via a gitignored `awm/gateway/dev/.env`), factoring `svc-*`/`comp-*` units out as they stabilize:
 
@@ -268,7 +290,9 @@ each submodule's `.git` gitdir pointer + `core.worktree`.
 
 Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees per scope.
 
-- Branch naming: `feat/{scope}` (or flat keyword for legacy scopes).
+- Branch naming: `feat/{scope}` by default; a legacy scope keeps its flat
+  keyword and a nested scope is named for itself (see *Scope Naming Convention*).
+  The DB row records which — nothing recomputes it from the scope name.
 - PRs created from feature branches into `main` / `release` as appropriate.
 - See `.awm/skills/tools/git.md` for the worktree-bare flow in detail.
 

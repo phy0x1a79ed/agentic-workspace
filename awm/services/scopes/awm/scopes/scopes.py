@@ -56,13 +56,123 @@ from awm.scopes.models import (
     ScopeListResponse,
     ScopeActionResponse,
 )
-from awm.scopes._validation import validate_name
+from awm.scopes._validation import validate_name, validate_scope_name
 
 log = logging.getLogger("awm.scopes")
 
 
 def _get_awm_dir(repo_dir: Path) -> Path:
     return repo_dir / ".awm"
+
+
+def _worktree_admin_dir(bare_dir: Path, worktree_dir: Path) -> Path | None:
+    """git's per-worktree admin directory under ``.bare/worktrees/``, or None.
+
+    Asked of git rather than derived from the worktree's basename. git names the
+    admin dir after the basename and disambiguates on collision (``dev``,
+    ``dev1``, …), so a nested scope ``fabfos/dev`` and a flat scope ``dev`` share
+    a basename while owning different admin dirs — deriving it would have
+    deleting either one silently destroy the other's.
+    """
+    r = run_git(["git", "-C", str(worktree_dir), "rev-parse", "--absolute-git-dir"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    admin = Path(r.stdout.strip())
+    try:
+        admin.relative_to(bare_dir / "worktrees")
+    except ValueError:
+        return None  # not a worktree of this bare repo — leave it alone
+    return admin
+
+
+def _project_worktrees(project: str) -> list[Path]:
+    """Every worktree of a project's bare repo, at whatever depth.
+
+    Enumerated from git, not by globbing ``projects/<project>/*``: a nested scope
+    such as ``fabfos/dev`` sits two levels down, and for ``data_gc`` a worktree
+    missing from this list is a worktree whose pinned objects fall out of the
+    keep-set — i.e. get collected. Raises rather than degrading to a short list,
+    for that same reason.
+    """
+    bare = PROJECTS_DIR / project / ".bare"
+    if not bare.exists():
+        raise FileNotFoundError(f"Project '{project}' has no bare repo at {bare}")
+    r = run_git(["git", "-C", str(bare), "worktree", "list", "--porcelain"])
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Could not enumerate worktrees of '{project}': {(r.stderr or '').strip()}"
+        )
+    out: list[Path] = []
+    path: Path | None = None
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):])
+        elif line.strip() == "bare":
+            path = None  # the bare repo's own entry — not a scope
+        elif not line.strip():
+            if path is not None:
+                out.append(path)
+            path = None
+    if path is not None:
+        out.append(path)
+    return out
+
+
+def _scope_branch(project: str, scope: str, worktree: Path | None = None) -> str:
+    """The branch a scope is actually on.
+
+    Recomputing ``feat/<scope>`` is wrong for any scope created with an explicit
+    ``branch_name`` — which is every nested scope, whose branch is its own name
+    with no ``feat/`` prefix. The DB row is authoritative; the worktree's own HEAD
+    is the fallback for a scope with no row.
+    """
+    rec = agent_record_for_scope(project, scope, active_only=False)
+    if rec is not None and rec["branch"]:
+        return rec["branch"]
+    if worktree is not None and worktree.exists():
+        r = run_git(["git", "-C", str(worktree), "branch", "--show-current"])
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return f"feat/{scope}"
+
+
+def _assert_branch_available(bare_dir: Path, branch: str) -> None:
+    """Refuse a branch name git cannot hold, naming the reason.
+
+    Two failures matter. A malformed ref, and — the one nesting introduces — a
+    directory/file conflict: git stores refs as paths, so once ``feat/fabfos``
+    exists no ref may be named ``feat/fabfos/dev``, and vice versa. git's own
+    error for the second names neither branch.
+    """
+    r = run_git(["git", "check-ref-format", f"refs/heads/{branch}"])
+    if r.returncode != 0:
+        raise ValueError(f"'{branch}' is not a valid git branch name")
+
+    r = run_git(["git", "-C", str(bare_dir), "for-each-ref",
+                 "--format=%(refname:short)", "refs/heads/"])
+    if r.returncode != 0:
+        return  # let worktree add report whatever is wrong with the repo
+    existing = set(r.stdout.split())
+    if branch in existing:
+        return  # a plain collision — create_scope's own path reports it
+
+    parts = branch.split("/")
+    for i in range(1, len(parts)):
+        prefix = "/".join(parts[:i])
+        if prefix in existing:
+            raise ValueError(
+                f"Cannot create branch '{branch}': branch '{prefix}' already exists "
+                f"and git cannot hold both (refs are stored as paths). Rename or "
+                f"delete '{prefix}' first."
+            )
+    beneath = sorted(b for b in existing if b.startswith(branch + "/"))
+    if beneath:
+        raise ValueError(
+            f"Cannot create branch '{branch}': "
+            f"{', '.join(beneath[:3])}{' …' if len(beneath) > 3 else ''} "
+            f"already exist beneath it and git cannot hold both "
+            f"(refs are stored as paths)."
+        )
 
 
 def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
@@ -87,6 +197,7 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
     other scope and project on the machine.
     """
     guard: dict = {"result": "ok", "path": str(worktree_dir)}
+    admin_dir = _worktree_admin_dir(bare_dir, worktree_dir)
     if worktree_dir.is_dir():
         st = run_git(["git", "-C", str(worktree_dir), "status", "--porcelain"])
         pending = [ln for ln in (st.stdout or "").splitlines() if ln.strip()]
@@ -107,9 +218,12 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
         # cannot harm the cache object; only `dvc gc` removes those.
         data_dvc.chmod_dirs_writable(worktree_dir)
         shutil.rmtree(worktree_dir, ignore_errors=True)
-    meta_dir = bare_dir / "worktrees" / worktree_dir.name
-    if meta_dir.exists():
-        shutil.rmtree(meta_dir, ignore_errors=True)
+    if admin_dir is not None and admin_dir.exists():
+        shutil.rmtree(admin_dir, ignore_errors=True)
+    # Catches the admin dir of a worktree whose directory was already gone — the
+    # one case _worktree_admin_dir cannot resolve. git prunes only entries it has
+    # established are dead, so this can never reach a live sibling.
+    run_git(["git", "-C", str(bare_dir), "worktree", "prune"])
     run_git(["git", "-C", str(bare_dir), "branch", "-D", feature_branch])
     return guard
 
@@ -265,7 +379,7 @@ def _generate_history_md(project: str, scope: str) -> str:
 
 def refresh_history(project: str, scope: str) -> str:
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     repo_dir = PROJECTS_DIR / project / scope
     awm_dir = _get_awm_dir(repo_dir)
     content = _generate_history_md(project, scope)
@@ -279,7 +393,7 @@ def refresh_history(project: str, scope: str) -> str:
 
 def awm_refresh(project: str, scope: str) -> dict:
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     h = refresh_history(project, scope)
     return {
         "message": f"Refreshed .awm/ for {project}/{scope}",
@@ -736,7 +850,7 @@ def _scaffold_awm_dir(
 def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
     """Create a new scope: git worktree + .awm/ metadata + agents row."""
     validate_name(req.project, kind="project name")
-    validate_name(req.scope, kind="scope name")
+    validate_scope_name(req.scope)
     bare_dir = PROJECTS_DIR / req.project / ".bare"
     if not bare_dir.exists():
         if req.project == VAGRANT_PROJECT:
@@ -770,8 +884,10 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
         _cleanup_worktree(bare_dir, repo_dir, feature_branch,
                           project=req.project, scope=req.scope)
 
+    _assert_branch_available(bare_dir, feature_branch)
+
     r = run_git(["git", "-C", str(bare_dir), "worktree", "add",
-                 f"../{req.scope}", "-b", feature_branch, from_branch])
+                 str(repo_dir), "-b", feature_branch, from_branch])
     if r.returncode != 0:
         raise RuntimeError(f"Failed to create worktree: {r.stderr}")
 
@@ -797,7 +913,7 @@ def create_scope(req: ScopeCreateRequest) -> ScopeActionResponse:
 def repair_scope(project: str, scope: str) -> ScopeActionResponse:
     """Reconcile an on-disk worktree+.awm/ with a missing DB row."""
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
 
     bare_dir = PROJECTS_DIR / project / ".bare"
     if not bare_dir.exists():
@@ -873,14 +989,14 @@ def repair_scope(project: str, scope: str) -> ScopeActionResponse:
 def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActionResponse:
     """Complete a scope (mark agent retired). Optionally merges + cleans up."""
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
 
     if not bare_dir.exists():
         raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
 
-    feature_branch = f"feat/{scope}"
+    feature_branch = _scope_branch(project, scope, repo_dir)
 
     if req.action != "complete":
         raise ValueError(f"Unknown action: {req.action}. Only 'complete' is supported.")
@@ -915,10 +1031,10 @@ def update_scope(project: str, scope: str, req: ScopeUpdateRequest) -> ScopeActi
 
 def sync_scope(project: str, scope: str, req: ScopeSyncRequest) -> ScopeActionResponse:
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
-    feature_branch = f"feat/{scope}"
+    feature_branch = _scope_branch(project, scope, repo_dir)
 
     if not bare_dir.exists():
         raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
@@ -1046,7 +1162,7 @@ def gather_scope(project: str, hub: str, peripherals: list[str],
     and the post-merge hook materialises it. One batch, still local-only.
     """
     validate_name(project, kind="project name")
-    validate_name(hub, kind="scope name")
+    validate_scope_name(hub)
     if strategy != "merge":
         raise ValueError("gather only supports strategy='merge' (rebase is not "
                          "meaningful for a shared hub).")
@@ -1078,7 +1194,7 @@ def gather_scope(project: str, hub: str, peripherals: list[str],
 
     results: list[dict] = []
     for p in peripherals:
-        validate_name(p, kind="scope name")
+        validate_scope_name(p)
         prec = _peripheral_record(project, p)
         p_branch = prec["branch"]
         verify = run_git(["git", "-C", str(bare_dir), "rev-parse", "--verify",
@@ -1112,7 +1228,7 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
     peripheral's post-merge hook materialises what it mounts.
     """
     validate_name(project, kind="project name")
-    validate_name(hub, kind="scope name")
+    validate_scope_name(hub)
     if strategy != "merge":
         raise ValueError("scatter only supports strategy='merge' (rebase is not "
                          "meaningful for fan-out).")
@@ -1129,7 +1245,7 @@ def scatter_scope(project: str, hub: str, peripherals: list[str],
 
     results: list[dict] = []
     for p in peripherals:
-        validate_name(p, kind="scope name")
+        validate_scope_name(p)
         prec = _peripheral_record(project, p)
         p_branch = prec["branch"]
         p_worktree = prec["worktree"]
@@ -1181,7 +1297,7 @@ def data_status(project: str, scope: str) -> dict:
     re-create the two-lever confusion this replaced.
     """
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     return data_dvc.data_status(project, scope, _scope_worktree(project, scope))
 
 
@@ -1196,7 +1312,7 @@ def data_gc(projects: list[str], dry_run: bool = True,
     repos: list[Path] = []
     for proj in projects:
         validate_name(proj, kind="project name")
-        for wt in sorted((PROJECTS_DIR / proj).glob("*")):
+        for wt in sorted(_project_worktrees(proj)):
             if wt.is_dir() and data_dvc.is_dvc_repo(wt):
                 repos.append(wt)
     return data_dvc.collect_garbage(repos, dry_run=dry_run, keep=keep)
@@ -1214,7 +1330,7 @@ def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dic
     Passing no chunks clears the list, which means "materialise everything".
     """
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     worktree = _scope_worktree(project, scope)
     awm_dir = worktree / ".awm"
     if chunks:
@@ -1227,10 +1343,10 @@ def data_mount(project: str, scope: str, chunks: list[str] | None = None) -> dic
 
 def delete_scope(project: str, scope: str, force: bool = False) -> ScopeActionResponse:
     validate_name(project, kind="project name")
-    validate_name(scope, kind="scope name")
+    validate_scope_name(scope)
     bare_dir = PROJECTS_DIR / project / ".bare"
     repo_dir = PROJECTS_DIR / project / scope
-    feature_branch = f"feat/{scope}"
+    feature_branch = _scope_branch(project, scope, repo_dir)
 
     if not bare_dir.exists():
         raise FileNotFoundError(f"Bare repository not found at {bare_dir}")
