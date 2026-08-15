@@ -279,8 +279,21 @@ Each project uses a **bare repo** at `projects/{project}/.bare/` with worktrees 
 - Branch naming: `feat/{scope}` by default; a legacy scope keeps its flat
   keyword and a nested scope is named for itself (see *Scope Naming Convention*).
   The DB row records which — nothing recomputes it from the scope name.
-- PRs created from feature branches into `main` / `release` as appropriate.
+- PRs created from feature branches into `release`. There is no `main` — it was
+  retired 2026-08-15 as a strict ancestor of `release` that had drifted 875
+  commits behind while still being GitHub's default branch, which is exactly how
+  a stale branch gets mistaken for a baseline.
 - See `.awm/skills/tools/git.md` for the worktree-bare flow in detail.
+
+**A peer's bare has most of its branches checked out, so pushes to it are
+refused.** Every scope worktree on a node holds its branch, and `release` is the
+node's live workspace — so `git push <peer> <branch>` fails with *branch is
+currently checked out* for nearly every branch worth pushing, which reads like a
+permissions or connectivity fault and is not one. Push to a temp ref, then
+fast-forward it into place *inside the target worktree* (`git -C <wt> merge
+--ff-only <tempref>`), and delete the temp ref. Prefer `merge --ff-only` over
+`reset --hard`: it refuses rather than discards when that worktree has
+uncommitted edits, which it often does. Stash first if you need it to pass.
 
 **Never commit in the workspace root checkout.** On a node that deploys rather than
 authors awm, `<workspace>/` is a deploy *target*: it is fetched and `reset --hard` onto
