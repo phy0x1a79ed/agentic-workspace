@@ -43,6 +43,23 @@ has no user manager (a container, a bare dev box) and the daemon will not
 survive an awm restart. The unit is transient, so a reboot leaves nothing
 behind and this service starts a fresh daemon as it would on any cold node.
 
+**Approvals are off; the sandbox is not.** The daemon launches with
+`--dangerously-skip-approvals`, unconditionally and on every node. A workbench
+awm supervises is unattended by construction, so an approval card is a stall
+rather than a check — there is nobody at the browser to click it. The flag is
+independent of `--dangerously-no-sandbox`, which we do not pass: bubblewrap, the
+egress proxy and the host grants are untouched and remain the actual boundary.
+Three things follow. It buys no network: the egress proxy refuses every private
+and loopback address as `blocked-by-resolved-ip`, "cannot be granted", which is
+not an approval and so not the flag's to auto-grant. It does not answer
+questions Claude asks *you* — those still arrive, as frames parked in
+`awaiting_user_response` / `awaiting_plan_approval`, and `/api/frames/:id/
+resolve-input` and `/approve-plan` are the only things that clear them. And the
+binary silently ignores the flag on internal "ant" builds, so read
+`skip_approvals` in `science status` — taken from the live daemon's argv — rather
+than assuming. Being an argv flag, it also needs an `awm science restart` to
+reach an already-adopted daemon, the same way a new allowed origin does.
+
 **Two ports, two origins.** Upstream serves generated-HTML previews from a
 second port so a page Claude wrote cannot read the session that wrote it. That
 boundary is a browser origin, so it survives only if we keep two of them. Hence
@@ -216,14 +233,24 @@ loopback, link-local and any name ending `.local` / `.internal` / `.lan` /
 connector cannot point at any node's gateway — TLS on the edge does not help,
 and there is no override or allowlist.
 
-**Local is closed by sandbox.** A local (stdio) server does run on the host
-rather than in the analysis sandbox, but it gets a bwrap sandbox of its own with
-`--unshare-net`: an empty network namespace, no route anywhere, and outbound
-only through a proxy whose `NO_PROXY` covers every private range. From inside,
-`127.0.0.1:7819` is `Network is unreachable`. AF_UNIX is blocked by seccomp
-(`runtime/*/seccomp/*/unix-block.bpf`), so a unix-socket relay fails `connect()`
-with `EPERM` even when the socket is plainly visible — and `[sandbox.network]
-allow_unix_sockets` is macOS-only config that changes nothing here.
+**Local is closed by policy, not by routing.** A local (stdio) server does run on
+the host rather than in the analysis sandbox, but it gets a bwrap sandbox of its
+own with `--unshare-net`, and its only egress is a unix-socket proxy bound in
+from `sbx-bind-src/sock-*/`. That proxy is a policy engine, and every private
+address dies on it with a considered 403 rather than a routing error — driving it
+straight from the host (it is a plain HTTP/SOCKS proxy on a unix socket, so
+`socat` plus `curl -x` reaches it) answers `blocked-by-resolved-ip`,
+"private/reserved address range; **cannot be granted**". Its filter has a second
+door that *does* admit private addresses — `allowedEndpoints`, fed only by the
+conda/pypi mirror policy and by registered compute endpoints — and nothing else
+opens one: `allowPrivateRanges` is hardcoded off where the analysis proxy is
+constructed, so no flag, config key or approval reaches it. Declaring the gateway
+a conda mirror is therefore the one supported route to a reachable
+`127.0.0.1:7819`, at the price of hijacking package installs; it is untested
+here. AF_UNIX is blocked by seccomp (`runtime/*/seccomp/*/unix-block.bpf`), so a
+unix-socket relay fails `connect()` with `EPERM` even when the socket is plainly
+visible — and `[sandbox.network] allow_unix_sockets` is macOS-only config that
+changes nothing here.
 
 Two facts are worth keeping anyway, because both cost a diagnosis to learn:
 

@@ -146,6 +146,26 @@ def port_listening(port: int, *, timeout: float = 1.0) -> bool:
         return False
 
 
+def launch_flags(pid: int | None) -> list[str] | None:
+    """The flags the running daemon was actually launched with, from ``/proc``.
+
+    Its argv is built once, at launch, and this service adopts a daemon rather
+    than relaunching it — so what we would pass today and what the live daemon
+    is running diverge for as long as an old one stays adopted. That gap is
+    invisible in ``claude-science status``, which reports the daemon's own view
+    and says nothing about its flags. Reading argv answers it locally, with no
+    nonce exchange against the daemon's API.
+    """
+    if not pid:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    return [arg for arg in raw.decode(errors="replace").split("\0")
+            if arg.startswith("--")]
+
+
 def _origin_host() -> str:
     """The host a browser reaches this node at.
 
@@ -237,9 +257,15 @@ class Supervisor:
 
     def snapshot(self) -> dict[str, Any]:
         st = status_json()
+        flags = launch_flags(st.get("pid"))
         return {
             "running": bool(st.get("running")),
             "pid": st.get("pid"),
+            # Read off the live daemon's argv, not off our config: an adopted
+            # daemon predating a flag change is still running the old one, and
+            # only a restart moves it.
+            "skip_approvals": (None if flags is None
+                               else "--dangerously-skip-approvals" in flags),
             "version": st.get("version"),
             "port": st.get("port"),
             "sandbox_port": SANDBOX_PORT,
@@ -287,6 +313,17 @@ class Supervisor:
             "--host", "127.0.0.1",
             "--port", str(PORT),
             "--sandbox-port", str(SANDBOX_PORT),
+            # Every workbench awm supervises runs unattended, so an approval
+            # card is a stall, not a check: nobody is watching the UI to click
+            # it. This is *not* `--dangerously-no-sandbox` — bubblewrap, the
+            # egress proxy and the host grants all stay exactly as they were,
+            # and they are the actual boundary. What goes away is the prompt in
+            # front of them, which was only ever load-bearing for a human at a
+            # browser. Note what it does not buy: the sandbox still refuses
+            # every private and loopback address outright ("cannot be granted"
+            # — it is not an approval the flag can auto-grant), so this does
+            # nothing to bring awm's own gateway within reach.
+            "--dangerously-skip-approvals",
         ]
         for origin in origins:
             args += ["--allow-origin", origin]
