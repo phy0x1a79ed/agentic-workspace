@@ -222,7 +222,10 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
     The record is written on **transitions**, not on activity, which decides the
     whole shape here. A session that was settled when we wrote has to move to run
     our line, so its timestamp advancing is proof it did — and a timestamp that
-    has moved stays moved, so a fast turn cannot slip between two polls. A
+    has moved stays moved, so a fast turn cannot slip between two polls. Settled
+    means what :func:`watcher.is_settled` means, not "``idle``": a session held at
+    ``shell`` by a background task runs our line immediately, and reporting that
+    as queued would understate a delivery that in fact went straight in. A
     A session that was already mid-turn *queues* the line instead, and queuing
     moves nothing — so the record has nothing to say about it. Its transcript
     does: an ``enqueue`` naming our text is the session acknowledging the
@@ -245,7 +248,7 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
         # `guards.INTERACTIVE` refuses on the way in. Named apart from `queued`
         # because the two want opposite things from whoever reads the result.
         return CONFIRMED_BLOCKED
-    if before[0] not in watcher.SETTLED:
+    if not watcher.is_settled(before[0], before[1], tail, text):
         deadline = clock() + CONFIRM_WAIT_S
         while tail is not None and text and clock() < deadline:
             tail.poll()
