@@ -75,6 +75,17 @@ fi
 
 PYTEST_ARGS="${PYTEST_ARGS:-}"
 
+# Ask mamba where the env's interpreter is, once, and run pytest with it
+# directly. `mamba run --no-capture-output <cmd>` writes `exec -- <cmd>` into a
+# script it then runs under bash, and bash's `exec` rejects `--` — so on mamba
+# 2.5.0 every dist fails identically before pytest is ever reached, which reads
+# like a repo breakage and is not one.
+PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1)"
+if [ ! -x "$PY" ]; then
+  echo "could not resolve the awm env's python (got '${PY:-<empty>}')" >&2
+  exit 1
+fi
+
 declare -A RESULT
 overall=0
 
@@ -94,8 +105,7 @@ for name in "${ORDER[@]}"; do
   echo "============================================================"
 
   PYTHONPATH="$src:$COMP" \
-    mamba run -n awm --no-capture-output \
-    python -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
+    "$PY" -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
   rc=$?
   if [ "$rc" -eq 0 ]; then
     RESULT[$name]="PASS"
