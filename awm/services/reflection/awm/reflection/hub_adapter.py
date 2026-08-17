@@ -246,7 +246,11 @@ def _handle_pending(args: dict) -> dict:
     return {"ok": True, "pending": [
         {"session": p.name or p.session_id, "pid": p.repl_pid,
          "hosting": p.hosting, "command": p.text, "resume": p.followup,
-         "waiting_for_s": max(0, (now - p.injected_at_ms) // 1000)}
+         "waiting_for_s": max(0, (now - p.injected_at_ms) // 1000),
+         # A resume is held rather than typed into a session that would only
+         # queue it, so a promise sitting here is normal and these two say
+         # whether it is progressing or stuck.
+         "holds": p.holds, "last_outcome": p.last_outcome}
         for p in pending.load_all()
     ]}
 

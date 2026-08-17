@@ -29,13 +29,34 @@ LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
                                name="test")
 
 
-def _promise(**over) -> pending.Pending:
-    """A promise stamped *now*.
+class Tail:
+    """A transcript that answers whatever the test says it answers."""
 
-    Stamping it matters: :func:`pending.load_all` drops anything past
-    ``MAX_AGE_MS``, so a fixture with a toy timestamp makes every "the record is
-    gone" assertion pass for the wrong reason.
-    """
+    def __init__(self, in_flight=None, landed=None):
+        self._in_flight = in_flight
+        self._landed = landed
+
+    def poll(self):
+        return self._in_flight is not None
+
+    def watch(self, _text):
+        pass
+
+    def tool_call_in_flight(self):
+        return self._in_flight
+
+    def landed(self, _text):
+        return self._landed
+
+    def consumed(self, _text):
+        return self._landed
+
+    def queued(self, _text):
+        return False
+
+
+def _promise(**over) -> pending.Pending:
+    """A promise stamped *now*, for a session that is alive."""
     base = dict(repl_pid=4242, proc_start="999", session_id="sid-1",
                 text="/compact", followup="resume",
                 injected_at_ms=int(time.time() * 1000), name="test",
@@ -152,6 +173,65 @@ def test_an_undeliverable_resume_stays_pending_and_shouts(lane, monkeypatch,
     assert any("sit idle" in r.getMessage() for r in caplog.records)
 
 
+def test_a_session_that_never_comes_free_keeps_its_promise_and_shouts(
+        lane, monkeypatch, caplog):
+    # The cap used to inject anyway, on the theory that a late resume beats none.
+    # It does not: a resume typed into a session mid-turn goes into its queue and
+    # runs whenever that turn ends, on whatever context is there by then. So the
+    # promise is held, every round is recorded, and the give-up is an ERROR.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.TIMED_OUT)
+    pending.record(_promise())
+    with caplog.at_level(logging.ERROR, logger="awm.reflection.inject"):
+        inject._await_and_resume(_promise())
+    assert lane == [], "nothing may be typed into a session that is not free"
+    [item] = pending.load_all()
+    assert item.holds == inject.MAX_HOLD_ROUNDS
+    assert "has not been free" in item.last_outcome
+    assert any("gave up delivering" in r.getMessage() for r in caplog.records)
+
+
+def test_a_busy_session_at_the_last_instant_holds_rather_than_types(
+        lane, monkeypatch):
+    # The watcher said settled, but a turn started in the gap between the wait
+    # and the write. Holding the promise is only worth anything if the delivery
+    # itself checks too.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(watcher, "read_status", lambda pid: ("busy", 9))
+    pending.record(_promise())
+    inject._await_and_resume(_promise())
+    assert lane == []
+    assert len(pending.load_all()) == 1
+
+
+def test_a_delivery_the_session_never_showed_is_tried_again(lane, monkeypatch):
+    # Verification is the half that was missing: a send used to be believed on
+    # the strength of the keystrokes having gone out. The transcript is asked
+    # whether they arrived, and a definite no puts the promise back.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
+    assert lane == ["resume"] * inject.MAX_HOLD_ROUNDS
+    [item] = pending.load_all()
+    assert "never showed it arriving" in item.last_outcome
+
+
+def test_an_unreadable_transcript_does_not_license_a_second_delivery(
+        lane, monkeypatch):
+    # "I could not read the transcript" is not proof that the resume was lost,
+    # and typing the same resume in twice is worse than not verifying at all.
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=None, landed=None))
+    assert lane == ["resume"]
+    assert pending.load_all() == []
+
+
 def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch):
     monkeypatch.setattr(watcher, "await_completion",
                         lambda *a, **kw: watcher.VANISHED)
@@ -161,11 +241,42 @@ def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch)
     assert pending.load_all() == []
 
 
-def test_a_stale_promise_is_dropped_rather_than_replayed():
-    # Past the watcher's own hard cap the session has long since been left to its
-    # own devices; resuming it then would interrupt whatever it moved on to.
+def test_a_long_held_promise_survives_while_its_session_lives(monkeypatch):
+    # Behaviour change, and the point of holding a resume rather than forcing it
+    # into a busy session: a promise held for an hour is this mechanism working,
+    # not a stale record. There used to be a flat twenty-minute cutoff here, and
+    # it reinstated the original bug — a session left idle forever — for any
+    # session that stayed busy longer than that.
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "999")
     pending.record(_promise(injected_at_ms=0))
-    assert pending.load_all(now_ms=pending.MAX_AGE_MS + 1) == []
+    kept = pending.load_all(now_ms=4 * 60 * 60 * 1000)
+    assert [i.followup for i in kept] == ["resume"]
+
+
+def test_a_promise_whose_session_is_gone_is_dropped(monkeypatch):
+    # Liveness, not age, is what decides. The pid is the key, and a pid outlives
+    # nothing.
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: None)
+    pending.record(_promise())
+    assert pending.load_all() == []
+
+
+def test_a_promise_on_a_recycled_pid_is_dropped(monkeypatch):
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "different")
+    pending.record(_promise())
+    assert pending.load_all() == []
+
+
+def test_holding_a_promise_records_why_without_moving_its_clock():
+    # `pending` has to be able to say what a held resume is waiting for. The
+    # injection time must not move with it: that is the watcher's reference for
+    # "the session reacted after this moment".
+    item = _promise(injected_at_ms=1234)
+    held = pending.held(item, "the session has not been free")
+    assert held.holds == 1
+    assert held.last_outcome == "the session has not been free"
+    assert held.injected_at_ms == 1234
+    assert pending.held(held, "again").holds == 2
 
 
 def test_an_unreadable_record_is_discarded_not_carried_forever(_pending_dir):
@@ -221,14 +332,14 @@ def test_replay_refuses_a_recycled_pid(monkeypatch):
     monkeypatch.setattr(inject, "resume_watch",
                         lambda item, **kw: pytest.fail("must not re-arm"))
     pending.record(_promise())
-    assert inject.replay_pending() == {"pending": 1, "resumed": 0}
+    assert inject.replay_pending() == {"pending": 0, "resumed": 0}
     assert pending.load_all() == []
 
 
 def test_replay_drops_a_session_that_is_simply_gone(monkeypatch):
     monkeypatch.setattr(session_target, "_proc_start", lambda pid: None)
     pending.record(_promise())
-    assert inject.replay_pending() == {"pending": 1, "resumed": 0}
+    assert inject.replay_pending() == {"pending": 0, "resumed": 0}
     assert pending.load_all() == []
 
 

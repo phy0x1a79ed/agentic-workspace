@@ -25,12 +25,22 @@ wait keyed on the pid rides straight through the shuffle. A pane id does not.
 
 The status vocabulary is closed: ``busy``, ``shell``, ``idle``, ``waiting``,
 which is the full set the CLI will write (its own validator accepts no others).
-Only ``idle`` is settled. ``shell`` is a tool call in flight. ``waiting`` is a
-*blocking dialog* — a sandbox request, a permission prompt, "input needed" — and
-resuming into one would paste a prompt behind a modal that swallows it, which is
-the same failure ``guards.INTERACTIVE`` refuses on the injection side. Anything
-unrecognised is treated as not-settled, so a vocabulary that grows leaves this
-waiting rather than firing early.
+``waiting`` is a *blocking dialog* — a sandbox request, a permission prompt,
+"input needed" — and resuming into one would paste a prompt behind a modal that
+swallows it, which is the same failure ``guards.INTERACTIVE`` refuses on the
+injection side. Anything unrecognised is treated as not-settled, so a vocabulary
+that grows leaves this waiting rather than firing early.
+
+``shell`` is the one that cannot be read off the record alone, and treating it as
+"a tool call in flight" is what made every autopilot resume wait out the cap. It
+is also what a session shows while a *background* task runs — a Monitor, a
+backgrounded Bash, a background Agent — and it keeps showing it after the turn
+has ended, until that task finishes. An autopilot session nearly always has one,
+so it is never seen ``idle``. The transcript is what tells the two apart: a
+foreground call leaves an unanswered ``tool_use`` at the tail and a background
+one does not (see :mod:`transcript`). So a ``shell`` that has sat unchanged for
+:data:`SHELL_SETTLE_S`, with a clean transcript tail and nothing of ours left in
+the queue, is a session between turns.
 """
 from __future__ import annotations
 
@@ -39,7 +49,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-from awm.reflection import session_target
+from awm.reflection import session_target, transcript
 
 log = logging.getLogger("awm.reflection.watcher")
 
@@ -48,9 +58,16 @@ log = logging.getLogger("awm.reflection.watcher")
 # so an unrecognised value keeps us waiting instead of firing.
 KNOWN_STATUSES = ("busy", "shell", "idle", "waiting")
 
-# Only a session doing nothing is done. See the module docstring for why
-# `waiting` is not in here — it means a modal is open, not that the turn ended.
+# A session doing nothing is done, no corroboration needed. See the module
+# docstring for why `waiting` is not in here — it means a modal is open, not that
+# the turn ended — and for how `shell` earns the same verdict the long way round.
 SETTLED = frozenset({"idle"})
+
+# How long a `shell` must sit unchanged before the transcript gets a say. During
+# a live turn the status flips between `busy` and `shell` every few seconds, so a
+# frozen one is already good evidence that nothing is being driven; this only has
+# to outlast the flapping, and stay well inside a compaction.
+SHELL_SETTLE_S = 20.0
 
 POLL_S = 2.0
 # Until the session is seen to react at all, poll tighter: that window is short
@@ -64,9 +81,12 @@ FAST_POLL_S = 0.3
 # longer load-bearing against that gap; it is kept at the value the daemon path
 # has shipped without misfiring, as cheap insurance against a status flap.
 SETTLE_POLLS = 3
-# Hard cap. Past this the resume goes in anyway: a resume that arrives late beats
-# a session that hangs idle forever, which is the failure this whole mechanism
-# exists to prevent.
+# Hard cap on one wait. Reaching it is a *refusal to deliver*, not a licence to
+# deliver anyway: a resume typed into a session that is still mid-turn lands in
+# its queue, and a queue is not where a resume does any good — it runs whenever
+# that turn happens to end, on whatever context is there by then. The promise
+# stays on disk instead and the wait is re-armed, so the only thing the cap costs
+# is a log line that says the session is still owed one.
 MAX_WAIT_S = 900.0
 
 SETTLED_OUTCOME = "settled"
@@ -94,24 +114,55 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def is_settled(status: str, updated_ms: int, tail, text: str = "") -> bool:
+    """Is this session between turns, and therefore safe to type a resume into?
+
+    ``idle`` says so outright. ``shell`` needs corroboration, because it is worn
+    both by a session running a foreground tool and by one that finished its turn
+    minutes ago with a Monitor still ticking — and only the second is safe. Three
+    things must agree: the status has not moved for :data:`SHELL_SETTLE_S`, the
+    transcript's tail holds no unanswered tool call, and nothing we typed is
+    still sitting in the session's queue.
+
+    Every transcript answer is tri-state, and only a definite ``False`` counts.
+    An unreadable transcript leaves the session unsettled — waiting is always the
+    safe direction here.
+    """
+    if status in SETTLED:
+        return True
+    if status != "shell":
+        return False
+    if now_ms() - updated_ms < SHELL_SETTLE_S * 1000:
+        return False
+    if tail is None or tail.tool_call_in_flight() is not False:
+        return False
+    return tail.queued(text) is not True
+
+
 def await_completion(repl_pid: int, *, injected_at_ms: int,
-                     label: str = "",
+                     label: str = "", text: str = "",
                      sleep: Callable[[float], None] = time.sleep,
                      clock: Callable[[], float] = time.monotonic,
-                     proc_start: Callable[[int], Optional[str]] = None) -> str:
+                     proc_start: Callable[[int], Optional[str]] = None,
+                     tail=None) -> str:
     """Block until the command injected at ``injected_at_ms`` has finished.
 
     Returns :data:`SETTLED_OUTCOME`, :data:`VANISHED` (the process is gone —
-    there is nobody left to resume), or :data:`TIMED_OUT`.
+    there is nobody left to resume), or :data:`TIMED_OUT` (still busy after
+    :data:`MAX_WAIT_S`, so the caller must hold its promise rather than deliver).
 
-    Two conditions must both hold. The session must have **reacted** — its
-    status timestamp moved past the moment we injected — and it must then be
-    **settled** for several consecutive samples. The reacted half is what fixes
-    the stalled resume, and it is strictly better than watching for a busy
-    *sighting*: a timestamp that has moved stays moved, so it cannot be missed
-    between two polls, whereas a one-second turn between two two-second samples
-    is invisible. Claude Code itself decides whether a session it kicked has
-    responded the same way.
+    Two conditions must both hold. The session must have **reacted** — it took
+    the command in — and it must then be :func:`settled <is_settled>` for
+    several consecutive samples. The reacted half is what fixes the stalled
+    resume, and it is strictly better than watching for a busy *sighting*: a
+    one-second turn between two two-second samples is invisible, whereas both
+    signals here persist once true. Seeing the command consumed in the
+    transcript is the direct form of it; a ``statusUpdatedAt`` that has moved
+    past our injection is the fallback for when no transcript can be read.
+
+    ``text`` is the command that was injected, and it is only ever used as
+    evidence about itself. ``tail`` is the transcript reader, which the caller
+    should open *before* injecting so that nothing is missed.
 
     Liveness is judged by the process, never by the record. A session being
     attached or backgrounded rewrites its record and can briefly make it
@@ -121,6 +172,10 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
     """
     proc_start = proc_start or session_target._proc_start
     who = label or f"pid {repl_pid}"
+    if tail is None:
+        tail = transcript.Tail(repl_pid)
+    if text:
+        tail.watch(text)
     deadline = clock() + MAX_WAIT_S
     reacted = False
     settled_streak = 0
@@ -128,6 +183,7 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
     waiting_logged = False
 
     while clock() < deadline:
+        tail.poll()
         sample = read_status(repl_pid)
         if sample is None:
             if proc_start(repl_pid) is None:
@@ -144,9 +200,9 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
             continue
         unreadable = 0
         status, updated_ms = sample
-        if updated_ms > injected_at_ms:
+        if updated_ms > injected_at_ms or (text and tail.consumed(text) is True):
             reacted = True
-        if reacted and status in SETTLED:
+        if reacted and is_settled(status, updated_ms, tail, text):
             settled_streak += 1
             if settled_streak >= SETTLE_POLLS:
                 return SETTLED_OUTCOME
@@ -161,6 +217,7 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
                 waiting_logged = True
         sleep(POLL_S if reacted else FAST_POLL_S)
 
-    log.warning("reflection: session %s did not settle within %ss (reacted=%s); "
-                "injecting its resume anyway", who, MAX_WAIT_S, reacted)
+    log.error("reflection: session %s has not been free for %ss (reacted=%s); it "
+              "is still owed its resume, which is being held rather than typed "
+              "into a session that would only queue it", who, MAX_WAIT_S, reacted)
     return TIMED_OUT

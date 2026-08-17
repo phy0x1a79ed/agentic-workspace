@@ -249,6 +249,23 @@ def test_a_busy_session_is_reported_queued_rather_than_confirmed(monkeypatch):
     assert events.count("commit") == 1, "and it is not retried"
 
 
+def test_a_busy_session_whose_transcript_shows_the_line_is_evidence(monkeypatch):
+    # `queued` was always an inference: nothing checked it, it was returned
+    # purely because the sampled status was non-settled. The session's transcript
+    # records the enqueue, which turns the commonest result of all into an
+    # observation — and keeps the word `queued` for the case with nothing to read.
+    class Tail:
+        def poll(self): return True
+        def watch(self, _t): pass
+        def landed(self, _t): return True
+
+    events = []
+    rec = FakeRecord(status="busy")
+    _, result = deliver([daemon(events, rec, deaf=True)], monkeypatch, record=rec,
+                        tail=Tail())
+    assert result.confirmed == inject.CONFIRMED_ENQUEUED
+
+
 def test_a_session_behind_a_modal_is_not_called_queued(monkeypatch):
     # `waiting` is a blocking dialog, not a turn in flight. The line was most
     # likely swallowed rather than queued, and the two want opposite things from
