@@ -23,7 +23,7 @@ import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import inject, session_target, tmux_inject
+from awm.reflection import inject, session_target, tmux_inject, watcher
 
 
 LANE = session_target.TmuxLane(pane="%7", session_id="sid", repl_pid=4242,
@@ -247,6 +247,27 @@ def test_a_busy_session_is_reported_queued_rather_than_confirmed(monkeypatch):
     assert result.submitted is True
     assert result.confirmed == inject.CONFIRMED_QUEUED
     assert events.count("commit") == 1, "and it is not retried"
+
+
+def test_a_session_held_at_shell_by_a_background_task_is_confirmed_by_record(
+        monkeypatch):
+    # Live probe, 2026-08-17: a session with a `sleep 600` running took its resume
+    # straight in as an ordinary user message, and was reported `enqueued`
+    # because `shell` was read as mid-turn. Confirmation asks the same question
+    # the watcher does, or the two drift apart on exactly the case they exist for.
+    class Tail:
+        def poll(self): return True
+        def watch(self, _t): pass
+        def landed(self, _t): return True
+        def tool_call_in_flight(self): return False
+        def queued(self, _t): return False
+
+    monkeypatch.setattr(watcher, "now_ms",
+                        lambda: 1000 + int(watcher.SHELL_SETTLE_S * 1000) + 1)
+    events = []
+    rec = FakeRecord(status="shell")
+    _, result = deliver([daemon(events, rec)], monkeypatch, record=rec, tail=Tail())
+    assert result.confirmed == inject.CONFIRMED_RECORD
 
 
 def test_a_busy_session_whose_transcript_shows_the_line_is_evidence(monkeypatch):
