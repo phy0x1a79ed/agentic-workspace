@@ -56,6 +56,7 @@ from awm.reflection import (
     pending,
     session_target,
     tmux_inject,
+    transcript,
     watcher,
 )
 
@@ -93,10 +94,26 @@ CONFIRM_POLL_S = 0.05
 # tell" and "it went in" are different answers and the caller acts on them
 # differently.
 CONFIRMED_RECORD = "record"        # the session's record moved: it took the line
-CONFIRMED_QUEUED = "queued"        # mid-turn at write time; queued, unobservable
+CONFIRMED_ENQUEUED = "enqueued"    # mid-turn, and its transcript shows ours queued
+CONFIRMED_QUEUED = "queued"        # mid-turn at write time; nothing observable
 CONFIRMED_BLOCKED = "blocked"      # a modal had the keyboard; probably swallowed
 CONFIRMED_UNREADABLE = "unreadable"  # record unreadable throughout; no claim
 NOT_SUBMITTED = "none"             # `enter` was false, so nothing was submitted
+
+# How long to watch a session's transcript for proof that a resume it was sent
+# actually arrived, and how often to look. Generous next to the ~100ms a settled
+# session takes to react, because this runs detached and costs nobody's turn.
+VERIFY_WAIT_S = 15.0
+VERIFY_POLL_S = 0.5
+
+# How many times a resume will wait out :data:`watcher.MAX_WAIT_S` for a session
+# that never comes free before the promise is left for a human. Four rounds is an
+# hour of holding, which is far longer than any turn and still bounded.
+MAX_HOLD_ROUNDS = 4
+
+# Statuses that say outright that typing now would land in a queue or behind a
+# modal. `shell` is not among them — see :func:`watcher.is_settled`.
+_NEVER_SETTLED = ("busy", "waiting")
 
 
 class Delivery(NamedTuple):
@@ -191,6 +208,7 @@ def _landed(before: str, after: str, probe: str) -> bool:
 
 
 def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
+                    text: str = "", tail=None,
                     sleep: Callable[[float], None] = time.sleep,
                     clock: Callable[[], float] = time.monotonic,
                     read_status=None) -> str:
@@ -205,10 +223,15 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
     whole shape here. A session that was settled when we wrote has to move to run
     our line, so its timestamp advancing is proof it did — and a timestamp that
     has moved stays moved, so a fast turn cannot slip between two polls. A
-    session that was already mid-turn *queues* the line instead, and queuing
-    moves nothing; there is nothing to observe and this says so rather than
-    inventing an answer. Returns :data:`NOT_SUBMITTED` only for the proven
-    negative: settled throughout, timestamp never moved.
+    A session that was already mid-turn *queues* the line instead, and queuing
+    moves nothing — so the record has nothing to say about it. Its transcript
+    does: an ``enqueue`` naming our text is the session acknowledging the
+    keystrokes, and that is :data:`CONFIRMED_ENQUEUED`. Only when there is no
+    transcript to read does this fall back to :data:`CONFIRMED_QUEUED`, which is
+    an assumption and is named apart from the observation for that reason.
+
+    Returns :data:`NOT_SUBMITTED` only for the proven negative: settled
+    throughout, timestamp never moved.
     """
     read_status = read_status or watcher.read_status
     if before is None:
@@ -223,6 +246,12 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
         # because the two want opposite things from whoever reads the result.
         return CONFIRMED_BLOCKED
     if before[0] not in watcher.SETTLED:
+        deadline = clock() + CONFIRM_WAIT_S
+        while tail is not None and text and clock() < deadline:
+            tail.poll()
+            if tail.landed(text) is True:
+                return CONFIRMED_ENQUEUED
+            sleep(CONFIRM_POLL_S)
         return CONFIRMED_QUEUED
     deadline = clock() + CONFIRM_WAIT_S
     ever_read = False
@@ -257,7 +286,7 @@ _LANE_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
 
 
 def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
-             detect, read_status=None, **kw) -> Delivery:
+             detect, read_status=None, tail=None, **kw) -> Delivery:
     """One detect → write → commit → confirm transaction. Raises on any failure.
 
     The confirmation is the last step, not the third. It used to sit between the
@@ -292,7 +321,8 @@ def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
                 f"the text reached {writer.label} and Enter was sent, but the "
                 f"submit did not complete cleanly ({exc}); not retrying, "
                 f"because it may already be running") from None
-    confirmed = _confirm_submit(repl_pid, was, read_status=read_status,
+    confirmed = _confirm_submit(repl_pid, was, text=text, tail=tail,
+                                read_status=read_status,
                                 sleep=kw.get("sleep", time.sleep))
     if confirmed == NOT_SUBMITTED:
         raise NotSubmitted(
@@ -324,7 +354,7 @@ def _wipe_prompt(repl_pid: int, detect, **kw) -> None:
 
 def deliver(repl_pid: int, text: str, *, enter: bool = True,
             attempts: int = ATTEMPTS, detect=None, what: str = "text",
-            **kw) -> Delivery:
+            tail=None, **kw) -> Delivery:
     """Put ``text`` into session ``repl_pid``, or raise :class:`DeliveryError`.
 
     Returns a :class:`Delivery` — whether it submitted, the lane the write went
@@ -343,7 +373,8 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
             sleep(RETRY_BACKOFF_S)
         try:
             result = _attempt(repl_pid, text, enter=enter,
-                              clear_first=attempt > 1, detect=detect, **kw)
+                              clear_first=attempt > 1, detect=detect,
+                              tail=tail, **kw)
         except CommitFailed as exc:
             log.error("reflection: %s reached pid %s on attempt %s/%s but the "
                       "submit did not complete: %s", what, repl_pid, attempt,
@@ -405,12 +436,18 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     if delay_ms and delay_ms > 0:
         time.sleep(min(delay_ms, 25_000) / 1000.0)
 
+    # Opened before a single keystroke goes out, so that whatever the session
+    # does with the text is inside the window this reader can see.
+    tail = transcript.Tail(caller_pid)
+    tail.watch(text)
+    tail.poll()
+
     injected_at_ms = watcher.now_ms()
     # A failure propagates: the caller is told the command did not go in, and —
     # because this sits above the record-and-spawn below — no promise is left
     # behind for a resume to a command that was never injected.
     result = deliver(caller_pid, text, enter=enter,
-                     what="the requested command", **kw)
+                     what="the requested command", tail=tail, **kw)
     submitted, lane = result.submitted, result.lane
 
     followup_sent = None
@@ -426,15 +463,16 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
         # Written down BEFORE the watcher starts: the watcher is a thread in this
         # process, and the gateway restarts this process out from under it.
         pending.record(promise)
-        resume_watch(promise, spawn=spawn, **kw)
+        resume_watch(promise, spawn=spawn, tail=tail, **kw)
 
     out = {"ok": True, "session": lane.name or lane.session_id,
            "hosting": lane.hosting, "text": text, "submitted": submitted,
-           # What the submit rests on. `queued` is the honest answer for the
-           # commonest call of all — a session compacting itself is by
-           # definition mid-turn, so its line waits behind the turn that asked
-           # for it and its record will not move until that turn ends. The
-           # deferred watcher is what notices; this verb cannot.
+           # What the submit rests on. For the commonest call of all — a session
+           # compacting itself — the session is by definition mid-turn, so its
+           # line waits behind the turn that asked for it and its record will not
+           # move until that turn ends. `enqueued` is that case *observed* in the
+           # session's transcript; `queued` is the same case with no transcript to
+           # read, and is inference rather than evidence.
            "confirmed": result.confirmed,
            "followup": followup_sent, "followup_deferred": followup_deferred}
     if isinstance(lane, session_target.TmuxLane):
@@ -442,44 +480,113 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     return out
 
 
-def _await_and_resume(item: pending.Pending, **kw) -> None:
-    """Wait for the command to finish, then deliver the resume.
+def _free_to_receive(repl_pid: int, tail) -> bool:
+    """Is anything visibly wrong with typing into this session right now?
+
+    The watcher has just said it settled, but a wait and a write are two
+    different moments and a session can start a turn in the gap. This is the
+    last-instant re-check, and it refuses only on what it can positively see —
+    a `busy` or `waiting` status, or a foreground tool call outstanding. The
+    watcher has already done the careful work; re-running its whole test here
+    would throw away a fifteen-minute round over a record that happened to be
+    mid-rewrite.
+    """
+    sample = watcher.read_status(repl_pid)
+    if sample is not None and sample[0] in _NEVER_SETTLED:
+        return False
+    tail.poll()
+    return tail.tool_call_in_flight() is not True
+
+
+def _verify_landed(tail, text: str, *, sleep: Callable[[float], None] = time.sleep,
+                   clock: Callable[[], float] = time.monotonic) -> Optional[bool]:
+    """Did ``text`` reach the session? Read it out of the session's transcript.
+
+    ``True`` if the session took it in or queued it, ``False`` if the transcript
+    was readable throughout and never mentioned it, ``None`` if there was no
+    transcript to read. Only ``False`` is evidence of a failure; ``None`` is the
+    absence of evidence and must not license a second delivery.
+    """
+    deadline = clock() + VERIFY_WAIT_S
+    while clock() < deadline:
+        tail.poll()
+        if tail.landed(text) is True:
+            return True
+        sleep(VERIFY_POLL_S)
+    return tail.landed(text)
+
+
+def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
+    """Wait for the command to finish, then deliver the resume — and prove it.
 
     Runs detached — a synchronous wait would deadlock, because the caller's turn
     has to end for the queued slash command to run at all.
+
+    A resume is only ever typed into a session that is between turns. Typing one
+    into a session that is mid-turn puts it in the queue, where it runs whenever
+    that turn happens to end, on whatever context is there by then — which is
+    not a resume, it is a stray prompt. So a session that is not free keeps its
+    promise and gets waited on again, and after :data:`MAX_HOLD_ROUNDS` of that
+    the promise is left on disk for a human to see rather than forced in.
     """
     who = item.name or item.session_id or f"pid {item.repl_pid}"
-    outcome = watcher.await_completion(item.repl_pid,
-                                       injected_at_ms=item.injected_at_ms,
-                                       label=who)
-    if outcome == watcher.VANISHED:
+    if tail is None:
+        tail = transcript.Tail(item.repl_pid)
+    tail.watch(item.text)
+    tail.watch(item.followup)
+
+    for held in range(1, MAX_HOLD_ROUNDS + 1):
+        outcome = watcher.await_completion(item.repl_pid, tail=tail,
+                                           injected_at_ms=item.injected_at_ms,
+                                           text=item.text, label=who)
+        if outcome == watcher.VANISHED:
+            pending.clear(item.repl_pid)
+            return
+        if outcome != watcher.SETTLED_OUTCOME or not _free_to_receive(
+                item.repl_pid, tail):
+            item = pending.held(item, f"the session has not been free (round "
+                                      f"{held} of {MAX_HOLD_ROUNDS})")
+            pending.record(item)
+            continue
+
+        # Forget the promise BEFORE delivering on it, not after. The two
+        # orderings trade opposite failure modes across a restart in the gap:
+        # clearing after would let a boot-time replay re-deliver a resume that
+        # already landed, injecting a stray prompt into a session that is busy
+        # working — whereas clearing first can only lose a resume if the process
+        # dies inside the delivery itself, which is the same hole every other
+        # step has.
         pending.clear(item.repl_pid)
-        return
-    # Forget the promise BEFORE delivering on it, not after. The two orderings
-    # trade opposite failure modes across a restart in the gap: clearing after
-    # would let a boot-time replay re-deliver a resume that already landed,
-    # injecting a stray prompt into a session that is busy working — whereas
-    # clearing first can only lose a resume if the process dies inside the
-    # delivery itself, which is the same hole every other step has.
-    pending.clear(item.repl_pid)
-    try:
-        deliver(item.repl_pid, item.followup, enter=True,
-                what="the deferred resume", **kw)
-    except DeliveryError as exc:
-        # Put the promise back. Clearing before delivering is right — it is what
-        # stops a boot replay re-delivering a resume that already landed — but
-        # the old code stopped there, so the one state worth seeing (a resume
-        # owed to a session that could not be reached) was the one state
-        # `pending` could not show. The timestamp deliberately stays as it was:
-        # it is the watcher's reference for "the session reacted after this
-        # moment", and a fresh one would make a replayed watcher wait out its
-        # full cap for a reaction that already happened. The cost is that
-        # `pending.MAX_AGE_MS` may bin it on a later boot — which is the same
-        # cutoff, and the same open question, that module already documents.
+        try:
+            deliver(item.repl_pid, item.followup, enter=True, tail=tail,
+                    what="the deferred resume", **kw)
+        except DeliveryError as exc:
+            # Put the promise back, keeping its original `injected_at_ms`: that
+            # is the watcher's reference for "the session reacted after this
+            # moment", and a fresh one would make the next wait sit out its full
+            # cap waiting for a reaction that already happened.
+            item = pending.held(item, f"could not be delivered: {exc}")
+            pending.record(item)
+            log.error("reflection: could not deliver the deferred resume to "
+                      "session %s; it is still pending: %s", who, exc)
+            continue
+
+        landed = _verify_landed(tail, item.followup,
+                                sleep=kw.get("sleep", time.sleep))
+        if landed is not False:
+            # True, or "no transcript to read" — which is not proof of anything
+            # and certainly not licence to type the same resume in twice.
+            return
+        item = pending.held(item, "delivered, but the session's transcript never "
+                                  "showed it arriving")
         pending.record(item)
-        log.error("reflection: could not deliver the deferred resume to session "
-                  "%s; it is left pending and this session will sit idle until "
-                  "something resumes it: %s", who, exc)
+        log.warning("reflection: the deferred resume for session %s was sent but "
+                    "its transcript never showed it arriving; holding the promise "
+                    "and waiting for the session again", who)
+
+    log.error("reflection: gave up delivering the deferred resume to session %s "
+              "after %s rounds; the promise is left in `pending` and that session "
+              "will sit idle until something resumes it", who, MAX_HOLD_ROUNDS)
 
 
 def resume_watch(item: pending.Pending, *,
@@ -504,29 +611,17 @@ def replay_pending() -> dict[str, Any]:
     wrong moment is simply left idle forever, with the caller already told the
     resume was on its way and nothing anywhere logging that it never came.
 
-    The one thing checked here is the stored ``procStart``: a pid outlives
-    nothing, and a promise replayed against whatever inherited the number would
-    type into a stranger. Reachability is deliberately *not* checked — the lane
-    is re-detected at delivery time, potentially minutes from now, and dropping a
-    promise because the session happened to be mid-re-host at boot would throw
-    away the very resume this exists to save.
+    Which promises survive is :func:`pending.load_all`'s question, and it asks
+    the process: alive, and started when the promise says it did. Reachability is
+    deliberately *not* checked — the lane is re-detected at delivery time,
+    potentially minutes from now, and dropping a promise because the session
+    happened to be mid-re-host at boot would throw away the very resume this
+    exists to save. Nor is age: a promise held for an hour because its session
+    never came free is this mechanism working, and re-arming it is the point.
     """
     items = pending.load_all()
     resumed = 0
     for item in items:
-        live = session_target._proc_start(item.repl_pid)
-        if live is None:
-            log.info("reflection: session %s (pid %s) is gone; dropping its "
-                     "pending resume", item.name or item.session_id, item.repl_pid)
-            pending.clear(item.repl_pid)
-            continue
-        if item.proc_start and item.proc_start != live:
-            log.warning("reflection: pid %s was recycled since its resume was "
-                        "promised (started %s, now %s); dropping it rather than "
-                        "injecting into whatever holds that pid now",
-                        item.repl_pid, item.proc_start, live)
-            pending.clear(item.repl_pid)
-            continue
         log.info("reflection: re-arming the deferred resume for session %s "
                  "(a command was injected before this service restarted)",
                  item.name or item.session_id)
