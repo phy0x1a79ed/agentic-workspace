@@ -35,10 +35,16 @@ class Tail:
     transcript is testing the record alone, as these all used to.
     """
 
-    def __init__(self, in_flight=None, queued=None, consumed=None):
+    def __init__(self, in_flight=None, queued=None, consumed=None,
+                 started=None, compacted=None, started_at=None):
         self._in_flight = in_flight
         self._queued = queued
         self._consumed = consumed
+        self._started = started
+        self._compacted = compacted
+        # When set, the start line is dated: the watcher must reject one stamped
+        # before it typed, because an earlier compaction left an identical line.
+        self._started_at = started_at
         self.polls = 0
 
     def poll(self):
@@ -56,6 +62,14 @@ class Tail:
 
     def consumed(self, _text):
         return self._consumed
+
+    def started(self, _text, *, since_ms=None):
+        if self._started_at is not None:
+            return self._started_at > (since_ms or 0)
+        return self._started
+
+    def compacted(self, *, since_ms=None):
+        return self._compacted
 
 
 def _run(read, injected_at_ms=1000, alive=True, step=0.0, tail=None, text=""):
@@ -84,6 +98,53 @@ def run(samples, *, injected_at_ms=1000, alive=True, step=0.0, tail=None,
         return served.pop(0) if len(served) > 1 else served[0]
 
     return _run(read, injected_at_ms, alive, step, tail, text)
+
+
+# ---------------------------------------------------------------------------
+# The signal that matters: the command has begun running
+# ---------------------------------------------------------------------------
+
+def test_a_command_seen_to_start_fires_at_once_however_busy_the_session_is():
+    # The change. A compacting session is `busy` from the driving turn straight
+    # through compaction, and everything typed in that window is drained into the
+    # turn that begins when it ends — so this is the moment to deliver, not
+    # something to wait out.
+    assert run([("busy", 2000)], text="/compact", step=100.0,
+               tail=Tail(started=True)) == watcher.STARTED_OUTCOME
+
+
+def test_a_start_line_from_an_earlier_compaction_does_not_fire():
+    # The session compacted half an hour ago, so its transcript already holds the
+    # identical `/compact` start line. Firing on it would put the resume in the
+    # queue *ahead* of the command it is meant to follow.
+    assert run([("busy", 2000)], injected_at_ms=1_000, text="/compact",
+               step=100.0,
+               tail=Tail(started_at=500)) == watcher.TIMED_OUT
+
+
+def test_a_finished_compaction_fires_even_if_the_start_line_was_missed():
+    assert run([("busy", 2000)], text="/compact", step=100.0,
+               tail=Tail(compacted=True)) == watcher.STARTED_OUTCOME
+
+
+def test_a_boundary_says_nothing_about_a_command_that_is_not_a_compaction():
+    # Somebody else's compaction, or the session's own, is not evidence that the
+    # `/model` we typed has run.
+    assert run([("busy", 2000)], text="/model opus", step=100.0,
+               tail=Tail(compacted=True)) == watcher.TIMED_OUT
+
+
+def test_a_started_command_still_waits_for_a_dialog_to_clear():
+    # `waiting` means a modal owns the keyboard, so a paste is swallowed rather
+    # than queued. That outranks every other signal.
+    assert run([("waiting", 2000)], text="/compact", step=100.0,
+               tail=Tail(started=True)) == watcher.TIMED_OUT
+
+
+def test_an_unreadable_transcript_falls_back_to_the_settled_path():
+    # No start line to see, so the old two-condition rule decides — which is why
+    # it is kept.
+    assert run([("idle", 2000)], text="/compact") == watcher.SETTLED_OUTCOME
 
 
 # ---------------------------------------------------------------------------
@@ -224,13 +285,14 @@ def test_an_unreadable_record_on_a_dead_process_is_death():
 
 
 def test_the_hard_cap_reports_itself_rather_than_hanging(caplog):
-    # Reaching the cap is a refusal, and it is the one state worth an ERROR: the
-    # session is owed a resume that nobody is going to see arrive.
+    # Reaching the cap is a refusal to deliver, and it says so — at WARNING now
+    # rather than ERROR, because the round ending is no longer the end of the
+    # promise: the session is asked to pause and waited on again.
     import logging
-    with caplog.at_level(logging.ERROR, logger="awm.reflection.watcher"):
+    with caplog.at_level(logging.WARNING, logger="awm.reflection.watcher"):
         assert run([("busy", 2000)], step=100.0) == watcher.TIMED_OUT
     assert any("still owed its resume" in r.getMessage()
-               and r.levelno >= logging.ERROR for r in caplog.records)
+               and r.levelno >= logging.WARNING for r in caplog.records)
 
 
 def test_the_watcher_imports_no_transport():

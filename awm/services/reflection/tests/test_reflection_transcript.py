@@ -72,6 +72,29 @@ def queued_command(prompt):
             "attachment": {"type": "queued_command", "prompt": prompt}}
 
 
+def at(ms):
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000.0, timezone.utc).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z")
+
+
+def prompt_taken_up(text, when_ms=2_000_000):
+    """The entry the CLI writes as it takes a prompt up and starts running it.
+
+    Copied from a live compaction: the content is a bare string, not a block
+    list, and it is stamped at the instant the command starts.
+    """
+    return {"type": "user", "timestamp": at(when_ms),
+            "message": {"role": "user", "content": text}}
+
+
+def compact_boundary(when_ms=2_000_000):
+    return {"type": "system", "subtype": "compact_boundary",
+            "timestamp": at(when_ms), "content": "Conversation compacted",
+            "compactMetadata": {"trigger": "manual", "preTokens": 180000,
+                                "postTokens": 20000, "durationMs": 120045}}
+
+
 # -- finding the file ------------------------------------------------------
 
 def test_the_transcript_is_found_by_id_not_by_guessing_the_directory(sessions):
@@ -144,6 +167,105 @@ def test_matching_ignores_surrounding_whitespace(sessions):
     append(sessions, user_text("resume please"))
     tail.poll()
     assert tail.consumed("resume please\n") is True
+
+
+# -- execution: has the command actually begun? ---------------------------
+
+def test_a_prompt_taken_up_is_the_command_starting(sessions):
+    # The live shape: content is a bare string, and this line is stamped at the
+    # moment compaction begins — which is the whole signal the resume fires on.
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, prompt_taken_up("/compact"))
+    tail.poll()
+    assert tail.started("/compact") is True
+    assert tail.consumed("/compact") is True
+
+
+def test_an_enqueued_command_has_not_started(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"))
+    tail.poll()
+    assert tail.started("/compact") is False
+    assert tail.landed("/compact") is True
+
+
+def test_a_dequeue_alone_does_not_mean_the_command_started(sessions):
+    # The trap. A dequeue drains the whole queue into the turn that is starting,
+    # and that turn may run an ordinary prompt first and only reach the slash
+    # command at its end. Firing a resume here is "any earlier and it hits before
+    # the compact".
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"), queue("dequeue"))
+    tail.poll()
+    assert tail.consumed("/compact") is True
+    assert tail.started("/compact") is False
+
+
+def test_the_queue_handing_a_line_over_is_not_execution_either(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions,
+           queue("enqueue", "/compact"),
+           queue("remove", "/compact"),
+           queued_command("/compact"))
+    tail.poll()
+    assert tail.consumed("/compact") is True
+    assert tail.started("/compact") is False
+
+
+def test_the_start_line_is_seen_even_when_the_queue_handed_it_over_first(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, queue("enqueue", "/compact"), queue("dequeue"),
+           prompt_taken_up("/compact"))
+    tail.poll()
+    assert tail.started("/compact") is True
+
+
+def test_a_compaction_boundary_is_reported(sessions):
+    tail = transcript.Tail(4242)
+    tail.poll()
+    assert tail.compacted() is False
+    append(sessions, compact_boundary())
+    tail.poll()
+    assert tail.compacted() is True
+
+
+def test_an_earlier_compactions_start_line_is_not_this_command_starting(sessions):
+    # The false positive that would fire a resume before the command ran: the
+    # session compacted half an hour ago, so its transcript already holds the
+    # identical `/compact` start line and a boundary of its own.
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, prompt_taken_up("/compact", when_ms=1_000_000),
+           compact_boundary(when_ms=1_100_000))
+    tail.poll()
+    assert tail.started("/compact", since_ms=1_500_000) is False
+    assert tail.compacted(since_ms=1_500_000) is False
+    assert tail.started("/compact", since_ms=900_000) is True
+    assert tail.compacted(since_ms=900_000) is True
+
+
+def test_an_undated_start_line_cannot_answer_a_since_question(sessions):
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    append(sessions, {"type": "user",
+                      "message": {"role": "user", "content": "/compact"}})
+    tail.poll()
+    assert tail.started("/compact") is True
+    assert tail.started("/compact", since_ms=1) is False
+
+
+def test_an_unreadable_transcript_knows_nothing_about_starting(sessions):
+    sessions.unlink()
+    tail = transcript.Tail(4242)
+    tail.watch("/compact")
+    tail.poll()
+    assert tail.started("/compact") is None
+    assert tail.compacted() is None
 
 
 # -- what the session is busy with ----------------------------------------
