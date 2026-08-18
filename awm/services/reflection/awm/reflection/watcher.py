@@ -1,10 +1,22 @@
-"""Wait for an injected command to finish, by reading what the session says.
+"""Wait for an injected command to run, by reading what the session says.
 
 A self-directed slash command and its resume must never be co-queued: ``/compact``
 runs at end of turn, whereas a resume is an ordinary message an *active* agent
 consumes immediately — so co-queuing lets the resume run first, on the old
 context, and starves the command of its idle slot. Something therefore has to
 wait, and this is that something.
+
+What it waits for is the command **starting**, not finishing. Everything typed
+into a session while it is compacting is accepted, queued, and drained into the
+turn that begins the instant compaction ends — so a resume delivered any time
+after compaction has begun runs first, on the fresh context, which is exactly
+what it is for. Waiting for the session to look free instead cost a measured
+27 seconds in the good case and, when the driving turn ran long, an hour of
+holding followed by a give-up: a turn that keeps starting work freezes
+``statusUpdatedAt`` and keeps the slash command queued, so the settled signal
+could not arrive. The start line in the transcript can, and does, while the
+session is at its busiest. Both signals are dated against the moment of
+injection, because an earlier compaction left an identical start line behind.
 
 It waits on the session's own record and on nothing else. Claude Code writes
 ``~/.claude/sessions/<repl-pid>.json`` about itself, with the same fields whether
@@ -81,14 +93,15 @@ FAST_POLL_S = 0.3
 # longer load-bearing against that gap; it is kept at the value the daemon path
 # has shipped without misfiring, as cheap insurance against a status flap.
 SETTLE_POLLS = 3
-# Hard cap on one wait. Reaching it is a *refusal to deliver*, not a licence to
-# deliver anyway: a resume typed into a session that is still mid-turn lands in
-# its queue, and a queue is not where a resume does any good — it runs whenever
-# that turn happens to end, on whatever context is there by then. The promise
-# stays on disk instead and the wait is re-armed, so the only thing the cap costs
-# is a log line that says the session is still owed one.
+# Hard cap on one round of waiting. Reaching it is a *refusal to deliver*, not a
+# licence to deliver anyway: a resume typed into a session that has not yet
+# reached its command lands in the queue behind it, and would then run first, on
+# the old context. The promise stays on disk instead and the wait is re-armed
+# without limit — what the end of a round costs the session is a pause request
+# (see ``inject._hold_and_nudge``), not its resume.
 MAX_WAIT_S = 900.0
 
+STARTED_OUTCOME = "started"
 SETTLED_OUTCOME = "settled"
 VANISHED = "vanished"
 TIMED_OUT = "timed-out"
@@ -112,6 +125,28 @@ def read_status(repl_pid: int) -> Optional[tuple[str, int]]:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def is_compaction(text: str) -> bool:
+    """Is ``text`` a ``/compact``? Decides whether a boundary is about it."""
+    head = (text or "").strip().split()
+    return bool(head) and head[0] == "/compact"
+
+
+def has_started(tail, text: str, injected_at_ms: int) -> bool:
+    """Has the command we injected begun running?
+
+    The start line naming it is the direct answer, and a ``compact_boundary`` is
+    the late one — a compaction that has *ended* has certainly begun, so a start
+    line missed for any reason still resolves instead of hanging until the cap.
+    Both are read as "since we typed", never as "present": an earlier compaction
+    left the same two lines in the file.
+    """
+    if tail is None or not text:
+        return False
+    if tail.started(text, since_ms=injected_at_ms) is True:
+        return True
+    return is_compaction(text) and tail.compacted(since_ms=injected_at_ms) is True
 
 
 def is_settled(status: str, updated_ms: int, tail, text: str = "") -> bool:
@@ -145,20 +180,26 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
                      clock: Callable[[], float] = time.monotonic,
                      proc_start: Callable[[int], Optional[str]] = None,
                      tail=None) -> str:
-    """Block until the command injected at ``injected_at_ms`` has finished.
+    """Block until the command injected at ``injected_at_ms`` is safe to resume past.
 
-    Returns :data:`SETTLED_OUTCOME`, :data:`VANISHED` (the process is gone —
-    there is nobody left to resume), or :data:`TIMED_OUT` (still busy after
-    :data:`MAX_WAIT_S`, so the caller must hold its promise rather than deliver).
+    Returns :data:`STARTED_OUTCOME` (the command is running, so anything typed
+    now lands on the other side of it), :data:`SETTLED_OUTCOME` (the session is
+    between turns), :data:`VANISHED` (the process is gone — there is nobody left
+    to resume), or :data:`TIMED_OUT` (neither, after :data:`MAX_WAIT_S`, so the
+    caller must hold its promise rather than deliver).
 
-    Two conditions must both hold. The session must have **reacted** — it took
-    the command in — and it must then be :func:`settled <is_settled>` for
-    several consecutive samples. The reacted half is what fixes the stalled
-    resume, and it is strictly better than watching for a busy *sighting*: a
-    one-second turn between two two-second samples is invisible, whereas both
-    signals here persist once true. Seeing the command consumed in the
-    transcript is the direct form of it; a ``statusUpdatedAt`` that has moved
-    past our injection is the fallback for when no transcript can be read.
+    :func:`has_started` is the signal that matters and the one that fires first.
+    The settled path below it survives for the cases it cannot cover: a
+    transcript that will not read, and a non-compacting slash command that leaves
+    no boundary. That path needs two conditions. The session must have
+    **reacted** — it took the command in — and it must then be :func:`settled
+    <is_settled>` for several consecutive samples. Reacted is strictly better
+    than watching for a busy *sighting*: a one-second turn between two
+    two-second samples is invisible, whereas both signals here persist once true.
+
+    A ``waiting`` status suppresses *both*: a blocking dialog owns the keyboard,
+    so a resume typed then is swallowed by the modal rather than queued. The wait
+    simply continues until a human answers it.
 
     ``text`` is the command that was injected, and it is only ever used as
     evidence about itself. ``tail`` is the transcript reader, which the caller
@@ -200,6 +241,11 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
             continue
         unreadable = 0
         status, updated_ms = sample
+        if status != "waiting" and has_started(tail, text, injected_at_ms):
+            log.info("reflection: session %s has begun running the command it was "
+                     "sent; its resume goes in now, to be taken up on the other "
+                     "side of it", who)
+            return STARTED_OUTCOME
         if updated_ms > injected_at_ms or (text and tail.consumed(text) is True):
             reacted = True
         if reacted and is_settled(status, updated_ms, tail, text):
@@ -217,7 +263,8 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
                 waiting_logged = True
         sleep(POLL_S if reacted else FAST_POLL_S)
 
-    log.error("reflection: session %s has not been free for %ss (reacted=%s); it "
-              "is still owed its resume, which is being held rather than typed "
-              "into a session that would only queue it", who, MAX_WAIT_S, reacted)
+    log.warning("reflection: session %s has not reached the command it was sent "
+                "after %ss (reacted=%s); it is still owed its resume, which is "
+                "being held rather than typed into a session that would only "
+                "queue it", who, MAX_WAIT_S, reacted)
     return TIMED_OUT

@@ -106,10 +106,23 @@ NOT_SUBMITTED = "none"             # `enter` was false, so nothing was submitted
 VERIFY_WAIT_S = 15.0
 VERIFY_POLL_S = 0.5
 
-# How many times a resume will wait out :data:`watcher.MAX_WAIT_S` for a session
-# that never comes free before the promise is left for a human. Four rounds is an
-# hour of holding, which is far longer than any turn and still bounded.
-MAX_HOLD_ROUNDS = 4
+# How many times a *delivery* may fail before the promise is left for a human.
+# This bounds the one failure that grinding cannot fix: a lane that will not take
+# the text, or a session whose transcript never shows it arriving.
+#
+# Waiting is deliberately not bounded. It used to be — four rounds, an hour — and
+# a session whose driving turn ran 63 minutes had its promise abandoned three
+# minutes before its `/compact` even began, then sat idle with the resume it was
+# owed still on disk. A session that is alive and has not yet reached its command
+# is the mechanism working, however long it takes; the answer to a long wait is
+# to ask the session to pause (see :func:`_hold_and_nudge`), not to give up on it.
+MAX_DELIVERY_ROUNDS = 4
+
+# How many times a session will be asked to bring its turn to a close before the
+# wait goes quiet and simply keeps holding. A pause request is text arriving
+# unbidden in somebody's session, so it is rationed: three across the life of a
+# promise, at most one per fifteen-minute round.
+NUDGE_LIMIT = 3
 
 # Statuses that say outright that typing now would land in a queue or behind a
 # modal. `shell` is not among them — see :func:`watcher.is_settled`.
@@ -519,18 +532,83 @@ def _verify_landed(tail, text: str, *, sleep: Callable[[float], None] = time.sle
     return tail.landed(text)
 
 
+def _nudge_text(item: pending.Pending, waited_s: int) -> str:
+    """The pause request. One line, and unmistakably not a new instruction.
+
+    It arrives mid-turn in somebody's session, unasked for, so it says who sent
+    it and asks for exactly one thing — a turn boundary. Anything that reads like
+    work would be work the session did not choose to do. It goes in as plain
+    text, never a slash command, and that asymmetry is the whole reason it lands:
+    a queued slash command waits for a turn boundary, while a plain prompt is
+    handed to the turn that is running (measured: seven such messages enqueued
+    and delivered within seconds each, across the 63 minutes one session's
+    `/compact` sat untouched in the same queue).
+    """
+    return (
+        f"[awm reflection] Your queued `{item.text}` cannot run until the current "
+        f"turn ends, and it has been waiting {waited_s // 60} minutes. Please "
+        f"finish the step you are on and end your turn without starting anything "
+        f"new — `{item.text}` will run then, and reflection will send you "
+        f"\"{item.followup}\" straight afterwards, so nothing is lost by stopping "
+        f"here. Automated message from the reflection service; it is not a new "
+        f"instruction from the user.")
+
+
+def _hold_and_nudge(item: pending.Pending, *, tail=None,
+                    now_ms=None, **kw) -> pending.Pending:
+    """Keep the promise for another round, and ask the session to pause.
+
+    Called when a round ended with the command still not run. Holding is silent
+    by itself, and silence is how an hour goes by: the session has no idea it is
+    sitting on its own compaction, and the only thing that ever broke that
+    deadlock was a human typing "pause for a moment to let the compact message
+    through" by hand.
+    """
+    who = item.name or item.session_id or f"pid {item.repl_pid}"
+    reason = f"still waiting for {item.text} to run (round {item.holds + 1})"
+    if item.nudges >= NUDGE_LIMIT:
+        item = pending.held(item, f"{reason}; asked {item.nudges} times already, "
+                                  f"now holding quietly")
+        pending.record(item)
+        return item
+
+    waited_s = max(0, ((now_ms or watcher.now_ms()) - item.injected_at_ms) // 1000)
+    text = _nudge_text(item, waited_s)
+    if tail is not None:
+        tail.watch(text)
+    try:
+        deliver(item.repl_pid, text, enter=True, tail=tail,
+                what="a pause request", **kw)
+    except DeliveryError as exc:
+        # A nudge is a courtesy, not the promise. Failing to deliver one must not
+        # spend the resume's own delivery budget.
+        log.warning("reflection: could not ask session %s to pause; still "
+                    "holding its resume: %s", who, exc)
+        item = pending.held(item, f"{reason}; the pause request could not be "
+                                  f"delivered")
+        pending.record(item)
+        return item
+    item = pending.held(pending.nudged(item),
+                        f"{reason}; asked the session to pause")
+    pending.record(item)
+    return item
+
+
 def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
-    """Wait for the command to finish, then deliver the resume — and prove it.
+    """Wait for the command to run, then deliver the resume — and prove it.
 
     Runs detached — a synchronous wait would deadlock, because the caller's turn
     has to end for the queued slash command to run at all.
 
-    A resume is only ever typed into a session that is between turns. Typing one
-    into a session that is mid-turn puts it in the queue, where it runs whenever
-    that turn happens to end, on whatever context is there by then — which is
-    not a resume, it is a stray prompt. So a session that is not free keeps its
-    promise and gets waited on again, and after :data:`MAX_HOLD_ROUNDS` of that
-    the promise is left on disk for a human to see rather than forced in.
+    A resume goes in once the command is *running* (anything typed then is
+    drained into the turn that starts on the other side of it) or once the
+    session is between turns. It is never typed into a session that has not
+    reached the command yet: that puts it in the queue ahead of nothing and
+    behind the command, where it runs first, on the old context — a stray prompt
+    rather than a resume. Such a session keeps its promise and is waited on
+    again, without limit while it is alive, and is asked to pause once a round.
+    Only a *delivery* that keeps failing is bounded, by
+    :data:`MAX_DELIVERY_ROUNDS`.
     """
     who = item.name or item.session_id or f"pid {item.repl_pid}"
     if tail is None:
@@ -538,17 +616,35 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
     tail.watch(item.text)
     tail.watch(item.followup)
 
-    for held in range(1, MAX_HOLD_ROUNDS + 1):
+    failures = 0
+    while failures < MAX_DELIVERY_ROUNDS:
         outcome = watcher.await_completion(item.repl_pid, tail=tail,
                                            injected_at_ms=item.injected_at_ms,
                                            text=item.text, label=who)
         if outcome == watcher.VANISHED:
             pending.clear(item.repl_pid)
             return
-        if outcome != watcher.SETTLED_OUTCOME or not _free_to_receive(
+        if outcome == watcher.TIMED_OUT:
+            # Re-ask before nudging. A round can expire in the same second the
+            # command starts — measured, first drill: the round ended 377ms
+            # before the `/compact` start line — and a pause request typed then
+            # is queued *during* compaction and drained into the fresh context
+            # alongside the resume, which is the one place it does harm.
+            tail.poll()
+            if not watcher.has_started(tail, item.text, item.injected_at_ms):
+                item = _hold_and_nudge(item, tail=tail, **kw)
+                continue
+            log.info("reflection: session %s reached its command just as the "
+                     "round expired; sending its resume rather than a pause "
+                     "request", who)
+            outcome = watcher.STARTED_OUTCOME
+        # A session seen to have STARTED its command is by definition mid-turn,
+        # and queuing is exactly what we want from it — so the free-to-receive
+        # check applies only to the settled path it was written for.
+        if outcome == watcher.SETTLED_OUTCOME and not _free_to_receive(
                 item.repl_pid, tail):
-            item = pending.held(item, f"the session has not been free (round "
-                                      f"{held} of {MAX_HOLD_ROUNDS})")
+            item = pending.held(item, "the session started a turn between "
+                                      "settling and the resume going in")
             pending.record(item)
             continue
 
@@ -568,6 +664,7 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
             # is the watcher's reference for "the session reacted after this
             # moment", and a fresh one would make the next wait sit out its full
             # cap waiting for a reaction that already happened.
+            failures += 1
             item = pending.held(item, f"could not be delivered: {exc}")
             pending.record(item)
             log.error("reflection: could not deliver the deferred resume to "
@@ -580,6 +677,7 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
             # True, or "no transcript to read" — which is not proof of anything
             # and certainly not licence to type the same resume in twice.
             return
+        failures += 1
         item = pending.held(item, "delivered, but the session's transcript never "
                                   "showed it arriving")
         pending.record(item)
@@ -588,8 +686,9 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
                     "and waiting for the session again", who)
 
     log.error("reflection: gave up delivering the deferred resume to session %s "
-              "after %s rounds; the promise is left in `pending` and that session "
-              "will sit idle until something resumes it", who, MAX_HOLD_ROUNDS)
+              "after %s failed deliveries; the promise is left in `pending` and "
+              "that session will sit idle until something resumes it",
+              who, MAX_DELIVERY_ROUNDS)
 
 
 def resume_watch(item: pending.Pending, *,

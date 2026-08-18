@@ -248,9 +248,11 @@ def _handle_pending(args: dict) -> dict:
          "hosting": p.hosting, "command": p.text, "resume": p.followup,
          "waiting_for_s": max(0, (now - p.injected_at_ms) // 1000),
          # A resume is held rather than typed into a session that would only
-         # queue it, so a promise sitting here is normal and these two say
-         # whether it is progressing or stuck.
-         "holds": p.holds, "last_outcome": p.last_outcome}
+         # queue it, so a promise sitting here is normal and these say whether it
+         # is progressing, and how many times the session has been asked to bring
+         # its turn to a close so the command it is sitting on can run.
+         "holds": p.holds, "nudges": p.nudges,
+         "last_outcome": p.last_outcome}
         for p in pending.load_all()
     ]}
 

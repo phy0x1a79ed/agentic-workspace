@@ -73,6 +73,12 @@ class Pending:
     # "what is it waiting for" and not only "how long has it been".
     holds: int = 0
     last_outcome: str = ""
+    # How many times the session has been asked to bring its turn to a close so
+    # that the command it is holding can run. Counted on the promise rather than
+    # in the watcher thread because the cap has to survive a restart: a session
+    # that has already been asked three times should not be asked three more
+    # every time this service is respawned.
+    nudges: int = 0
 
 
 def held(pending: Pending, outcome: str) -> Pending:
@@ -83,6 +89,11 @@ def held(pending: Pending, outcome: str) -> Pending:
     next wait sit out its cap waiting for a reaction that already happened.
     """
     return replace(pending, holds=pending.holds + 1, last_outcome=outcome)
+
+
+def nudged(pending: Pending) -> Pending:
+    """The same promise, with one more pause request against it."""
+    return replace(pending, nudges=pending.nudges + 1)
 
 
 def _path(repl_pid: int) -> Path:
@@ -152,6 +163,7 @@ def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
                 hosting=str(data.get("hosting") or ""),
                 holds=int(data.get("holds") or 0),
                 last_outcome=str(data.get("last_outcome") or ""),
+                nudges=int(data.get("nudges") or 0),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning("reflection: discarding unreadable pending record %s: %s",
@@ -178,8 +190,8 @@ def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
         age_ms = now - item.injected_at_ms
         if age_ms > OLD_ENOUGH_TO_MENTION_MS:
             log.info("reflection: session %s has been owed a resume for %ss (%s "
-                     "round(s) of holding; last: %s)",
+                     "round(s) of holding, %s pause request(s); last: %s)",
                      item.name or item.session_id, age_ms // 1000, item.holds,
-                     item.last_outcome or "still waiting")
+                     item.nudges, item.last_outcome or "still waiting")
         out.append(item)
     return out

@@ -26,6 +26,20 @@ cannot say at all:
 * ``queue-operation dequeue`` — the whole queue drained into the next turn. It
   carries no content, so it settles every line queued up to that point.
 
+Of those, the plain ``user`` entry is the only one that says the line is
+*running*: Claude Code writes it as the turn begins, so for ``/compact`` it is
+stamped at the instant compaction starts, minutes before the
+``compact_boundary`` that ends it. That distinction is why :meth:`Tail.started`
+exists apart from :meth:`Tail.consumed` — a ``dequeue`` hands a whole queue to a
+turn that may run an ordinary prompt first and only reach the slash command at
+its end, so consumption is not execution. Nothing here may key off the ORDER of
+lines: the file is appended out of timestamp order (a compaction's own start line
+is flushed after the boundary that follows it), so a question is about an event's
+presence, and where it must be about *when*, it reads the entry's own timestamp.
+The two execution signals do exactly that, because both of them recur: the same
+``/compact`` start line and a ``compact_boundary`` are sitting in the file from
+every earlier compaction the session has been through.
+
 Every question here is phrased as a positive observation, and every one answers
 ``None`` for "could not tell". An unreadable transcript must leave a caller
 waiting, never conclude that a session ignored us — the same stance
@@ -36,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -88,6 +103,24 @@ def path_for(session_id: str) -> Optional[Path]:
     return matches[0] if matches else None
 
 
+def _stamp_ms(entry: dict) -> int:
+    """The entry's own timestamp in epoch ms, or ``0`` if it has none.
+
+    Zero means "cannot be dated", and a caller asking for events *since* some
+    moment must therefore not count it. That is the safe direction: the fire
+    signals below are the ones that would otherwise be satisfied by an identical
+    line from a compaction that happened an hour ago.
+    """
+    raw = entry.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return 0
+    try:
+        return int(datetime.fromisoformat(
+            raw.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
 def _text_of(entry: dict) -> str:
     """The user-visible text of a ``user`` entry, or ``""`` for a tool result."""
     content = (entry.get("message") or {}).get("content")
@@ -123,6 +156,11 @@ class Tail:
         self._watched: set[str] = set()
         self._queued: set[str] = set()
         self._consumed: set[str] = set()
+        # These two are dated rather than set-membership, because both are read as
+        # "did this happen since we typed?" — and a tail's first read reaches back
+        # far enough to see an earlier compaction's own start line and boundary.
+        self._started: dict[str, int] = {}
+        self._compacted_at = 0
         self._open_tools: set[str] = set()
 
     # -- what we are looking for -------------------------------------------
@@ -221,8 +259,17 @@ class Tail:
                     self._open_tools.discard(str(block.get("tool_use_id")))
             text = _text_of(entry).strip()
             if text and text in self._watched:
+                # The turn running this line has begun. Written by the CLI as the
+                # prompt is taken up, which for a slash command is the moment the
+                # command starts — not when it finishes.
+                self._started[text] = max(self._started.get(text, 0),
+                                          _stamp_ms(entry))
                 self._consumed.add(text)
                 self._queued.discard(text)
+            return
+
+        if kind == "system" and entry.get("subtype") == "compact_boundary":
+            self._compacted_at = max(self._compacted_at, _stamp_ms(entry))
             return
 
         if kind == "queue-operation":
@@ -264,6 +311,41 @@ class Tail:
         if not self._ever_read:
             return None
         return (text or "").strip() in self._consumed
+
+    def started(self, text: str, *, since_ms: Optional[int] = None) -> Optional[bool]:
+        """Has the turn that runs ``text`` begun? ``None`` if unknown.
+
+        Narrower than :meth:`consumed`, and the difference is the whole point of
+        this method: only a plain ``user`` entry answers it, because that is what
+        the CLI writes when it takes a prompt up. A queue event says a line
+        changed hands, which for a slash command can be a whole turn earlier.
+
+        ``since_ms`` is what makes it safe to act on. A session that compacted
+        half an hour ago has that compaction's start line — the same ``/compact``,
+        character for character — within reach of a first read, and answering
+        ``True`` off it would fire a resume before the command it belongs to had
+        run. Callers pass the moment they injected.
+        """
+        if not self._ever_read:
+            return None
+        stamp = self._started.get((text or "").strip())
+        if stamp is None:
+            return False
+        return stamp > since_ms if since_ms is not None else True
+
+    def compacted(self, *, since_ms: Optional[int] = None) -> Optional[bool]:
+        """Has a compaction completed? ``None`` if unknown.
+
+        The ``compact_boundary`` system entry, which is the one place the CLI says
+        outright that a conversation was replaced. The late fallback for a
+        compaction whose start line was missed; ``since_ms`` bounds it to this
+        one, for the same reason :meth:`started` takes it.
+        """
+        if not self._ever_read:
+            return None
+        if not self._compacted_at:
+            return False
+        return (self._compacted_at > since_ms if since_ms is not None else True)
 
     def queued(self, text: str) -> Optional[bool]:
         """Is ``text`` sitting in the session's queue? ``None`` if unknown."""

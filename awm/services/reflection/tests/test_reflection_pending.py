@@ -32,9 +32,10 @@ LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
 class Tail:
     """A transcript that answers whatever the test says it answers."""
 
-    def __init__(self, in_flight=None, landed=None):
+    def __init__(self, in_flight=None, landed=None, started=False):
         self._in_flight = in_flight
         self._landed = landed
+        self._started = started
 
     def poll(self):
         return self._in_flight is not None
@@ -51,8 +52,34 @@ class Tail:
     def consumed(self, _text):
         return self._landed
 
+    def started(self, _text, *, since_ms=None):
+        return self._started
+
+    def compacted(self, *, since_ms=None):
+        return False
+
     def queued(self, _text):
         return False
+
+
+class Stop(Exception):
+    """Breaks out of a wait that is now deliberately unbounded."""
+
+
+def _outcomes(*sequence):
+    """An ``await_completion`` that returns each outcome in turn, then stops.
+
+    The holding loop no longer gives up on a session that has not reached its
+    command, so a test that wants to see several rounds has to end the loop
+    itself. That is the behaviour under test, not a testing inconvenience.
+    """
+    remaining = list(sequence)
+
+    def fake(*_a, **_kw):
+        if not remaining:
+            raise Stop
+        return remaining.pop(0)
+    return fake
 
 
 def _promise(**over) -> pending.Pending:
@@ -173,34 +200,100 @@ def test_an_undeliverable_resume_stays_pending_and_shouts(lane, monkeypatch,
     assert any("sit idle" in r.getMessage() for r in caplog.records)
 
 
-def test_a_session_that_never_comes_free_keeps_its_promise_and_shouts(
+def test_a_started_command_is_resumed_without_waiting_for_a_free_session(
+        lane, monkeypatch):
+    # The change this whole round is about. A session that has begun running its
+    # `/compact` is by definition mid-turn and its status is `busy` — and that is
+    # precisely when the resume must go in, because everything typed during a
+    # compaction is drained into the turn that starts when it ends. Requiring the
+    # session to look free first is what cost 27 seconds in the good case and an
+    # hour in the bad one.
+    monkeypatch.setattr(watcher, "await_completion", _outcomes(
+        watcher.STARTED_OUTCOME))
+    monkeypatch.setattr(watcher, "read_status", lambda pid: ("busy", 9))
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=True))
+    assert lane == ["resume"]
+    assert pending.load_all() == []
+
+
+def test_a_session_that_never_reaches_its_command_is_never_given_up_on(
         lane, monkeypatch, caplog):
-    # The cap used to inject anyway, on the theory that a late resume beats none.
-    # It does not: a resume typed into a session mid-turn goes into its queue and
-    # runs whenever that turn ends, on whatever context is there by then. So the
-    # promise is held, every round is recorded, and the give-up is an ERROR.
+    # A promise used to be abandoned after four rounds. One session's driving turn
+    # ran 63 minutes: its promise was binned three minutes before the `/compact`
+    # began, and it then sat idle holding a resume nobody was waiting to give it.
+    # Waiting is now bounded only by the session's own life.
     monkeypatch.setattr(watcher, "await_completion",
-                        lambda *a, **kw: watcher.TIMED_OUT)
+                        _outcomes(*[watcher.TIMED_OUT] * 8))
     pending.record(_promise())
     with caplog.at_level(logging.ERROR, logger="awm.reflection.inject"):
-        inject._await_and_resume(_promise())
-    assert lane == [], "nothing may be typed into a session that is not free"
+        with pytest.raises(Stop):
+            inject._await_and_resume(_promise())
+    assert "resume" not in lane, "a resume must not be typed in ahead of the command"
     [item] = pending.load_all()
-    assert item.holds == inject.MAX_HOLD_ROUNDS
-    assert "has not been free" in item.last_outcome
-    assert any("gave up delivering" in r.getMessage() for r in caplog.records)
+    assert item.holds == 8
+    assert not any("gave up" in r.getMessage() for r in caplog.records)
+
+
+def test_a_session_holding_up_its_own_command_is_asked_to_pause(lane, monkeypatch):
+    # Holding in silence is how an hour goes by: the session cannot see that it is
+    # sitting on its own compaction. The pause request goes in as plain text —
+    # which the queue hands to the *running* turn, unlike the slash command it is
+    # about — and asks for a turn boundary and nothing else.
+    monkeypatch.setattr(watcher, "await_completion", _outcomes(
+        watcher.TIMED_OUT, watcher.STARTED_OUTCOME))
+    monkeypatch.setattr(watcher, "read_status", lambda pid: ("busy", 9))
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=True))
+    nudge, resumed = lane
+    assert resumed == "resume"
+    assert nudge.startswith("[awm reflection]")
+    assert "/compact" in nudge and "end your turn" in nudge
+    assert "not a new instruction" in nudge
+    assert "\n" not in nudge, "a newline in a paste submits it early"
+
+
+def test_a_round_that_expires_as_the_command_starts_resumes_instead_of_nudging(
+        lane, monkeypatch):
+    # Measured in the first live drill: the round ended 377ms before the
+    # `/compact` start line was written. The pause request that followed was
+    # queued *during* compaction and would have been drained into the fresh
+    # context alongside the resume — the one place it does harm.
+    monkeypatch.setattr(watcher, "await_completion", _outcomes(watcher.TIMED_OUT))
+    monkeypatch.setattr(watcher, "read_status", lambda pid: ("busy", 9))
+    pending.record(_promise())
+    inject._await_and_resume(
+        _promise(), tail=Tail(in_flight=False, landed=True, started=True))
+    assert lane == ["resume"], "no pause request once the command is running"
+    assert pending.load_all() == []
+
+
+def test_the_pause_request_is_rationed_and_the_wait_goes_quiet(lane, monkeypatch):
+    # Text arriving unbidden in somebody's session is rationed. After the cap the
+    # promise is still held — quietly, and for as long as the session lives.
+    monkeypatch.setattr(watcher, "await_completion",
+                        _outcomes(*[watcher.TIMED_OUT] * (inject.NUDGE_LIMIT + 2)))
+    pending.record(_promise())
+    with pytest.raises(Stop):
+        inject._await_and_resume(_promise())
+    assert len(lane) == inject.NUDGE_LIMIT
+    [item] = pending.load_all()
+    assert item.nudges == inject.NUDGE_LIMIT
+    assert "holding quietly" in item.last_outcome
 
 
 def test_a_busy_session_at_the_last_instant_holds_rather_than_types(
         lane, monkeypatch):
     # The watcher said settled, but a turn started in the gap between the wait
     # and the write. Holding the promise is only worth anything if the delivery
-    # itself checks too.
+    # itself checks too. (A *started* command is the opposite case and skips this
+    # check — see above.)
     monkeypatch.setattr(watcher, "await_completion",
-                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+                        _outcomes(watcher.SETTLED_OUTCOME))
     monkeypatch.setattr(watcher, "read_status", lambda pid: ("busy", 9))
     pending.record(_promise())
-    inject._await_and_resume(_promise())
+    with pytest.raises(Stop):
+        inject._await_and_resume(_promise())
     assert lane == []
     assert len(pending.load_all()) == 1
 
@@ -214,7 +307,7 @@ def test_a_delivery_the_session_never_showed_is_tried_again(lane, monkeypatch):
     monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
     pending.record(_promise())
     inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
-    assert lane == ["resume"] * inject.MAX_HOLD_ROUNDS
+    assert lane == ["resume"] * inject.MAX_DELIVERY_ROUNDS
     [item] = pending.load_all()
     assert "never showed it arriving" in item.last_outcome
 
@@ -277,6 +370,16 @@ def test_holding_a_promise_records_why_without_moving_its_clock():
     assert held.last_outcome == "the session has not been free"
     assert held.injected_at_ms == 1234
     assert pending.held(held, "again").holds == 2
+
+
+def test_pause_requests_are_counted_on_the_promise_so_a_restart_cannot_reset_them():
+    # The cap has to survive a respawn: a session already asked three times must
+    # not be asked three more by the process that replaces this one.
+    item = pending.nudged(pending.nudged(_promise()))
+    assert item.nudges == 2
+    pending.record(item)
+    [reloaded] = pending.load_all(proc_start=lambda pid: "999")
+    assert reloaded.nudges == 2
 
 
 def test_an_unreadable_record_is_discarded_not_carried_forever(_pending_dir):
