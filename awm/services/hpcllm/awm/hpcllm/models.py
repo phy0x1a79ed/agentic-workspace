@@ -11,6 +11,10 @@ class ModelSpec:
     min_gpus: int = 1
     min_mem_gb: int = 16
     ctx_size: int = 32768
+    # llama.cpp divides --ctx-size across --parallel slots, so the two are chosen
+    # together or not at all: 8 slots out of 65536 leaves 8192 apiece. Default 1
+    # keeps the single-request behaviour every existing entry was measured under.
+    parallel: int = 1
 
 
 @dataclass(frozen=True)
@@ -36,11 +40,24 @@ REGISTRY: dict[str, ModelSpec] = {
         min_mem_gb=24,
         ctx_size=32768,
     ),
+    # fir schedules a whole 80 GB H100 per GPU, and the 14B above uses 10.5 GB of
+    # it -- about an eighth of the card. This is the same card actually filled:
+    # 23.2 GB of weights, a 64k context, and eight concurrent slots, which is
+    # what makes a panel sweep cost minutes instead of an hour.
+    "Qwen/Qwen3-32B": ModelSpec(
+        name="Qwen/Qwen3-32B",
+        gguf_filename="Qwen3-32B-Q5_K_M.gguf",
+        api_name="qwen3-32b",
+        min_gpus=1,
+        min_mem_gb=64,
+        ctx_size=65536,
+        parallel=8,
+    ),
 }
 
 CLUSTER_MODELS: dict[str, list[str]] = {
     "sockeye": ["Qwen/Qwen3-8B"],
-    "fir": ["Qwen/Qwen2.5-14B-Instruct"],
+    "fir": ["Qwen/Qwen2.5-14B-Instruct", "Qwen/Qwen3-32B"],
 }
 
 
@@ -55,6 +72,7 @@ def list_models(cluster: str | None = None) -> list[dict]:
                 "min_gpus": spec.min_gpus,
                 "min_mem_gb": spec.min_mem_gb,
                 "ctx_size": spec.ctx_size,
+                "parallel": spec.parallel,
                 "clusters": [
                     c for c, names in CLUSTER_MODELS.items()
                     if name in names

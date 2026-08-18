@@ -50,6 +50,10 @@ CLUSTERS: dict[str, ClusterConfig] = {
         constraint="",
         apptainer_module="apptainer/1.3.5",
         gpu_type="h100",
+        # The sbatch stages the GGUF into $SLURM_TMPDIR before loading it, so the
+        # allocation has to hold the largest model on this cluster with room to
+        # spare rather than the smallest. 32 was sized for a 10.5 GB model.
+        default_mem_gb=64,
     ),
 }
 
