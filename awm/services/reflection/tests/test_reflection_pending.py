@@ -22,7 +22,7 @@ import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import inject, pending, session_target, watcher
+from awm.reflection import inject, pending, session_target, stop_gate, watcher
 
 
 LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
@@ -121,6 +121,12 @@ def _pending_dir(tmp_path, monkeypatch):
     yield tmp_path / "pending"
 
 
+@pytest.fixture(autouse=True)
+def _gate_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(stop_gate, "GATE_DIR", str(tmp_path / "stop-gate"))
+    yield tmp_path / "stop-gate"
+
+
 @pytest.fixture
 def lane(monkeypatch):
     """Wire the sender to a fake lane and return the list of texts written."""
@@ -158,6 +164,25 @@ def test_a_deferred_resume_is_written_down_before_the_watcher_starts(lane):
 def test_a_plain_prompt_promises_nothing(lane):
     inject.send("just a prompt", caller_pid=4242, spawn=lambda fn: None)
     assert pending.load_all() == []
+
+
+# ---------------------------------------------------------------------------
+# Disarming the turn-end nag around a queued slash command
+# ---------------------------------------------------------------------------
+
+def test_queuing_a_slash_command_disarms_the_callers_stop_gate(lane, _gate_dir):
+    _gate_dir.mkdir(parents=True, exist_ok=True)
+    (_gate_dir / LANE.session_id).write_text("")
+    inject.send("/compact", caller_pid=4242, spawn=lambda fn: None)
+    assert not (_gate_dir / LANE.session_id).exists()
+
+
+def test_a_plain_prompt_never_touches_the_stop_gate(lane, _gate_dir):
+    _gate_dir.mkdir(parents=True, exist_ok=True)
+    marker = _gate_dir / LANE.session_id
+    marker.write_text("")
+    inject.send("just a prompt", caller_pid=4242, spawn=lambda fn: None)
+    assert marker.exists(), "no queued command, nothing to wait on, nothing to disarm"
 
 
 def test_no_promise_survives_a_command_that_never_went_in(monkeypatch):
@@ -325,13 +350,34 @@ def test_an_unreadable_transcript_does_not_license_a_second_delivery(
     assert pending.load_all() == []
 
 
-def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch):
+def test_a_vanished_session_clears_its_promise_without_typing(lane, monkeypatch,
+                                                              _gate_dir):
     monkeypatch.setattr(watcher, "await_completion",
                         lambda *a, **kw: watcher.VANISHED)
     pending.record(_promise())
     inject._await_and_resume(_promise())
     assert lane == [], "there is nobody left to resume"
     assert pending.load_all() == []
+    assert (_gate_dir / LANE.session_id).exists(), \
+        "the wait is over; the caller's own nag resumes"
+
+
+def test_a_delivered_resume_rearms_the_stop_gate(lane, monkeypatch, _gate_dir):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    pending.record(_promise())
+    inject._await_and_resume(_promise())
+    assert (_gate_dir / LANE.session_id).exists()
+
+
+def test_giving_up_after_max_delivery_rounds_still_rearms_the_stop_gate(
+        lane, monkeypatch, _gate_dir):
+    monkeypatch.setattr(watcher, "await_completion",
+                        lambda *a, **kw: watcher.SETTLED_OUTCOME)
+    monkeypatch.setattr(inject, "VERIFY_WAIT_S", 0.0)
+    pending.record(_promise())
+    inject._await_and_resume(_promise(), tail=Tail(in_flight=False, landed=False))
+    assert (_gate_dir / LANE.session_id).exists()
 
 
 def test_a_long_held_promise_survives_while_its_session_lives(monkeypatch):
