@@ -485,20 +485,33 @@ class ViewNotifier:
     """Publishes a ``view-updated`` event on a diagram's emit topic per commit.
 
     A consumer editor tab that placed one of this diagram's pages as an image
-    subscribes to ``drawio:<save>`` and refreshes the image when this arrives.
+    subscribes to ``drawio:<save>:<page>`` (percent-encoded page name) and
+    refreshes the image when this arrives. A page-omitted (whole-document)
+    reference subscribes to the unscoped ``drawio:<save>`` instead, which is
+    always emitted alongside the page-scoped topics regardless of which pages
+    changed — that reference's granularity is the whole document by design.
 
     Two things make it distinct from :meth:`Service._push_to_live_tabs`, which
-    also emits on that topic: it fires on **every** accepted write (not only a
-    merge), and **unconditionally** — a consumer can be open when the source has
-    no editor tab of its own (an agent ``merge`` is the case that matters most).
-    The source diagram's *own* tab also receives it but ignores it: the client
-    handles only ``flush``/``push`` for its own save.
+    also emits on the unscoped topic: it fires on **every** accepted write (not
+    only a merge), and **unconditionally** — a consumer can be open when the
+    source has no editor tab of its own (an agent ``merge`` is the case that
+    matters most). The source diagram's *own* tab also receives it but ignores
+    it: the client handles only ``flush``/``push`` for its own save.
+
+    Page-scoped topics are derived by diffing the just-committed content
+    against the immediately prior revision of *this path* (``store.history``
+    is already ``git log -- path``-scoped, so it is robust to unrelated
+    commits landing in between). Anything that stops that diff from being
+    trustworthy — no prior revision, a read/parse failure — falls back to
+    treating every current page as changed: over-notifying is a wasted
+    refresh, under-notifying is a consumer stuck showing stale content.
     """
 
     def __init__(self, emit):
         #: ``Callable[[str, Any], Awaitable[None]]`` — the adapter's emit.
         self._emit = emit
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._store: Store | None = None
 
     def attach(self, store: Store,
                loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -506,10 +519,47 @@ class ViewNotifier:
             self._loop = loop or asyncio.get_running_loop()
         except RuntimeError:
             self._loop = loop
+        self._store = store
         store.subscribe(self.notify)
 
+    def _changed_pages(self, save: str, rev: str | None) -> list[str] | None:
+        """Names of pages that changed in ``rev``, or ``None`` for "all of them".
+
+        ``None`` is the defensive fallback — every path here that cannot
+        establish a trustworthy diff (no prior revision, unreadable/unparsable
+        content on either side) returns it rather than guessing.
+        """
+        store = self._store
+        if store is None:
+            return None
+        try:
+            history = store.history(save, limit=2)
+            if len(history) < 2:
+                return None  # first commit for this path — nothing to diff
+            prior_rev = history[1].rev
+            new_xml = store.read(save, rev=rev) if rev else store.read(save)
+            old_xml = store.read(save, rev=prior_rev)
+            new_pages = xmlmodel.parse(new_xml).findall("diagram")
+            old_pages = xmlmodel.parse(old_xml).findall("diagram")
+        except Exception:  # noqa: BLE001 — any failure means "diff untrustworthy"
+            return None
+
+        def key(diagram) -> str | None:
+            return diagram.get("id") or diagram.get("name")
+
+        old_by_key = {key(d): d for d in old_pages if key(d) is not None}
+        changed = []
+        for diagram in new_pages:
+            name = diagram.get("name")
+            if not name:
+                continue
+            old = old_by_key.get(key(diagram))
+            if old is None or xmlmodel.serialize(old) != xmlmodel.serialize(diagram):
+                changed.append(name)
+        return changed
+
     def notify(self, save: str, rev: str | None = None) -> None:
-        """Schedule the emit on the loop. Cheap and non-blocking: the commit
+        """Schedule the emit(s) on the loop. Cheap and non-blocking: the commit
         hook may run off the loop thread, and nothing writing a diagram should
         wait on a fan-out to consumers."""
         loop = self._loop
@@ -518,11 +568,27 @@ class ViewNotifier:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 return
-        topic = f"drawio:{save}"
+
+        topics = [f"drawio:{save}"]
+        changed_pages = self._changed_pages(save, rev)
+        if changed_pages is None:
+            changed_pages = []
+            store = self._store
+            if store is not None:
+                try:
+                    xml = store.read(save, rev=rev) if rev else store.read(save)
+                    pages = xmlmodel.page_summaries(xmlmodel.parse(xml))
+                    changed_pages = [p["name"] for p in pages if p.get("name")]
+                except Exception:  # noqa: BLE001 — unknown pages is not fatal
+                    changed_pages = []
+        for page in changed_pages:
+            topics.append(f"drawio:{save}:{quote(page, safe='')}")
+
         payload = {"type": "view-updated", "save": save, "rev": rev}
 
         def _fire() -> None:
-            asyncio.create_task(self._emit(topic, payload))
+            for topic in topics:
+                asyncio.create_task(self._emit(topic, payload))
 
         try:
             loop.call_soon_threadsafe(_fire)

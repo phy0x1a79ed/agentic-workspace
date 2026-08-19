@@ -252,10 +252,98 @@ def test_commit_emits_view_updated():
 
     events = run(scenario())
     assert events, "a commit should emit a view-updated event"
-    topic, payload = events[-1]
-    assert topic == f"drawio:{SAVE}"
-    assert payload["type"] == "view-updated" and payload["save"] == SAVE
-    assert payload["rev"]
+    topics = {topic for topic, _ in events}
+    assert f"drawio:{SAVE}" in topics
+    for topic, payload in events:
+        assert payload["type"] == "view-updated" and payload["save"] == SAVE
+        assert payload["rev"]
+
+
+def test_commit_scopes_the_notify_to_the_page_that_changed():
+    async def scenario():
+        events = []
+
+        async def emit(topic, payload):
+            events.append(topic)
+
+        import tempfile
+        store = Store(tempfile.mkdtemp())
+        # Different authors so the second write lands as its own commit
+        # rather than amending the first (see Store._can_amend) — the diff
+        # needs two distinct revisions to compare.
+        store.create(SAVE, author="creator", xml=TWO_PAGES)
+        ViewNotifier(emit).attach(store)
+
+        # Edit cell "a", which lives on "Page-1" only.
+        store.write(SAVE, set_value(store.read(SAVE), "a", "moved"), author="editor")
+        await asyncio.sleep(0.05)
+        return events
+
+    events = run(scenario())
+    assert f"drawio:{SAVE}:Page-1" in events
+    assert f"drawio:{SAVE}:Second" not in events
+
+
+def test_a_new_page_is_reported_changed():
+    async def scenario():
+        events = []
+
+        async def emit(topic, payload):
+            events.append(topic)
+
+        import tempfile
+        store = Store(tempfile.mkdtemp())
+        store.create(SAVE, author="creator", xml=TEMPLATE)
+        ViewNotifier(emit).attach(store)
+
+        store.write(SAVE, TWO_PAGES, author="editor")
+        await asyncio.sleep(0.05)
+        return events
+
+    events = run(scenario())
+    assert f"drawio:{SAVE}:Second" in events
+
+
+def test_first_commit_notifies_every_page_present():
+    async def scenario():
+        events = []
+
+        async def emit(topic, payload):
+            events.append(topic)
+
+        import tempfile
+        store = Store(tempfile.mkdtemp())
+        ViewNotifier(emit).attach(store)
+        # No prior revision exists for this path — `create` is its first
+        # commit — so the notifier's "no history to diff" fallback fires.
+        store.create(SAVE, author="t", xml=TWO_PAGES)
+        await asyncio.sleep(0.05)
+        return events
+
+    events = run(scenario())
+    assert f"drawio:{SAVE}:Page-1" in events
+    assert f"drawio:{SAVE}:Second" in events
+
+
+def test_changed_pages_is_none_when_there_is_no_prior_revision(store):
+    async def noop(topic, payload):
+        pass
+
+    notifier = ViewNotifier(noop)
+    notifier.attach(store)
+    # `store` fixture's `create` is the only commit for this path so far.
+    assert notifier._changed_pages(SAVE, rev=store.head_rev(SAVE)) is None
+
+
+def test_changed_pages_reports_only_the_page_that_differs(store):
+    async def noop(topic, payload):
+        pass
+
+    notifier = ViewNotifier(noop)
+    notifier.attach(store)
+    result = store.write(SAVE, set_value(store.read(SAVE), "a", "moved"),
+                          author="t")
+    assert notifier._changed_pages(SAVE, rev=result["rev"]) == ["Page-1"]
 
 
 # --- the HTTP listener over a real socket ----------------------------------
