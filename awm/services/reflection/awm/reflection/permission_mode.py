@@ -181,24 +181,30 @@ def _open(target, *, socket=None, runner=None, opener=None, sleep=time.sleep):
 
 def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
                   runner=None, opener=None,
-                  sleep: Callable[[float], None] = time.sleep) -> dict:
+                  sleep: Callable[[float], None] = time.sleep,
+                  expect_session: Optional[str] = None) -> dict:
     """Cycle the calling session's permission mode until it reads as bypass.
 
     Returns a result dict describing what happened: ``changed`` says whether any
     key was pressed, ``mode`` is where the session ended up, and ``steps`` is how
     many times Shift+Tab was sent.
+
+    ``expect_session`` narrows which session the pid is allowed to resolve to —
+    see :func:`session_target.resolve`. It refuses on a mismatch and never
+    redirects.
     """
     if not caller_pid:
         raise session_target.ResolveError(
             "could not tell which session is calling, so there is no permission "
             "mode to change. Reflection acts on the caller's own session only")
-    target = session_target.resolve(caller_pid, socket=socket, runner=runner)
+    target = session_target.resolve(caller_pid, socket=socket, runner=runner,
+                                    expect_session=expect_session)
     sess = _open(target, socket=socket, runner=runner, opener=opener, sleep=sleep)
     try:
         started_as = classify(sess.read())
         if started_as == TARGET_MODE:
             return {"ok": True, "changed": False, "mode": TARGET_MODE, "steps": 0,
-                    "session": sess.label,
+                    "session": sess.label, "hosting": target.hosting,
                     "detail": "already in bypass-permissions mode"}
         if started_as == "unknown":
             # No mode indicator on screen means the footer is covered — almost
@@ -208,11 +214,13 @@ def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
             # here could select an arbitrary menu entry, so don't.
             return {
                 "ok": False, "changed": False, "mode": "unknown", "steps": 0,
-                "session": sess.label,
+                "session": sess.label, "hosting": target.hosting,
                 "error": (
                     "cannot see this session's permission-mode indicator, so the "
-                    "mode cannot be changed safely — the session is most likely "
-                    "showing a modal or prompt that would swallow the keystroke. "
+                    "mode cannot be changed safely — on a terminal session that "
+                    "means a modal or prompt is covering the footer and would "
+                    "swallow the keystroke; on a background session it usually "
+                    "means the pty stream carries no footer paint to read. "
                     "Nothing was sent."),
             }
 
@@ -228,6 +236,7 @@ def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
                          sess.label, step, " → ".join(seen))
                 return {"ok": True, "changed": True, "mode": TARGET_MODE,
                         "steps": step, "session": sess.label,
+                        "hosting": target.hosting,
                         "started_as": started_as, "path": seen}
             # Back where we started without passing through bypass: this session
             # does not offer it (a remote-attached session, or one launched
@@ -243,6 +252,7 @@ def ensure_bypass(*, caller_pid: Optional[int], socket: Optional[str] = None,
             "mode": seen[-1],
             "steps": len(seen) - 1,
             "session": sess.label,
+            "hosting": target.hosting,
             "started_as": started_as,
             "path": seen,
             "error": (

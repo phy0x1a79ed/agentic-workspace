@@ -163,9 +163,33 @@ the session lands in auto, where a classifier gates every action.
 No hook output can fix this: the hook contract exposes per-call allow/deny and
 permission *rules*, but the session mode is internal state with no external
 setter. `reflection_mode` therefore does what a human would — presses the
-Shift+Tab permission-mode cycle — driven from a `PostToolUse` hook matching
-`ExitPlanMode` (which fires only when the tool actually executed, so an approval
-and never a rejection).
+Shift+Tab permission-mode cycle. `hooks/plan_mode_hook.py` is the trigger:
+
+```bash
+ln -s /home/tony/agentic_workspace/awm/services/reflection/hooks/plan_mode_hook.py \
+      ~/.claude/hooks/awm-reflection-mode.py
+```
+
+then merge `hooks/claude-settings-fragment.json` into the `PostToolUse` array of
+`~/.claude/settings.json`, **alongside** anything already matching
+`ExitPlanMode`. Editing that file is a global decision for every session on the
+box, which is why no installer touches it.
+
+The hook runs synchronously and calls `POST /invoke` directly rather than through
+the CLI, because identity travels in a header the CLI does not send. A hook's own
+pid names no session, so it sends `X-Awm-Caller-Pid` — the opt-in header that
+asks the gateway to walk its ancestry — plus the `session_id` Claude Code handed
+it on stdin as `expect_session`, which reflection refuses to act against if the
+walk resolved somewhere else. Detaching the hook (as the notify hook does) would
+reparent it away from the REPL and destroy that ancestry.
+
+Two guards, both read off the hook's own stdin: `tool_response` must carry a
+`plan` key (the approved shape — a rejection does not reach a `PostToolUse` hook
+at all, it is a separate `PermissionDenied` event), and `permission_mode` — which
+`ExitPlanMode` has already restored by the time the hook runs — must not already
+be `bypassPermissions`. A refusal it cannot retry past is appended to
+`~/.claude/awm-reflection-mode.log`; an unreadable footer is retried for ~15s,
+since whatever covers it after an approval is transient.
 
 It never counts presses. The cycle is `default → acceptEdits → plan →
 bypassPermissions → auto → default`, `bypassPermissions` and `auto` appear only
@@ -178,15 +202,15 @@ pressing anything, for the same reason the modal guard exists.
 Footer strings are TUI copy and can move under a CLI update; they fail safe,
 since an unrecognised footer reads as unknown and unknown does not act.
 
-One bounded gap, background sessions only: `default` paints no indicator, and
-that backend reads an append-only byte stream rather than a rendered screen, so
-a session sitting in `default` can read back as whatever mode last painted one.
-Output is discarded before each keypress, which fixes every read during a walk;
-only the first read can still be stale, and the worst outcome is that such a
-session is left alone rather than switched. Nothing repaints the footer on demand
-— an empty bracketed paste and a cursor key were both tried — so closing it
-properly means rendering the stream through a terminal emulator. The tmux backend
-is unaffected, and that is the path a phone-approved plan actually takes.
+Reading the footer is what bounds this to the tmux lane in practice. `capture-pane`
+renders the current screen; the daemon backend gets an append-only stream of
+repaint deltas, and the *first* read of a walk has nothing to discard, so a
+background session mid-turn reads back either no footer at all (`unknown`, which
+refuses) or the last one painted — which can name a mode it has since left, and
+that reads as "already in bypass" and returns ok having done nothing. Both were
+measured on one live background session minutes apart. Neither types blind, and
+both leave the session where it was; the useful lane is tmux, which is also the
+one a phone-approved plan takes.
 
 ## Sessions reflection cannot reach
 

@@ -129,3 +129,22 @@ def test_an_overlay_does_not_re_arm_the_bases_promises(monkeypatch):
     monkeypatch.delenv("AWM_SERVICE_OVERLAY")
     hub_adapter._on_start()
     assert called == [1], "a base must still replay its own"
+
+
+def test_mode_forwards_the_callers_expected_session(monkeypatch):
+    # The hook passes the sessionId Claude Code handed it; the adapter must not
+    # swallow it, or the narrowing check silently stops narrowing.
+    seen = {}
+    monkeypatch.setattr(hub_adapter.permission_mode, "ensure_bypass",
+                        lambda **kw: seen.update(kw) or {"ok": True})
+
+    hub_adapter._handle_mode({"_caller_pid": 42, "expect_session": "sid-9"})
+    assert seen == {"caller_pid": 42, "expect_session": "sid-9"}
+
+    # An agent calling `reflection(verb="mode")` sends nothing, and an empty
+    # string is the same as absent — never a session id to match against.
+    hub_adapter._handle_mode({"_caller_pid": 42, "expect_session": ""})
+    assert seen["expect_session"] is None
+    hub_adapter._handle_mode({"_caller_pid": 42})
+    assert seen["expect_session"] is None
+
