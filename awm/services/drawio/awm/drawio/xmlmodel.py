@@ -226,6 +226,32 @@ def normalize(xml: str | bytes) -> str:
     return serialize(normalize_tree(parse(xml)))
 
 
+def as_tree(xml: "str | bytes | ET.Element") -> ET.Element:
+    """Parse, or pass an already-parsed ``mxfile`` straight through.
+
+    A caller that needs both a page index and a page cut would otherwise parse
+    a half-megabyte document twice to do it.
+    """
+    return xml if isinstance(xml, ET.Element) else parse(xml)
+
+
+def single_page(xml: "str | bytes | ET.Element", index: int) -> str:
+    """The document reduced to the one page at ``index``, still an ``mxfile``.
+
+    The root's attributes come along, so the page keeps whatever document-level
+    settings it was authored under. The source tree is left alone.
+    """
+    mxfile = as_tree(xml)
+    diagrams = mxfile.findall("diagram")
+    if not 0 <= index < len(diagrams):
+        raise MalformedDiagram(
+            f"page index {index} is out of range for a {len(diagrams)}-page "
+            "document")
+    cut = ET.Element(mxfile.tag, dict(mxfile.attrib))
+    cut.append(diagrams[index])
+    return serialize(normalize_tree(cut))
+
+
 # --- inspection ------------------------------------------------------------
 
 def page_summaries(mxfile: ET.Element) -> list[dict]:

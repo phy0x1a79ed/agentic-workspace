@@ -575,6 +575,133 @@ def test_an_escaped_query_on_a_placed_view_survives_the_store(renderer, store):
     assert not result.problems and renderer.renders == 2
 
 
+# --- one page's work, and no more ------------------------------------------
+
+def test_a_sibling_pages_references_are_never_resolved(renderer, store):
+    """The fan-out this removes: in the SCADC abstract one page places thirteen
+    live views, so a request for any *other* page resolved all thirteen —
+    recursively, exhausting the render budget — and then discarded the lot."""
+    seen: list[str] = []
+
+    def spy(url, budget):
+        seen.append(url)
+        return b"<svg />", []
+
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Second"))
+    renderer.render("fig/host/Second", resolver=spy)
+    assert seen == []
+    renderer.render("fig/host/Page-1", resolver=spy)
+    assert seen == [f"{V.VIEW_PREFIX}/scadc/demo/Second"]
+
+
+def test_the_browser_is_handed_the_one_page_at_index_zero(renderer, render):
+    renderer.render("scadc/demo/Second")
+    assert render_xml_of(renderer).count("<diagram ") == 1
+    assert render.calls[-1][1] == 0
+
+
+def test_a_page_omitted_request_is_still_the_whole_document(renderer, render):
+    """``None`` means "let the exporter decide", and for a compressed diagram it
+    is also the only path that never parses. Both have to survive the cut."""
+    renderer.render("scadc/demo")
+    assert render_xml_of(renderer).count("<diagram ") == 2
+    assert render.calls[-1][1] is None
+
+
+def test_the_cut_does_not_move_a_pages_content_key(renderer, store):
+    """Keyed the way the whole-document pipeline keyed it — hash of the page as
+    it sits in the full inlined document. If the cut moved the key, every render
+    already in ``viewcache`` would be orphaned the moment this deployed."""
+    from awm.drawio import export as export_mod
+    from awm.drawio import renderspec
+
+    inlined, _ = export_mod.inline_images(store.read(SAVE))
+    before = renderer._content_key(inlined, 1, renderspec.DEFAULT)
+    assert renderer.render("scadc/demo/Second").etag == before
+
+
+# --- the warm path ---------------------------------------------------------
+
+def test_a_repeat_request_never_reaches_the_inliner(renderer, store):
+    """Reaching the content key costs a parse, every referenced file read, and a
+    render of every page this one places. A second identical request pays none
+    of it: the precheck answers from ``stat`` alone."""
+    seen: list[str] = []
+
+    def spy(url, budget):
+        seen.append(url)
+        return b"<svg />", []
+
+    store.create("fig/host.drawio", author="t",
+                 xml=_placing(f"{V.VIEW_PREFIX}/scadc/demo/Second"))
+    first = renderer.render("fig/host/Page-1", resolver=spy)
+    assert len(seen) == 1
+    second = renderer.render("fig/host/Page-1", resolver=spy)
+    assert second.cached and second.etag == first.etag
+    assert len(seen) == 1
+
+
+def test_the_warm_path_does_not_fork_git(renderer, store, monkeypatch):
+    """``head_rev`` fills one header and forks a subprocess to do it — thirteen
+    times over for a page that places a dozen sibling views."""
+    renderer.render("scadc/demo/Second")
+
+    def refuse(save):
+        raise AssertionError("a warm request must not re-ask for head_rev")
+
+    monkeypatch.setattr(store, "head_rev", refuse)
+    assert renderer.render("scadc/demo/Second").cached
+    assert renderer.resolve_meta("scadc/demo/Second")[2]
+
+
+def test_editing_the_diagram_takes_the_slow_path_again(renderer, store):
+    renderer.render("scadc/demo/Page-1")
+    store.write(SAVE, set_value(store.read(SAVE), "a", "edited"), author="t")
+    assert renderer.render("scadc/demo/Page-1").cached is False
+
+
+def test_a_changed_referenced_image_is_not_served_stale(renderer, store, tmp_path):
+    """What the whole content-keying scheme exists for: a re-rendered molecule
+    that never commits the diagram. Its mtime is in the precheck, so a warm path
+    blind to it would serve the old picture forever."""
+    art = tmp_path / "molecule.svg"
+    art.write_text('<svg xmlns="http://www.w3.org/2000/svg" id="one" />')
+    store.create("fig/art.drawio", author="t", xml=_placing(f"/files{art}"))
+    first = renderer.render("fig/art/Page-1")
+    art.write_text('<svg xmlns="http://www.w3.org/2000/svg" id="two" />')
+    second = renderer.render("fig/art/Page-1")
+    assert second.cached is False and second.etag != first.etag
+
+
+def test_a_revision_pinned_request_is_keyed_on_that_revision(renderer, store):
+    """The working tree's stat describes the working tree, and says nothing about
+    what a historical revision held — so a pinned request never takes the warm
+    path, and gets the render that revision's content deserves."""
+    before = renderer.render("scadc/demo/Page-1")
+    rev = store.head_rev(SAVE)
+    store.write(SAVE, set_value(store.read(SAVE), "a", "edited"), author="t")
+    assert renderer.render("scadc/demo/Page-1").etag != before.etag
+    assert renderer.render("scadc/demo/Page-1", rev=rev).etag == before.etag
+
+
+def test_a_commit_drops_the_memos_the_stat_cannot_expire(renderer, store):
+    """The write lands before the commit, so a revision can move while the file
+    does not. The commit hook is what closes that window."""
+    renderer.render("scadc/demo/Second")
+    renderer.prune_for_commit(SAVE, rev="deadbeef")
+    assert not renderer._warm and not renderer._revs and not renderer._refs
+
+
+def test_a_reclaimed_render_falls_through_rather_than_404ing(renderer, store):
+    """The precheck names a content key; the version cap can delete the file it
+    named. The entry has to be discarded, not trusted."""
+    first = renderer.render("scadc/demo/Second")
+    (renderer._page_dir(SAVE, "Second") / f"{first.etag}.svg").unlink()
+    again = renderer.render("scadc/demo/Second")
+    assert again.cached is False and again.etag == first.etag
+
+
 def test_check_reports_a_placed_view_whose_page_is_gone(store, tmp_path):
     """`check` gates `export`; a checker blind to view references would pass an
     export with a hole in it."""

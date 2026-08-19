@@ -68,3 +68,38 @@ def test_installed_webapp_matches_the_patch(name):
         f"webapp/js/{name} differs from patches/{name} — the installed client is "
         "stale or unpatched; re-run install.sh"
     )
+
+
+def test_preconfig_remembers_the_last_seen_view_image():
+    """What paints a placed view before the network answers. Without it a
+    reopened consumer diagram shows empty boxes until every image round-trips —
+    and since nothing here runs a browser, losing it would be silent."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "indexedDB.open(VIEW_DB" in src
+    assert "URL.createObjectURL" in src
+
+
+def test_preconfig_revalidates_rather_than_trusting_the_cache():
+    """A cached image is what is *shown*, never what is believed. The
+    conditional has to be ours: left to the browser, `cache: 'default'` answers
+    200 out of its own copy and the 304 never reaches us."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "'If-None-Match'" in src
+    assert "cache: 'no-store'" in src
+    assert "r.status === 304" in src
+
+
+def test_preconfig_bounds_the_view_store():
+    """The query space is caller-controlled: one diagram cycled through colour
+    variants would grow this without limit."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    assert "VIEW_MAX_ENTRIES" in src and "VIEW_MAX_BYTES" in src
+    assert "function evictViews()" in src
+
+
+def test_preconfig_does_not_key_the_view_store_on_the_cache_buster():
+    """`?rev=` moves on every refresh; keyed on it the store would write a fresh
+    entry each time and never once hit."""
+    src = (PATCHES / "PreConfig.js").read_text(encoding="utf-8")
+    body = src.split("function cacheKey(url) {", 1)[1].split("\n  }", 1)[0]
+    assert "rev=" in body and "replace" in body

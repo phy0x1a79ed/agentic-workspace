@@ -282,16 +282,29 @@ export-time inliner all go through it, so a parameter cannot exist on one
 surface and silently not on another. Order never matters — the formatter and the
 fingerprint both sort.
 
-What a swap reaches is deliberately narrow: style values whose key ends in
-`Color` (plus `imageBorder`/`imageBackground`), colours inside a cell's label,
-and the *text* of referenced `/files/**.svg` images. It never touches an
-`image=` value, which is how an inlined data URI survives untouched — a blanket
-text replace is ruled out for exactly that reason. Raster images cannot be
-masked at all: a pink region inside a PNG stays pink. Replacements are
-simultaneous, never chained (one compiled alternation, one pass), and named
-colours / `rgb()` / eight-digit `#rrggbbaa` are out of scope, the last rejected
-rather than half-supported. A compressed diagram fails loudly instead of
-returning an un-swapped render that looks like a swap which matched nothing.
+A swap reaches the picture whatever the picture is made of: style values whose
+key ends in `Color` (plus `imageBorder`/`imageBackground`), colours inside a
+cell's label, the text of referenced `/files/**.svg` images, and the contents of
+an `image=` value — which drawio writes as base64 whenever you import an SVG, and
+which is therefore *decoded* rather than text-replaced. `awm/drawio/recolour.py`
+owns that: it sniffs the codec off the payload, recolours SVG source as text and
+PNG/JPEG/GIF/WebP as pixels, and descends into a raster nested inside an imported
+SVG. A raster mask is shifted by `target - source` within a tolerance rather than
+filled flat, so shading and JPEG noise survive; an image containing none of the
+source colours comes back byte-identical and never re-encoded, because the cache
+key is a hash of the inlined document. A swap that cannot be *attempted* — Pillow
+absent, an image that will not decode — is reported through `X-Drawio-Problems`
+rather than passing for a picture that simply had no mask in it.
+
+One `image=` value is deliberately left alone: another page's view URL. A
+reference's colours are decided by its own query, so the enclosing page's swaps
+never cascade into an embedded page.
+
+Replacements are simultaneous, never chained (one compiled alternation, one
+pass), and named colours / `rgb()` / eight-digit `#rrggbbaa` are out of scope,
+the last rejected rather than half-supported. A compressed diagram fails loudly
+instead of returning an un-swapped render that looks like a swap which matched
+nothing.
 
 `crop` names a shape by label (or cell id). The frame is restyled to a bare
 outline before rendering — drawio builds no state for an invisible cell, so a
@@ -310,6 +323,13 @@ It is a fourth registration — a loopback listener fronted as a `kind=url` moun
 GET-to-verb) and a `kind=static` mount cannot render on demand, so the listener
 is what turns a GET into a render. The gateway's longest-prefix routing resolves
 `/drawio-app/view/…` to it and everything else under `/drawio-app` to the editor.
+
+**One page's work, and no more.** The document is cut to the requested page
+before anything else happens, so a request resolves only the references that page
+places. Without that, asking for any page of a diagram whose *other* pages hold
+live views resolved all of them, recursively, and then threw the result away.
+Problems belonging to other pages therefore no longer reach `X-Drawio-Problems`;
+`drawio check` is what audits a whole document.
 
 **Cache.** Each render is cached under
 `<AWM_DIR>/services/drawio/viewcache/<save>/<page>/<hash>.svg`, keyed by the
@@ -330,16 +350,36 @@ un-parameterised render keeps the original path and key, which is why deploying
 variants threw no already-rendered page away. Variants of a page share one
 change topic and therefore refresh together — they have one source.
 
+In front of that key sits a precheck that answers from `stat` alone: the
+diagram's `(mtime_ns, size)`, every referenced file's, and the spec. On a hit the
+request returns the stored render without parsing, inlining or forking `git` for
+the revision header. It is strictly a fast path — the `ETag` is still the content
+key, a miss costs the full pass, and a request pinned to a revision never takes
+it, because the working tree's stat says nothing about history.
+
+The browser leg keeps one tab parked on drawio's `export3.html` rather than
+loading the ~9 MB app bundle per render. Any anomaly — the tab gone, the reset
+failing, the render not answering — discards it and falls back to
+create-navigate-render, so reuse can never wedge the service.
+
 **Live update in an open consumer.** On every accepted write the service emits
-`{"type":"view-updated","save","rev"}` on the source diagram's existing
-`drawio:<save>` emit topic. The client (`PreConfig.js`) recognizes view-URL
-images on the *active* page, learns each one's source diagram via a `HEAD`
-(`X-Drawio-Save`), subscribes to that topic, and on an event re-fetches just those
-images — a cache-bust on the rendered `<image>` node only, never a model edit, so
-a consumer never autosaves a churned URL and its document stays byte-for-byte
-canonical. Insert the image as a **link** (URL kept) for this; an embedded copy is
-a one-time snapshot by definition. A consumer that is closed simply re-fetches the
-current render when it is next opened.
+`{"type":"view-updated","save","rev"}` on the emit topic for the page that
+actually changed — `drawio:<save>:<page>`, percent-encoded, so an edit to one page
+does not wake every consumer of its siblings. The client (`PreConfig.js`)
+recognizes view-URL images on the *active* page, learns each one's source diagram
+and page via a `HEAD` (`X-Drawio-Save` / `X-Drawio-Page`), subscribes to that
+topic, and on an event re-fetches just those images — a swap on the rendered
+`<image>` node only, never a model edit, so a consumer never autosaves a churned
+URL and its document stays byte-for-byte canonical. Insert the image as a **link**
+(URL kept) for this; an embedded copy is a one-time snapshot by definition.
+
+**Last-seen images.** `Cache-Control: no-cache` means the browser must revalidate
+before it may paint, and revalidating costs a server render pass — so reopening a
+consumer showed empty boxes until every image round-tripped. The client keeps the
+bytes it last saw in IndexedDB (keyed by the URL without its `?rev=` buster,
+bounded by count and total size) and paints them at first draw with no network at
+all. The revalidation behind that sends `If-None-Match` and touches the DOM only
+on a new `ETag`. Nothing about it writes to the model.
 
 ### Registrations
 
@@ -418,6 +458,7 @@ The page needs a built `dist/` to be discovered:
 | `awm-config`, `awm-gatewayclient` | component libs (ServiceAdapter register/control loop) |
 | `awm-persistence` | resolves the per-service data dir |
 | `httpx`, `websockets` | already adapter deps; used by the mount lease, export, and the CDP browser driver |
+| `pillow`, `numpy` | recolouring a raster image: decode with one, do the colour pass in the other |
 | `pygraphviz` *(optional)* | only for the `layout` operation |
 
 Git is required at runtime. Docker is required for `export` to PDF/PNG/JPG. A
