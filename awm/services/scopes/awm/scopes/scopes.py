@@ -291,47 +291,22 @@ def _cleanup_worktree(bare_dir: Path, worktree_dir: Path, feature_branch: str,
 
 
 def _default_context(project: str, scope: str) -> str:
-    """Generate a default .awm/context.md for a new scope.
-
-    Debrief is a native Claude Code skill (~/.claude/skills/debrief/), so the
-    context just names it — no skill-service lookup is needed.
-    """
     return (
         f"# {project}/{scope}\n\n"
         f"## Startup\n\n"
-        f"1. Run `scope(verb=\"refresh\", args={{project:\"{project}\", scope:\"{scope}\"}})` to update the local history index\n"
-        f"2. Read `.awm/history.md` for session history, open issues, and resolved items\n\n"
-        f"## Work\n\n"
-        f"- Code is in the current directory (this IS the git worktree)\n"
-        f"- Project data is at `data/` (`.awm/data` is a symlink to it)\n"
-        f"- Reference protocols (git, mamba, etc.) are on disk at `.awm/skills/` if you need them\n"
-        f"- Do NOT edit `.awm/history.md` — use MCP tools\n\n"
-        f"## Data\n\n"
-        f"Data may be **versioned with DVC** "
-        f"(`scope_data_status project={project} scope={scope}` says which). When it is, "
-        f"the thing to internalise is that **there is only one lever**: a commit records "
-        f"your code and the exact data it was built against, together.\n\n"
-        f"- `data/<chunk>` holds the files; `data/<chunk>.dvc` is a ~110-byte **pin** "
-        f"tracked in this repo. The bytes live once in a workspace-shared cache.\n"
-        f"- To save data you wrote: `dvc add data/<chunk>`, then commit the changed "
-        f"`.dvc` pin **alongside your code**. That is the whole snapshot-and-publish "
-        f"story — there is no separate data verb, no data branch, no promote.\n"
-        f"- To take a sibling's data: merge their branch. The pin comes with it and "
-        f"the files are checked out for you.\n"
-        f"- Materialised files are **read-only** — they are hardlinks to the shared "
-        f"cache, so editing in place would corrupt it for every other scope. Write a "
-        f"new file, or `dvc unprotect <path>` first.\n"
-        f"- **Delete superseded data.** That is the point of versioning: an old version "
-        f"stays reachable from the commit that pinned it, so you never need two live "
-        f"copies to answer 'which one is current?'.\n"
-        f"- You need not hold every chunk on disk — `scope_data_mount` picks which ones "
-        f"materialise here. Unmounted chunks stay pinned and backed up regardless.\n"
-        f"- Never run a bare `dvc gc`: the cache is shared by every project.\n"
-        f"- If data is still the legacy shared directory, none of the above applies — "
-        f"it behaves exactly as it always has.\n\n"
+        f"1. `scope(verb=\"refresh\", args={{project:\"{project}\", scope:\"{scope}\"}})`\n"
+        f"2. Read `.awm/history.md` — session history, open issues, resolved items.\n"
+        f"3. `scope(verb=\"fetch\", args={{scope:\"{scope}\", kind:\"message\"}})`\n\n"
+        f"## This scope\n\n"
+        f"_Why this scope exists._\n\n"
+        f"## Working here\n\n"
+        f"The current directory is the git worktree. Data is at `data/`. Do not edit "
+        f"`.awm/history.md` — use the `scope` verbs.\n\n"
+        f"Workspace rules — data versioning, environments, the git model — are in "
+        f"`WORKSPACE.md` and are not repeated here.\n\n"
         f"## Debrief\n\n"
-        f"When the user asks you to debrief (or says \"debrief\"), run the `debrief` skill —\n"
-        f"the end-of-session protocol that commits, journals, and refreshes.\n"
+        f"Run the `debrief` skill when the work is done. When a plan drives the work, "
+        f"its last task is the debrief.\n"
     )
 
 
