@@ -321,7 +321,8 @@ Three things that bite:
 ```bash
 # the service, from this node
 awm services list | grep claude-science          # enabled, running, ready
-awm science status                        # daemon + install + fronts + bridge
+awm science status                        # daemon + install + fronts + bridge;
+                                          #   skip_approvals proves the flag took
 awm science grants                        # host file access, as the daemon has it
 awm science connector                     # local MCP servers (none is expected)
 
