@@ -53,11 +53,13 @@ from typing import Any, Callable, NamedTuple, Optional
 from awm.reflection import (
     daemon_inject,
     guards,
+    observation,
+    oc_inject,
+    oc_session,
     pending,
     session_target,
     stop_gate,
     tmux_inject,
-    transcript,
     watcher,
 )
 
@@ -181,7 +183,24 @@ def _resolve(caller_pid: Optional[int]):
             "will not guess at a target — this usually means the call did not "
             "come through a session's own awm-mcp proxy (a plain shell, for "
             "instance)")
-    return session_target.resolve(caller_pid)
+    return resolve_lane(caller_pid)
+
+
+def resolve_lane(caller_pid: int):
+    """The caller's injection target, whichever harness it runs under.
+
+    The claude path is tried first and wins when it can: a process is either a
+    Claude Code session or it is not, and only the record says which. Only when
+    the claude path refuses is the opencode adapter asked — it too refuses for
+    a pid that is not an opencode process, so the two cannot cross-resolve.
+    """
+    try:
+        return session_target.resolve(caller_pid)
+    except session_target.ResolveError as claude_err:
+        try:
+            return oc_session.resolve(caller_pid)
+        except oc_session.ResolveError:
+            raise claude_err from None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +309,10 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
 # ---------------------------------------------------------------------------
 
 def _open_lane(lane, **kw):
+    if isinstance(lane, oc_session.OpencodeLane):
+        return oc_inject.open_lane(
+            lane, **{k: v for k, v in kw.items()
+                     if k in ("opener", "socket", "runner", "sleep")})
     if isinstance(lane, session_target.DaemonLane):
         return daemon_inject.open_lane(
             lane, **{k: v for k, v in kw.items() if k in ("opener", "sleep")})
@@ -298,8 +321,10 @@ def _open_lane(lane, **kw):
                  if k in ("socket", "runner", "sleep")})
 
 
-_LANE_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-                  daemon_inject.DaemonError, NotVerified, NotSubmitted, OSError)
+_LANE_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
+                  tmux_inject.TmuxError, daemon_inject.DaemonError,
+                  oc_inject.OpencodeError, oc_inject.ServeError,
+                  NotVerified, NotSubmitted, OSError)
 
 
 def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
@@ -382,7 +407,7 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
     third try is the system telling you something about this host, and it should
     be readable later without anyone re-deriving it from timestamps.
     """
-    detect = detect or session_target.resolve
+    detect = detect or resolve_lane
     sleep = kw.get("sleep", time.sleep)
     failures: list[str] = []
     for attempt in range(1, attempts + 1):
@@ -455,7 +480,8 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
 
     # Opened before a single keystroke goes out, so that whatever the session
     # does with the text is inside the window this reader can see.
-    tail = transcript.Tail(caller_pid)
+    obs = observation.observation_for(caller_pid)
+    tail = obs.open_tail(caller_pid)
     tail.watch(text)
     tail.poll()
 
@@ -464,7 +490,8 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
     # because this sits above the record-and-spawn below — no promise is left
     # behind for a resume to a command that was never injected.
     result = deliver(caller_pid, text, enter=enter,
-                     what="the requested command", tail=tail, **kw)
+                     what="the requested command", tail=tail,
+                     read_status=obs.read_status, **kw)
     submitted, lane = result.submitted, result.lane
 
     followup_sent = None
@@ -501,12 +528,13 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
            # read, and is inference rather than evidence.
            "confirmed": result.confirmed,
            "followup": followup_sent, "followup_deferred": followup_deferred}
-    if isinstance(lane, session_target.TmuxLane):
+    if isinstance(lane, session_target.TmuxLane) or (
+            isinstance(lane, oc_session.OpencodeLane) and lane.pane):
         out["pane"] = lane.pane
     return out
 
 
-def _free_to_receive(repl_pid: int, tail) -> bool:
+def _free_to_receive(repl_pid: int, tail, read_status=None) -> bool:
     """Is anything visibly wrong with typing into this session right now?
 
     The watcher has just said it settled, but a wait and a write are two
@@ -517,7 +545,8 @@ def _free_to_receive(repl_pid: int, tail) -> bool:
     would throw away a fifteen-minute round over a record that happened to be
     mid-rewrite.
     """
-    sample = watcher.read_status(repl_pid)
+    read_status = read_status or watcher.read_status
+    sample = read_status(repl_pid)
     if sample is not None and sample[0] in _NEVER_SETTLED:
         return False
     tail.poll()
@@ -564,7 +593,7 @@ def _nudge_text(item: pending.Pending, waited_s: int) -> str:
         f"instruction from the user.")
 
 
-def _hold_and_nudge(item: pending.Pending, *, tail=None,
+def _hold_and_nudge(item: pending.Pending, *, tail=None, read_status=None,
                     now_ms=None, **kw) -> pending.Pending:
     """Keep the promise for another round, and ask the session to pause.
 
@@ -588,7 +617,7 @@ def _hold_and_nudge(item: pending.Pending, *, tail=None,
         tail.watch(text)
     try:
         deliver(item.repl_pid, text, enter=True, tail=tail,
-                what="a pause request", **kw)
+                read_status=read_status, what="a pause request", **kw)
     except DeliveryError as exc:
         # A nudge is a courtesy, not the promise. Failing to deliver one must not
         # spend the resume's own delivery budget.
@@ -604,7 +633,8 @@ def _hold_and_nudge(item: pending.Pending, *, tail=None,
     return item
 
 
-def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
+def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
+                      **kw) -> None:
     """Wait for the command to run, then deliver the resume — and prove it.
 
     Runs detached — a synchronous wait would deadlock, because the caller's turn
@@ -622,12 +652,15 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
     """
     who = item.name or item.session_id or f"pid {item.repl_pid}"
     if tail is None:
-        tail = transcript.Tail(item.repl_pid)
+        obs = observation.observation_for(item.repl_pid)
+        tail = obs.open_tail(item.repl_pid)
+        if read_status is None:
+            read_status = obs.read_status
     tail.watch(item.text)
     tail.watch(item.followup)
 
     try:
-        _await_and_resume_inner(item, tail, who, **kw)
+        _await_and_resume_inner(item, tail, who, read_status=read_status, **kw)
     finally:
         # Rearms on every exit path below: VANISHED, delivered-and-verified, or
         # gave up after MAX_DELIVERY_ROUNDS. Covers replay_pending() for free,
@@ -635,12 +668,14 @@ def _await_and_resume(item: pending.Pending, *, tail=None, **kw) -> None:
         stop_gate.rearm(item.session_id)
 
 
-def _await_and_resume_inner(item: pending.Pending, tail, who, **kw) -> None:
+def _await_and_resume_inner(item: pending.Pending, tail, who,
+                            read_status=None, **kw) -> None:
     failures = 0
     while failures < MAX_DELIVERY_ROUNDS:
         outcome = watcher.await_completion(item.repl_pid, tail=tail,
                                            injected_at_ms=item.injected_at_ms,
-                                           text=item.text, label=who)
+                                           text=item.text, label=who,
+                                           read_status=read_status)
         if outcome == watcher.VANISHED:
             pending.clear(item.repl_pid)
             return
@@ -652,7 +687,8 @@ def _await_and_resume_inner(item: pending.Pending, tail, who, **kw) -> None:
             # alongside the resume, which is the one place it does harm.
             tail.poll()
             if not watcher.has_started(tail, item.text, item.injected_at_ms):
-                item = _hold_and_nudge(item, tail=tail, **kw)
+                item = _hold_and_nudge(item, tail=tail, read_status=read_status,
+                                       **kw)
                 continue
             log.info("reflection: session %s reached its command just as the "
                      "round expired; sending its resume rather than a pause "
@@ -662,7 +698,7 @@ def _await_and_resume_inner(item: pending.Pending, tail, who, **kw) -> None:
         # and queuing is exactly what we want from it — so the free-to-receive
         # check applies only to the settled path it was written for.
         if outcome == watcher.SETTLED_OUTCOME and not _free_to_receive(
-                item.repl_pid, tail):
+                item.repl_pid, tail, read_status=read_status):
             item = pending.held(item, "the session started a turn between "
                                       "settling and the resume going in")
             pending.record(item)
@@ -678,7 +714,7 @@ def _await_and_resume_inner(item: pending.Pending, tail, who, **kw) -> None:
         pending.clear(item.repl_pid)
         try:
             deliver(item.repl_pid, item.followup, enter=True, tail=tail,
-                    what="the deferred resume", **kw)
+                    read_status=read_status, what="the deferred resume", **kw)
         except DeliveryError as exc:
             # Put the promise back, keeping its original `injected_at_ms`: that
             # is the watcher's reference for "the session reacted after this
@@ -712,7 +748,7 @@ def _await_and_resume_inner(item: pending.Pending, tail, who, **kw) -> None:
 
 
 def resume_watch(item: pending.Pending, *,
-                 spawn: Callable[[Callable[[], None]], Any] = _default_spawn,
+                 spawn: Callable[[Callable[[], None]], Any] = None,
                  **kw) -> None:
     """Arm the wait-then-resume for a promise, on either lane.
 
@@ -720,7 +756,12 @@ def resume_watch(item: pending.Pending, *,
     session's own record, and the delivering half re-detects the lane when the
     time comes — so a session that was in a pane when its command was injected
     and is a background job by the time it finishes is simply found again.
+
+    ``spawn`` defaults to the module-level :func:`_default_spawn`, resolved at
+    call time rather than bound at def time — so a caller (or a test) that
+    replaces :data:`inject._default_spawn` actually redirects the watcher.
     """
+    spawn = spawn or _default_spawn
     spawn(lambda: _await_and_resume(item, **kw))
 
 
@@ -758,6 +799,7 @@ def describe_caller(caller_pid: Optional[int]) -> dict[str, Any]:
     common = {"session": lane.name or lane.session_id,
               "session_id": lane.session_id, "pid": lane.repl_pid,
               "hosting": lane.hosting}
-    if isinstance(lane, session_target.TmuxLane):
+    if isinstance(lane, session_target.TmuxLane) or (
+            isinstance(lane, oc_session.OpencodeLane) and lane.pane):
         return {**common, "pane": lane.pane}
     return common

@@ -167,6 +167,36 @@ def test_walk_is_bounded(tmp_path):
     assert got == 200
 
 
+def test_stops_at_an_opencode_repl_pid(tmp_path):
+    # OpenCode writes no per-pid record file, so the walk must name the process
+    # whose exe is `opencode` — the direct analogue of the claude record stop.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 400, 400: 1}),
+        is_opencode=lambda pid: pid == 400)
+    assert got == 400
+
+
+def test_opencode_stop_respects_first_match_too(tmp_path):
+    # Same safety property as the claude path: an agent nested inside another
+    # resolves to its own REPL, never to the session that spawned it.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 400, 400: 500, 500: 1}),
+        is_opencode=lambda pid: pid in (400, 500))
+    assert got == 400
+
+
+def test_a_plain_process_does_not_stop_the_walk(tmp_path):
+    # The default `is_opencode` reads /proc; injected here as False so a wrapper
+    # (bash) between the proxy and the opencode REPL is walked past.
+    got = _resolve_caller_pid(
+        200, sessions_dir=_sessions(tmp_path),
+        ppid_of=_chain({200: 300, 300: 1}),
+        is_opencode=lambda pid: pid == 300)
+    assert got == 300
+
+
 def test_stops_at_init(tmp_path):
     # pid 1 is never a Claude session; walking into it (or past a vanished
     # process, where ppid_of returns None) ends the walk.

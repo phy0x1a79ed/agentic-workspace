@@ -37,6 +37,8 @@ from awm.gatewayclient import ServiceAdapter
 from awm.reflection import (
     daemon_inject,
     inject,
+    oc_inject,
+    oc_session,
     pending,
     permission_mode,
     session_target,
@@ -180,8 +182,10 @@ def _caller_pid(args: dict) -> Any:
 # way — a result with ok=false and a readable reason, not an exception. The
 # distinction the caller cares about is whether their command ran, not which
 # layer declined.
-_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-             daemon_inject.DaemonError, inject.DeliveryError)
+_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
+             tmux_inject.TmuxError, daemon_inject.DaemonError,
+             oc_inject.OpencodeError, oc_inject.ServeError,
+             inject.DeliveryError)
 
 
 def _guarded(verb: str, fn):
