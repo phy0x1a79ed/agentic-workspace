@@ -39,10 +39,17 @@ call. The front therefore passes `rewrite_origin=True`, an opt-in added to
 is off). It applies on the WebSocket path too; a rewrite on HTTP alone yields a
 GUI that loads and then silently never streams.
 
-**The model route is seeded, not owned.** `$DSH_HOME/settings.yaml` gets an
-OpenRouter provider block on first start and is never touched again — a route
-tuned in the GUI survives every restart and deploy, and deleting the block is
-how you say "don't". The credential is *referenced*: the block carries
+**The model route is seeded, not owned.** `$DSH_HOME/settings.yaml` gets two
+sections on first start and neither is ever touched again — a route tuned in the
+GUI survives every restart and deploy, and deleting a section is how you say
+"don't". Two, because declaring a provider is not selecting one: the web profile
+ships `agent-default-model = deepseek-official/deepseek-v4-flash`, so a harness
+with a perfectly good OpenRouter route still fails every request with
+`MISSING_CREDENTIAL` against a key this workspace does not hold. Settings
+sections are keyed by the *plugin id* in the composed profile — `llm-pi-ai` and
+`agent-default-model`; `dsh --profile web --dump-config` is where those names
+come from, and guessing either produces a file the harness reads and ignores.
+The credential is *referenced*: the provider block carries
 `apiKeyEnv: OPENROUTER_API_KEY`, and the supervisor reads that value out of
 opencode's `~/.local/share/opencode/auth.json` at spawn. The key stays in the one
 file that already owns it and never reaches a settings file, a git object, or
@@ -124,15 +131,19 @@ awm dsh status                    # version, pid, listening, front, model route
 `status` reports the three states separately on purpose. `harness.listening`
 false with `running` true means the process came up and failed to bind — read
 `awm dsh logs`. `front.serving` false is a TLS or certificate problem, not a
-harness problem. `model_route.key_available` false means the GUI will load with
-an empty model picker.
+harness problem. The `model_route` block reports three things that fail the
+same way — nothing answers — and need three different fixes:
+`provider_declared`, `key_available`, and `default_model_ours`.
 
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
 2. `/ui/dsh` — the reception page; **Open harness** goes to `https://<mesh-ip>:12301/`.
 3. **Settings → Models** opens and saves. This is the test that the `Origin`
-   rewrite is actually working: it is the privileged plane, and it 403s without it.
+   rewrite is actually working: it is the privileged plane, and it 403s without
+   it. The route itself is testable without a browser:
+   `dsh --profile headless "Reply with exactly the word PONG and nothing else."`
+   with `DSH_HOME` and `OPENROUTER_API_KEY` set.
 4. Send one prompt and watch it *stream*. A response that arrives in one lump, or
    not at all, is the WebSocket path — a rewrite that reached HTTP and not WS.
 
