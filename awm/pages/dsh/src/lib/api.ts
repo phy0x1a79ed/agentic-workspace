@@ -15,11 +15,16 @@ import { svc } from '@awm/client';
 
 const dsh = svc('dsh');
 
-/** The model route's two halves. Either alone shows up in the GUI as an empty
- *  model picker, so they are reported apart. */
+/** The model route's three failure modes. All present as "nothing answers" in
+ *  the GUI, so they are reported apart. */
 export interface RouteState {
   settings: string;
   provider_declared: boolean;
+  /** `<provider>/<model>` the harness will use for a new session. */
+  default_model: string | null;
+  /** False when the selection still points at the profile's DeepSeek-direct
+   *  default, whose credential this workspace does not hold. */
+  default_model_ours: boolean;
   key_env: string;
   key_available: boolean;
   key_source: string;

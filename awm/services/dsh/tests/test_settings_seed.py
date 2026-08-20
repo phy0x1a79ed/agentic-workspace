@@ -56,10 +56,10 @@ def test_seeding_is_idempotent(mod):
 def test_an_existing_provider_is_left_exactly_as_the_user_left_it(mod):
     """A route tuned in the GUI must survive a restart and a deploy."""
     mod.DSH_HOME.mkdir(parents=True, exist_ok=True)
-    mine = {mod.PLUGIN_KEY: {"providers": {"openrouter": {"models": [{"id": "mine"}]}}}}
-    mod.SETTINGS_FILE.write_text(yaml.safe_dump(mine))
-    assert mod.ensure()["changed"] is False
-    assert _read(mod) == mine
+    mine = {"providers": {"openrouter": {"models": [{"id": "mine"}]}}}
+    mod.SETTINGS_FILE.write_text(yaml.safe_dump({mod.PLUGIN_KEY: mine}))
+    mod.ensure()
+    assert _read(mod)[mod.PLUGIN_KEY] == mine
 
 
 def test_unrelated_settings_survive_the_seed(mod):
@@ -86,3 +86,28 @@ def test_the_credential_is_referenced_by_env_name_never_written(mod):
     assert "apiKeyEnv: OPENROUTER_API_KEY" in text
     assert "sk-" not in text
     assert "apiKey:" not in text
+
+
+def test_the_default_model_selection_is_seeded_too(mod):
+    """A declared route the default selection does not point at is a working
+    provider list and a dead harness: the profile ships a DeepSeek-direct
+    default whose credential this workspace does not hold."""
+    mod.ensure()
+    sel = _read(mod)[mod.DEFAULT_MODEL_KEY]
+    assert sel == {"provider": "openrouter", "model": mod.MODELS[0]}
+
+
+def test_a_chosen_default_model_is_not_overwritten(mod):
+    mod.DSH_HOME.mkdir(parents=True, exist_ok=True)
+    mine = {mod.DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}
+    mod.SETTINGS_FILE.write_text(yaml.safe_dump(mine))
+    mod.ensure()
+    assert _read(mod)[mod.DEFAULT_MODEL_KEY]["model"] == "mine"
+
+
+def test_the_two_sections_are_seeded_independently(mod):
+    """Someone who deleted only the provider block gets only that back."""
+    mod.DSH_HOME.mkdir(parents=True, exist_ok=True)
+    mod.SETTINGS_FILE.write_text(yaml.safe_dump(
+        {mod.DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}))
+    assert mod.ensure()["seeded"] == ["provider"]

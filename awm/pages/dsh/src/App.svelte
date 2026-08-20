@@ -66,7 +66,9 @@
   // front in front of it is serving. Any one missing and the button lies.
   const reachable = $derived(!!h?.listening && !!front?.serving);
   const route = $derived(h?.model_route ?? null);
-  const routable = $derived(!!route?.provider_declared && !!route?.key_available);
+  const routable = $derived(
+    !!route?.provider_declared && !!route?.key_available && !!route?.default_model_ours,
+  );
   const uptime = $derived(
     h?.uptime_s != null ? `${Math.floor(h.uptime_s / 60)} min` : null,
   );
@@ -93,8 +95,8 @@
   {#if !routable && route}
     <p class="warn">
       No usable model route: {route.provider_declared ? '' : 'no provider declared; '}
-      {route.key_available ? '' : `no key at ${route.key_source}`}. The GUI will
-      load with an empty model picker.
+      {route.key_available ? '' : `no key at ${route.key_source}; `}
+      {route.default_model_ours ? '' : `default model is ${route.default_model}`}.
     </p>
   {/if}
 
@@ -144,6 +146,9 @@
         </li>
         <li data-ok={route?.key_available}>
           key available as <span class="dim">{route?.key_env}</span>
+        </li>
+        <li data-ok={route?.default_model_ours}>
+          default model <span class="dim">{route?.default_model ?? '—'}</span>
         </li>
       </ul>
       <p class="hint">
