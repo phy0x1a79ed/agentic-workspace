@@ -106,3 +106,25 @@ every service, including the mic's audio session — is reachable from the
 LAN/ZeroTier on `:8443` behind this one password. The gateway remains
 loopback-only for plain HTTP; this is the single TLS door in, and there is no
 longer any other.
+
+## Reuse: fronting something that is not the gateway
+
+`proxy.serve(upstream=…, landing=False, extra_routes=…, rewrite_origin=…)` is the
+whole reuse surface. `claude-science` and `dsh` both front their own loopback
+binaries with it rather than reimplementing TLS, the shared CA and the
+`awm_session` gate.
+
+`rewrite_origin` arbitrates two upstreams that want opposite things, which is why
+it exists as a flag rather than a decision. Note first that `host` is always
+dropped, so httpx derives it from the upstream URL and a wrapped app sees a
+loopback `Host` — that is deliberate and load-bearing, because it is what opens
+an app's loopback-pinned privileged plane to a remote browser. `Origin` is then
+forwarded verbatim by default, which is what `claude-science` needs: it
+allowlists the exact browser origins its WebSocket upgrades may come from, and
+rewriting the header would reject every handshake. `dsh` needs the reverse — its
+`/api` fence compares `Origin` against `Host` and demands they match, so the
+real browser origin can never satisfy it. `rewrite_origin=True` replaces a
+*present* `Origin` with the upstream's own scheme and authority, on the HTTP and
+WebSocket paths alike. It never mints one where the browser sent none: that would
+turn a same-origin navigation into a cross-origin request at the upstream.
+Default off, so the gateway front stays byte-identical.
