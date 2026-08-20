@@ -97,7 +97,7 @@ For an **external** upstream the gateway should front, register a lease via `awm
 | `GET`    | `/hub/services` | List registrations + lease state |
 | `DELETE` | `/hub/services/{name}` | Force-evict by name |
 
-All unauthenticated — the gateway binds loopback only. `kind=static` serves canonical paths only (a file at the exact path, or a directory's `index.html`; a miss is a 404 — no `Accept` fallback, no SPA shell synthesis). For deep-link refresh in a SvelteKit/React-Router bundle, prerender every route; for routes the server can't enumerate, front the upstream as `kind=url`.
+All unauthenticated — the gateway binds loopback only. A `kind=url` registration may pass `strip_prefix: true` (CLI: `--strip-prefix`) to forward the path with its mount prefix removed and announce that prefix as `X-Forwarded-Prefix` — for an upstream that serves at the root and rebases its own links from that header; it is off by default because an upstream expecting the full path would break. `kind=static` serves canonical paths only (a file at the exact path, or a directory's `index.html`; a miss is a 404 — no `Accept` fallback, no SPA shell synthesis). For deep-link refresh in a SvelteKit/React-Router bundle, prerender every route; for routes the server can't enumerate, front the upstream as `kind=url`.
 
 ### Gotchas
 
