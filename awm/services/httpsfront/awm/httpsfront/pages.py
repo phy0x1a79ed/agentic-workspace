@@ -85,7 +85,7 @@ def landing_page(services: list[dict[str, Any]]) -> str:
     """Dynamic index of the registered ``/ui/*`` pages."""
     pages = [
         s for s in services
-        if s.get("kind") in ("page", "static")
+        if s.get("kind") in ("page", "static", "url")
         and str(s.get("prefix", "")).startswith("/ui/")
     ]
     pages.sort(key=lambda s: str(s.get("name", "")))
