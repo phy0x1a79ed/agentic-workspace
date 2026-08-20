@@ -173,3 +173,22 @@ def test_unrelated_sections_survive_a_model_change(mod):
     mod.SETTINGS_FILE.write_text(yaml.safe_dump(doc))
     mod.set_default_model(mod.MODELS[1])
     assert _read(mod)["some-other-plugin"] == {"kept": True}
+
+
+def test_a_model_change_keeps_the_reasoning_effort_the_harness_wrote(mod):
+    """The harness owns this section too and puts reasoningEffort in it;
+    replacing the mapping would silently discard the user's choice."""
+    mod.ensure()
+    doc = _read(mod)
+    doc[mod.DEFAULT_MODEL_KEY]["reasoningEffort"] = "high"
+    mod.SETTINGS_FILE.write_text(yaml.safe_dump(doc))
+    mod.set_default_model(mod.MODELS[1])
+    after = _read(mod)[mod.DEFAULT_MODEL_KEY]
+    assert after == {"provider": "openrouter", "model": mod.MODELS[1],
+                     "reasoningEffort": "high"}
+
+
+def test_reasoning_is_set_when_asked(mod):
+    mod.ensure()
+    mod.set_default_model(mod.MODELS[1], reasoning="low")
+    assert _read(mod)[mod.DEFAULT_MODEL_KEY]["reasoningEffort"] == "low"

@@ -231,7 +231,8 @@ def selection(doc: dict[str, Any] | None = None) -> dict[str, Any]:
     return dict(doc.get(DEFAULT_MODEL_KEY) or {})
 
 
-def set_default_model(model: str, *, declare: bool = False) -> dict[str, Any]:
+def set_default_model(model: str, *, declare: bool = False,
+                      reasoning: str | None = None) -> dict[str, Any]:
     """Point the default selection at ``model`` on the OpenRouter route.
 
     ``declare`` also adds the id to the route's catalog. Off by default: a
@@ -239,6 +240,13 @@ def set_default_model(model: str, *, declare: bool = False) -> dict[str, Any]:
     this verb exists to prevent, so making it up silently would be perverse —
     but the harness does not validate catalog membership either, and a route may
     serve a model newer than the list, so it stays available deliberately.
+
+    The selection is **edited in place**, not replaced. The harness writes this
+    section too and puts ``reasoningEffort`` in it, so replacing the mapping
+    would silently drop an effort the user chose — and any key a later version
+    adds. ``reasoning`` sets that effort explicitly; clearing one is the
+    harness's own business (it knows which efforts a model has) and is left to
+    the Settings UI or a hand edit.
 
     The harness watches the document, so this takes effect without a restart.
     """
@@ -257,9 +265,13 @@ def set_default_model(model: str, *, declare: bool = False) -> dict[str, Any]:
             provider = doc[PLUGIN_KEY]["providers"][PROVIDER_ID]
             provider.setdefault("models", []).append({"id": model})
         before = selection(doc)
-        doc[DEFAULT_MODEL_KEY] = {"provider": PROVIDER_ID, "model": model}
+        selected = doc[DEFAULT_MODEL_KEY]
+        selected["provider"] = PROVIDER_ID
+        selected["model"] = model
+        if reasoning:
+            selected["reasoningEffort"] = reasoning
         _write_document(doc)
     log.info("dsh: default model %s -> %s", before.get("model"), model)
-    return {"changed": before.get("model") != model,
-            "previous": before.get("model"), "provider": PROVIDER_ID,
-            "model": model, "models": declared_models()}
+    return {"changed": selection() != before, "previous": before.get("model"),
+            "provider": PROVIDER_ID, "model": model,
+            "selection": selection(), "models": declared_models()}

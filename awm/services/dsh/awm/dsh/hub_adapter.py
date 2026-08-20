@@ -110,6 +110,9 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "declare", "type": "boolean",
                  "description": "Also add the id to the route's catalog. Needed "
                                 "for a model the route does not yet advertise."},
+                {"name": "reasoning", "type": "string",
+                 "description": "Reasoning effort to set alongside the model. "
+                                "Omit to keep whatever is already selected."},
             ],
             "timeout": 60,
         },
@@ -166,7 +169,9 @@ def _model(args: dict) -> dict:
         return {"selection": settings.selection(doc),
                 "models": settings.declared_models(doc),
                 "settings": str(harness.SETTINGS_FILE)}
-    return settings.set_default_model(model, declare=bool(args.get("declare")))
+    return settings.set_default_model(
+        model, declare=bool(args.get("declare")),
+        reasoning=(args.get("reasoning") or "").strip() or None)
 
 
 async def _h_model(args: dict) -> dict:
