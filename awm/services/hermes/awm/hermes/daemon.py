@@ -352,9 +352,12 @@ class Supervisor:
 
     def restart(self) -> dict[str, Any]:
         self.stop()
-        snap = self.start()
+        self.start()
         self.restarts += 1
-        return snap
+        # Re-snapshot rather than returning `start`'s: the counter moves after
+        # it, and a reply that under-reports its own restart is the kind of
+        # small lie status is supposed to not tell.
+        return self.snapshot()
 
     def reconcile(self) -> dict[str, Any]:
         """One pass of the supervision loop: relaunch a dashboard that has died.
