@@ -123,6 +123,16 @@ def read_status(repl_pid: int) -> Optional[tuple[str, int]]:
     return str(record.get("status") or ""), int(record.get("statusUpdatedAt") or 0)
 
 
+def _default_read_status(pid: int):
+    """The default status reader: the Claude Code record read.
+
+    A function rather than an alias so it resolves the module attribute at call
+    time — tests monkeypatch ``read_status`` and expect the watcher to see the
+    patched reader.
+    """
+    return read_status(pid)
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -179,7 +189,7 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
                      sleep: Callable[[float], None] = time.sleep,
                      clock: Callable[[], float] = time.monotonic,
                      proc_start: Callable[[int], Optional[str]] = None,
-                     tail=None) -> str:
+                     tail=None, read_status=None) -> str:
     """Block until the command injected at ``injected_at_ms`` is safe to resume past.
 
     Returns :data:`STARTED_OUTCOME` (the command is running, so anything typed
@@ -212,6 +222,7 @@ def await_completion(repl_pid: int, *, injected_at_ms: int,
     ride through.
     """
     proc_start = proc_start or session_target._proc_start
+    read_status = read_status or _default_read_status
     who = label or f"pid {repl_pid}"
     if tail is None:
         tail = transcript.Tail(repl_pid)

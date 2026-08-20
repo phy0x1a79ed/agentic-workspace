@@ -25,7 +25,7 @@ from awm.config import (
     WORKSPACE_ROOT,
     IDLE_SHUTDOWN_SECONDS,
 )
-from awm.gateway import catalog, peer_catalog
+from awm.gateway import catalog, mcp_caller, peer_catalog
 from awm.gateway.gateway_ops import GATEWAY_OPERATIONS
 from awm.gateway.operations import register_fastapi_routes
 
@@ -431,7 +431,8 @@ def list_tools_endpoint(view: str | None = None, peers: int = 0):
 _REFLECTION_FLAT_PREFIX = "reflection_"
 
 
-def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> None:
+def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None,
+                             descendant_header: str | None = None) -> None:
     """Stamp the calling session's own pid onto a reflection call.
 
     `awm-mcp` runs as a stdio child of the session that calls it, so it forwards
@@ -447,6 +448,18 @@ def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> N
     a different target would turn it into a way to type into other agents.
     Scoped to reflection only — no other service's args are touched. Mutates
     ``args`` in place (mirrors how the flat/domain shapes already nest it).
+
+    ``X-Awm-Caller-Pid`` is the opt-in second door, for a caller that is *some
+    descendant* of the session rather than the proxy itself — a Claude Code hook,
+    whose own pid names no session and is refused outright otherwise. That pid is
+    walked to the nearest ancestor holding a session record, exactly as the proxy
+    walks its own. It stays a separate header rather than a widening of the first
+    on purpose: running the walk on ``X-Awm-Session-Pid`` would turn its
+    fail-closed refusal (a pid with no record) into a climb to whatever *ancestor*
+    session exists, which for a nested agent is the parent's prompt. Opt-in keeps
+    the walk to callers that asked for it, and the resolved pid is still only a
+    narrowing step — reflection re-reads the record and checks it before typing.
+    ``X-Awm-Session-Pid`` wins when both are present.
     """
     if name == "reflection":
         inner = args.get("args")
@@ -459,6 +472,8 @@ def _stamp_reflection_caller(name: str, args: dict, pid_header: str | None) -> N
         return
     if pid_header and pid_header.isdigit():
         inner["_caller_pid"] = int(pid_header)
+    elif descendant_header and descendant_header.isdigit():
+        inner["_caller_pid"] = mcp_caller.resolve_caller_pid(int(descendant_header))
     else:
         inner.pop("_caller_pid", None)
 
@@ -475,7 +490,8 @@ async def invoke_tool(payload: dict, request: Request):
     if not name:
         raise HTTPException(400, "missing 'name' in payload")
     as_ = request.headers.get("X-Awm-As")
-    _stamp_reflection_caller(name, args, request.headers.get("X-Awm-Session-Pid"))
+    _stamp_reflection_caller(name, args, request.headers.get("X-Awm-Session-Pid"),
+                             request.headers.get("X-Awm-Caller-Pid"))
     try:
         result = await catalog.dispatch(name, args, as_=as_)
     except peer_catalog.PeerRedirect as e:

@@ -37,6 +37,8 @@ from awm.gatewayclient import ServiceAdapter
 from awm.reflection import (
     daemon_inject,
     inject,
+    oc_inject,
+    oc_session,
     pending,
     permission_mode,
     session_target,
@@ -116,7 +118,12 @@ API_MANIFEST: dict[str, Any] = {
                 "bypass is a no-op. Acts only on your own session."
             ),
             "timeout": 60,
-            "params": [],
+            "params": [
+                {"name": "expect_session", "type": "string",
+                 "description": "Refuse unless the resolved session has this "
+                                "sessionId. For hooks, which reach us through an "
+                                "ancestry walk; agents never need it."},
+            ],
         },
         {
             "name": "pending",
@@ -175,8 +182,10 @@ def _caller_pid(args: dict) -> Any:
 # way — a result with ok=false and a readable reason, not an exception. The
 # distinction the caller cares about is whether their command ran, not which
 # layer declined.
-_FAILURES = (session_target.ResolveError, tmux_inject.TmuxError,
-             daemon_inject.DaemonError, inject.DeliveryError)
+_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
+             tmux_inject.TmuxError, daemon_inject.DaemonError,
+             oc_inject.OpencodeError, oc_inject.ServeError,
+             inject.DeliveryError)
 
 
 def _guarded(verb: str, fn):
@@ -234,7 +243,9 @@ def _handle_compact(args: dict) -> dict:
 
 
 def _handle_mode(args: dict) -> dict:
-    return permission_mode.ensure_bypass(caller_pid=_caller_pid(args))
+    return permission_mode.ensure_bypass(
+        caller_pid=_caller_pid(args),
+        expect_session=args.get("expect_session") or None)
 
 
 def _handle_whoami(args: dict) -> dict:

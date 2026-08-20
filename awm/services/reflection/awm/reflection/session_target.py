@@ -201,12 +201,21 @@ def _roster_worker(record: dict, repl_pid: int) -> dict:
     return worker
 
 
-def resolve(repl_pid: int, *, socket: Optional[str] = None,
-            runner=None) -> TmuxLane | DaemonLane:
+def resolve(repl_pid: int, *, socket: Optional[str] = None, runner=None,
+            expect_session: Optional[str] = None) -> TmuxLane | DaemonLane:
     """Resolve a caller's REPL pid to its injection target.
 
     ``socket``/``runner`` are only consulted on the tmux path (they are the tmux
     socket override and the subprocess runner seam used by tests).
+
+    ``expect_session`` is the caller saying which conversation it believes it is,
+    and it can only ever *refuse*: the pid still decides the target, and a
+    mismatch raises rather than redirecting, so it cannot be used to name a
+    session. It exists for callers whose pid reaches us through an ancestry walk
+    — a Claude Code hook — where a record that is missing or not yet written
+    would otherwise let the walk climb past its own session and land on whoever
+    launched it. Claude Code hands such a caller its ``session_id`` directly, so
+    it can check the walk's answer against a fact it already holds.
     """
     from awm.reflection import tmux_inject
 
@@ -217,6 +226,12 @@ def resolve(repl_pid: int, *, socket: Optional[str] = None,
     kind = record.get("kind")
     session_id = record.get("sessionId") or ""
     name = record.get("name")
+
+    if expect_session and session_id != expect_session:
+        raise ResolveError(
+            f"pid {repl_pid} resolves to session {session_id or '<unset>'}, but "
+            f"the caller expected session {expect_session}; that pid belongs to a "
+            f"different conversation, so reflection will not act on it")
 
     parked = record.get("parkedJobId")
     if parked:

@@ -263,6 +263,39 @@ def test_unknown_hosting_kind_refuses(tmp_path, monkeypatch):
         session_target.resolve(1234)
 
 
+def test_expect_session_refuses_a_pid_that_resolved_elsewhere(tmp_path, monkeypatch):
+    # The hook lane's failure mode: an ancestry walk past a session whose record
+    # is missing or not yet written lands on whoever launched it. The caller
+    # already knows its own sessionId, so a mismatch refuses here rather than
+    # typing into a stranger's prompt.
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "111")
+    _write_session(tmp_path, 1234, procStart="111", sessionId="the-launcher")
+    with pytest.raises(session_target.ResolveError, match="different conversation"):
+        session_target.resolve(1234, expect_session="mine")
+
+
+def test_expect_session_can_only_refuse_never_redirect(tmp_path, monkeypatch):
+    # Naming a session that exists does not fetch it: the pid still decides, so
+    # the check is a narrowing step and not a way to address another session.
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "111")
+    monkeypatch.setattr(tmux_inject, "pane_for_pid", lambda pid, **kw: "%3")
+    _write_session(tmp_path, 1234, procStart="111", sessionId="mine")
+    _write_session(tmp_path, 5678, procStart="111", sessionId="theirs")
+    assert session_target.resolve(1234, expect_session="mine").session_id == "mine"
+    with pytest.raises(session_target.ResolveError, match="different conversation"):
+        session_target.resolve(1234, expect_session="theirs")
+
+
+def test_no_expect_session_leaves_resolution_as_it_was(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(session_target, "_proc_start", lambda pid: "111")
+    monkeypatch.setattr(tmux_inject, "pane_for_pid", lambda pid, **kw: "%3")
+    _write_session(tmp_path, 1234, procStart="111", sessionId="whatever")
+    assert session_target.resolve(1234).session_id == "whatever"
+
+
 def _bg_roster(tmp_path, monkeypatch, workers, *, children=None, dead=()):
     """Point resolve() at a fake roster and a fake process table.
 
@@ -437,12 +470,27 @@ class FakeModeSession:
         self.closed = True
 
 
-def _run_mode(cycle, monkeypatch):
+def _run_mode(cycle, monkeypatch, lane=None):
     sess = FakeModeSession(cycle)
-    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: object())
+    lane = lane or session_target.TmuxLane(pane="%1", session_id="sid",
+                                           repl_pid=1234)
+    monkeypatch.setattr(session_target, "resolve", lambda pid, **kw: lane)
     monkeypatch.setattr(permission_mode, "_open", lambda *a, **kw: sess)
     res = permission_mode.ensure_bypass(caller_pid=1234, sleep=lambda _s: None)
     return res, sess
+
+
+def test_mode_reports_which_lane_it_was_on(monkeypatch):
+    # An unreadable footer means different things per lane — a modal over a tmux
+    # pane, which passes, versus a pty stream with no footer paint in it, which
+    # does not — so the caller needs to know which one it got.
+    daemon = session_target.DaemonLane(sock="/tmp/s", auth="t", session_id="sid",
+                                       repl_pid=1234)
+    res, sess = _run_mode(["unknown"], monkeypatch, lane=daemon)
+    assert res["hosting"] == "background" and sess.presses == 0
+    res, _ = _run_mode(["auto", "default", "acceptEdits", "plan",
+                        "bypassPermissions"], monkeypatch)
+    assert res["hosting"] == "tmux"
 
 
 def test_mode_is_a_noop_when_already_in_bypass(monkeypatch):
