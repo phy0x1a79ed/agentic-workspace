@@ -111,3 +111,65 @@ def test_the_two_sections_are_seeded_independently(mod):
     mod.SETTINGS_FILE.write_text(yaml.safe_dump(
         {mod.DEFAULT_MODEL_KEY: {"provider": "openrouter", "model": "mine"}}))
     assert mod.ensure()["seeded"] == ["provider"]
+
+
+# ---------------------------------------------------------------------------
+# Steering the route from awm, because the harness's Settings UI is loopback-only
+# ---------------------------------------------------------------------------
+
+def test_selecting_a_declared_model_moves_the_default(mod):
+    mod.ensure()
+    res = mod.set_default_model(mod.MODELS[2])
+    assert res["changed"] is True and res["previous"] == mod.MODELS[0]
+    assert _read(mod)[mod.DEFAULT_MODEL_KEY]["model"] == mod.MODELS[2]
+
+
+def test_selecting_the_same_model_twice_reports_no_change(mod):
+    mod.ensure()
+    assert mod.set_default_model(mod.MODELS[0])["changed"] is False
+
+
+def test_an_undeclared_model_is_refused_unless_declared(mod):
+    """A selection naming a model the route does not advertise is the exact
+    failure this verb exists to prevent."""
+    mod.ensure()
+    with pytest.raises(ValueError, match="not declared"):
+        mod.set_default_model("vendor/not-listed")
+    assert _read(mod)[mod.DEFAULT_MODEL_KEY]["model"] == mod.MODELS[0]
+
+    res = mod.set_default_model("vendor/not-listed", declare=True)
+    assert res["model"] == "vendor/not-listed"
+    assert "vendor/not-listed" in mod.declared_models()
+
+
+def test_a_write_never_lands_while_the_harness_holds_the_lock(mod):
+    """Stealing the lock would turn a delay into a lost write, so we time out."""
+    mod.ensure()
+    lock = mod.SETTINGS_FILE.with_name(mod.SETTINGS_FILE.name + ".lock")
+    lock.write_text("")
+    try:
+        mod.LOCK_TIMEOUT_S = 0.05
+        with pytest.raises(mod.SettingsUnavailable, match="is held"):
+            mod.set_default_model(mod.MODELS[1])
+        assert lock.exists(), "the contender must not remove somebody else's lock"
+    finally:
+        lock.unlink()
+    assert _read(mod)[mod.DEFAULT_MODEL_KEY]["model"] == mod.MODELS[0]
+
+
+def test_an_unparseable_document_is_never_partially_rewritten(mod):
+    mod.DSH_HOME.mkdir(parents=True, exist_ok=True)
+    mod.SETTINGS_FILE.write_text("this: [is: not: yaml\n")
+    before = mod.SETTINGS_FILE.read_text()
+    with pytest.raises(mod.SettingsUnavailable, match="does not parse"):
+        mod.set_default_model("anything", declare=True)
+    assert mod.SETTINGS_FILE.read_text() == before
+
+
+def test_unrelated_sections_survive_a_model_change(mod):
+    mod.ensure()
+    doc = _read(mod)
+    doc["some-other-plugin"] = {"kept": True}
+    mod.SETTINGS_FILE.write_text(yaml.safe_dump(doc))
+    mod.set_default_model(mod.MODELS[1])
+    assert _read(mod)["some-other-plugin"] == {"kept": True}

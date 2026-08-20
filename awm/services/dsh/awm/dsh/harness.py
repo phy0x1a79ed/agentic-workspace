@@ -79,6 +79,14 @@ AUTH_JSON = Path(os.environ.get("DSH_AUTH_JSON")
 PROVIDER_ID = "openrouter"
 API_KEY_ENV = "OPENROUTER_API_KEY"
 
+#: Settings sections are keyed by the *plugin id* in the composed profile, which
+#: is where these two names come from — ``dsh --profile web --dump-config``
+#: lists them. Guessing either produces a file the harness reads and ignores.
+#: They live here rather than in ``settings`` so this module can report on the
+#: document without importing the module that writes it.
+PLUGIN_KEY = "llm-pi-ai"
+DEFAULT_MODEL_KEY = "agent-default-model"
+
 
 def installed() -> bool:
     return CLI.is_file() and os.access(CLI, os.X_OK)
@@ -196,11 +204,15 @@ class Supervisor:
             doc = {}
         if not isinstance(doc, dict):
             doc = {}
-        providers = ((doc.get("llm-pi-ai") or {}).get("providers") or {})
-        selected = doc.get("agent-default-model") or {}
+        providers = ((doc.get(PLUGIN_KEY) or {}).get("providers") or {})
+        selected = doc.get(DEFAULT_MODEL_KEY) or {}
+        catalog = [m.get("id") for m in
+                   ((providers.get(PROVIDER_ID) or {}).get("models") or [])
+                   if m.get("id")]
         return {
             "settings": str(SETTINGS_FILE),
             "provider_declared": PROVIDER_ID in providers,
+            "models": catalog,
             "default_model": (f"{selected.get('provider')}/{selected.get('model')}"
                               if selected else None),
             "default_model_ours": selected.get("provider") == PROVIDER_ID,

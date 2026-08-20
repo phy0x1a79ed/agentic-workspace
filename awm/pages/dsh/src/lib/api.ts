@@ -20,6 +20,8 @@ const dsh = svc('dsh');
 export interface RouteState {
   settings: string;
   provider_declared: boolean;
+  /** Model ids the route advertises, in declared order. */
+  models: string[];
   /** `<provider>/<model>` the harness will use for a new session. */
   default_model: string | null;
   /** False when the selection still points at the profile's DeepSeek-direct
@@ -70,3 +72,15 @@ export const stop = () => dsh.fn<HarnessState>('stop');
 export const restart = () => dsh.fn<HarnessState>('restart');
 export const logs = (tail = 200) => dsh.fn<{ tail: number; log: string }>('logs', { tail });
 export const url = () => dsh.fn<{ url: string }>('url').then((r) => r.url);
+
+/**
+ * Select the default model new sessions start on.
+ *
+ * This lives here rather than in the harness's own Settings UI because that UI
+ * is loopback-only: the harness client decides from `location.hostname` alone
+ * whether settings are reachable, so a browser on the mesh gets an in-memory
+ * mirror and the Models page reports that settings are unavailable. The harness
+ * watches its settings document, so a change here applies without a restart.
+ */
+export const setModel = (model: string) =>
+  dsh.fn<{ changed: boolean; previous: string | null; model: string }>('model', { model });

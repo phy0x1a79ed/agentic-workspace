@@ -26,18 +26,45 @@ base-path option, and the gateway's WebSocket bridge forwards no headers at all.
 A dedicated front on its own port is the design. Don't re-derive this.
 
 **The `Origin` rewrite is what makes the GUI work at all.** Every `/api` request
-passes a browser-trust fence in the harness that compares `Origin` against
-`Host` and demands they match; its privileged plane — settings, credentials, the
-workspace picker — is additionally pinned to a *loopback* `Host` with an empty
-trust list, which no `--trusted-host` grant unlocks. `httpsfront` drops the
-inbound `Host` so httpx derives it from the upstream URL, and that is what makes
-the harness see a loopback `Host` and open the privileged plane to a remote
-browser with its own posture untouched. It forwards `Origin` verbatim, though,
-which leaves the fence comparing a mesh origin to a loopback host — 403 on every
-call. The front therefore passes `rewrite_origin=True`, an opt-in added to
-`httpsfront` for exactly this (see that service's INSTALL.md for why the default
-is off). It applies on the WebSocket path too; a rewrite on HTTP alone yields a
-GUI that loads and then silently never streams.
+passes a browser-trust fence in the harness: the `Host` must be loopback or a
+`--trusted-host` grant, and a present `Origin` must equal it. `httpsfront` drops
+the inbound `Host` so httpx derives it from the upstream URL, which satisfies the
+first half without any grant. It forwards `Origin` verbatim, though, which leaves
+the fence comparing a mesh origin to a loopback host — 403 on every call,
+handshakes included. The front therefore passes `rewrite_origin=True`, an opt-in
+added to `httpsfront` for exactly this (see that service's INSTALL.md for why the
+default is off). It applies on the WebSocket path too; a rewrite on HTTP alone
+yields a GUI that loads and then silently never streams.
+
+**Settings are loopback-only, and no proxy can change that.** The fence above is
+a server check and the rewrite satisfies it. The harness's *client* makes a
+second, independent decision: `isLoopbackHostname(location.hostname)` — literally
+`localhost`, `[::1]`, or `127.x.x.x` — chooses between a host-backed settings
+mirror and an in-memory one. On a mesh address the mirror never loads and the
+Models page reports "settings are unavailable in this browser". That is
+`location`, not a header, so nothing this service does reaches it, and
+`--trusted-host` does not either — it only widens the server fence.
+
+Everything else works over the mesh: conversations, the per-session model picker,
+the workspace picker (which resolves to the `browse` backend on a non-loopback
+bind), tools. What is lost is the Settings pages and the native "open this file"
+affordance on produced files — the latter correctly, since it would open a file
+on this VM's absent desktop.
+
+The route is the one thing anyone actually needs from Settings, so it has a verb:
+`awm dsh model` reports the selection and the route's catalog, and
+`awm dsh model --model <id>` changes it. `dsh-settings-file` watches the document
+and hot-publishes external edits, so that applies without a restart. Writes take
+the same `<file>.lock` the harness writes under, and never steal it. For the full
+Settings UI, put a local TCP relay on the *viewing* machine and open
+`https://127.0.0.1:12301` — the shared leaf already carries `IP:127.0.0.1`, so
+there is no certificate warning:
+
+```
+socat TCP-LISTEN:12301,bind=127.0.0.1,fork,reuseaddr TCP:10.74.81.84:12301   # linux/mac
+netsh interface portproxy add v4tov4 listenaddress=127.0.0.1 listenport=12301 \
+      connectaddress=10.74.81.84 connectport=12301                           # windows
+```
 
 **The model route is seeded, not owned.** `$DSH_HOME/settings.yaml` gets two
 sections on first start and neither is ever touched again — a route tuned in the
@@ -67,7 +94,7 @@ Two, from one process:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision |
+| `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision and the model route |
 | — | (TLS front) | `0.0.0.0:12301` | the harness GUI, behind `awm_session` |
 
 The front is not a gateway registration — it is a listener this process owns,
@@ -139,9 +166,10 @@ Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
 2. `/ui/dsh` — the reception page; **Open harness** goes to `https://<mesh-ip>:12301/`.
-3. **Settings → Models** opens and saves. This is the test that the `Origin`
-   rewrite is actually working: it is the privileged plane, and it 403s without
-   it. The route itself is testable without a browser:
+3. Start a session and open the composer's model picker — it is a plain RPC and
+   must list the route's models. **Settings will not open on a mesh address**;
+   that is upstream's client-side loopback rule, not a fault. The route is
+   testable without a browser at all:
    `dsh --profile headless "Reply with exactly the word PONG and nothing else."`
    with `DSH_HOME` and `OPENROUTER_API_KEY` set.
 4. Send one prompt and watch it *stream*. A response that arrives in one lump, or
