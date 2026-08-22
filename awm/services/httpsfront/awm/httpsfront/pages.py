@@ -160,7 +160,11 @@ def landing_page(
         if s.get("kind") in ("page", "static")
         and str(s.get("prefix", "")).startswith("/ui/")
     ]
-    pages.sort(key=lambda s: str(s.get("name", "")))
+    def _label(s: dict[str, Any]) -> str:
+        name = str(s.get("name", s.get("prefix", "")))
+        return display_names.get(name) or name
+
+    pages.sort(key=_label)
 
     if pages:
         cards = []
@@ -244,6 +248,15 @@ function escapeHtml(s) {{
 function cardTags(card) {{
   const v = card.dataset.tags || '';
   return v ? v.split(',') : [];
+}}
+
+function resortCards() {{
+  const list = document.querySelector('.cards');
+  if (!list) return;
+  const cards = Array.from(list.querySelectorAll('.card'));
+  cards.sort((a, b) => a.querySelector('.pagelink').textContent
+    .localeCompare(b.querySelector('.pagelink').textContent));
+  cards.forEach(c => list.appendChild(c));
 }}
 
 function applyFilter() {{
@@ -388,6 +401,7 @@ async function renameCard(page, name) {{
   if (card) {{
     card.querySelector('.pagelink').textContent = data.display_name || page;
     closeAllMenus();
+    resortCards();
   }}
 }}
 
