@@ -88,6 +88,20 @@ def submit(
     return task_id
 
 
+def skipped_errors(cfg: ChinookConfig, task_id: str) -> list[dict]:
+    """Paths a task passed over because it could not read their source.
+
+    ``skip_source_errors`` is what stops one file vanishing mid-scan from
+    failing a 100k-file backup. It is *also* what lets a backup whose source was
+    entirely unreadable finish **SUCCEEDED with zero files moved** — and nothing
+    in the task document says so: status is a success, every counter stays at 0,
+    ``files_skipped`` included. This list is the only place it shows. A
+    successful run is therefore only actually successful once this is empty.
+    """
+    out = _run(cfg, ["task", "show", "--skipped-errors", task_id, "--format", "json"])
+    return json.loads(out).get("DATA", []) if out else []
+
+
 def task_status(cfg: ChinookConfig, task_id: str) -> dict:
     """Current state of a task, as the fields that actually tell you anything."""
     fields = [

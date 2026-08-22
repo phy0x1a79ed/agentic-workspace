@@ -19,6 +19,7 @@ Post ``kind``:
   - ``journal`` — a self-post by the owning agent (the debrief entry; its
     structured fields live in ``meta``).
   - ``system``  — a system notice.
+  - ``goal``    — what the user is after at this level; see :mod:`awm.scopes.goals`.
 
 All SQL goes through :class:`ScopesDAO`.
 """
@@ -308,8 +309,10 @@ def post(project: str, scope: str, *, author: str, body: str,
             _delivery_sink(project, scope, post_obj)
         except Exception:
             pass
-    # Index journals + messages for hybrid search (cheap; bodies are short).
-    if kind in ("journal", "message") and body:
+    # Index journals + messages + goals for hybrid search (cheap; bodies are
+    # short). A goal left out here would be findable by keyword but not by
+    # meaning, which is the half that matters for retrieving one.
+    if kind in ("journal", "message", "goal") and body:
         _index_post(pid, f"{post_obj.author} {body}")
     return post_obj
 

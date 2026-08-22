@@ -15,7 +15,11 @@ from typing import Any
 
 from awm.persistence.embeddings import (  # noqa: F401  (re-exported)
     EMBEDDINGS_DDL,
+    EmbeddingsUnavailable,
+    degraded_marker,
     embed_text,
+    load_vec_extension,
+    probe,
     upsert_embedding,
     delete_embedding,
     semantic_search,
@@ -43,11 +47,11 @@ def pairwise_cosine(conn: sqlite3.Connection) -> list[tuple[str, str, float]]:
 
     Uses sqlite-vec's ``vec_distance_cosine`` over the stored embeddings so we
     never re-run the model. Returns (id_a, id_b, similarity) with id_a < id_b.
-    """
-    import sqlite_vec
 
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
+    Needs only sqlite-vec, not the model — but a node missing the search extra
+    is missing both, so this raises :class:`EmbeddingsUnavailable` like the rest.
+    """
+    load_vec_extension(conn)
     rows = conn.execute(
         """
         SELECT a.source_id AS ida, b.source_id AS idb,

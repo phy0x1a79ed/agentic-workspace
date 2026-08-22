@@ -18,6 +18,31 @@ This is a private protocol, read out of the Claude Code bundle rather than a
 documented interface. It is version-checked on connect so that a CLI update which
 moves it degrades to a clear "background reflection unavailable" rather than
 misfiring; the tmux backend is unaffected either way.
+
+What this module can and cannot promise is worth stating plainly, because the
+gap is structural rather than a shortcoming to be closed later. Injection can
+confirm that the frames were written to a socket whose host identified itself as
+the calling session's, and that the host did not reject them. It can NOT confirm
+that the text is on screen: reading the pty back gives the TUI's repaint deltas,
+and the TUI repaints the composer only when it chooses to — the same paste
+painted in 21ms into an empty composer and not at all within five seconds into a
+busy session whose composer already held text, having arrived both times. And it
+can NOT confirm that the command ran: a slash command runs at end of turn, and
+the reflection call has to *return* for the caller's turn to end, so at the
+moment of the return there is by construction nothing to observe yet. That is the
+whole reason the follow-up is deferred to a watcher instead of awaited here, and
+anything that later looks like a way to verify *execution* inline is this
+constraint being forgotten.
+
+What *is* checkable is what the session did with the keystrokes, and that is not
+this module's business — it lives in the session's own status record, which
+:mod:`awm.reflection.inject` reads after the commit and which says the same thing
+whichever pty the session is hosted on.
+
+This module knows the protocol and nothing else. Which session to reach is
+:mod:`awm.reflection.session_target`'s job, retrying is
+:mod:`awm.reflection.inject`'s, and waiting for completion is
+:mod:`awm.reflection.watcher`'s.
 """
 from __future__ import annotations
 
@@ -25,12 +50,11 @@ import json
 import logging
 import socket as _socket
 import struct
-import threading
 import time
-from typing import Callable, Optional
+from contextlib import contextmanager
+from typing import Callable, Iterator, Optional
 
 from awm.reflection import session_target
-from awm.reflection.guards import is_slash, refusal, resume_text
 
 log = logging.getLogger("awm.reflection.daemon_inject")
 
@@ -51,8 +75,10 @@ _BRACKETED_PASTE_MODE = 2004
 _ENTER = b"\r"
 
 # Settle beat between the paste landing and the Enter that submits it — the same
-# beat, and for the same reason, as the tmux path's.
-_SETTLE_S = 0.15
+# beat, and for the same reason, as the tmux path's. Matched to
+# ``permission_mode._REDRAW_S``, which is the one window in this service that has
+# shipped without misfiring.
+_SETTLE_S = 0.35
 
 # How long to wait for the host's replay to finish and the session to go live
 # before authenticating. The replay is the scrollback; we do not need it, we just
@@ -60,29 +86,32 @@ _SETTLE_S = 0.15
 _HELLO_WAIT_S = 5.0
 _QUIET_S = 0.6
 
-# Deferred follow-up, watching the session record's own `status` field rather
-# than scraping the screen. Same shape as the tmux watcher and the same hazard:
-# `/compact` runs at end of turn, so the sequence is busy → a brief idle → busy
-# again while compacting → idle. Firing on the first idle would resume on the old
-# context, which is the entire bug the deferred design exists to prevent — hence
-# the confirmed idle streak.
+# How long to keep listening after the last write before closing the socket. Long
+# enough for the host to say it threw the input away, short enough that it does
+# not show up as latency on a verb the caller is blocking on. It is bounded by the
+# cap rather than by the quiet period: a live session is streaming its own output
+# the whole time, so "quiet" is not something this window can rely on reaching.
 #
-# What marks the command as *started* is `statusUpdatedAt` moving past the moment
-# we injected, not catching a sample that reads "busy". Requiring a busy sighting
-# is a trap: a short conversation compacts in a couple of seconds and the busy
-# window can close between two polls, after which the watcher waits out the full
-# hard cap and the session sits idle for fifteen minutes. A timestamp cannot be
-# missed that way — it is still there on the next poll, whenever that lands.
-_POLL_S = 2.0
-_FAST_POLL_S = 0.3       # until the session is seen to react at all
-_IDLE_CONFIRM_POLLS = 3
-_FOLLOWUP_MAX_WAIT_S = 900.0
-_BUSY_STATES = {"busy"}
-_SETTLED_STATES = {"idle", "waiting"}
+# The quiet period cannot usefully go below the recv timeout in ``_pump`` — a gap
+# is only noticed when a read times out — so 0.15 was 0.3 in all but name. Saying
+# 0.3 keeps the constant honest about what it can express.
+_ACCEPT_CHECK_S = 1.0
+_ACCEPT_QUIET_S = 0.3
+
+# Ctrl-U: kill the prompt line. Only ever sent before a *retry*, to wipe whatever
+# a failed attempt left in the box so the next paste cannot concatenate onto it.
+_CLEAR_KEY = b"\x15"
 
 
 class DaemonError(RuntimeError):
-    """The daemon PTY socket could not be reached, or spoke an unexpected shape."""
+    """The daemon PTY socket could not be reached, or spoke an unexpected shape.
+
+    This used to carry a ``wrote_input`` flag so the retry above could *guess*
+    whether bytes might already have landed and skip re-pasting if so. It is
+    gone: the sender now reads the prompt back before pressing Enter, which
+    answers that question directly instead of inferring it, and it retries only
+    from before the commit point where a repeat cannot double-submit.
+    """
 
 
 Opener = Callable[[str], "_SocketLike"]
@@ -140,7 +169,7 @@ class Connection:
     Pings that do arrive while we are connected are answered anyway.
     """
 
-    def __init__(self, target: session_target.DaemonTarget, *,
+    def __init__(self, target: session_target.DaemonLane, *,
                  opener: Opener = _open_unix,
                  sleep: Callable[[float], None] = time.sleep,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -150,6 +179,7 @@ class Connection:
         self._reader = _FrameReader()
         self._sock = opener(target.sock)
         self._authed = False
+        self._raw_sent = False
         self.hello: dict = {}
         self.output = bytearray()
 
@@ -230,15 +260,42 @@ class Connection:
     # -- public ------------------------------------------------------------
 
     def handshake(self) -> None:
-        """Read the host's greeting and check we understand what it speaks."""
+        """Read the host's greeting, and check it is the right session's host.
+
+        The greeting names the REPL on the far end of the socket. Reflection
+        already knows which REPL it is acting for, so comparing the two is the
+        one place a wrong target can be caught before any keystroke is written —
+        and a wrong target is reachable: the roster hands out recycled
+        ``spare/*.pty.sock`` paths and its entries carry an attempt counter, so
+        "the socket you were told about now belongs to another job" is a state
+        the daemon reaches on its own, without anything being broken.
+
+        No greeting at all is a failure too. It used to pass, because the
+        unrecognised-message check was guarded on having *received* something —
+        so a socket that connected and then said nothing sailed through, and
+        authentication proceeded into a host that had never identified itself.
+        """
         self._pump(until_live=True)
+        if not self.hello:
+            raise DaemonError(
+                f"the background session's PTY host never greeted us on "
+                f"{self._target.sock}; the roster entry is stale, or that socket "
+                f"is no longer being served — refusing to type into it blind")
         version = self.hello.get("version")
-        if self.hello and "replPid" not in self.hello:
+        if "replPid" not in self.hello:
             raise DaemonError(
                 f"the background session's PTY host greeted us with an "
                 f"unrecognised message (version {version!r}); reflection cannot "
                 f"safely drive it — background reflection is unavailable until "
                 f"this is re-verified against the current Claude Code build")
+        greeted = self.hello.get("replPid")
+        if greeted != self._target.repl_pid:
+            raise DaemonError(
+                f"the PTY socket {self._target.sock} is hosting REPL {greeted}, "
+                f"not the calling session's REPL {self._target.repl_pid}; the "
+                f"roster entry is stale (the session was re-hosted, or a "
+                f"pre-warmed socket has since been handed to another job) — "
+                f"refusing to type into a different session")
 
     def authenticate(self) -> None:
         self._send(_CTL, json.dumps(
@@ -262,7 +319,27 @@ class Connection:
         self._send(_RAW, payload)
 
     def press_enter(self) -> None:
+        if not self._authed:
+            raise DaemonError("refusing to send input before authenticating")
         self._send(_RAW, _ENTER)
+
+    def check_not_rejected(self, *, cap: float = _ACCEPT_CHECK_S) -> None:
+        """Raise if the host says it discarded what we just wrote.
+
+        A **negative** check, and only that. An unauthenticated raw frame is
+        dropped silently apart from the ``auth-required`` control frame that
+        follows it — which the write path used to miss entirely, because it
+        closed the socket the instant the last byte went out and never read
+        again. Listening for a beat turns that class of silent no-op into a
+        failure the caller (and the retry above it) can act on.
+
+        It is not, and must not become, a check that the line was *accepted*.
+        There is no positive acknowledgement in this protocol, and the session is
+        mid-turn by design, so its prompt does not behave like an idle one. See
+        the module docstring for why waiting for evidence the command ran is not
+        something this call can do.
+        """
+        self._pump(quiet_for=_ACCEPT_QUIET_S, cap=cap)
 
     def send_keys(self, data: bytes) -> None:
         """Send raw key bytes (not text) — e.g. a Shift+Tab escape sequence."""
@@ -282,9 +359,50 @@ class Connection:
         self._pump(quiet_for=quiet_for, cap=cap)
         return self.output.decode("utf-8", "replace")
 
+    # -- the lane verbs ----------------------------------------------------
+    # The same four :mod:`awm.reflection.inject` drives the tmux lane through.
+    # It must not be able to tell which one it is holding.
 
-def _connect(target: session_target.DaemonTarget, *, opener: Opener,
-             sleep: Callable[[float], None]) -> Connection:
+    # A negative read-back here proves NOTHING, and treating it as proof is what
+    # broke self-compaction on 2026-08-15. This is a byte stream of the TUI's
+    # repaint deltas, not a rendered screen, and the TUI repaints the composer
+    # only when it decides to: measured on a scratch session, a short paste into
+    # an empty composer painted in 21ms every time, while a long paste into a
+    # composer that already held text produced no paint at all inside five
+    # seconds. The bytes were still delivered. So the sender may use this to
+    # corroborate a write, never to veto one.
+    read_back_is_evidence = False
+
+    @property
+    def label(self) -> str:
+        return (f"background session "
+                f"{self._target.name or self._target.session_id}")
+
+    def read_back(self) -> str:
+        """What the host has painted, bounded tightly.
+
+        A live session streams its own output continuously, so this cannot wait
+        for the stream to fall quiet the way the handshake can — it takes a short
+        window and works with what arrives. Pumping is also what surfaces an
+        ``auth-required``, so every read doubles as the rejection check.
+        """
+        return self.screen(quiet_for=_ACCEPT_QUIET_S, cap=_ACCEPT_CHECK_S)
+
+    def clear(self) -> None:
+        self.send_keys(_CLEAR_KEY)
+        self._sleep(_SETTLE_S)
+
+    def write(self, text: str) -> None:
+        self.type_text(text)
+        self._sleep(_SETTLE_S)
+
+    def commit(self) -> None:
+        self.press_enter()
+        self.check_not_rejected()
+
+
+def _connect(target: session_target.DaemonLane, *, opener: Opener,
+             sleep: Callable[[float], None] = time.sleep) -> Connection:
     conn = Connection(target, opener=opener, sleep=sleep)
     try:
         conn.handshake()
@@ -295,136 +413,24 @@ def _connect(target: session_target.DaemonTarget, *, opener: Opener,
     return conn
 
 
-def _paste_and_submit(text: str, target: session_target.DaemonTarget, *,
-                      enter: bool, opener: Opener,
-                      sleep: Callable[[float], None] = time.sleep) -> bool:
-    with _connect(target, opener=opener, sleep=sleep) as conn:
-        conn.type_text(text)
-        if enter:
-            sleep(_SETTLE_S)
-            conn.press_enter()
-            return True
-    return False
+@contextmanager
+def open_lane(lane: session_target.DaemonLane, *, opener: Opener = _open_unix,
+              sleep: Callable[[float], None] = time.sleep
+              ) -> Iterator[Connection]:
+    """Open ``lane`` for writing, on a connection that identifies its far end.
 
-
-# ---------------------------------------------------------------------------
-# Deferred follow-up
-# ---------------------------------------------------------------------------
-
-def _status(repl_pid: int) -> Optional[tuple[str, int]]:
-    """Return ``(status, statusUpdatedAt)`` for a background session, or ``None``."""
-    try:
-        record = json.loads(
-            (session_target.SESSIONS_DIR / f"{repl_pid}.json").read_text())
-    except (OSError, ValueError):
-        return None
-    return str(record.get("status") or ""), int(record.get("statusUpdatedAt") or 0)
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _await_and_followup(text: str, followup: str,
-                        target: session_target.DaemonTarget, *,
-                        opener: Opener = _open_unix,
-                        injected_at_ms: Optional[int] = None,
-                        sleep: Callable[[float], None] = time.sleep,
-                        clock: Callable[[], float] = time.monotonic,
-                        now_ms: Callable[[], int] = _now_ms) -> None:
-    """Block until the injected command has finished, then submit ``followup``.
-
-    Uses the session's own ``status`` field instead of reading the screen: it is
-    structured, it is maintained by the session itself, and it does not go stale
-    when TUI wording changes.
-
-    Two conditions must both hold before the resume fires: the session must have
-    *reacted* since we injected (its status timestamp moved past that moment),
-    and it must then be settled — several consecutive idle samples, not the first
-    one. Either condition alone is satisfiable by the brief lull that precedes
-    compaction, which is exactly when resuming would land on the old context.
+    The handshake is the safety check, and it belongs to *this attempt*: the
+    greeting names the REPL on the other end of the socket and it is compared
+    against the session we were told to act for. That matters more here than
+    anywhere else in the service, because the daemon hands out pre-warmed
+    ``spare/*.pty.sock`` paths that accept connections and greet healthily
+    *before* any job claims them. An address held across a claim does not write
+    into a void — it writes into somebody else's live conversation. Re-opening
+    per attempt, rather than reusing one connection across retries, is what keeps
+    a retry from being a second chance to type into a stranger.
     """
-    injected_at_ms = injected_at_ms if injected_at_ms is not None else now_ms()
-    deadline = clock() + _FOLLOWUP_MAX_WAIT_S
-    reacted = False
-    idle_streak = 0
-    ready = False
-    while clock() < deadline:
-        sample = _status(target.repl_pid)
-        if sample is None:
-            log.warning("reflection: background session %s vanished while "
-                        "awaiting completion; no resume injected",
-                        target.name or target.session_id)
-            return
-        status, updated_ms = sample
-        if updated_ms > injected_at_ms:
-            reacted = True
-        if status in _BUSY_STATES:
-            idle_streak = 0
-        elif reacted and status in _SETTLED_STATES:
-            idle_streak += 1
-            if idle_streak >= _IDLE_CONFIRM_POLLS:
-                ready = True
-                break
-        else:
-            idle_streak = 0
-        sleep(_POLL_S if reacted else _FAST_POLL_S)
-    if not ready:
-        log.warning("reflection: command %r completion not observed within %ss; "
-                    "injecting resume anyway", text, _FOLLOWUP_MAX_WAIT_S)
-    # Re-read the roster: a background session that respawned mid-wait has a new
-    # PTY socket and a new input token, and the ones we were handed at injection
-    # time are dead. Same session id, though — that is the durable identity.
+    conn = _connect(lane, opener=opener, sleep=sleep)
     try:
-        fresh = session_target.resolve(target.repl_pid)
-    except session_target.ResolveError:
-        fresh = target
-    if not isinstance(fresh, session_target.DaemonTarget):
-        fresh = target
-    try:
-        _paste_and_submit(followup, fresh, enter=True, opener=opener, sleep=sleep)
-    except DaemonError as exc:
-        log.warning("reflection: could not inject resume into background "
-                    "session %s: %s", target.name or target.session_id, exc)
-
-
-def _default_spawn(fn: Callable[[], None]) -> None:
-    threading.Thread(target=fn, name="reflection-followup-bg", daemon=True).start()
-
-
-def send(text: str, *, target: session_target.DaemonTarget, enter: bool = True,
-         delay_ms: int = 0, confirm: bool = False,
-         followup: Optional[str] = None,
-         opener: Opener = _open_unix,
-         sleep: Callable[[float], None] = time.sleep,
-         spawn: Callable[[Callable[[], None]], object] = _default_spawn) -> dict:
-    """Type ``text`` into a background session and (unless ``enter=False``) submit it.
-
-    Mirrors :func:`awm.reflection.tmux_inject.send` — same guards, same deferred
-    follow-up contract, same result shape — over a different transport.
-    """
-    refused = refusal(text, confirm=confirm)
-    if refused is not None:
-        return refused
-
-    if delay_ms and delay_ms > 0:
-        sleep(min(delay_ms, 25_000) / 1000.0)
-
-    injected_at_ms = _now_ms()
-    submitted = _paste_and_submit(text, target, enter=enter, opener=opener,
-                                  sleep=sleep)
-
-    followup_sent = None
-    followup_deferred = False
-    if submitted and is_slash(text):
-        followup_sent = resume_text(followup)
-        followup_deferred = True
-        spawn(lambda: _await_and_followup(text, followup_sent, target,
-                                          opener=opener,
-                                          injected_at_ms=injected_at_ms,
-                                          sleep=sleep))
-
-    return {"ok": True, "session": target.name or target.session_id,
-            "hosting": "background", "text": text,
-            "submitted": submitted, "followup": followup_sent,
-            "followup_deferred": followup_deferred}
+        yield conn
+    finally:
+        conn.close()

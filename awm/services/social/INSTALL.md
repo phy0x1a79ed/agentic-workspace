@@ -96,17 +96,30 @@ source of truth, and every read queries them live. (Live receive still only
   **bot** account cannot search at all — use `social_fetch`.
 - **`social_download_attachments account= channel= message_id= [idx=]`** pulls a
   message's attachments to a **system temp dir outside the awm workspace**
-  (honoring `$TMPDIR`) and returns `{files:[{filename, mime, size, path}], dir}`.
-  It re-fetches the message live so signed/expiring urls are always fresh
-  (Discord CDN links, Slack `url_private`). `idx` optionally selects one
-  attachment. Returns paths, not bytes — large files never bloat the RPC payload
-  (the verb declares a generous 300s timeout for the download hop).
+  (honoring `$TMPDIR`) and returns
+  `{files:[{filename, mime, size, path, url}], dir, node}`. It re-fetches the
+  message live so signed/expiring urls are always fresh (Discord CDN links, Slack
+  `url_private`). `idx` optionally selects one attachment. Returns paths, not
+  bytes — large files never bloat the RPC payload (the verb declares a generous
+  300s timeout for the download hop).
 - **`social_channels account= [include_dms=true]`** lists channels; with
   `include_dms` it also enumerates direct/group DMs (`kind` `dm`/`group`) where
   the platform supports it (Slack `im`/`mpim`, Teams 1:1/group chats).
 - **`social_open_dm account= user=`** resolves a platform user — by id, or by
   name where the platform supports a directory lookup (Slack `users.list`) — to a
   DM channel and opens it, returning the channel id for use with `fetch`/`send`.
+
+**The retrieval contract, when the call is borrowed.** `path` and `dir` are
+absolute on the node that ran the download — which for a borrowed `social` is not
+the caller's. That is what `url` is for: the same bytes' address on the serving
+node's `fileviewer` mount, which the MCP proxy uses to pull them down and rewrite
+`path` to a local copy (FEDERATION.md § *Cross-peer bytes*). Two consequences
+worth knowing. A file the mount's denylist hides — `*.pem`, `*.key`, `*.token`,
+`credentials`, anything under `secrets/` — cannot cross, and comes back as
+`path: null` with a named `error` rather than a path that does not exist. And a
+caller reaching the service by any other route (CLI, raw `/invoke`, a service
+calling `social` directly) gets the serving node's paths verbatim and must use
+`url` itself.
 
 Slack and Teams run through the mira daemon; conversation enumeration, `open_dm`,
 `search`, and attachment `download` for those platforms live in `mira/mira_api/`
@@ -144,10 +157,19 @@ root = "/teams/ubcMICB-gr-HallamLab/Shared Documents/Hallam_Lab_roadmaps/Tony-L_
 **Google Drive (OAuth2).** A Google App Password (the Gmail path) cannot reach
 Drive, so a bucket needs its own OAuth2 client. One-time, in the Google Cloud
 console: create a project, enable the **Drive API**, configure the OAuth consent
-screen (add the account as a test user), and create a **Desktop app** OAuth
-client. Then run the consent helper **once per account**:
+screen, and create a **Desktop app** OAuth client. **Publish the consent screen
+to Production.** Left in *Testing* it works for exactly seven days and then every
+call fails with `invalid_grant: Bad Request` — a bucket that worked and silently
+stopped a week later is this and nothing else, and re-minting the token without
+publishing just buys another week. Then run the consent helper **once per
+account**:
 
     python scripts/gdrive_auth.py --client-secrets /path/to/client_secret.json --bucket-name gdrive-phyber
+
+Consent needs a browser and the redirect comes back to a local port, so on a
+headless host forward one first (`ssh -L 8765:localhost:8765 <host>`) and add
+`--port 8765 --no-browser`. Re-minting for a client already in `social.toml`
+takes `--client-id` + `--client-secret-file` instead of the downloaded JSON.
 
 It prints a `refresh_token` (and a ready TOML snippet). Paste the
 `client_id`/`client_secret`/`refresh_token` into the section above (secrets

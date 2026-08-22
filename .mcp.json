@@ -22,17 +22,6 @@
       "env": {
         "PATH": "/home/tony/lib/miniforge3/envs/awm/bin:/usr/local/bin:/usr/bin:/bin"
       }
-    },
-    "ollama": {
-      "command": "/home/tony/lib/miniforge3/envs/awm/bin/npx",
-      "args": [
-        "-y",
-        "@iflow-mcp/ollama-mcp"
-      ],
-      "env": {
-        "PATH": "/home/tony/lib/miniforge3/envs/awm/bin:/usr/local/bin:/usr/bin:/bin",
-        "OLLAMA_HOST": "http://172.25.176.1:11434"
-      }
     }
   }
 }

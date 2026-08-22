@@ -1,88 +1,90 @@
-"""Unit tests for the reflection self-injection primitive.
+"""The tmux lane, and the guards both lanes share.
 
-All tmux calls go through an injected fake runner, so these exercise the argv
-assembly + guard logic without a real tmux server. The follow-up prompt is
-*deferred* (a detached watcher injects it only after the slash command has
-visibly finished), so `send()` schedules the watcher via an injectable ``spawn``
-seam and the completion logic is tested directly through ``_await_and_followup``.
+Every tmux call goes through an injected runner, so none of this needs a real
+tmux server. The runner is not a stub that records argv, though — it models a
+pane with a prompt box you can paste into, clear, and submit, because the
+transaction under test writes, reads the pane back, and only then presses Enter.
+A recorder alone cannot express "the text never showed up".
 """
-import logging
+from __future__ import annotations
+
 import subprocess
 
 import pytest
 
-from awm.reflection import tmux_inject
+from awm.reflection import guards, inject, session_target, tmux_inject
 
 
-def _noop_spawn(fn):
-    """Drop the scheduled watcher — most tests only inspect synchronous output."""
-    return None
+LANE = session_target.TmuxLane(pane="%7", session_id="sid-1", repl_pid=4242,
+                               name="test")
 
 
 @pytest.fixture(autouse=True)
 def _agent_present(monkeypatch):
-    """Default the T3 agent-subtree sanity check to "yes" for every test.
+    """Default the agent-subtree sanity check to "yes" for every test.
 
     `_subtree_has_agent` walks the real `/proc`, which a unit test has no
-    business depending on. Tests exercising the refusal path override this
-    per-test via `monkeypatch.setattr(tmux_inject, "_subtree_has_agent", ...)`.
+    business depending on. The refusal path overrides this per-test.
     """
     monkeypatch.setattr(tmux_inject, "_subtree_has_agent", lambda pid, kids: True)
+    monkeypatch.setattr(tmux_inject, "_ppid_children", dict)
 
 
-class FakeRunner:
-    def __init__(self, returncode: int = 0, captures=None,
-                pane_pid: str = "4242", session: str = "sess0",
-                reresolved_pane: str = "%32", list_panes=None):
-        self.calls: list[tuple[list, dict]] = []
-        self.returncode = returncode
-        # Scripted `capture-pane -p` snapshots served in order (last one repeats).
-        self._captures = list(captures) if captures else []
+class FakePane:
+    """A tmux server holding one pane with a working prompt box."""
+
+    def __init__(self, *, pane_pid="4242", session="sess0", list_panes=None,
+                 returncode=0, swallow_paste=False, scrollback=""):
+        self.calls: list[list[str]] = []
+        self.buffers: dict[str, str] = {}
+        self.prompt = ""
+        self.submitted: list[str] = []
+        self.scrollback = scrollback
         self._pane_pid = pane_pid
         self._session = session
-        # What a `display-message -t <session>` re-resolve query returns —
-        # the session's pane id after a hop (T5).
-        self._reresolved_pane = reresolved_pane
-        # Rows for `list-panes -a`, as (pane, pid, command, session) tuples;
-        # each becomes one tab-separated stdout line.
-        self._list_panes = list(list_panes) if list_panes else []
+        self._list_panes = list(list_panes or [])
+        self._rc = returncode
+        # Models a modal (or a session not reading its pty): the paste is
+        # accepted by tmux and never reaches the prompt.
+        self._swallow = swallow_paste
 
     def __call__(self, argv, **kw):
-        self.calls.append((argv, kw))
-        if "list-panes" in argv:
+        self.calls.append(argv)
+        rest = argv[1:]
+        if rest[:1] == ["-S"]:
+            rest = rest[2:]
+        verb = rest[0] if rest else ""
+        stdout = ""
+        if verb == "load-buffer":
+            self.buffers[argv[argv.index("-b") + 1]] = \
+                kw.get("input", b"").decode()
+        elif verb == "paste-buffer":
+            if not self._swallow:
+                self.prompt += self.buffers.get(argv[argv.index("-b") + 1], "")
+        elif verb == "send-keys":
+            key = argv[-1]
+            if key == "Enter":
+                self.submitted.append(self.prompt)
+                self.scrollback += f"❯ {self.prompt}\n"
+                self.prompt = ""
+            elif key == tmux_inject._CLEAR_KEY:
+                self.prompt = ""
+        elif verb == "capture-pane":
+            stdout = f"{self.scrollback}❯ {self.prompt}"
+        elif verb == "display-message":
+            fmt = argv[-1]
+            stdout = {"#{pane_pid}": self._pane_pid,
+                      "#{session_name}": self._session}.get(
+                          fmt, argv[argv.index("-t") + 1])
+        elif verb == "list-panes":
             stdout = "\n".join("\t".join(str(f) for f in row)
                                for row in self._list_panes)
-        elif "display-message" in argv:
-            fmt = argv[-1]
-            if fmt == "#{pane_pid}":
-                stdout = self._pane_pid
-            elif fmt == "#{session_name}":
-                stdout = self._session
-            elif fmt == "#{pane_id}":
-                # `-t <pane>` existence check echoes the pane; `-t <session>`
-                # re-resolve returns wherever that session's current pane is.
-                target = argv[argv.index("-t") + 1]
-                stdout = self._reresolved_pane if target == self._session else target
-            else:
-                stdout = "%32"
-        elif "capture-pane" in argv:
-            stdout = self._next_capture()
-        else:
-            stdout = ""
-        return subprocess.CompletedProcess(argv, self.returncode,
-                                           stdout=stdout, stderr="boom")
-
-    def _next_capture(self) -> str:
-        if not self._captures:
-            return ""
-        if len(self._captures) == 1:
-            return self._captures[0]
-        return self._captures.pop(0)
+        return subprocess.CompletedProcess(argv, self._rc, stdout=stdout,
+                                           stderr="boom")
 
     def verbs(self) -> list[str]:
-        # The tmux subcommand is the token after the binary (and optional -S sock).
         out = []
-        for argv, _ in self.calls:
+        for argv in self.calls:
             rest = argv[1:]
             if rest[:1] == ["-S"]:
                 rest = rest[2:]
@@ -90,497 +92,219 @@ class FakeRunner:
         return out
 
     def flat(self) -> list[str]:
-        return [tok for argv, _ in self.calls for tok in argv]
+        return [tok for argv in self.calls for tok in argv]
 
 
-class FakeClock:
-    """Monotonic-ish clock that advances ``step`` seconds per call."""
+def send(text, pane: FakePane, *, status=("idle", 1000), **kw):
+    """Deliver through the real tmux writer, against a fake pane.
 
-    def __init__(self, step: float = 100.0):
-        self.t = 0.0
-        self.step = step
+    ``status`` stands in for the session's own record, which is what the sender
+    now confirms a submit against. The pane fake cannot write one, and the tmux
+    lane has no more claim on that signal than the daemon lane does — the point
+    of reading the record is that neither transport owns it.
+    """
+    moved = {"at": status[1]}
 
-    def __call__(self) -> float:
-        v = self.t
-        self.t += self.step
-        return v
+    def read_status(_pid):
+        if status is None:
+            return None
+        out = (status[0], moved["at"])
+        if pane.submitted:
+            moved["at"] = status[1] + 1
+        return out
 
-
-# ---------------------------------------------------------------------------
-# send(): synchronous injection + deferred-follow-up scheduling
-# ---------------------------------------------------------------------------
-
-@pytest.mark.smoke
-def test_send_pastes_loads_and_submits():
-    r = FakeRunner()
-    scheduled = []
-    res = tmux_inject.send("/compact", pane="%32", runner=r, spawn=scheduled.append)
-    assert res == {"ok": True, "pane": "%32", "text": "/compact",
-                   "submitted": True, "followup": tmux_inject.DEFAULT_FOLLOWUP,
-                   "followup_deferred": True}
-    # ONLY the command is injected synchronously: display-message (existence
-    # check) → display-message (agent-subtree check) → load → paste →
-    # send-keys → display-message (session captured for the deferred
-    # watcher's pane-hop fallback). The resume itself is deferred to the
-    # watcher, never co-queued behind /compact.
-    assert r.verbs() == ["display-message", "display-message",
-                         "load-buffer", "paste-buffer", "send-keys",
-                         "display-message"]
-    assert len(scheduled) == 1
-
-
-@pytest.mark.smoke
-def test_bracketed_paste_targets_pane():
-    r = FakeRunner()
-    tmux_inject.send("/compact", pane="%7", runner=r, spawn=_noop_spawn)
-    paste = next(argv for argv, _ in r.calls if "paste-buffer" in argv)
-    assert "-p" in paste           # bracketed paste, so a leading / is literal
-    assert "-t" in paste and "%7" in paste
-
-
-@pytest.mark.smoke
-def test_never_sends_escape():
-    # Escape would interrupt the in-flight turn; the whole point is to queue.
-    r = FakeRunner()
-    tmux_inject.send("/compact", pane="%32", runner=r, spawn=_noop_spawn)
-    assert "Escape" not in r.flat()
-
-
-@pytest.mark.smoke
-def test_load_buffer_gets_text_on_stdin():
-    r = FakeRunner()
-    tmux_inject.send("/model opus", pane="%32", runner=r, spawn=_noop_spawn)
-    lb = next(kw for argv, kw in r.calls if "load-buffer" in argv)
-    assert lb.get("input") == b"/model opus"
-
-
-@pytest.mark.smoke
-def test_slash_command_defers_followup():
-    # A bare slash command leaves the session idle; a resume must follow — but it
-    # is DEFERRED (scheduled), not pasted synchronously behind the command.
-    r = FakeRunner()
-    scheduled = []
-    res = tmux_inject.send("/compact", pane="%32", runner=r, spawn=scheduled.append)
-    assert res["followup"] == tmux_inject.DEFAULT_FOLLOWUP
-    assert res["followup_deferred"] is True
-    # Synchronously only /compact is loaded; the resume is not co-queued.
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"/compact"]
-    assert r.verbs().count("send-keys") == 1
-    assert len(scheduled) == 1
-
-
-@pytest.mark.smoke
-def test_custom_followup_used():
-    r = FakeRunner()
-    scheduled = []
-    res = tmux_inject.send("/compact", pane="%32", followup="resume task 3",
-                           runner=r, spawn=scheduled.append)
-    assert res["followup"] == "resume task 3"
-    assert res["followup_deferred"] is True
-    # The custom text is carried on the result and handed to the watcher, not
-    # pasted synchronously.
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"/compact"]
-    assert len(scheduled) == 1
-
-
-@pytest.mark.smoke
-def test_plain_prompt_gets_no_followup():
-    # A normal prompt is its own turn — no keep-alive needed, nothing scheduled.
-    r = FakeRunner()
-    scheduled = []
-    res = tmux_inject.send("hello there", pane="%32", runner=r, spawn=scheduled.append)
-    assert res["followup"] is None
-    assert res["followup_deferred"] is False
-    assert r.verbs().count("send-keys") == 1
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"hello there"]
-    assert scheduled == []
+    return inject.deliver(4242, text, detect=lambda _p: LANE, runner=pane,
+                          sleep=lambda _s: None, read_status=read_status, **kw)
 
 
 # ---------------------------------------------------------------------------
-# _pane_phase(): classify the TUI pane tail
+# The paste sequence
 # ---------------------------------------------------------------------------
 
 @pytest.mark.smoke
-def test_pane_phase_variants():
-    assert tmux_inject._pane_phase("Compacting conversation…") == "compacting"
-    assert tmux_inject._pane_phase(
-        "Compacted (ctrl+o to see full summary)\n❯ ") == "compacted"
-    assert tmux_inject._pane_phase("❯ ") == "idle"
-    assert tmux_inject._pane_phase("working… esc to interrupt") == "busy"
+def test_a_command_lands_in_the_prompt_and_is_submitted():
+    pane = FakePane()
+    result = send("/compact", pane)
+    assert result.submitted is True
+    assert result.lane is LANE
+    assert result.confirmed == inject.CONFIRMED_RECORD
+    assert pane.submitted == ["/compact"]
 
 
 @pytest.mark.smoke
-def test_pane_phase_busy_beats_stale_compacted():
-    # An active turn whose scrollback still holds a prior compaction's marker must
-    # classify as busy, not compacted — else the watcher fires on the old marker.
-    snap = "Compacted (ctrl+o to see full summary)\n…\nthinking… esc to interrupt"
-    assert tmux_inject._pane_phase(snap) == "busy"
+def test_the_paste_is_bracketed_and_targets_the_pane():
+    # `-p` is load-bearing, not decoration: without bracketed paste a leading
+    # `/` opens the TUI's slash menu instead of arriving as literal text.
+    pane = FakePane()
+    send("/compact", pane)
+    paste = next(a for a in pane.calls if "paste-buffer" in a)
+    assert "-p" in paste and "-d" in paste
+    assert paste[paste.index("-t") + 1] == "%7"
+
+
+@pytest.mark.smoke
+def test_no_escape_is_ever_sent():
+    # Escape would cancel the agent's in-flight turn. The whole design queues
+    # behind that turn instead of interrupting it.
+    pane = FakePane()
+    send("/compact", pane)
+    assert "Escape" not in pane.flat()
+
+
+def test_the_text_goes_in_on_stdin_not_as_an_argument():
+    # Command lines are visible to every process on the box, and `send` carries
+    # the caller's own prompt content.
+    pane = FakePane()
+    send("/model opus", pane)
+    load = next(a for a in pane.calls if "load-buffer" in a)
+    assert load[-1] == "-"
+    assert "/model opus" not in " ".join(load)
+
+
+def test_enter_false_leaves_the_text_in_the_prompt_unsubmitted():
+    pane = FakePane()
+    result = send("half a thought", pane, enter=False)
+    assert result.submitted is False
+    assert pane.submitted == []
+    assert pane.prompt == "half a thought"
 
 
 # ---------------------------------------------------------------------------
-# _await_and_followup(): inject the resume only after the command finishes
+# Verification, on this lane specifically
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
-def test_await_followup_fires_after_compacting_then_compacted():
-    r = FakeRunner(captures=[
-        "assistant working… esc to interrupt",          # turn still running
-        "Compacting conversation…",                       # compaction underway
-        "Compacted (ctrl+o to see full summary)\n❯ ",     # done + idle
-    ])
-    tmux_inject._await_and_followup(
-        "/compact", "resume now", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    # Resume injected exactly once, only after the busy→compacted transition.
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume now"]
-    assert r.verbs().count("send-keys") == 1
+def test_a_swallowed_paste_is_not_reported_as_sent():
+    # tmux accepted every call and the prompt stayed empty — a modal ate it.
+    pane = FakePane(swallow_paste=True)
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
+    assert pane.submitted == []
 
 
-@pytest.mark.smoke
-def test_await_followup_ignores_idle_before_busy():
-    # A brief idle sample *before* the command starts must not misfire the resume.
-    r = FakeRunner(captures=[
-        "❯ ",                                             # idle gap (pre-command)
-        "assistant working… esc to interrupt",            # busy
-        "Compacted (ctrl+o to see full summary)\n❯ ",     # done
-    ])
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    caps = [argv for argv, _ in r.calls if "capture-pane" in argv]
-    assert len(caps) == 3               # waited through all three, didn't early-fire
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
+def test_an_earlier_compaction_in_the_scrollback_does_not_fake_a_success():
+    # `capture-pane` hands back the visible screen, which still holds the last
+    # time this session compacted. Verification counts occurrences for exactly
+    # this reason.
+    pane = FakePane(swallow_paste=True,
+                    scrollback="❯ /compact\n⎿ Compacted (ctrl+o …)\n")
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
 
 
-@pytest.mark.smoke
-def test_await_followup_non_compact_busy_to_idle():
-    # A non-/compact slash command (e.g. /model opus) resumes on a settled idle.
-    r = FakeRunner(captures=[
-        "switching model… esc to interrupt",
-        "❯ ", "❯ ", "❯ ",       # a settled idle streak
-    ])
-    tmux_inject._await_and_followup(
-        "/model opus", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
-
-
-@pytest.mark.smoke
-def test_await_followup_noop_compact_settled_idle():
-    # A no-op /compact ("Not enough messages to compact") produces no marker; the
-    # resume must still fire, via a settled idle streak after the busy turn.
-    r = FakeRunner(captures=[
-        "assistant working… esc to interrupt",   # driving turn
-        "❯ ", "❯ ", "❯ ",                         # settled idle (compact was a no-op)
-    ])
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
-
-
-@pytest.mark.smoke
-def test_await_followup_transient_idle_gap_no_early_fire():
-    # A single idle sample between the turn ending and `Compacting conversation`
-    # appearing must NOT fire the resume early — it fires only after `Compacted`.
-    r = FakeRunner(captures=[
-        "assistant working… esc to interrupt",    # driving turn (busy)
-        "❯ ",                                      # transient gap (1 idle sample)
-        "Compacting conversation…",                # compaction actually starts
-        "Compacting conversation…",
-        "Compacted (ctrl+o to see full summary)\n❯ ",
-    ])
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    # All five samples consumed — the single idle gap did not trip the streak.
-    caps = [argv for argv, _ in r.calls if "capture-pane" in argv]
-    assert len(caps) == 5
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
-
-
-@pytest.mark.smoke
-def test_await_followup_timeout_injects_anyway(caplog):
-    # Never-idle pane → the hard cap injects the resume anyway (resume beats hang).
-    r = FakeRunner(captures=["stuck… esc to interrupt"])
-    with caplog.at_level(logging.WARNING):
-        tmux_inject._await_and_followup(
-            "/compact", "resume", "%32",
-            socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock(step=100.0))
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
-    assert any("not observed" in rec.message for rec in caplog.records)
-
-
-@pytest.mark.smoke
-def test_await_followup_pane_vanishes_no_resume():
-    # capture-pane failing (pane gone) aborts cleanly with no resume injected.
-    r = FakeRunner(returncode=1)
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == []
+def test_a_retry_wipes_the_prompt_with_ctrl_u():
+    pane = FakePane(swallow_paste=True)
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
+    assert pane.flat().count(tmux_inject._CLEAR_KEY) == 3, \
+        "attempts 2 and 3 wipe on the way in; the give-up wipes on the way out"
 
 
 # ---------------------------------------------------------------------------
-# Guards (unchanged behavior)
+# Refusing a pane that is not what it was
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
-def test_modal_command_refused():
-    # /mcp opens a navigable modal that swallows input — refused, nothing pasted.
-    for cmd in ("/mcp", "/status", "/config"):
-        r = FakeRunner()
-        res = tmux_inject.send(cmd, pane="%32", runner=r, spawn=_noop_spawn)
-        assert res["ok"] is False and res["refused"] is True
-        assert res["kind"] == "interactive"
-        assert r.calls == []
-
-
-@pytest.mark.smoke
-def test_modal_not_overridable_by_confirm():
-    # Unlike destructive commands, modal ones cannot be forced — they'd freeze.
-    r = FakeRunner()
-    res = tmux_inject.send("/mcp", pane="%32", confirm=True, runner=r, spawn=_noop_spawn)
-    assert res["ok"] is False and res["kind"] == "interactive"
-    assert r.calls == []
-
-
-@pytest.mark.smoke
-def test_bare_model_refused_but_model_arg_allowed():
-    # `/model` alone opens the picker (modal); `/model opus` acts directly.
-    r1 = FakeRunner()
-    assert tmux_inject.send("/model", pane="%32", runner=r1,
-                            spawn=_noop_spawn)["ok"] is False
-    assert r1.calls == []
-
-    r2 = FakeRunner()
-    res = tmux_inject.send("/model opus", pane="%32", runner=r2, spawn=_noop_spawn)
-    assert res["ok"] is True
-    assert res["followup"] == tmux_inject.DEFAULT_FOLLOWUP   # still a slash cmd
-    assert res["followup_deferred"] is True
-    loaded = [kw["input"] for argv, kw in r2.calls if "load-buffer" in argv]
-    assert loaded[0] == b"/model opus"
-
-
-@pytest.mark.smoke
-def test_destructive_refused_without_confirm():
-    r = FakeRunner()
-    res = tmux_inject.send("/clear", pane="%32", runner=r, spawn=_noop_spawn)
-    assert res["ok"] is False and res["refused"] is True
-    assert "/clear" in res["reason"]
-    assert r.calls == []           # nothing was pasted
-
-
-@pytest.mark.smoke
-def test_destructive_allowed_with_confirm():
-    r = FakeRunner()
-    res = tmux_inject.send("/clear", pane="%32", confirm=True, runner=r, spawn=_noop_spawn)
-    assert res["ok"] is True
-    assert "send-keys" in r.verbs()
-
-
-@pytest.mark.smoke
-def test_enter_false_skips_submit():
-    r = FakeRunner()
-    scheduled = []
-    res = tmux_inject.send("draft text", pane="%32", enter=False, runner=r,
-                           spawn=scheduled.append)
-    assert res["submitted"] is False
-    assert "send-keys" not in r.verbs()
-    assert scheduled == []          # nothing submitted → no follow-up scheduled
-
-
-@pytest.mark.smoke
-def test_socket_is_threaded():
-    r = FakeRunner()
-    tmux_inject.send("/compact", pane="%32", socket="/tmp/s", runner=r, spawn=_noop_spawn)
-    assert all(argv[1:3] == ["-S", "/tmp/s"] for argv, _ in r.calls)
-
-
-@pytest.mark.smoke
-def test_empty_text_raises():
-    with pytest.raises(ValueError):
-        tmux_inject.send("   ", pane="%32", runner=FakeRunner())
-
-
-@pytest.mark.smoke
-def test_tmux_failure_raises_tmuxerror():
-    with pytest.raises(tmux_inject.TmuxError):
-        tmux_inject.send("/compact", pane="%32", runner=FakeRunner(returncode=1),
-                         spawn=_noop_spawn)
-
-
-# ---------------------------------------------------------------------------
-# T3: refuse to inject into a pane with no agent in its process subtree
-# ---------------------------------------------------------------------------
-
-@pytest.mark.smoke
-def test_refuses_pane_with_no_agent(monkeypatch):
-    # The pane exists (display-message succeeds) but nothing in its subtree is
-    # claude/opencode — a stale id repointed at a shell, or a wrong explicit
-    # `pane` argument. Must refuse, not silently paste into whatever is there.
+def test_a_pane_running_no_agent_is_refused(monkeypatch):
+    # The pane id is real and exists, but nothing running there is an agent — a
+    # stale id now repointed at a shell or an editor.
     monkeypatch.setattr(tmux_inject, "_subtree_has_agent", lambda pid, kids: False)
-    r = FakeRunner()
-    with pytest.raises(tmux_inject.TmuxError, match="not running an agent"):
-        tmux_inject.send("/compact", pane="%32", runner=r, spawn=_noop_spawn)
-    # Nothing pasted once the agent-subtree check fails.
-    assert "load-buffer" not in r.verbs()
+    pane = FakePane()
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
+    assert pane.submitted == []
 
 
-@pytest.mark.smoke
-def test_agent_present_allows_injection():
-    # Sanity: the default fixture's "agent present" stub is exercised by every
-    # other test in this file; this asserts it explicitly for the happy path.
-    r = FakeRunner()
-    res = tmux_inject.send("/compact", pane="%32", runner=r, spawn=_noop_spawn)
-    assert res["ok"] is True
+def test_a_dead_pane_is_refused():
+    pane = FakePane(returncode=1)
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
 
 
-# ---------------------------------------------------------------------------
-# T5: the deferred watcher survives its pane vanishing mid-wait, via the
-# pane's tmux session name
-# ---------------------------------------------------------------------------
-
-@pytest.mark.smoke
-def test_await_followup_reresolves_pane_after_session_hop():
-    # The original pane (%32) vanishes mid-wait (capture-pane fails once); the
-    # watcher falls back to the session's *current* pane (%99, per
-    # FakeRunner's reresolved_pane) and keeps watching — and pastes the resume
-    # against — that pane instead.
-    r = FakeRunner(reresolved_pane="%99")
-    n = {"captures": 0}
-
-    def flaky(argv, **kw):
-        if "capture-pane" in argv:
-            n["captures"] += 1
-            if n["captures"] == 1:
-                proc = subprocess.CompletedProcess(argv, 1, stdout="", stderr="gone")
-            else:
-                snapshot = ("Compacting conversation…" if n["captures"] == 2
-                           else "Compacted (ctrl+o to see full summary)\n❯ ")
-                proc = subprocess.CompletedProcess(argv, 0, stdout=snapshot, stderr="")
-            r.calls.append((argv, kw))
-            return proc
-        return r(argv, **kw)
-
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32", session="sess0",
-        socket=None, runner=flaky, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume"]
-    # The resume must have been pasted against the re-resolved pane, not the
-    # vanished one.
-    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
-    assert any("%99" in argv for argv in pastes)
-
-
-@pytest.mark.smoke
-def test_await_followup_gives_up_if_session_also_gone():
-    # If the session itself is gone (re-resolve also fails), drop the resume
-    # cleanly rather than loop or crash.
-    r = FakeRunner(returncode=1)
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32", session=None,
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == []
+def test_the_pane_is_re_checked_on_every_attempt():
+    # The checks belong to the attempt, not to some earlier resolution: a pane
+    # can be destroyed between detecting it and writing to it.
+    pane = FakePane(swallow_paste=True)
+    with pytest.raises(inject.DeliveryError):
+        send("/compact", pane)
+    assert pane.verbs().count("display-message") == 8, \
+        "two assertions per attempt, three attempts, plus the give-up wipe"
 
 
 # ---------------------------------------------------------------------------
-# T6: fire on the compacting→anything transition, not on settled idle alone —
-# so an agent that self-resumes immediately after /compact isn't missed.
+# Pane discovery
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
-def test_await_followup_fires_when_agent_self_resumes_after_compacting():
-    # busy -> compacting -> busy again (the agent started its own next turn
-    # immediately, no idle gap, no lingering Compacted marker). Must still
-    # fire promptly on the very next sample after compacting, not wait for an
-    # idle streak that will never come.
-    r = FakeRunner(captures=[
-        "assistant working… esc to interrupt",     # driving turn
-        "Compacting conversation…",                  # compaction underway
-        "assistant working… esc to interrupt",       # self-resumed immediately
-        "assistant working… esc to interrupt",       # still going (must not matter)
-    ])
-    tmux_inject._await_and_followup(
-        "/compact", "resume now", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    loaded = [kw["input"] for argv, kw in r.calls if "load-buffer" in argv]
-    assert loaded == [b"resume now"]
-    caps = [argv for argv, _ in r.calls if "capture-pane" in argv]
-    # Fired on the third sample (first non-compacting after compacting) —
-    # never consumed the fourth.
-    assert len(caps) == 3
+def test_a_pane_is_found_by_containing_the_caller(monkeypatch):
+    monkeypatch.setattr(tmux_inject, "_ppid_children",
+                        lambda: {100: [200], 200: [4242]})
+    pane = FakePane(list_panes=[("%1", "999", "bash", "s"),
+                                ("%7", "100", "claude", "s")])
+    assert tmux_inject.pane_for_pid(4242, runner=pane) == "%7"
+
+
+def test_a_caller_in_no_pane_resolves_to_nothing(monkeypatch):
+    monkeypatch.setattr(tmux_inject, "_ppid_children", lambda: {100: [200]})
+    pane = FakePane(list_panes=[("%1", "100", "claude", "s")])
+    assert tmux_inject.pane_for_pid(4242, runner=pane) is None
+
+
+def test_panes_are_never_ranked_by_recency():
+    # An earlier version asked tmux for `#{pane_activity}`, which does not exist
+    # — it expanded to empty for every pane, so they all ranked identically and
+    # every deferred resume went to the lowest-numbered agent pane. The caller's
+    # identity says which pane is theirs; nothing else gets a vote.
+    pane = FakePane(list_panes=[("%1", "100", "claude", "s")])
+    tmux_inject.list_panes(runner=pane)
+    fmt = next(a for a in pane.calls if "list-panes" in a)[-1]
+    assert "activity" not in fmt
 
 
 # ---------------------------------------------------------------------------
-# T7: the deferred resume goes to the CALLER's pane and to nobody else.
-#
-# This is a regression guard for a real incident: the watcher used to re-scan
-# the tmux server for "the current agent pane" immediately before injecting the
-# resume, and the ranking it used to break ties between candidates read a tmux
-# format that does not exist — so every candidate tied and the first-listed pane
-# always won. Result: deferred resumes were delivered into whichever agent
-# happened to own the lowest-numbered pane, not the one that asked.
+# Guards — enforced above both lanes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.smoke
-def test_await_followup_injects_into_the_calling_pane():
-    # Other agent panes exist on the server — including a lower-numbered one,
-    # which is exactly what used to win. The resume must still land on %32.
-    r = FakeRunner(
-        captures=[
-            "assistant working… esc to interrupt",
-            "Compacting conversation…",
-            "Compacted (ctrl+o to see full summary)\n❯ ",
-        ],
-        list_panes=[
-            ("%0", "111", "claude", "sess0"),
-            ("%32", "444", "claude", "sess4"),
-            ("%77", "555", "claude", "sess9"),
-        ],
-    )
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    pastes = [argv for argv, _ in r.calls if "paste-buffer" in argv]
-    assert any("%32" in argv for argv in pastes)
-    assert not any("%0" in argv or "%77" in argv for argv in pastes)
+@pytest.mark.parametrize("cmd", ["/mcp", "/status", "/config", "/resume"])
+def test_a_modal_command_is_refused(cmd):
+    # These trap pasted input and Enter; a follow-up does not escape them and a
+    # navigable list drills deeper on Enter. Only a hand-typed Esc recovers.
+    res = inject.send(cmd, caller_pid=4242)
+    assert res["refused"] is True and res["kind"] == "interactive"
 
 
-@pytest.mark.smoke
-def test_await_followup_never_scans_for_a_pane_to_inject_into():
-    # Stronger form of the above, independent of which panes happen to exist:
-    # resolving the resume target must not involve enumerating the server at
-    # all. If this starts failing, someone reintroduced a global pane scan.
-    r = FakeRunner(
-        captures=[
-            "assistant working… esc to interrupt",
-            "Compacting conversation…",
-            "Compacted (ctrl+o to see full summary)\n❯ ",
-        ],
-        list_panes=[("%0", "111", "claude", "sess0")],
-    )
-    tmux_inject._await_and_followup(
-        "/compact", "resume", "%32",
-        socket=None, runner=r, sleep=lambda _s: None, clock=FakeClock())
-    assert "list-panes" not in r.verbs()
+def test_a_modal_command_is_not_overridable_by_confirm():
+    assert inject.send("/mcp", caller_pid=4242, confirm=True)["refused"] is True
 
 
-@pytest.mark.smoke
-def test_send_refuses_when_the_caller_cannot_be_identified():
-    # No pane means no known caller. Refuse loudly rather than picking someone.
-    with pytest.raises(tmux_inject.TmuxError, match="only ever acts on the caller"):
-        tmux_inject.send("/compact", pane=None, runner=FakeRunner(),
-                         spawn=_noop_spawn)
+def test_bare_model_is_refused_but_model_with_an_argument_is_not():
+    # `/model` alone opens a chooser; `/model opus` acts immediately.
+    assert inject.send("/model", caller_pid=4242)["refused"] is True
+    pane = FakePane()
+    assert send("/model opus", pane)[0] is True
+
+
+@pytest.mark.parametrize("cmd", ["/clear", "/quit", "/exit"])
+def test_a_destructive_command_needs_confirmation(cmd):
+    assert inject.send(cmd, caller_pid=4242)["refused"] is True
+
+
+def test_a_destructive_command_goes_through_with_confirmation():
+    pane = FakePane()
+    assert send("/clear", pane, confirm=True).submitted is True
+
+
+def test_empty_text_is_a_caller_bug_not_a_refusal():
+    with pytest.raises(ValueError):
+        inject.send("   ", caller_pid=4242)
+
+
+def test_a_caller_that_cannot_be_identified_is_refused():
+    # Reflection acts on the caller and on nobody else, so an unresolvable
+    # caller is refused rather than served with someone else's session.
+    with pytest.raises(session_target.ResolveError):
+        inject.send("/compact", caller_pid=None)
+
+
+def test_the_guard_tables_are_shared_by_both_lanes():
+    # They are properties of the agent TUI, not of how a keystroke reaches it.
+    # It would be a nasty surprise if `/clear` were guarded on one lane only.
+    assert guards.refusal("/clear", confirm=False) is not None
+    assert guards.refusal("/clear", confirm=True) is None
