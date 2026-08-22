@@ -4,8 +4,9 @@
 #
 # Two halves, because this service has two kinds of dependency:
 #
-#   1. Python — the adapter, the supervisor and the gateway mount. Installs the
-#      component libraries it imports first, then the service.
+#   1. Python — the adapter, the supervisor and the mesh front. Installs the
+#      component libraries it imports first, then httpsfront (the front is a
+#      *configuration* of that component, not a copy of it), then the service.
 #
 #   2. The Hermes Agent runtime — NOT built here. Upstream ships an installer
 #      that clones its own checkout into $HERMES_HOME/hermes-agent, provisions a
@@ -32,6 +33,7 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
+run "$WS/awm/services/httpsfront" --no-deps
 run "$WS/awm/services/hermes"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

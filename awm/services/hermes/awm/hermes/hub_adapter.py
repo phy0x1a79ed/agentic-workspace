@@ -9,11 +9,17 @@ Two things live under this one supervised process:
 
   - the dashboard, adopted rather than parented so an awm deploy never
     interrupts a live chat session — see ``daemon``,
-  - a ``kind=url`` mount at ``/ui/hermes`` putting its GUI behind awm's edge
-    session — see ``mount``.
+  - a TLS front on the mesh putting its GUI behind awm's edge session at the
+    root of its own origin — see ``front``.
 
-The mount dies with this process, which is right: it is pure plumbing and costs
+The front dies with this process, which is right: it is pure plumbing and costs
 nothing to rebuild. The dashboard does not, which is also right.
+
+The landing page at ``/ui/hermes`` is neither of those — it is an ordinary awm
+page the gateway discovers on disk, so nothing here registers it. It reports on
+this service and links out to the front, and being served from the shared edge
+rather than from the front is what lets it still answer when the front is the
+part that is broken.
 
 Run via ``run.sh`` (which the gateway spawns and respawns):
     python -m awm.hermes.hub_adapter
@@ -27,7 +33,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.hermes import daemon, mount
+from awm.hermes import daemon, front
 
 log = logging.getLogger("awm.hermes.hub_adapter")
 
@@ -46,7 +52,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Report the Hermes Agent dashboard: whether it is listening and "
                 "at what pid/port, whether this service adopted it or started "
                 "it, the transient user unit it runs in (null means it will not "
-                "survive an awm restart), the gateway mount's state and public "
+                "survive an awm restart), the mesh TLS front's state and public "
                 "URL, and the configured provider and model."
             ),
             "params": [],
@@ -104,9 +110,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "url",
             "tool": "hermes_url",
             "description": (
-                "Where to reach the dashboard: the gateway mount for a browser "
-                "already holding an awm session, and the loopback address for "
-                "an SSH tunnel."
+                "Where to reach the dashboard: the mesh TLS front for a browser "
+                "already holding an awm session, the landing page on the shared "
+                "edge, and the loopback address for an SSH tunnel."
             ),
             "params": [],
         },
@@ -142,7 +148,8 @@ def _status() -> dict[str, Any]:
     return {
         "dashboard": SUPERVISOR.snapshot(),
         "health": daemon.health(),
-        "mount": {**mount.status(), "public_url": mount.public_url()},
+        "front": front.status(),
+        "landing_url": front.landing_url(),
         "model": daemon.model_config(),
     }
 
@@ -169,9 +176,11 @@ async def _h_logs(args: dict) -> dict:
 
 async def _h_url(args: dict) -> dict:
     return {
-        "mount": mount.public_url(),
+        "url": front.origin(),
+        "landing": front.landing_url(),
         "loopback": f"http://127.0.0.1:{daemon.PORT}/",
-        "mounted": mount.status().get("mounted"),
+        "serving": front.status().get("serving"),
+        "note": "requires an awm session",
     }
 
 
@@ -214,18 +223,21 @@ async def _health_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Raise the mount and the loop, then adopt-or-start the dashboard.
+    """Raise the front and the loop, then adopt-or-start the dashboard.
 
-    The two background tasks go up first because they are instant, and the
+    The two background workers go up first because they are instant, and the
     adopt-or-start can take a minute on a cold node — the orphan reaper kills a
     lease-holder that has not become ready, so nothing slow belongs ahead of
     them. No failure here is fatal: the service still registers, so ``status``
     can report *why* it is broken.
     """
-    # Both are long-lived and both fail silently under a bare create_task whose
-    # handle nobody reads: a mount that died on its first line looks exactly
-    # like one nobody has visited. spawn_supervised logs at ERROR and respawns.
-    spawn_supervised("hermes:mount", mount.hold)
+    # The front is a blocking uvicorn server, so it owns a thread rather than a
+    # task — and it supervises itself there, because a listener that died on its
+    # first line looks exactly like one nobody has visited.
+    front.start()
+    # The health loop is async and long-lived; a bare create_task whose handle
+    # nobody reads would swallow a first-line failure whole. spawn_supervised
+    # logs at ERROR and respawns.
     spawn_supervised("hermes:health", _health_loop)
 
     if not daemon.installed():

@@ -6,12 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "awm-hermes"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM hermes service: supervise the Hermes Agent dashboard (adopt-don't-own) and mount its GUI on the gateway at /ui/hermes behind awm's edge session."
+description = "AWM hermes service: supervise the Hermes Agent dashboard (adopt-don't-own) and put an authenticated TLS front on the mesh in front of its GUI."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    # Service-on-service: the mesh front is a configuration of httpsfront's
+    # cert handling, auth gate and reverse proxy, not a second implementation.
+    "awm-httpsfront",
     "httpx",
-    "websockets",
 ]
 
 [project.optional-dependencies]
