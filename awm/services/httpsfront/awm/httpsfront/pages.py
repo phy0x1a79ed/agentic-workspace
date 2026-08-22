@@ -157,7 +157,7 @@ def landing_page(
 
     pages = [
         s for s in services
-        if s.get("kind") in ("page", "static")
+        if s.get("kind") in ("page", "static", "url")
         and str(s.get("prefix", "")).startswith("/ui/")
     ]
     def _label(s: dict[str, Any]) -> str:
