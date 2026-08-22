@@ -34,10 +34,13 @@ def conn(tmp_path, monkeypatch):
     files.mkdir()
     monkeypatch.setattr(config, "files_dir", lambda: files)
 
-    # Stub the embedding side so tests never load the model.
+    # Stub the embedding side so tests never load the model. ``probe`` goes with
+    # them: the stubs stand in for a *working* stack, and the tests that care
+    # about a missing one say so explicitly.
     monkeypatch.setattr(index, "embed_note", lambda *a, **k: None)
     monkeypatch.setattr(index, "drop_embedding", lambda *a, **k: None)
     monkeypatch.setattr(index, "search_semantic", lambda *a, **k: [])
+    monkeypatch.setattr(index, "probe", lambda: {"available": True, "missing": []})
 
     c = sqlite3.connect(tmp_path / "notes.db")
     c.row_factory = sqlite3.Row
@@ -232,6 +235,82 @@ def test_trash_drops_room(conn):
     rooms.open_room(n["id"])
     notes.trash(conn, n["id"])
     assert rooms.live_content(n["id"]) is None
+
+
+def test_writes_survive_a_broken_embedding_stack(conn, monkeypatch):
+    """Embedding is an optional heavy extra (``awm-persistence[search]``). When
+    it is missing, notes must still be creatable, editable and — the symptom that
+    exposed this — renamable; only the vector index falls behind.
+
+    The failure mode this pins: a rename re-embeds whenever content_hash has
+    drifted from embedded_hash (which a room flush leaves it doing), so an
+    uninstalled model turned every retitle of an edited note into a 502.
+    """
+    def _boom(*a, **k):
+        raise ModuleNotFoundError("No module named 'sentence_transformers'")
+
+    monkeypatch.setattr(index, "embed_note", _boom)
+
+    n = notes.create(conn, path="a", content="body")
+    assert store.read(n["id"]) == "body"
+
+    # A flush leaves embedded_hash stale — the state a live note is normally in.
+    notes.collab_edit(n["id"], 0, "edited body")
+    rooms.flush_all(conn)
+    row = db.get_note(conn, n["id"])
+    assert row["content_hash"] != row["embedded_hash"]
+
+    # …and the rename still lands, on the row and in the keyword index.
+    notes.save(conn, n["id"], path="a/renamed")
+    assert notes.get(conn, n["id"])["path"] == "a/renamed"
+    assert notes.search(conn, query="renamed")["count"] == 1
+
+
+def test_semantic_search_degrades_to_fuzzy(conn, monkeypatch):
+    """A missing stack must never look like an empty archive.
+
+    The read path returns whatever the dependency-free matcher finds, plus an
+    explicit marker — the distinction between "searched and found nothing" and
+    "this node cannot search" is the whole point of the contract.
+    """
+    def _boom(*a, **k):
+        raise index.EmbeddingsUnavailable("sentence-transformers: not installed")
+
+    monkeypatch.setattr(index, "search_semantic", _boom)
+    notes.create(conn, path="research/avarice/notes", content="quant models")
+
+    res = notes.search(conn, semantic="avarice")
+    assert res["degraded"]["semantic"] == "unavailable"
+    assert res["degraded"]["fallback"] == "fuzzy"
+    assert "notes/install.sh" in res["degraded"]["fix"]
+    assert any("avarice" in r["path"] for r in res["results"])
+
+    # A healthy search carries no marker at all — the key is additive.
+    assert "degraded" not in notes.search(conn, query="quant")
+
+
+def test_reindex_repairs_stale_stamps(conn):
+    n = notes.create(conn, path="p", content="body")
+    # Simulate a write made while the stack was down: content current, stamp stale.
+    conn.execute("UPDATE notes SET embedded_hash='stale' WHERE id=?", (n["id"],))
+    conn.commit()
+
+    res = notes.reindex(conn)
+    assert res["embedded"] == 1 and res["stale_remaining"] == 0
+    row = db.get_note(conn, n["id"])
+    assert row["embedded_hash"] == row["content_hash"]
+    # Idempotent: nothing stale left to do.
+    assert notes.reindex(conn)["embedded"] == 0
+
+
+def test_reindex_refuses_without_the_stack(conn, monkeypatch):
+    """A backfill that silently embeds nothing is worse than one that fails —
+    the caller stops looking."""
+    monkeypatch.setattr(index, "probe", lambda: {"available": False,
+                                                 "missing": ["sqlite_vec"]})
+    notes.create(conn, path="p", content="body")
+    with pytest.raises(index.EmbeddingsUnavailable):
+        notes.reindex(conn)
 
 
 def test_vocab_crud(conn):

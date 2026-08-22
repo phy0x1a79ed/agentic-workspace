@@ -34,9 +34,11 @@
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
   // A last-used value that already looks like `project/scope` (no leading slash,
-  // exactly one segment separator) implies the scope mode was used last.
+  // at least one segment separator) implies the scope mode was used last. Scope
+  // names nest, so `metasmith/fabfos/dev` is a scope reference too — only a
+  // bare word or an absolute path is a directory.
   const looksLikeScope = (v: string): boolean =>
-    !!v && !v.startsWith('/') && v.split('/').filter(Boolean).length === 2;
+    !!v && !v.startsWith('/') && v.split('/').filter(Boolean).length >= 2;
 
   let mode = $state<'scope' | 'dir'>(looksLikeScope(defaults.scope || '') ? 'scope' : 'dir');
   let harness = $state(defaults.harness || 'claude');

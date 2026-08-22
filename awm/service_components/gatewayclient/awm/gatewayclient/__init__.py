@@ -54,8 +54,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
+import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -77,6 +80,8 @@ __all__ = [
     "resolve_peer",
     "fetch_peer_cred",
     "fetch_peer_cred_async",
+    "fetch_peer_file",
+    "fetch_peer_file_sync",
     "subscribe",
     "subscribe_peer",
     "peer_env",
@@ -594,6 +599,122 @@ async def subscribe_peer(
                 yield json.loads(raw)
             except json.JSONDecodeError:
                 yield raw
+
+
+# ---------------------------------------------------------------------------
+# Cross-peer BYTES — the third transport, beside cross-peer calls and cross-peer
+# streaming. Neither of those can carry a file: `call_peer` is JSON and fully
+# buffered, and `subscribe_peer` discards binary frames outright. A service that
+# produces a file therefore returns its *address* on the serving node's
+# `fileviewer` mount, and the caller pulls the bytes down here.
+# ---------------------------------------------------------------------------
+
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_basename(name: str, fallback: str = "peer-file") -> str:
+    """A filesystem-safe basename for a file whose name a PEER chose.
+
+    Directory components are stripped and unsafe characters collapsed: the
+    remote side names the file, this side names the directory, and nothing the
+    remote sends may escape it.
+    """
+    base = os.path.basename(urllib.parse.unquote(name or "")).strip()
+    base = _UNSAFE_NAME.sub("_", base).strip("._")
+    return base or fallback
+
+
+def fetch_peer_file_sync(
+    peer: str,
+    url: str,
+    *,
+    dest_dir: str | None = None,
+    filename: str | None = None,
+    entry: dict | None = None,
+    as_: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """Download ``url`` from peer node ``peer`` and return the LOCAL path.
+
+    ``url`` must be **origin-relative** (``/files/tmp/awm-social-xyz/a.png``, as
+    returned beside a file in a service reply). The peer names the path; this
+    side names the host — an absolute or protocol-relative URL is refused, so a
+    reply cannot aim the credentialed request at a third party.
+
+    Same setup as :func:`call_peer` — resolve the peer's edge via the local
+    gateway, fetch the bearer over ssh, CA-verified TLS, one forced credential
+    re-fetch on a 401 — but the body is streamed to disk rather than parsed, so
+    a large file never lands in memory. Raises :class:`PeerError`; a 404 is
+    called out specially because the two ways to get one (the mount's denylist
+    hid the file, or the peer's ``fileviewer`` is not holding its mount) are
+    both invisible from the status alone.
+    """
+    if not isinstance(url, str) or not url.startswith("/"):
+        raise PeerError(
+            f"peer file url must be origin-relative (start with '/'), got {url!r}")
+    split = urllib.parse.urlsplit(url)
+    if split.scheme or split.netloc:
+        raise PeerError(f"peer file url must name no host, got {url!r}")
+
+    if entry is None or not entry.get("edge_url"):
+        entry = resolve_peer(peer)
+    edge = str(entry["edge_url"]).rstrip("/")
+    ssh_alias = entry.get("ssh_alias") or peer
+    ca = _peer_ca()
+    target = edge + url
+
+    if dest_dir is None:
+        dest_dir = tempfile.mkdtemp(prefix=f"awm-peer-{_safe_basename(peer, 'node')}-")
+    dest = os.path.join(dest_dir, _safe_basename(filename or split.path))
+
+    for attempt in (0, 1):
+        bearer = fetch_peer_cred(ssh_alias, force=(attempt == 1))
+        headers = {"Authorization": f"Bearer {bearer}"}
+        if as_ is not None:
+            headers["X-Awm-As"] = as_
+        # follow_redirects stays off: a redirect is the one way an origin-relative
+        # URL could still end up sending the bearer somewhere else.
+        with httpx.Client(timeout=timeout, verify=ca, follow_redirects=False) as cli:
+            with cli.stream("GET", target, headers=headers) as resp:
+                if resp.status_code == 401 and attempt == 0:
+                    continue  # credential likely rotated — re-fetch and retry
+                if resp.status_code == 404:
+                    raise PeerError(
+                        f"{peer} has no file at {url} — either its fileviewer "
+                        f"denylist hides it (*.key, *.pem, *.token, credentials, "
+                        f"secrets/…, which 404 exactly like a missing file), or "
+                        f"the peer's fileviewer is not holding its mount")
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise PeerError(
+                        f"GET {url} from {peer} failed: HTTP {resp.status_code}: "
+                        f"{resp.text[:200]}")
+                with open(dest, "wb") as fh:
+                    for chunk in resp.iter_bytes(65536):
+                        fh.write(chunk)
+        return dest
+    raise PeerError(f"GET {url} from {peer} failed: unauthorized after credential refresh")
+
+
+async def fetch_peer_file(
+    peer: str,
+    url: str,
+    *,
+    dest_dir: str | None = None,
+    filename: str | None = None,
+    entry: dict | None = None,
+    as_: str | None = None,
+    timeout: float = 120.0,
+) -> str:
+    """:func:`fetch_peer_file_sync` off the event loop.
+
+    The download blocks on an ssh, a TLS handshake and then arbitrarily many
+    bytes to disk. Run in a thread so one large attachment cannot stall the
+    caller's whole service.
+    """
+    return await asyncio.to_thread(
+        fetch_peer_file_sync, peer, url, dest_dir=dest_dir, filename=filename,
+        entry=entry, as_=as_, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------

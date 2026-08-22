@@ -31,6 +31,7 @@
   --nt-live: #c2562f;
   --nt-live-soft: rgba(194, 86, 47, 0.14);
   --nt-danger: #b23b2e;
+  --nt-danger-soft: rgba(178, 59, 46, 0.14);
   --nt-input-bg: #fbfcf8;
   --nt-chip-bg: #eef1e8;
   --nt-code-bg: #e7ebdf;
@@ -58,6 +59,7 @@
     --nt-live: #ec8a5e;
     --nt-live-soft: rgba(236, 138, 94, 0.16);
     --nt-danger: #e2705a;
+    --nt-danger-soft: rgba(226, 112, 90, 0.16);
     --nt-input-bg: #10120b;
     --nt-chip-bg: #20241a;
     --nt-code-bg: #20241a;
@@ -76,7 +78,8 @@
   --nt-accent: #2f6b4f; --nt-accent-soft: rgba(47,107,79,0.12);
   --nt-active-bg: rgba(47,107,79,0.11); --nt-on-accent: #f8f9f4;
   --nt-select: rgba(47,107,79,0.22);
-  --nt-live: #c2562f; --nt-live-soft: rgba(194,86,47,0.14); --nt-danger: #b23b2e;
+  --nt-live: #c2562f; --nt-live-soft: rgba(194,86,47,0.14);
+  --nt-danger: #b23b2e; --nt-danger-soft: rgba(178,59,46,0.14);
   --nt-input-bg: #fbfcf8; --nt-chip-bg: #eef1e8; --nt-code-bg: #e7ebdf;
   --nt-paper: #ffffff;
 }
@@ -88,7 +91,8 @@
   --nt-accent: #74c096; --nt-accent-soft: rgba(116,192,150,0.15);
   --nt-active-bg: rgba(116,192,150,0.12); --nt-on-accent: #10120b;
   --nt-select: rgba(116,192,150,0.30);
-  --nt-live: #ec8a5e; --nt-live-soft: rgba(236,138,94,0.16); --nt-danger: #e2705a;
+  --nt-live: #ec8a5e; --nt-live-soft: rgba(236,138,94,0.16);
+  --nt-danger: #e2705a; --nt-danger-soft: rgba(226,112,90,0.16);
   --nt-input-bg: #10120b; --nt-chip-bg: #20241a; --nt-code-bg: #20241a;
   --nt-paper: #1b1e15;
 }
@@ -455,26 +459,33 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
 .copied { color: var(--nt-accent); font-family: var(--nt-sans); }
 .status-right { display: flex; align-items: center; gap: 0.9rem; flex: 0 0 auto; }
 .wc { color: var(--nt-faint); font-family: var(--nt-mono); }
+/* Tones, not states: the label is composed from the transport AND the content
+   state, so one save state can render in two colours (see App.svelte). */
 .save-state { font-family: var(--nt-sans); font-weight: 600; color: var(--nt-faint); }
-.save-state[data-state="synced"] { color: var(--nt-accent); }
-.save-state[data-state="saving"] { color: var(--nt-text2); }
-.save-state[data-state="savedLocal"] { color: var(--nt-text2); }
-.save-state[data-state="offline"] { color: var(--nt-live); font-weight: 700; }
-.save-state[data-state="editing"] { color: var(--nt-live); }
+.save-state[data-tone="ok"]    { color: var(--nt-accent); }
+.save-state[data-tone="muted"] { color: var(--nt-text2); }
+.save-state[data-tone="grey"]  { color: var(--nt-faint); }
+.save-state[data-tone="warn"]  { color: var(--nt-live); font-weight: 700; }
 
-.live-pill {
+/* Link pill. Colour carries the state on its own — the pulse is decoration and
+   is switched off entirely under prefers-reduced-motion (see below). */
+.link-pill {
   display: inline-flex; align-items: center; gap: 0.32rem;
   font-family: var(--nt-sans); font-weight: 600; font-size: 0.68rem;
+  white-space: nowrap;
   color: var(--nt-accent);
+  --ring: var(--nt-accent-soft);
 }
-.live-dot {
+.link-pill[data-link="connecting"] { color: var(--nt-live);   --ring: var(--nt-live-soft); }
+.link-pill[data-link="down"]       { color: var(--nt-danger); --ring: var(--nt-danger-soft); }
+.link-dot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: var(--nt-accent);
-  box-shadow: 0 0 0 0 var(--nt-accent-soft);
-  animation: live-pulse 1.8s ease-out infinite;
+  background: currentColor;
+  box-shadow: 0 0 0 0 var(--ring);
+  animation: link-pulse 1.8s ease-out infinite;
 }
-@keyframes live-pulse {
-  0% { box-shadow: 0 0 0 0 var(--nt-accent-soft); }
+@keyframes link-pulse {
+  0% { box-shadow: 0 0 0 0 var(--ring); }
   70% { box-shadow: 0 0 0 6px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
@@ -553,8 +564,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--nt-accent); }
   .path-input { font-size: 0.95rem; }
   .crumbs { display: none; }              /* reclaim vertical space on a phone */
 
-  .filepath code { max-width: 40vw; }
+  /* "Disconnected" is ~4x the width of "Live"; give the right-hand group the
+     room by tightening its gaps and letting the path ellipsis take the hit. */
+  .filepath code { max-width: 28vw; }
   .statusbar { padding: 0.4rem 0.7rem; }
+  .status-right { gap: 0.55rem; }
 
   /* ---- document-level scroll + auto-hiding chrome (phones) --------------
      On desktop the shell is locked to the viewport (`.app` height:100vh /

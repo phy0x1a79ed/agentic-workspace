@@ -62,10 +62,11 @@ declare -A DISTS=(
   [compute]="$WS/awm/services/compute::$WS/awm/services/compute/tests"
   [reflection]="$WS/awm/services/reflection::$WS/awm/services/reflection/tests"
   [dvc]="$WS/awm/services/dvc::$WS/awm/services/dvc/tests"
+  [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc)
+ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
@@ -73,6 +74,17 @@ if [ "$#" -gt 0 ]; then
 fi
 
 PYTEST_ARGS="${PYTEST_ARGS:-}"
+
+# Ask mamba where the env's interpreter is, once, and run pytest with it
+# directly. `mamba run --no-capture-output <cmd>` writes `exec -- <cmd>` into a
+# script it then runs under bash, and bash's `exec` rejects `--` — so on mamba
+# 2.5.0 every dist fails identically before pytest is ever reached, which reads
+# like a repo breakage and is not one.
+PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1)"
+if [ ! -x "$PY" ]; then
+  echo "could not resolve the awm env's python (got '${PY:-<empty>}')" >&2
+  exit 1
+fi
 
 declare -A RESULT
 overall=0
@@ -93,8 +105,7 @@ for name in "${ORDER[@]}"; do
   echo "============================================================"
 
   PYTHONPATH="$src:$COMP" \
-    mamba run -n awm --no-capture-output \
-    python -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
+    "$PY" -m pytest "$testdir" -p no:cacheprovider ${PYTEST_ARGS}
   rc=$?
   if [ "$rc" -eq 0 ]; then
     RESULT[$name]="PASS"

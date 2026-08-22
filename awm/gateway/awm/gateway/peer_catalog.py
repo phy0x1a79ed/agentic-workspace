@@ -50,7 +50,12 @@ domain lives elsewhere":
   fleet-global, not the ``ssh`` service, which every node needs locally.
 
 ``AWM_DOMAIN_HOME_<domain>=<peer>`` declares a future singleton without a code
-change.
+change. A node with no local provider for a domain that two peers both advertise
+resolves it ``ambiguous`` and every call must name a peer by hand, so that escape
+hatch is also the cure for *borrowing* a domain wholesale: altair sets
+``AWM_DOMAIN_HOME_social=mira`` because it has no ``social.toml`` and therefore no
+accounts to lose. The rule above is unchanged — the shape of ``AWM_SOCIAL_PEER``
+still declares nothing; what differs is per-node fact about what is installed.
 """
 
 from __future__ import annotations

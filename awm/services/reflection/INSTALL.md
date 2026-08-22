@@ -17,10 +17,25 @@ moment to `/compact`).
 
 **Follow-up prompt (kept alive).** A bare slash command runs at end-of-turn and
 then leaves the session idle with nothing to do — for an autonomous agent that is
-death. So whenever `send` submits a slash command it also queues a **follow-up
-prompt** behind it (default `"Continue with what you were doing."`, override with
+death. So whenever `send` submits a slash command it also promises a **follow-up
+prompt** (default `"Continue with what you were doing."`, override with
 `followup`), giving the session a real turn once the command completes. Plain
 prompts are their own turn and get no follow-up.
+
+The follow-up is **deferred, not co-queued**: co-queuing lets an active agent run
+the resume first, on the old context, starving `/compact` of the idle slot it
+needs. Instead a watcher waits for the command to visibly finish and injects the
+resume then. Two consequences fall out of that, and both have bitten:
+
+- The watcher must not fire on the brief idle beat *before* compaction starts —
+  hence the reacted-then-settled test rather than the first idle sample.
+- The watcher is a thread, the wait can run for minutes, and the gateway
+  restarts this service routinely. So the promise is **written to disk before the
+  watcher starts** (`pending.py`) and replayed on boot; without that, a restart
+  inside the wait left the session idle forever with nobody able to tell. The
+  record carries the caller's `procStart`, and a replay whose pid no longer
+  matches is dropped rather than delivered — a pid outlives nothing.
+  `reflection_pending` lists what is currently owed.
 
 **Modal guard.** Some commands open a blocking modal/picker (`/mcp`, `/status`,
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
@@ -58,11 +73,15 @@ fallback that picks a plausible session, and adding one back would be a bug:
 > pane always won — delivering resumes into *other agents'* prompts. Rank panes
 > by nothing. The caller's identity is the only vote.
 
-Two joins are easy to get wrong and are load-bearing: the roster's `pid` is the
-`bg-pty-host` process rather than the REPL, and its key does not reliably prefix
-the session id — so a background session is matched on `sessionId` alone. And
-because session records are keyed by pid, `procStart` must agree with
-`/proc/<pid>/stat` before a record is trusted.
+Two joins are easy to get wrong and are load-bearing. A background session is
+matched on **`jobId`**, not `sessionId`: a `/clear` mints a new session id in
+place while the roster keeps the one the job was dispatched with, so joining on
+the session id lost such a session permanently — and told it its PTY host had
+exited, which sent readers chasing a live process. The match is then validated by
+asking whether the roster entry's `bg-pty-host` actually contains the caller,
+since that `pid` is the host and never the REPL. And because session records are
+keyed by pid, `procStart` must agree with `/proc/<pid>/stat` before a record is
+trusted.
 
 Callers with no proxy in front of them (a human at a plain shell) have no
 identity and are refused. `reflection_whoami` reports what the service resolved,
@@ -112,7 +131,7 @@ No auth — the registration handshake carries no token.
 
 ## Surface
 
-Four verbs, all on MCP + CLI + HTTP, none of which takes a target:
+Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
 - `reflection_send` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
@@ -120,6 +139,9 @@ Four verbs, all on MCP + CLI + HTTP, none of which takes a target:
   slash command is trailed by a `followup` prompt to keep the session alive.
 - `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
 - `reflection_mode` — put your own session back into bypass-permissions mode.
+- `reflection_pending` — list the deferred resumes still owed, node-wide. The
+  one verb that is not caller-scoped, because its whole job is to make a *lost*
+  promise visible from outside the session that lost it.
 - `reflection_whoami` — report which session reflection resolves you to.
 
 The normal call carries nothing agent-specific, on either hosting kind:
@@ -141,9 +163,33 @@ the session lands in auto, where a classifier gates every action.
 No hook output can fix this: the hook contract exposes per-call allow/deny and
 permission *rules*, but the session mode is internal state with no external
 setter. `reflection_mode` therefore does what a human would — presses the
-Shift+Tab permission-mode cycle — driven from a `PostToolUse` hook matching
-`ExitPlanMode` (which fires only when the tool actually executed, so an approval
-and never a rejection).
+Shift+Tab permission-mode cycle. `hooks/plan_mode_hook.py` is the trigger:
+
+```bash
+ln -s /home/tony/agentic_workspace/awm/services/reflection/hooks/plan_mode_hook.py \
+      ~/.claude/hooks/awm-reflection-mode.py
+```
+
+then merge `hooks/claude-settings-fragment.json` into the `PostToolUse` array of
+`~/.claude/settings.json`, **alongside** anything already matching
+`ExitPlanMode`. Editing that file is a global decision for every session on the
+box, which is why no installer touches it.
+
+The hook runs synchronously and calls `POST /invoke` directly rather than through
+the CLI, because identity travels in a header the CLI does not send. A hook's own
+pid names no session, so it sends `X-Awm-Caller-Pid` — the opt-in header that
+asks the gateway to walk its ancestry — plus the `session_id` Claude Code handed
+it on stdin as `expect_session`, which reflection refuses to act against if the
+walk resolved somewhere else. Detaching the hook (as the notify hook does) would
+reparent it away from the REPL and destroy that ancestry.
+
+Two guards, both read off the hook's own stdin: `tool_response` must carry a
+`plan` key (the approved shape — a rejection does not reach a `PostToolUse` hook
+at all, it is a separate `PermissionDenied` event), and `permission_mode` — which
+`ExitPlanMode` has already restored by the time the hook runs — must not already
+be `bypassPermissions`. A refusal it cannot retry past is appended to
+`~/.claude/awm-reflection-mode.log`; an unreadable footer is retried for ~15s,
+since whatever covers it after an approval is transient.
 
 It never counts presses. The cycle is `default → acceptEdits → plan →
 bypassPermissions → auto → default`, `bypassPermissions` and `auto` appear only
@@ -156,15 +202,15 @@ pressing anything, for the same reason the modal guard exists.
 Footer strings are TUI copy and can move under a CLI update; they fail safe,
 since an unrecognised footer reads as unknown and unknown does not act.
 
-One bounded gap, background sessions only: `default` paints no indicator, and
-that backend reads an append-only byte stream rather than a rendered screen, so
-a session sitting in `default` can read back as whatever mode last painted one.
-Output is discarded before each keypress, which fixes every read during a walk;
-only the first read can still be stale, and the worst outcome is that such a
-session is left alone rather than switched. Nothing repaints the footer on demand
-— an empty bracketed paste and a cursor key were both tried — so closing it
-properly means rendering the stream through a terminal emulator. The tmux backend
-is unaffected, and that is the path a phone-approved plan actually takes.
+Reading the footer is what bounds this to the tmux lane in practice. `capture-pane`
+renders the current screen; the daemon backend gets an append-only stream of
+repaint deltas, and the *first* read of a walk has nothing to discard, so a
+background session mid-turn reads back either no footer at all (`unknown`, which
+refuses) or the last one painted — which can name a mode it has since left, and
+that reads as "already in bypass" and returns ok having done nothing. Both were
+measured on one live background session minutes apart. Neither types blind, and
+both leave the session where it was; the useful lane is tmux, which is also the
+one a phone-approved plan takes.
 
 ## Sessions reflection cannot reach
 

@@ -174,14 +174,11 @@ def _persist(conn, note_id: str, content: str) -> None:
     )
     db.fts_replace(conn, note_id, r["path"], content)
     conn.commit()
-    # 2) Embedding — slower; committed separately. If it's interrupted, the row's
-    #    embedded_hash stays stale so the next flush re-embeds (no data lost).
+    # 2) Embedding — slower; committed separately. If it's interrupted or the
+    #    embedding stack is unavailable, the row's embedded_hash stays stale so a
+    #    later write re-embeds (no data lost).
     if chash != r["embedded_hash"]:
-        if content.strip():
-            index.embed_note(conn, note_id, content)
-        else:
-            index.drop_embedding(conn, note_id)
-        conn.execute("UPDATE notes SET embedded_hash=? WHERE id=?", (chash, note_id))
+        index.reembed(conn, note_id, content, chash)
         conn.commit()
 
 

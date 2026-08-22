@@ -207,6 +207,36 @@ only on the next reconnect. Consumers that need indefinite liveness wrap
 `subscribe_peer` itself keeps single-connection semantics plus the one
 credential-refresh retry.
 
+## Cross-peer bytes
+
+The third transport. Neither of the first two can carry a file: `call_peer` is
+JSON and fully buffered, `subscribe_peer` discards binary frames outright. So a
+verb that produces a file returns the file's **address on the node that ran it**,
+and the caller pulls the bytes down separately.
+
+That address is the serving node's `fileviewer` static mount (`/files/<abs
+path>`), which every node registers and `httpsfront` fronts as a catch-all — the
+peer bearer authenticates there exactly as it does on `/svc/*`, so no gateway or
+edge change was needed here either. `gatewayclient.fetch_peer_file(peer, url)`
+resolves the edge, fetches the bearer over ssh, GETs over CA-verified TLS with
+the same one-shot 401 refetch, and **streams** to a local temp dir. The URL must
+be origin-relative and redirects are not followed: the peer names the path, this
+side names the host, so a reply can never aim a credentialed GET elsewhere.
+
+Two things to know before returning a file from a service:
+
+- **A path in a reply is a lie the moment the call is borrowed.** `social`'s
+  `download_attachments` reported success and handed back a path on *mira*;
+  callers on other nodes could never open it. Return `url` beside `path` (see
+  `awm/services/social/awm/social/attachments.py`), and the MCP proxy
+  (`gateway/peer_files.py`, shared by both proxy implementations) rewrites
+  `path` to a local copy for any peer-routed reply — with a named `error` and
+  `path: null` when it cannot, never a foreign path left in place.
+- **The mount is denylist-masked and a masked file 404s exactly like a missing
+  one.** `*.pem`, `*.key`, `*.token`, `credentials`, `secrets/**` and friends are
+  unreachable by design; that is why the 404 message names both causes rather
+  than reporting a bare status.
+
 ### Selecting local-or-peer — one branch, node-level config
 
 A service that consumes a singleton (`ssh`→`2fa`, `ssh`/`2fa`/`auth`→`social`)
@@ -403,6 +433,16 @@ that touches the CA, and a test in its suite fails if a second copy reappears.
   are oblivious. Whether a shared account tolerates concurrent logins is the
   platform's answer, not ours — Discord does not, which is why the flag is
   per-account and opt-in rather than inferred.
+- **A node with no local install of a per-node service borrows the whole
+  domain.** That is a fact about the node, not about the service. altair runs no
+  `social` — no `social.toml`, no accounts — so with two peers advertising it the
+  catalog resolved `social` as `ambiguous` and every call had to name a peer by
+  hand. `AWM_DOMAIN_HOME_social=mira` in altair's `.awm/env` makes it a declared
+  singleton *there*: one provider, one default, no `peer` argument. Node-local
+  and deliberately not fleet state — capella, which does run `social`, must never
+  get it, or it loses its own accounts. Note that this and `AWM_SOCIAL_PEER` are
+  independent: the latter tells *services* on this node where to send Discord
+  traffic, the former tells the *catalog* where an agent's call lands.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
 

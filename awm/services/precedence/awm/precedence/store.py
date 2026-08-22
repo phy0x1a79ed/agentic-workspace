@@ -20,6 +20,7 @@ side effect that feeds the reputation loop.
 from __future__ import annotations
 
 import json
+import logging
 import random
 import sqlite3
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from . import config, db, index
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -167,30 +170,40 @@ def _relevance_map(
     decision: str | None,
     keyword: str | None,
     allowed: set[str],
-) -> dict[str, float] | None:
-    """Per-decision relevance in ~[0,1] over the allowed set, or None for listing mode.
+) -> tuple[dict[str, float] | None, dict[str, Any] | None]:
+    """Per-decision relevance in ~[0,1] over the allowed set, plus a degradation
+    marker. A ``None`` map means listing mode.
 
     Each provided semantic field contributes its cosine (weighted, normalized by
     the provided fields' weights); a field with no counterpart embedding
     contributes 0. Keyword (FTS) hits contribute a flat relevance floor, combined
-    by max with the semantic score. Returns None when neither a semantic field nor
-    a keyword was supplied (caller falls back to a reputation/explore-ordered list).
+    by max with the semantic score. The map is None when neither a semantic field
+    nor a keyword was supplied (caller falls back to a reputation/explore-ordered
+    list) — and also when the semantic stack is missing and nothing else matched,
+    since an archive whose whole point is semantic recall must answer "here is
+    what I hold, unranked" rather than "no such precedent".
     """
     provided = {
         f: q for f, q in (("context", context), ("question", question),
                           ("decision", decision)) if q and q.strip()
     }
     if not provided and not (keyword and keyword.strip()):
-        return None
+        return None, None
 
     rel: dict[str, float] = {}
+    unavailable = False
     if provided:
         # Uniform per-field weight so a blended relevance stays in [0,1].
         total_w = float(len(provided))
         per_field: dict[str, dict[str, float]] = {}
-        for field, q in provided.items():
-            hits = index.search_field(conn, field, q, limit=config.SEMANTIC_LIMIT)
-            per_field[field] = {h["source_id"]: h["score"] for h in hits}
+        try:
+            for field, q in provided.items():
+                hits = index.search_field(conn, field, q, limit=config.SEMANTIC_LIMIT)
+                per_field[field] = {h["source_id"]: h["score"] for h in hits}
+        except index.EmbeddingsUnavailable:
+            # Treat the semantic fields as not provided; the keyword leg below
+            # still runs, and the caller degrades to listing if it finds nothing.
+            unavailable, per_field = True, {}
         cand: set[str] = set()
         for m in per_field.values():
             cand |= set(m)
@@ -203,7 +216,11 @@ def _relevance_map(
             if did in allowed:
                 rel[did] = max(rel.get(did, 0.0), config.KEYWORD_RELEVANCE)
 
-    return rel
+    if not unavailable:
+        return rel, None
+    if rel:
+        return rel, index.degraded_marker("precedence", fallback="keyword")
+    return None, index.degraded_marker("precedence", fallback="listing")
 
 
 def search(
@@ -234,6 +251,11 @@ def search(
     Ranks the candidate set, returns the top ``k``, and — as a side effect —
     bumps ``seen_count`` + ``last_seen`` on the returned entries so the archive
     gathers the impressions the explore/exploit term feeds on.
+
+    On a node without the semantic stack the fielded legs drop out and the
+    payload carries a ``degraded`` block. This service degrades loudly because
+    semantic recall *is* its product: an empty ``count: 0`` here would read as
+    "no such precedent has ever been set", which is the opposite of the truth.
     """
     if explore is None:
         explore = config.DEFAULT_EXPLORE
@@ -247,7 +269,7 @@ def search(
     if not allowed_set:
         return {"count": 0, "results": []}
 
-    rel = _relevance_map(
+    rel, degraded = _relevance_map(
         conn, context=context, question=question, decision=decision,
         keyword=keyword, allowed=allowed_set,
     )
@@ -277,12 +299,19 @@ def search(
     scored.sort(key=lambda t: t[1]["score"], reverse=True)
     top = scored[: int(k)]
 
-    _bump_impressions(conn, [did for did, _, _ in top])
+    if not degraded:
+        _bump_impressions(conn, [did for did, _, _ in top])
+    # Skipped when degraded: unranked listing-mode hits were never shown *because
+    # they were relevant*, and counting them would let one node's missing
+    # dependency poison the explore/exploit term for the whole archive.
 
-    return {
+    out: dict[str, Any] = {
         "count": len(top),
         "results": [_row(conn, r, breakdown=bd) for _, bd, r in top],
     }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 def _bump_impressions(conn: sqlite3.Connection, ids: list[str]) -> None:
@@ -349,6 +378,31 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _embed_decision_best_effort(
+    conn: sqlite3.Connection,
+    did: str,
+    context: str,
+    question: str,
+    decision: str,
+    chash: str,
+) -> bool:
+    """Embed a decision's three fields and stamp ``embedded_hash``. Returns
+    whether the embedding was *deferred* (i.e. the stack is unavailable here).
+
+    The decision text is the thing worth keeping: an agent contributing a
+    precedent on a node without the search extra must not lose it. The stamp is
+    left stale on failure, which is precisely what :func:`embed` looks for once
+    the stack is installed.
+    """
+    try:
+        index.embed_decision(conn, did, context, question, decision)
+    except index.EmbeddingsUnavailable:
+        log.warning("precedence: embedding unavailable, %s stored unindexed", did)
+        return True
+    conn.execute("UPDATE decisions SET embedded_hash=? WHERE id=?", (chash, did))
+    return False
+
+
 def add(
     conn: sqlite3.Connection,
     *,
@@ -391,10 +445,12 @@ def add(
     db.fts_replace(conn, did, context, question, decision)
     for t in tag or []:
         db.set_tag(conn, did, t)
-    index.embed_decision(conn, did, context, question, decision)
-    conn.execute("UPDATE decisions SET embedded_hash=? WHERE id=?", (chash, did))
+    deferred = _embed_decision_best_effort(conn, did, context, question, decision, chash)
     conn.commit()
-    return get(conn, did)
+    out = get(conn, did)
+    if deferred:
+        out["embedding_deferred"] = True
+    return out
 
 
 def note(
@@ -472,12 +528,17 @@ def edit(
         db.clear_tag(conn, decision_id, t)
     for t in add_tag or []:
         db.set_tag(conn, decision_id, t)
+    deferred = False
     if changed:
         db.fts_replace(conn, decision_id, new_ctx, new_q, new_dec)
-        index.embed_decision(conn, decision_id, new_ctx, new_q, new_dec)
-        conn.execute("UPDATE decisions SET embedded_hash=? WHERE id=?", (chash, decision_id))
+        deferred = _embed_decision_best_effort(
+            conn, decision_id, new_ctx, new_q, new_dec, chash
+        )
     conn.commit()
-    return get(conn, decision_id)
+    out = get(conn, decision_id)
+    if deferred:
+        out["embedding_deferred"] = True
+    return out
 
 
 def supersede(
@@ -553,7 +614,18 @@ def merge(conn: sqlite3.Connection, keeper: str, dups: list[str]) -> dict[str, A
 
 
 def embed(conn: sqlite3.Connection, *, force: bool = False) -> dict[str, Any]:
-    """Embed new/changed decisions (or all, with ``force``). Loads the model once."""
+    """Embed new/changed decisions (or all, with ``force``). Loads the model once.
+
+    Raises :class:`index.EmbeddingsUnavailable` when the stack is missing rather
+    than reporting ``{"embedded": 0}`` — a backfill that silently does nothing is
+    worse than one that fails, because the caller stops looking.
+    """
+    p = index.probe()
+    if not p["available"]:
+        raise index.EmbeddingsUnavailable(
+            f"cannot embed: missing {', '.join(p['missing'])} — "
+            "run awm/services/precedence/install.sh on this node"
+        )
     rows = db.all_decisions(conn)
     todo = [r for r in rows if force or r["embedded_hash"] != r["content_hash"]]
     for r in todo:
@@ -614,5 +686,15 @@ def import_manifest(
         if prev is None or prev["content_hash"] != chash:
             changed += 1
     conn.commit()
-    embedded = embed(conn)["embedded"] if embed_after else 0
-    return {"imported": imported, "changed": changed, "embedded": embedded}
+    # The decisions are the import; embedding is a follow-up. A stackless node
+    # still ingests them and leaves every row stale for a later ``embed``.
+    deferred = False
+    try:
+        embedded = embed(conn)["embedded"] if embed_after else 0
+    except index.EmbeddingsUnavailable:
+        log.warning("precedence: embedding unavailable, %d decisions imported unindexed", imported)
+        embedded, deferred = 0, True
+    out = {"imported": imported, "changed": changed, "embedded": embedded}
+    if deferred:
+        out["embedding_deferred"] = True
+    return out

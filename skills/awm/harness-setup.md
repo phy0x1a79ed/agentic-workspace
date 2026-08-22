@@ -164,7 +164,7 @@ cd <workspace>/projects/<p>/<scope> && opencode run "list your loaded instructio
 
 ## 7. Maintenance
 
-Updating any of these files is part of the same edit cycle as the code that surfaced the need (stack change, new MCP, new convention). The `awm/debrief.md` skill enforces this: step 1 is "update AGENTS.md if user-facing behavior changed."
+Updating any of these files is part of the same edit cycle as the code that surfaced the need (stack change, new MCP, new convention). The `debrief` skill enforces this: its first step corrects a doc the change made wrong.
 
 **`awm scope heal`** is the cleanup pass — it enforces the canonical per-scope shape across all active scope worktrees:
 
@@ -176,4 +176,4 @@ Updating any of these files is part of the same edit cycle as the code that surf
 
 Idempotent. Use `awm scope heal --dry-run` to preview.
 
-`skill_get path="awm/debrief.md"` — the full debrief protocol.
+The native `debrief` skill (`~/.claude/skills/debrief/`) — the full debrief protocol.
