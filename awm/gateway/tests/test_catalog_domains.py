@@ -74,10 +74,23 @@ def test_domain_tool_envelope(patched_registry):
     assert {"scope", "project", "ref"} <= set(tools)
     scope = tools["scope"]
     assert scope.inputSchema["required"] == ["verb"]
-    assert set(scope.inputSchema["properties"]) == {"verb", "args"}
+    # ``peer`` rides the standard envelope beside verb/args — it is how a call is
+    # aimed at another fleet node, instead of that node getting its own tool.
+    assert set(scope.inputSchema["properties"]) == {"verb", "args", "peer"}
     assert scope.inputSchema["properties"]["args"]["type"] == "object"
-    # verbs are advertised in the free-text description (cheap discovery)
+    # verbs are advertised in the free-text description (cheap discovery) and
+    # enumerated on ``verb`` so a peer reading this catalog gets them structurally
     assert "search" in scope.description and "refresh" in scope.description
+    assert {"search", "refresh"} <= set(scope.inputSchema["properties"]["verb"]["enum"])
+
+
+def test_envelope_constant_not_mutated_across_domains(patched_registry):
+    """Each domain's enum is its own — a shallow copy would have every domain
+    inherit whichever one was projected last."""
+    tools = {t.name: t for t in catalog.list_domain_tools()}
+    assert (tools["scope"].inputSchema["properties"]["verb"]["enum"]
+            != tools["project"].inputSchema["properties"]["verb"]["enum"])
+    assert "enum" not in catalog._DOMAIN_INPUT_SCHEMA["properties"]["verb"]
 
 
 def test_native_domains_present(patched_registry):

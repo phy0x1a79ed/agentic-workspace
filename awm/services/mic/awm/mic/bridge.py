@@ -1,332 +1,326 @@
-"""The off-host HTTPS mic bridge (stdlib transport; one lazy gatewayclient call).
+"""Browser microphone → the PulseAudio ``virtmic`` null-sink.
 
-A stripped port of remote-audio's ``server.py``: serves the mic page and
-accepts the browser mic as s16le PCM over a hand-rolled WebSocket, piping each
-stream into the PulseAudio ``virtmic`` null-sink via ``pacat`` so the browser
-becomes WSL's microphone. Bound ``0.0.0.0:<port>`` with TLS always on, since a
-ZeroTier phone needs a secure context for ``getUserMedia`` and can't reach the
-loopback-only awm hub.
+The service half of mic's ``stream`` session. The browser opens
+``POST /svc/mic/session/stream`` declaring its capture format, the gateway hands
+both sides a direct byte-relayed WebSocket, and every binary frame that arrives
+is s16le PCM written straight into a ``pacat`` playing into the sink — so
+whatever the phone hears, this machine records.
 
-Dropped vs the reference: the ``/voice/*`` tmux toggle, the ttyd port injection,
-and the whole cockpit/session surface — this is the microphone, nothing else.
+This used to be an off-host HTTPS listener with a hand-rolled WebSocket, because
+``getUserMedia`` needs a secure context and the hub is loopback-only. ``httpsfront``
+now puts the whole of awm behind one CA-verified TLS door, so the listener,
+its TLS, and its copy of the cert-minting code are gone; what is left is the
+part that was always the point.
 
-Single-stream policy: a new audio stream terminates the prior ``pacat`` so two
-phones can't mix into the sink (the loser's WS sees a broken pipe and closes).
+mic does not own the audio plumbing — PulseAudio and the null-sink belong to the
+``virtmic`` service. The dependency is resolved per-stream rather than at boot
+(the gateway guarantees no start order between services, and a sink provisioned
+once at startup silently disappears when PulseAudio idle-exits), which is why
+``virtmic ensure`` runs immediately before ``pacat`` is spawned.
+
+Single-stream policy: a new stream supersedes the old one so two phones can't
+mix into the sink. The loser is *told* rather than left to infer it from a
+broken pipe.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
+import asyncio
 import json
 import logging
 import os
-import ssl
-import struct
-import subprocess
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 log = logging.getLogger("awm.mic.bridge")
 
-WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#: Which sink to feed. The *name* lives here because mic is what hands it to
+#: ``pacat``; creating the sink is virtmic's job.
+SINK = os.environ.get("MIC_SINK", "virtmic")
+
+#: The session handler starts as soon as the gateway accepts the open, which is
+#: before the browser's socket has necessarily arrived. Without a deadline an
+#: abandoned session would hold a live ``pacat`` on the sink forever.
+FIRST_FRAME_TIMEOUT_S = 30.0
+
+#: Wide enough for every browser's native rate (Chrome/Firefox pick the device's
+#: own, commonly 44.1k or 48k), narrow enough that a garbage value can't reach
+#: ``pacat``.
+MIN_RATE, MAX_RATE = 8000, 192000
+
+
+class _Stream:
+    """One browser's audio and the ``pacat`` it feeds."""
+
+    def __init__(self, proc: asyncio.subprocess.Process,
+                 rate: int, channels: int) -> None:
+        self.proc = proc
+        self.rate = rate
+        self.channels = channels
+        self.superseded = asyncio.Event()
+        self._reaped = False
+
+    def supersede(self) -> None:
+        """Another device took the microphone; this stream ends."""
+        self.superseded.set()
+        self.kill()
+
+    def kill(self) -> None:
+        """Terminate *this* stream's subprocess. Safe to call twice."""
+        stdin = self.proc.stdin
+        if stdin is not None:
+            try:
+                stdin.close()
+            except Exception:  # noqa: BLE001 — already-broken pipe
+                pass
+        if self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+            except ProcessLookupError:
+                pass
+        if not self._reaped:
+            self._reaped = True
+            try:
+                asyncio.get_running_loop().create_task(self.proc.wait())
+            except RuntimeError:  # no loop (tests) — nothing to reap against
+                pass
 
 
 class _State:
-    """Live bridge status, read by the ``mic_status`` verb."""
+    """Live service state, read by the ``mic_status`` verb.
+
+    Loop-only: every mutation and every read happens on the service's single
+    event loop, so there is no lock. That is a consequence of the move — the old
+    listener ran a thread per socket and needed one.
+    """
 
     def __init__(self) -> None:
-        self.lock = threading.Lock()
         self.active_streams = 0
         self.last_pcm_ts: float = 0.0
-        self.port: int | None = None
-        self.tls = False
-        self.sink = "virtmic"
-        self._pacat: subprocess.Popen | None = None  # the single allowed stream
+        self.sink = SINK
+        self.current: _Stream | None = None
 
 
 STATE = _State()
 
 
 def status() -> dict:
-    """Snapshot of the bridge for the status verb."""
-    with STATE.lock:
-        return {
-            "listener_port": STATE.port,
-            "tls": STATE.tls,
-            "sink": STATE.sink,
-            "active_streams": STATE.active_streams,
-            "last_pcm_ts": STATE.last_pcm_ts or None,
-        }
+    """Snapshot of the audio path for the status verb."""
+    cur = STATE.current
+    return {
+        "sink": STATE.sink,
+        "active_streams": STATE.active_streams,
+        "last_pcm_ts": STATE.last_pcm_ts or None,
+        "stream_rate": cur.rate if cur else None,
+        "stream_channels": cur.channels if cur else None,
+    }
 
 
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+# -- the audio path ---------------------------------------------------------
 
-    # Bound by serve() before the server starts.
-    static_dir: str = ""
-    ca_cert: str = ""
-    sink: str = "virtmic"
 
-    def log_message(self, *a):  # silence stdlib access logging
+def pacat_argv(sink: str, rate: int, channels: int) -> list[str]:
+    """The exact argv the browser's PCM is played into the sink with.
+
+    Named rather than inlined so it can be asserted: this list *is* the audio
+    path, and moving mic onto the hub must not perturb it. ``--latency-msec=40``
+    in particular is tuned against the sink, not against the transport.
+    """
+    return [
+        "pacat", "--playback", "-d", sink, "--raw",
+        "--format=s16le", f"--rate={rate}", f"--channels={channels}",
+        "--client-name=awm-mic", "--stream-name=browser-mic",
+        "--latency-msec=40",
+    ]
+
+
+def pacat_env() -> dict:
+    """The environment ``pacat`` needs to find the user's PulseAudio socket.
+
+    The gateway respawns services under systemd's minimal environment, which has
+    no ``XDG_RUNTIME_DIR`` — and without it libpulse cannot locate
+    ``$XDG_RUNTIME_DIR/pulse/native`` and fails with "Connection refused" even
+    when the daemon is perfectly healthy. That mismatch is invisible from
+    ``virtmic_status``, which reports on *its own* repaired environment.
+
+    This is about mic's subprocess environment, not about owning the audio
+    plumbing, so it stays here rather than moving to virtmic.
+    """
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
+
+
+def parse_init(init: dict[str, Any]) -> tuple[int, int]:
+    """Validate the capture format the browser declared when opening the session.
+
+    Knowing the rate *before* any audio arrives is the point of carrying it in
+    the open payload rather than as a first message on the audio channel: pacat
+    is already running when the first sample lands. A wrong rate is also the
+    worst kind of failure — it pitch-shifts everything the machine records with
+    no error anywhere — so it is rejected here rather than handed to pacat.
+    """
+    fmt = init.get("format", "s16le")
+    if fmt != "s16le":
+        raise ValueError(f"unsupported format {fmt!r}; mic accepts s16le only")
+    try:
+        rate = int(init.get("sampleRate", 48000))
+        channels = int(init.get("channels", 1))
+    except (TypeError, ValueError):
+        raise ValueError("sampleRate and channels must be integers") from None
+    if not MIN_RATE <= rate <= MAX_RATE:
+        raise ValueError(
+            f"sampleRate {rate} outside [{MIN_RATE}, {MAX_RATE}]")
+    if channels not in (1, 2):
+        raise ValueError(f"channels {channels} must be 1 or 2")
+    return rate, channels
+
+
+async def _ensure_sink() -> None:
+    """Ask virtmic to guarantee the sink exists, right before we feed it.
+
+    Best-effort: if virtmic is unreachable we still start ``pacat``, because the
+    sink may well already exist and refusing audio outright would be a worse
+    failure than a possibly-dead one.
+    """
+    try:
+        from awm import gatewayclient
+        await gatewayclient.call("virtmic", "ensure", timeout=30.0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("virtmic ensure failed (%s); starting pacat anyway", exc)
+
+
+async def start_stream(rate: int, channels: int) -> _Stream:
+    """Spawn this stream's ``pacat``, superseding whatever was feeding the sink."""
+    await _ensure_sink()
+    proc = await asyncio.create_subprocess_exec(
+        *pacat_argv(STATE.sink, rate, channels),
+        stdin=asyncio.subprocess.PIPE,
+        env=pacat_env(),
+    )
+    stream = _Stream(proc, rate, channels)
+    prev, STATE.current = STATE.current, stream
+    if prev is not None:
+        prev.supersede()
+    log.info("pacat started rate=%d ch=%d sink=%s", rate, channels, STATE.sink)
+    return stream
+
+
+# -- the session ------------------------------------------------------------
+
+
+async def _send(bridge: Any, obj: dict) -> None:
+    try:
+        await bridge.send(json.dumps(obj))
+    except Exception as exc:  # noqa: BLE001 — a dead socket isn't news here
+        log.debug("mic control send failed: %s", exc)
+
+
+async def _close(bridge: Any) -> None:
+    try:
+        await bridge.close()
+    except Exception:  # noqa: BLE001
         pass
 
-    # ---- static files ----
-    def _serve(self, rel: str, ctype: str) -> None:
-        import os
+
+async def _recv_loop(bridge: Any, stream: _Stream) -> None:
+    """Binary frames are PCM for ``pacat``; text frames are JSON control."""
+    import websockets
+
+    deadline: float | None = FIRST_FRAME_TIMEOUT_S
+    while True:
+        try:
+            raw = await asyncio.wait_for(bridge.recv(), timeout=deadline)
+        except asyncio.TimeoutError:
+            log.info("mic session opened but no audio arrived in %.0fs; closing",
+                     FIRST_FRAME_TIMEOUT_S)
+            return
+        except websockets.ConnectionClosed:
+            return
+        deadline = None  # only the first frame is deadlined
+
+        if isinstance(raw, (bytes, bytearray)):
+            stdin = stream.proc.stdin
+            if stdin is None or stream.proc.returncode is not None:
+                await _send(bridge, {"type": "error", "message": "pacat exited"})
+                return
+            try:
+                stdin.write(bytes(raw))
+                await stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, RuntimeError):
+                log.info("pacat pipe broke (superseded, or pacat died)")
+                return
+            STATE.last_pcm_ts = time.time()
+            continue
 
         try:
-            with open(os.path.join(self.static_dir, rel), "rb") as f:
-                body = f.read()
-        except FileNotFoundError:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            msg = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(msg, dict) and msg.get("type") == "ping":
+            # Echoed so the page can display a real round-trip time. The old
+            # protocol echoed it too and then threw the answer away.
+            await _send(bridge, {"type": "pong", "t": msg.get("t")})
 
-    def do_GET(self):
-        if self.headers.get("Upgrade", "").lower() == "websocket":
-            return self._ws()
-        if self.path in ("/", "/index.html"):
-            return self._serve("index.html", "text/html; charset=utf-8")
-        if self.path == "/worklet.js":
-            return self._serve("worklet.js", "application/javascript")
-        if self.path in ("/ca.crt", "/ca.pem"):
-            return self._serve_ca()
-        self.send_error(404)
 
-    def _serve_ca(self) -> None:
-        """Serve the local root CA so a device can install + trust it once,
-        clearing ERR_CERT_AUTHORITY_INVALID. Sent as a downloadable
-        ``application/x-x509-ca-cert`` so Android offers to install it."""
+async def _pump(bridge: Any, stream: _Stream) -> None:
+    """Run the receive loop until it ends or another device takes the mic."""
+    recv = asyncio.create_task(_recv_loop(bridge, stream), name="mic-recv")
+    sup = asyncio.create_task(stream.superseded.wait(), name="mic-superseded")
+    try:
+        done, _ = await asyncio.wait(
+            {recv, sup}, return_when=asyncio.FIRST_COMPLETED)
+        if sup in done and recv not in done:
+            await _send(bridge, {
+                "type": "superseded",
+                "message": "another device took the microphone",
+            })
+        if recv in done and not recv.cancelled() and recv.exception():
+            log.warning("mic receive loop failed: %s", recv.exception())
+    finally:
+        for task in (recv, sup):
+            task.cancel()
+        await asyncio.gather(recv, sup, return_exceptions=True)
+
+
+async def run_session(ctx: Any) -> None:
+    """Drive one ``stream`` session: browser PCM in, control frames out."""
+    # Open the bridge FIRST. The gateway drops the browser's socket if this side
+    # hasn't attached within five seconds, and the virtmic call below is allowed
+    # thirty — so ensuring the sink first fails precisely when virtmic is doing
+    # its job, which is the case the lazy call exists to serve.
+    bridge = await ctx.open_bridge()
+    try:
         try:
-            with open(self.ca_cert, "rb") as f:
-                body = f.read()
-        except (FileNotFoundError, OSError):
-            self.send_error(404)
+            rate, channels = parse_init(ctx.init or {})
+        except ValueError as exc:
+            await _send(bridge, {"type": "error", "message": str(exc)})
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-x509-ca-cert")
-        self.send_header(
-            "Content-Disposition", 'attachment; filename="remote-audio-ca.crt"'
-        )
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    # ---- websocket ----
-    def _ws(self) -> None:
-        key = self.headers.get("Sec-WebSocket-Key")
-        if not key:
-            self.send_error(400)
-            return
-        accept = base64.b64encode(
-            hashlib.sha1((key + WS_GUID).encode()).digest()
-        ).decode()
-        self.send_response(101)
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", accept)
-        self.end_headers()
-        self.close_connection = True
-        log.info("ws connected %s", self.client_address)
-        with STATE.lock:
-            STATE.active_streams += 1
-
-        pacat: subprocess.Popen | None = None
-        frag_op, frag = None, bytearray()
         try:
-            while True:
-                fin, op, payload = self._read_frame()
-                if op is None or op == 0x8:        # closed / close frame
-                    break
-                if op == 0x9:                      # ping -> pong
-                    self._send_frame(0xA, payload)
-                    continue
-                if op == 0xA:                      # pong
-                    continue
-                if op == 0x0:                      # continuation
-                    frag += payload
-                    if not fin:
-                        continue
-                    op, payload, frag = frag_op, bytes(frag), bytearray()
-                    frag_op = None
-                elif not fin:                      # first fragment
-                    frag_op, frag = op, bytearray(payload)
-                    continue
+            stream = await start_stream(rate, channels)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("pacat spawn failed")
+            await _send(bridge, {"type": "error", "message": f"pacat: {exc}"})
+            return
 
-                if op == 0x1:                       # text = control (config / ping)
-                    try:
-                        cfg = json.loads(payload.decode("utf-8"))
-                    except Exception as e:  # noqa: BLE001
-                        log.debug("bad control msg %s", e)
-                        continue
-                    if cfg.get("type") == "ping":
-                        # echo back so the client can measure RTT
-                        try:
-                            self._send_frame(0x1, payload)
-                        except OSError as e:
-                            log.debug("ping echo failed %s", e)
-                            break
-                        continue
-                    rate = int(cfg.get("sampleRate", 48000))
-                    ch = int(cfg.get("channels", 1))
-                    pacat = self._start_stream(rate, ch)
-                    log.info("pacat started rate=%d ch=%d", rate, ch)
-                elif op == 0x2:                     # binary PCM
-                    if pacat and pacat.stdin:
-                        try:
-                            pacat.stdin.write(payload)
-                        except (BrokenPipeError, ValueError):
-                            log.info("pacat pipe broke (stream superseded?)")
-                            break
-                        with STATE.lock:
-                            STATE.last_pcm_ts = time.time()
-        except (ConnectionResetError, BrokenPipeError, OSError) as e:
-            log.debug("ws error %s", e)
+        STATE.active_streams += 1
+        try:
+            # `ready` — not socket-open — is what turns the page's badge purple.
+            # An open socket says nothing about whether pacat exists; during the
+            # XDG_RUNTIME_DIR outage the page displayed "48 kHz · live" while
+            # nothing was recording at all.
+            await _send(bridge, {
+                "type": "ready", "sampleRate": rate,
+                "channels": channels, "sink": STATE.sink,
+            })
+            await _pump(bridge, stream)
         finally:
-            if pacat:
-                try:
-                    pacat.stdin.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                pacat.terminate()
-            with STATE.lock:
-                STATE.active_streams = max(0, STATE.active_streams - 1)
-                if STATE._pacat is pacat:
-                    STATE._pacat = None
-            log.info("ws closed")
-
-    def _ensure_sink(self) -> None:
-        """Ask virtmic to guarantee the sink exists, right before we feed it.
-
-        This is where the mic → virtmic dependency is made explicit instead of
-        temporal. The gateway guarantees no start order between services, so
-        provisioning at boot would race; ensuring here means the sink is
-        present at the moment audio actually needs it. We're on the WS handler
-        thread, never the event loop, so the blocking `call_sync` is correct.
-
-        Best-effort: if virtmic is unreachable we still start `pacat`, because
-        the sink may well already exist and refusing audio outright would be a
-        worse failure than a possibly-dead one.
-        """
-        try:
-            from awm import gatewayclient
-            gatewayclient.call_sync("virtmic", "ensure", timeout=30.0)
-        except Exception as e:  # noqa: BLE001
-            log.warning("virtmic ensure failed (%s); starting pacat anyway", e)
-
-    @staticmethod
-    def _pacat_env() -> dict:
-        """The environment `pacat` needs to find the user's PulseAudio socket.
-
-        The gateway respawns services under systemd's minimal environment, which
-        has no ``XDG_RUNTIME_DIR`` — and without it libpulse cannot locate
-        ``$XDG_RUNTIME_DIR/pulse/native`` and fails with "Connection refused"
-        even when the daemon is perfectly healthy. That mismatch is invisible
-        from `virtmic_status`, which reports on *its own* repaired environment.
-
-        This is about mic's subprocess environment, not about owning the audio
-        plumbing, so it stays here rather than moving to virtmic.
-        """
-        env = dict(os.environ)
-        env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-        return env
-
-    def _start_stream(self, rate: int, ch: int) -> subprocess.Popen:
-        """Start a pacat for this stream, terminating any prior one first so
-        only one phone ever feeds the sink."""
-        self._ensure_sink()
-        with STATE.lock:
-            if STATE._pacat is not None:
-                try:
-                    STATE._pacat.terminate()
-                except Exception:  # noqa: BLE001
-                    pass
-            cmd = [
-                "pacat", "--playback", "-d", self.sink, "--raw",
-                "--format=s16le", f"--rate={rate}", f"--channels={ch}",
-                "--client-name=awm-mic", "--stream-name=browser-mic",
-                "--latency-msec=40",
-            ]
-            pacat = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                     env=self._pacat_env())
-            STATE._pacat = pacat
-            return pacat
-
-    # ---- frame I/O ----
-    def _read_exact(self, n: int):
-        if n == 0:
-            return b""
-        data = self.rfile.read(n)
-        if not data or len(data) < n:
-            return None
-        return data
-
-    def _read_frame(self):
-        hdr = self._read_exact(2)
-        if not hdr:
-            return (None, None, None)
-        b0, b1 = hdr[0], hdr[1]
-        fin = bool(b0 & 0x80)
-        op = b0 & 0x0F
-        masked = bool(b1 & 0x80)
-        ln = b1 & 0x7F
-        if ln == 126:
-            ext = self._read_exact(2)
-            if ext is None:
-                return (None, None, None)
-            ln = struct.unpack(">H", ext)[0]
-        elif ln == 127:
-            ext = self._read_exact(8)
-            if ext is None:
-                return (None, None, None)
-            ln = struct.unpack(">Q", ext)[0]
-        mask = self._read_exact(4) if masked else None
-        payload = self._read_exact(ln) if ln else b""
-        if payload is None:
-            return (None, None, None)
-        if masked and payload:
-            payload = bytes(payload[i] ^ mask[i & 3] for i in range(len(payload)))
-        return (fin, op, payload)
-
-    def _send_frame(self, op: int, data: bytes = b"") -> None:
-        b0 = 0x80 | op
-        n = len(data)
-        if n < 126:
-            hdr = struct.pack(">BB", b0, n)
-        elif n < 65536:
-            hdr = struct.pack(">BBH", b0, 126, n)
-        else:
-            hdr = struct.pack(">BBQ", b0, 127, n)
-        self.wfile.write(hdr + data)
-        self.wfile.flush()
-
-
-def serve(*, port: int, cert: str, key: str, ca: str,
-          static_dir: str, sink: str = "virtmic") -> None:
-    """Bind ``0.0.0.0:port`` with TLS and serve forever (blocks).
-
-    Designed to run in a daemon thread launched from the hub adapter's
-    ``on_start``. ``ThreadingHTTPServer`` sets ``allow_reuse_address`` so a
-    gateway respawn rebinds the port cleanly.
-    """
-    Handler.static_dir = static_dir
-    Handler.ca_cert = ca
-    Handler.sink = sink
-    with STATE.lock:
-        STATE.port = port
-        STATE.sink = sink
-        STATE.tls = bool(cert)
-
-    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    if cert:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(cert, key)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    log.info("listening on https://0.0.0.0:%d (sink=%s, tls=on)", port, sink)
-    srv.serve_forever()
+            STATE.active_streams = max(0, STATE.active_streams - 1)
+            stream.kill()
+            # Release the shared slot only if we still own it — on a fast
+            # reconnect the successor has already claimed it.
+            if STATE.current is stream:
+                STATE.current = None
+    finally:
+        await _close(bridge)
+        log.info("mic session closed")

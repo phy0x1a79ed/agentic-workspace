@@ -7,11 +7,15 @@ HTTP *and* WebSocket — to the loopback awm gateway (`AWM_HUB_URL`, normally
 `http://127.0.0.1:7819`).
 
 Why it exists: the gateway binds loopback-only plain HTTP by design, but browser
-APIs like `getUserMedia` (the notes-page dictation) require a *secure context*,
-which off-localhost means HTTPS. Rather than re-architect the loopback gateway,
-this rides its own off-host HTTPS listener — exactly as `mic` and `fileviewer`
-serve their surfaces off-hub — and the gateway registration provides supervision
-plus an `httpsfront_status` verb only.
+APIs like `getUserMedia` (the notes-page dictation, the mic page) require a
+*secure context*, which off-localhost means HTTPS. Rather than re-architect the
+loopback gateway, this rides its own off-host HTTPS listener, and the gateway
+registration provides supervision plus an `httpsfront_status` verb only.
+
+`fileviewer` and `mic` each used to serve their own surface off-hub the same
+way; both have since been folded in. httpsfront is now the **only** off-host
+listener in awm, and everything else rides the gateway behind it — which is also
+why it is the only holder of the CA.
 
 Because every awm page makes *same-origin* relative calls (`/svc/*`, same-origin
 WebSockets), fronting the gateway wholesale is what makes those calls work under
@@ -53,7 +57,7 @@ Both live in `/usr/bin`, on the minimal systemd PATH the supervisor uses.
 ## TLS — reuses the remote-audio CA
 
 Certs are minted by `awm.httpsfront.certs` into a gitignored `.certs/` next to
-the service. The **root CA is shared with remote-audio / the `mic` service** at
+the service. The **root CA is shared with remote-audio** at
 `~/.config/remote-audio/ca` (override with `REMOTE_AUDIO_CA_DIR`), so a device
 that already trusts that root needs no new setup. The root is minted only the
 first time it's missing; only the short-lived leaf rotates (re-minted whenever
@@ -97,7 +101,8 @@ there is no plain-HTTP relay. A future port change is one line in `.awm/env`.
 
 ## Exposure note
 
-Fronting the gateway wholesale means the **entire unauthenticated awm surface**
-is reachable from the LAN/ZeroTier on `:8443` — the same exposure posture as the
-`mic` bridge on `:12200`. The gateway remains loopback-only for plain HTTP; this
-is the single TLS door in.
+Fronting the gateway wholesale means the **entire awm surface** — every page and
+every service, including the mic's audio session — is reachable from the
+LAN/ZeroTier on `:8443` behind this one password. The gateway remains
+loopback-only for plain HTTP; this is the single TLS door in, and there is no
+longer any other.

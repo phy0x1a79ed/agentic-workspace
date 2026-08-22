@@ -11,6 +11,10 @@ dependencies = [
     "awm-config",
     "awm-gatewayclient",
     "awm-persistence",
+    # Recolouring a raster image: decode with Pillow, do the colour pass in
+    # numpy. See awm/drawio/recolour.py.
+    "pillow",
+    "numpy",
 ]
 
 [project.optional-dependencies]

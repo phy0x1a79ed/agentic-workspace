@@ -44,18 +44,31 @@ def ms_to_iso(ms: int | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 _FORBIDDEN_CHARS = ("/", "\\", "\x00")
+_FORBIDDEN_SEGMENT_CHARS = ("\\", "\x00")
 
 
-def _validate_name(name: str, kind: str = "name") -> str:
+def _validate_name(name: str, kind: str = "name", *, allow_nesting: bool = False) -> str:
+    """Mirror of ``awm.scopes._validation.validate_name`` — kept in step by hand
+    so artifacts stays its own dist. Scope names nest (``fabfos/dev``); project
+    names do not, since a slashed project would imply a second bare repo."""
     if not isinstance(name, str) or not name:
         raise ValueError(f"{kind} must be a non-empty string")
-    if name in (".", ".."):
-        raise ValueError(f"{kind} cannot be '.' or '..'")
-    if name.startswith("."):
-        raise ValueError(f"{kind} cannot start with '.' (got {name!r})")
-    for ch in _FORBIDDEN_CHARS:
-        if ch in name:
-            raise ValueError(f"{kind} cannot contain {ch!r} (got {name!r})")
+    if allow_nesting:
+        if name.startswith("/") or name.endswith("/"):
+            raise ValueError(f"{kind} cannot start or end with '/' (got {name!r})")
+        segments, forbidden = name.split("/"), _FORBIDDEN_SEGMENT_CHARS
+    else:
+        segments, forbidden = [name], _FORBIDDEN_CHARS
+    for segment in segments:
+        if not segment:
+            raise ValueError(f"{kind} cannot contain an empty segment (got {name!r})")
+        if segment in (".", ".."):
+            raise ValueError(f"{kind} cannot contain '.' or '..' (got {name!r})")
+        if segment.startswith("."):
+            raise ValueError(f"{kind} cannot start with '.' (got {name!r})")
+        for ch in forbidden:
+            if ch in segment:
+                raise ValueError(f"{kind} cannot contain {ch!r} (got {name!r})")
     return name
 
 
@@ -111,7 +124,12 @@ def _row_to_info(row: dict) -> ArtifactInfo:
 def _index_artifact(artifact_id: int) -> None:
     """Embed the artifact's text and upsert into this service's embeddings table.
 
-    Degrades gracefully when sentence-transformers / sqlite-vec are not installed.
+    Degrades gracefully when sentence-transformers / sqlite-vec are not
+    installed: the guard that does that work is the ``except Exception`` around
+    the upsert below, not this import — ``awm.persistence.embeddings`` always
+    imports, since the heavy modules load lazily inside its functions. Artifacts
+    has no staleness column, so a skipped embedding is not repairable later; that
+    is a deliberate trade for a service whose search has a real keyword path.
     """
     try:
         from awm.persistence.embeddings import upsert_embedding
@@ -150,7 +168,7 @@ def register_artifact(req: ArtifactRegisterRequest) -> ArtifactInfo:
     """Upserts on (path, project) — validate (project, scope) via scopes RPC
     BEFORE writing. On unresolvable scope, fail LOUDLY — no orphan rows."""
     _validate_name(req.project, kind="project name")
-    _validate_name(req.scope, kind="scope name")
+    _validate_name(req.scope, kind="scope name", allow_nesting=True)
 
     # RPC-validate: reject unresolvable scopes
     try:

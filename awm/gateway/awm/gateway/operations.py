@@ -348,8 +348,18 @@ def _make_cli_handler(op: Operation, api_func: Callable) -> Callable:
         flag = p.cli_name or f"--{p.name.replace('_', '-')}"
 
         if p.cli_type == "argument":
-            ann = Annotated[base, typer.Argument(help=p.description)]
-            default = inspect.Parameter.empty
+            # A positional argument may be optional: ``required=False`` yields an
+            # Optional annotation + a real default, which Typer renders as
+            # ``[TOOL]``. Without this every argument was mandatory, so an op
+            # whose positional is genuinely omittable (``awm peer providers``
+            # with no tool = the whole fleet map) had to demote it to a flag.
+            if p.required:
+                ann = Annotated[base, typer.Argument(help=p.description)]
+                default = inspect.Parameter.empty
+            else:
+                ann = Annotated[Optional[base],
+                                typer.Argument(help=p.description)]
+                default = p.default
         elif p.type == "array":
             ann = Annotated[Optional[list[str]], typer.Option(flag, help=p.description)]
             default = p.default

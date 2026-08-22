@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages
+from awm.httpsfront import pages, store
 from awm.httpsfront.auth import COOKIE_NAME, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -64,6 +65,15 @@ _ALL_METHODS = _METHODS  # alias for route registration clarity
 def _req_headers(request: Request) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
+    # ``host`` is dropped above so httpx derives it from the upstream URL, which
+    # means the upstream otherwise cannot tell what address the browser used.
+    # awm's own services never needed that, but a reverse-proxied third party
+    # does: an app that builds its self-origin from the request (for redirects,
+    # or to decide the ``Secure`` flag on its own cookies) derives a loopback
+    # http:// origin without this, and its browser session never persists.
+    host = request.headers.get("host")
+    if host:
+        hdrs["X-Forwarded-Host"] = host
     if request.client:
         hdrs["X-Forwarded-For"] = request.client.host
     return hdrs
@@ -176,7 +186,7 @@ async def _whoami(request: Request) -> Response:
 
 async def _root(request: Request) -> Response:
     """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
-    pulled from the gateway registry."""
+    pulled from the gateway registry, tagged and filterable via ``store``."""
     ok, refreshed = await _authenticate(request)
     if not ok:
         return _deny(request)
@@ -189,11 +199,65 @@ async def _root(request: Request) -> Response:
             services = (r.json() or {}).get("services", [])
     except Exception as exc:  # noqa: BLE001 — degrade to an empty index
         log.debug("landing: could not fetch registry: %s", exc)
-    resp = HTMLResponse(pages.landing_page(services))
+    dao = store.LandingDAO()
+    page_names = [str(s.get("name", s.get("prefix", ""))) for s in services]
+    tags_by_page = dao.tags_by_page(page_names)
+    tag_counts = dao.all_tag_counts()
+    selected = dao.selected_tags()
+    resp = HTMLResponse(
+        pages.landing_page(services, tags_by_page, tag_counts, selected)
+    )
     if refreshed:
         _set_session_cookie(resp, refreshed,
                             int(await app.state.gate.session_ttl_seconds()))
     return resp
+
+
+async def _landing_add_tag(request: Request) -> Response:
+    """``POST /__landing/tags`` — body ``{page, tag}``. Returns the page's
+    updated tag list plus the refreshed global tag counts."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    tag = str((data or {}).get("tag") or "").strip()
+    if not page or not tag:
+        return JSONResponse({"error": "page and tag are required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.add_tag(page, tag)
+    return JSONResponse({
+        "tags": dao.tags_for_page(page),
+        "tag_counts": dao.all_tag_counts(),
+    })
+
+
+async def _landing_select_filter(request: Request) -> Response:
+    """``POST /__landing/filter`` — body ``{tag}``. Selects ``tag`` as a filter."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    tag = str((data or {}).get("tag") or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.select_tag(tag)
+    return JSONResponse({"selected_tags": dao.selected_tags()})
+
+
+async def _landing_deselect_filter(request: Request) -> Response:
+    """``DELETE /__landing/filter`` — body ``{tag}``. Deselects ``tag``."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    tag = str((data or {}).get("tag") or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.deselect_tag(tag)
+    return JSONResponse({"selected_tags": dao.selected_tags()})
 
 
 async def _http_proxy(request: Request) -> Response:
@@ -216,9 +280,16 @@ async def _http_proxy(request: Request) -> Response:
     out = StreamingResponse(
         resp.aiter_raw(),
         status_code=resp.status_code,
-        headers=dict(_resp_headers(resp)),
         background=BackgroundTask(resp.aclose),
     )
+    # Assign the raw list rather than passing ``headers=dict(...)``: a dict keeps
+    # only the last of a repeated key, and ``Set-Cookie`` is repeated whenever an
+    # upstream sets more than one cookie in a response. Collapsing those loses
+    # every cookie but the last, which is invisible until a wrapped app's session
+    # simply fails to establish. ``set_cookie`` below appends to this same list.
+    out.raw_headers = [
+        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
+    ]
     if refreshed:
         _set_session_cookie(out, refreshed,
                             int(await app.state.gate.session_ttl_seconds()))
@@ -263,23 +334,40 @@ async def _ws_proxy(ws: WebSocket) -> None:
         await ws.close(code=1008)  # policy violation
         return
 
-    # Forward cookies / identity so the gateway sees the real caller.
+    # Forward cookies / identity so the gateway sees the real caller. ``origin``
+    # and the forwarded-* hints matter only for a reverse-proxied third party:
+    # an upstream that origin-checks its WS upgrades (an allowlist of the exact
+    # scheme+host+port a browser may connect from) rejects every handshake if
+    # the header never arrives. The gateway ignores all four.
     fwd = {}
-    for k in ("cookie", "x-awm-as", "authorization"):
+    for k in ("cookie", "x-awm-as", "authorization", "origin"):
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    fwd["X-Forwarded-Proto"] = "https"
+    host = ws.headers.get("host")
+    if host:
+        fwd["X-Forwarded-Host"] = host
 
-    await ws.accept()
+    # Subprotocols are negotiated end to end rather than dropped: a browser that
+    # asks for one and gets a handshake response without it fails the connection
+    # per RFC 6455. No awm service uses them, so `or None` keeps the gateway
+    # front's behaviour byte-identical.
+    subprotocols = list(ws.scope.get("subprotocols") or [])
+
     try:
         upstream = await websockets.connect(
             up_url, additional_headers=fwd, max_size=None, open_timeout=10,
+            subprotocols=subprotocols or None,
         )
     except Exception as exc:  # noqa: BLE001 — upstream refused / bad path
         # Path only, never the query string — see the log_level note in serve().
         log.debug("ws upstream connect failed for %s: %s", ws.url.path, exc)
+        # Reject the handshake outright rather than accept-then-close, so the
+        # client sees a clean failure instead of a socket that opens and dies.
         await ws.close(code=1011)
         return
+    await ws.accept(subprotocol=getattr(upstream, "subprotocol", None))
 
     async def client_to_upstream() -> None:
         try:
@@ -322,15 +410,54 @@ async def _ws_proxy(ws: WebSocket) -> None:
             pass
 
 
-def build_app(upstream: str, ca_path: str, *, landing: bool = True) -> Starlette:
+#: An extra endpoint a wrapping front adds: ``(path, methods, handler)``.
+ExtraRoute = tuple[str, Sequence[str], Callable[[Request], Awaitable[Response]]]
+
+
+def _gated(
+    handler: Callable[[Request], Awaitable[Response]],
+) -> Callable[[Request], Awaitable[Response]]:
+    """Wrap an extra route in the edge session check the catch-all proxy applies.
+
+    Same deny shape (login page for a browser GET, 401 otherwise) and the same
+    sliding-cookie refresh, so an added endpoint is indistinguishable from a
+    proxied path as far as auth is concerned.
+    """
+    async def _wrapped(request: Request) -> Response:
+        ok, refreshed = await _authenticate(request)
+        if not ok:
+            return _deny(request)
+        resp = await handler(request)
+        if refreshed:
+            _set_session_cookie(
+                resp, refreshed,
+                int(await request.app.state.gate.session_ttl_seconds()),
+            )
+        return resp
+
+    return _wrapped
+
+
+def build_app(upstream: str, ca_path: str, *, landing: bool = True,
+              extra_routes: Sequence[ExtraRoute] | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     The landing page is right for the gateway front, whose ``/`` has nothing
     else to serve. It is wrong for a front that sits in front of a *single*
-    app — claude-view's SPA lives at ``/``, and the index route would shadow
+    app — a wrapped app's SPA lives at ``/``, and the index route would shadow
     it. Turning it off lets ``/`` fall through to the catch-all proxy, which is
     what makes this module reusable for any upstream rather than the gateway
     alone. Default keeps the gateway front's behaviour byte-identical.
+
+    ``extra_routes`` are ``(path, methods, handler)`` triples for endpoints the
+    upstream cannot serve itself — a sign-in shim that has to shell out to the
+    wrapped binary, say. They are registered after the ``/__auth/*`` routes, so
+    they cannot shadow the edge's own auth surface, and **this function gates
+    them** with the same check the catch-all proxy applies, including the
+    sliding cookie refresh. Handlers are therefore plain endpoints that may
+    assume an authenticated caller: the gate is not something a caller can
+    forget, because the whole reason such a route exists is that it does
+    something privileged on the upstream's behalf.
     """
     http_up = upstream.rstrip("/")
     # http://… → ws://… ,  https://… → wss://…
@@ -351,6 +478,12 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True) -> Starlette
     if landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
         routes.append(Route("/", _root, methods=["GET"]))
+        # Tag/filter endpoints backing the landing page's tagging UI.
+        routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
+        routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
+        routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
+    for path, methods, handler in (extra_routes or ()):
+        routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
         # Everything else is auth-gated inside the handler, then proxied.
         WebSocketRoute("/{path:path}", _ws_proxy),
@@ -375,16 +508,18 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True) -> Starlette
 
 
 def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
-          landing: bool = True) -> None:
+          landing: bool = True,
+          extra_routes: Sequence[ExtraRoute] | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
-    ``upstream`` and ``landing`` are what make this reusable beyond the gateway:
-    the ``claude-view`` service calls it against its own loopback binary with
-    ``landing=False`` to get TLS, the shared CA, and the ``awm_session`` edge
-    auth without duplicating any of it.
+    ``upstream``, ``landing`` and ``extra_routes`` are what make this reusable
+    beyond the gateway: the ``claude-science`` service calls it against its own
+    loopback binary with ``landing=False`` to get TLS, the shared CA, and the
+    ``awm_session`` edge auth without duplicating any of it, and adds one gated
+    sign-in route the wrapped binary cannot serve itself.
     """
-    app = build_app(upstream, ca, landing=landing)
+    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",

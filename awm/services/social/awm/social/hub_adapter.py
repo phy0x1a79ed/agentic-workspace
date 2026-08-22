@@ -283,6 +283,23 @@ async def _h_search(args: dict) -> dict:
     return {"messages": rows, "count": len(rows)}
 
 
+def _written_reply(written: list[dict]) -> dict:
+    """The common shape both file-returning verbs answer with.
+
+    ``path`` and ``dir`` are absolute on **this** node, so the reply also names
+    which node that is: a caller that borrowed ``social`` from a peer needs that
+    to know the paths are not its own, and the per-file ``url`` to do something
+    about it (see ``attachments`` module docstring).
+    """
+    return {
+        "files": written,
+        "count": len(written),
+        "dir": os.path.dirname(written[0]["path"]) if written else "",
+        "node": config.node_name(),
+        "edge_url": config.edge_url() or "",
+    }
+
+
 async def _h_download_attachments(args: dict) -> dict:
     """Download one message's attachments to a system temp dir (outside AWM_DIR).
 
@@ -295,9 +312,7 @@ async def _h_download_attachments(args: dict) -> dict:
     idx = int(idx_raw) if idx_raw not in (None, "") else None
     files = await conn.download_attachments(
         args["channel"], str(args["message_id"]), idx=idx)
-    written = write_attachments(files)
-    out_dir = os.path.dirname(written[0]["path"]) if written else ""
-    return {"files": written, "count": len(written), "dir": out_dir}
+    return _written_reply(write_attachments(files))
 
 
 def _h_list_operators(args: dict) -> dict:
@@ -357,9 +372,7 @@ async def _h_bucket_get(args: dict) -> dict:
     """Download one file to a system temp dir (outside AWM_DIR) and return its
     path — reuses the attachment sink so large files never inline into the RPC."""
     filename, mime, data = await _bucket(args["bucket"]).get(args["path"])
-    written = write_attachments([(filename, mime, data)])
-    out_dir = os.path.dirname(written[0]["path"]) if written else ""
-    return {"files": written, "count": len(written), "dir": out_dir}
+    return _written_reply(write_attachments([(filename, mime, data)]))
 
 
 async def _h_bucket_put(args: dict) -> dict:

@@ -56,6 +56,35 @@ def test_scopes_are_found_at_project_scope_depth_and_no_deeper(workspace):
     assert coverage.find_worktrees(root) == [scope]
 
 
+def test_nested_scopes_are_found(tmp_path, monkeypatch):
+    """A nested scope sits two levels below ``projects/``. The fixed-depth walk
+    could not see one, and an audit that under-reports what is uncovered fails
+    exactly when it is needed."""
+    proj = tmp_path / "projects" / "metasmith"
+    proj.mkdir(parents=True)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q", "-b", "main")
+    (seed / "README").write_text("x\n")
+    git(seed, "add", "README")
+    git(seed, "commit", "-qm", "init")
+
+    bare = proj / ".bare"
+    subprocess.run(["git", "clone", "--bare", "-q", str(seed), str(bare)],
+                   check=True, capture_output=True)
+    flat = proj / "monorepo"
+    nested = proj / "fabfos" / "dev"
+    git(bare, "worktree", "add", "-b", "feat/monorepo", str(flat), "main")
+    git(bare, "worktree", "add", "-b", "fabfos/dev", str(nested), "main")
+
+    monkeypatch.setattr(coverage, "WORKSPACE_ROOT", tmp_path)
+
+    found = {p.resolve() for p in coverage.find_worktrees(tmp_path)}
+    assert found == {flat.resolve(), nested.resolve()}
+    assert bare.resolve() not in found
+
+
 def test_a_committed_pushed_scope_with_no_pins_is_not_at_risk(workspace):
     root, scope, _ = workspace
     # Give it an upstream that is exactly HEAD — the "everything is safe" case.

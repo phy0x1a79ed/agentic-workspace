@@ -13,6 +13,10 @@ run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 run "$WS/awm/service_components/config" --no-deps
 run "$WS/awm/service_components/persistence" --no-deps
 run "$WS/awm/service_components/gatewayclient" --no-deps
+# This service embeds + queries vectors, so it also needs persistence's
+# `search` extra (sentence-transformers + sqlite-vec, on the CPU torch wheel).
+# Opt-in on purpose — see that script for why it is not a declared dependency.
+bash "$WS/awm/service_components/persistence/install-search.sh" "$ENV"
 run "$WS/awm/services/precedence"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

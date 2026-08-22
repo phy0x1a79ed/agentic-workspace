@@ -52,6 +52,7 @@ demand; there is no single identity brain (per-node state, cross-reads on demand
 | `auth` service | `awm/services/auth/` | credential **authority**: mints paired (login-password, peer-credential) generations, signs sliding session tokens, pushes the day's password to Discord, mirrors the peer credential to `$AWM_PEER_CRED` |
 | `httpsfront` edge | `awm/services/httpsfront/` | **enforces** auth at the network edge: session cookie (sliding) OR peer bearer, CA-verified TLS, login page / 401; serves the landing page at `/` |
 | peer directory | gateway (`awm/gateway/awm/gateway/peers.py`) | the address book: `peer_join`/`peer_list`/`peer_resolve`/`peer_forget` |
+| peer capabilities | gateway (`awm/gateway/awm/gateway/peer_catalog.py`) | which peer provides which MCP domain, and the default provider per domain: `peer_providers` / `providersOf` |
 | cross-peer calls | `gatewayclient.call_peer` + the `awm-mcp` proxy | reach a peer's edge directly (client-side federation) |
 
 ## Authentication
@@ -133,15 +134,58 @@ mutual (nothing is synced). `edge_url` may be bare `host:port` (coerced to
 
 ## Cross-peer calls
 
-- **From an agent (MCP):** each registered peer's collapsed catalog is merged
-  into the `awm-mcp` surface namespaced `<domain>@<peer>` (e.g. `2fa@mira`); a
-  call to it is routed to the peer's edge directly. A down peer contributes no
-  tools and never blocks the local surface.
+- **From an agent (MCP): the peer is an argument, never another tool.** The
+  collapsed surface carries **one tool per domain name across the whole fleet** —
+  `scope`, `2fa`, `hpcllm` — each with an optional `peer` beside `verb`/`args`.
+  Where a call lands with no `peer` is the domain's **default provider**: this
+  node for an ordinary per-node domain, the owner for a declared singleton, the
+  sole peer for a domain no local service provides. `providersOf(tool=…)` (also
+  `awm peer providers`) reports the valid providers and which is the default.
+  Peer-only domains appear in the union, so nothing is reachable-but-unnameable.
+  Merging each peer's whole catalog under `<domain>@<peer>` names is what this
+  replaced: it multiplied the tool count by the peer count (29 domains → 82 tools
+  on a two-peer node) while adding no capability, defeating the point of
+  collapsing by domain in the first place. Those names still *dispatch* as a
+  compatibility shim; nothing advertises them.
 - **From a service (service→service):** `gatewayclient.call_peer(peer, service,
   fn, args)` — e.g. `ssh` → `2fa@mira`. Resolves the peer via the local gateway,
   fetches the bearer over SSH, POSTs `{edge}/svc/{service}/fn/{fn}` over
   CA-verified TLS. `RefCache` keys include the peer so `2fa` and `2fa@mira` never
-  collide.
+  collide. Unchanged — the `@` form remains the service-side spelling.
+
+### Who provides what — and why the gateway still never relays
+
+`peers.py` is the address book; `peer_catalog.py` is the capability half, holding
+which domains each peer exposes. It is filled by a **background sweep** (one
+supervised loop, ~2 min) rather than on demand, because a fetch costs an ssh plus
+a TLS round trip to a host that may be asleep — the old inline-per-listing fetch
+made every `list_tools` pay that. `GET /tools?view=domains&peers=1` therefore
+never waits on a peer, cold cache included. The sweep asks each peer for its
+**local** view (plain `?view=domains`); a peer's own union would carry *its*
+peers, which this node may not have in its book and cannot dial. Peer chaining is
+deliberately not a thing.
+
+Dispatch resolves the target and, for a peer, raises a **redirect carrying that
+peer's edge address** instead of forwarding: the caller dials the peer directly,
+so the invariant that no peer bytes traverse a gateway holds exactly as before —
+handing back an address is the same job `peer_resolve` already does. Only a caller
+that declares it can follow one (`X-Awm-Peer-Redirect`, which just `awm-mcp` sets)
+gets it; anyone else gets `421 Misdirected Request`. A request that cannot be
+honoured **fails loudly** rather than running locally — a silent local fallback is
+precisely the half-route this whole model exists to prevent.
+
+**Which domains are singletons is declared, never inferred from env-var shape.**
+Of the three selectors above only `AWM_TWOFA_PEER` means "the whole domain lives
+elsewhere", and it seeds the table. `AWM_SOCIAL_PEER` does not — `social` runs
+per-node and only individual *accounts* are singular, so re-homing the domain
+would cost the node its own Slack, Gmail and buckets. `AWM_SSH_SLOT_PEER` does not
+— only the arbiter *role* is fleet-global, not the `ssh` service every node needs
+locally. Both keep a local default with the peer available as an override.
+`AWM_DOMAIN_HOME_<domain>=<peer>` declares a future singleton without a code
+change. A declared singleton has exactly **one** valid provider, not "local plus
+the owner": two nodes each treating themselves as valid for one external resource
+is the failure documented below — two listeners spending one Duo budget, two
+logins on one Discord token.
 
 ## Cross-peer streaming
 
@@ -162,6 +206,36 @@ only on the next reconnect. Consumers that need indefinite liveness wrap
 `subscribe_peer` in their own reconnect loop (as the `/approve` listeners do) —
 `subscribe_peer` itself keeps single-connection semantics plus the one
 credential-refresh retry.
+
+## Cross-peer bytes
+
+The third transport. Neither of the first two can carry a file: `call_peer` is
+JSON and fully buffered, `subscribe_peer` discards binary frames outright. So a
+verb that produces a file returns the file's **address on the node that ran it**,
+and the caller pulls the bytes down separately.
+
+That address is the serving node's `fileviewer` static mount (`/files/<abs
+path>`), which every node registers and `httpsfront` fronts as a catch-all — the
+peer bearer authenticates there exactly as it does on `/svc/*`, so no gateway or
+edge change was needed here either. `gatewayclient.fetch_peer_file(peer, url)`
+resolves the edge, fetches the bearer over ssh, GETs over CA-verified TLS with
+the same one-shot 401 refetch, and **streams** to a local temp dir. The URL must
+be origin-relative and redirects are not followed: the peer names the path, this
+side names the host, so a reply can never aim a credentialed GET elsewhere.
+
+Two things to know before returning a file from a service:
+
+- **A path in a reply is a lie the moment the call is borrowed.** `social`'s
+  `download_attachments` reported success and handed back a path on *mira*;
+  callers on other nodes could never open it. Return `url` beside `path` (see
+  `awm/services/social/awm/social/attachments.py`), and the MCP proxy
+  (`gateway/peer_files.py`, shared by both proxy implementations) rewrites
+  `path` to a local copy for any peer-routed reply — with a named `error` and
+  `path: null` when it cannot, never a foreign path left in place.
+- **The mount is denylist-masked and a masked file 404s exactly like a missing
+  one.** `*.pem`, `*.key`, `*.token`, `credentials`, `secrets/**` and friends are
+  unreachable by design; that is why the 404 message names both causes rather
+  than reporting a bare status.
 
 ### Selecting local-or-peer — one branch, node-level config
 
@@ -314,7 +388,7 @@ beats accepting it blind on the new one.
 ## TLS
 
 Peer edges present certs signed by the shared **remote-audio root CA** (the same
-root `mic`/`httpsfront` already use). Cross-peer TLS is **CA-verified, never
+root `httpsfront` already uses). Cross-peer TLS is **CA-verified, never
 `verify=False`** — a bearer over an unverified connection could be captured. The
 CA path is `AWM_PEER_CA` / `REMOTE_AUDIO_CA_DIR` / `~/.config/remote-audio/ca/
 ca.pem`; if it is absent the call raises loudly rather than falling back to
@@ -335,10 +409,11 @@ minted their own leaf. That is not urgent (they hold the *same* root), but it me
 either could re-mint the fleet root if its `ca.pem` were ever lost, so the goal is
 one key-holder and the rest trust consumers.
 
-`mic` keeps its own copy of that code, shares the root, and is **enabled by default
-on every node** — so left unfixed it would win the boot race, put a key back, and
-swap the root before httpsfront's guard ever ran. A test in `mic`'s suite reads both
-files and fails if the predicate diverges.
+`mic` used to keep its own copy of that code and is **enabled by default on every
+node**, so it could win the boot race, put a key back, and swap the root before
+httpsfront's guard ever ran. Its copy is gone: mic's page and audio moved onto the
+hub behind httpsfront, so it mints nothing. `httpsfront` is now the only service
+that touches the CA, and a test in its suite fails if a second copy reappears.
 
 ## Singletons vs per-node services
 
@@ -358,6 +433,16 @@ files and fails if the predicate diverges.
   are oblivious. Whether a shared account tolerates concurrent logins is the
   platform's answer, not ours — Discord does not, which is why the flag is
   per-account and opt-in rather than inferred.
+- **A node with no local install of a per-node service borrows the whole
+  domain.** That is a fact about the node, not about the service. altair runs no
+  `social` — no `social.toml`, no accounts — so with two peers advertising it the
+  catalog resolved `social` as `ambiguous` and every call had to name a peer by
+  hand. `AWM_DOMAIN_HOME_social=mira` in altair's `.awm/env` makes it a declared
+  singleton *there*: one provider, one default, no `peer` argument. Node-local
+  and deliberately not fleet state — capella, which does run `social`, must never
+  get it, or it loses its own accounts. Note that this and `AWM_SOCIAL_PEER` are
+  independent: the latter tells *services* on this node where to send Discord
+  traffic, the former tells the *catalog* where an agent's call lands.
 - **Everything else is per-node** (local resource or node-owned state): visible
   on both, calls default local, nothing synced.
 
