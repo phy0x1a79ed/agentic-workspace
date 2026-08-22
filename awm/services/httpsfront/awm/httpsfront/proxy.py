@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -45,7 +46,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages
+from awm.httpsfront import pages, store
 from awm.httpsfront.auth import COOKIE_NAME, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -61,6 +62,8 @@ _HOP = {
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 
 _ALL_METHODS = _METHODS  # alias for route registration clarity
+
+_PEER_NAME = socket.gethostname().split(".")[0].title()
 
 
 def _origin_override(app) -> str | None:
@@ -204,7 +207,7 @@ async def _whoami(request: Request) -> Response:
 
 async def _root(request: Request) -> Response:
     """Authenticated landing page at ``/`` — a dynamic index of ``/ui/*`` pages
-    pulled from the gateway registry."""
+    pulled from the gateway registry, tagged and filterable via ``store``."""
     ok, refreshed = await _authenticate(request)
     if not ok:
         return _deny(request)
@@ -217,11 +220,84 @@ async def _root(request: Request) -> Response:
             services = (r.json() or {}).get("services", [])
     except Exception as exc:  # noqa: BLE001 — degrade to an empty index
         log.debug("landing: could not fetch registry: %s", exc)
-    resp = HTMLResponse(pages.landing_page(services))
+    dao = store.LandingDAO()
+    page_names = [str(s.get("name", s.get("prefix", ""))) for s in services]
+    tags_by_page = dao.tags_by_page(page_names)
+    tag_counts = dao.all_tag_counts()
+    selected = dao.selected_tags()
+    resp = HTMLResponse(
+        pages.landing_page(services, tags_by_page, tag_counts, selected, _PEER_NAME)
+    )
     if refreshed:
         _set_session_cookie(resp, refreshed,
                             int(await app.state.gate.session_ttl_seconds()))
     return resp
+
+
+async def _landing_add_tag(request: Request) -> Response:
+    """``POST /__landing/tags`` — body ``{page, tag}``. Returns the page's
+    updated tag list plus the refreshed global tag counts."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    tag = str((data or {}).get("tag") or "").strip()
+    if not page or not tag:
+        return JSONResponse({"error": "page and tag are required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.add_tag(page, tag)
+    return JSONResponse({
+        "tags": dao.tags_for_page(page),
+        "tag_counts": dao.all_tag_counts(),
+    })
+
+
+async def _landing_remove_tag(request: Request) -> Response:
+    """``DELETE /__landing/tags`` — body ``{page, tag}``. Returns the page's
+    updated tag list plus the refreshed global tag counts."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    tag = str((data or {}).get("tag") or "").strip()
+    if not page or not tag:
+        return JSONResponse({"error": "page and tag are required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.remove_tag(page, tag)
+    return JSONResponse({
+        "tags": dao.tags_for_page(page),
+        "tag_counts": dao.all_tag_counts(),
+    })
+
+
+async def _landing_select_filter(request: Request) -> Response:
+    """``POST /__landing/filter`` — body ``{tag}``. Selects ``tag`` as a filter."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    tag = str((data or {}).get("tag") or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.select_tag(tag)
+    return JSONResponse({"selected_tags": dao.selected_tags()})
+
+
+async def _landing_deselect_filter(request: Request) -> Response:
+    """``DELETE /__landing/filter`` — body ``{tag}``. Deselects ``tag``."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    tag = str((data or {}).get("tag") or "").strip()
+    if not tag:
+        return JSONResponse({"error": "tag is required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.deselect_tag(tag)
+    return JSONResponse({"selected_tags": dao.selected_tags()})
 
 
 async def _http_proxy(request: Request) -> Response:
@@ -462,6 +538,11 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     if landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
         routes.append(Route("/", _root, methods=["GET"]))
+        # Tag/filter endpoints backing the landing page's tagging UI.
+        routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
+        routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
+        routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
+        routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [

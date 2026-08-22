@@ -93,6 +93,30 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
         },
         {
+            "name": "model",
+            "tool": "dsh_model",
+            "description": (
+                "The default model new sessions start on. With no arguments, "
+                "report the current selection and the route's catalog. Given a "
+                "model id, select it — the harness watches its settings "
+                "document, so this takes effect without a restart. This exists "
+                "because the harness's own Settings UI is loopback-only: a "
+                "browser on the mesh gets an in-memory settings mirror and the "
+                "Models page reports that settings are unavailable."
+            ),
+            "params": [
+                {"name": "model", "type": "string",
+                 "description": "Model id to select. Omit to report only."},
+                {"name": "declare", "type": "boolean",
+                 "description": "Also add the id to the route's catalog. Needed "
+                                "for a model the route does not yet advertise."},
+                {"name": "reasoning", "type": "string",
+                 "description": "Reasoning effort to set alongside the model. "
+                                "Omit to keep whatever is already selected."},
+            ],
+            "timeout": 60,
+        },
+        {
             "name": "logs",
             "tool": "dsh_logs",
             "description": "Tail the harness's stdout/stderr log.",
@@ -137,6 +161,23 @@ async def _h_url(args: dict) -> dict:
     return {"url": front.origin(), "note": "requires an awm session"}
 
 
+def _model(args: dict) -> dict:
+    """Report or set the default model. Runs on a worker thread (file I/O + lock)."""
+    model = (args.get("model") or "").strip()
+    if not model:
+        doc = settings.read_document()
+        return {"selection": settings.selection(doc),
+                "models": settings.declared_models(doc),
+                "settings": str(harness.SETTINGS_FILE)}
+    return settings.set_default_model(
+        model, declare=bool(args.get("declare")),
+        reasoning=(args.get("reasoning") or "").strip() or None)
+
+
+async def _h_model(args: dict) -> dict:
+    return await asyncio.to_thread(_model, args)
+
+
 async def _h_logs(args: dict) -> dict:
     tail = int(args.get("tail") or 200)
     return {"tail": tail, "log": await asyncio.to_thread(SUPERVISOR.logs, tail)}
@@ -148,6 +189,7 @@ HANDLERS = {
     "stop": _h_stop,
     "restart": _h_restart,
     "url": _h_url,
+    "model": _h_model,
     "logs": _h_logs,
 }
 

@@ -49,6 +49,12 @@
     if (st?.front.url) window.open(st.front.url, '_blank');
   }
 
+  async function chooseModel(event: Event) {
+    const next = (event.currentTarget as HTMLSelectElement).value;
+    if (!next || next === modelId) return;
+    await act('model', () => api.setModel(next));
+  }
+
   async function toggleLog() {
     showLog = !showLog;
     if (showLog) log = (await api.logs(200)).log;
@@ -66,7 +72,12 @@
   // front in front of it is serving. Any one missing and the button lies.
   const reachable = $derived(!!h?.listening && !!front?.serving);
   const route = $derived(h?.model_route ?? null);
-  const routable = $derived(!!route?.provider_declared && !!route?.key_available);
+  const routable = $derived(
+    !!route?.provider_declared && !!route?.key_available && !!route?.default_model_ours,
+  );
+  // `default_model` is `<provider>/<model>` for display; the select needs the
+  // model id alone, which is everything after the first slash.
+  const modelId = $derived(route?.default_model?.split('/').slice(1).join('/') ?? '');
   const uptime = $derived(
     h?.uptime_s != null ? `${Math.floor(h.uptime_s / 60)} min` : null,
   );
@@ -93,8 +104,8 @@
   {#if !routable && route}
     <p class="warn">
       No usable model route: {route.provider_declared ? '' : 'no provider declared; '}
-      {route.key_available ? '' : `no key at ${route.key_source}`}. The GUI will
-      load with an empty model picker.
+      {route.key_available ? '' : `no key at ${route.key_source}; `}
+      {route.default_model_ours ? '' : `default model is ${route.default_model}`}.
     </p>
   {/if}
 
@@ -145,7 +156,25 @@
         <li data-ok={route?.key_available}>
           key available as <span class="dim">{route?.key_env}</span>
         </li>
+        <li data-ok={route?.default_model_ours}>
+          default model
+          <select value={modelId} onchange={chooseModel} disabled={!!busy}>
+            {#each route?.models ?? [] as id}<option value={id}>{id}</option>{/each}
+            {#if modelId && !(route?.models ?? []).includes(modelId)}
+              <option value={modelId}>{modelId} (not on this route)</option>
+            {/if}
+          </select>
+        </li>
       </ul>
+      <p class="hint">
+        Changing it applies immediately — the harness watches its settings file —
+        and affects sessions started afterwards. It lives here because the
+        harness's own <strong>Settings</strong> pages are loopback-only: they
+        decide from the page's hostname, so on a mesh address they report
+        "settings are unavailable in this browser". For the full Settings UI,
+        point a local relay at this host and open it on 127.0.0.1 — the
+        certificate already covers that name.
+      </p>
       <p class="hint">
         The key is read from {route?.key_source} at launch and passed to the
         harness as an environment variable. It is never written to settings.
@@ -184,6 +213,11 @@
   button.primary {
     width: 100%; padding: 0.7rem; font-weight: 600;
     background: var(--accent, #2f6fed); border-color: transparent; color: #fff;
+  }
+  select {
+    font: inherit; padding: 0.15rem 0.3rem; border-radius: 5px;
+    border: 1px solid var(--border, #3a3a3a);
+    background: var(--surface, #1e1e1e); color: inherit; max-width: 100%;
   }
   .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 

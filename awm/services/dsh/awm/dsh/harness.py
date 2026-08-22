@@ -39,6 +39,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from awm.config import AWM_DIR, WORKSPACE_ROOT
 
 log = logging.getLogger("awm.dsh.harness")
@@ -76,6 +78,14 @@ AUTH_JSON = Path(os.environ.get("DSH_AUTH_JSON")
 #: The provider id the settings file declares, and the env var it points at.
 PROVIDER_ID = "openrouter"
 API_KEY_ENV = "OPENROUTER_API_KEY"
+
+#: Settings sections are keyed by the *plugin id* in the composed profile, which
+#: is where these two names come from — ``dsh --profile web --dump-config``
+#: lists them. Guessing either produces a file the harness reads and ignores.
+#: They live here rather than in ``settings`` so this module can report on the
+#: document without importing the module that writes it.
+PLUGIN_KEY = "llm-pi-ai"
+DEFAULT_MODEL_KEY = "agent-default-model"
 
 
 def installed() -> bool:
@@ -179,16 +189,33 @@ class Supervisor:
             }
 
     def route_state(self) -> dict[str, Any]:
-        """Whether the model route is actually usable, in its two separate halves.
+        """Whether the model route is usable, in the three parts that can fail.
 
-        A declared provider with no key behind it and a key with no provider
-        declared fail the same way in the GUI — an empty model picker — so they
-        are reported apart.
+        A declared provider with no key behind it, a key with no provider
+        declared, and a working provider the default selection does not point
+        at all present in the GUI the same way — nothing answers — so they are
+        reported apart. The last is the easiest to miss: the profile ships a
+        DeepSeek-direct default, and leaving it selected fails every request
+        against a credential this workspace does not hold.
         """
+        try:
+            doc = yaml.safe_load(SETTINGS_FILE.read_text()) or {}
+        except (OSError, ValueError, yaml.YAMLError):
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        providers = ((doc.get(PLUGIN_KEY) or {}).get("providers") or {})
+        selected = doc.get(DEFAULT_MODEL_KEY) or {}
+        catalog = [m.get("id") for m in
+                   ((providers.get(PROVIDER_ID) or {}).get("models") or [])
+                   if m.get("id")]
         return {
             "settings": str(SETTINGS_FILE),
-            "provider_declared": SETTINGS_FILE.is_file()
-            and PROVIDER_ID in SETTINGS_FILE.read_text(),
+            "provider_declared": PROVIDER_ID in providers,
+            "models": catalog,
+            "default_model": (f"{selected.get('provider')}/{selected.get('model')}"
+                              if selected else None),
+            "default_model_ours": selected.get("provider") == PROVIDER_ID,
             "key_env": API_KEY_ENV,
             "key_available": openrouter_key() is not None,
             "key_source": str(AUTH_JSON),

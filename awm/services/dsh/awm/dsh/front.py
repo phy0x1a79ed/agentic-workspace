@@ -18,16 +18,21 @@ bridge forwards no headers at all. A dedicated front on its own port is the
 design, not a shortcut around one. Don't re-derive this.
 
 **Why the Origin rewrite.** Every ``/api`` request passes a browser-trust fence
-in the harness that compares ``Origin`` against ``Host`` and demands they match,
-and its privileged plane — settings, credentials, the workspace picker — is
-additionally pinned to a *loopback* ``Host`` with an empty trust list. httpsfront
-drops the inbound ``Host`` so httpx derives it from the upstream URL, which is
-what makes the harness see a loopback ``Host`` and open that plane remotely with
-no ``--trusted-host`` grant and no weakening of its own posture. It forwards
-``Origin`` verbatim, though, which leaves the fence comparing a mesh origin to a
-loopback host — every call 403s. ``rewrite_origin=True`` closes exactly that gap,
-on the WebSocket path as well as the HTTP one; a rewrite on HTTP alone yields a
-GUI that loads and then silently never streams.
+in the harness: the ``Host`` must be loopback or a ``--trusted-host`` grant, and
+a present ``Origin`` must equal it. httpsfront drops the inbound ``Host`` so
+httpx derives it from the upstream URL, which satisfies the first half with no
+grant and no weakening of the harness's own posture. It forwards ``Origin``
+verbatim, though, which leaves the fence comparing a mesh origin to a loopback
+host — every call 403s, handshakes included. ``rewrite_origin=True`` closes
+exactly that gap, on the WebSocket path as well as the HTTP one; a rewrite on
+HTTP alone yields a GUI that loads and then silently never streams.
+
+**What the rewrite does not buy.** The fence is a server check. The harness's
+*client* independently tests ``isLoopbackHostname(location.hostname)`` to decide
+whether its settings mirror is host-backed or in-memory, so on a mesh address
+the Settings pages report that settings are unavailable. That is ``location``,
+not a header; nothing here reaches it. See ``INSTALL.md`` — the model route,
+which is what anyone needs from that page, is a verb instead.
 """
 
 from __future__ import annotations
