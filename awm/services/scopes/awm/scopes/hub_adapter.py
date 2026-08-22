@@ -41,6 +41,7 @@ from awm.scopes.operations.scope_channel import (
     SCOPE_CHANNEL_HANDLERS,
 )
 from awm.scopes.operations.projects import PROJECT_MANIFEST_FUNCTIONS, PROJECT_HANDLERS
+from awm.scopes.operations.goals import GOAL_MANIFEST_FUNCTIONS, GOAL_HANDLERS
 
 log = logging.getLogger("awm.scopes.hub_adapter")
 
@@ -220,6 +221,7 @@ API_MANIFEST: dict[str, Any] = {
         _IDENTITY_FUNCTIONS
         + SCOPE_MANIFEST_FUNCTIONS
         + SCOPE_CHANNEL_MANIFEST_FUNCTIONS
+        + GOAL_MANIFEST_FUNCTIONS
         + PROJECT_MANIFEST_FUNCTIONS
     ),
     "emitters": [
@@ -247,6 +249,7 @@ HANDLERS: dict[str, Any] = {
     **_IDENTITY_HANDLERS,
     **SCOPE_HANDLERS,
     **SCOPE_CHANNEL_HANDLERS,
+    **GOAL_HANDLERS,
     **PROJECT_HANDLERS,
 }
 

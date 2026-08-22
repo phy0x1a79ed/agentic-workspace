@@ -31,7 +31,7 @@ converted keep a plain `.awm/data` symlink to `data/<project>/`, shared by every
 scope. `scope_data_status project=<p> scope=<s>` reports which. See
 WORKSPACE.md § *Data*.
 
-For end-of-session logging, follow `skill_get path="awm/debrief.md"`.
+For end-of-session logging, run the native `debrief` skill (`~/.claude/skills/debrief/`).
 
 ## List
 

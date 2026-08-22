@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -36,10 +36,17 @@ log = logging.getLogger("awm.reflection.pending")
 # on a workspace being configured.
 PENDING_DIR: Optional[Path] = None
 
-# A promise older than this is not worth keeping: the watcher's own hard cap is
-# 900s, so anything past it would have given up on its own long ago, and
-# replaying it would resume a session that has since moved on by itself.
-MAX_AGE_MS = 20 * 60 * 1000
+# Age is worth a log line and nothing more. A promise is kept for exactly as long
+# as the session it belongs to is alive and still owed one, which is the question
+# that actually matters — and it is asked of the process, not of the clock.
+#
+# There used to be a hard cutoff here, on the theory that a watcher past its own
+# 900s cap had given up anyway. That theory assumed a watcher was alive to give
+# up, which is false in the one case replay exists for: a service down longer
+# than the cutoff came back and binned promises nobody had ever waited on. It is
+# doubly wrong now that a resume is *held* rather than forced into a busy session
+# — a long-held promise is the mechanism working, not a stale record.
+OLD_ENOUGH_TO_MENTION_MS = 20 * 60 * 1000
 
 
 def dir_path() -> Path:
@@ -61,6 +68,32 @@ class Pending:
     injected_at_ms: int
     name: Optional[str] = None
     hosting: str = ""
+    # Why this promise is still here. Written every time a round of waiting ends
+    # without the resume landing, so that `reflection(verb="pending")` answers
+    # "what is it waiting for" and not only "how long has it been".
+    holds: int = 0
+    last_outcome: str = ""
+    # How many times the session has been asked to bring its turn to a close so
+    # that the command it is holding can run. Counted on the promise rather than
+    # in the watcher thread because the cap has to survive a restart: a session
+    # that has already been asked three times should not be asked three more
+    # every time this service is respawned.
+    nudges: int = 0
+
+
+def held(pending: Pending, outcome: str) -> Pending:
+    """The same promise, one round older, with ``outcome`` as its reason.
+
+    ``injected_at_ms`` deliberately does not move: it is the watcher's reference
+    for "the session reacted after this moment", and refreshing it would make the
+    next wait sit out its cap waiting for a reaction that already happened.
+    """
+    return replace(pending, holds=pending.holds + 1, last_outcome=outcome)
+
+
+def nudged(pending: Pending) -> Pending:
+    """The same promise, with one more pause request against it."""
+    return replace(pending, nudges=pending.nudges + 1)
 
 
 def _path(repl_pid: int) -> Path:
@@ -95,14 +128,21 @@ def clear(repl_pid: int) -> None:
         pass
 
 
-def load_all(*, now_ms: Optional[int] = None) -> list[Pending]:
+def load_all(*, now_ms: Optional[int] = None, proc_start=None) -> list[Pending]:
     """Every promise still worth keeping, clearing the ones that are not.
 
-    Unreadable, malformed, and stale records are removed here rather than left to
-    accumulate: this directory is swept once per service boot and nothing else
-    ever reads it, so a record that survives one sweep unexplained would survive
-    forever.
+    Worth keeping means the session is still there: its pid is live and started
+    when the promise says it did. That is the fail-closed test — pids are
+    recycled, and a promise replayed against whatever inherited the number would
+    type into a stranger — and it is the only test. Age is logged, never acted
+    on.
+
+    Unreadable and malformed records are removed here rather than left to
+    accumulate: nothing else ever sweeps this directory, so a record that
+    survives one pass unexplained would survive forever.
     """
+    if proc_start is None:
+        from awm.reflection.session_target import _proc_start as proc_start
     now = now_ms if now_ms is not None else int(time.time() * 1000)
     out: list[Pending] = []
     try:
@@ -121,6 +161,9 @@ def load_all(*, now_ms: Optional[int] = None) -> list[Pending]:
                 injected_at_ms=int(data["injected_at_ms"]),
                 name=data.get("name"),
                 hosting=str(data.get("hosting") or ""),
+                holds=int(data.get("holds") or 0),
+                last_outcome=str(data.get("last_outcome") or ""),
+                nudges=int(data.get("nudges") or 0),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning("reflection: discarding unreadable pending record %s: %s",
@@ -130,12 +173,25 @@ def load_all(*, now_ms: Optional[int] = None) -> list[Pending]:
             except OSError:
                 pass
             continue
-        if now - item.injected_at_ms > MAX_AGE_MS:
-            log.info("reflection: pending resume for session %s is %ss old; "
-                     "dropping it rather than resuming a session that has moved "
-                     "on", item.name or item.session_id,
-                     (now - item.injected_at_ms) // 1000)
+        live = proc_start(item.repl_pid)
+        if live is None:
+            log.info("reflection: session %s (pid %s) is gone; dropping the "
+                     "resume it was owed", item.name or item.session_id,
+                     item.repl_pid)
             clear(item.repl_pid)
             continue
+        if item.proc_start and item.proc_start != live:
+            log.warning("reflection: pid %s was recycled since its resume was "
+                        "promised (started %s, now %s); dropping it rather than "
+                        "injecting into whatever holds that pid now",
+                        item.repl_pid, item.proc_start, live)
+            clear(item.repl_pid)
+            continue
+        age_ms = now - item.injected_at_ms
+        if age_ms > OLD_ENOUGH_TO_MENTION_MS:
+            log.info("reflection: session %s has been owed a resume for %ss (%s "
+                     "round(s) of holding, %s pause request(s); last: %s)",
+                     item.name or item.session_id, age_ms // 1000, item.holds,
+                     item.nudges, item.last_outcome or "still waiting")
         out.append(item)
     return out
