@@ -1,10 +1,51 @@
 # AWM runtime state
 .awm/
 
+# Per-service interpreter sidecar baked by awm/gateway/install.sh (machine-specific)
+awm/services/*/.runtime-env
+
+# Per-worktree dev sandbox (lives at awm/gateway/dev/): env override + the
+# generated per-sandbox MCP config symlink. State dirs (.awm/, data/, projects/)
+# are covered by the global patterns below.
+awm/gateway/dev/.env
+awm/gateway/dev/.mcp.json
+
+# Per-host orientation symlink. AGENTS.md is the canonical tracked source;
+# CLAUDE.md is a host-local symlink to it (see .awm/context.md for the
+# per-scope override layer).
+CLAUDE.md
+
+# Machine identity — per-host; see AGENTS.md
+NAME.md
+
 # Workspace runtime directories (not tracked)
 data/
-main/
-repos/
+projects/
+# Per-task workspace units (workspace service execution sandboxes — gitignored,
+# the DAG-node analog of projects/).
+tasks/
+
+# One-off sandboxes (bioinformatics run outputs, etc.) and pre-collapse layout
+# leftovers — never tracked. Both were untracked-but-unignored, so a `git add -A`
+# would have pushed them (packages/ is superseded by awm/pages/ + awm/services/;
+# the packages/**/dist/ rule below is now subsumed by this).
+scratch/
+packages/
+
+# SvelteKit static build output — registered with the hub via
+# `awm hub register --dir build/`, not committed.
+build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
+# npm workspace artifacts
+# package-lock.json (root + frontend/) is tracked authoritatively so a stale
+# untracked copy can't block dev's next FF — see session #334.
+node_modules/
+packages/**/dist/
+# Post-collapse layout: pages build to awm/pages/<name>/dist/ (registered with
+# the hub via `awm packages sync`, not committed).
+awm/pages/*/dist/
 
 # Python
 __pycache__/
@@ -32,3 +73,5 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+secrets

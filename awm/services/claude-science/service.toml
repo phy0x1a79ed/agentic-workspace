@@ -1,0 +1,9 @@
+# This service bootstraps only on a gateway whose AWM_PROFILES includes one of
+# these (an explicit `awm services enable` still overrides).
+#
+# Gated because it wraps a 160 MB binary and a ~6 GB data directory a node has
+# to be provisioned for. On a node without them the service would still register
+# and report "binary absent" forever — correct, but noise in `awm services
+# list`. The gate is how a node volunteers, not how the fleet elects one:
+# deployments are per-node and wholly independent, sharing no state.
+profiles = ["claude-science"]

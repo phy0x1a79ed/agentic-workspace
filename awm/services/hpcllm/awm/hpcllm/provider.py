@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from awm.hpcllm.cluster import ClusterConfig
+from awm.hpcllm.models import ModelSpec
+
+CONTAINER_SIF = "llamacpp.sif"
+
+
+def build_sbatch(serve_id: str, model: ModelSpec, cfg: ClusterConfig,
+                 hours: int, gpus: int, cpus: int, mem: int,
+                 port: int = 8000) -> str:
+    """Generate a self-contained sbatch script for the serve request."""
+
+    model_gguf_path = f"{cfg.project_dir}/models/{model.gguf_filename}"
+    container_path = f"{cfg.project_dir}/containers/{CONTAINER_SIF}"
+    active_dir = f"{cfg.scratch_dir}/active/{serve_id}"
+    log_dir = f"{cfg.scratch_dir}/logs"
+
+    constraint_line = ""
+    if cfg.constraint:
+        constraint_line = f"#SBATCH --constraint={cfg.constraint}"
+
+    partition_line = ""
+    if cfg.partition:
+        partition_line = f"#SBATCH --partition={cfg.partition}"
+
+    # Alliance clusters (fir) require a GPU type in the gres spec.
+    gres = f"gpu:{cfg.gpu_type}:{gpus}" if cfg.gpu_type else f"gpu:{gpus}"
+
+    return f"""\
+#!/bin/bash
+#SBATCH --account={cfg.account}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={cpus}
+#SBATCH --mem={mem}G
+#SBATCH --time={hours}:00:00
+#SBATCH --gres={gres}
+#SBATCH --job-name=hpcllm-{serve_id}
+#SBATCH --output={log_dir}/{serve_id}-%j.out
+#SBATCH --error={log_dir}/{serve_id}-%j.err
+{partition_line}
+{constraint_line}
+
+set -euo pipefail
+
+ACTIVE_DIR="{active_dir}"
+mkdir -p "$ACTIVE_DIR"
+hostname > "$ACTIVE_DIR/hostname"
+echo "running" > "$ACTIVE_DIR/status"
+
+cleanup() {{
+    echo "done" > "$ACTIVE_DIR/status"
+    rm -f "$ACTIVE_DIR/hostname"
+}}
+trap cleanup EXIT
+
+echo "=== stage: copying to SLURM_TMPDIR ==="
+cp {container_path} $SLURM_TMPDIR/llamacpp.sif
+cp {model_gguf_path} $SLURM_TMPDIR/model.gguf
+
+echo "=== stage: loading module ==="
+module purge && module load {cfg.apptainer_module}
+
+echo "=== stage: starting llama-server ==="
+echo "loading" > "$ACTIVE_DIR/status"
+
+apptainer exec --nv --cleanenv \\
+    --home "$SLURM_TMPDIR" \\
+    --env HF_HOME="$SLURM_TMPDIR/hf_cache" \\
+    --env HF_HUB_OFFLINE=1 \\
+    --env TRANSFORMERS_OFFLINE=1 \\
+    --env LD_LIBRARY_PATH=/app \\
+    "$SLURM_TMPDIR/llamacpp.sif" \\
+    /app/llama-server \\
+        --model "$SLURM_TMPDIR/model.gguf" \\
+        --host 0.0.0.0 \\
+        --port {port} \\
+        --n-gpu-layers 999 \\
+        --ctx-size {model.ctx_size} \\
+        --cont-batching \\
+        --alias {model.api_name}
+"""
+
+
+def build_active_dir(cfg: ClusterConfig, serve_id: str) -> str:
+    return f"{cfg.scratch_dir}/active/{serve_id}"
+
+
+def build_scratch_log_dir(cfg: ClusterConfig, serve_id: str) -> str:
+    return f"{cfg.scratch_dir}/logs"
+
+
+def build_remote_scratch_dir(cfg: ClusterConfig, serve_id: str) -> str:
+    return f"{cfg.scratch_dir}/{serve_id}"
+
+
+def build_req_path(cfg: ClusterConfig, serve_id: str) -> str:
+    return f"{cfg.scratch_dir}/{serve_id}/req.sh"

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-compute"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM compute service: a local-compute watchdog. Attributes every process to its owning Claude Code session via CLAUDE_CODE_SESSION_ID, deprioritizes CPU hogs, terminates memory hogs that threaten the box, and tells the responsible agent why — and that the work belongs on remote compute."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/compute/.
+[tool.setuptools.packages.find]
+include = ["awm.compute*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]

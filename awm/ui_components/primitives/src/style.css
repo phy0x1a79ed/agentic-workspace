@@ -1,0 +1,118 @@
+@import './tokens.css';
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.toc {
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+.toc .count {
+  color: var(--text3);
+  font-size: 10px;
+  margin-bottom: 8px;
+}
+.jumps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+.jumps a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  color: var(--text2);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.jumps a:hover {
+  color: var(--text);
+  background: var(--surface3);
+  border-color: var(--border);
+}
+
+.page {
+  overflow-y: auto;
+  scroll-snap-type: y proximity;
+  scroll-behavior: smooth;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.missing {
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  background: color-mix(in oklab, var(--warn) 8%, transparent);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 880px;
+}
+
+.list > .card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 140px;
+  scroll-snap-align: start;
+  scroll-margin-top: 16px;
+}
+.list > .card .name {
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--text2);
+  text-transform: uppercase;
+}
+
+.stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+.stage.row { gap: 8px; flex-direction: row; }
+.stage.col { gap: 8px; flex-direction: column; align-items: stretch; }
+.stage.wrap { flex-wrap: wrap; }
+
+.card-body, .body, .ttip-target {
+  font-family: var(--mono);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ttip-target {
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}

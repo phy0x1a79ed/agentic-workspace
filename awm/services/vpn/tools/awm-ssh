@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# awm-ssh — ssh wrapper for autonomous Duo logins (sockeye, fir).
+#
+# Identical to `ssh` except it (1) arms the right Duo burst on the awm `2fa`
+# service for the target host and (2) installs the awm-duo-askpass helper and
+# forces OpenSSH to consult it, so the Duo keyboard-interactive menu is answered
+# automatically (our 2fa auto-approver device is selected; the burst approves the
+# push). The result: a fully hands-free login.
+#
+#   awm-ssh sockeye 'hostname'   # arms the cwl burst + ensures the UBC VPN exit
+#   awm-ssh fir                  # arms the alliance burst
+#
+# Bare `ssh sockeye` / `ssh fir` are deliberately VANILLA — no burst, no askpass,
+# you tap the phone / pick the Duo option yourself. All the autonomous machinery
+# lives here in the wrapper, not in ~/.ssh/config, so plain ssh is untouched.
+#
+# SSH_ASKPASS_REQUIRE=force is scoped to this process only (not your shell), so
+# your normal interactive `ssh` is unaffected. A burst-arm failure (2fa service
+# down, etc.) never blocks the connect — the bare ssh still runs.
+set -euo pipefail
+
+export SSH_ASKPASS="${AWM_DUO_ASKPASS:-$HOME/.ssh/awm-duo-askpass}"
+export SSH_ASKPASS_REQUIRE=force
+export AWM_DUO_DEVICES="${AWM_DUO_DEVICES:-awm|Mira}"
+
+# Resolve the ssh destination: the first bare (non-option) argument, skipping
+# options and the tokens that value-taking options consume. We only need it to
+# choose which Duo burst to arm, so approximate OpenSSH's grammar — good enough
+# for our host aliases; an unrecognised target simply arms nothing.
+_awm_ssh_target() {
+    local skip=0 a
+    for a in "$@"; do
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
+        case "$a" in
+            -o|-i|-p|-l|-F|-L|-R|-D|-W|-J|-b|-c|-e|-I|-m|-O|-Q|-S|-w|-E)
+                skip=1 ;;          # consumes the next token
+            --) : ;;               # end of options; next bare token is the host
+            -*) : ;;               # a flag (or glued value like -p22) — ignore
+            *) printf '%s\n' "$a"; return 0 ;;
+        esac
+    done
+}
+
+target="$(_awm_ssh_target "$@")"
+host="${target##*@}"   # strip any user@ prefix
+
+# Extra ssh opts we prepend before the user's argv (command-line -o is
+# first-match-wins over ~/.ssh/config).
+extra=()
+
+case "$host" in
+    *sockeye*)
+        # cwl burst + ensure the UBC VPN bounce container/tunnel is up (the
+        # sockeye ProxyCommand bounces through it). Never blocks the connect.
+        "$HOME/.ssh/awm-sockeye-up.sh" || true
+        ;;
+    fir|fir.*)
+        # fir is GUARDED (MFA-lockout risk, #0317299). This wrapper USED TO arm
+        # the alliance burst and add `-o ProxyCommand=none` here, bypassing the
+        # ssh-config guard — which made awm-ssh a breaker-blind way to fire Duo
+        # pushes in a loop. That is exactly what locked the Alliance account
+        # (2026-07-09, a DAG worker looping reconnects). Refuse: the awm ssh
+        # SERVICE is the ONLY sanctioned fir path — its one-strike breaker plus
+        # the awm-duo-askpass push-cap govern every attempt.
+        echo "awm-ssh: refusing direct fir connect — fir is guarded (MFA-lockout risk, #0317299)." >&2
+        echo "Use the ssh service instead:" >&2
+        echo "  awm ssh connect --host fir     # service opens the ControlMaster (breaker-governed)" >&2
+        echo "  ssh fir <cmd>                  # then plain ssh multiplexes over it, zero new auth" >&2
+        exit 3
+        ;;
+esac
+
+exec ssh "${extra[@]}" "$@"

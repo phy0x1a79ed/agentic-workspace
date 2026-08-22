@@ -1,0 +1,448 @@
+"""aiohttp REST + WebSocket server for the mira API daemon.
+
+Runs ON mira. Exposes a clean per-platform API over the awm-network so the awm
+``social`` connectors can act as a thin client:
+
+    GET  /v1/health                      → per-platform target liveness
+    GET  /v1/{platform}/identity         → who the session is logged in as
+    GET  /v1/{platform}/channels[?include_dms=true]  → channels (or, with
+                                                       include_dms, all im/mpim
+                                                       conversations too)
+    GET  /v1/{platform}/messages?channel=&limit=&before=  → history (before = page
+                                                           backwards; Slack only)
+    GET  /v1/{platform}/search?query=&limit=&channel=  → native message search
+                                                        (Teams: best-effort scan)
+    GET  /v1/{platform}/download?channel=&message_id=&idx=  → one message's
+                                       attachments as [{filename,mime,b64}]
+    POST /v1/{platform}/send  {channel,text,thread?}
+    POST /v1/{platform}/open_dm  {user}  → resolve a user (id/name) to a DM channel
+    GET  /v1/events                      → WS; pushes inbound {type:"message", …}
+
+Every route requires ``Authorization: Bearer <token>``. The daemon polls each
+platform on mira (the **inbound watcher**) and pushes new messages to all WS
+clients, so awm-side clients never poll. One :class:`CDPPage` per platform
+(serialised) drives the logged-in Opera tab via in-page fetch.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import logging
+from typing import Any
+
+from aiohttp import web
+
+from mira_api import drivers as drivers_mod
+from mira_api import storage_drivers as storage_mod
+from mira_api.cdp import CDPPage
+
+log = logging.getLogger("mira_api.server")
+
+DEFAULT_POLL_INTERVAL_S = 15.0
+WATCH_HISTORY_LIMIT = 50
+
+
+class Platform:
+    """Live state for one platform: its CDP page, driver, and watcher cursors."""
+
+    def __init__(self, name: str, page: CDPPage, driver: drivers_mod.Driver) -> None:
+        self.name = name
+        self.page = page
+        self.driver = driver
+        self.self_id = ""          # own user id, to drop echoes of our own sends
+        self.baseline: dict[str, str] = {}  # channel_id -> last-seen marker
+        self.seen: set[str] = set()         # process-local message_id dedupe
+        self.unreadable: set[str] = set()   # convs whose history endpoint 404s
+
+
+class MiraAPI:
+    def __init__(
+        self,
+        cdp_http_base: str,
+        platforms: list[str],
+        auth_token: str,
+        *,
+        poll_interval: float = DEFAULT_POLL_INTERVAL_S,
+        storage: list[str] | None = None,
+    ) -> None:
+        self._cdp_http_base = cdp_http_base
+        self._platform_names = platforms
+        self._storage_names = storage or []
+        self._auth_token = auth_token
+        self._poll_interval = poll_interval
+        self._platforms: dict[str, Platform] = {}
+        # Cloud file stores (OneDrive/SharePoint). Like platforms each owns a CDP
+        # page + driver, but there is no inbound watcher — files don't push.
+        self._storage: dict[str, storage_mod.StorageDriver] = {}
+        self._clients: set[web.WebSocketResponse] = set()
+        self._watchers: list[asyncio.Task] = []
+
+    # -- setup --------------------------------------------------------------
+
+    def build_app(self) -> web.Application:
+        app = web.Application(middlewares=[self._auth_mw])
+        app.router.add_get("/v1/health", self._h_health)
+        app.router.add_get("/v1/events", self._h_events)
+        app.router.add_get("/v1/{platform}/identity", self._h_identity)
+        app.router.add_get("/v1/{platform}/channels", self._h_channels)
+        app.router.add_get("/v1/{platform}/messages", self._h_messages)
+        app.router.add_get("/v1/{platform}/search", self._h_search)
+        app.router.add_get("/v1/{platform}/download", self._h_download)
+        app.router.add_post("/v1/{platform}/send", self._h_send)
+        app.router.add_post("/v1/{platform}/open_dm", self._h_open_dm)
+        # Cloud file-store routes (OneDrive/SharePoint), one set per storage name.
+        app.router.add_get("/v1/fs/{name}/ls", self._h_fs_ls)
+        app.router.add_get("/v1/fs/{name}/stat", self._h_fs_stat)
+        app.router.add_get("/v1/fs/{name}/get", self._h_fs_get)
+        app.router.add_get("/v1/fs/{name}/search", self._h_fs_search)
+        app.router.add_post("/v1/fs/{name}/put", self._h_fs_put)
+        app.router.add_post("/v1/fs/{name}/rm", self._h_fs_rm)
+        app.on_startup.append(self._on_startup)
+        app.on_cleanup.append(self._on_cleanup)
+        return app
+
+    async def _on_startup(self, app: web.Application) -> None:
+        for name in self._platform_names:
+            cls = drivers_mod.REGISTRY.get(name)
+            if cls is None:
+                log.error("unknown platform %r; skipping", name)
+                continue
+            page = CDPPage(self._cdp_http_base, cls.target_needle)
+            self._platforms[name] = Platform(name, page, cls(page))
+            self._watchers.append(asyncio.create_task(self._watch(name)))
+            log.info("platform %s initialised (needle %r)", name, cls.target_needle)
+        for name in self._storage_names:
+            scls = storage_mod.STORAGE_REGISTRY.get(name)
+            if scls is None:
+                log.error("unknown storage %r; skipping", name)
+                continue
+            page = CDPPage(self._cdp_http_base, scls.target_needle)
+            self._storage[name] = scls(page)
+            log.info("storage %s initialised (needle %r)", name, scls.target_needle)
+
+    async def _on_cleanup(self, app: web.Application) -> None:
+        for t in self._watchers:
+            t.cancel()
+        for ws in list(self._clients):
+            await ws.close()
+        for p in self._platforms.values():
+            await p.page.close()
+        for s in self._storage.values():
+            await s.page.close()
+
+    # -- auth ---------------------------------------------------------------
+
+    @web.middleware
+    async def _auth_mw(self, request: web.Request, handler) -> web.StreamResponse:
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else ""
+        if not token or not hmac.compare_digest(token, self._auth_token):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return await handler(request)
+
+    def _platform(self, request: web.Request) -> Platform:
+        name = request.match_info["platform"]
+        p = self._platforms.get(name)
+        if p is None:
+            raise web.HTTPNotFound(reason=f"platform {name!r} not configured")
+        return p
+
+    def _storage_driver(self, request: web.Request) -> storage_mod.StorageDriver:
+        name = request.match_info["name"]
+        s = self._storage.get(name)
+        if s is None:
+            raise web.HTTPNotFound(reason=f"storage {name!r} not configured")
+        return s
+
+    # -- REST handlers ------------------------------------------------------
+
+    async def _h_health(self, request: web.Request) -> web.Response:
+        out: dict[str, Any] = {"ok": True, "platforms": {}, "storage": {}}
+        for name, p in self._platforms.items():
+            healthy = await p.page.healthy()
+            out["platforms"][name] = {
+                "target": p.page.target_url, "healthy": healthy,
+                "self_id": p.self_id, "watching": len(p.baseline)}
+        for name, s in self._storage.items():
+            healthy = await s.page.healthy()
+            out["storage"][name] = {
+                "target": s.page.target_url, "healthy": healthy}
+        return web.json_response(out)
+
+    async def _h_identity(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            return web.json_response(await p.driver.identity())
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_channels(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        # ``include_dms=true`` returns the full conversation set (im/mpim too) via
+        # the driver's ``list_conversations`` — the same set the inbound watcher
+        # tails — instead of the channels-only ``list_channels``.
+        include_dms = request.query.get("include_dms", "").lower() in (
+            "1", "true", "yes")
+        try:
+            chans = await (p.driver.list_conversations() if include_dms
+                           else p.driver.list_channels())
+            return web.json_response({"channels": chans})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_open_dm(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        user = body.get("user")
+        if not user:
+            return web.json_response({"error": "user is required"}, status=400)
+        try:
+            return web.json_response(await p.driver.open_dm(user))
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_messages(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        channel = request.query.get("channel", "")
+        if not channel:
+            return web.json_response({"error": "channel is required"}, status=400)
+        limit = int(request.query.get("limit", "20") or 20)
+        before = request.query.get("before") or None
+        try:
+            msgs = await p.driver.fetch_messages(channel, None, limit, before=before)
+            return web.json_response({"messages": msgs})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_search(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        query = request.query.get("query", "")
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+        limit = int(request.query.get("limit", "50") or 50)
+        channel = request.query.get("channel") or None
+        try:
+            msgs = await p.driver.search(query, limit, channel)
+            return web.json_response({"messages": msgs})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_download(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        channel = request.query.get("channel", "")
+        message_id = request.query.get("message_id", "")
+        if not channel or not message_id:
+            return web.json_response(
+                {"error": "channel and message_id are required"}, status=400)
+        idx_raw = request.query.get("idx")
+        idx = int(idx_raw) if idx_raw not in (None, "") else None
+        try:
+            files = await p.driver.download(channel, message_id, idx)
+            return web.json_response({"files": files})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_send(self, request: web.Request) -> web.Response:
+        p = self._platform(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        channel, text = body.get("channel"), body.get("text")
+        if not channel or text is None:
+            return web.json_response(
+                {"error": "channel and text are required"}, status=400)
+        try:
+            sent = await p.driver.send(channel, text, body.get("thread"))
+            return web.json_response({"ok": True, **sent})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    # -- cloud file-store (fs) handlers -------------------------------------
+
+    async def _h_fs_ls(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            return web.json_response(
+                {"entries": await s.ls(request.query.get("path", "") or "")})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_stat(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response({"entry": await s.stat(path)})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_get(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        path = request.query.get("path", "")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            return web.json_response(await s.get(path))
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_put(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path, b64 = body.get("path"), body.get("b64")
+        if not path or b64 is None:
+            return web.json_response(
+                {"error": "path and b64 are required"}, status=400)
+        try:
+            entry = await s.put(path, b64, body.get("mime"))
+            return web.json_response({"entry": entry})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_rm(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        path = body.get("path")
+        if not path:
+            return web.json_response({"error": "path is required"}, status=400)
+        try:
+            await s.rm(path)
+            return web.json_response({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    async def _h_fs_search(self, request: web.Request) -> web.Response:
+        s = self._storage_driver(request)
+        query = request.query.get("query", "")
+        if not query:
+            return web.json_response({"error": "query is required"}, status=400)
+        limit = int(request.query.get("limit", "50") or 50)
+        root = request.query.get("root") or None
+        try:
+            return web.json_response({"entries": await s.search(query, limit, root)})
+        except NotImplementedError as exc:
+            return web.json_response({"error": str(exc)}, status=501)
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"error": str(exc)}, status=502)
+
+    # -- WebSocket fan-out --------------------------------------------------
+
+    async def _h_events(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+        self._clients.add(ws)
+        log.info("ws client connected (%d total)", len(self._clients))
+        try:
+            await ws.send_json({"type": "ready",
+                                "platforms": list(self._platforms)})
+            async for _msg in ws:  # drain client frames (keepalive/subscribe)
+                pass
+        finally:
+            self._clients.discard(ws)
+            log.info("ws client disconnected (%d total)", len(self._clients))
+        return ws
+
+    async def _broadcast(self, payload: dict) -> None:
+        for ws in list(self._clients):
+            if ws.closed:
+                self._clients.discard(ws)
+                continue
+            try:
+                await ws.send_json(payload)
+            except Exception:  # noqa: BLE001
+                self._clients.discard(ws)
+
+    # -- inbound watcher ----------------------------------------------------
+
+    async def _watch(self, name: str) -> None:
+        """Poll one platform and push new inbound messages to WS clients.
+
+        Mirrors the connectors' baseline-then-delta discipline: a conversation
+        seen for the first time is baselined to its latest marker and NOT
+        replayed; only strictly-newer messages on known conversations emit. Own
+        messages (sends echoed back) and non-text events are dropped.
+        """
+        p = self._platforms[name]
+        backoff = 1.0
+        first = True
+        while True:
+            try:
+                if not p.self_id:
+                    ident = await p.driver.identity()
+                    p.self_id = ident.get("id", "") or ""
+                convs = await p.driver.list_conversations()
+                if first:
+                    log.info("%s watcher: %d conversations, poll %.0fs",
+                             name, len(convs), self._poll_interval)
+                    first = False
+                for conv in convs:
+                    cid = conv.get("id", "")
+                    if cid in p.unreadable:
+                        continue
+                    try:
+                        await self._poll_conversation(p, conv)
+                    except Exception as exc:  # noqa: BLE001
+                        # One conversation we can't read (e.g. a Teams team
+                        # channel, served by a different backend than the ng.msg
+                        # chat service) must never stall the whole poll — mark it
+                        # unreadable so we stop retrying it every cycle.
+                        if cid:
+                            p.unreadable.add(cid)
+                        log.debug("%s skip conversation %s: %s", name, cid, exc)
+                backoff = 1.0
+                await asyncio.sleep(self._poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s watcher error (%s); retry in %.1fs",
+                            name, exc, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+
+    async def _poll_conversation(self, p: Platform, conv: dict) -> None:
+        cid = conv.get("id", "")
+        if not cid:
+            return
+        if cid not in p.baseline:
+            latest = await p.driver.fetch_messages(cid, None, 1)
+            p.baseline[cid] = latest[0]["marker"] if latest else ""
+            return
+        msgs = await p.driver.fetch_messages(cid, p.baseline[cid], WATCH_HISTORY_LIMIT)
+        newest = p.baseline[cid]
+        # platform returns newest-first; emit oldest-first
+        for m in sorted(msgs, key=lambda x: x.get("marker", "")):
+            marker = m.get("marker", "")
+            if not marker or marker <= p.baseline[cid]:
+                continue
+            if marker > newest:
+                newest = marker
+            if m.get("sender_id") and m["sender_id"] == p.self_id:
+                continue  # echo of our own send
+            if not m.get("text"):
+                continue
+            mid = m.get("message_id", "")
+            if mid and mid in p.seen:
+                continue
+            if mid:
+                p.seen.add(mid)
+            m["channel_name"] = m.get("channel_name") or conv.get("name", "")
+            await self._broadcast({"type": "message", "message": m})
+        p.baseline[cid] = newest

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-telemetry"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM telemetry: a reusable idempotent event-sync substrate. A service publishes an ordered event stream (append-only table in its OWN db + an in-proc live bus); a third-party client syncs by poll OR live WS, both carrying (seq, id) so the backfill/live overlap dedupes. Pure imported source; persistence is the only awm import; no gateway/config imports."
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/telemetry/.
+[tool.setuptools.packages.find]
+include = ["awm.telemetry*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

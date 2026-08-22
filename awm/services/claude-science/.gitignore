@@ -1,0 +1,9 @@
+# install.sh sidecar (absolute interpreter path; host-specific)
+.runtime-env
+
+# Leaf certs for the two mesh fronts, minted from the shared root CA.
+.certs/
+
+# Host-specific extra SANs (the Windows-side ZeroTier address is invisible from
+# inside WSL, so nothing can enumerate it).
+.sans

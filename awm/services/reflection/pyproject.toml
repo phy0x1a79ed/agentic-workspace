@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-reflection"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM reflection service: let a terminal agent inject slash-commands (e.g. /compact) into its own tmux pane."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/reflection/.
+[tool.setuptools.packages.find]
+include = ["awm.reflection*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "unit: pure unit tests (models, validation, registries)",
+    "reflection: reflection service self-injection",
+]

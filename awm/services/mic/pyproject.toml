@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-mic"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM mic service: remote microphone — a phone browser captures its mic and streams s16le PCM over a direct hub session into a PulseAudio virtmic null-sink, giving the host a microphone."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/mic/.
+[tool.setuptools.packages.find]
+include = ["awm.mic*"]
+namespaces = true

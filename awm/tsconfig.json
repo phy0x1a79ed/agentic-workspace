@@ -1,0 +1,66 @@
+{
+  // Workspace-root TypeScript BASE config for the awm frontend tree.
+  //
+  // This file holds only the shared compiler options. The two leaf configs
+  // that actually select files extend it:
+  //   - tsconfig.components.json  → ui_components/* (the shared, contract-
+  //                                 bearing libraries: @awm/client, @awm/*)
+  //   - tsconfig.pages.json       → pages/* (thin static-bundle mounts)
+  //
+  // Wired behind `npm run typecheck` (see package.json):
+  //   - `tsc -p ui_components/client/tsconfig.json` type-checks the pure-TS
+  //     @awm/client package (the hub client every page/component imports).
+  //   - `svelte-check --tsconfig ./tsconfig.components.json` type-checks the
+  //     .svelte component libraries. This is the GATING surface.
+  //   - `npm run typecheck:pages` is an ADVISORY pass over pages/* (see the
+  //     note in package.json) — pages are thin mounts whose page-local
+  //     `$lib` alias resolution needs Vite, which svelte-check can't load
+  //     under this vite 5.x / @sveltejs/load-config combo.
+  //
+  // Guards SHAPE/CONTRACT drift only — it does NOT catch string-name
+  // mismatches (e.g. a wrong RPC op name passed as a string literal).
+  //
+  // There are no per-unit package.json/vite.config.ts: one root
+  // awm/vite.config.ts resolves `@awm/*` by path alias for the bundler, and
+  // the `paths` below give tsc/svelte-check the same mapping.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["node", "svelte", "vite/client"],
+
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "allowJs": false,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": false,
+    "allowImportingTsExtensions": true,
+    "useDefineForClassFields": true,
+
+    // Resolve workspace `@awm/<name>` imports to each package's source entry,
+    // so `tsc`/`svelte-check` follow cross-package imports without a build.
+    // A glob fallback keeps this resilient to packages that don't exist yet
+    // (e.g. @awm/agent-chat is built in a later wave) — the explicit entries
+    // win for current packages; the glob covers any future ui_components/<x>.
+    "baseUrl": ".",
+    "paths": {
+      "@awm/client": ["./ui_components/client/src/index.ts"],
+      "@awm/primitives": ["./ui_components/primitives/src/index.ts"],
+      "@awm/primitives/*": ["./ui_components/primitives/src/*"],
+      "@awm/stt-composer": ["./ui_components/stt-composer/src/index.ts"],
+      "@awm/stt-telemetry": ["./ui_components/stt-telemetry/src/index.ts"],
+      "@awm/tts-history": ["./ui_components/tts-history/src/index.ts"],
+      "@awm/*": ["./ui_components/*/src/index.ts"]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "game-bot-control",
+  "version": "0.2.0",
+  "title": "Game Bot Control",
+  "author": "awm",
+  "description": "Script-controlled character body for agent play over RCON: spawn, pathfinded move, observe, mine/craft/build/insert/take, cheat-flagged research, and a drainable events buffer. State lives in `storage` so the body survives save/load.",
+  "factorio_version": "2.1",
+  "dependencies": ["base"]
+}

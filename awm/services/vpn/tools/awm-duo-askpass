@@ -1,0 +1,116 @@
+#!/bin/sh
+# awm-duo-askpass — an SSH_ASKPASS helper for autonomous Duo logins (sockeye, fir).
+#
+# OpenSSH calls this with the keyboard-interactive prompt as $1. For a Duo option
+# menu we select the numbered option whose label names one of OUR awm `2fa`
+# auto-approver devices, so the push goes to the device the armed 2fa burst is
+# watching (NOT the user's personal phone). The burst then auto-approves it (~1s).
+#
+# Device markers (Duo display names of our enrolled devices) are configurable via
+# AWM_DUO_DEVICES (an egrep alternation); default covers cwl="awm" + alliance="Mira".
+#
+# FAIL-CLOSED: we answer ONLY when the prompt is a recognized Duo menu AND a
+# numbered option exactly names one of our devices. Any deviation — an
+# unrecognized prompt, or a menu with no option matching our devices — makes us
+# refuse (print nothing, exit non-zero) rather than guessing. Guessing an option
+# is what burns a failed MFA attempt toward provider lockout. On deviation we
+# also drop a marker file (AWM_SSH_ASKPASS_MARKER) so the ssh service's circuit
+# breaker can record "askpass deviation" as the lock reason.
+#
+# GLOBAL PUSH BREAKER (#0317299). Answering the menu is EXACTLY what fires a Duo
+# push, and each push counts toward the provider's consecutive-failure lockout
+# (10 for Alliance). This helper is the ONE chokepoint every AUTONOMOUS push
+# flows through — the ssh service, `awm-ssh`, and any `ssh` with SSH_ASKPASS
+# forced all call it — so the rate cap lives HERE, where no caller can bypass it
+# (unlike the ssh-service one-strike breaker, which `awm-ssh` and raw
+# `ssh -o ProxyCommand=none` sail straight past). We answer at most AWM_DUO_MAX
+# (default 3) times per AWM_DUO_WINDOW (default 600s) PER DEVICE; exceeding it
+# trips a hold that refuses ALL further answers for that device until it
+# auto-clears after AWM_DUO_HOLD_COOLDOWN (default 1800s) or an operator removes
+# the hold file. A refused answer fires NO push, so actual pushes can never
+# exceed the cap — the 10-strike lockout is unreachable from any autonomous loop.
+# A human at a real terminal is untouched: bare `ssh` doesn't force SSH_ASKPASS,
+# so this never runs for an interactive tap.
+prompt="$1"
+markers="${AWM_DUO_DEVICES:-awm|Mira}"
+marker_file="${AWM_SSH_ASKPASS_MARKER:-}"
+
+lockdir="${AWM_DUO_LOCK_DIR:-$HOME/.ssh/awm-duo-locks}"
+max="${AWM_DUO_MAX:-3}"
+window="${AWM_DUO_WINDOW:-600}"
+cooldown="${AWM_DUO_HOLD_COOLDOWN:-1800}"
+
+deviate() {
+  # $1 = short reason. Record it (best-effort) and fail closed.
+  [ -n "$marker_file" ] && printf '%s\n' "$1" >>"$marker_file" 2>/dev/null
+  printf 'awm-duo-askpass: REFUSING — %s. Not answering (fail-closed).\n' "$1" >&2
+  exit 1
+}
+
+# Global per-device push breaker. $1 = device key. Refuses (so NO push fires) if
+# the device is on hold, or if answering would exceed max-per-window; tripping
+# the cap SETS the hold. Returns 0 (caller may answer) only when within budget.
+breaker_check() {
+  dev="$1"
+  mkdir -p "$lockdir" 2>/dev/null
+  # Serialize the read-modify-write against concurrent ssh invocations. The
+  # `{ …; } 2>/dev/null` scopes the redirect to the group so `exec 9>` opens the
+  # lock fd WITHOUT permanently clobbering stderr (deviate's message must survive).
+  if command -v flock >/dev/null 2>&1; then
+    { exec 9>"$lockdir/.$dev.flock"; } 2>/dev/null && flock 9 2>/dev/null || true
+  fi
+  hold="$lockdir/$dev.hold"
+  win="$lockdir/$dev.window"
+  now=$(date +%s)
+
+  if [ -f "$hold" ]; then
+    ht=$(awk 'NR==1{print $1}' "$hold" 2>/dev/null)
+    case "$ht" in
+      ''|*[!0-9]*) ht=0 ;;
+    esac
+    if [ "$((now - ht))" -ge "$cooldown" ]; then
+      rm -f "$hold" "$win" 2>/dev/null   # cooldown elapsed → self-heal
+    else
+      deviate "device '$dev' is on Duo push-hold (auto-clears $((cooldown - (now - ht)))s, or rm $hold)"
+    fi
+  fi
+
+  # Prune the sliding window to entries newer than `window` seconds.
+  cutoff=$((now - window))
+  if [ -f "$win" ]; then
+    awk -v c="$cutoff" '$1 ~ /^[0-9]+$/ && $1 >= c' "$win" >"$win.tmp" 2>/dev/null \
+      && mv "$win.tmp" "$win" 2>/dev/null
+  fi
+  count=0
+  [ -f "$win" ] && count=$(wc -l <"$win" 2>/dev/null | tr -d ' ')
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+
+  if [ "$count" -ge "$max" ]; then
+    printf '%s tripped: %s answered pushes within %ss for %s\n' \
+      "$now" "$count" "$window" "$dev" >"$hold" 2>/dev/null
+    deviate "Duo push rate cap for '$dev' exceeded ($max/${window}s) — hold set ($hold)"
+  fi
+  printf '%s\n' "$now" >>"$win" 2>/dev/null
+}
+
+case "$prompt" in
+  *[Pp]asscode\ or\ option*|*[Dd]uo\ two-factor*|*[Dd]uo\ Push*)
+    line=$(printf '%s\n' "$prompt" \
+        | grep -iE "^[[:space:]]*[0-9]+\..*($markers)" \
+        | head -1)
+    n=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*([0-9]+)\..*/\1/')
+    if [ -n "$n" ]; then
+      # Which enrolled device did the matched option name? → per-device breaker.
+      dev=$(printf '%s\n' "$line" | grep -ioE "($markers)" | head -1 \
+            | tr '[:upper:]' '[:lower:]')
+      [ -n "$dev" ] || dev="unknown"
+      breaker_check "$dev"
+      printf '%s\n' "$n"
+    else
+      deviate "no Duo option matched our devices ($markers)"
+    fi
+    ;;
+  *)
+    deviate "unrecognized prompt (not a known Duo menu)"
+    ;;
+esac

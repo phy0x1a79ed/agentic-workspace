@@ -1,0 +1,199 @@
+"""Static-directory serving for ``kind="static"`` registrations.
+
+Mirrors ``proxy.py`` in role: where ``proxy_http`` forwards a request to a
+registered URL, ``serve_static`` answers it from a registered directory.
+
+The hub uses ``starlette.responses.FileResponse`` for the actual byte
+shipping — we don't mount a ``StaticFiles`` sub-app because the prefix is
+chosen per record at registration time, not at app-construction time.
+
+Canonical paths only: each registered URL maps to a deterministic file
+on disk — the file at that exact path, or the directory's
+``index.html``. No SPA fallback, no ``Accept``-conditional synthesis on
+miss. A registered prefix that wants deep-link refresh must prerender a
+real ``index.html`` at every URL its UI exposes. For SPA-shaped routing
+without per-route prerendering, use ``kind=url`` against a real
+upstream.
+
+Auto-shell exception: if the registered dir has no ``index.html`` and the
+record carries an ``entry``, ``serve_static`` synthesises a minimal ESM
+page **at the prefix root only** so a "naked bundle" (just ``main.js`` ±
+css) is viewable without the scope hand-authoring HTML. This is still
+canonical — the synthesized HTML answers exactly the prefix-root URL.
+"""
+
+from __future__ import annotations
+
+import html
+import logging
+from pathlib import Path, PurePosixPath
+
+from fastapi import Request
+from starlette.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
+
+from awm.gateway.hub.registry import ServiceRecord
+
+log = logging.getLogger("awm.hub.static")
+
+
+async def serve_static(request: Request, rec: ServiceRecord) -> Response:
+    """Resolve the request path against ``rec.static_dir`` and return a Response.
+
+    Path resolution is contained: any target that resolves outside the
+    registered directory is rejected as 404 (no traversal — we don't even
+    distinguish forbidden from missing).
+
+    Canonical-paths contract: the resolved URL maps to one specific file
+    on disk, or 404. The mapping is:
+
+    * URL has a file at that exact path → serve that file.
+    * URL points at a directory that contains ``index.html`` → serve
+      that ``index.html``. This is the universal static-server default
+      ("directory URLs are served by their index file") used by nginx,
+      Apache, GitHub Pages, Netlify, etc.; SvelteKit's adapter-static
+      with ``trailingSlash: 'always'`` emits exactly this layout
+      (``<route>/index.html``) so a deep link to ``/focus`` is answered
+      by ``focus/index.html`` without any ``Accept`` sniffing or shell
+      fallback.
+    * URL points at a directory with no ``index.html``, or at no file
+      at all → 404.
+
+    No ``Accept``-conditional behaviour, no extension sniffing, no
+    fallback to the prefix root's ``index.html`` on miss. The only
+    response that isn't bytes-from-disk is the naked-bundle auto-shell
+    at the prefix root (records carrying an ``entry``).
+    """
+    rel = request.url.path[len(rec.prefix):].lstrip("/")
+    root = Path(rec.static_dir).resolve()
+
+    if rel == "":
+        index = root / "index.html"
+        if index.is_file() and _is_masked(index, root, rec.deny):
+            return PlainTextResponse("not found", status_code=404)
+        served_at_root = index.is_file() or rec.entry
+        # Canonical directory URL: a bare prefix (``/ui/agent``) is the
+        # bundle's directory, so redirect it to the trailing-slash form
+        # (``/ui/agent/``) the same way nginx/Apache/GitHub Pages do. Without
+        # this the browser resolves the bundle's relative ``./assets/...`` refs
+        # against the parent (``/ui/``) and every asset 404s. Only the prefix
+        # root redirects; asset sub-paths stay byte-serves.
+        if served_at_root and not request.url.path.endswith("/"):
+            dest = request.url.path + "/"
+            if request.url.query:
+                dest = f"{dest}?{request.url.query}"
+            return RedirectResponse(dest, status_code=301)
+        if index.is_file():
+            return FileResponse(index)
+        if rec.entry:
+            return HTMLResponse(_render_shell(rec))
+        return PlainTextResponse("not found", status_code=404)
+
+    try:
+        target = (root / rel).resolve()
+    except OSError:
+        return PlainTextResponse("not found", status_code=404)
+    if not _is_within(target, root):
+        return PlainTextResponse("not found", status_code=404)
+    # Mask: a request whose resolved (post-symlink) path matches a deny glob is
+    # 404 — indistinguishable from missing — so a broad mount can hide secrets.
+    # Matched on ``target`` (already resolved), so a symlink to a masked file
+    # cannot slip past by presenting an unmasked request path.
+    if _is_masked(target, root, rec.deny):
+        return PlainTextResponse("not found", status_code=404)
+    if target.is_file():
+        return FileResponse(target)
+    if target.is_dir():
+        index = target / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+    return PlainTextResponse("not found", status_code=404)
+
+
+async def close_ws_unsupported(scope, receive, send) -> None:
+    """Accept + immediately close a WebSocket scope with code 1003.
+
+    Static prefixes have no WS semantics; we accept first so the client
+    sees a clean close rather than a handshake reject."""
+    await send({"type": "websocket.accept"})
+    await send({
+        "type": "websocket.close",
+        "code": 1003,
+        "reason": "static prefix does not accept websocket connections",
+    })
+
+
+def _is_within(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_masked(target: Path, root: Path, deny: tuple[str, ...]) -> bool:
+    """True if ``target`` (already resolved) is hidden by the ``deny`` globs,
+    taken relative to ``root``. Matching uses ``PurePosixPath.full_match`` so
+    ``**`` spans path segments (``**/.ssh/**`` hides ssh keys at any depth)
+    while ``*`` stays within one segment. Matching the *resolved* path is
+    deliberate: a symlink pointing at a masked file resolves to it and is caught
+    here, so the mask can't be bypassed by requesting the link's (unmasked) name.
+
+    Semantics are gitignore's: a leading ``!`` negates (re-exposes), and **the
+    last matching glob wins**. That gives a broad deny an escape hatch for a
+    servable subtree inside an otherwise masked directory, while any
+    secret-shaped glob listed *after* the negation still re-masks. Order is
+    therefore meaningful; keep secret patterns last."""
+    if not deny:
+        return False
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        # Outside the root — _is_within already rejects this, but be defensive.
+        return True
+    pp = PurePosixPath(rel)
+    masked = False
+    for glob in deny:
+        negated = glob.startswith("!")
+        pattern = glob[1:] if negated else glob
+        if pattern and pp.full_match(pattern):
+            masked = not negated
+    return masked
+
+
+def _render_shell(rec: ServiceRecord) -> str:
+    """Render the opinionated ESM shell for a naked component bundle.
+
+    Fixed shape: an empty mount node, optional CSS links, and a module
+    script pointing at ``rec.entry``. Anything fancier (importmaps,
+    multiple entries, framework-specific bootstrap) is handled by the
+    scope shipping its own ``index.html``.
+    """
+    prefix = rec.prefix.rstrip("/")
+    title = html.escape(rec.name)
+    mount = html.escape(rec.mount_id, quote=True)
+    entry_url = f"{prefix}/{rec.entry}" if rec.entry else ""
+    css_links = "\n".join(
+        f'<link rel="stylesheet" href="{prefix}/{html.escape(href, quote=True)}">'
+        for href in rec.css
+    )
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        '<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        f'<title>{title}</title>\n'
+        f'{css_links}\n'
+        "</head>\n"
+        "<body>\n"
+        f'<div id="{mount}"></div>\n'
+        f'<script type="module" src="{html.escape(entry_url, quote=True)}"></script>\n'
+        "</body>\n"
+        "</html>\n"
+    )

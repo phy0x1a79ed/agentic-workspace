@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-config"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM system-wide configuration constants (paths, gateway host/port, idle policy, .awm/env loader)."
+dependencies = [
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/config/.
+[tool.setuptools.packages.find]
+include = ["awm.config*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real docker, or network; excluded from smoke",
+    "unit: pure unit tests (models, validation, registries)",
+    "integration: cross-component integration tests",
+]

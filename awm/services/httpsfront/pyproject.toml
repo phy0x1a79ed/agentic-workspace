@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-httpsfront"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM httpsfront service: a whole-gateway HTTPS front — terminates TLS on an off-host 0.0.0.0 listener and reverse-proxies every HTTP/WebSocket request to the loopback awm gateway, so the entire awm surface (pages, /svc/*, /hub/*) is reachable over one HTTPS origin (the secure context getUserMedia et al. need off-localhost)."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "starlette",
+    "uvicorn",
+    "httpx",
+    "websockets",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/httpsfront/.
+[tool.setuptools.packages.find]
+include = ["awm.httpsfront*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "smoke: fast unit + tiny in-process tests; target <30s, run on every dev iteration",
+    "slow: spawns subprocesses, real docker, or network; excluded from smoke",
+    "unit: pure unit tests (models, validation, registries)",
+    "integration: cross-component integration tests",
+]
