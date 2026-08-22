@@ -2,8 +2,8 @@
 
 Nous Research's [Hermes Agent](https://github.com/NousResearch/hermes-agent) —
 a self-improving CLI agent with a web dashboard — supervised by awm, with its
-GUI mounted on the gateway behind awm's edge session and its inference pointed
-at the same OpenRouter account and model opencode uses on this node.
+GUI on a TLS front behind awm's edge session and its inference pointed at the
+same OpenRouter account and model opencode uses on this node.
 
 Upstream is a git checkout with its own Python venv, its own managed Node, and a
 Vite/React dashboard it builds itself. It is a personal-workstation tool that
@@ -38,48 +38,71 @@ session this arrangement exists to protect. Nothing accepting a TCP connection
 on the port is unambiguous; a slow reply is not. `status` still reports the HTTP
 probe — it is richer — but nothing is ever killed on it.
 
-**Why a gateway `kind=url` mount here, when `claude-science` refuses one.** That
-service's INSTALL.md argues url mounts are unusable, and it is right about its
-own upstream. The three failures it names are the url proxy stripping `Cookie`,
-forwarding *no* headers on a WebSocket upgrade, and comma-collapsing duplicate
-`Set-Cookie`. None of them bind a loopback-bound Hermes dashboard:
+**The dashboard owns an origin; it cannot live under a path prefix.** This is
+the one design constraint the whole shape follows from, and it looks wrong on
+first inspection, so it is worth being precise about.
 
-- on a loopback bind its auth gate is off, and the SPA authenticates with a
-  session token injected into `index.html` — no cookie is involved;
-- its REST calls carry that token in `X-Hermes-Session-Token`, which the proxy
-  passes through; the stripped `Authorization` is unused;
-- its WebSockets carry it as a `?token=` query parameter, which survives a
-  header-less upgrade.
+Upstream *appears* to support subpath mounting. Give it `X-Forwarded-Prefix` and
+it rewrites `index.html`'s asset URLs, rewrites `url()` references inside its
+stylesheets, and publishes `window.__HERMES_BASE_PATH__` for the SPA to prepend
+to `/api/…`. Mount it under a prefix and the shell paints, the sidebar fills in,
+the first route renders. It still does not work: the SPA's *lazy* route chunks
+are fetched by a loader whose asset base was frozen at `/` when the bundle was
+built, so under any prefix each one is requested from the server root. Script
+preloads fail quietly there, but a stylesheet preload is awaited — so the first
+route carrying CSS, which is chat, throws and paints nothing at all.
 
-What *was* missing is the path. The proxy forwards `request.url.path` verbatim
-and the dashboard serves at the root, so `/ui/hermes/api/status` reached it as
-`/ui/hermes/api/status` and 404'd. Hence the registration's `strip_prefix` (see
-`awm/AGENTS.md` § *External registrations*), which peels the mount prefix off
-and sends it back as `X-Forwarded-Prefix`. The dashboard reads exactly that
-header to set `window.__HERMES_BASE_PATH__`, which the SPA prepends to every
-`/api/…` URL it builds. Verified end to end: page load, REST through the prefix,
-the event WebSocket, and the chat tab's PTY echoing keystrokes.
+**A build-time constant is not a header-addressable property.** No gateway flag
+reaches it and no proxy can rewrite around it, so there are exactly two options:
+serve the upstream at a root of its own, or rebuild its bundle. Rebuilding puts
+the fix inside a checkout `hermes update` rewrites in place — with
+`updates.non_interactive_local_changes: stash`, which would silently drop it —
+so it is the front. `dsh` reached the same conclusion about the same class of
+upstream; `claude-science` reached it for different reasons (the url proxy
+strips `Cookie`, forwards no headers on a WebSocket upgrade, and comma-collapses
+`Set-Cookie`). Three services, three routes to one answer. Don't re-derive it.
 
-**Re-check all of that the day the dashboard is bound non-loopback.** At that
-point it fails closed until a password or OAuth provider is configured, and
-starts using cookies — and the claude-science verdict applies again.
+**The Origin rewrite is load-bearing.** The dashboard re-runs its DNS-rebinding
+guard on every WebSocket upgrade, checking `Host` *and* `Origin` against the
+interface it bound. `httpsfront` drops the inbound `Host` so httpx derives a
+loopback one, which satisfies the first half, but forwards `Origin` verbatim —
+leaving the guard holding a mesh origin against a loopback bind, and refusing
+the upgrade. `front.py` passes `rewrite_origin=True` for exactly this. Without
+it the GUI loads perfectly and silently never streams, because every part of
+this dashboard that matters is a WebSocket.
 
 **The dashboard binds loopback and therefore runs with its auth gate off.**
-Everything reaching it comes through the gateway and `httpsfront`, so the awm
-edge session is the real boundary — the same posture as every other awm page.
+Everything reaching it comes through the front, so the awm edge session is the
+real boundary — the same posture as every other awm page. Re-check that the day
+the dashboard is bound non-loopback: at that point it fails closed until a
+password or OAuth provider is configured, and starts using cookies.
 
-## Registrations
+**The leaf is borrowed, never minted.** This node holds `ca.pem` without
+`ca-key.pem` — a deliberate trust *consumer* — so `ensure_certs` validates a
+pre-placed leaf rather than minting a fleet-incompatible root. `front.py` copies
+`httpsfront`'s pair in: the leaf is port-independent and its SAN set already
+covers this host's mesh address, so a second front on a second port needs the
+same pair, not a new one. It looks in the sibling `httpsfront` of its own tree
+first, then in the **canonical** workspace — canonical rather than local because
+a shadow overlay runs against an isolated `.awm-shadow` root that holds no certs
+at all, and reading it leaves the front looping on `TrustConsumerError`.
 
-Two, from one process:
+## What serves what
 
-| kind | name | prefix | what |
-|---|---|---|---|
-| `service` | `hermes` | `/svc/hermes` | the verbs, plus supervision |
-| `url` | `hermes-ui` | `/ui/hermes` | the dashboard, `strip_prefix` on |
+Three things, and only the first two come from this process:
 
-The mount dies with this service; the dashboard does not. Registry records are
-in memory, so a gateway restart drops the mount and the service's lease loop
-puts it back.
+| where | what | who runs it |
+|---|---|---|
+| `/svc/hermes` on the gateway | the verbs, plus supervision | this service |
+| `https://<mesh>:12401/` | the dashboard itself, at its own root | this service's front thread |
+| `/ui/hermes` on the shared edge | the landing page — health, and a link out | the gateway, from `awm/pages/hermes/dist` |
+
+The front dies with this service; the dashboard does not. The landing page is an
+ordinary awm page discovered on disk, so nothing here registers it — and being
+served from the shared edge rather than from the front is what lets it still
+answer when the front is the part that is broken. It reports the dashboard
+process, the front and the model route separately, because those fail
+independently and need different fixes.
 
 `hermes` is already a single token, so the gateway's MCP fold — which splits a
 projected tool name on its *first* underscore — leaves the surface intact:
@@ -171,7 +194,7 @@ dashboard came back.
 | `HERMES_BIN` | `~/.local/bin/hermes` | the launcher to drive |
 | `HERMES_HOME` | `~/.hermes` | config, sessions, skills, logs, the checkout |
 | `HERMES_DASHBOARD_PORT` | `9119` | loopback dashboard port |
-| `HERMES_MOUNT_PREFIX` | `/ui/hermes` | gateway mount prefix |
+| `HERMES_FRONT_PORT` | `12401` | mesh-facing TLS port for the GUI |
 | `HERMES_TRANSIENT_UNIT` | `hermes-dashboard` | transient user unit name |
 | `HERMES_HEALTH_INTERVAL_S` | `20` | supervision loop period |
 | `HERMES_START_TIMEOUT_S` | `180` | how long to wait for the bind |
@@ -183,15 +206,22 @@ would be worse than no service at all.
 ## Verify
 
 ```
-awm hermes status                       # listening, pid, unit, mount, model
-awm services list | grep hermes         # service + mount registrations
-curl -s -o /dev/null -w '%{http_code}\n' $AWM_EDGE_URL/ui/hermes/
+awm hermes status                       # listening, pid, unit, front, model
+awm hermes url                           # the front, the landing page, loopback
+curl -s -o /dev/null -w '%{http_code}\n' $AWM_EDGE_URL/ui/hermes/   # 200 with a session
 
 # the guarantee
 awm hermes status | jq -r .dashboard.pid
 awm gateway restart && sleep 20
 awm hermes status | jq -r .dashboard.pid   # same pid
 ```
+
+**A 200 is not evidence that the GUI works.** The failure this arrangement
+exists to prevent is a route that loads its own chunks and throws — the shell
+still paints and every curl still passes. Open the dashboard in a real browser,
+go to **Chat**, and check that the network log has no 404 and that `/api/ws`,
+`/api/events` and `/api/pty` all reach 101. Two of those three prove the parts
+a curl cannot reach.
 
 ## Not done here
 

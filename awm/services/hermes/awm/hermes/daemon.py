@@ -47,8 +47,8 @@ BIN = Path(os.environ.get("HERMES_BIN") or (Path.home() / ".local" / "bin" / "he
 #: checkout hermes updates in place. Never ours to manage.
 HOME_DIR = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
 
-#: Loopback port for the dashboard. Not a mesh port — the gateway mount owns
-#: the public side.
+#: Loopback port for the dashboard. Not a mesh port — the TLS front owns the
+#: public side.
 PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "9119"))
 
 #: How often the reconcile loop checks the dashboard is still listening.

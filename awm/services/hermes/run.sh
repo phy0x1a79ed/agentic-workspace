@@ -9,8 +9,9 @@
 # This service owns two things the gateway registration does not carry:
 #   - the Hermes Agent dashboard, a foreign process that is *adopted* rather
 #     than parented (see awm.hermes.daemon for why),
-#   - a kind=url mount at /ui/hermes putting its GUI behind awm's edge session.
-# The mount dies with this process; the dashboard deliberately does not, so an
+#   - a TLS front on the mesh serving its GUI at the root of its own origin,
+#     behind awm's edge session (see awm.hermes.front for why not a mount).
+# The front dies with this process; the dashboard deliberately does not, so an
 # awm deploy never interrupts a live chat session.
 #
 # Two launch modes, branched on the dev signal DEV_PYTHONPATH:
