@@ -225,8 +225,12 @@ async def _root(request: Request) -> Response:
     tags_by_page = dao.tags_by_page(page_names)
     tag_counts = dao.all_tag_counts()
     selected = dao.selected_tags()
+    display_names = dao.display_names(page_names)
     resp = HTMLResponse(
-        pages.landing_page(services, tags_by_page, tag_counts, selected, _PEER_NAME)
+        pages.landing_page(
+            services, tags_by_page, tag_counts, selected, _PEER_NAME,
+            display_names=display_names,
+        )
     )
     if refreshed:
         _set_session_cookie(resp, refreshed,
@@ -298,6 +302,25 @@ async def _landing_deselect_filter(request: Request) -> Response:
     dao = store.LandingDAO()
     dao.deselect_tag(tag)
     return JSONResponse({"selected_tags": dao.selected_tags()})
+
+
+async def _landing_set_name(request: Request) -> Response:
+    """``POST /__landing/name`` — body ``{page, name}``. A blank/whitespace-only
+    ``name`` clears the override, reverting the card to its technical label."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    name = str((data or {}).get("name") or "").strip()
+    if not page:
+        return JSONResponse({"error": "page is required"}, status_code=400)
+    dao = store.LandingDAO()
+    if name:
+        dao.set_display_name(page, name)
+    else:
+        dao.clear_display_name(page)
+    return JSONResponse({"display_name": dao.display_name(page)})
 
 
 async def _http_proxy(request: Request) -> Response:
@@ -543,6 +566,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
         routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
         routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
+        routes.append(Route("/__landing/name", _gated(_landing_set_name), methods=["POST"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [

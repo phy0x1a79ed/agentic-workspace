@@ -142,13 +142,18 @@ def landing_page(
     tag_counts: dict[str, int] | None = None,
     selected_tags: list[str] | None = None,
     peer_name: str = "awm",
+    display_names: dict[str, str] | None = None,
 ) -> str:
     """Dynamic index of the registered ``/ui/*`` pages, taggable and
-    filterable by tag. ``tags_by_page``/``tag_counts``/``selected_tags`` come
-    from ``store.LandingDAO`` and are persisted server-side."""
+    filterable by tag. ``tags_by_page``/``tag_counts``/``selected_tags``/
+    ``display_names`` come from ``store.LandingDAO`` and are persisted
+    server-side. ``display_names`` is a purely cosmetic label override keyed
+    by the same technical ``name`` used for tags — it never affects a card's
+    ``href`` or ``data-page`` identity."""
     tags_by_page = tags_by_page or {}
     tag_counts = tag_counts or {}
     selected_tags = selected_tags or []
+    display_names = display_names or {}
 
     pages = [
         s for s in services
@@ -161,6 +166,7 @@ def landing_page(
         cards = []
         for s in pages:
             name = str(s.get("name", s.get("prefix", "")))
+            label = display_names.get(name) or name
             href = html.escape(str(s["prefix"]).rstrip("/") + "/")
             page_tags = tags_by_page.get(name, [])
             data_tags = html.escape(",".join(page_tags))
@@ -170,7 +176,7 @@ def landing_page(
                 for t in page_tags
             )
             cards.append(f"""  <li class="card" data-page="{html.escape(name)}" data-tags="{data_tags}">
-    <a class="pagelink" href="{href}">{html.escape(name)}</a>
+    <a class="pagelink" href="{href}">{html.escape(label)}</a>
     <div class="cardfoot">
       <span class="cardtags">
 {tag_chips}
@@ -198,6 +204,7 @@ def landing_page(
 
     tag_counts_json = json.dumps(tag_counts)
     selected_json = json.dumps(selected_tags)
+    display_names_json = json.dumps(display_names)
     total_pages = len(pages)
     title = html.escape(peer_name)
 
@@ -226,6 +233,7 @@ def landing_page(
 <script>
 const TAG_COUNTS = {tag_counts_json};
 let SELECTED = {selected_json};
+let DISPLAY_NAMES = {display_names_json};
 let SHOW_ALL = false;
 const TOTAL_PAGES = {total_pages};
 
@@ -309,11 +317,18 @@ function toggleTagMenu(btn, page) {{
   const card = btn.closest('.card');
   const have = new Set(cardTags(card));
   const opts = Object.keys(TAG_COUNTS).sort().filter(t => !have.has(t));
+  const ep = escapeHtml(page).replace(/'/g,"\\\\'");
+  const currentLabel = DISPLAY_NAMES[page] || page;
   menu.innerHTML = opts.map(t =>
-    `<button type="button" class="opt" onclick="addTag('${{escapeHtml(page).replace(/'/g,"\\\\'")}}','${{escapeHtml(t).replace(/'/g,"\\\\'")}}')">${{escapeHtml(t)}}</button>`
+    `<button type="button" class="opt" onclick="addTag('${{ep}}','${{escapeHtml(t).replace(/'/g,"\\\\'")}}')">${{escapeHtml(t)}}</button>`
   ).join('') +
-    `<input type="text" placeholder="new tag" onkeydown="if(event.key==='Enter'){{addTag('${{escapeHtml(page).replace(/'/g,"\\\\'")}}',this.value);this.value='';}}" />`
-    + `<button type="button" class="addbtn" onclick="const i=this.previousElementSibling;addTag('${{escapeHtml(page).replace(/'/g,"\\\\'")}}',i.value);i.value='';">add</button>`;
+    `<input type="text" placeholder="new tag" onkeydown="if(event.key==='Enter'){{addTag('${{ep}}',this.value);this.value='';}}" />`
+    + `<button type="button" class="addbtn" onclick="const i=this.previousElementSibling;addTag('${{ep}}',i.value);i.value='';">add</button>`
+    + `<hr />`
+    + `<input type="text" class="renameinput" value="${{escapeHtml(currentLabel)}}" placeholder="card name"`
+    + ` onkeydown="if(event.key==='Enter'){{renameCard('${{ep}}',this.value);}}" />`
+    + `<button type="button" class="addbtn" onclick="const i=this.previousElementSibling;renameCard('${{ep}}',i.value);">rename</button>`
+    + `<button type="button" class="opt" onclick="renameCard('${{ep}}','')">reset to default</button>`;
   menu.classList.add('open');
 }}
 
@@ -359,6 +374,21 @@ async function removeTag(page, tag) {{
     body: JSON.stringify({{page, tag}})}});
   if (!r.ok) return;
   applyTagUpdate(page, await r.json());
+}}
+
+async function renameCard(page, name) {{
+  const r = await fetch('/__landing/name', {{method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{page, name}})}});
+  if (!r.ok) return;
+  const data = await r.json();
+  if (data.display_name) {{ DISPLAY_NAMES[page] = data.display_name; }}
+  else {{ delete DISPLAY_NAMES[page]; }}
+  const card = document.querySelector(`.card[data-page="${{CSS.escape(page)}}"]`);
+  if (card) {{
+    card.querySelector('.pagelink').textContent = data.display_name || page;
+    closeAllMenus();
+  }}
 }}
 
 applyFilter();
