@@ -106,6 +106,12 @@ class RegisterRequest(BaseModel):
     url: str | None = Field(None)
     static: StaticSpec | None = Field(None)
     page: PageSpec | None = Field(None)
+    strip_prefix: bool = Field(
+        False,
+        description="url only: forward the path with `prefix` removed and send "
+                    "`X-Forwarded-Prefix: <prefix>`. For an upstream that serves "
+                    "at the root and rebases its own links from that header.",
+    )
 
     @model_validator(mode="after")
     def _one_of(self) -> "RegisterRequest":
@@ -119,6 +125,8 @@ class RegisterRequest(BaseModel):
             raise ValueError(
                 "exactly one of `url`, `static`, or `page` must be provided"
             )
+        if self.strip_prefix and not self.url:
+            raise ValueError("`strip_prefix` applies only to a `url` registration")
         return self
 
 
@@ -128,6 +136,7 @@ class RegisterResponse(BaseModel):
     prefix: str
     kind: str
     url: str | None = None
+    strip_prefix: bool = False
     static: StaticSpec | None = None
     page: PageSpec | None = None
     lease_ws_path: str
@@ -138,7 +147,10 @@ async def register(req: RegisterRequest) -> RegisterResponse:
     registry = get_registry()
     try:
         if req.url is not None:
-            rec = await registry.register(req.name, req.prefix, req.url)
+            rec = await registry.register(
+                req.name, req.prefix, req.url,
+                strip_prefix=req.strip_prefix,
+            )
         elif req.static is not None:
             resolved = Path(req.static.dir).expanduser().resolve()
             if not resolved.is_dir():
@@ -170,6 +182,7 @@ async def register(req: RegisterRequest) -> RegisterResponse:
         prefix=rec.prefix,
         kind=rec.kind,
         url=rec.url if rec.kind == "url" else None,
+        strip_prefix=rec.strip_prefix,
         static=(
             StaticSpec(
                 dir=rec.static_dir,

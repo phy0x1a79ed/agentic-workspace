@@ -28,6 +28,7 @@ import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -65,9 +66,26 @@ _ALL_METHODS = _METHODS  # alias for route registration clarity
 _PEER_NAME = socket.gethostname().split(".")[0].title()
 
 
+def _origin_override(app) -> str | None:
+    """The scheme+authority a rewriting front presents as ``Origin``, or None.
+
+    ``_HOP`` drops the browser's ``Host`` so httpx derives it from the upstream
+    URL — so an upstream that compares ``Origin`` against ``Host`` sees a pair
+    that cannot match while ``Origin`` is forwarded verbatim. Rewriting it to
+    the upstream's own origin restores the comparison the upstream is actually
+    trying to make: same-origin, as it would be on loopback.
+    """
+    return getattr(app.state, "origin_override", None)
+
+
 def _req_headers(request: Request) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
+    override = _origin_override(request.app)
+    # Only rewrite a header the browser actually sent: minting an Origin where
+    # there was none turns a same-origin navigation into a cross-origin one.
+    if override and "origin" in hdrs:
+        hdrs["origin"] = override
     # ``host`` is dropped above so httpx derives it from the upstream URL, which
     # means the upstream otherwise cannot tell what address the browser used.
     # awm's own services never needed that, but a reverse-proxied third party
@@ -366,6 +384,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    override = _origin_override(app)
+    if override and "origin" in fwd:
+        fwd["origin"] = override
     fwd["X-Forwarded-Proto"] = "https"
     host = ws.headers.get("host")
     if host:
@@ -432,6 +453,12 @@ async def _ws_proxy(ws: WebSocket) -> None:
             pass
 
 
+def _origin_of(url: str) -> str:
+    """``scheme://host[:port]`` of ``url`` — an RFC 6454 origin, no path."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 #: An extra endpoint a wrapping front adds: ``(path, methods, handler)``.
 ExtraRoute = tuple[str, Sequence[str], Callable[[Request], Awaitable[Response]]]
 
@@ -461,7 +488,8 @@ def _gated(
 
 
 def build_app(upstream: str, ca_path: str, *, landing: bool = True,
-              extra_routes: Sequence[ExtraRoute] | None = None) -> Starlette:
+              extra_routes: Sequence[ExtraRoute] | None = None,
+              rewrite_origin: bool = False) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     The landing page is right for the gateway front, whose ``/`` has nothing
@@ -480,6 +508,16 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     assume an authenticated caller: the gate is not something a caller can
     forget, because the whole reason such a route exists is that it does
     something privileged on the upstream's behalf.
+
+    ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
+    own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
+    apps want opposite things here. One origin-checks its WebSocket upgrades
+    against an allowlist of the exact browser origins it expects, and needs the
+    real header (``claude-science``). The other compares ``Origin`` against
+    ``Host`` and demands they match — and since ``Host`` is dropped so httpx
+    derives it from the upstream URL, the browser's real ``Origin`` can never
+    match it, so every request 403s (``dsh``). Default off: the gateway front
+    and every existing caller keep byte-identical behaviour.
     """
     http_up = upstream.rstrip("/")
     # http://… → ws://… ,  https://… → wss://…
@@ -526,13 +564,19 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     app.state.http_up = http_up
     app.state.ws_up = ws_up
     app.state.ca_path = ca_path
+    # Derived from the upstream URL rather than taken as a string, so the
+    # rewritten Origin is by construction the one httpx will also put in Host.
+    app.state.origin_override = (
+        _origin_of(http_up) if rewrite_origin else None
+    )
     app.state.gate = AuthGate()
     return app
 
 
 def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           landing: bool = True,
-          extra_routes: Sequence[ExtraRoute] | None = None) -> None:
+          extra_routes: Sequence[ExtraRoute] | None = None,
+          rewrite_origin: bool = False) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -542,7 +586,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     ``awm_session`` edge auth without duplicating any of it, and adds one gated
     sign-in route the wrapped binary cannot serve itself.
     """
-    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes)
+    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
+                    rewrite_origin=rewrite_origin)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",

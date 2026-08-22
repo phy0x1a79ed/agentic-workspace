@@ -1,0 +1,10 @@
+# This service bootstraps only on a gateway whose AWM_PROFILES includes one of
+# these (an explicit `awm services enable` still overrides).
+#
+# Gated because it supervises a ~2 GB user-global install (a git checkout, its
+# own Python venv, a managed Node runtime and a built SPA) that a node has to
+# be provisioned for. On a node without it the service would still register and
+# report "launcher absent" forever — correct, but noise in `awm services list`.
+# The gate is how a node volunteers, not how the fleet elects one: deployments
+# are per-node and wholly independent, sharing no state.
+profiles = ["hermes"]

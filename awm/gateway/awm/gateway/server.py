@@ -583,14 +583,15 @@ class HubRoutingMiddleware:
         if rec.kind == "service":
             await self._dispatch_service(scope, receive, send, rec, path)
             return
+        strip = rec.prefix if rec.strip_prefix else ""
         if scope["type"] == "http":
             request = Request(scope, receive=receive)
-            response = await proxy_http(request, rec.url)
+            response = await proxy_http(request, rec.url, prefix=strip)
             await response(scope, receive, send)
         else:
             from fastapi import WebSocket as _WS
             ws = _WS(scope, receive=receive, send=send)
-            await proxy_ws(ws, rec.url)
+            await proxy_ws(ws, rec.url, prefix=strip)
 
     async def _dispatch_service(self, scope, receive, send, rec, path):
         """RPC-WS service routing (kind="service"):
