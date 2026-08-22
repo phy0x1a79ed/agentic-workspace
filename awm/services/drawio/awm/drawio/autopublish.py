@@ -185,17 +185,20 @@ def default_registry_path() -> Path:
     return service_db_path("drawio").parent / REGISTRY_FILENAME
 
 
-def page_index(xml: str, name: str | None) -> int | None:
+def page_index(xml, name: str | None) -> int | None:
     """Resolve a page *name* to the index the export server wants.
 
     ``None`` name means "the whole document, let the exporter decide", which for
     a single-page diagram is the only page anyway. A named page that no longer
     exists raises, because publishing the wrong page silently is the failure
     name-addressing exists to prevent.
+
+    ``xml`` may be an already-parsed ``mxfile``, for a caller that goes on to
+    use the same tree.
     """
     if name is None:
         return None
-    pages = xmlmodel.page_summaries(xmlmodel.parse(xml))
+    pages = xmlmodel.page_summaries(xmlmodel.as_tree(xml))
     for index, page in enumerate(pages):
         if page.get("name") == name:
             return index

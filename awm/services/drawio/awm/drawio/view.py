@@ -23,6 +23,19 @@ which the biomass map depends on. An unchanged page therefore keeps its cache
 across an unrelated commit, and the ``ETag`` lets the client's change-event
 re-fetch collapse to a cheap ``304`` when nothing actually moved.
 
+Reaching that key is the expensive part — a parse, a colour pass, every
+referenced file read, a render of every page this one places — so a cheap
+precheck sits in front of it, deciding from ``stat`` alone whether any of that
+could have changed. It is a fast path, not a second source of truth: the
+``ETag`` is still the content key, and a precheck miss simply costs the full
+pass.
+
+**The pipeline is scoped to the page that was asked for.** The document is cut
+to that one page before anything else happens, so a request resolves the
+references that page places and no others. Without the cut, asking for any page
+of a diagram whose *other* pages hold live views resolved all of them —
+recursively, exhausting the render budget — and then discarded the result.
+
 **One page, many variants.** The query string can recolour and crop the render
 (:mod:`awm.drawio.renderspec` owns that grammar), so one source page serves
 every placement instead of a near-duplicate page per colour. Each variant caches
@@ -42,6 +55,9 @@ import os
 import shutil
 import ssl
 import threading
+import time
+from collections import OrderedDict
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -79,6 +95,11 @@ MAX_VERSIONS_PER_PAGE = 5
 #: How many *variants* of a page to keep. The query space is caller-controlled
 #: and unbounded, and nothing else would ever reclaim an abandoned colour.
 MAX_VARIANTS_PER_PAGE = 12
+
+#: How many warm-path answers to remember in process. Each entry is two hashes
+#: and a few strings, so the bound is about not holding stale keys forever
+#: rather than about memory.
+MAX_WARM_ENTRIES = 256
 
 
 def default_cache_dir() -> Path:
@@ -168,6 +189,20 @@ def split_view_url(url: str) -> tuple[str, dict]:
                                                 keep_blank_values=True)
 
 
+@contextmanager
+def _span(marks: list[str], name: str):
+    """Time a stage of a render and record it for the request's debug line.
+
+    Cheap enough to leave unconditional: the whole point is that the cost of a
+    view request is readable from the service log without a profiler.
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        marks.append(f"{name}={(time.perf_counter() - start) * 1000:.0f}ms")
+
+
 class Renderer:
     """Resolves ``<save>/<page>`` requests to cached SVG bytes.
 
@@ -186,6 +221,16 @@ class Renderer:
         #: Bumped whenever a render actually runs — the test seam for asserting
         #: a cache hit did not re-render, mirroring ``AutoPublisher.renders``.
         self.renders = 0
+        #: Precheck key -> (content key, problems), newest last. See the warm
+        #: path below.
+        self._warm: OrderedDict[str, tuple[str, tuple[str, ...]]] = OrderedDict()
+        #: save -> (stat signature, head revision).
+        self._revs: dict[str, tuple[tuple[int, int] | None, str | None]] = {}
+        #: save -> (stat signature, (/files paths, other diagrams)).
+        self._refs: dict[str, tuple[tuple[int, int] | None, tuple]] = {}
+        #: Guards the LRU only. ``_revs`` and ``_refs`` are plain dicts whose
+        #: entries are written whole, so a race there costs a recomputation.
+        self._memo_lock = threading.Lock()
 
     # -- request parsing ----------------------------------------------------
 
@@ -224,23 +269,42 @@ class Renderer:
 
     # -- rendering + cache --------------------------------------------------
 
-    def _page_index(self, xml: str, name: str | None) -> int | None:
-        """Resolve a page name to its export index, or ``None`` for the whole
-        document. Reuses the same name→index contract autopublish uses so a
-        reordered tab never silently repoints a view."""
+    def _cut_to_page(self, xml: str, name: str | None) -> tuple[str, int | None]:
+        """Resolve a page name and reduce the document to that page alone.
+
+        Resolution reuses the same name→index contract autopublish uses, so a
+        reordered tab never silently repoints a view. The cut is what keeps a
+        request for one page from doing the rest of the document's work: on a
+        diagram whose *other* pages place live views, inlining the whole thing
+        resolved every one of them and then threw the result away.
+
+        A page-omitted request means "the whole document, let the exporter
+        decide", so it is left whole — and, as today, never parsed, which is why
+        a compressed diagram still renders plainly.
+        """
         from .autopublish import AutoPublishError, page_index
 
+        if name is None:
+            return xml, None
+        mxfile = xmlmodel.parse(xml)
         try:
-            return page_index(xml, name)
+            index = page_index(mxfile, name)
         except AutoPublishError as exc:
             raise ViewError(404, str(exc)) from None
+        return xmlmodel.single_page(mxfile, index), index
 
     def _content_key(self, inlined: str, index: int | None,
-                     spec: renderspec.RenderSpec) -> str:
+                     spec: renderspec.RenderSpec, *, at: int | None = None) -> str:
         """Hash the *specific page's* inlined content (whole doc if page-omitted).
 
         Keying per page — not per whole document — is what keeps an unchanged
         page's cache valid across a commit that only touched a sibling page.
+
+        ``index`` is the page's position in the author's document and is part of
+        the key; ``at`` is where that page sits inside ``inlined``, which is 0
+        once the document has been cut down to it. Keeping the two apart is what
+        makes a cut render key-identical to the whole-document render it
+        replaced, so no already-cached page is orphaned.
 
         The spec's fingerprint joins the hash only when it is not the plain one,
         which keeps every existing cache entry valid across this change. It is
@@ -249,12 +313,13 @@ class Renderer:
         ETag is what the revalidation path turns on.
         """
         material = inlined
-        if index is not None:
+        where = index if at is None else at
+        if where is not None:
             try:
                 mxfile = xmlmodel.parse(inlined)
                 diagrams = mxfile.findall("diagram")
-                if 0 <= index < len(diagrams):
-                    material = xmlmodel.serialize(diagrams[index])
+                if 0 <= where < len(diagrams):
+                    material = xmlmodel.serialize(diagrams[where])
             except xmlmodel.MalformedDiagram:
                 material = inlined  # hash the whole thing rather than crash
         digest = hashlib.sha256()
@@ -264,12 +329,157 @@ class Renderer:
         digest.update(material.encode("utf-8"))
         return digest.hexdigest()
 
+    # -- the warm path ------------------------------------------------------
+    #
+    # The content key is a hash of the *inlined* document, which is what makes
+    # it trustworthy and also what makes it expensive: reaching it costs a
+    # parse, a colour pass, every referenced file read, and a render of every
+    # page this one places. The precheck below reaches the same answer from
+    # ``stat`` alone. It is strictly a fast path in front of the content key —
+    # nothing about what that key means changes, and a miss costs exactly what
+    # a request cost before this existed.
+
+    @staticmethod
+    def _stat_sig(path: Path) -> tuple[int, int] | None:
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        return info.st_mtime_ns, info.st_size
+
+    def _head_rev(self, save: str) -> str | None:
+        """:meth:`Store.head_rev`, memoized on the diagram's stat.
+
+        It forks ``git log`` to fill one response header, and a page that places
+        a dozen sibling views pays that fork a dozen times over. A commit can
+        move the revision without moving the file, which is why the commit hook
+        drops this rather than the stat alone being trusted to expire it.
+        """
+        sig = self._stat_sig(self.store.abs_path(save))
+        remembered = self._revs.get(save)
+        if remembered is not None and remembered[0] == sig:
+            return remembered[1]
+        rev = self.store.head_rev(save)
+        self._revs[save] = (sig, rev)
+        return rev
+
+    def _references(self, save: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``(/files paths, other diagrams)`` this document points at, memoized
+        on its stat.
+
+        Scanning half a megabyte of XML costs an order of magnitude more than
+        every ``stat`` the precheck then does with the answer, and the answer
+        only changes when the file does. A scan that could not resolve one of
+        its references is not remembered, so a diagram created later is picked
+        up rather than being cached as broken.
+        """
+        sig = self._stat_sig(self.store.abs_path(save))
+        if sig is None:
+            return None
+        remembered = self._refs.get(save)
+        if remembered is not None and remembered[0] == sig:
+            return remembered[1]
+        try:
+            xml = self.store.read(save)
+        except (StoreError, OSError):
+            return None
+        files: list[str] = []
+        others: list[str] = []
+        for match in export_mod.REFERENCE_PATTERN.finditer(xml):
+            if match.group("file") is not None:
+                if match.group("file") not in files:
+                    files.append(match.group("file"))
+                continue
+            try:
+                rel, _ = split_view_url(
+                    export_mod.unescape_amp(match.group("view")))
+                other, _ = resolve_target(self.store, rel)
+            except (ViewError, StoreError):
+                return None
+            if other != save and other not in others:
+                others.append(other)
+        found = (tuple(files), tuple(others))
+        self._refs[save] = (sig, found)
+        return found
+
+    def _precheck_key(self, save: str, page: str | None,
+                      spec: renderspec.RenderSpec,
+                      seen: frozenset[str] = frozenset()) -> str | None:
+        """Hash everything a ``stat`` can see that this render depends on.
+
+        That is: the spec, and the ``(mtime_ns, size)`` of the diagram and of
+        every file the *document* references. Deliberately the whole document
+        rather than the target page — that is what a scan can answer without
+        parsing, and over-approximating only ever costs a slow path that would
+        have been correct anyway.
+
+        A reference to a page of this same diagram adds nothing: its content is
+        already in this file's stat. A reference into another diagram folds in
+        that diagram's key, recursively, behind the same cycle guard
+        :class:`ViewResolver` carries.
+
+        ``None`` means "cannot answer" — a missing file, a reference that will
+        not resolve — and the caller must take the slow path. A file rewritten
+        within one mtime tick *and* to the same size would slip through; that is
+        what the size component is there to make unlikely.
+        """
+        sig = self._stat_sig(self.store.abs_path(save))
+        found = self._references(save)
+        if sig is None or found is None:
+            return None
+        files, others = found
+        parts = [f"v1|{save}|{page}|{spec.scale:.4f}|"
+                 f"{renderspec.fingerprint(spec)}|{sig[0]}:{sig[1]}"]
+        for target in files:
+            parts.append(f"f|{target}|{self._stat_sig(Path(target))}")
+        seen = seen | {save}
+        for other in others:
+            if other in seen:
+                continue
+            seen = seen | {other}
+            nested = self._precheck_key(other, None, renderspec.DEFAULT, seen)
+            if nested is None:
+                return None
+            parts.append(f"v|{other}|{nested}")
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+    def _warm_hit(self, warm_key: str | None, save: str, page: str | None,
+                  spec: renderspec.RenderSpec,
+                  head_rev: str | None) -> "RenderResult | None":
+        """The render this precheck key named, if it is still on disk."""
+        with self._memo_lock:
+            entry = self._warm.get(warm_key) if warm_key else None
+        if entry is None:
+            return None
+        key, problems = entry
+        try:
+            data = (self._variant_dir(save, page, spec) / f"{key}.svg").read_bytes()
+        except OSError:
+            with self._memo_lock:         # the render it named was reclaimed
+                self._warm.pop(warm_key, None)
+            return None
+        with self._memo_lock:
+            if warm_key in self._warm:
+                self._warm.move_to_end(warm_key)
+        return RenderResult(data, key, save, page, head_rev, list(problems),
+                            cached=True)
+
+    def _remember(self, warm_key: str | None, key: str,
+                  problems: list[str]) -> None:
+        if warm_key is None:
+            return
+        with self._memo_lock:
+            self._warm[warm_key] = (key, tuple(problems))
+            self._warm.move_to_end(warm_key)
+            while len(self._warm) > MAX_WARM_ENTRIES:
+                self._warm.popitem(last=False)
+
     def resolve_meta(self, rel_path: str) -> tuple[str, str | None, str | None]:
         """Resolve ``(save, page, head_rev)`` without rendering — the cheap HEAD
         answer the consumer client uses to learn which topic to subscribe to,
         free of the save-vs-page path ambiguity a client cannot settle alone."""
         save, page_name = self.resolve_target(rel_path)
-        return save, page_name, self.store.head_rev(save)
+        return save, page_name, self._head_rev(save)
 
     def render(self, rel_path: str, spec: renderspec.RenderSpec | None = None,
                rev: str | None = None, resolver=None,
@@ -282,82 +492,122 @@ class Renderer:
         same reason — a parameter that silently does nothing is worse than one
         that fails.
 
-        The order is: read, resolve the page, transform for the spec, inline,
-        then key over that final material. Swapping before inlining means the
+        The order is: read, cut to the requested page, transform for the spec,
+        inline, then key over that final material. Cutting first is what bounds
+        the work to the page asked for — every reference resolved from here down
+        is one that page actually places. Swapping before inlining means the
         colour rewrite only ever sees ``/files`` references, never a
         percent-encoded payload it might corrupt.
+
+        A consequence worth knowing: problems belonging to *other* pages no
+        longer surface here. ``Service.check`` is the surface that audits a whole
+        document.
         """
         spec = spec or renderspec.DEFAULT
         save, page_name = resolve_target(self.store, rel_path)
-        head_rev = rev or self.store.head_rev(save)
+        timings: list[str] = []
         try:
-            xml = self.store.read(save, rev=rev)
-        except UnknownDiagram as exc:
-            raise ViewError(404, str(exc)) from None
-        except StoreError as exc:
-            raise ViewError(404, str(exc)) from None
+            with _span(timings, "rev"):
+                head_rev = rev or self._head_rev(save)
 
-        index = self._page_index(xml, page_name)
+            # Before the read, not after: a warm request should not pull half a
+            # megabyte off disk to discover it had the answer already. A request
+            # pinned to a revision is not what the working tree's stat
+            # describes, so it never takes this path at all.
+            warm_key = None
+            if rev is None:
+                with _span(timings, "precheck"):
+                    warm_key = self._precheck_key(save, page_name, spec)
+                    warm = self._warm_hit(warm_key, save, page_name, spec,
+                                          head_rev)
+                if warm is not None:
+                    return warm
 
-        if spec.swaps:
             try:
-                xml, hits = renderspec.swap_document(xml, spec.swaps)
-            except xmlmodel.CompressedDiagram as exc:
-                raise ViewError(
-                    422, f"this diagram is compressed, so its colours cannot be "
-                         f"swapped: {exc}") from None
-            except xmlmodel.MalformedDiagram as exc:
-                raise ViewError(422, str(exc)) from None
-            if hits == 0:
-                # Not an error — a mask may live on one page and not another —
-                # but not silent either, since "nothing happened" and "the
-                # parameter was ignored" look identical from the outside.
-                log.warning("view of %s%s: no colour matched %s", save,
-                            f" page {page_name!r}" if page_name else "",
-                            renderspec.describe(spec))
-
-        crop_id = None
-        if spec.crop:
-            try:
-                xml, crop_id = renderspec.prepare_crop(xml, index, spec.crop)
-            except renderspec.CropNotFound as exc:
+                xml = self.store.read(save, rev=rev)
+            except UnknownDiagram as exc:
                 raise ViewError(404, str(exc)) from None
-            except xmlmodel.CompressedDiagram as exc:
-                raise ViewError(422, str(exc)) from None
+            except StoreError as exc:
+                raise ViewError(404, str(exc)) from None
 
-        # Inline once here (for the content key) and hand the already-inlined
-        # document to render with inline=False, so the /files bytes are read a
-        # single time per request rather than twice. This also strictly precedes
-        # the render call, which is what keeps a nested page view from
-        # re-entering the browser's non-reentrant lock.
-        if resolver is None:
-            resolver = ViewResolver(self, seen=frozenset({(save, page_name)}))
-        inlined, problems = export_mod.inline_images(
-            xml, swaps=spec.swaps, resolver=resolver, budget=budget)
-        key = self._content_key(inlined, index, spec)
+            with _span(timings, "cut"):
+                xml, index = self._cut_to_page(xml, page_name)
+            # Where the target page sits in `xml` from here on: the cut put it
+            # first, and a page-omitted request never cut, so it stays whole.
+            at = None if index is None else 0
 
-        variant_dir = self._variant_dir(save, page_name, spec)
-        cache_file = variant_dir / f"{key}.svg"
-        if cache_file.is_file():
-            return RenderResult(cache_file.read_bytes(), key, save, page_name,
-                                head_rev, problems, cached=True)
+            swap_problems: list[str] = []
+            if spec.swaps:
+                try:
+                    xml, hits, swap_problems = renderspec.swap_document(
+                        xml, spec.swaps)
+                except xmlmodel.CompressedDiagram as exc:
+                    raise ViewError(
+                        422, f"this diagram is compressed, so its colours cannot "
+                             f"be swapped: {exc}") from None
+                except xmlmodel.MalformedDiagram as exc:
+                    raise ViewError(422, str(exc)) from None
+                if hits == 0:
+                    # Not an error — a mask may live on one page and not another
+                    # — but not silent either, since "nothing happened" and "the
+                    # parameter was ignored" look identical from the outside.
+                    log.warning("view of %s%s: no colour matched %s", save,
+                                f" page {page_name!r}" if page_name else "",
+                                renderspec.describe(spec))
 
-        data, _ = self._render(inlined, "svg", inline=False, page=index,
-                               scale=spec.scale, crop_id=crop_id)
-        self.renders += 1
-        variant_dir.mkdir(parents=True, exist_ok=True)
-        tmp = cache_file.with_name(f".{cache_file.name}.tmp")
-        try:
-            tmp.write_bytes(data)
-            os.replace(tmp, cache_file)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-        self._cap_versions(variant_dir)
-        if not spec.is_plain:
-            self._cap_variants(self._page_dir(save, page_name))
-        return RenderResult(data, key, save, page_name, head_rev, problems,
-                            cached=False)
+            crop_id = None
+            if spec.crop:
+                try:
+                    xml, crop_id = renderspec.prepare_crop(xml, at, spec.crop)
+                except renderspec.CropNotFound as exc:
+                    raise ViewError(404, str(exc)) from None
+                except xmlmodel.CompressedDiagram as exc:
+                    raise ViewError(422, str(exc)) from None
+
+            # Inline once here (for the content key) and hand the already-inlined
+            # document to render with inline=False, so the /files bytes are read
+            # a single time per request rather than twice. This also strictly
+            # precedes the render call, which is what keeps a nested page view
+            # from re-entering the browser's non-reentrant lock.
+            if resolver is None:
+                resolver = ViewResolver(self, seen=frozenset({(save, page_name)}))
+            with _span(timings, "inline"):
+                inlined, problems = export_mod.inline_images(
+                    xml, swaps=spec.swaps, resolver=resolver, budget=budget)
+            problems = swap_problems + problems
+            with _span(timings, "key"):
+                key = self._content_key(inlined, index, spec, at=at)
+
+            self._remember(warm_key, key, problems)
+            variant_dir = self._variant_dir(save, page_name, spec)
+            cache_file = variant_dir / f"{key}.svg"
+            if cache_file.is_file():
+                return RenderResult(cache_file.read_bytes(), key, save, page_name,
+                                    head_rev, problems, cached=True)
+
+            with _span(timings, "browser"):
+                data, _ = self._render(inlined, "svg", inline=False, page=at,
+                                       scale=spec.scale, crop_id=crop_id)
+            self.renders += 1
+            variant_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_name(f".{cache_file.name}.tmp")
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, cache_file)
+            except BaseException:
+                tmp.unlink(missing_ok=True)
+                raise
+            self._cap_versions(variant_dir)
+            if not spec.is_plain:
+                self._cap_variants(self._page_dir(save, page_name))
+            return RenderResult(data, key, save, page_name, head_rev, problems,
+                                cached=False)
+        finally:
+            if timings:
+                log.debug("view %s%s%s: %s", save,
+                          f"/{page_name}" if page_name else "",
+                          "" if spec.is_plain else f"?{renderspec.to_query(spec)}",
+                          " ".join(timings))
 
     def _cap_versions(self, variant_dir: Path) -> None:
         """Keep only the newest :data:`MAX_VERSIONS_PER_PAGE` renders in a dir.
@@ -395,7 +645,15 @@ class Renderer:
         Called from the store's commit hook, so a page rename (old name → gone)
         and a diagram removal both reach it. Never raises — a stale SVG left
         behind is harmless, but a pruning error must not fail the write.
+
+        The in-process memos go first and go whole. A commit moves the revision
+        without necessarily moving the file — the write landed before it — so
+        the stat those memos key on cannot be trusted to have expired them.
         """
+        with self._memo_lock:
+            self._warm.clear()
+        self._revs.clear()
+        self._refs.clear()
         try:
             save = normalize_save_path(save)
             save_dir = self._save_dir(save)
@@ -485,20 +743,33 @@ class ViewNotifier:
     """Publishes a ``view-updated`` event on a diagram's emit topic per commit.
 
     A consumer editor tab that placed one of this diagram's pages as an image
-    subscribes to ``drawio:<save>`` and refreshes the image when this arrives.
+    subscribes to ``drawio:<save>:<page>`` (percent-encoded page name) and
+    refreshes the image when this arrives. A page-omitted (whole-document)
+    reference subscribes to the unscoped ``drawio:<save>`` instead, which is
+    always emitted alongside the page-scoped topics regardless of which pages
+    changed — that reference's granularity is the whole document by design.
 
     Two things make it distinct from :meth:`Service._push_to_live_tabs`, which
-    also emits on that topic: it fires on **every** accepted write (not only a
-    merge), and **unconditionally** — a consumer can be open when the source has
-    no editor tab of its own (an agent ``merge`` is the case that matters most).
-    The source diagram's *own* tab also receives it but ignores it: the client
-    handles only ``flush``/``push`` for its own save.
+    also emits on the unscoped topic: it fires on **every** accepted write (not
+    only a merge), and **unconditionally** — a consumer can be open when the
+    source has no editor tab of its own (an agent ``merge`` is the case that
+    matters most). The source diagram's *own* tab also receives it but ignores
+    it: the client handles only ``flush``/``push`` for its own save.
+
+    Page-scoped topics are derived by diffing the just-committed content
+    against the immediately prior revision of *this path* (``store.history``
+    is already ``git log -- path``-scoped, so it is robust to unrelated
+    commits landing in between). Anything that stops that diff from being
+    trustworthy — no prior revision, a read/parse failure — falls back to
+    treating every current page as changed: over-notifying is a wasted
+    refresh, under-notifying is a consumer stuck showing stale content.
     """
 
     def __init__(self, emit):
         #: ``Callable[[str, Any], Awaitable[None]]`` — the adapter's emit.
         self._emit = emit
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._store: Store | None = None
 
     def attach(self, store: Store,
                loop: asyncio.AbstractEventLoop | None = None) -> None:
@@ -506,10 +777,47 @@ class ViewNotifier:
             self._loop = loop or asyncio.get_running_loop()
         except RuntimeError:
             self._loop = loop
+        self._store = store
         store.subscribe(self.notify)
 
+    def _changed_pages(self, save: str, rev: str | None) -> list[str] | None:
+        """Names of pages that changed in ``rev``, or ``None`` for "all of them".
+
+        ``None`` is the defensive fallback — every path here that cannot
+        establish a trustworthy diff (no prior revision, unreadable/unparsable
+        content on either side) returns it rather than guessing.
+        """
+        store = self._store
+        if store is None:
+            return None
+        try:
+            history = store.history(save, limit=2)
+            if len(history) < 2:
+                return None  # first commit for this path — nothing to diff
+            prior_rev = history[1].rev
+            new_xml = store.read(save, rev=rev) if rev else store.read(save)
+            old_xml = store.read(save, rev=prior_rev)
+            new_pages = xmlmodel.parse(new_xml).findall("diagram")
+            old_pages = xmlmodel.parse(old_xml).findall("diagram")
+        except Exception:  # noqa: BLE001 — any failure means "diff untrustworthy"
+            return None
+
+        def key(diagram) -> str | None:
+            return diagram.get("id") or diagram.get("name")
+
+        old_by_key = {key(d): d for d in old_pages if key(d) is not None}
+        changed = []
+        for diagram in new_pages:
+            name = diagram.get("name")
+            if not name:
+                continue
+            old = old_by_key.get(key(diagram))
+            if old is None or xmlmodel.serialize(old) != xmlmodel.serialize(diagram):
+                changed.append(name)
+        return changed
+
     def notify(self, save: str, rev: str | None = None) -> None:
-        """Schedule the emit on the loop. Cheap and non-blocking: the commit
+        """Schedule the emit(s) on the loop. Cheap and non-blocking: the commit
         hook may run off the loop thread, and nothing writing a diagram should
         wait on a fan-out to consumers."""
         loop = self._loop
@@ -518,11 +826,27 @@ class ViewNotifier:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 return
-        topic = f"drawio:{save}"
+
+        topics = [f"drawio:{save}"]
+        changed_pages = self._changed_pages(save, rev)
+        if changed_pages is None:
+            changed_pages = []
+            store = self._store
+            if store is not None:
+                try:
+                    xml = store.read(save, rev=rev) if rev else store.read(save)
+                    pages = xmlmodel.page_summaries(xmlmodel.parse(xml))
+                    changed_pages = [p["name"] for p in pages if p.get("name")]
+                except Exception:  # noqa: BLE001 — unknown pages is not fatal
+                    changed_pages = []
+        for page in changed_pages:
+            topics.append(f"drawio:{save}:{quote(page, safe='')}")
+
         payload = {"type": "view-updated", "save": save, "rev": rev}
 
         def _fire() -> None:
-            asyncio.create_task(self._emit(topic, payload))
+            for topic in topics:
+                asyncio.create_task(self._emit(topic, payload))
 
         try:
             loop.call_soon_threadsafe(_fire)

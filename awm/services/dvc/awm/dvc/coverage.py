@@ -60,22 +60,52 @@ def _git(worktree: Path, *args: str) -> str | None:
     return proc.stdout
 
 
-def find_worktrees(root: Path) -> list[Path]:
-    """Scope worktrees under ``projects/`` — ``projects/<project>/<scope>``.
+def _worktrees_of(bare: Path) -> list[Path] | None:
+    """Worktree paths git itself reports for a bare repo, or None if it can't.
 
-    Depth is fixed rather than searched: a scope is a worktree of its project's
-    bare repo at exactly this level, and recursing would descend into every
-    vendored checkout a scope happens to have cloned.
+    Asking git is what makes depth a non-question: a nested scope like
+    ``fabfos/dev`` sits two levels down, while a vendored checkout a scope
+    happens to have cloned is not a worktree of this repo and never appears.
+    """
+    raw = _git(bare, "worktree", "list", "--porcelain")
+    if raw is None:
+        return None
+    out, path = [], None
+    for line in raw.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[len("worktree "):])
+        elif line.strip() == "bare":
+            path = None  # the bare repo's own entry — not a scope
+        elif not line.strip():
+            if path is not None:
+                out.append(path)
+            path = None
+    if path is not None:
+        out.append(path)
+    return out
+
+
+def find_worktrees(root: Path) -> list[Path]:
+    """Scope worktrees under ``projects/``, at whatever depth.
+
+    Enumerated from each project's bare repo rather than walked to a fixed
+    depth. The fixed walk predated nested scope names and could not see one, so
+    a nested scope simply dropped out of the inventory — and an audit whose job
+    is naming what is uncovered fails silently when it under-reports. The walk
+    survives as the fallback for a project with no readable bare repo.
     """
     projects = root / "projects"
     if not projects.is_dir():
         return []
-    out = []
+    out: list[Path] = []
     for project in sorted(p for p in projects.iterdir() if p.is_dir()):
-        for scope in sorted(s for s in project.iterdir() if s.is_dir()):
-            if (scope / ".git").exists():
-                out.append(scope)
-    return out
+        listed = _worktrees_of(project / ".bare") if (project / ".bare").is_dir() else None
+        if listed is not None:
+            out.extend(listed)
+            continue
+        out.extend(s for s in sorted(project.iterdir())
+                   if s.is_dir() and (s / ".git").exists())
+    return sorted(set(out))
 
 
 def _uncommitted(worktree: Path) -> dict[str, Any]:

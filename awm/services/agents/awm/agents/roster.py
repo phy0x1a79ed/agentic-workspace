@@ -75,11 +75,22 @@ def _snippet(text: Optional[str]) -> Optional[str]:
 
 
 def _project_label(cwd: Optional[str]) -> Optional[str]:
-    """A short human label for where the session lives (last two path parts)."""
+    """A short human label for where the session lives.
+
+    Anchored on the ``projects/`` segment rather than taking a fixed-length
+    suffix: a nested scope's worktree is ``projects/<project>/<a>/<b>``, and the
+    last two parts of that are the scope with the project name dropped.
+    """
     if not cwd:
         return None
     parts = [p for p in cwd.rstrip("/").split("/") if p]
-    return "/".join(parts[-2:]) if parts else None
+    if not parts:
+        return None
+    if "projects" in parts:
+        tail = parts[len(parts) - 1 - parts[::-1].index("projects") + 1:]
+        if tail:
+            return "/".join(tail[:3])
+    return "/".join(parts[-2:])
 
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:

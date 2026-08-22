@@ -35,7 +35,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
-from awm.httpsfront import certs, proxy
+from awm.httpsfront import certs, proxy, store
 
 log = logging.getLogger("awm.httpsfront.hub_adapter")
 
@@ -116,6 +116,8 @@ def _on_start() -> None:
     Runs once, alongside registration. A cert failure is fatal since
     the listener can't come up without TLS.
     """
+    store.init()
+
     sans = certs.resolve_sans(san_file=SANS_FILE)
     info = certs.ensure_certs(CERT_DIR, sans=sans)
     log.info("certs ready (SAN=%s)", info["san"])
