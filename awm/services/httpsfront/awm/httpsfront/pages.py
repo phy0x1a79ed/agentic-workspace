@@ -47,36 +47,43 @@ _STYLE = """
          font-size: 0.85rem; border-radius: 50%; background: transparent;
          color: inherit; opacity: 0.6; }
   .chip button:hover { opacity: 1; background: #3b6fc433; }
-  .filteradd { margin-top: 8px; }
+  .filteradd { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
   select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;
          border: 1px solid #8886; background: Canvas; color: CanvasText; }
   select#addFilter option { background: Canvas; color: CanvasText; }
+  .togglechip { display: inline-flex; align-items: center; padding: 5px 10px;
+         font-size: 0.82rem; border: 1px solid #8886; border-radius: 999px;
+         background: transparent; color: inherit; cursor: pointer; }
+  .togglechip:hover { border-color: #3b6fc4; }
+  .togglechip.active { border-color: #3b6fc4; background: #3b6fc4; color: #fff; }
   .status { margin-top: 6px; font-size: 0.8rem; opacity: 0.6; }
 
   .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;
-         flex-direction: column; gap: 8px; }
-  .card { border: 1px solid #8884; border-radius: 8px; padding: 12px 14px;
+         flex-direction: column; gap: 6px; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: 8px 10px;
          position: relative; }
   .card.hidden { display: none; }
   .card a.pagelink { text-decoration: none; color: inherit; font-weight: 500; }
   .card a.pagelink:hover { color: #3b6fc4; }
+  .card a.pagelink::before { content: ""; position: absolute; inset: 0; }
   .cardfoot { display: flex; justify-content: flex-end; align-items: center;
-         gap: 6px; margin-top: 8px; }
+         gap: 6px; margin-top: 4px; position: relative; z-index: 1;
+         pointer-events: none; }
   .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
   .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;
          padding: 2px 4px 2px 7px; border-radius: 999px; border: 1px solid #8886;
-         opacity: 0.85; }
+         opacity: 0.85; pointer-events: auto; }
   .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;
          font-size: 0.75rem; border-radius: 50%; background: transparent;
          color: inherit; opacity: 0.6; }
   .tagchip button:hover { opacity: 1; background: #8884; }
   .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;
-         font-size: 0.95rem; border-radius: 6px; }
+         font-size: 0.95rem; border-radius: 6px; pointer-events: auto; }
   .dots:hover { opacity: 1; background: #8882; }
   .tagmenu { display: none; position: absolute; right: 12px; bottom: 44px;
          background: Canvas; color: CanvasText; border: 1px solid #8886;
          border-radius: 8px; padding: 10px; min-width: 180px; box-shadow:
-         0 4px 16px #0004; z-index: 10; }
+         0 4px 16px #0004; z-index: 10; pointer-events: auto; }
   .tagmenu.open { display: block; }
   .tagmenu .opt { display: block; width: 100%; text-align: left; padding: 6px 8px;
          background: transparent; color: inherit; border-radius: 6px; font-size: 0.85rem; }
@@ -134,6 +141,7 @@ def landing_page(
     tags_by_page: dict[str, list[str]] | None = None,
     tag_counts: dict[str, int] | None = None,
     selected_tags: list[str] | None = None,
+    peer_name: str = "awm",
 ) -> str:
     """Dynamic index of the registered ``/ui/*`` pages, taggable and
     filterable by tag. ``tags_by_page``/``tag_counts``/``selected_tags`` come
@@ -191,15 +199,16 @@ def landing_page(
     tag_counts_json = json.dumps(tag_counts)
     selected_json = json.dumps(selected_tags)
     total_pages = len(pages)
+    title = html.escape(peer_name)
 
     return f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>awm</title>
+<title>{title}</title>
 <style>{_STYLE}</style>
 </head><body>
-<div class="top"><h1>awm</h1>
+<div class="top"><h1>{title}</h1>
   <a class="logout" href="#" onclick="fetch('/__auth/logout',{{method:'POST'}}).then(()=>location.reload());return false;">sign out</a>
 </div>
 <div class="filterbar" id="filterbar">
@@ -210,13 +219,14 @@ def landing_page(
     <option value="">+ filter by tag&hellip;</option>
 {filter_opts}
   </select>
+  <button type="button" id="showAllToggle" class="togglechip" onclick="toggleShowAll()">show all</button>
 </div>
 <p class="status" id="status"></p>
-<p class="muted">Registered pages on this node:</p>
 {body}
 <script>
 const TAG_COUNTS = {tag_counts_json};
 let SELECTED = {selected_json};
+let SHOW_ALL = false;
 const TOTAL_PAGES = {total_pages};
 
 function escapeHtml(s) {{
@@ -233,12 +243,20 @@ function applyFilter() {{
   let hidden = 0;
   cards.forEach(card => {{
     const tags = cardTags(card);
-    const visible = SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));
+    const visible = SHOW_ALL || SELECTED.length === 0 || tags.some(t => SELECTED.includes(t));
     card.classList.toggle('hidden', !visible);
     if (!visible) hidden++;
   }});
   const status = document.getElementById('status');
-  status.textContent = `${{hidden}} of ${{TOTAL_PAGES}} hidden`;
+  status.textContent = SHOW_ALL
+    ? `showing all ${{TOTAL_PAGES}}`
+    : `${{hidden}} of ${{TOTAL_PAGES}} hidden`;
+}}
+
+function toggleShowAll() {{
+  SHOW_ALL = !SHOW_ALL;
+  document.getElementById('showAllToggle').classList.toggle('active', SHOW_ALL);
+  applyFilter();
 }}
 
 function renderFilterBar() {{

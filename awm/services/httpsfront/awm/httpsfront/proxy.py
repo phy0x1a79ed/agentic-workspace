@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -60,6 +61,8 @@ _HOP = {
 _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 
 _ALL_METHODS = _METHODS  # alias for route registration clarity
+
+_PEER_NAME = socket.gethostname().split(".")[0].title()
 
 
 def _req_headers(request: Request) -> dict[str, str]:
@@ -205,7 +208,7 @@ async def _root(request: Request) -> Response:
     tag_counts = dao.all_tag_counts()
     selected = dao.selected_tags()
     resp = HTMLResponse(
-        pages.landing_page(services, tags_by_page, tag_counts, selected)
+        pages.landing_page(services, tags_by_page, tag_counts, selected, _PEER_NAME)
     )
     if refreshed:
         _set_session_cookie(resp, refreshed,
