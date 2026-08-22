@@ -49,7 +49,8 @@ _STYLE = """
   .chip button:hover { opacity: 1; background: #3b6fc433; }
   .filteradd { margin-top: 8px; }
   select#addFilter { padding: 6px 8px; font-size: 0.85rem; border-radius: 6px;
-         border: 1px solid #8886; background: transparent; color: inherit; }
+         border: 1px solid #8886; background: Canvas; color: CanvasText; }
+  select#addFilter option { background: Canvas; color: CanvasText; }
   .status { margin-top: 6px; font-size: 0.8rem; opacity: 0.6; }
 
   .cards { list-style: none; padding: 0; margin-top: 20px; display: flex;
@@ -62,8 +63,13 @@ _STYLE = """
   .cardfoot { display: flex; justify-content: flex-end; align-items: center;
          gap: 6px; margin-top: 8px; }
   .cardtags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
-  .tagchip { font-size: 0.76rem; padding: 2px 7px; border-radius: 999px;
-         border: 1px solid #8886; opacity: 0.85; }
+  .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.76rem;
+         padding: 2px 4px 2px 7px; border-radius: 999px; border: 1px solid #8886;
+         opacity: 0.85; }
+  .tagchip button { padding: 0; margin: 0; width: 13px; height: 13px; line-height: 1;
+         font-size: 0.75rem; border-radius: 50%; background: transparent;
+         color: inherit; opacity: 0.6; }
+  .tagchip button:hover { opacity: 1; background: #8884; }
   .dots { padding: 2px 6px; background: transparent; color: inherit; opacity: 0.55;
          font-size: 0.95rem; border-radius: 6px; }
   .dots:hover { opacity: 1; background: #8882; }
@@ -151,7 +157,8 @@ def landing_page(
             page_tags = tags_by_page.get(name, [])
             data_tags = html.escape(",".join(page_tags))
             tag_chips = "\n".join(
-                f'      <span class="tagchip">{html.escape(t)}</span>'
+                f'      <span class="tagchip">{html.escape(t)}'
+                f'<button type="button" onclick="removeTag(\'{html.escape(name, quote=True)}\',\'{html.escape(t, quote=True)}\')">&times;</button></span>'
                 for t in page_tags
             )
             cards.append(f"""  <li class="card" data-page="{html.escape(name)}" data-tags="{data_tags}">
@@ -296,6 +303,28 @@ document.addEventListener('click', ev => {{
   if (!ev.target.closest('.tagmenu') && !ev.target.closest('.dots')) closeAllMenus();
 }});
 
+function renderCardTags(page, tags) {{
+  const ep = escapeHtml(page).replace(/'/g,"\\\\'");
+  return tags.map(t => {{
+    const et = escapeHtml(t);
+    return `<span class="tagchip">${{et}}`
+      + `<button type="button" onclick="removeTag('${{ep}}','${{et.replace(/'/g,"\\\\'")}}')">&times;</button></span>`;
+  }}).join('');
+}}
+
+function applyTagUpdate(page, data) {{
+  Object.assign(TAG_COUNTS, data.tag_counts);
+  Object.keys(TAG_COUNTS).forEach(k => {{ if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; }});
+  const card = document.querySelector(`.card[data-page="${{CSS.escape(page)}}"]`);
+  if (card) {{
+    card.dataset.tags = data.tags.join(',');
+    card.querySelector('.cardtags').innerHTML = renderCardTags(page, data.tags);
+    closeAllMenus();
+  }}
+  renderFilterBar();
+  applyFilter();
+}}
+
 async function addTag(page, tag) {{
   tag = (tag || '').trim();
   if (!tag) return;
@@ -303,18 +332,15 @@ async function addTag(page, tag) {{
     headers:{{'Content-Type':'application/json'}},
     body: JSON.stringify({{page, tag}})}});
   if (!r.ok) return;
-  const data = await r.json();
-  Object.assign(TAG_COUNTS, data.tag_counts);
-  Object.keys(TAG_COUNTS).forEach(k => {{ if (!(k in data.tag_counts)) delete TAG_COUNTS[k]; }});
-  const card = document.querySelector(`.card[data-page="${{CSS.escape(page)}}"]`);
-  if (card) {{
-    card.dataset.tags = data.tags.join(',');
-    card.querySelector('.cardtags').innerHTML =
-      data.tags.map(t => `<span class="tagchip">${{escapeHtml(t)}}</span>`).join('');
-    closeAllMenus();
-  }}
-  renderFilterBar();
-  applyFilter();
+  applyTagUpdate(page, await r.json());
+}}
+
+async function removeTag(page, tag) {{
+  const r = await fetch('/__landing/tags', {{method:'DELETE',
+    headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{page, tag}})}});
+  if (!r.ok) return;
+  applyTagUpdate(page, await r.json());
 }}
 
 applyFilter();

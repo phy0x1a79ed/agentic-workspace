@@ -232,6 +232,25 @@ async def _landing_add_tag(request: Request) -> Response:
     })
 
 
+async def _landing_remove_tag(request: Request) -> Response:
+    """``DELETE /__landing/tags`` — body ``{page, tag}``. Returns the page's
+    updated tag list plus the refreshed global tag counts."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    tag = str((data or {}).get("tag") or "").strip()
+    if not page or not tag:
+        return JSONResponse({"error": "page and tag are required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.remove_tag(page, tag)
+    return JSONResponse({
+        "tags": dao.tags_for_page(page),
+        "tag_counts": dao.all_tag_counts(),
+    })
+
+
 async def _landing_select_filter(request: Request) -> Response:
     """``POST /__landing/filter`` — body ``{tag}``. Selects ``tag`` as a filter."""
     try:
@@ -480,6 +499,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/", _root, methods=["GET"]))
         # Tag/filter endpoints backing the landing page's tagging UI.
         routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
+        routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
         routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
         routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
     for path, methods, handler in (extra_routes or ()):
