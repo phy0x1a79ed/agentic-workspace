@@ -406,6 +406,20 @@ class BrowserManager:
         self._attach_backend = AttachBackend()
         self._sessions: dict[str, _Session] = {}
         self._lock = asyncio.Lock()
+        # session_id -> peer name, for `attached` sessions forwarded to a peer
+        # that owns the real Chrome (see hub_adapter._build()). In-memory only:
+        # never persisted, since the owning peer's own DAO row is the durable
+        # record — this is just local routing memory for this node's adapter.
+        self._attach_forwards: dict[str, str] = {}
+
+    def note_forwarded(self, session_id: str, peer: str) -> None:
+        self._attach_forwards[session_id] = peer
+
+    def forwarded_peer(self, session_id: str) -> str | None:
+        return self._attach_forwards.get(session_id)
+
+    def forget_forwarded(self, session_id: str) -> None:
+        self._attach_forwards.pop(session_id, None)
 
     def _backend_for(self, mode: str) -> LaunchBackend:
         return self._attach_backend if mode == "attached" else self._launch_backend
