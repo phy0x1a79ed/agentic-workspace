@@ -111,9 +111,20 @@ class LandingDAO(BaseDAO):
             "DELETE FROM page_tags WHERE page = ? AND tag = ?",
             (page, tag),
         )
+        # A tag with no remaining page can't be a live filter option either —
+        # drop it from selected_tags so it doesn't linger as a stale chip.
+        self.execute(
+            "DELETE FROM selected_tags WHERE tag = ? "
+            "AND tag NOT IN (SELECT DISTINCT tag FROM page_tags)",
+            (tag,),
+        )
 
     def selected_tags(self) -> list[str]:
-        rows = self.query_all("SELECT tag FROM selected_tags ORDER BY tag")
+        rows = self.query_all(
+            "SELECT tag FROM selected_tags "
+            "WHERE tag IN (SELECT DISTINCT tag FROM page_tags) "
+            "ORDER BY tag"
+        )
         return [r["tag"] for r in rows]
 
     def select_tag(self, tag: str) -> None:
