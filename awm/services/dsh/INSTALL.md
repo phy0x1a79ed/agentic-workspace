@@ -36,35 +36,29 @@ added to `httpsfront` for exactly this (see that service's INSTALL.md for why th
 default is off). It applies on the WebSocket path too; a rewrite on HTTP alone
 yields a GUI that loads and then silently never streams.
 
-**Settings are loopback-only, and no proxy can change that.** The fence above is
-a server check and the rewrite satisfies it. The harness's *client* makes a
-second, independent decision: `isLoopbackHostname(location.hostname)` — literally
-`localhost`, `[::1]`, or `127.x.x.x` — chooses between a host-backed settings
-mirror and an in-memory one. On a mesh address the mirror never loads and the
-Models page reports "settings are unavailable in this browser". That is
-`location`, not a header, so nothing this service does reaches it, and
-`--trusted-host` does not either — it only widens the server fence.
+**Settings work over the mesh because the fork widened one client decision.**
+The fence above is a server check and the rewrite satisfies it. The harness's
+*client* makes a second, independent decision: which backing store the settings
+mirror uses. Upstream picks `host` only when `location.hostname` is loopback, so
+on a mesh address the mirror stayed empty, the Models page reported "settings are
+unavailable in this browser", and the Plugins page rendered no cards. That is
+`location`, not a header, so no proxy setting reaches it.
 
-Everything else works over the mesh: conversations, the per-session model picker,
-the workspace picker (which resolves to the `browse` backend on a non-loopback
-bind), tools. What is lost is the Settings pages and the native "open this file"
-affordance on produced files — the latter correctly, since it would open a file
-on this VM's absent desktop.
+The fork adds `ConnectionHandle.settingsTrusted`, which also admits an `https:`
+page. The harness serves plain HTTP on loopback, so an `https:` page can only
+have arrived through this service's TLS front, which authenticates every request
+against the edge session first. Three things stay narrow on purpose:
 
-The route is the one thing anyone actually needs from Settings, so it has a verb:
+- `isLoopback` keeps its meaning, so the native "open this file" affordance stays
+  off over a network. It would open a file on this VM's absent desktop.
+- The server-side `/api` Host fence is untouched.
+- A plain-HTTP page on a non-loopback host is still refused.
+
+The route also has a verb, which is what to reach for without a browser:
 `awm dsh model` reports the selection and the route's catalog, and
 `awm dsh model --model <id>` changes it. `dsh-settings-file` watches the document
 and hot-publishes external edits, so that applies without a restart. Writes take
-the same `<file>.lock` the harness writes under, and never steal it. For the full
-Settings UI, put a local TCP relay on the *viewing* machine and open
-`https://127.0.0.1:12301` — the shared leaf already carries `IP:127.0.0.1`, so
-there is no certificate warning:
-
-```
-socat TCP-LISTEN:12301,bind=127.0.0.1,fork,reuseaddr TCP:10.74.81.84:12301   # linux/mac
-netsh interface portproxy add v4tov4 listenaddress=127.0.0.1 listenport=12301 \
-      connectaddress=10.74.81.84 connectport=12301                           # windows
-```
+the same `<file>.lock` the harness writes under, and never steal it.
 
 **The model route is seeded, not owned.** `$DSH_HOME/settings.yaml` gets two
 sections on first start and neither is ever touched again — a route tuned in the
@@ -87,6 +81,11 @@ session id of whichever agent's shell started it, so everything it spawns is
 attributable to that agent and therefore reapable. A long-lived node process
 that is idle until it streams is exactly the shape of a victim. Only the harness
 itself is listed; what it spawns to do work is work.
+
+CAUTION: the entry matches the launcher path
+`deepseek-harness/…/apps/cli/lib/bin.js`, because nothing on the command line is
+called `dsh` any more. Changing how `harness.py` spawns the child without
+changing that pattern makes the harness reapable again, and nothing reports it.
 
 ## Registrations
 
@@ -116,8 +115,57 @@ The harness itself listens on loopback `12311`.
 Idempotent, and it runs on every deploy via `awm/gateway/install.sh`. It installs
 the Python bits (including `httpsfront`, whose cert handling, auth gate and
 reverse proxy the front is a *configuration* of), writes `.runtime-env`, creates
-the `dsh` mamba env pinned to nodejs 24 if it is missing, and installs the
-pinned harness into `<workspace>/.awm/services/dsh/runtime/`.
+the `dsh` mamba env pinned to nodejs 24 if it is missing, and builds the harness
+fork.
+
+**The harness is a project, not a dependency.** `projects/deepseek-harness` is a
+fork of `deepseek-ai/deepseek-harness` with three branches: `master` mirrors
+upstream and has no worktree, `dev` carries every change we author, and `release`
+is what a deployed node serves. Create it once per node:
+
+```
+awm project create --name deepseek-harness \
+    --fork-url https://github.com/deepseek-ai/deepseek-harness
+awm scope create --project deepseek-harness --scope dev     --branch-name dev
+awm scope create --project deepseek-harness --scope release --branch-name release
+```
+
+CAUTION: `awm scope delete` removes the scope's branch as well as its worktree,
+so retiring the `master` worktree that `project create` scaffolds deletes the
+`master` branch and leaves the bare repo's HEAD dangling. Recreate it with
+`git branch master <sha>` and `git symbolic-ref HEAD refs/heads/master`.
+
+A worktree there is not a checkout of a harness. It **is** a runnable harness:
+`pnpm install --frozen-lockfile` then `pnpm run build` produces `apps/cli/lib/bin.js`,
+which is the CLI `harness.py` launches. Everything untracked inside it —
+`node_modules/`, each package's `lib/` — is derived from tracked files, so the
+deployed state and the repository state are the same thing. That is the whole
+reason for the fork: a change to the harness is a commit, not an edit to a build
+artifact nobody tracks.
+
+So the chain from fork to served GUI is:
+
+1. `dev` is where you edit. `pnpm run dev:web` watches and rewrites each package's
+   `lib/client.js`, and the harness's own HMR broadcasts a `rebuilt` frame over
+   `GET /plugins/events`, so a client-side edit reaches an open browser in about
+   ten seconds with no restart.
+2. `git -C ../release merge dev` promotes it. That merge is the transaction.
+3. `install.sh` rebuilds `release` and stamps the build.
+4. `harness.py` spawns `node <release>/apps/cli/lib/bin.js --profile web` on
+   loopback, and the front puts it on the mesh.
+
+**Builds are stamped, not sniffed.** `<fork>/.awm/dsh-build-stamp` records the
+commit, the dirty flag and the lockfile hash the current `lib/` was built from.
+A deploy whose tree has not moved costs 0.1 s instead of a 45 s incremental build
+or a 2.5 min cold one. `awm dsh status` reports the same three facts under
+`source`, so a stale or hand-edited deployment is visible rather than something
+you infer from a symptom. `DSH_SKIP_BUILD=1` opts out.
+
+A node with no fork is not an error. `install.sh` warns, the service registers,
+and `status` reports it unbuilt — because the gateway runs every service's
+install under `set -e`, so failing here would abort the whole deploy on a node
+that simply does not serve the harness. `DSH_REQUIRE_HARNESS=1` makes it fatal on
+a node that is supposed to have one.
 
 **Node comes from its own env.** The harness needs >= 22.19; the node on the host
 PATH is 22.16 and carries no npm, so borrowing it is not an option. The absolute
@@ -125,19 +173,30 @@ bin directory is recorded in `.awm/services/dsh/node-bin`, because the superviso
 respawns under systemd's minimal PATH where neither `node` nor the `mamba` that
 could find it exists.
 
-**pnpm, not npm.** The harness is a pnpm workspace upstream and `dsh plugin`
-shells out to pnpm, but the operative reason is that npm 11's peer resolver does
-not converge on this tree in any usable time — the one run that finished needed
-`--legacy-peer-deps`, which silently omits `@deepseek-ai/cordis-plugin-group` and
-fails at first launch with `ERR_MODULE_NOT_FOUND`. pnpm resolves it in seconds.
-Install settings live in `runtime/pnpm-workspace.yaml`: `shamefullyHoist` because
-the harness resolves plugin packages by bare name from its own boot bundle, and
-an `allowBuilds` list because pnpm 11 will not run a package's build scripts
-unless named — without it `node-pty` and `koffi` have no natives and every tool
-that touches a subprocess fails at use time while the GUI still loads fine.
+**pnpm, not npm.** The harness declares `packageManager: pnpm@11.7.0` and is a
+pnpm workspace of ~250 projects. npm 11's peer resolver does not converge on this
+tree in any usable time — the one run that finished needed `--legacy-peer-deps`,
+which silently omits `@deepseek-ai/cordis-plugin-group` and fails at first launch
+with `ERR_MODULE_NOT_FOUND`. The pnpm `install.sh` puts in the node env is only a
+bootstrap: it reads `packageManager` and hands off to the pinned version, so the
+build runs under upstream's toolchain. Install settings come from the workspace's
+own `pnpm-workspace.yaml`, whose `allowBuilds` already names `node-pty` and
+`koffi` — without their natives every tool that touches a subprocess fails at use
+time while the GUI still loads fine.
 
-**The version is pinned.** dsh is an explicit developer preview that promises
-compatibility-breaking changes; bumping `DSH_VERSION` is a deliberate step.
+CAUTION: `install.sh` sets `CI=true` for both pnpm commands. The root
+`postinstall` runs `scripts/install-lefthook.mjs`, which cannot enable
+`extensions.worktreeConfig` against a bare repo's config and fails the entire
+install. That script returns early on exactly the string `true`, and git hooks
+have no business in a supervised worktree.
+
+**The version moves by merge.** dsh is an explicit developer preview that
+promises compatibility-breaking changes. Take a new one by fetching `upstream`
+and merging `upstream/master` into `dev`, which puts our edits in the conflict
+path where they can be reviewed, then promote `dev` to `release`.
+
+WARNING: `dsh-session` keeps `SESSION_FORMAT_VERSION` at `0` with no
+compatibility promise, so back up `$DSH_HOME` before a version move.
 
 **Certificates are borrowed, not minted.** This node is a deliberate *trust
 consumer* — it holds `ca.pem` without `ca-key.pem`, so it must not sign, because
@@ -155,23 +214,23 @@ awm services list                 # dsh: ready
 awm dsh status                    # version, pid, listening, front, model route
 ```
 
-`status` reports the three states separately on purpose. `harness.listening`
+`status` reports the states separately on purpose. `harness.listening`
 false with `running` true means the process came up and failed to bind — read
 `awm dsh logs`. `front.serving` false is a TLS or certificate problem, not a
 harness problem. The `model_route` block reports three things that fail the
 same way — nothing answers — and need three different fixes:
-`provider_declared`, `key_available`, and `default_model_ours`.
+`provider_declared`, `key_available`, and `default_model_ours`. `source.dirty`
+true means somebody edited the serving worktree, and `source.built_current`
+false means the built bundles are older than the commit that is checked out.
 
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
 2. `/ui/dsh` — the reception page; **Open harness** goes to `https://<mesh-ip>:12301/`.
-3. Start a session and open the composer's model picker — it is a plain RPC and
-   must list the route's models. **Settings will not open on a mesh address**;
-   that is upstream's client-side loopback rule, not a fault. The route is
-   testable without a browser at all:
-   `dsh --profile headless "Reply with exactly the word PONG and nothing else."`
-   with `DSH_HOME` and `OPENROUTER_API_KEY` set.
+3. Open **Settings → Models**. It must list the provider directory with an
+   `openrouter` row. **Settings → Plugins** must render configuration cards.
+   Both empty, or "settings are unavailable in this browser", means the page did
+   not reach `settingsTrusted` — check that the address really is `https:`.
 4. Send one prompt and watch it *stream*. A response that arrives in one lump, or
    not at all, is the WebSocket path — a rewrite that reached HTTP and not WS.
 
@@ -182,11 +241,16 @@ A device that has never talked to awm needs the root once:
 
 | Var | Default | Effect |
 |---|---|---|
-| `DSH_STATE_DIR` | `<workspace>/.awm/services/dsh` | runtime, `$DSH_HOME`, log, `node-bin` |
+| `DSH_FORK_DIR` | `<workspace>/projects/deepseek-harness/release` | the harness worktree this node builds and serves |
+| `DSH_STATE_DIR` | `<workspace>/.awm/services/dsh` | `$DSH_HOME`, log, `node-bin` |
 | `DSH_HOME` | `<state>/home` | the harness's own data dir |
 | `DSH_UPSTREAM_PORT` | `12311` | loopback port the harness binds |
 | `DSH_FRONT_PORT` | `12301` | mesh TLS port |
 | `DSH_WORKDIR` | the workspace root | the harness's cwd, so any project is pickable |
 | `DSH_NODE_ENV` | `dsh` | mamba env holding node (install-time only) |
-| `DSH_VERSION` | pinned in `install.sh` | harness version to install |
+| `DSH_SKIP_BUILD` | unset | `1` leaves the fork's build alone (install-time only) |
+| `DSH_REQUIRE_HARNESS` | unset | `1` makes a missing fork fatal (install-time only) |
 | `DSH_AUTH_JSON` | `~/.local/share/opencode/auth.json` | where the OpenRouter key is read from |
+
+Point `DSH_FORK_DIR` at `projects/deepseek-harness/dev` in a sandbox's gitignored
+`awm/gateway/dev/.env` to run the hot loop against a supervised service.
