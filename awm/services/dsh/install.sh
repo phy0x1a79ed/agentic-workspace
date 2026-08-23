@@ -24,21 +24,39 @@
 # Override the target env with AWM_ENV=<name>.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-WS="$(git -C "$HERE" rev-parse --show-toplevel)"
 ENV="${AWM_ENV:-awm}"
+
+# Two different roots, and they coincide only in the deployed tree. REPO is the
+# awm checkout this script belongs to. WS is the workspace holding `projects/`
+# and `.awm/`. Run from a scope worktree they differ, and using the git toplevel
+# for a `projects/` path silently addresses a directory that does not exist.
+REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+workspace_root() {
+    [ -n "${AWM_WORKSPACE:-}" ] && { printf '%s\n' "$AWM_WORKSPACE"; return; }
+    local d="$1"
+    while [ "$d" != "/" ]; do
+        if [ -d "$d/projects" ] && [ -f "$d/AGENTS.md" ]; then
+            printf '%s\n' "$d"
+            return
+        fi
+        d="$(dirname "$d")"
+    done
+    printf '%s\n' "$REPO"          # standalone checkout: nothing above it
+}
+WS="$(workspace_root "$HERE")"
 
 NODE_ENV_NAME="${DSH_NODE_ENV:-dsh}"
 STATE_DIR="${DSH_STATE_DIR:-$WS/.awm/services/dsh}"
-# The harness fork worktree this node serves. `release` by default; a dev
+# The harness fork worktree this node serves. `release` by default. A dev
 # sandbox points DSH_FORK_DIR at `dev`.
 FORK_DIR="${DSH_FORK_DIR:-$WS/projects/deepseek-harness/release}"
 
 run() { echo "+ pip install -e $*"; mamba run -n "$ENV" pip install -e "$@"; }
 
-run "$WS/awm/service_components/config" --no-deps
-run "$WS/awm/service_components/gatewayclient" --no-deps
-run "$WS/awm/services/httpsfront" --no-deps
-run "$WS/awm/services/dsh"
+run "$REPO/awm/service_components/config" --no-deps
+run "$REPO/awm/service_components/gatewayclient" --no-deps
+run "$REPO/awm/services/httpsfront" --no-deps
+run "$REPO/awm/services/dsh"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`
 # sidecar so the hub supervisor can respawn this service under systemd's
@@ -88,9 +106,7 @@ command -v "$NODE_BIN/pnpm" >/dev/null 2>&1 || \
 # warning would be the wrong answer.
 if [ ! -e "$FORK_DIR/.git" ]; then
     echo "warning: no harness fork at $FORK_DIR — dsh will register unbuilt." >&2
-    echo "  awm project create --name deepseek-harness \\" >&2
-    echo "      --fork-url https://github.com/deepseek-ai/deepseek-harness" >&2
-    echo "  then create the 'dev' and 'release' scopes from tag dsh-v0.1.1-rc.2." >&2
+    echo "  run $HERE/bootstrap-fork.sh to create it." >&2
     if [ "${DSH_REQUIRE_HARNESS:-}" = "1" ]; then
         exit 1
     fi

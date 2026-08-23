@@ -4,10 +4,20 @@ DeepSeek Harness — a plugin-based agent harness whose primary surface is a
 browser UI — supervised by awm, wired to OpenRouter, and put on the ZeroTier
 mesh behind awm's edge session.
 
-Upstream ships it as a loopback-only web server: it binds `127.0.0.1` by design
+Upstream ships it as a loopback-only web server. It binds `127.0.0.1` by design
 and refuses `--host 0.0.0.0` outright. This node is a cloud VM whose only route
 to a person is the mesh, so everything here is about crossing that gap without
 weakening the posture that makes loopback-only the right default.
+
+## Purpose & Contents
+
+This file holds the decisions a reader cannot recover from the code: why the
+harness sits behind a dedicated front instead of a gateway mount, why a mesh
+page is trusted for settings, and how a forked source tree becomes a served GUI.
+
+The harness's own architecture belongs to `projects/deepseek-harness` and its
+upstream docs. Each scope's `.awm/context.md` there says which branch does what.
+This file covers only the boundary between awm and the harness.
 
 ## The contract
 
@@ -19,10 +29,14 @@ stack — no adoption protocol, no orphan to find later. The child gets its own
 session so the node process tree can be signalled as a group, and
 `PR_SET_PDEATHSIG` closes the window between the fork and the first instruction.
 
-**Why not a gateway `kind=url` mount.** Three independent blockers, not one: the
-gateway's url proxy forwards the full request path without stripping the mount
-prefix, the harness's frontend is built with an absolute asset base and has no
-base-path option, and the gateway's WebSocket bridge forwards no headers at all.
+**Why not a gateway `kind=url` mount.** Three independent blockers, not one:
+
+- The gateway's url proxy forwards the full request path without stripping the
+  mount prefix.
+- The harness's frontend builds with an absolute asset base and offers no
+  base-path option.
+- The gateway's WebSocket bridge forwards no headers at all.
+
 A dedicated front on its own port is the design. Don't re-derive this.
 
 **The `Origin` rewrite is what makes the GUI work at all.** Every `/api` request
@@ -33,8 +47,8 @@ first half without any grant. It forwards `Origin` verbatim, though, which leave
 the fence comparing a mesh origin to a loopback host — 403 on every call,
 handshakes included. The front therefore passes `rewrite_origin=True`, an opt-in
 added to `httpsfront` for exactly this (see that service's INSTALL.md for why the
-default is off). It applies on the WebSocket path too; a rewrite on HTTP alone
-yields a GUI that loads and then silently never streams.
+default is off). It applies on the WebSocket path too. A rewrite that reaches
+HTTP alone yields a GUI that loads and never streams.
 
 **Settings work over the mesh because the fork widened one client decision.**
 The fence above is a server check and the rewrite satisfies it. The harness's
@@ -68,7 +82,7 @@ ships `agent-default-model = deepseek-official/deepseek-v4-flash`, so a harness
 with a perfectly good OpenRouter route still fails every request with
 `MISSING_CREDENTIAL` against a key this workspace does not hold. Settings
 sections are keyed by the *plugin id* in the composed profile — `llm-pi-ai` and
-`agent-default-model`; `dsh --profile web --dump-config` is where those names
+`agent-default-model`. `dsh --profile web --dump-config` is where those names
 come from, and guessing either produces a file the harness reads and ignores.
 The credential is *referenced*: the provider block carries
 `apiKeyEnv: OPENROUTER_API_KEY`, and the supervisor reads that value out of
@@ -80,7 +94,7 @@ this service's state.
 session id of whichever agent's shell started it, so everything it spawns is
 attributable to that agent and therefore reapable. A long-lived node process
 that is idle until it streams is exactly the shape of a victim. Only the harness
-itself is listed; what it spawns to do work is work.
+itself is listed. What it spawns to do work is work.
 
 CAUTION: the entry matches the launcher path
 `deepseek-harness/…/apps/cli/lib/bin.js`, because nothing on the command line is
@@ -100,7 +114,7 @@ The front is not a gateway registration — it is a listener this process owns,
 the same shape as `httpsfront`'s own, and it dies with the service.
 
 A third thing appears without this process doing anything: the reception page at
-`/ui/dsh`, which the gateway mounts on any node where the page has been *built*.
+`/ui/dsh`, which the gateway mounts on any node where the page is *built*.
 It reports the harness, the front and the model route as three separate states,
 because those are three different failures with three different fixes.
 
@@ -112,63 +126,61 @@ The harness itself listens on loopback `12311`.
 ./install.sh
 ```
 
-Idempotent, and it runs on every deploy via `awm/gateway/install.sh`. It installs
-the Python bits (including `httpsfront`, whose cert handling, auth gate and
-reverse proxy the front is a *configuration* of), writes `.runtime-env`, creates
-the `dsh` mamba env pinned to nodejs 24 if it is missing, and builds the harness
-fork.
+`awm/gateway/install.sh` runs this on every deploy. Every step is idempotent and
+skips itself when already satisfied. It does four things:
 
-**The harness is a project, not a dependency.** `projects/deepseek-harness` is a
-fork of `deepseek-ai/deepseek-harness` with three branches: `master` mirrors
-upstream and has no worktree, `dev` carries every change we author, and `release`
-is what a deployed node serves. Create it once per node:
+- Installs the Python bits, including `httpsfront`, whose cert handling, auth
+  gate and reverse proxy the front is a *configuration* of.
+- Writes `.runtime-env`, the absolute interpreter the supervisor respawns with.
+- Creates the `dsh` mamba env pinned to nodejs 24 when it is missing.
+- Builds the harness fork.
+
+**The harness is a project, not a dependency.**
 
 ```
-awm project create --name deepseek-harness \
-    --fork-url https://github.com/deepseek-ai/deepseek-harness
-awm scope create --project deepseek-harness --scope dev     --branch-name dev
-awm scope create --project deepseek-harness --scope release --branch-name release
+./bootstrap-fork.sh          # once per node
 ```
 
-CAUTION: `awm scope delete` removes the scope's branch as well as its worktree,
-so retiring the `master` worktree that `project create` scaffolds deletes the
-`master` branch and leaves the bare repo's HEAD dangling. Recreate it with
-`git branch master <sha>` and `git symbolic-ref HEAD refs/heads/master`.
+`projects/deepseek-harness` forks `deepseek-ai/deepseek-harness` into three
+branches. `master` mirrors upstream and carries no worktree. `dev` carries every
+change we author. `release` is what a deployed node serves. `bootstrap-fork.sh`
+creates all three and restores the `master` branch that retiring its worktree
+destroys. Run the script rather than the commands inside it.
 
-A worktree there is not a checkout of a harness. It **is** a runnable harness:
-`pnpm install --frozen-lockfile` then `pnpm run build` produces `apps/cli/lib/bin.js`,
-which is the CLI `harness.py` launches. Everything untracked inside it —
-`node_modules/`, each package's `lib/` — is derived from tracked files, so the
-deployed state and the repository state are the same thing. That is the whole
-reason for the fork: a change to the harness is a commit, not an edit to a build
-artifact nobody tracks.
+`install.sh` never creates the fork, because cloning 109 MB is not something a
+deploy may do behind your back. It warns instead, the service registers, and
+`status` reports the harness unbuilt. The gateway runs every service's install
+under `set -e`, so failing here aborts the whole deploy on a node that simply
+does not serve the harness. `DSH_REQUIRE_HARNESS=1` makes it fatal on a node
+that is supposed to have one.
 
-So the chain from fork to served GUI is:
+**A worktree is not a checkout of a harness. It is a runnable harness.**
+`pnpm install --frozen-lockfile` followed by `pnpm run build` produces
+`apps/cli/lib/bin.js`, the CLI `harness.py` launches. Everything untracked inside
+the worktree — `node_modules/`, each package's `lib/` — derives from tracked
+files, so the deployed state and the repository state are the same thing. A
+change to the harness is therefore a commit, not an edit to a build artifact
+nobody tracks. That is the whole reason for the fork.
 
-1. `dev` is where you edit. `pnpm run dev:web` watches and rewrites each package's
-   `lib/client.js`, and the harness's own HMR broadcasts a `rebuilt` frame over
-   `GET /plugins/events`, so a client-side edit reaches an open browser in about
-   ten seconds with no restart.
-2. `git -C ../release merge dev` promotes it. That merge is the transaction.
-3. `install.sh` rebuilds `release` and stamps the build.
+The chain from an edit to a served GUI:
+
+1. Edit in `dev`. `pnpm run dev:web` rewrites each package's `lib/client.js`, and
+   the harness's HMR broadcasts a `rebuilt` frame over `GET /plugins/events`, so
+   the edit reaches an open browser in about ten seconds with no restart.
+2. Run `git -C ../release merge dev`. That merge is the transaction.
+3. Run `install.sh`. It rebuilds `release` and stamps the build.
 4. `harness.py` spawns `node <release>/apps/cli/lib/bin.js --profile web` on
-   loopback, and the front puts it on the mesh.
+   loopback. The front puts it on the mesh.
 
 **Builds are stamped, not sniffed.** `<fork>/.awm/dsh-build-stamp` records the
-commit, the dirty flag and the lockfile hash the current `lib/` was built from.
-A deploy whose tree has not moved costs 0.1 s instead of a 45 s incremental build
-or a 2.5 min cold one. `awm dsh status` reports the same three facts under
-`source`, so a stale or hand-edited deployment is visible rather than something
-you infer from a symptom. `DSH_SKIP_BUILD=1` opts out.
+commit, the dirty flag and the lockfile hash the current `lib/` came from. A
+deploy whose tree stayed put costs 0.1 s instead of a 45 s incremental build or a
+2.5 min cold one. `awm dsh status` reports the same three facts under `source`,
+so a stale or hand-edited deployment is visible rather than something you infer
+from a symptom. `DSH_SKIP_BUILD=1` opts out.
 
-A node with no fork is not an error. `install.sh` warns, the service registers,
-and `status` reports it unbuilt — because the gateway runs every service's
-install under `set -e`, so failing here would abort the whole deploy on a node
-that simply does not serve the harness. `DSH_REQUIRE_HARNESS=1` makes it fatal on
-a node that is supposed to have one.
-
-**Node comes from its own env.** The harness needs >= 22.19; the node on the host
-PATH is 22.16 and carries no npm, so borrowing it is not an option. The absolute
+**Node comes from its own env.** The harness needs >= 22.19. The node on the host
+PATH is 22.16 and carries no npm, so this env is the only source. The absolute
 bin directory is recorded in `.awm/services/dsh/node-bin`, because the supervisor
 respawns under systemd's minimal PATH where neither `node` nor the `mamba` that
 could find it exists.
@@ -184,11 +196,9 @@ own `pnpm-workspace.yaml`, whose `allowBuilds` already names `node-pty` and
 `koffi` — without their natives every tool that touches a subprocess fails at use
 time while the GUI still loads fine.
 
-CAUTION: `install.sh` sets `CI=true` for both pnpm commands. The root
-`postinstall` runs `scripts/install-lefthook.mjs`, which cannot enable
-`extensions.worktreeConfig` against a bare repo's config and fails the entire
-install. That script returns early on exactly the string `true`, and git hooks
-have no business in a supervised worktree.
+CAUTION: a bare `pnpm install` in a fork worktree fails. `install.sh` sets the
+one environment variable that avoids it, and explains why at that line. Copy the
+command from there before running pnpm by hand.
 
 **The version moves by merge.** dsh is an explicit developer preview that
 promises compatibility-breaking changes. Take a new one by fetching `upstream`
@@ -226,7 +236,7 @@ false means the built bundles are older than the commit that is checked out.
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
-2. `/ui/dsh` — the reception page; **Open harness** goes to `https://<mesh-ip>:12301/`.
+2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12301/`.
 3. Open **Settings → Models**. It must list the provider directory with an
    `openrouter` row. **Settings → Plugins** must render configuration cards.
    Both empty, or "settings are unavailable in this browser", means the page did
