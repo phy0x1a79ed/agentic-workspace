@@ -478,6 +478,12 @@ def gateway_register(
         "app", "--mount-id",
         help="DOM id of the mount node in the auto-shell.",
     ),
+    strip_prefix: bool = typer.Option(
+        False, "--strip-prefix",
+        help="With --url: forward the path with --prefix removed and send "
+             "X-Forwarded-Prefix. Use for an upstream that serves at the root "
+             "and rebases its own links from that header.",
+    ),
 ):
     """Register a service and hold a WS lease until interrupted.
 
@@ -503,6 +509,9 @@ def gateway_register(
     if url and (entry or css or mount_id != "app"):
         typer.echo("--entry/--css/--mount-id only apply with --dir", err=True)
         raise typer.Exit(2)
+    if strip_prefix and not url:
+        typer.echo("--strip-prefix only applies with --url", err=True)
+        raise typer.Exit(2)
 
     if dir:
         from pathlib import Path as _Path
@@ -519,8 +528,9 @@ def gateway_register(
         }
         summary = f"dir={dir_abs}"
     else:
-        payload = {"name": name, "prefix": prefix, "url": url}
-        summary = f"url={url}"
+        payload = {"name": name, "prefix": prefix, "url": url,
+                   "strip_prefix": strip_prefix}
+        summary = f"url={url}" + (" (prefix stripped)" if strip_prefix else "")
 
     try:
         r = httpx.post(f"{BASE_URL}/hub/register", json=payload, timeout=10)

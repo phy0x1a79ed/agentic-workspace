@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -61,10 +63,29 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 
 _ALL_METHODS = _METHODS  # alias for route registration clarity
 
+_PEER_NAME = socket.gethostname().split(".")[0].title()
+
+
+def _origin_override(app) -> str | None:
+    """The scheme+authority a rewriting front presents as ``Origin``, or None.
+
+    ``_HOP`` drops the browser's ``Host`` so httpx derives it from the upstream
+    URL — so an upstream that compares ``Origin`` against ``Host`` sees a pair
+    that cannot match while ``Origin`` is forwarded verbatim. Rewriting it to
+    the upstream's own origin restores the comparison the upstream is actually
+    trying to make: same-origin, as it would be on loopback.
+    """
+    return getattr(app.state, "origin_override", None)
+
 
 def _req_headers(request: Request) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
+    override = _origin_override(request.app)
+    # Only rewrite a header the browser actually sent: minting an Origin where
+    # there was none turns a same-origin navigation into a cross-origin one.
+    if override and "origin" in hdrs:
+        hdrs["origin"] = override
     # ``host`` is dropped above so httpx derives it from the upstream URL, which
     # means the upstream otherwise cannot tell what address the browser used.
     # awm's own services never needed that, but a reverse-proxied third party
@@ -204,8 +225,12 @@ async def _root(request: Request) -> Response:
     tags_by_page = dao.tags_by_page(page_names)
     tag_counts = dao.all_tag_counts()
     selected = dao.selected_tags()
+    display_names = dao.display_names(page_names)
     resp = HTMLResponse(
-        pages.landing_page(services, tags_by_page, tag_counts, selected)
+        pages.landing_page(
+            services, tags_by_page, tag_counts, selected, _PEER_NAME,
+            display_names=display_names,
+        )
     )
     if refreshed:
         _set_session_cookie(resp, refreshed,
@@ -226,6 +251,25 @@ async def _landing_add_tag(request: Request) -> Response:
         return JSONResponse({"error": "page and tag are required"}, status_code=400)
     dao = store.LandingDAO()
     dao.add_tag(page, tag)
+    return JSONResponse({
+        "tags": dao.tags_for_page(page),
+        "tag_counts": dao.all_tag_counts(),
+    })
+
+
+async def _landing_remove_tag(request: Request) -> Response:
+    """``DELETE /__landing/tags`` — body ``{page, tag}``. Returns the page's
+    updated tag list plus the refreshed global tag counts."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    tag = str((data or {}).get("tag") or "").strip()
+    if not page or not tag:
+        return JSONResponse({"error": "page and tag are required"}, status_code=400)
+    dao = store.LandingDAO()
+    dao.remove_tag(page, tag)
     return JSONResponse({
         "tags": dao.tags_for_page(page),
         "tag_counts": dao.all_tag_counts(),
@@ -258,6 +302,25 @@ async def _landing_deselect_filter(request: Request) -> Response:
     dao = store.LandingDAO()
     dao.deselect_tag(tag)
     return JSONResponse({"selected_tags": dao.selected_tags()})
+
+
+async def _landing_set_name(request: Request) -> Response:
+    """``POST /__landing/name`` — body ``{page, name}``. A blank/whitespace-only
+    ``name`` clears the override, reverting the card to its technical label."""
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    page = str((data or {}).get("page") or "").strip()
+    name = str((data or {}).get("name") or "").strip()
+    if not page:
+        return JSONResponse({"error": "page is required"}, status_code=400)
+    dao = store.LandingDAO()
+    if name:
+        dao.set_display_name(page, name)
+    else:
+        dao.clear_display_name(page)
+    return JSONResponse({"display_name": dao.display_name(page)})
 
 
 async def _http_proxy(request: Request) -> Response:
@@ -344,6 +407,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    override = _origin_override(app)
+    if override and "origin" in fwd:
+        fwd["origin"] = override
     fwd["X-Forwarded-Proto"] = "https"
     host = ws.headers.get("host")
     if host:
@@ -410,6 +476,12 @@ async def _ws_proxy(ws: WebSocket) -> None:
             pass
 
 
+def _origin_of(url: str) -> str:
+    """``scheme://host[:port]`` of ``url`` — an RFC 6454 origin, no path."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 #: An extra endpoint a wrapping front adds: ``(path, methods, handler)``.
 ExtraRoute = tuple[str, Sequence[str], Callable[[Request], Awaitable[Response]]]
 
@@ -439,7 +511,8 @@ def _gated(
 
 
 def build_app(upstream: str, ca_path: str, *, landing: bool = True,
-              extra_routes: Sequence[ExtraRoute] | None = None) -> Starlette:
+              extra_routes: Sequence[ExtraRoute] | None = None,
+              rewrite_origin: bool = False) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     The landing page is right for the gateway front, whose ``/`` has nothing
@@ -458,6 +531,16 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     assume an authenticated caller: the gate is not something a caller can
     forget, because the whole reason such a route exists is that it does
     something privileged on the upstream's behalf.
+
+    ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
+    own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
+    apps want opposite things here. One origin-checks its WebSocket upgrades
+    against an allowlist of the exact browser origins it expects, and needs the
+    real header (``claude-science``). The other compares ``Origin`` against
+    ``Host`` and demands they match — and since ``Host`` is dropped so httpx
+    derives it from the upstream URL, the browser's real ``Origin`` can never
+    match it, so every request 403s (``dsh``). Default off: the gateway front
+    and every existing caller keep byte-identical behaviour.
     """
     http_up = upstream.rstrip("/")
     # http://… → ws://… ,  https://… → wss://…
@@ -480,8 +563,10 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/", _root, methods=["GET"]))
         # Tag/filter endpoints backing the landing page's tagging UI.
         routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
+        routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
         routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
         routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
+        routes.append(Route("/__landing/name", _gated(_landing_set_name), methods=["POST"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -503,13 +588,19 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     app.state.http_up = http_up
     app.state.ws_up = ws_up
     app.state.ca_path = ca_path
+    # Derived from the upstream URL rather than taken as a string, so the
+    # rewritten Origin is by construction the one httpx will also put in Host.
+    app.state.origin_override = (
+        _origin_of(http_up) if rewrite_origin else None
+    )
     app.state.gate = AuthGate()
     return app
 
 
 def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           landing: bool = True,
-          extra_routes: Sequence[ExtraRoute] | None = None) -> None:
+          extra_routes: Sequence[ExtraRoute] | None = None,
+          rewrite_origin: bool = False) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -519,7 +610,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     ``awm_session`` edge auth without duplicating any of it, and adds one gated
     sign-in route the wrapped binary cannot serve itself.
     """
-    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes)
+    app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
+                    rewrite_origin=rewrite_origin)
     config = uvicorn.Config(
         app,
         host="0.0.0.0",
