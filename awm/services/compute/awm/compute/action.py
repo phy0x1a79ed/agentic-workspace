@@ -76,7 +76,13 @@ PROTECTED: tuple[tuple[str, str], ...] = (
     # and it is exactly the shape of a victim: a long-lived node process, idle
     # until it streams, carrying the session id of the agent whose shell started
     # the gateway. Only the harness itself; what it spawns to do work is work.
-    ("dsh-harness",    r"services/dsh/runtime/node_modules|(^|/)dsh\s+.*--profile\s+web\b"),
+    # Matched on the launcher path, because nothing on the command line is
+    # called `dsh` any more: the harness is built from the deepseek-harness
+    # fork and started as `node …/apps/cli/lib/bin.js`. The old registry
+    # runtime path is kept so a node that has not been repointed stays covered.
+    ("dsh-harness",    r"services/dsh/runtime/node_modules"
+                       r"|deepseek-harness/\S*/apps/cli/lib/bin\.js"
+                       r"|(^|/)dsh\s+.*--profile\s+web\b"),
     ("ssh-tunnel",     r"(^|/)ssh\s+.*(-[A-Za-z]*[NMWfL]|ControlMaster|ProxyCommand)"),
     ("init",           r"^/sbin/init\b|^/lib/systemd/systemd\b|^systemd\b"),
 )
