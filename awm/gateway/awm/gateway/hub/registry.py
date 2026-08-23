@@ -50,6 +50,7 @@ class ServiceRecord:
     name: str
     prefix: str
     kind: Kind = "url"
+    label: str = ""                                 # human-facing display name (pages only)
     url: str = ""                                   # kind == "url"
     static_dir: str = ""                            # kind in {"static","page"}
     entry: str | None = None                        # auto-shell entry (static only)
@@ -156,6 +157,7 @@ class Registry:
         name: str,
         prefix: str,
         static_dir: str,
+        label: str = "",
     ) -> ServiceRecord:
         """Register a page bundle. Prefix must begin /ui/."""
         prefix = _normalize_prefix(prefix)
@@ -170,6 +172,7 @@ class Registry:
                 prefix=prefix,
                 kind="page",
                 static_dir=static_dir,
+                label=label,
             )
             rec.backend_status = "ready"  # static; nothing to wait for
             self._install_base(rec)

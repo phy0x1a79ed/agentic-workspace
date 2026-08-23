@@ -274,6 +274,15 @@ def read_prefix_txt(pkg_dir: Path, default: str) -> str:
     return default
 
 
+def read_label_txt(pkg_dir: Path) -> str:
+    """A page's optional ``label.txt``, giving a human-facing display name
+    (e.g. "DeepSeek Harness"). Returns empty string if absent."""
+    f = pkg_dir / "label.txt"
+    if f.is_file():
+        return f.read_text(encoding="utf-8").strip()
+    return ""
+
+
 @dataclass(frozen=True)
 class PageSpec:
     """A discovered page bundle: a ``awm/pages/<name>`` folder with a built
@@ -281,11 +290,13 @@ class PageSpec:
 
     ``prefix`` is the ``/ui/...`` mount and ``dist_dir`` the servable static
     root — exactly the two arguments ``registry.register_page`` needs.
+    ``label`` is an optional human-facing display name (e.g. "DeepSeek Harness").
     """
 
     name: str
     prefix: str
     dist_dir: str
+    label: str = ""
 
 
 def discover_pages() -> list[PageSpec]:
@@ -312,6 +323,7 @@ def discover_pages() -> list[PageSpec]:
             name=entry.name,
             prefix=read_prefix_txt(entry, f"/ui/{entry.name}"),
             dist_dir=str(dist),
+            label=read_label_txt(entry),
         ))
     return specs
 

@@ -92,7 +92,7 @@ def landing_page(services: list[dict[str, Any]]) -> str:
     if pages:
         items = "\n".join(
             f'    <li><a href="{html.escape(str(s["prefix"]).rstrip("/") + "/")}">'
-            f'{html.escape(str(s.get("name", s["prefix"])))}</a></li>'
+            f'{html.escape(str(s.get("label") or s.get("name", s["prefix"])))}</a></li>'
             for s in pages
         )
         body = f'  <ul class="svc">\n{items}\n  </ul>'

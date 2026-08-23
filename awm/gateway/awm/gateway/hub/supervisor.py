@@ -744,7 +744,7 @@ async def bootstrap_discovered_pages() -> None:
     registry = get_registry()
     for spec in discovery.discover_pages():
         try:
-            await registry.register_page(spec.name, spec.prefix, spec.dist_dir)
+            await registry.register_page(spec.name, spec.prefix, spec.dist_dir, label=spec.label)
         except PrefixConflict as exc:
             log.warning("bootstrap page %s: %s; skipping", spec.name, exc)
         except Exception as exc:  # noqa: BLE001

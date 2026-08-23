@@ -106,6 +106,7 @@ async def _op_gateway_list() -> dict[str, Any]:
             "name": rec.name,
             "prefix": rec.prefix,
             "kind": rec.kind,
+            "label": rec.label,
             "service_id": rec.service_id,
             "lease_held": lm.is_held(rec.service_id),
             "is_overlay": rec.is_overlay,
