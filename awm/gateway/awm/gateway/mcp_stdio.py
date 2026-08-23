@@ -336,17 +336,26 @@ def _dispatch(msg: dict) -> None:
 def _ensure_core_running() -> None:
     """Start the awm core via systemd if it is not already up.
 
-    Best-effort — falls back to a detached ``awm gateway serve`` in dev setups
-    without systemd, port-checking first so we never race into a zombie
-    already binding the listener.
+    Checks the listener first — cheap and instant when the core is already
+    running, which is the common case — before falling back to systemd, then
+    to a detached ``awm gateway serve`` in dev setups without systemd.
     """
-    r = subprocess.run(
-        ["systemctl", "--user", "start", "awm.service"],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        return
     import socket as _socket  # noqa: PLC0415
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        try:
+            s.connect(("127.0.0.1", 7819))
+            return
+        except OSError:
+            pass
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "start", "awm.service"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        r = None
+    if r is not None and r.returncode == 0:
+        return
     with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
         try:
             s.connect(("127.0.0.1", 7819))
