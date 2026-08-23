@@ -360,7 +360,7 @@ def _domain_envelope(verb_names: list[str]) -> dict[str, Any]:
     """
     schema = copy.deepcopy(_DOMAIN_INPUT_SCHEMA)
     if verb_names:
-        schema["properties"]["verb"]["enum"] = verb_names
+        schema["properties"]["verb"]["enum"] = [*verb_names, _DESCRIBE_VERB]
     return schema
 
 

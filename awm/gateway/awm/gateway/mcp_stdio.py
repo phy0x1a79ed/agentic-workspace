@@ -28,11 +28,11 @@ the tool's ``inputSchema`` before dispatching — that jsonschema dependency is 
 large slice of the import cost being removed here, and validating locally would
 mean holding a schema snapshot, which is exactly the stale-surface failure the
 stateless design exists to avoid. Arguments are therefore forwarded and the
-core validates them. Malformed calls still fail; they fail with the core's
-message instead of a jsonschema one. Note this *widens* what gets through in
-one useful way: every domain's ``verb`` enum omits the reserved ``describe``
-verb, so ``<domain>(verb="describe")`` — the documented way to discover a
-domain's verbs — was rejected before ever reaching the core.
+core validates them: each domain's ``verb`` enum includes the reserved
+``describe`` verb alongside its registered verbs, and ``ServiceAdapter._dispatch``
+checks a verb's manifest-declared required arguments before invoking its
+handler, so a missing argument fails with a clear named-parameter message
+instead of a jsonschema one.
 """
 
 from __future__ import annotations
