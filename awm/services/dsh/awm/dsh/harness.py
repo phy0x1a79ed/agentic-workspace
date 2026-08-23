@@ -12,12 +12,19 @@ put in its own session so the whole node process tree can be signalled as a
 group; ``PR_SET_PDEATHSIG`` is what closes the window where this process dies
 between the fork and the child's first instruction.
 
-**Where things live.** The npm runtime and the harness's own data directory are
-*state*, not source, so both sit under ``.awm/services/dsh/`` beside every other
-service's state rather than inside the git tree. ``install.sh`` puts them there
-and records the absolute node bin directory in ``node-bin``, because the
-supervisor respawns under systemd's minimal PATH where neither ``node`` nor
-``mamba`` exists.
+**Where things live.** The harness is not installed from a registry: it is a
+fork held as its own awm project, and the ``release`` worktree of
+``projects/deepseek-harness`` *is* the runnable harness. This module launches
+the CLI that worktree's own build emits, so the code serving the browser is the
+code in that git history — which is what makes a change to the harness
+reviewable and promotable instead of an edit to a build artifact nobody tracks.
+``DSH_FORK_DIR`` points a dev sandbox at the ``dev`` worktree instead.
+
+The harness's own data directory stays *state*, under ``.awm/services/dsh/``
+beside every other service's, because sessions and ``settings.yaml`` are
+per-node runtime data. ``install.sh`` records the absolute node bin directory
+in ``node-bin`` there too, because the supervisor respawns under systemd's
+minimal PATH where neither ``node`` nor ``mamba`` exists.
 
 **The model route.** The OpenRouter key is read out of opencode's ``auth.json``
 at spawn and passed as ``OPENROUTER_API_KEY``, which is the name
@@ -48,18 +55,28 @@ log = logging.getLogger("awm.dsh.harness")
 HERE = Path(__file__).resolve().parent          # …/dsh/awm/dsh
 SERVICE_DIR = HERE.parents[1]                   # …/awm/services/dsh
 
-#: Per-service state: the npm runtime, the harness's data dir, its log.
+#: Per-service state: the harness's data dir and its log.
 STATE_DIR = Path(os.environ.get("DSH_STATE_DIR") or (AWM_DIR / "services" / "dsh"))
-RUNTIME_DIR = STATE_DIR / "runtime"
 DSH_HOME = Path(os.environ.get("DSH_HOME") or (STATE_DIR / "home"))
 NODE_BIN_FILE = STATE_DIR / "node-bin"
 LOG_FILE = STATE_DIR / "dsh.log"
 SETTINGS_FILE = DSH_HOME / "settings.yaml"
 
-#: The npm-installed CLI shim. A ``#!/usr/bin/env node`` script, so PATH has to
-#: carry the right node — see :func:`node_bin_dir`.
-CLI = RUNTIME_DIR / "node_modules" / ".bin" / "dsh"
-PKG_JSON = RUNTIME_DIR / "node_modules" / "@deepseek-ai" / "dsh" / "package.json"
+#: The harness fork worktree. The deployed service serves ``release``; a dev
+#: sandbox overrides this to ``dev`` in its gitignored ``gateway/dev/.env``.
+FORK_DIR = Path(os.environ.get("DSH_FORK_DIR")
+                or (WORKSPACE_ROOT / "projects" / "deepseek-harness" / "release"))
+
+#: The CLI ``pnpm run build`` emits — ``apps/cli`` declares ``bin: lib/bin.js``.
+#: Launched as an argument to an absolute node rather than through its shebang,
+#: because the supervisor respawns under systemd's minimal PATH.
+CLI = FORK_DIR / "apps" / "cli" / "lib" / "bin.js"
+PKG_JSON = FORK_DIR / "package.json"
+
+#: What ``install.sh`` last built, written where the worktree already ignores
+#: it. Reported beside the live revision so a stale build is visible rather
+#: than something you infer from a symptom.
+BUILD_STAMP = FORK_DIR / ".awm" / "dsh-build-stamp"
 
 #: Loopback port for the harness. Not the mesh port — the front owns that.
 PORT = int(os.environ.get("DSH_UPSTREAM_PORT", "12311"))
@@ -89,15 +106,63 @@ DEFAULT_MODEL_KEY = "agent-default-model"
 
 
 def installed() -> bool:
-    return CLI.is_file() and os.access(CLI, os.X_OK)
+    """Whether the fork worktree has been built. A checkout alone is not enough."""
+    return CLI.is_file()
 
 
 def version() -> str | None:
-    """The installed harness version, or None if the runtime is absent."""
+    """The harness version the fork declares, or None if it is absent."""
     try:
         return json.loads(PKG_JSON.read_text()).get("version")
     except (OSError, ValueError):
         return None
+
+
+def _git(*args: str) -> str | None:
+    """A git command in the fork worktree, or None if it cannot be answered."""
+    try:
+        r = subprocess.run(["git", "-C", str(FORK_DIR), *args],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def source_state() -> dict[str, Any]:
+    """Which harness revision is on disk, and whether the build matches it.
+
+    Without this a stale or hand-edited deployment is invisible: the harness
+    serves whatever bundles happen to be in ``lib/``, and nothing relates them
+    to a commit. ``dirty`` and ``built_current`` are the two ways that goes
+    wrong — an uncommitted edit, and a commit that was never rebuilt.
+    """
+    status = _git("status", "--porcelain")
+    stamp = None
+    try:
+        stamp = dict(
+            line.split("=", 1) for line in
+            BUILD_STAMP.read_text().split() if "=" in line
+        )
+    except (OSError, ValueError):
+        pass
+    head = _git("rev-parse", "HEAD")
+    return {
+        "dir": str(FORK_DIR),
+        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "describe": _git("describe", "--tags", "--always", "--dirty"),
+        "head": head,
+        "dirty": None if status is None else bool(status),
+        "built_head": (stamp or {}).get("head"),
+        "built_current": (None if (stamp is None or head is None)
+                          else stamp.get("head") == head
+                          and stamp.get("dirty") == ("1" if status else "0")),
+    }
+
+
+def node_exe() -> str:
+    """Absolute node, falling back to PATH. The CLI is a script we pass to it."""
+    nb = node_bin_dir()
+    return str(Path(nb) / "node") if nb else "node"
 
 
 def node_bin_dir() -> str | None:
@@ -181,9 +246,10 @@ class Supervisor:
                 "uptime_s": (round(time.time() - self._started_at, 1)
                              if self._started_at and self._alive() else None),
                 "home": str(DSH_HOME),
-                "runtime": str(RUNTIME_DIR),
+                "runtime": str(FORK_DIR),
                 "workdir": str(WORKDIR),
                 "node_bin": node_bin_dir(),
+                "source": source_state(),
                 "model_route": self.route_state(),
                 "error": self._last_error,
             }
@@ -227,7 +293,8 @@ class Supervisor:
         """Launch the harness. Caller holds the lock."""
         if not installed():
             raise FileNotFoundError(
-                f"the dsh runtime is not installed at {CLI} — run install.sh")
+                f"the harness fork at {FORK_DIR} has no built CLI at {CLI} — "
+                f"run awm/services/dsh/install.sh")
 
         env = dict(os.environ)
         env["DSH_HOME"] = str(DSH_HOME)
@@ -244,7 +311,7 @@ class Supervisor:
 
         DSH_HOME.mkdir(parents=True, exist_ok=True)
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        cmd = [str(CLI), "--profile", "web", "--host", "127.0.0.1",
+        cmd = [node_exe(), str(CLI), "--profile", "web", "--host", "127.0.0.1",
                "--port", str(PORT), "--no-open"]
         log.info("dsh: launching %s (cwd=%s)", " ".join(cmd), WORKDIR)
         # Append rather than truncate: the log is the only account of a crash

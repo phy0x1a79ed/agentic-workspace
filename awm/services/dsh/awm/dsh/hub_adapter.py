@@ -42,12 +42,13 @@ API_MANIFEST: dict[str, Any] = {
             "name": "status",
             "tool": "dsh_status",
             "description": (
-                "Report the DeepSeek Harness: whether the runtime is installed "
-                "and at what version, whether the web server is running and at "
-                "what pid/port, whether it is actually listening, the mesh "
-                "front's listener and TLS state with the URL to open, and the "
-                "model route's two halves — provider declared, key available — "
-                "named separately."
+                "Report the DeepSeek Harness: whether the fork worktree is "
+                "built and at what version, which revision it is on and "
+                "whether that revision is what was built, whether the web "
+                "server is running and at what pid/port, whether it is "
+                "actually listening, the mesh front's listener and TLS state "
+                "with the URL to open, and the model route's two halves — "
+                "provider declared, key available — named separately."
             ),
             "params": [],
         },
@@ -236,7 +237,7 @@ async def _on_start() -> None:
         log.exception("dsh: could not seed the model route")
 
     if not harness.installed():
-        log.warning("dsh: runtime missing at %s — run install.sh; the service "
+        log.warning("dsh: no built harness at %s — run install.sh; the service "
                     "will register and report this via status", harness.CLI)
     else:
         try:
