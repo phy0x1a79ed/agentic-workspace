@@ -77,14 +77,25 @@ command -v "$NODE_BIN/pnpm" >/dev/null 2>&1 || \
     ( echo "Installing pnpm into env '$NODE_ENV_NAME' …"; \
       PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" i -g --no-fund --no-audit pnpm )
 
-# A deploy must never clone 109 MB behind your back: an absent fork is a
-# missing project, and the fix is one command the operator runs deliberately.
-if [ ! -d "$FORK_DIR/.git" ] && [ ! -f "$FORK_DIR/.git" ]; then
-    echo "error: no harness fork at $FORK_DIR" >&2
+# A deploy must never clone 109 MB behind your back, so an absent fork is
+# reported rather than fixed. It is not fatal, though: the gateway's install.sh
+# runs every service's under `set -e`, so exiting here would abort the whole
+# deploy on a node that has no fork — and a node without one is a node that
+# simply does not serve the harness. The service still registers and reports it
+# through `status`, the same shape as an unbuilt fork.
+#
+# DSH_REQUIRE_HARNESS=1 is for a node that is *supposed* to serve it, where a
+# warning would be the wrong answer.
+if [ ! -e "$FORK_DIR/.git" ]; then
+    echo "warning: no harness fork at $FORK_DIR — dsh will register unbuilt." >&2
     echo "  awm project create --name deepseek-harness \\" >&2
     echo "      --fork-url https://github.com/deepseek-ai/deepseek-harness" >&2
     echo "  then create the 'dev' and 'release' scopes from tag dsh-v0.1.1-rc.2." >&2
-    exit 1
+    if [ "${DSH_REQUIRE_HARNESS:-}" = "1" ]; then
+        exit 1
+    fi
+    echo "Installed awm-dsh into env '$ENV' (no harness)."
+    exit 0
 fi
 
 # What a build corresponds to: the commit, whether the tree was clean, and the
@@ -94,7 +105,8 @@ fi
 STAMP_DIR="$FORK_DIR/.awm"          # already excluded by the bare repo
 STAMP="$STAMP_DIR/dsh-build-stamp"
 HEAD_SHA="$(git -C "$FORK_DIR" rev-parse HEAD)"
-DIRTY=0; [ -n "$(git -C "$FORK_DIR" status --porcelain)" ] && DIRTY=1
+DIRTY=0
+[ -z "$(git -C "$FORK_DIR" status --porcelain)" ] || DIRTY=1
 LOCK_SHA="$(sha256sum "$FORK_DIR/pnpm-lock.yaml" | cut -d' ' -f1)"
 WANT="head=$HEAD_SHA dirty=$DIRTY lock=$LOCK_SHA"
 
