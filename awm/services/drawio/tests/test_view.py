@@ -397,6 +397,67 @@ def test_get_missing_is_404(server):
     assert _get(server, "/drawio-app/view/scadc/ghost/Page-1").status_code == 404
 
 
+def _raw(server, request: bytes, *, settle: float = 0.4) -> bytes:
+    """Speak HTTP by hand — httpx will not frame a malformed request for us."""
+    import socket
+
+    s = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+    try:
+        s.sendall(request)
+        s.settimeout(settle)
+        out = b""
+        while True:
+            try:
+                chunk = s.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            out += chunk
+        return out
+    finally:
+        s.close()
+
+
+def test_a_get_carrying_a_body_gets_exactly_one_response(server):
+    """A body on a GET is always a peer bug, but the peer that sent it was the
+    gateway (it framed every bodyless proxied GET as chunked). Unread, that
+    body's terminator became the next request line on a keep-alive connection:
+    a 200 followed by a 400, and a socket dropped under whoever the proxy's
+    pool handed it to next. The listener drains or closes instead."""
+    out = _raw(server, (
+        b"GET /drawio-app/view/scadc/demo/Page-1 HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"\r\n"
+        b"0\r\n\r\n"
+    ))
+    assert out.startswith(b"HTTP/1.1 200"), out[:200]
+    # The stray 400 arrives with no status line at all — parse_request fails
+    # before it learns the version, so send_error answers as HTTP/0.9 and the
+    # error page lands bare on the tail of the good response. Assert on the
+    # page, not on a second status line.
+    assert b"Error response" not in out, out[-400:]
+    assert out.count(b"HTTP/1.1 ") == 1, out[:400]
+
+
+def test_a_get_with_a_sized_body_is_answered_and_the_socket_stays_clean(server):
+    """A declared Content-Length is consumed, so the connection survives and
+    the *next* real request on it is parsed as a request."""
+    out = _raw(server, (
+        b"GET /drawio-app/view/scadc/demo/Page-1 HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Length: 5\r\n"
+        b"\r\n"
+        b"junk!"
+        b"GET /drawio-app/view/scadc/demo/Second HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"\r\n"
+    ))
+    assert out.count(b"HTTP/1.1 200") == 2, out[:400]
+    assert b"HTTP/1.1 400" not in out
+
+
 # --- variants: one page, many placements -----------------------------------
 
 def _spec(**kw):
