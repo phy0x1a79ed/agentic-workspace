@@ -94,13 +94,40 @@ def _rebase(path: str, prefix: str) -> str:
     return path[len(prefix):] or "/"
 
 
+def _forwards_body(request: Request) -> bool:
+    """Did the client actually frame a request body?
+
+    Per RFC 9112 §6 an HTTP/1.1 body exists if and only if one of these two
+    headers is present; the method says nothing (bodyless POST and GET-with-body
+    both exist in the wild). Handing httpx a stream for a request that framed no
+    body makes it invent ``Transfer-Encoding: chunked`` and append a zero-length
+    chunk terminator. An upstream that never reads request bodies — the drawio
+    view listener is a stdlib ``ThreadingHTTPServer`` doing exactly that — then
+    parses that terminator as the next request line, answers ``400`` and drops
+    the connection, which the hub's pooled client has already handed to somebody
+    else. It surfaces as an intermittent gateway ``500``.
+
+    Read ``request.headers`` here, never the list ``_hub_headers`` returns: that
+    list has ``transfer-encoding`` stripped as hop-by-hop, and it is a list of
+    tuples, so a membership test against it is silently always false and would
+    drop the body off every upload.
+
+    Assumes HTTP/1.1 (uvicorn/h11, the only server the gateway runs). HTTP/2
+    frames a body with neither header, so this would need revisiting there.
+    """
+    return (
+        "content-length" in request.headers
+        or "transfer-encoding" in request.headers
+    )
+
+
 async def proxy_http(
     request: Request,
     target_base: str,
     extra_headers: list[tuple[str, str]] | None = None,
     *,
     prefix: str = "",
-) -> StreamingResponse:
+) -> Response:
     """Forward ``request`` to ``target_base + request.url.path`` and
     stream the response back. Body and response are streamed; no
     materialization.
@@ -116,13 +143,39 @@ async def proxy_http(
         extras.append(("X-Forwarded-Prefix", prefix))
     headers = _hub_headers(request.headers, extra_headers=extras)
 
-    req = _client().build_request(
-        method=request.method,
-        url=url,
-        headers=headers,
-        content=request.stream(),
-    )
-    upstream = await _client().send(req, stream=True)
+    def _build() -> httpx.Request:
+        return _client().build_request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=request.stream() if _forwards_body(request) else None,
+        )
+
+    try:
+        upstream = await _client().send(_build(), stream=True)
+    except httpx.RemoteProtocolError as exc:
+        # A pooled socket the upstream closed between checkout and write. Safe
+        # to replay only when nothing was consumed and the method is idempotent
+        # — ``request.stream()`` is single-shot, so a body request cannot be.
+        replayable = (
+            not _forwards_body(request)
+            and request.method in ("GET", "HEAD", "OPTIONS")
+        )
+        if not replayable:
+            log.warning(
+                "hub upstream protocol error (%s %s): %s",
+                request.method, url, exc,
+            )
+            return JSONResponse(
+                {"error": "upstream connection dropped"}, status_code=502,
+            )
+        upstream = await _client().send(_build(), stream=True)
+    except httpx.TransportError as exc:
+        log.warning(
+            "hub upstream transport error (%s %s): %s",
+            request.method, url, exc,
+        )
+        return JSONResponse({"error": "upstream unreachable"}, status_code=502)
 
     resp_headers = [
         (k, v) for k, v in upstream.headers.items()

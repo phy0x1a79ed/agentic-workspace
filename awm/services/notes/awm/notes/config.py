@@ -44,3 +44,35 @@ def files_dir() -> Path:
     d = service_db_path("notes").parent / "files"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def orphaned_dir() -> Path:
+    """Where a file written out of band is kept when a flush would erase it.
+
+    Deliberately not ``files_dir`` — a stray ``.md`` there is one restore script
+    away from being read back as a note.
+    """
+    from awm.persistence.databases import service_db_path
+
+    d = service_db_path("notes").parent / "orphaned"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def checkouts_dir() -> Path:
+    """Directory holding one subdirectory per open checkout. Created on demand.
+
+    A sibling of ``files_dir`` rather than a child, so nothing that walks the
+    notes directory can mistake a working copy for a note.
+    """
+    import os
+
+    override = os.environ.get("AWM_NOTES_CHECKOUTS")
+    if override:
+        d = Path(override).expanduser()
+    else:
+        from awm.persistence.databases import service_db_path
+
+        d = service_db_path("notes").parent / "checkouts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
