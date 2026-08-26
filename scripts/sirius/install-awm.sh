@@ -56,6 +56,7 @@ for d in .awm data projects tasks main; do
     fi
     [ "$(readlink "$d" 2>/dev/null)" = "$target" ] || ln -sfn "$target" "$d"
 done
+sudo install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT/httpsfront.certs"
 for f in .certs .sans; do
     src=awm/services/httpsfront/$f
     target=$STATE_ROOT/httpsfront$f
