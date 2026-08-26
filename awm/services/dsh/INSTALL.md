@@ -13,7 +13,8 @@ weakening the posture that makes loopback-only the right default.
 
 This file holds the decisions a reader cannot recover from the code: why the
 harness sits behind a dedicated front instead of a gateway mount, why a mesh
-page is trusted for settings, and how a forked source tree becomes a served GUI.
+page is trusted for settings, how a forked source tree becomes a served GUI, and
+which of the harness's own configuration this repository tracks.
 
 The harness's own architecture belongs to `projects/deepseek-harness` and its
 upstream docs. Each scope's `.awm/context.md` there says which branch does what.
@@ -100,6 +101,48 @@ CAUTION: the entry matches the launcher path
 `deepseek-harness/…/apps/cli/lib/bin.js`, because nothing on the command line is
 called `dsh` any more. Changing how `harness.py` spawns the child without
 changing that pattern makes the harness reapable again, and nothing reports it.
+
+## Tracked configuration
+
+`config/` holds the hand-authored `$DSH_HOME` content, so both nodes run one
+reviewed configuration instead of two that drift. `$DSH_HOME` reaches it through
+relative symlinks, which resolve identically on every node because the workspace
+layout is the same everywhere.
+
+| `$DSH_HOME` entry | kind | tracked as |
+|---|---|---|
+| `.agent-presets` | directory symlink | `config/agent-presets/` |
+| `profiles/web/cordis.patch.yml` | file symlink | `config/profiles/web/cordis.patch.yml` |
+| `profiles/web/plugins` | directory symlink | `config/profiles/web/plugins/` |
+| `settings.yaml` | copy | `config/settings.yaml` |
+
+**`settings.yaml` is a copy because it cannot be a symlink.** The harness commits
+it through `dsh-atomic-write`, whose rename replaces a symlinked path itself
+rather than writing through to the referent. That defeats a symlink-hijack
+attack. It also silently detaches any symlink you put there on the first GUI
+write. Presets survive the same rename because the symlink is on the *directory*,
+so the rename lands inside the tracked tree.
+
+CAUTION: the symlinks point into `<workspace>/awm/`, which a deploy node fetches
+and resets hard onto upstream `release`. An edit made against the live symlink
+therefore lives in a deploy target. Commit it from the `svc-dsh` scope before the
+next deploy, or the reset discards it. The same reset restores committed content,
+so a deploy is otherwise idempotent here.
+
+Copy `settings.yaml` back into `config/` by hand after changing the route or the
+model in the GUI. Nothing does that for you, and `ensure()` never overwrites a
+section that already exists.
+
+Three kinds of state stay untracked on purpose. `sessions/`, `storages/`, and the
+logs are per-node history. `cordis.yml`, `package.json`, `pnpm-workspace.yaml`,
+and `node_modules/` under `profiles/` are boot output. `global-instructions.md`
+is a per-node symlink to `~/.claude/CLAUDE.md`, which is that node's own file.
+
+**Credentials live in `$DSH_HOME/.credentials.yaml`, never in `config/`.**
+`dsh-credentials-local` resolves that path from `$DSH_HOME`, which this service
+sets to `<state>/home` — not `~/.dsh`. A credentials document under `~/.dsh` is
+read by nothing here. `.awm/` is gitignored, so the document cannot reach a git
+object from that location.
 
 ## Registrations
 
