@@ -29,7 +29,7 @@ step() { echo; echo "== $*"; }
 
 step "miniforge"
 if [ ! -x "$MF/bin/mamba" ]; then
-    inst=$(mktemp)
+    inst=$(mktemp --suffix=.sh)
     curl -fsSL -o "$inst" "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
     bash "$inst" -b -u -p "$MF"
     rm -f "$inst"

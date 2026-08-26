@@ -18,7 +18,7 @@ ssh "$HOST" "git -C /opt/awm checkout -q $BRANCH"
 after=$(ssh "$HOST" 'git -C /opt/awm rev-parse HEAD')
 
 if [ -z "$before" ] || [ -n "$(git diff --name-only "$before" "$after" -- 'awm/gateway/install.sh' 'awm/gateway/environment.yml' '**/pyproject.toml' 'scripts/sirius/' 2>/dev/null)" ]; then
-    ssh -t "$HOST" /opt/awm/scripts/sirius/install-awm.sh
+    ssh "$HOST" /opt/awm/scripts/sirius/install-awm.sh
 else
     ssh "$HOST" 'sudo systemctl restart awm && sleep 2 && systemctl is-active awm'
 fi
