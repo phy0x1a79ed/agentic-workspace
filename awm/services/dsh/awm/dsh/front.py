@@ -10,12 +10,16 @@ Almost none of that is written here. ``awm.httpsfront`` already solves it and
 takes the upstream as a parameter, so this is a configuration of an existing
 component rather than a second implementation.
 
-**Why not a gateway mount.** ``kind=url`` looks like it should work, and it
-cannot, in three independent places: the gateway's url proxy forwards the full
-path without stripping the mount prefix, the harness's frontend is built with an
-absolute asset base and has no base-path option, and the gateway's WebSocket
-bridge forwards no headers at all. A dedicated front on its own port is the
-design, not a shortcut around one. Don't re-derive this.
+**Why not a gateway mount.** ``kind=page`` and ``kind=static`` serve a dist
+directory and refuse WebSockets outright, so neither can host a SPA that needs
+``/api`` and a stream on its own origin. ``kind=url`` can carry both — the hub
+middleware does strip the mount prefix and does bridge the WebSocket — and two
+blockers remain anyway: the harness frontend is built with an absolute asset
+base and has no base-path option, and ``proxy_http`` strips ``Host`` while
+forwarding ``Origin`` verbatim, so the harness's Origin-equals-Host fence would
+403 every ``/api`` call with no ``rewrite_origin`` to close it. A dedicated
+front on its own port is the design, not a shortcut around one. Don't
+re-derive this.
 
 **Why the Origin rewrite.** Every ``/api`` request passes a browser-trust fence
 in the harness: the ``Host`` must be loopback or a ``--trusted-host`` grant, and
@@ -27,12 +31,13 @@ host — every call 403s, handshakes included. ``rewrite_origin=True`` closes
 exactly that gap, on the WebSocket path as well as the HTTP one; a rewrite on
 HTTP alone yields a GUI that loads and then silently never streams.
 
-**What the rewrite does not buy.** The fence is a server check. The harness's
-*client* independently tests ``isLoopbackHostname(location.hostname)`` to decide
-whether its settings mirror is host-backed or in-memory, so on a mesh address
-the Settings pages report that settings are unavailable. That is ``location``,
-not a header; nothing here reaches it. See ``INSTALL.md`` — the model route,
-which is what anyone needs from that page, is a verb instead.
+**What the rewrite does not buy.** The fence is a server check, and the
+harness's *client* makes its own decisions from ``location``. It once admitted
+the host-backed settings mirror on a loopback hostname alone, which left the
+Settings pages reporting that settings are unavailable on a mesh address; the
+fork now also admits an ``https:`` page, because a TLS page cannot have reached
+the browser except through this front. ``dsh model`` remains the way to set the
+model route without the GUI.
 """
 
 from __future__ import annotations
@@ -59,8 +64,21 @@ SANS_FILE = harness.SERVICE_DIR / ".sans"
 #: :func:`_borrow_leaf`.
 HTTPSFRONT_CERT_DIR = harness.SERVICE_DIR.parent / "httpsfront" / ".certs"
 
+#: The SAN declarations behind that borrowed leaf. This service keeps no
+#: ``.sans`` of its own, so a hand-recorded address lives there, and
+#: :func:`_declared_mesh_address` reads the file that actually put the address
+#: into the leaf this front serves.
+HTTPSFRONT_SANS_FILE = harness.SERVICE_DIR.parent / "httpsfront" / ".sans"
+
 #: Mesh-facing TLS port for the harness GUI.
-PORT = int(os.environ.get("DSH_FRONT_PORT", "12301"))
+#:
+#: Inside the range this host forwards into WSL and admits through the Windows
+#: firewall, which is what makes the mesh URL reachable at all. Every other awm
+#: front already sits there — httpsfront on 12100, claude-science on 12201/2 —
+#: and this service was the one outlier, so its URL worked from nowhere but
+#: loopback. Moving the port is cheaper than widening a portproxy table and a
+#: firewall rule for one service.
+PORT = int(os.environ.get("DSH_FRONT_PORT", "12130"))
 
 _STATUS: dict[str, Any] = {}
 
@@ -69,16 +87,58 @@ def status() -> dict:
     return dict(_STATUS)
 
 
+def _declared_mesh_address() -> str | None:
+    """The mesh address recorded in ``.sans``, for a host that cannot see its own.
+
+    A WSL node has no ZeroTier address of its own: the client runs on the
+    Windows host, and traffic reaches this listener through a port forward, so
+    ``config.mesh_address()`` enumerating local interfaces finds nothing. The
+    address is already written down for exactly this reason — it is a ``.sans``
+    entry, which is how it reached the leaf this front serves — so read those
+    files rather than adding a second place to record one fact: this service's
+    own, then httpsfront's, whose leaf this service borrows. Entries outside the mesh subnet (the LAN
+    address, the docker bridge) are skipped: a link to one of those is a link
+    the phone this page is read on cannot follow.
+    """
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(
+            os.environ.get(config.MESH_SUBNET_ENV) or config.DEFAULT_MESH_SUBNET,
+            strict=False)
+    except ValueError:
+        return None
+    for path in (SANS_FILE, HTTPSFRONT_SANS_FILE):
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            # Absent or unreadable: that file simply declares nothing.
+            continue
+        for line in lines:
+            entry = line.split("#", 1)[0].strip()
+            if not entry:
+                continue
+            try:
+                addr = ipaddress.ip_address(entry)
+            except ValueError:
+                continue
+            if addr in net:
+                return str(addr)
+    return None
+
+
 def origin(port: int = PORT) -> str:
     """The URL a browser on the mesh opens.
 
     The fleet mesh address specifically, not merely the first non-loopback one
     the host has: this node also carries a LAN address and a docker bridge, and
     a link to either is a link the phone this page is read on cannot follow.
-    Falls back to loopback so the page shows a URL that at least works from here
-    rather than one that works nowhere.
+    Prefers the address this host can enumerate, falls back to the one declared
+    in ``.sans`` (see :func:`_declared_mesh_address`), and only then to loopback
+    so the page shows a URL that at least works from here rather than one that
+    works nowhere.
     """
-    return f"https://{config.mesh_address() or '127.0.0.1'}:{port}"
+    host = config.mesh_address() or _declared_mesh_address() or "127.0.0.1"
+    return f"https://{host}:{port}"
 
 
 def _borrow_leaf() -> None:

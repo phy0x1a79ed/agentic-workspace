@@ -108,10 +108,17 @@ Two, from one process:
 | kind | name | prefix / port | what |
 |---|---|---|---|
 | `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision and the model route |
-| — | (TLS front) | `0.0.0.0:12301` | the harness GUI, behind `awm_session` |
+| — | (TLS front) | `0.0.0.0:12130` | the harness GUI, behind `awm_session` |
 
 The front is not a gateway registration — it is a listener this process owns,
 the same shape as `httpsfront`'s own, and it dies with the service.
+
+**The port has to be one the host lets through.** A node that reaches its mesh
+through another host — a WSL node behind a Windows ZeroTier client — publishes
+this listener only for ports that host forwards and firewalls. Every awm front
+already sits inside one such range; a port outside it answers on loopback and
+from nowhere else, which is what `dsh url` reporting a loopback address means.
+Check the host's forwarding before blaming the front.
 
 A third thing appears without this process doing anything: the reception page at
 `/ui/dsh`, which the gateway mounts on any node where the page is *built*.
@@ -236,7 +243,7 @@ false means the built bundles are older than the commit that is checked out.
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
-2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12301/`.
+2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
 3. Open **Settings → Models**. It must list the provider directory with an
    `openrouter` row. **Settings → Plugins** must render configuration cards.
    Both empty, or "settings are unavailable in this browser", means the page did
@@ -245,7 +252,7 @@ Then, from a browser on the mesh:
    not at all, is the WebSocket path — a rewrite that reached HTTP and not WS.
 
 A device that has never talked to awm needs the root once:
-`https://<mesh-ip>:12301/ca.crt`.
+`https://<mesh-ip>:12130/ca.crt`.
 
 ## Environment
 
@@ -255,7 +262,7 @@ A device that has never talked to awm needs the root once:
 | `DSH_STATE_DIR` | `<workspace>/.awm/services/dsh` | `$DSH_HOME`, log, `node-bin` |
 | `DSH_HOME` | `<state>/home` | the harness's own data dir |
 | `DSH_UPSTREAM_PORT` | `12311` | loopback port the harness binds |
-| `DSH_FRONT_PORT` | `12301` | mesh TLS port |
+| `DSH_FRONT_PORT` | `12130` | mesh TLS port |
 | `DSH_WORKDIR` | the workspace root | the harness's cwd, so any project is pickable |
 | `DSH_NODE_ENV` | `dsh` | mamba env holding node (install-time only) |
 | `DSH_SKIP_BUILD` | unset | `1` leaves the fork's build alone (install-time only) |
