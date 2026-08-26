@@ -9,7 +9,7 @@
 #   1. miniforge at /opt/miniforge3 (dev-user owned)
 #   2. mamba env `awm` + awm/gateway/install.sh (editable installs)
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
-#   4. `awm gateway init` as the app user, enabled.json with the public set
+#   4. `awm gateway init` as the app user, enabled.json (all off for now)
 #   5. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
 set -euo pipefail
 
@@ -43,9 +43,9 @@ if [ ! -x "$MF/envs/awm/bin/python" ]; then
 else
     mamba env update -y -q -f awm/gateway/environment.yml --prune
 fi
-# The public service set: the only services installed and the only ones
-# enabled. Everything else under awm/services/ is written as disabled.
-PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer dvc scopes precedence"
+# The service set installed and enabled on this box. Empty: the gateway
+# alone. Every other service under awm/services/ is written as disabled.
+PUBLIC_SERVICES=""
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" bash awm/gateway/install.sh
 
 step "state symlinks"
@@ -55,15 +55,6 @@ for d in .awm data projects tasks main; do
         echo "refusing: $INSTALL_ROOT/$d is a real directory, expected a symlink to $target" >&2; exit 1
     fi
     [ "$(readlink "$d" 2>/dev/null)" = "$target" ] || ln -sfn "$target" "$d"
-done
-sudo install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT/httpsfront.certs"
-for f in .certs .sans; do
-    src=awm/services/httpsfront/$f
-    target=$STATE_ROOT/httpsfront$f
-    if [ -e "$src" ] && [ ! -L "$src" ]; then
-        echo "refusing: $src is a real path, expected a symlink to $target" >&2; exit 1
-    fi
-    [ "$(readlink "$src" 2>/dev/null)" = "$target" ] || ln -sfn "$target" "$src"
 done
 
 step "init as $APP_USER"
@@ -77,7 +68,7 @@ if ! sudo test -f "$ENABLED"; then
         sep=""
         for d in awm/services/*/; do
             n=$(basename "$d")
-            v=false; grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
+            v=false; [ -n "$PUBLIC_SERVICES" ] && grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
             printf '%s  "%s": %s' "$sep" "$n" "$v"; sep=$',\n'
         done
         echo; echo "}"
