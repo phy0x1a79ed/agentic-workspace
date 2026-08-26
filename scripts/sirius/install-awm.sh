@@ -43,7 +43,10 @@ if [ ! -x "$MF/envs/awm/bin/python" ]; then
 else
     mamba env update -y -q -f awm/gateway/environment.yml --prune
 fi
-AWM_ENV=awm bash awm/gateway/install.sh
+# The public service set: the only services installed and the only ones
+# enabled. Everything else under awm/services/ is written as disabled.
+PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer dvc scopes precedence"
+AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" bash awm/gateway/install.sh
 
 step "state symlinks"
 for d in .awm data projects tasks; do
@@ -68,42 +71,16 @@ sudo -u "$APP_USER" env AWM_WORKSPACE=$INSTALL_ROOT HOME=$STATE_ROOT XDG_CONFIG_
 ENABLED=$STATE_ROOT/state/services/enabled.json
 if ! sudo test -f "$ENABLED"; then
     sudo -u "$APP_USER" install -d -m 750 "$(dirname "$ENABLED")"
-    sudo -u "$APP_USER" tee "$ENABLED" >/dev/null <<'JSON'
-{
-  "auth": true,
-  "httpsfront": true,
-  "notes": true,
-  "drawio": true,
-  "fileviewer": true,
-  "dvc": true,
-  "scopes": true,
-  "precedence": true,
-  "2fa": false,
-  "agents": false,
-  "artifacts": false,
-  "claude-science": false,
-  "compute": false,
-  "dev": false,
-  "dsh": false,
-  "events": false,
-  "graphify": false,
-  "hermes": false,
-  "hpcllm": false,
-  "mic": false,
-  "orchestrator": false,
-  "reflection": false,
-  "rlm-browser": false,
-  "rlm-factorio": false,
-  "social": false,
-  "ssh": false,
-  "stt": false,
-  "tts": false,
-  "virtmic": false,
-  "vpn": false,
-  "workspace": false,
-  "writing": false
-}
-JSON
+    {
+        echo "{"
+        sep=""
+        for d in awm/services/*/; do
+            n=$(basename "$d")
+            v=false; grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
+            printf '%s  "%s": %s' "$sep" "$n" "$v"; sep=$',\n'
+        done
+        echo; echo "}"
+    } | sudo -u "$APP_USER" tee "$ENABLED" >/dev/null
     echo "   seeded $ENABLED (public service set)"
 fi
 
