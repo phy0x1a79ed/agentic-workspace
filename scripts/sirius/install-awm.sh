@@ -49,7 +49,7 @@ PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer dvc scopes precedence"
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" bash awm/gateway/install.sh
 
 step "state symlinks"
-for d in .awm data projects tasks; do
+for d in .awm data projects tasks main; do
     target=$STATE_ROOT/${d#.awm}; [ "$d" = .awm ] && target=$STATE_ROOT/state
     if [ -e "$d" ] && [ ! -L "$d" ]; then
         echo "refusing: $INSTALL_ROOT/$d is a real directory, expected a symlink to $target" >&2; exit 1

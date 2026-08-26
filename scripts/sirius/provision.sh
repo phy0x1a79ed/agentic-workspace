@@ -139,7 +139,7 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
     adduser --system --group --home "$STATE_ROOT" --shell /usr/sbin/nologin "$APP_USER"
     note "created $APP_USER"
 fi
-install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT" "$STATE_ROOT/state" "$STATE_ROOT/config" "$STATE_ROOT/data" "$STATE_ROOT/projects" "$STATE_ROOT/tasks"
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT" "$STATE_ROOT/state" "$STATE_ROOT/config" "$STATE_ROOT/data" "$STATE_ROOT/projects" "$STATE_ROOT/tasks" "$STATE_ROOT/main"
 install -d -m 755 -o "$DEV_USER" -g "$APP_USER" "$INSTALL_ROOT" /opt/miniforge3
 install -d -m 750 -o root -g "$APP_USER" /etc/awm
 if [ ! -d "$INSTALL_ROOT/.git" ]; then
