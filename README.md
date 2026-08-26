@@ -16,6 +16,14 @@ This creates an `awm` mamba environment, installs the gateway plus every
 discovered feature service, initializes runtime state, and adds `awm` and
 `awm-mcp` to your PATH.
 
+To run awm as a service account on a shared host, point `AWM_WORKSPACE` at a
+checkout the service account can read, and make the checkout's `.awm/`
+(gitignored) a symlink into a state dir the service account owns. Install
+with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
+to run when `AWM_WORKSPACE` names a different checkout, so a second install
+cannot land in a home directory by accident. `scripts/sirius/` is the worked
+example: `provision.sh`, `install-awm.sh`, `deploy.sh`.
+
 ## Manual Install
 
 ```bash
