@@ -12,7 +12,7 @@ HOST=${SIRIUS_HOST:-sirius}
 BRANCH=${1:-$(git rev-parse --abbrev-ref HEAD)}
 REMOTE="$HOST:/opt/awm"
 
-before=$(ssh "$HOST" 'git -C /opt/awm rev-parse HEAD 2>/dev/null || true')
+before=$(ssh "$HOST" 'git -C /opt/awm rev-parse --verify -q HEAD || true')
 git push -q "$REMOTE" "$BRANCH:$BRANCH"
 ssh "$HOST" "git -C /opt/awm checkout -q $BRANCH"
 after=$(ssh "$HOST" 'git -C /opt/awm rev-parse HEAD')
