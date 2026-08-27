@@ -620,8 +620,20 @@ class Renderer:
                     name="board", scale=spec.scale)
             except ExporterError as exc:
                 raise ViewError(502, f"export failed: {exc}") from exc
+            # Penpot's export points its image fills and web fonts back at
+            # Penpot's own origin by absolute URL, and the image ones are
+            # authenticated -- so an un-inlined render has holes in it for
+            # every viewer that is not this service's own session. Inlining
+            # needs the authenticated client, which is why it happens here
+            # and not inside the pure `postprocess`. A fake exporter without
+            # the method (every unit test's) skips it and gets the raw bytes.
+            inlined: list[str] = []
+            fetch = getattr(self._exporter, "fetch_subresource", None)
+            if fetch is not None:
+                svg, inlined = S.inline_externals(svg, fetch)
             try:
-                return S.postprocess(svg, spec)
+                data, problems = S.postprocess(svg, spec)
+                return data, inlined + problems
             except S.ShapeNotFound as exc:
                 raise ViewError(404, str(exc)) from exc
             except S.SvgPostError as exc:

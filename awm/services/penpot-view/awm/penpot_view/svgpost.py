@@ -118,6 +118,7 @@ that, rather than shipping a crop computed from thin air.
 
 from __future__ import annotations
 
+import base64
 import re
 import xml.etree.ElementTree as ET
 
@@ -160,6 +161,16 @@ _IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
 Matrix = tuple[float, float, float, float, float, float]
 BBox = tuple[float, float, float, float]
+
+
+#: An absolute ``http(s)`` reference the exporter left pointing back at
+#: Penpot: `href="..."` on an `<image>`, or `url(...)` inside the `@font-face`
+#: rules in the document's own `<style>` block. Both forms are matched in one
+#: pass so a single rewrite pulls the whole document self-contained.
+_EXTERNAL_REF = re.compile(
+    r'(?P<attr>\b(?:xlink:href|href)=")(?P<hurl>https?://[^"]+)"'
+    r'|(?P<func>url\(\s*)(?P<uurl>https?://[^)\s]+)\s*\)'
+)
 
 
 class SvgPostError(ValueError):
@@ -354,15 +365,109 @@ def crop_svg(svg: bytes, name: str) -> bytes:
     return ET.tostring(root, encoding="unicode").encode("utf-8")
 
 
+# --- scale -----------------------------------------------------------------
+
+#: The root `<svg>`'s presentation width/height, as the exporter writes them:
+#: a bare number of user units, no unit suffix.
+_ROOT_DIM = re.compile(rb'(?P<attr>\b(width|height)=")(?P<value>[\d.]+)"')
+
+
+def scale_svg(svg: bytes, factor: float) -> bytes:
+    """Multiply the root ``<svg>``'s presentation width and height, leaving
+    its ``viewBox`` alone.
+
+    ``scale`` is declared as a native exporter parameter and *is* sent as one,
+    but Penpot only applies it to the bitmap formats: an SVG export comes back
+    at the board's own dimensions whatever scale was asked for (verified live
+    -- ``scale=2`` returned a byte-for-byte identical root element). SVG has
+    no resolution to scale in the first place, so the meaningful reading of
+    ``scale`` here is the presentation size: the same vector content laid out
+    at N times the size, which is exactly width/height against an unchanged
+    viewBox. Doing it here rather than dropping the parameter keeps a
+    ``scale=`` request honest instead of silently ignored.
+
+    Only the *first* width/height pair is touched -- that is the root element,
+    and every later one belongs to a shape whose geometry the viewBox already
+    governs.
+    """
+    if factor == 1.0:
+        return svg
+    head, sep, tail = svg.partition(b">")
+    if not sep:
+        return svg
+    seen = 0
+
+    def rewrite(match: "re.Match[bytes]") -> bytes:
+        nonlocal seen
+        seen += 1
+        if seen > 2:
+            return match.group(0)
+        value = float(match.group("value")) * factor
+        return match.group("attr") + f"{value:g}".encode() + b'"'
+
+    return _ROOT_DIM.sub(rewrite, head) + sep + tail
+
+
+# --- inlining ---------------------------------------------------------------
+
+def inline_externals(svg: bytes, fetch) -> tuple[bytes, list[str]]:
+    """Replace every absolute ``http(s)`` reference with a ``data:`` URI, so
+    the render is self-contained.
+
+    ``fetch(url) -> (content_type, bytes)`` does the retrieval and owns the
+    decision about *which* URLs may be fetched at all -- see
+    :meth:`awm.penpot_view.exporter_client.ExporterClient.fetch_subresource`,
+    which refuses anything not same-origin with Penpot itself.
+
+    A reference that cannot be fetched is **left exactly as it was** and
+    reported as a problem. That is the honest degradation: the render still
+    carries the reference it was born with, and the caller sees in
+    ``X-Penpot-Problems`` that part of the document did not come along --
+    rather than a silently holed image, which is the failure this whole
+    service exists to refuse. Each distinct URL is fetched once however many
+    times the document references it.
+    """
+    cache: dict[str, bytes | None] = {}
+    problems: list[str] = []
+
+    def resolve(url: str) -> bytes | None:
+        if url not in cache:
+            try:
+                content_type, data = fetch(url)
+            except Exception as exc:  # noqa: BLE001 -- any failure degrades alike
+                problems.append(f"could not inline {url}: {exc}")
+                cache[url] = None
+            else:
+                encoded = base64.b64encode(data).decode("ascii")
+                cache[url] = f"data:{content_type};base64,{encoded}".encode()
+        return cache[url]
+
+    def rewrite(match: "re.Match[str]") -> str:
+        url = match.group("hurl") or match.group("uurl")
+        inlined = resolve(url)
+        if inlined is None:
+            return match.group(0)
+        value = inlined.decode("ascii")
+        if match.group("hurl") is not None:
+            return f'{match.group("attr")}{value}"'
+        return f'{match.group("func")}{value})'
+
+    text = svg.decode("utf-8", errors="surrogateescape")
+    out = _EXTERNAL_REF.sub(rewrite, text)
+    return out.encode("utf-8", errors="surrogateescape"), problems
+
+
 # --- combined --------------------------------------------------------------
 
 def postprocess(svg: bytes, spec: R.RenderSpec) -> tuple[bytes, list[str]]:
-    """Apply ``spec.swap`` then ``spec.crop`` to raw exported SVG bytes.
+    """Apply ``spec.swap``, ``spec.crop`` and ``spec.scale`` to exported SVG
+    bytes.
 
-    ``spec.scale`` is ignored -- it is a native exporter parameter, applied
-    upstream of this module entirely; see the module docstring.
+    ``scale`` runs last: it rewrites the root element's presentation size, and
+    doing that before a crop would mean cropping against dimensions the
+    viewBox no longer agrees with.
     """
     data, problems = swap_svg(svg, spec.swaps)
     if spec.crop:
         data = crop_svg(data, spec.crop)
-    return data, problems
+    return scale_svg(data, spec.scale), problems

@@ -204,10 +204,102 @@ def test_postprocess_applies_swap_then_crop():
     assert problems == []
 
 
-def test_postprocess_ignores_scale():
-    """`scale` is a native exporter parameter applied upstream -- postprocess
-    must not touch it or fail because of it."""
-    spec = R.RenderSpec(scale=2.0)
-    data, problems = S.postprocess(SAMPLE_SVG, spec)
+def test_scale_is_a_no_op_at_one():
+    """The default must be byte-identical, so an unscaled render is exactly
+    what the exporter produced."""
+    data, problems = S.postprocess(SAMPLE_SVG, R.RenderSpec(scale=1.0))
+    assert data == SAMPLE_SVG
+    assert problems == []
+
+
+def test_scale_resizes_the_root_but_not_the_viewbox():
+    """Penpot ignores `scale` for SVG (verified live: scale=2 came back at the
+    board's own dimensions), so this module applies it as the presentation
+    size. The viewBox must survive untouched -- scaling it instead would
+    change which part of the board is visible rather than how big it is."""
+    data, _ = S.postprocess(SAMPLE_SVG, R.RenderSpec(scale=2.0))
+    text = data.decode("utf-8")
+    assert 'width="800"' in text
+    assert 'height="600"' in text
+    assert 'viewBox="0 0 400 300"' in text
+
+
+def test_scale_leaves_inner_shape_geometry_alone():
+    """Only the root element's own width/height move. A shape's width= is
+    governed by the viewBox and must not be doubled a second time."""
+    data, _ = S.postprocess(SAMPLE_SVG, R.RenderSpec(scale=2.0))
+    text = data.decode("utf-8")
+    body = text.partition(">")[2]
+    assert 'width="800"' not in body
+
+
+def test_scale_applies_after_crop():
+    """A crop rewrites width/height to the cropped box; the scale must then
+    multiply *that*, not the original board size."""
+    spec = R.RenderSpec(scale=3.0, crop=f"shape-{ROOT_ID}")
+    data, _ = S.postprocess(SAMPLE_SVG, spec)
+    text = data.decode("utf-8")
+    assert 'viewBox="0 0 400 300"' in text
+    assert 'width="1200"' in text
+    assert 'height="900"' in text
+
+
+# --- inlining ----------------------------------------------------------
+
+EXTERNAL_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+    '<style>@font-face { src: url(http://penpot.test/internal/gfonts/f.woff2); }</style>'
+    '<image href="http://penpot.test/assets/by-file-media-id/abc"/>'
+    '<image href="http://penpot.test/assets/by-file-media-id/abc"/>'
+    '</svg>'
+).encode("utf-8")
+
+
+def test_inlining_replaces_both_reference_shapes():
+    """Penpot emits image fills as href= and web fonts as url() inside its own
+    <style> block. Both are absolute against Penpot's origin, so both must
+    come along or the render is holed for anyone else."""
+    def fetch(url):
+        return ("font/woff2" if url.endswith(".woff2") else "image/jpeg"), b"xy"
+
+    data, problems = S.inline_externals(EXTERNAL_SVG, fetch)
+    text = data.decode("utf-8")
+    assert problems == []
+    assert "http://penpot.test" not in text
+    assert "url(data:font/woff2;base64,eHk=)" in text
+    assert 'href="data:image/jpeg;base64,eHk="' in text
+
+
+def test_each_url_is_fetched_once_however_often_it_appears():
+    calls: list[str] = []
+
+    def fetch(url):
+        calls.append(url)
+        return "image/jpeg", b"xy"
+
+    S.inline_externals(EXTERNAL_SVG, fetch)
+    assert len(calls) == len(set(calls)) == 2
+
+
+def test_an_unfetchable_reference_is_reported_not_dropped():
+    """The reference must survive verbatim. Dropping it would leave a render
+    that looks complete and is not -- exactly the silent-blank failure this
+    service exists to refuse."""
+    def fetch(url):
+        raise RuntimeError("boom")
+
+    data, problems = S.inline_externals(EXTERNAL_SVG, fetch)
+    text = data.decode("utf-8")
+    assert 'href="http://penpot.test/assets/by-file-media-id/abc"' in text
+    assert "url(http://penpot.test/internal/gfonts/f.woff2)" in text
+    assert len(problems) == 2
+    assert all("boom" in p for p in problems)
+
+
+def test_a_document_with_no_external_references_is_byte_identical():
+    def fetch(url):  # pragma: no cover -- must never be called
+        raise AssertionError("nothing to fetch")
+
+    data, problems = S.inline_externals(SAMPLE_SVG, fetch)
     assert data == SAMPLE_SVG
     assert problems == []

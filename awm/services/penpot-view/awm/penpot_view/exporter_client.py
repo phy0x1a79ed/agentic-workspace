@@ -89,6 +89,14 @@ ASSET_TIMEOUT = float(os.environ.get("PENPOT_ASSET_TIMEOUT", "30"))
 #: much shorter leash than a render -- if it is slow, re-rendering is cheaper
 #: than waiting for it.
 FRESHNESS_TIMEOUT = float(os.environ.get("PENPOT_FRESHNESS_TIMEOUT", "10"))
+#: Sub-resources are small (a font, one image fill) next to a render, so they
+#: get a short leash of their own rather than the asset fetch's.
+SUBRESOURCE_TIMEOUT = float(os.environ.get("PENPOT_SUBRESOURCE_TIMEOUT", "20"))
+#: Refuse to pull an unbounded blob into an inlined SVG. A board carrying a
+#: fill larger than this keeps its external reference and reports a problem,
+#: which is visible, rather than producing a render nobody can load.
+MAX_SUBRESOURCE_BYTES = int(
+    os.environ.get("PENPOT_MAX_SUBRESOURCE_BYTES", str(8 * 1024 * 1024)))
 
 COOKIE_NAME = "auth-token"
 
@@ -576,3 +584,51 @@ class ExporterClient:
         if not data:
             raise ExporterError(f"asset {uri} returned zero bytes")
         return data
+
+    # --- sub-resources --------------------------------------------------
+
+    def fetch_subresource(self, url: str) -> tuple[str, bytes]:
+        """Fetch one sub-resource an exported SVG still points at, so it can
+        be inlined (see :func:`awm.penpot_view.svgpost.inline_externals`).
+
+        Penpot's exported SVG is **not** self-contained: image fills arrive as
+        ``<image href="{PENPOT_PUBLIC_URI}/assets/by-file-media-id/...">`` and
+        every web font as ``url({PENPOT_PUBLIC_URI}/internal/gfonts/...)``.
+        Both are absolute URLs against Penpot's *own* public origin, and the
+        image ones are authenticated -- an unauthenticated GET answers 404.
+        A viewer that is not logged into Penpot, or that reaches this service
+        from anywhere Penpot's origin does not resolve, therefore gets a
+        render with holes where its images should be and fallback fonts in
+        place of its real ones, with no error anywhere. Inlining is what
+        turns the export into something that renders the same for everyone.
+
+        **Same-origin only, and that restriction is load-bearing.** The URL
+        comes out of a document a Penpot user authored, and this method
+        attaches the service account's cookie to it. Fetching an arbitrary
+        URL from it would let any board hand this service an internal address
+        and read the response back out of its own render -- so anything that
+        is not Penpot's own origin is refused here rather than filtered
+        further up.
+        """
+        parsed = httpx.URL(url)
+        base = httpx.URL(self._base_url)
+        if (parsed.scheme, parsed.host, parsed.port) != (base.scheme, base.host, base.port):
+            raise ExporterError(
+                f"refusing to fetch sub-resource {url!r}: not same-origin "
+                f"with {self._base_url} -- the service session's cookie is "
+                "never sent anywhere but Penpot itself")
+
+        resp = self._authed_request("GET", url, timeout=SUBRESOURCE_TIMEOUT)
+        if resp.status_code != 200:
+            raise ExporterError(
+                f"sub-resource {url} fetch failed: HTTP {resp.status_code}")
+        data = resp.content
+        if not data:
+            raise ExporterError(f"sub-resource {url} returned zero bytes")
+        if len(data) > MAX_SUBRESOURCE_BYTES:
+            raise ExporterError(
+                f"sub-resource {url} is {len(data)} bytes, over the "
+                f"{MAX_SUBRESOURCE_BYTES}-byte inlining cap")
+        content_type = (resp.headers.get("content-type", "")
+                        .split(";")[0].strip() or "application/octet-stream")
+        return content_type, data

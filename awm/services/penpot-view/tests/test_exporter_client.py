@@ -384,3 +384,63 @@ def test_a_two_element_map_is_not_mistaken_for_a_tagged_value():
     two-key map that happens to start with one must stay a map."""
     decoded = EC._transit_loads('["^ ","~:a",1,"~:b",2]')
     assert decoded == {"a": 1, "b": 2}
+
+
+# --- sub-resource inlining ---------------------------------------------
+
+def test_a_subresource_fetch_carries_the_auth_token_cookie():
+    """Penpot's image assets are authenticated -- `/assets/by-file-media-id/...`
+    answers 404 to an anonymous GET (verified live). Without the cookie every
+    inlined image would silently become a 404 problem."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("cookie", ""))
+        return httpx.Response(200, content=b"jpegbytes",
+                              headers={"content-type": "image/jpeg"})
+
+    client = _client(asset=asset)
+    content_type, data = client.fetch_subresource(
+        f"{BASE_URL}/assets/by-file-media-id/abc")
+    assert (content_type, data) == ("image/jpeg", b"jpegbytes")
+    assert any(f"{EC.COOKIE_NAME}=svc-token" in c for c in seen)
+
+
+def test_a_cross_origin_subresource_is_refused_before_any_request():
+    """The URL comes out of a user-authored document and this method attaches
+    the service account's cookie to it. Anything that is not Penpot's own
+    origin must be refused here, not filtered further up."""
+    calls: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"x", headers={"content-type": "text/plain"})
+
+    client = _client(asset=asset)
+    with pytest.raises(EC.ExporterError, match="same-origin"):
+        client.fetch_subresource("http://169.254.169.254/latest/meta-data/")
+    assert calls == []
+
+
+def test_an_oversized_subresource_is_refused():
+    def asset(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 64,
+                              headers={"content-type": "image/png"})
+
+    client = _client(asset=asset)
+    monkeyed = EC.MAX_SUBRESOURCE_BYTES
+    EC.MAX_SUBRESOURCE_BYTES = 8
+    try:
+        with pytest.raises(EC.ExporterError, match="inlining cap"):
+            client.fetch_subresource(f"{BASE_URL}/assets/by-file-media-id/big")
+    finally:
+        EC.MAX_SUBRESOURCE_BYTES = monkeyed
+
+
+def test_a_failed_subresource_is_an_error_not_empty_bytes():
+    def asset(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, content=b"")
+
+    client = _client(asset=asset)
+    with pytest.raises(EC.ExporterError, match="HTTP 404"):
+        client.fetch_subresource(f"{BASE_URL}/assets/by-file-media-id/gone")
