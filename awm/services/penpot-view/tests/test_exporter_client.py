@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import uuid as uuidlib
 
+import json
+
 import httpx
 import pytest
 
@@ -498,3 +500,52 @@ def test_a_subresource_on_the_public_origin_is_localised():
                                transport=httpx.MockTransport(_router(asset=asset)))
     client.fetch_subresource(f"{PUBLIC}/internal/gfonts/font/a.woff2")
     assert seen == [f"{BASE_URL}/internal/gfonts/font/a.woff2"]
+
+
+# --- the read cache counts tags too ---------------------------------------
+
+def test_a_tag_occupies_a_read_cache_slot():
+    """Transit caches a tag like any other `~`-prefixed string of four
+    characters or more, so skipping it shifts every later back-reference by
+    one. Found on a real 7.3 MB `get-file`, which decoded fine until a
+    reference walked off the end of a cache 37 entries short; a small response
+    never reaches far enough to notice."""
+    payload = json.dumps(["^ ", "~:aaa", ["~#uri", "http://x"], "~:bbb", "^2"])
+    decoded = EC._transit_loads(payload)
+    assert decoded == {"aaa": "http://x", "bbb": "bbb"}
+
+
+def test_a_verbose_tag_occupies_a_read_cache_slot():
+    payload = json.dumps(["^ ", "~:aaa", {"~#uri": "http://x"}, "~:bbb", "^2"])
+    decoded = EC._transit_loads(payload)
+    assert decoded == {"aaa": "http://x", "bbb": "bbb"}
+
+
+def test_a_two_element_vector_is_still_a_vector():
+    """The tag check now decodes the head before judging it, so an ordinary
+    two-element vector must survive as one rather than collapsing."""
+    assert EC._transit_loads(json.dumps([1, 2])) == [1, 2]
+    assert EC._transit_loads(json.dumps(["~:aaa", "~:bbb"])) == ["aaa", "bbb"]
+
+
+def test_a_single_entry_map_that_is_not_a_tag_stays_a_map():
+    assert EC._transit_loads(json.dumps({"~:aaa": 1})) == {"aaa": 1}
+
+
+def test_the_real_get_file_payload_decodes():
+    """The live payload that exposed the bug, in miniature: a tagged value
+    ahead of the references that depend on the slot it takes."""
+    payload = json.dumps(["^ ", "~:modified-at", {"~#uri": "http://x"},
+                          "~:revn", 4, "~:name", "Tutorial", "^3", "again"])
+    decoded = EC._transit_loads(payload)
+    assert decoded["revn"] == 4
+    # `^3` is the fourth cached string: modified-at, the ~#uri tag, revn,
+    # name. Miss the tag and it lands on `revn` instead.
+    assert decoded["name"] == "again"
+
+
+def test_a_tag_shorter_than_the_cache_minimum_takes_no_slot():
+    """`~#m` is three characters, so transit does not cache it -- the length
+    rule applies to tags exactly as it does to keywords."""
+    payload = json.dumps(["^ ", "~:aaa", {"~#m": 1}, "~:bbb", "^1"])
+    assert EC._transit_loads(payload) == {"aaa": 1, "bbb": "bbb"}

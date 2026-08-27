@@ -5,9 +5,10 @@ chain of substitutions would turn a colour that was never asked for into one
 that was -- pinned by ``test_a_swap_never_chains``. A swap that matches
 nothing looks identical to a swap that silently failed unless the bytes are
 checked -- pinned by ``test_a_swap_matching_nothing_is_byte_identical``. A
-colour this module cannot reach (a bare XML attribute rather than
-``style=``) must say so rather than quietly leave the picture wrong --
-pinned by ``test_an_unreachable_swap_is_reported_not_dropped``. A crop
+gradient stop, which Penpot spells as a bare ``stop-color="#hex"`` rather
+than as ``rgb()`` inside ``style=``, must be swapped like any other colour
+rather than silently left behind -- pinned by
+``test_gradient_stops_are_swapped``. A crop
 against an unknown shape must fail loudly rather than render the full,
 un-cropped board -- pinned by ``test_crop_of_an_unknown_shape_is_refused``.
 """
@@ -80,10 +81,10 @@ def test_a_swap_matching_nothing_is_byte_identical():
     assert problems == []
 
 
-def test_an_unreachable_swap_is_reported_not_dropped():
-    """A colour spelled as a bare XML attribute rather than inside style= is
-    a swap this module cannot carry out -- it must say so, not just leave
-    the picture silently wrong the way a shrug would."""
+def test_a_bare_colour_attribute_is_swapped_too():
+    """Both forms Penpot emits get rewritten. A colour left behind in one of
+    them is a half-swapped picture that reports success -- the failure this
+    module exists to refuse."""
     svg = (
         b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
         b'<rect fill="#ff00ff" width="1" height="1"/>'
@@ -92,14 +93,47 @@ def test_an_unreachable_swap_is_reported_not_dropped():
     )
     data, problems = S.swap_svg(svg, (("ff00ff", "00aa55"),))
     text = data.decode("utf-8")
-    # the style= occurrence was rewritten...
     assert "rgb(0, 170, 85)" in text
-    # ...but the bare attribute was left exactly as it was...
-    assert 'fill="#ff00ff"' in text
-    # ...and that gap was reported, naming the attribute and the colour.
+    assert 'fill="#00aa55"' in text
+    assert 'fill="#ff00ff"' not in text
+    assert problems == []
+
+
+def test_gradient_stops_are_swapped():
+    """Penpot writes a gradient stop as a bare `stop-color="#hex"`, not as
+    `rgb()` inside style= -- verified against a live export of a board with
+    two linear gradients. Rewriting only style= would leave every gradient at
+    its original colour."""
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs>'
+        b'<linearGradient id="g">'
+        b'<stop offset="0" stop-color="#b1b2b5" stop-opacity="0"/>'
+        b'<stop offset="1" stop-color="#b1b2b5" stop-opacity="1"/>'
+        b"</linearGradient></defs></svg>"
+    )
+    data, problems = S.swap_svg(svg, (("b1b2b5", "ff0000"),))
+    text = data.decode("utf-8")
+    assert text.count('stop-color="#ff0000"') == 2
+    assert "b1b2b5" not in text
+    assert problems == []
+
+
+def test_fill_none_is_left_alone_and_not_reported():
+    svg = (b'<svg xmlns="http://www.w3.org/2000/svg" fill="none">'
+           b'<rect fill="none"/></svg>')
+    data, problems = S.swap_svg(svg, (("ff00ff", "00aa55"),))
+    assert data == svg
+    assert problems == []
+
+
+def test_a_colour_spelling_this_module_cannot_parse_is_reported():
+    """A CSS colour name is skipped by the rewrite. Skipping it silently
+    would hand back an unchanged picture with a clean report."""
+    svg = (b'<svg xmlns="http://www.w3.org/2000/svg">'
+           b'<rect fill="rebeccapurple"/></svg>')
+    _, problems = S.swap_svg(svg, (("663399", "00aa55"),))
     assert len(problems) == 1
-    assert "ff00ff" in problems[0]
-    assert "fill=" in problems[0]
+    assert "rebeccapurple" in problems[0]
 
 
 def test_a_repeated_swap_source_is_still_one_lookup():

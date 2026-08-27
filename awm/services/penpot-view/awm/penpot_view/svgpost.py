@@ -2,10 +2,9 @@
 
 :mod:`awm.penpot_view.renderspec` owns the query grammar (``scale=``,
 ``swap=<from>:<to>``, ``crop=<name>``) and the cache identity; this module is
-what actually rewrites the SVG bytes the exporter handed back. ``scale`` is
-not this module's job at all -- it is a native parameter the exporter applies
-while rendering, upstream of anything here. Only ``swap`` and ``crop`` are
-post-processing, and they are the whole of this module.
+what actually rewrites the SVG bytes the exporter handed back: ``swap``,
+``crop``, and -- because Penpot ignores it for SVG (verified live) --
+``scale``, applied here as the root element's presentation size.
 
 **This is not a port of :mod:`awm.drawio.recolour`, and deliberately so.** A
 ``.drawio`` document is a container that can hold an imported raster or
@@ -13,18 +12,19 @@ another SVG as a base64/percent-encoded ``data:`` URI, so drawio's module
 spends most of its bulk sniffing codecs, decoding Pillow images and shifting
 pixels. An exported Penpot board is a single, self-contained SVG document
 with no embedded foreign images to decode -- every colour in it is text, and
-every colour that matters is spelled the same way. That collapses the whole
-"three surfaces" problem drawio has to solve down to one: rewrite ``rgb()``
-inside a ``style=`` attribute.
+every colour that matters is spelled one of two ways. That collapses the
+whole "three surfaces" problem drawio has to solve down to two regex passes.
 
 **What a real Penpot export actually looks like** (confirmed against a live
 sample, not assumed): a shape is a ``<g id="shape-<uuid>">``. Fill and stroke
 are **inline CSS declarations inside a ``style=`` attribute**, in functional
 ``rgb(r, g, b)`` notation --
-``style="fill: rgb(255, 255, 255); fill-opacity: 1;"`` -- never a bare
-``fill="#rrggbb"`` XML attribute. (A bare ``fill=``/``stroke=``/
-``stop-color=`` attribute *does* appear in real output, but only ever holding
-``none`` -- Penpot uses it to suppress a paint, not to spell a colour.) The
+``style="fill: rgb(255, 255, 255); fill-opacity: 1;"``. A **gradient stop**
+is the exception, and the one that matters: it arrives as a bare
+``stop-color="#b1b2b5"`` XML attribute holding hex, never as ``rgb()`` inside
+``style=`` -- confirmed against a live export of a board carrying two linear
+gradients. A bare ``fill=``/``stroke=`` attribute also appears, holding
+``none`` (Penpot suppressing a paint) or a ``url(#...)`` reference. The
 root ``<svg>`` also carries a *second*, unrelated id --
 ``id="screenshot-<uuid>"`` -- which is the exporter's own render-completion
 locator (:mod:`awm.penpot_view` polls for that id to know the page finished
@@ -34,9 +34,9 @@ frame is wrapped in a ``<clipPath id="frame-clip-<uuid>-render-N">`` holding
 one ``<rect>`` -- see *crop* below for why that rect matters far beyond
 clipping.
 
-**swap.** Because every colour lives inside one attribute in one notation,
-plain regex over ``style="..."`` values is simpler and safer here than a full
-XML parse would be: it touches only the bytes that can hold a colour and
+**swap.** Because every colour lives inside an attribute in one of two known
+notations, plain regex is simpler and safer here than a full XML parse would
+be: it touches only the bytes that can hold a colour and
 leaves everything else -- attribute order, quoting, self-closing style --
 byte-for-byte untouched, which is what makes "a swap that matches nothing
 returns the input unchanged" a trivial guarantee rather than something a
@@ -50,26 +50,20 @@ hex) by its ``canonical_colour``/``parse_swaps``; this module trusts that and
 never re-derives hex parsing, except to reuse ``canonical_colour`` itself
 when checking a bare attribute below.
 
-A swap that matches no ``rgb()`` anywhere is not an error -- the requested
-colour may simply not be on this board. But a colour that *is* present, just
-somewhere this module does not rewrite, is a different failure and is
-reported rather than silently dropped: if a requested source colour turns up
-as a bare ``fill=``/``stroke=``/``stop-color=`` XML attribute (not inside
-``style=``), that occurrence is left alone and a problem string is appended,
-following the sibling ``(data, problems)`` convention used by
-:mod:`awm.drawio.export`.
+A swap that matches nothing is not an error -- the requested colour may
+simply not be on this board. What *is* reported, through the sibling
+``(data, problems)`` convention :mod:`awm.drawio.export` uses, is a paint
+spelled in a form this module cannot parse at all (a CSS colour name, say):
+such a value is skipped by both passes, and skipping it silently would hand
+a caller an unchanged picture alongside a clean report.
 
-**Unverified, on purpose, not papered over:** the one live sample available
-while writing this was a plain white-filled frame with no gradient and no
-text. A gradient stop written as ``style="stop-color: rgb(...)"`` would be
-caught by the same regex, since it does not care which CSS property the
-``rgb()`` sits inside -- but that is inference, not confirmation. Text
-flattened to a path is, likewise, just another element with its own
-``style="fill: rgb(...)"`` if Penpot spells it the same way everything else
-does -- also unconfirmed. Neither case gets special-cased here; if either
-turns out to need one, the ``problems`` channel above is exactly where a
-future fix would report the gap rather than a caller silently getting an
-unchanged picture.
+**The one colour still out of reach, and it is Penpot's own bug.** Text
+carries its fill indirectly, as ``fill: url(#fill-0-render-N)`` pointing at a
+generated def. Rewriting the def's own colour does reach it -- but in the
+live export the reference is *dangling*: the document defines
+``fill-0-render-9-0`` while the text points at ``fill-0-render-9``, so
+exported text renders unfilled whatever this module does. That is an upstream
+fidelity defect, not something a colour swap can repair.
 
 **crop.** :mod:`renderspec` documents ``crop=<name>`` as naming a shape "by
 name", but the exported SVG carries no human-readable label anywhere in it --
@@ -185,14 +179,17 @@ class ShapeNotFound(SvgPostError):
 
 def swap_svg(svg: bytes, swaps: tuple[tuple[str, str], ...]
              ) -> tuple[bytes, list[str]]:
-    """Rewrite ``rgb()`` colours inside every ``style=`` attribute.
+    """Rewrite colours in the two forms Penpot's exporter actually emits.
 
-    Applies all of ``swaps`` in one pass, so ``a -> b`` and ``b -> c``
-    requested together never chain into ``a -> c`` -- see the module
-    docstring. Returns ``(bytes, problems)``; ``problems`` names a requested
-    source colour that exists in the document only as a bare colour
-    attribute this module does not rewrite. A source colour absent from the
-    document entirely is not a problem, and the bytes come back
+    A shape fill arrives as ``rgb()`` inside a ``style=`` attribute; a
+    gradient stop arrives as a bare ``stop-color="#hex"`` attribute. Both are
+    rewritten, in two passes over disjoint text, so ``a -> b`` and ``b -> c``
+    requested together still never chain into ``a -> c``.
+
+    Returns ``(bytes, problems)``. ``problems`` names a source colour still
+    present in a rewritable form afterwards -- a post-condition on the passes
+    above rather than a prediction about the document. A source colour absent
+    from the document entirely is not a problem, and the bytes come back
     byte-for-byte identical when no swap touches anything.
     """
     if not swaps:
@@ -215,27 +212,49 @@ def swap_svg(svg: bytes, swaps: tuple[tuple[str, str], ...]
 
     text = _STYLE_ATTR.sub(_style_sub, text)
 
-    # A source colour is checked against bare attributes regardless of
-    # whether it also matched inside style= elsewhere: those are two
-    # different occurrences in the document, and a hit on one must not mask
-    # a miss on the other -- a partially-applied swap is still a gap to
-    # report.
+    # Gradient stops are the reason this second pass exists. Penpot writes a
+    # shape fill as `style="fill: rgb(...)"` but a gradient's stops as bare
+    # `stop-color="#b1b2b5"` attributes carrying a hex value -- verified live
+    # against a board with two linear gradients. Rewriting only style= would
+    # leave every gradient in the document at its original colour while
+    # reporting the swap as applied everywhere else, which is precisely the
+    # half-done render this module is supposed to refuse. The two passes
+    # touch disjoint text, so applying both still cannot chain a -> b -> c.
+    def _attr_sub(match: "re.Match[str]") -> str:
+        attr_name, value = match.groups()
+        try:
+            hexval = R.canonical_colour(value)
+        except R.SpecError:
+            return match.group(0)  # `fill="none"` and the like
+        target = lookup.get(hexval)
+        if target is None:
+            return match.group(0)
+        return f'{attr_name}="#{target}"'
+
+    text = _BARE_COLOUR_ATTR.sub(_attr_sub, text)
+
+    # Both forms Penpot is known to emit are now rewritten, so there is no
+    # longer a "found it, cannot reach it" case to report for a *recognised*
+    # colour. What is still worth reporting is a paint spelled in a form this
+    # module cannot parse at all -- a CSS colour name, say. Such a value is
+    # skipped silently by the pass above, and a caller who asked to swap the
+    # colour it denotes would otherwise get an unchanged picture and a clean
+    # report. `none` is excluded: it is Penpot suppressing a paint, not a
+    # colour spelling this module failed to understand.
     problems: list[str] = []
-    for source, target in swaps:
-        for attr_match in _BARE_COLOUR_ATTR.finditer(text):
-            attr_name, value = attr_match.groups()
-            try:
-                hexval = R.canonical_colour(value)
-            except R.SpecError:
-                continue  # `fill="none"` and the like -- not a colour at all
-            if hexval == source:
-                problems.append(
-                    f"swap {source}->{target}: found as a bare "
-                    f'{attr_name}="{value}" attribute, not inside style=; '
-                    "this module only rewrites colours inside style= so it "
-                    "was left unchanged"
-                )
-                break
+    seen: set[str] = set()
+    for match in _BARE_COLOUR_ATTR.finditer(text):
+        attr_name, value = match.groups()
+        if value == "none" or value.startswith("url(") or value in seen:
+            continue
+        try:
+            R.canonical_colour(value)
+        except R.SpecError:
+            seen.add(value)
+            problems.append(
+                f'{attr_name}="{value}" is not a colour spelling this module '
+                "can parse, so any swap of the colour it denotes was not "
+                "applied to it")
 
     return text.encode("utf-8"), problems
 

@@ -272,18 +272,18 @@ def test_a_declared_content_length_body_is_drained_and_the_connection_survives(h
 
 def test_svgpost_problems_reach_a_response_header_and_the_log(harness, caplog):
     """A degraded picture is acceptable; a *silently* degraded one is not.
-    `swap`'s inability to rewrite a colour spelled as a bare (non-style)
-    attribute must be visible to the caller via a header, and logged, rather
-    than folded into an ordinary 200."""
+    A paint spelled in a form `swap` cannot parse -- a CSS colour name --
+    must be visible to the caller via a header, and logged, rather than
+    folded into an ordinary 200."""
     problem_svg = (
         b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
-        b'<rect fill="#ff00ff"/></svg>'
+        b'<rect fill="rebeccapurple"/></svg>'
     )
     exporter = FakeExporter(svg=problem_svg)
     h = harness(exporter=exporter)
 
     with caplog.at_level("WARNING", logger="awm.penpot_view.view"):
-        resp, data = h.request("GET", f"{PATH}?swap=ff00ff:00ff00")
+        resp, data = h.request("GET", f"{PATH}?swap=663399:00ff00")
 
     assert resp.status == 200
     assert resp.getheader("X-Penpot-Problems") == "1"

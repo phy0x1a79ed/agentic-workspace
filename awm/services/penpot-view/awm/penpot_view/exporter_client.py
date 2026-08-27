@@ -251,9 +251,22 @@ def _decode_transit(value: Any, cache: list | None = None,
 
     if isinstance(value, list):
         # A tagged value in compact form: ["~#tag", representation].
-        if (len(value) == 2 and isinstance(value[0], str)
-                and value[0].startswith(_TAG)):
-            return _decode_transit(value[1], cache, False)
+        #
+        # The tag goes through the read cache like any other `~`-prefixed
+        # string of four characters or more, and on a repeat it arrives as a
+        # back-reference rather than as the tag itself -- so the head is
+        # decoded through the normal path, which both resolves a reference and
+        # caches a first occurrence. Special-casing it (matching `~#` on the
+        # raw string and returning early) silently skipped a cache slot, and
+        # since the cache is positional every later reference in the document
+        # then pointed one entry short. On a small response that is invisible;
+        # on a real `get-file` it walks off the end of the cache.
+        if len(value) == 2 and isinstance(value[0], str) and value[0] != _MAP_AS_ARRAY:
+            head = _decode_transit(value[0], cache, False)
+            rep = _decode_transit(value[1], cache, False)
+            if isinstance(head, str) and head.startswith(_TAG):
+                return rep
+            return [head, rep]
         if value and value[0] == _MAP_AS_ARRAY:
             items = value[1:]
             if len(items) % 2:
@@ -275,9 +288,13 @@ def _decode_transit(value: Any, cache: list | None = None,
         # caller a dict where it expected a string, and the export fails
         # *after* a successful multi-second render.
         if len(value) == 1:
-            only_key = next(iter(value))
+            raw_key = next(iter(value))
+            # Decoded as a map key, so it lands in the cache exactly as the
+            # compact form's tag does -- see the note there.
+            only_key = _decode_transit(raw_key, cache, True)
             if isinstance(only_key, str) and only_key.startswith(_TAG):
-                return _decode_transit(value[only_key], cache, False)
+                return _decode_transit(value[raw_key], cache, False)
+            return {only_key: _decode_transit(value[raw_key], cache, False)}
         return {_decode_transit(k, cache, True): _decode_transit(v, cache, False)
                 for k, v in value.items()}
 
