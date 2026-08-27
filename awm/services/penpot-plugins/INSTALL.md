@@ -106,13 +106,28 @@ purpose too — browsers throttle timers in a backgrounded tab, so a refresh
 that silently stops firing there would be worse than one that never
 existed.
 
-**Known, unverified risk: image fidelity through Penpot's own ingestion.**
-`uploadMediaUrl` hands the fetched bytes to Penpot's own media pipeline,
-which may rasterize or re-encode an SVG on the way in — this plugin has not
-been driven against a live Penpot + `penpot-view` instance to confirm
-whether a refreshed board still renders as crisp vector output or comes back
-rasterized. Verify this before relying on it for anything where fidelity
-matters, and update this paragraph with the answer once it is checked.
+**Fidelity through Penpot's ingestion: verified, and it stays vector.** A
+real `penpot-view` render imported through the same RPC `uploadMediaUrl`
+uses comes back `image/svg+xml` at its original 1390x724, with all 197
+shape groups and all ten inlined `data:` sub-resources intact. Penpot
+re-serialises the document (single-quoted attributes, an added XML
+declaration) but does not rasterize or strip it.
+
+**Two things the fetch requires, and both are silent when missing.**
+
+1. **Penpot's backend does the fetching, so the render URL must be
+   reachable from inside that container.** The awm gateway binds loopback
+   only, so a `/penpot-view/...` URL on `127.0.0.1` is unreachable from
+   Penpot's containers — confirmed from inside `penpot-backend`, via both
+   its own localhost and the compose bridge gateway.
+
+2. **Penpot refuses private-network targets outright.** Its SSRF guard
+   (`backend/src/app/util/ssrf.clj`) rejects loopback, link-local,
+   site-local and RFC1918 addresses with `:ssrf-blocked-target`, so even a
+   reachable private address is refused. The supported escape hatch is
+   `PENPOT_SSRF_ALLOWED_HOSTS`, an exact, case-insensitive host allow-list
+   that bypasses the IP check — name the host serving `/penpot-view` there
+   rather than widening the guard or making the render public.
 
 **Storage format.** The source URL is stored under the plugin-data key
 `penpot-view-refresh:sourceUrl`, one per shape. Linking again overwrites it;
