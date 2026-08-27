@@ -26,7 +26,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import front, instances, server
+from awm.trilium import etapi, front, instances, server, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -121,6 +121,115 @@ API_MANIFEST: dict[str, Any] = {
             ],
         },
         {
+            "name": "authorize",
+            "tool": "trilium_authorize",
+            "description": (
+                "Give this service an ETAPI token for a user, so snapshot and "
+                "export can reach their vault. Preferred: the person creates a "
+                "token in Trilium under Options -> ETAPI and passes it as "
+                "`token`. Passing `password` instead exchanges it for a token "
+                "over loopback and discards it — the password is never stored, "
+                "but it does travel through this call. Either way the token is "
+                "written 0600 in service state and is revocable from that same "
+                "options screen. Pass `forget` to drop the stored token."
+            ),
+            "params": [
+                {"name": "user", "type": "string", "required": True,
+                 "description": "Whose vault to authorize against."},
+                {"name": "token", "type": "string",
+                 "description": "An ETAPI token created in Trilium's options."},
+                {"name": "password", "type": "string",
+                 "description": "That user's Trilium password, exchanged for a "
+                                "token and not retained."},
+                {"name": "forget", "type": "boolean",
+                 "description": "Delete the stored token instead."},
+            ],
+        },
+        {
+            "name": "snapshot",
+            "tool": "trilium_snapshot",
+            "description": (
+                "Take a named point this vault can be returned to. Without "
+                "`note_id` that is the whole database: Trilium copies it under "
+                "its sync mutex, the copy moves into the DVC chunk under a name "
+                "carrying a UTC timestamp, and the pin is committed. With "
+                "`note_id` it is one note's revision instead — Trilium's own "
+                "machinery, restorable with one click in its revisions dialog."
+            ),
+            "params": [
+                {"name": "user", "type": "string", "required": True,
+                 "description": "Whose vault to snapshot."},
+                {"name": "name", "type": "string",
+                 "description": "Label for the snapshot. A UTC timestamp is "
+                                "appended, so a name is never reused."},
+                {"name": "note_id", "type": "string",
+                 "description": "Snapshot one note as a revision instead of the "
+                                "whole database."},
+                {"name": "commit", "type": "boolean",
+                 "description": "Pin and commit the result (default true)."},
+            ],
+            "timeout": 600,
+        },
+        {
+            "name": "snapshots",
+            "tool": "trilium_snapshots",
+            "description": (
+                "Every database copy a user has, newest first. `snapshot` "
+                "entries are named, pinned and durable. `rolling` entries are "
+                "Trilium's own daily/weekly/monthly rotation — overwritten on a "
+                "schedule and pinned by nothing, so they are a race, not an "
+                "archive."
+            ),
+            "params": [
+                {"name": "user", "type": "string", "required": True,
+                 "description": "Whose snapshots to list."},
+            ],
+        },
+        {
+            "name": "restore",
+            "tool": "trilium_restore",
+            "description": (
+                "Replace a user's whole vault with a snapshot, stopping and "
+                "restarting their server around the swap. Destructive: every "
+                "note written since that snapshot is gone from the live vault. "
+                "Nothing is deleted — the database being replaced is moved to "
+                "live/superseded/<timestamp>/ and can be moved back. Requires "
+                "`confirm`. Restoring a single note is one click in Trilium's "
+                "own revisions dialog and is not this verb."
+            ),
+            "params": [
+                {"name": "user", "type": "string", "required": True,
+                 "description": "Whose vault to restore."},
+                {"name": "snapshot", "type": "string", "required": True,
+                 "description": "Snapshot name from `trilium snapshots`."},
+                {"name": "confirm", "type": "boolean",
+                 "description": "Must be true. Without it the verb reports what "
+                                "it would replace and does nothing."},
+            ],
+            "timeout": 600,
+        },
+        {
+            "name": "export",
+            "tool": "trilium_export",
+            "description": (
+                "Export a user's vault as markdown into their scope's notes/ "
+                "directory and commit it, pinning the snapshot chunk in the "
+                "same commit. The markdown is a DERIVED VIEW: Trilium stores "
+                "markup as HTML, so this is a conversion and importing it back "
+                "is lossy. It is for reading, diffing, searching and merging by "
+                "a person. Recovery is a snapshot, never this."
+            ),
+            "params": [
+                {"name": "user", "type": "string", "required": True,
+                 "description": "Whose vault to export."},
+                {"name": "note_id", "type": "string",
+                 "description": "Subtree to export (default the whole vault)."},
+                {"name": "commit", "type": "boolean",
+                 "description": "Commit the result (default true)."},
+            ],
+            "timeout": 600,
+        },
+        {
             "name": "logs",
             "tool": "trilium_logs",
             "description": "Tail one user's server stdout/stderr log.",
@@ -156,8 +265,22 @@ def _resolve(user: str | None) -> list[server.Child]:
 
 
 async def _h_status(args: dict) -> dict:
+    def _read() -> list[dict]:
+        rows = FLEET.snapshot()
+        for row in rows:
+            inst = instances.instance(row.get("user", ""))
+            # Counted here rather than in the supervisor: "this person has a
+            # durable copy" is a fact about their scope, not about the process.
+            # The rolling copies the supervisor reports are overwritten on a
+            # schedule, so they are not the answer to that question.
+            row["snapshots"] = (
+                len([s for s in vault.snapshots(inst)["snapshots"]
+                     if s["kind"] == "snapshot"]) if inst else 0)
+            row["authorized"] = bool(inst and etapi.read_token(inst))
+        return rows
+
     return {
-        "instances": await asyncio.to_thread(FLEET.snapshot),
+        "instances": await asyncio.to_thread(_read),
         "fronts": front.status(),
         "source": await asyncio.to_thread(instances.source_state),
     }
@@ -217,6 +340,85 @@ async def _h_logs(args: dict) -> dict:
             "log": await asyncio.to_thread(child.logs, tail)}
 
 
+def _inst(args: dict) -> instances.Instance:
+    user = (args.get("user") or "").strip()
+    inst = instances.instance(user)
+    if inst is None:
+        known = ", ".join(instances.discovered_users()) or "none"
+        raise KeyError(f"no Trilium instance for user {user!r} (known: {known})")
+    return inst
+
+
+async def _h_authorize(args: dict) -> dict:
+    inst = await asyncio.to_thread(_inst, args)
+
+    def _run() -> dict:
+        if args.get("forget"):
+            return {"user": inst.user, "forgotten": etapi.forget_token(inst)}
+        token = (args.get("token") or "").strip()
+        source = "supplied"
+        if not token:
+            password = args.get("password") or ""
+            if not password:
+                raise ValueError(
+                    "pass either `token` (created in Trilium under Options -> "
+                    "ETAPI) or `password` (exchanged for one and not stored)")
+            token = etapi.login(inst, password, token_name=f"awm-{inst.user}")
+            source = "issued"
+        path = etapi.store_token(inst, token)
+        # Prove the token works now rather than at the next snapshot, when the
+        # failure would look like a broken backup instead of a bad credential.
+        info = etapi.Etapi(inst, token).app_info()
+        return {"user": inst.user, "token": source, "stored": str(path),
+                "app_version": info.get("appVersion"),
+                "db_version": info.get("dbVersion")}
+    return await asyncio.to_thread(_run)
+
+
+async def _h_snapshot(args: dict) -> dict:
+    inst = await asyncio.to_thread(_inst, args)
+    return await asyncio.to_thread(
+        vault.snapshot, inst, (args.get("name") or "").strip() or None,
+        note_id=(args.get("note_id") or "").strip() or None,
+        commit=args.get("commit", True) is not False)
+
+
+async def _h_snapshots(args: dict) -> dict:
+    inst = await asyncio.to_thread(_inst, args)
+    return await asyncio.to_thread(vault.snapshots, inst)
+
+
+async def _h_restore(args: dict) -> dict:
+    inst = await asyncio.to_thread(_inst, args)
+    name = (args.get("snapshot") or "").strip()
+    source = await asyncio.to_thread(vault.resolve_snapshot, inst, name)
+
+    if not args.get("confirm"):
+        return {
+            "user": inst.user, "would_restore": str(source), "confirmed": False,
+            "warning": (f"this replaces {inst.document_db} and every note "
+                        f"written since that snapshot. Pass confirm=true."),
+        }
+
+    child = FLEET.get(inst.user)
+
+    def _swap() -> dict:
+        stopped = child.stop() if child else {"action": "no child"}
+        report = vault.restore_files(inst, source)
+        report["stopped"] = stopped
+        report["started"] = child.start() if child else {"action": "no child"}
+        return report
+    return await asyncio.to_thread(_swap)
+
+
+async def _h_export(args: dict) -> dict:
+    inst = await asyncio.to_thread(_inst, args)
+    return await asyncio.to_thread(
+        vault.export, inst,
+        note_id=(args.get("note_id") or "").strip() or "root",
+        commit=args.get("commit", True) is not False)
+
+
 HANDLERS = {
     "status": _h_status,
     "users": _h_users,
@@ -225,6 +427,11 @@ HANDLERS = {
     "restart": _h_restart,
     "url": _h_url,
     "logs": _h_logs,
+    "authorize": _h_authorize,
+    "snapshot": _h_snapshot,
+    "snapshots": _h_snapshots,
+    "restore": _h_restore,
+    "export": _h_export,
 }
 
 

@@ -18,6 +18,8 @@
   let busy = $state<string | null>(null);
   let log = $state<string>('');
   let openLog = $state<string | null>(null);
+  let snaps = $state<api.SnapshotInfo[]>([]);
+  let openSnaps = $state<string | null>(null);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
@@ -40,6 +42,12 @@
     } finally {
       busy = null;
     }
+  }
+
+  async function toggleSnaps(user: string) {
+    if (openSnaps === user) { openSnaps = null; return; }
+    openSnaps = user;
+    snaps = (await api.snapshots(user)).snapshots;
   }
 
   async function toggleLog(user: string) {
@@ -128,9 +136,20 @@
             front serving <span class="dim">:{front?.listener_port}</span>
             {#if front?.error}<span class="error"> {front.error}</span>{/if}
           </li>
-          <li data-ok={inst.backups.length > 0}>
-            recoverable copies
-            <span class="dim">{inst.backups.join(', ') || 'none yet'}</span>
+          <li data-ok={inst.snapshots > 0}>
+            {inst.snapshots} pinned snapshot(s)
+            <span class="dim">
+              · {inst.backups.length} rolling copy(ies), overwritten on a schedule
+            </span>
+          </li>
+          <li data-ok={inst.authorized}>
+            snapshot and export authorized
+            {#if !inst.authorized}
+              <span class="dim">
+                · create a token in Trilium under Options → ETAPI, then
+                <code>awm trilium authorize --user {inst.user} --token …</code>
+              </span>
+            {/if}
           </li>
         </ul>
 
@@ -152,7 +171,42 @@
             {openLog === inst.user ? 'Hide log' : 'Log'}
           </button>
         </div>
+        <div class="row">
+          <button onclick={() => act(`snap:${inst.user}`, () => api.snapshot(inst.user))}
+                  disabled={!!busy || !inst.authorized || !inst.listening}>
+            {busy === `snap:${inst.user}` ? 'Snapshotting…' : 'Snapshot'}
+          </button>
+          <button onclick={() => act(`export:${inst.user}`, () => api.exportNotes(inst.user))}
+                  disabled={!!busy || !inst.authorized || !inst.listening}>
+            {busy === `export:${inst.user}` ? 'Exporting…' : 'Export markdown'}
+          </button>
+          <button onclick={() => toggleSnaps(inst.user)} disabled={!!busy}>
+            {openSnaps === inst.user ? 'Hide copies' : 'Copies'}
+          </button>
+        </div>
         {#if openLog === inst.user}<pre class="log">{log || '(empty)'}</pre>{/if}
+        {#if openSnaps === inst.user}
+          {#if snaps.length === 0}
+            <p class="hint">No copies yet.</p>
+          {:else}
+            <table>
+              <tbody>
+                {#each snaps as s (s.file)}
+                  <tr>
+                    <td>{s.kind === 'snapshot' ? 'pinned' : 'rolling'}</td>
+                    <td class="dim">{s.modified}</td>
+                    <td>{s.name}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+          <p class="hint">
+            Putting one back is <code>awm trilium restore --user {inst.user}
+            --snapshot &lt;name&gt; --confirm</code>. It replaces the whole vault
+            and every note written since, so it is a verb and not a button.
+          </p>
+        {/if}
       </section>
     {/each}
 
@@ -169,9 +223,9 @@
       </dl>
       <p class="hint">
         Notes are stored as HTML, and the markdown tree in each person's scope is
-        an export of it. Read and diff that tree freely. Recover from a note
-        revision or from one of the database copies above, never from the
-        markdown.
+        an export of it. Read and diff that tree freely. Recover from a pinned
+        snapshot, never from the markdown — the export is a conversion, and
+        converting it back loses formatting.
       </p>
     </section>
   {:else if st}
@@ -238,4 +292,7 @@
     max-height: 22rem; overflow: auto; font-size: 0.8rem;
     background: var(--surface, #1a1a1a); padding: 0.75rem; border-radius: 6px;
   }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }
+  td { padding: 0.15rem 0.5rem 0.15rem 0; vertical-align: top; }
+  td:first-child { width: 5rem; color: var(--text-dim, #9a9a9a); }
 </style>

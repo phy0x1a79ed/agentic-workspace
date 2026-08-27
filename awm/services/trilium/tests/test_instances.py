@@ -82,6 +82,16 @@ def test_the_live_database_is_never_where_a_pin_would_reach(workspace):
     database that is being written to."""
     _add(workspace, "tony")
     inst = instances.instances()[0]
-    assert inst.backup_dir != inst.data_dir
-    assert inst.backup_dir.parent.name == "data"
+    assert inst.snapshots_dir != inst.data_dir
+    assert inst.snapshots_dir.parent.name == "data"
     assert inst.data_dir.name == "live"
+
+
+def test_trilium_never_writes_into_the_pinned_chunk(workspace):
+    """`dvc add` leaves every pinned file a read-only hardlink into the shared
+    cache. Trilium rewrites `backup-daily.db` in place, so its rolling
+    directory has to sit outside the chunk or the daily backup stops."""
+    _add(workspace, "tony")
+    inst = instances.instances()[0]
+    assert inst.snapshots_dir not in inst.rolling_dir.parents
+    assert inst.rolling_dir.is_relative_to(inst.data_dir)

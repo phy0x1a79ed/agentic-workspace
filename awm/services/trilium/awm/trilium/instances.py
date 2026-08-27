@@ -108,11 +108,51 @@ class Instance:
         return self.scope / "live"
 
     @property
-    def backup_dir(self) -> Path:
-        """TRILIUM_BACKUP_DIR — `backup-daily.db` and friends, and the only
-        database file that is safe to pin. Trilium writes these under its sync
-        mutex, so each one is a consistent copy."""
+    def rolling_dir(self) -> Path:
+        """TRILIUM_BACKUP_DIR — `backup-daily.db` and friends, rewritten in place.
+
+        Inside `live/`, and gitignored with it. It is tempting to make this the
+        DVC chunk, because these are the only consistent database copies on
+        disk — Trilium writes them under its sync mutex. It cannot be one.
+        `dvc add` replaces every file it pins with a read-only hardlink into the
+        shared cache, and Trilium's next rolling backup overwrites the same
+        name: the write fails on permissions, and the daily backup stops.
+
+        So Trilium churns here, and `snapshots_dir` holds the copies awm pins.
+        """
+        return self.scope / "live" / "backups"
+
+    @property
+    def snapshots_dir(self) -> Path:
+        """The DVC chunk — one immutable file per named snapshot.
+
+        awm writes here and Trilium does not, which is what makes read-only
+        hardlinks safe. Each file is written once under a name that is never
+        reused, so nothing ever has to overwrite a pinned file.
+        """
         return self.scope / "data" / "backups"
+
+    @property
+    def superseded_dir(self) -> Path:
+        """Where a restore puts the vault it replaced. Inside `live/`, so it is
+        ignored by git and pinned by nothing, but it is still on disk — a
+        restore of the wrong snapshot is undone by moving a file back."""
+        return self.scope / "live" / "superseded"
+
+    @property
+    def document_db(self) -> Path:
+        """The live database. Its `-wal` and `-shm` siblings are part of it."""
+        return self.data_dir / "document.db"
+
+    @property
+    def token_file(self) -> Path:
+        """This user's ETAPI token, in service state and never in their scope.
+
+        A token, never their password: `POST /etapi/auth/login` exchanges one
+        for the other, and only the token is written down. It is revocable from
+        Trilium's own options screen, which a password is not.
+        """
+        return STATE_DIR / "tokens" / f"{self.user}.token"
 
     @property
     def notes_dir(self) -> Path:

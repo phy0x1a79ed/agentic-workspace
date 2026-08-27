@@ -29,9 +29,15 @@ export interface InstanceState {
   uptime_s: number | null;
   scope: string;
   data_dir: string;
-  /** Rolling database copies present, e.g. `backup-daily.db`. Empty means this
-   *  person has nothing to recover from yet. */
+  /** The service's own rolling copies, e.g. `backup-daily.db`. Overwritten on
+   *  a schedule and pinned by nothing, so this is not the recovery answer. */
   backups: string[];
+  /** Named snapshots pinned in this person's scope. This is the recovery
+   *  answer, and zero means there is none. */
+  snapshots: number;
+  /** Whether the service holds an ETAPI token for this person. Without one,
+   *  snapshot and export cannot reach their vault. */
+  authorized: boolean;
   log: string;
   error: string | null;
 }
@@ -86,3 +92,26 @@ export const stop = (user: string) => trilium.fn<unknown>('stop', { user });
 export const restart = (user: string) => trilium.fn<unknown>('restart', { user });
 export const logs = (user: string, tail = 200) =>
   trilium.fn<{ user: string; tail: number; log: string }>('logs', { user, tail });
+
+/** One database copy. `snapshot` is named, pinned and durable; `rolling` is the
+ *  service's own rotation and is overwritten without warning. */
+export interface SnapshotInfo {
+  name: string;
+  file: string;
+  kind: 'snapshot' | 'rolling';
+  bytes: number;
+  modified: string;
+  restorable: boolean;
+}
+
+export const snapshots = (user: string) =>
+  trilium.fn<{ user: string; snapshots: SnapshotInfo[] }>('snapshots', { user });
+export const snapshot = (user: string, name?: string) =>
+  trilium.fn<{ snapshot: string }>('snapshot', { user, name });
+export const exportNotes = (user: string) =>
+  trilium.fn<{ files: number }>('export', { user });
+
+// `restore` is deliberately absent. It replaces a whole vault and every note
+// written since the snapshot, which is not a thing a page with a refresh timer
+// should offer behind one click. It stays a verb, where naming the snapshot and
+// passing confirm=true are two separate deliberate acts.

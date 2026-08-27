@@ -61,9 +61,10 @@ def child_env(inst: Instance) -> dict[str, str]:
 
     - The data directory is the user's own scope worktree, which is what makes
       one person's content one branch.
-    - The backup directory is split out of it deliberately. It is the only
-      database file safe to pin, because Trilium writes those under its sync
-      mutex while `document.db` and its write-ahead log are live.
+    - The backup directory is set explicitly so the rolling copies land beside
+      the live database rather than inside the DVC-pinned chunk. Trilium
+      rewrites `backup-daily.db` in place, and a pinned file is a read-only
+      hardlink into the shared cache — see `Instance.rolling_dir`.
     - The bind is loopback. The front is the only way in.
     - `trustedReverseProxy` is required, not cosmetic: httpsfront terminates TLS
       and forwards `X-Forwarded-Proto: https`. Without the trust setting express
@@ -79,7 +80,7 @@ def child_env(inst: Instance) -> dict[str, str]:
     env.update({
         "TRILIUM_ENV": "production",
         "TRILIUM_DATA_DIR": str(inst.data_dir),
-        "TRILIUM_BACKUP_DIR": str(inst.backup_dir),
+        "TRILIUM_BACKUP_DIR": str(inst.rolling_dir),
         "TRILIUM_HOST": "127.0.0.1",
         "TRILIUM_PORT": str(inst.upstream_port),
         "TRILIUM_NETWORK_TRUSTEDREVERSEPROXY": "loopback",
@@ -133,14 +134,15 @@ class Child:
             }
 
     def backups(self) -> list[str]:
-        """The rolling database copies present, newest name order.
+        """The rolling database copies Trilium keeps, in name order.
 
         Reported per user because "the service is up" and "this person has a
         recoverable copy" are different facts, and only the second one matters
-        the day someone needs it.
+        the day someone needs it. These are Trilium's own rotation — the named
+        snapshots awm pins are listed by `trilium snapshots`.
         """
         try:
-            return sorted(p.name for p in self.inst.backup_dir.glob("backup-*.db"))
+            return sorted(p.name for p in self.inst.rolling_dir.glob("backup-*.*"))
         except OSError:
             return []
 
@@ -158,7 +160,7 @@ class Child:
 
         inst = self.inst
         inst.data_dir.mkdir(parents=True, exist_ok=True)
-        inst.backup_dir.mkdir(parents=True, exist_ok=True)
+        inst.rolling_dir.mkdir(parents=True, exist_ok=True)
         inst.log_file.parent.mkdir(parents=True, exist_ok=True)
 
         # An absolute path to the bundle, and the cwd is irrelevant: in
