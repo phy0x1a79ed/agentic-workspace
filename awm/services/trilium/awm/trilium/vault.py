@@ -3,8 +3,8 @@
 Three facilities, and awm invents none of them. Trilium copies its own database
 under its sync mutex, keeps its own per-note revisions, and exports its own
 tree as markdown. What this module adds is where the results go: into the
-person's `userdata` scope, pinned by DVC and committed by git, so a knowledge
-base has the same history as code.
+`vault` project's worktree, pinned by DVC and committed by git, so the shared
+knowledge base has the same history as code.
 
 **Three kinds of copy, and they are not interchangeable.**
 
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from awm.trilium import etapi, instances
-from awm.trilium.instances import Instance
+from awm.trilium.instances import Vault
 
 log = logging.getLogger("awm.trilium.vault")
 
@@ -133,14 +133,14 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _pin_and_commit(inst: Instance, message: str, paths: list[str]) -> dict[str, Any]:
+def _pin_and_commit(vault: Vault, message: str, paths: list[str]) -> dict[str, Any]:
     """Pin the snapshot chunk, stage `paths`, and make one commit of the lot.
 
     One commit, not two, so the markdown and the database pin that produced it
     move together — a tree whose text says one thing and whose pin says another
     is worse than either alone.
     """
-    scope = inst.scope
+    scope = vault.scope
     report: dict[str, Any] = {"committed": False}
     staged = list(paths)
 
@@ -151,7 +151,7 @@ def _pin_and_commit(inst: Instance, message: str, paths: list[str]) -> dict[str,
         report["detail"] = f"{scope} is not a git checkout — files written, not committed"
         return report
 
-    if inst.snapshots_dir.is_dir() and any(inst.snapshots_dir.iterdir()):
+    if vault.snapshots_dir.is_dir() and any(vault.snapshots_dir.iterdir()):
         if not _is_dvc_repo(scope):
             report["pin"] = "skipped: worktree does not track a .dvc/config"
         else:
@@ -193,7 +193,7 @@ def _find_backup(directory: Path, name: str) -> Path | None:
     return None
 
 
-def snapshot(inst: Instance, name: str | None = None, *,
+def snapshot(vault: Vault, name: str | None = None, *,
              note_id: str | None = None, commit: bool = True) -> dict[str, Any]:
     """Take a named point this vault can be returned to.
 
@@ -207,27 +207,27 @@ def snapshot(inst: Instance, name: str | None = None, *,
     hardlink into the shared cache, so a name that repeated would be a write
     that fails — every snapshot gets a name no other snapshot has.
     """
-    api = etapi.client(inst)
+    api = etapi.client()
 
     if note_id:
         api.save_revision(note_id, description=name or "awm snapshot")
-        return {"kind": "revision", "user": inst.user, "note_id": note_id,
+        return {"kind": "revision", "note_id": note_id,
                 "revisions": len(api.revisions(note_id))}
 
     label = _NAME_STRIP.sub("", name or "snapshot") or "snapshot"
     snap_name = f"{label}-{_stamp()}"
 
-    inst.rolling_dir.mkdir(parents=True, exist_ok=True)
+    vault.rolling_dir.mkdir(parents=True, exist_ok=True)
     api.backup(snap_name)
 
-    produced = _find_backup(inst.rolling_dir, snap_name)
+    produced = _find_backup(vault.rolling_dir, snap_name)
     if produced is None:
         raise RuntimeError(
             f"Trilium reported the backup written and nothing named "
-            f"backup-{snap_name}.* is in {inst.rolling_dir}")
+            f"backup-{snap_name}.* is in {vault.rolling_dir}")
 
-    inst.snapshots_dir.mkdir(parents=True, exist_ok=True)
-    dest = inst.snapshots_dir / produced.name
+    vault.snapshots_dir.mkdir(parents=True, exist_ok=True)
+    dest = vault.snapshots_dir / produced.name
     if dest.exists():
         raise FileExistsError(f"{dest} already exists — refusing to overwrite a pin")
     # Move rather than copy: same filesystem, so it is a rename, and it keeps
@@ -235,13 +235,13 @@ def snapshot(inst: Instance, name: str | None = None, *,
     shutil.move(str(produced), str(dest))
 
     out: dict[str, Any] = {
-        "kind": "database", "user": inst.user, "snapshot": dest.stem,
+        "kind": "database", "snapshot": dest.stem,
         "file": str(dest), "bytes": dest.stat().st_size,
         "restorable": dest.suffix == PLAIN_EXT,
     }
     if commit:
         out["git"] = _pin_and_commit(
-            inst, f"trilium/{inst.user}: snapshot {dest.stem}", [])
+            vault, f"vault: snapshot {dest.stem}", [])
     return out
 
 
@@ -256,16 +256,16 @@ def _describe(path: Path, kind: str) -> dict[str, Any]:
     }
 
 
-def snapshots(inst: Instance) -> dict[str, Any]:
-    """Every database copy this user has, newest first, by kind.
+def snapshots(vault: Vault) -> dict[str, Any]:
+    """Every database copy the vault has, newest first, by kind.
 
     Both kinds are listed because only one of them is durable. A rolling backup
     is overwritten on a schedule and pinned by nothing, so finding the state you
     want there is a race against the next rotation.
     """
     found: list[dict[str, Any]] = []
-    for directory, kind in ((inst.snapshots_dir, "snapshot"),
-                            (inst.rolling_dir, "rolling")):
+    for directory, kind in ((vault.snapshots_dir, "snapshot"),
+                            (vault.rolling_dir, "rolling")):
         try:
             entries = list(directory.glob("backup-*.*"))
         except OSError:
@@ -273,27 +273,26 @@ def snapshots(inst: Instance) -> dict[str, Any]:
         found += [_describe(p, kind) for p in entries if p.is_file()]
     found.sort(key=lambda d: d["modified"], reverse=True)
     return {
-        "user": inst.user,
         "snapshots": found,
-        "pinned_dir": str(inst.snapshots_dir),
-        "rolling_dir": str(inst.rolling_dir),
+        "pinned_dir": str(vault.snapshots_dir),
+        "rolling_dir": str(vault.rolling_dir),
     }
 
 
-def resolve_snapshot(inst: Instance, name: str) -> Path:
+def resolve_snapshot(vault: Vault, name: str) -> Path:
     """The file a snapshot name refers to. Accepts the stem or the filename."""
     stem = name[:-len(PLAIN_EXT)] if name.endswith(PLAIN_EXT) else name
     stem = stem[:-len(CONTAINER_EXT)] if stem.endswith(CONTAINER_EXT) else stem
     bare = stem[len("backup-"):] if stem.startswith("backup-") else stem
-    for directory in (inst.snapshots_dir, inst.rolling_dir):
+    for directory in (vault.snapshots_dir, vault.rolling_dir):
         hit = _find_backup(directory, bare)
         if hit:
             return hit
     raise FileNotFoundError(
-        f"no snapshot named {name!r} for {inst.user!r} — `trilium snapshots` lists them")
+        f"no snapshot named {name!r} — `trilium snapshots` lists them")
 
 
-def restore_files(inst: Instance, source: Path) -> dict[str, Any]:
+def restore_files(vault: Vault, source: Path) -> dict[str, Any]:
     """Put `source` in place as the live database. The server must be stopped.
 
     Nothing is deleted. The database being replaced, together with its
@@ -309,31 +308,31 @@ def restore_files(inst: Instance, source: Path) -> dict[str, Any]:
             f"{source.name} is a compressed or encrypted backup container, not a "
             f"plain database. Restore it through Trilium's own restore screen, "
             f"which holds the passphrase.")
-    if instances.listening(inst.upstream_port):
+    if instances.listening(instances.UPSTREAM_PORT):
         raise RuntimeError(
-            f"{inst.user}'s server is still listening on {inst.upstream_port}. "
+            f"the vault's server is still listening on {instances.UPSTREAM_PORT}. "
             f"Stop it before restoring — a swap under a live SQLite connection "
             f"leaves the process writing to a file nobody can see.")
 
-    holding = inst.superseded_dir / _stamp()
+    holding = vault.superseded_dir / _stamp()
     holding.mkdir(parents=True, exist_ok=True)
     moved = []
     for suffix in ("", "-wal", "-shm"):
-        old = Path(str(inst.document_db) + suffix)
+        old = Path(str(vault.document_db) + suffix)
         if old.exists():
             shutil.move(str(old), str(holding / old.name))
             moved.append(old.name)
 
-    inst.data_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, inst.document_db)
+    vault.data_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, vault.document_db)
     # A pinned file is a read-only hardlink into the shared cache. `copy2`
     # carries that mode across to a database the server has to write to, and
     # the mode is the only thing about the source that must not survive.
-    os.chmod(inst.document_db, 0o600)
+    os.chmod(vault.document_db, 0o600)
 
-    return {"user": inst.user, "restored_from": str(source),
+    return {"restored_from": str(source),
             "superseded": str(holding), "moved_aside": moved,
-            "bytes": inst.document_db.stat().st_size}
+            "bytes": vault.document_db.stat().st_size}
 
 
 # -- the markdown export ----------------------------------------------------
@@ -353,7 +352,7 @@ def _safe_members(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return keep
 
 
-def export(inst: Instance, *, note_id: str = "root",
+def export(vault: Vault, *, note_id: str = "root",
            commit: bool = True) -> dict[str, Any]:
     """Write the vault out as markdown into the scope, and commit it.
 
@@ -361,10 +360,10 @@ def export(inst: Instance, *, note_id: str = "root",
     Trilium holds, so a file that survived only because a previous export made
     it would be a lie about the vault's current contents.
     """
-    api = etapi.client(inst)
+    api = etapi.client()
     blob = api.export_zip(note_id=note_id, fmt="markdown")
 
-    staging = inst.scope / ".notes.incoming"
+    staging = vault.scope / ".notes.incoming"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     try:
@@ -380,22 +379,22 @@ def export(inst: Instance, *, note_id: str = "root",
         # the staging tree becomes `notes/`.
         count, total = len(files), sum(p.stat().st_size for p in files)
 
-        retired = inst.scope / ".notes.retired"
+        retired = vault.scope / ".notes.retired"
         shutil.rmtree(retired, ignore_errors=True)
-        if inst.notes_dir.exists():
-            inst.notes_dir.rename(retired)
-        staging.rename(inst.notes_dir)
+        if vault.notes_dir.exists():
+            vault.notes_dir.rename(retired)
+        staging.rename(vault.notes_dir)
         shutil.rmtree(retired, ignore_errors=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
     out: dict[str, Any] = {
-        "user": inst.user, "note_id": note_id, "notes_dir": str(inst.notes_dir),
+        "note_id": note_id, "notes_dir": str(vault.notes_dir),
         "files": count, "bytes": total,
         "derived": "markdown converted from Trilium's HTML — read it, do not "
                    "restore from it",
     }
     if commit:
         out["git"] = _pin_and_commit(
-            inst, f"trilium/{inst.user}: export {count} files", ["notes"])
+            vault, f"vault: export {count} files", ["notes"])
     return out

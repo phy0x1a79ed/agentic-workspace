@@ -184,6 +184,13 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("AWM_PORT", "7819"))
 BASE_URL = f"http://{HOST}:{PORT}"
 
+# The shared Trilium vault's loopback port. Named here rather than in either
+# service because two processes have to agree on it and neither owns it: the
+# trilium supervisor binds it, and the edge proxies to it. One definition means
+# there is no RPC to make, no table to cache, and nothing to go stale.
+VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
+VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
+
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
 ACCESS_LOG = AWM_DIR / "access.log"

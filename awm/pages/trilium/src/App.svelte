@@ -1,25 +1,19 @@
 <script lang="ts">
-  // The reception page for the Trilium fleet: who has an instance, is theirs
-  // healthy, and a way in to each.
+  // The reception page for the shared vault: is it up, does it have a
+  // database, is there a copy to recover from, and a way in.
   //
-  // A list rather than a dashboard, because the fleet is the unit here. One
-  // person's server being down says nothing about anyone else's, so each row
-  // carries its own state and its own controls, and the page-level banner only
-  // reports the one thing they share: which bundle is being served.
-  //
-  // Three ways a row can be down and they need three different fixes — the
-  // node process, that user's TLS listener, and the bundle nobody built — so
-  // they are shown apart rather than as one green dot.
+  // One panel, because there is one vault. It reports rather than controls:
+  // every verb that acts on the vault is refused for a caller arriving through
+  // an edge, because the vault is shared and those are one person's button on
+  // everyone's work. What is left is the state somebody would want before
+  // trusting it, and each of the four ways it can be down is shown apart,
+  // because they need four different fixes.
   import { onMount, onDestroy } from 'svelte';
   import * as api from './lib/api';
 
   let st = $state<api.Status | null>(null);
   let error = $state<string | null>(null);
-  let busy = $state<string | null>(null);
-  let log = $state<string>('');
-  let openLog = $state<string | null>(null);
-  let snaps = $state<api.SnapshotInfo[]>([]);
-  let openSnaps = $state<string | null>(null);
+  let snaps = $state<api.SnapshotInfo[] | null>(null);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refresh() {
@@ -31,35 +25,13 @@
     }
   }
 
-  async function act(key: string, fn: () => Promise<unknown>) {
-    if (busy) return;
-    busy = key;
+  async function toggleSnaps() {
+    if (snaps) { snaps = null; return; }
     try {
-      await fn();
-      await refresh();
+      snaps = (await api.snapshots()).snapshots;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
-    } finally {
-      busy = null;
     }
-  }
-
-  async function toggleSnaps(user: string) {
-    if (openSnaps === user) { openSnaps = null; return; }
-    openSnaps = user;
-    snaps = (await api.snapshots(user)).snapshots;
-  }
-
-  async function toggleLog(user: string) {
-    if (openLog === user) { openLog = null; return; }
-    openLog = user;
-    log = (await api.logs(user, 200)).log;
-  }
-
-  function open(url: string) {
-    // Cross-origin by construction: this page is on the gateway front, each
-    // Trilium on its own. A new tab, never an iframe.
-    window.open(url, '_blank');
   }
 
   onMount(() => {
@@ -69,27 +41,22 @@
   onDestroy(() => { if (timer) clearInterval(timer); });
 
   const src = $derived(st?.source ?? null);
-  const frontOf = $derived((user: string) =>
-    st?.fronts.find((f) => f.user === user) ?? null);
-  // Reachable means all three: the process is up, it bound its port, and that
-  // user's front is serving. Any one missing and the button lies.
-  const reachable = $derived((user: string) => {
-    const i = st?.instances.find((x) => x.user === user);
-    return !!i?.listening && !!frontOf(user)?.serving;
-  });
-  const anyone = $derived((st?.instances.length ?? 0) > 0);
+  const v = $derived(st?.vault ?? null);
+  // Reachable means both: the process is up and it bound its port. A start
+  // that failed to bind is running and useless, and the link would lie.
+  const reachable = $derived(!!v?.listening);
 </script>
 
 <main>
   <header>
-    <h1>Trilium</h1>
-    <span class="badge">{st?.instances.length ?? 0} instance(s)</span>
+    <h1>Vault</h1>
+    <span class="badge">{reachable ? 'up' : 'down'}</span>
   </header>
 
   <p class="hint">
-    One server per person, each with its own database and its own login. That
-    second login is what tells two people apart — the awm session in front of
-    it is one shared password for the whole workspace.
+    One knowledge base, shared by everyone who can sign in. There is no second
+    password: you are already signed in, and the vault is served on this origin
+    behind that same session.
   </p>
 
   {#if error}<p class="error">{error}</p>{/if}
@@ -108,107 +75,63 @@
     </p>
   {/if}
 
-  {#if st && anyone}
-    {#each st.instances as inst (inst.user)}
-      {@const front = frontOf(inst.user)}
-      <section data-state={reachable(inst.user) ? 'up' : 'down'}>
-        <h2>{inst.user}</h2>
+  {#if st && v}
+    <section data-state={reachable ? 'up' : 'down'}>
+      <a class="primary" href={api.VAULT_PATH} aria-disabled={!reachable}>
+        Open the vault
+      </a>
+      <p class="hint">
+        Same origin, same session — no new tab and nothing further to sign in to.
+      </p>
 
-        <button
-          class="primary"
-          onclick={() => front?.url && open(front.url)}
-          disabled={!reachable(inst.user)}
-        >
-          Open {inst.user}'s notes
-        </button>
-        <p class="hint">
-          Opens in a new tab{front?.url ? ` (${front.url})` : ''}. You will be
-          asked for this instance's own password.
-        </p>
+      <ul class="steps">
+        <li data-ok={v.running}>server running</li>
+        <li data-ok={v.listening}>listening <span class="dim">(loopback only)</span></li>
+        <li data-ok={v.initialized !== false}>
+          {v.initialized === false ? 'no database yet — it is being created' : 'database ready'}
+        </li>
+        <li data-ok={v.snapshots > 0}>
+          {v.snapshots} pinned snapshot(s)
+          <span class="dim">
+            · {v.backups.length} rolling copy(ies), overwritten on a schedule
+          </span>
+        </li>
+      </ul>
 
-        <ul class="steps">
-          <li data-ok={inst.running}>
-            server running{inst.exit_code != null && !inst.running
-              ? ` (last exit ${inst.exit_code})` : ''}
-          </li>
-          <li data-ok={inst.listening}>listening on :{inst.port} <span class="dim">(loopback)</span></li>
-          <li data-ok={front?.serving && front?.tls}>
-            front serving <span class="dim">:{front?.listener_port}</span>
-            {#if front?.error}<span class="error"> {front.error}</span>{/if}
-          </li>
-          <li data-ok={inst.snapshots > 0}>
-            {inst.snapshots} pinned snapshot(s)
-            <span class="dim">
-              · {inst.backups.length} rolling copy(ies), overwritten on a schedule
-            </span>
-          </li>
-          <li data-ok={inst.authorized}>
-            snapshot and export authorized
-            {#if !inst.authorized}
-              <span class="dim">
-                · create a token in Trilium under Options → ETAPI, then
-                <code>awm trilium authorize --user {inst.user} --token …</code>
-              </span>
-            {/if}
-          </li>
-        </ul>
+      <dl>
+        <dt>uptime</dt>
+        <dd>{v.uptime_s != null ? `${Math.floor(v.uptime_s / 60)} min` : '—'}</dd>
+        {#if v.error}<dt>error</dt><dd class="error">{v.error}</dd>{/if}
+      </dl>
 
-        <dl>
-          <dt>uptime</dt>
-          <dd>{inst.uptime_s != null ? `${Math.floor(inst.uptime_s / 60)} min` : '—'}</dd>
-          <dt>content</dt><dd class="dim">{inst.scope}</dd>
-          {#if inst.error}<dt>error</dt><dd class="error">{inst.error}</dd>{/if}
-        </dl>
+      <div class="row">
+        <button onclick={toggleSnaps}>{snaps ? 'Hide copies' : 'Copies'}</button>
+      </div>
 
-        <div class="row">
-          <button onclick={() => act(`start:${inst.user}`, () => api.start(inst.user))}
-                  disabled={!!busy || inst.running}>Start</button>
-          <button onclick={() => act(`restart:${inst.user}`, () => api.restart(inst.user))}
-                  disabled={!!busy}>Restart</button>
-          <button onclick={() => act(`stop:${inst.user}`, () => api.stop(inst.user))}
-                  disabled={!!busy || !inst.running}>Stop</button>
-          <button onclick={() => toggleLog(inst.user)} disabled={!!busy}>
-            {openLog === inst.user ? 'Hide log' : 'Log'}
-          </button>
-        </div>
-        <div class="row">
-          <button onclick={() => act(`snap:${inst.user}`, () => api.snapshot(inst.user))}
-                  disabled={!!busy || !inst.authorized || !inst.listening}>
-            {busy === `snap:${inst.user}` ? 'Snapshotting…' : 'Snapshot'}
-          </button>
-          <button onclick={() => act(`export:${inst.user}`, () => api.exportNotes(inst.user))}
-                  disabled={!!busy || !inst.authorized || !inst.listening}>
-            {busy === `export:${inst.user}` ? 'Exporting…' : 'Export markdown'}
-          </button>
-          <button onclick={() => toggleSnaps(inst.user)} disabled={!!busy}>
-            {openSnaps === inst.user ? 'Hide copies' : 'Copies'}
-          </button>
-        </div>
-        {#if openLog === inst.user}<pre class="log">{log || '(empty)'}</pre>{/if}
-        {#if openSnaps === inst.user}
-          {#if snaps.length === 0}
-            <p class="hint">No copies yet.</p>
-          {:else}
-            <table>
-              <tbody>
-                {#each snaps as s (s.file)}
-                  <tr>
-                    <td>{s.kind === 'snapshot' ? 'pinned' : 'rolling'}</td>
-                    <td class="dim">{s.modified}</td>
-                    <td>{s.name}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          {/if}
-          <p class="hint">
-            Putting one back is <code>awm trilium restore --user {inst.user}
-            --snapshot &lt;name&gt; --confirm</code>. It replaces the whole vault
-            and every note written since, so it is a verb and not a button.
-          </p>
+      {#if snaps}
+        {#if snaps.length === 0}
+          <p class="hint">No copies yet.</p>
+        {:else}
+          <table>
+            <tbody>
+              {#each snaps as s (s.file)}
+                <tr>
+                  <td>{s.kind === 'snapshot' ? 'pinned' : 'rolling'}</td>
+                  <td class="dim">{s.modified}</td>
+                  <td>{s.name}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         {/if}
-      </section>
-    {/each}
+        <p class="hint">
+          Taking a copy is <code>awm trilium snapshot</code> and putting one back
+          is <code>awm trilium restore --snapshot &lt;name&gt; --confirm</code>,
+          both on the host. A restore replaces the whole vault and every note
+          anyone has written since, which is why it is a verb and not a button.
+        </p>
+      {/if}
+    </section>
 
     <section>
       <h2>Serving</h2>
@@ -222,19 +145,12 @@
         </dd>
       </dl>
       <p class="hint">
-        Notes are stored as HTML, and the markdown tree in each person's scope is
+        Notes are stored as HTML, and the markdown tree in the vault's scope is
         an export of it. Read and diff that tree freely. Recover from a pinned
         snapshot, never from the markdown — the export is a conversion, and
         converting it back loses formatting.
       </p>
     </section>
-  {:else if st}
-    <p class="warn">
-      Nobody has an instance yet. A person exists here because a scope exists:
-      <code>awm scope create --project userdata --scope trilium/&lt;user&gt;
-      --branch-name trilium/&lt;user&gt; --from-branch main</code>. The
-      supervision loop picks it up without a restart.
-    </p>
   {:else if !error}
     <p class="hint">Loading…</p>
   {/if}
@@ -256,8 +172,9 @@
     font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px;
     border: 1px solid currentColor; color: var(--text-dim, #9a9a9a);
   }
-  section[data-state='up'] h2 { color: var(--ok, #4ade80); }
-  section[data-state='down'] h2 { color: var(--warn, #fbbf24); }
+  /* The vault panel has no heading of its own — the page is the vault — so
+     the state colours the link into it instead. */
+  section[data-state='down'] .primary { opacity: 0.5; pointer-events: none; }
 
   button {
     font: inherit; padding: 0.4rem 0.8rem; border-radius: 6px;
@@ -265,8 +182,11 @@
     background: var(--surface, #1e1e1e); color: inherit; cursor: pointer;
   }
   button:disabled { opacity: 0.45; cursor: default; }
-  button.primary {
-    width: 100%; padding: 0.7rem; font-weight: 600;
+  /* An anchor, not a button: the vault is a page on this origin, so it should
+     middle-click, bookmark and open in a new tab like any other link. */
+  .primary {
+    display: block; text-align: center; text-decoration: none;
+    width: 100%; padding: 0.7rem; font-weight: 600; border-radius: 6px;
     background: var(--accent, #2f6fed); border-color: transparent; color: #fff;
   }
   .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
@@ -288,10 +208,6 @@
   .warn { color: var(--warn, #fbbf24); }
   .hint { color: var(--text-dim, #9a9a9a); font-size: 0.85rem; }
   .error { color: var(--error, #f87171); }
-  .log {
-    max-height: 22rem; overflow: auto; font-size: 0.8rem;
-    background: var(--surface, #1a1a1a); padding: 0.75rem; border-radius: 6px;
-  }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }
   td { padding: 0.15rem 0.5rem 0.15rem 0; vertical-align: top; }
   td:first-child { width: 5rem; color: var(--text-dim, #9a9a9a); }

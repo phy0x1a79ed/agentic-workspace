@@ -6,13 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "awm-trilium"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "AWM trilium service: supervise one Trilium server per user on loopback and put an authenticated TLS front on the mesh in front of each."
+description = "AWM trilium service: supervise the shared Trilium knowledge base on loopback, and snapshot, restore and export it. The awm edge serves it at /vault; this service never binds a public port."
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
-    # Service-on-service: each mesh front is a configuration of httpsfront's
-    # cert handling, auth gate and reverse proxy, not a second implementation.
-    "awm-httpsfront",
+    # Deliberately NOT awm-httpsfront. The edge routes the vault; this service
+    # only supervises it. The dependency pointed the other way when each person
+    # had their own TLS front, and leaving it would make it easy to grow a
+    # second listener here again — which is the one thing the design forbids.
     "httpx",
 ]
 

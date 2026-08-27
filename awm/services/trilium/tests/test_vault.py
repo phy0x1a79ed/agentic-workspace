@@ -21,14 +21,14 @@ pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
 @pytest.fixture
-def inst(tmp_path, monkeypatch) -> instances.Instance:
-    users = tmp_path / "userdata"
-    (users / "tony").mkdir(parents=True)
-    (users / "tony" / ".git").write_text("gitdir: elsewhere\n")
-    monkeypatch.setattr(instances, "USERDATA_DIR", users)
+def inst(tmp_path, monkeypatch) -> instances.Vault:
+    """A throwaway vault worktree. Named `inst` still because every test below
+    reads better with a short name for the thing under test."""
+    scope = tmp_path / "vault" / "main"
+    scope.mkdir(parents=True)
+    (scope / ".git").write_text("gitdir: elsewhere\n")
     monkeypatch.setattr(instances, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(instances, "PORTS_FILE", tmp_path / "state" / "ports.json")
-    it = instances.instances()[0]
+    it = instances.Vault(scope=scope)
     it.data_dir.mkdir(parents=True, exist_ok=True)
     it.rolling_dir.mkdir(parents=True, exist_ok=True)
     it.snapshots_dir.mkdir(parents=True, exist_ok=True)
@@ -139,7 +139,7 @@ def test_an_empty_export_does_not_replace_the_notes_tree(inst, monkeypatch):
         def export_zip(self, note_id="root", fmt="markdown"):
             return empty.getvalue()
 
-    monkeypatch.setattr(vault.etapi, "client", lambda _i: _Api())
+    monkeypatch.setattr(vault.etapi, "client", lambda: _Api())
 
     with pytest.raises(RuntimeError, match="no files"):
         vault.export(inst, commit=False)

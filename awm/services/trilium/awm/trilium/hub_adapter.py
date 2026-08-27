@@ -1,18 +1,21 @@
-"""Hub adapter for the trilium service — one knowledge base per person.
+"""Hub adapter for the trilium service — one shared knowledge base.
 
 Registers with the gateway on the shared `ServiceAdapter` loop (register →
-ready → serve → reconnect), so the fleet of Trilium servers is a service like
-any other: visible in `awm services list`, health as a verb, and reachable from
-any node rather than being node processes somebody started by hand.
+ready → serve → reconnect), so the vault is a service like any other: visible
+in `awm services list`, health as a verb, and reachable from any node rather
+than a node process somebody started by hand.
 
-Three things live under this one supervised process:
+Two things live under this one supervised process: the Trilium server on
+loopback (see `server`), and the data lifecycle verbs that snapshot, restore
+and export what is in it (see `vault`). There is no front here and no
+discovery: the awm edge serves the vault at `/vault`, and there is one vault, so
+there is nothing to enumerate.
 
-  - one Trilium server per user, on loopback — see `server`,
-  - one TLS front per user, behind awm's edge session — see `front`,
-  - the discovery that decides who "per user" means — see `instances`.
-
-All of them die with this process. Trilium persists everything to its data
-directory, so an awm deploy costs a browser reload rather than any content.
+**Who may call what.** The vault is shared, so a write verb is one person's
+button acting on everyone's work. `restore` in particular replaces the whole
+database. The split is enforced by `_operator_only` rather than by the public
+edge's allow-list, because a mesh node's edge runs no allow-list at all — see
+that function for the discriminator it uses.
 
 Run via `run.sh` (which the gateway spawns and respawns):
     python -m awm.trilium.hub_adapter
@@ -26,11 +29,11 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import etapi, front, instances, server, vault
+from awm.trilium import instances, server, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
-FLEET = server.Fleet()
+CHILD = server.CHILD
 
 #: Every function carries an explicit `tool` name under a `trilium_` prefix,
 #: which is what decides the domain this service appears as: the gateway folds
@@ -42,131 +45,75 @@ API_MANIFEST: dict[str, Any] = {
             "name": "status",
             "tool": "trilium_status",
             "description": (
-                "Report every Trilium instance on this node: which users have "
-                "a scope, whether each server is running and at what pid/port, "
-                "whether it is actually listening, which rolling backups that "
-                "user has, each mesh front's TLS state with the URL to open, "
-                "and which server bundle is being served — the fork worktree "
-                "or the published tarball — with whether the build matches the "
-                "revision on disk."
+                "Whether the vault is up, whether it has a database yet, how "
+                "many pinned snapshots it has, and which bundle is serving it. "
+                "A caller arriving through the edge gets the readable half; "
+                "pids, ports and absolute paths are for the console."
             ),
-            "params": [],
-        },
-        {
-            "name": "users",
-            "tool": "trilium_users",
-            "description": (
-                "The users this node serves and the ports they own. A user "
-                "exists because a scope userdata/trilium/<user> exists on "
-                "disk, so adding a person is `awm scope create` and nothing "
-                "else. Ports are allocated once and remembered, so adding a "
-                "user never moves an existing one's URL."
-            ),
-            "params": [],
+            "parameters": [],
         },
         {
             "name": "start",
             "tool": "trilium_start",
             "description": (
-                "Start a user's server, waiting until it binds. With no user, "
-                "start every user's. Idempotent."
+                "Start the vault's server if it is not running. Operator only: "
+                "the supervision loop already does this within seconds."
             ),
-            "params": [
-                {"name": "user", "type": "string",
-                 "description": "User to start. Omit for all."},
-            ],
+            "parameters": [],
             "timeout": 300,
         },
         {
             "name": "stop",
             "tool": "trilium_stop",
             "description": (
-                "Stop a user's server, ending live browser connections. "
-                "Content is on disk, so this loses no notes. With no user, "
-                "stop every user's. Idempotent. The supervision loop respawns "
-                "a stopped server on its next pass — use this to bounce one, "
-                "not to keep it down."
+                "Stop the vault's server. Operator only — this takes the "
+                "knowledge base away from everyone using it."
             ),
-            "params": [
-                {"name": "user", "type": "string",
-                 "description": "User to stop. Omit for all."},
-            ],
-            "timeout": 120,
+            "parameters": [],
+            "timeout": 300,
         },
         {
             "name": "restart",
             "tool": "trilium_restart",
-            "description": (
-                "Stop a user's server and start it again — e.g. to pick up a "
-                "rebuilt bundle or an edited config.ini, both read at startup."
-            ),
-            "params": [
-                {"name": "user", "type": "string",
-                 "description": "User to restart. Omit for all."},
-            ],
+            "description": "Stop then start the vault's server. Operator only.",
+            "parameters": [],
             "timeout": 300,
         },
         {
             "name": "url",
             "tool": "trilium_url",
             "description": (
-                "The mesh URL that opens a user's Trilium. Behind awm's edge "
-                "session, and then behind that user's own Trilium login — two "
-                "gates, because the edge session is one shared password and "
-                "only the second one says which person."
+                "Where the vault is served. A path, not a URL: it is on the "
+                "same origin as the page asking, behind the same session."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose instance to link to."},
-            ],
+            "parameters": [],
         },
         {
-            "name": "authorize",
-            "tool": "trilium_authorize",
+            "name": "provision",
+            "tool": "trilium_provision",
             "description": (
-                "Give this service an ETAPI token for a user, so snapshot and "
-                "export can reach their vault. Preferred: the person creates a "
-                "token in Trilium under Options -> ETAPI and passes it as "
-                "`token`. Passing `password` instead exchanges it for a token "
-                "over loopback and discards it — the password is never stored, "
-                "but it does travel through this call. Either way the token is "
-                "written 0600 in service state and is revocable from that same "
-                "options screen. Pass `forget` to drop the stored token."
+                "Create the vault's database if it has none. Idempotent, and "
+                "the supervision loop does it unprompted — this verb is for "
+                "when it failed and you want the error. Operator only."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose vault to authorize against."},
-                {"name": "token", "type": "string",
-                 "description": "An ETAPI token created in Trilium's options."},
-                {"name": "password", "type": "string",
-                 "description": "That user's Trilium password, exchanged for a "
-                                "token and not retained."},
-                {"name": "forget", "type": "boolean",
-                 "description": "Delete the stored token instead."},
-            ],
+            "parameters": [],
         },
         {
             "name": "snapshot",
             "tool": "trilium_snapshot",
             "description": (
-                "Take a named point this vault can be returned to. Without "
-                "`note_id` that is the whole database: Trilium copies it under "
-                "its sync mutex, the copy moves into the DVC chunk under a name "
-                "carrying a UTC timestamp, and the pin is committed. With "
-                "`note_id` it is one note's revision instead — Trilium's own "
-                "machinery, restorable with one click in its revisions dialog."
+                "Ask Trilium for a consistent database copy, move it into the "
+                "DVC chunk under a name that is never reused, and commit the "
+                "pin. With note_id, saves that note's revision instead. "
+                "Operator only: it copies the whole database each time."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose vault to snapshot."},
+            "parameters": [
                 {"name": "name", "type": "string",
-                 "description": "Label for the snapshot. A UTC timestamp is "
-                                "appended, so a name is never reused."},
+                 "description": "Snapshot name. Defaults to a UTC timestamp."},
                 {"name": "note_id", "type": "string",
-                 "description": "Snapshot one note as a revision instead of the "
-                                "whole database."},
+                 "description": "Save a revision of this note instead of a database copy."},
                 {"name": "commit", "type": "boolean",
-                 "description": "Pin and commit the result (default true)."},
+                 "description": "Commit and pin the result. Default true."},
             ],
             "timeout": 600,
         },
@@ -174,37 +121,26 @@ API_MANIFEST: dict[str, Any] = {
             "name": "snapshots",
             "tool": "trilium_snapshots",
             "description": (
-                "Every database copy a user has, newest first. `snapshot` "
-                "entries are named, pinned and durable. `rolling` entries are "
-                "Trilium's own daily/weekly/monthly rotation — overwritten on a "
-                "schedule and pinned by nothing, so they are a race, not an "
-                "archive."
+                "Every database copy the vault has, newest first: the pinned "
+                "snapshots and Trilium's own rolling rotation, kept apart "
+                "because only the first kind is a restore path."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose snapshots to list."},
-            ],
+            "parameters": [],
         },
         {
             "name": "restore",
             "tool": "trilium_restore",
             "description": (
-                "Replace a user's whole vault with a snapshot, stopping and "
-                "restarting their server around the swap. Destructive: every "
-                "note written since that snapshot is gone from the live vault. "
-                "Nothing is deleted — the database being replaced is moved to "
-                "live/superseded/<timestamp>/ and can be moved back. Requires "
-                "`confirm`. Restoring a single note is one click in Trilium's "
-                "own revisions dialog and is not this verb."
+                "Replace the whole vault with a snapshot, moving the database "
+                "it replaced into live/superseded/. Whole-vault, never one "
+                "note — Trilium's own revisions dialog does that. Operator "
+                "only, and it discards everyone's work since the snapshot."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose vault to restore."},
+            "parameters": [
                 {"name": "snapshot", "type": "string", "required": True,
-                 "description": "Snapshot name from `trilium snapshots`."},
+                 "description": "Snapshot name, from `trilium snapshots`."},
                 {"name": "confirm", "type": "boolean",
-                 "description": "Must be true. Without it the verb reports what "
-                                "it would replace and does nothing."},
+                 "description": "Required. Without it this reports what it would do."},
             ],
             "timeout": 600,
         },
@@ -212,38 +148,60 @@ API_MANIFEST: dict[str, Any] = {
             "name": "export",
             "tool": "trilium_export",
             "description": (
-                "Export a user's vault as markdown into their scope's notes/ "
-                "directory and commit it, pinning the snapshot chunk in the "
-                "same commit. The markdown is a DERIVED VIEW: Trilium stores "
-                "markup as HTML, so this is a conversion and importing it back "
-                "is lossy. It is for reading, diffing, searching and merging by "
-                "a person. Recovery is a snapshot, never this."
+                "Export the vault as markdown into notes/ and commit it. A "
+                "derived, lossy view for reading and diffing — recovery is a "
+                "snapshot. Operator only: it rebuilds the whole tree."
             ),
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose vault to export."},
+            "parameters": [
                 {"name": "note_id", "type": "string",
-                 "description": "Subtree to export (default the whole vault)."},
+                 "description": "Subtree to export. Default the whole vault."},
                 {"name": "commit", "type": "boolean",
-                 "description": "Commit the result (default true)."},
+                 "description": "Commit the result. Default true."},
             ],
             "timeout": 600,
         },
         {
             "name": "logs",
             "tool": "trilium_logs",
-            "description": "Tail one user's server stdout/stderr log.",
-            "params": [
-                {"name": "user", "type": "string", "required": True,
-                 "description": "Whose log to read."},
+            "description": (
+                "Tail the vault server's log. Operator only: it carries "
+                "absolute paths and stack traces."
+            ),
+            "parameters": [
                 {"name": "tail", "type": "number",
-                 "description": "Lines to return (default 200)."},
+                 "description": "Lines from the end. Default 200."},
             ],
         },
     ],
     "emitters": [],
     "sessions": [],
 }
+
+
+# -- who may call what ------------------------------------------------------
+
+
+def _operator_only(as_: str | None, verb: str) -> None:
+    """Refuse a verb that arrived through an edge listener.
+
+    The vault is shared, so every write verb is one person acting on everyone's
+    work, and `restore` discards it. Those belong to whoever can reach the host,
+    not to whoever can reach the page.
+
+    The discriminator needs no new credential because the edge already supplies
+    one. `httpsfront` overwrites `X-Awm-As` on every request it forwards — the
+    browser's own value is discarded — and it never forwards an empty one. So an
+    absent identity here means the call did not cross an edge: it came from
+    `/invoke` on loopback, which is the host's own CLI.
+
+    This is deliberately *not* `userroot.wrap_handlers`. That answers "whose
+    store?", which a shared vault never asks, and under `AWM_USER_ROOT_STRICT`
+    it raises for exactly the caller we want to admit.
+    """
+    if as_ is not None:
+        raise PermissionError(
+            f"{verb} acts on the shared vault and is an operator verb: "
+            f"run `awm trilium {verb}` on the host")
 
 
 # -- handlers ---------------------------------------------------------------
@@ -253,192 +211,123 @@ API_MANIFEST: dict[str, Any] = {
 # WS and have the gateway take this service for dead.
 
 
-def _resolve(user: str | None) -> list[server.Child]:
-    """The children a verb addresses. Named users must exist; absent means all."""
-    if not user:
-        return FLEET.children()
-    child = FLEET.get(user)
-    if child is None:
-        known = ", ".join(sorted(c.inst.user for c in FLEET.children())) or "none"
-        raise KeyError(f"no Trilium instance for user {user!r} (known: {known})")
-    return [child]
+async def _h_status(args: dict, as_: str | None = None) -> dict:
+    verbose = as_ is None
 
-
-async def _h_status(args: dict) -> dict:
-    def _read() -> list[dict]:
-        # Discovery first: a scope created a moment ago is a person who is
-        # waiting for a URL, and making them wait for the next supervision pass
-        # to be told they exist reads as the service having missed them.
-        FLEET.sync()
-        rows = FLEET.snapshot()
-        for row in rows:
-            inst = instances.instance(row.get("user", ""))
-            # Counted here rather than in the supervisor: "this person has a
-            # durable copy" is a fact about their scope, not about the process.
-            # The rolling copies the supervisor reports are overwritten on a
-            # schedule, so they are not the answer to that question.
-            row["snapshots"] = (
-                len([s for s in vault.snapshots(inst)["snapshots"]
-                     if s["kind"] == "snapshot"]) if inst else 0)
-            row["authorized"] = bool(inst and etapi.read_token(inst))
-        return rows
-
-    return {
-        "instances": await asyncio.to_thread(_read),
-        "fronts": front.status(),
-        "source": await asyncio.to_thread(instances.source_state),
-    }
-
-
-async def _h_users(args: dict) -> dict:
     def _read() -> dict:
-        FLEET.sync()
-        return {
-            "users": [
-                {"user": i.user, "slot": i.slot,
-                 "front_port": i.front_port, "upstream_port": i.upstream_port,
-                 "scope": str(i.scope)}
-                for i in instances.instances()
-            ],
-            "userdata_dir": str(instances.USERDATA_DIR),
-            "max_users": instances.MAX_USERS,
-        }
-    return await asyncio.to_thread(_read)
+        state = CHILD.snapshot(verbose=verbose)
+        # Counted here rather than in the supervisor: "there is a durable copy"
+        # is a fact about the scope, not about the process. The rolling copies
+        # the supervisor reports are overwritten on a schedule, so they are not
+        # the answer to that question.
+        try:
+            state["snapshots"] = len(
+                [s for s in vault.snapshots(instances.VAULT)["snapshots"]
+                 if s["kind"] == "snapshot"])
+        except OSError:
+            state["snapshots"] = 0
+        return state
+
+    out = {"vault": await asyncio.to_thread(_read)}
+    if verbose:
+        out["source"] = await asyncio.to_thread(instances.source_state)
+    return out
 
 
-async def _h_start(args: dict) -> dict:
-    user = (args.get("user") or "").strip() or None
-    if user is None:
-        return {"results": await asyncio.to_thread(FLEET.start_all)}
-    children = await asyncio.to_thread(_resolve, user)
-    return {"results": [await asyncio.to_thread(c.start) for c in children]}
+async def _h_start(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "start")
+    return await asyncio.to_thread(CHILD.start)
 
 
-async def _h_stop(args: dict) -> dict:
-    user = (args.get("user") or "").strip() or None
-    children = await asyncio.to_thread(_resolve, user)
-    return {"results": [await asyncio.to_thread(c.stop) for c in children]}
+async def _h_stop(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "stop")
+    return await asyncio.to_thread(CHILD.stop)
 
 
-async def _h_restart(args: dict) -> dict:
-    user = (args.get("user") or "").strip() or None
-    children = await asyncio.to_thread(_resolve, user)
-    return {"results": [await asyncio.to_thread(c.restart) for c in children]}
+async def _h_restart(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "restart")
+    return await asyncio.to_thread(CHILD.restart)
 
 
-async def _h_url(args: dict) -> dict:
-    user = (args.get("user") or "").strip()
-    inst = await asyncio.to_thread(instances.instance, user)
-    if inst is None:
-        raise KeyError(f"no Trilium instance for user {user!r}")
-    return {"user": user, "url": front.origin(inst),
-            "note": "requires an awm session, then this user's Trilium login"}
+async def _h_provision(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "provision")
+    return await asyncio.to_thread(CHILD.provision)
 
 
-async def _h_logs(args: dict) -> dict:
-    user = (args.get("user") or "").strip()
+async def _h_url(args: dict, as_: str | None = None) -> dict:
+    """The vault's path, not a URL.
+
+    There is nothing to compute: the vault is on the same origin as whatever
+    page is rendering the link, reached through the same session. A host and a
+    port here would be a guess, and the old one guessed wrong on any node with
+    more than one address.
+    """
+    return {"path": "/vault"}
+
+
+async def _h_logs(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "logs")
     tail = int(args.get("tail") or 200)
-    children = await asyncio.to_thread(_resolve, user)
-    child = children[0]
-    return {"user": user, "tail": tail,
-            "log": await asyncio.to_thread(child.logs, tail)}
+    return {"tail": tail, "log": await asyncio.to_thread(CHILD.logs, tail)}
 
 
-def _inst(args: dict) -> instances.Instance:
-    user = (args.get("user") or "").strip()
-    inst = instances.instance(user)
-    if inst is None:
-        known = ", ".join(instances.discovered_users()) or "none"
-        raise KeyError(f"no Trilium instance for user {user!r} (known: {known})")
-    return inst
-
-
-async def _h_authorize(args: dict) -> dict:
-    inst = await asyncio.to_thread(_inst, args)
-
-    def _run() -> dict:
-        if args.get("forget"):
-            return {"user": inst.user, "forgotten": etapi.forget_token(inst)}
-        token = (args.get("token") or "").strip()
-        source = "supplied"
-        if not token:
-            password = args.get("password") or ""
-            if not password:
-                raise ValueError(
-                    "pass either `token` (created in Trilium under Options -> "
-                    "ETAPI) or `password` (exchanged for one and not stored)")
-            token = etapi.login(inst, password, token_name=f"awm-{inst.user}")
-            source = "issued"
-        path = etapi.store_token(inst, token)
-        # Prove the token works now rather than at the next snapshot, when the
-        # failure would look like a broken backup instead of a bad credential.
-        info = etapi.Etapi(inst, token).app_info()
-        return {"user": inst.user, "token": source, "stored": str(path),
-                "app_version": info.get("appVersion"),
-                "db_version": info.get("dbVersion")}
-    return await asyncio.to_thread(_run)
-
-
-async def _h_snapshot(args: dict) -> dict:
-    inst = await asyncio.to_thread(_inst, args)
+async def _h_snapshot(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "snapshot")
     return await asyncio.to_thread(
-        vault.snapshot, inst, (args.get("name") or "").strip() or None,
+        vault.snapshot, instances.VAULT, (args.get("name") or "").strip() or None,
         note_id=(args.get("note_id") or "").strip() or None,
         commit=args.get("commit", True) is not False)
 
 
-async def _h_snapshots(args: dict) -> dict:
-    inst = await asyncio.to_thread(_inst, args)
-    return await asyncio.to_thread(vault.snapshots, inst)
+async def _h_snapshots(args: dict, as_: str | None = None) -> dict:
+    return await asyncio.to_thread(vault.snapshots, instances.VAULT)
 
 
-async def _h_restore(args: dict) -> dict:
-    inst = await asyncio.to_thread(_inst, args)
+async def _h_restore(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "restore")
+    v = instances.VAULT
     name = (args.get("snapshot") or "").strip()
-    source = await asyncio.to_thread(vault.resolve_snapshot, inst, name)
+    source = await asyncio.to_thread(vault.resolve_snapshot, v, name)
 
     if not args.get("confirm"):
         return {
-            "user": inst.user, "would_restore": str(source), "confirmed": False,
-            "warning": (f"this replaces {inst.document_db} and every note "
-                        f"written since that snapshot. Pass confirm=true."),
+            "would_restore": str(source), "confirmed": False,
+            "warning": (f"this replaces {v.document_db} and every note anyone "
+                        f"has written since that snapshot. Pass confirm=true."),
         }
-
-    child = FLEET.get(inst.user)
 
     def _swap() -> dict:
         # `hold` keeps the supervision loop from respawning the child between
         # the stop and the swap. The start is in a `finally` because a failed
         # restore that also left the server down would be two problems, and the
         # second one has no message anywhere.
-        stopped = child.stop(hold=True) if child else {"action": "no child"}
+        stopped = CHILD.stop(hold=True)
         try:
-            report = vault.restore_files(inst, source)
+            report = vault.restore_files(v, source)
         finally:
-            started = child.start() if child else {"action": "no child"}
+            started = CHILD.start()
         report["stopped"] = stopped
         report["started"] = started
         return report
     return await asyncio.to_thread(_swap)
 
 
-async def _h_export(args: dict) -> dict:
-    inst = await asyncio.to_thread(_inst, args)
+async def _h_export(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "export")
     return await asyncio.to_thread(
-        vault.export, inst,
+        vault.export, instances.VAULT,
         note_id=(args.get("note_id") or "").strip() or "root",
         commit=args.get("commit", True) is not False)
 
 
 HANDLERS = {
     "status": _h_status,
-    "users": _h_users,
     "start": _h_start,
     "stop": _h_stop,
     "restart": _h_restart,
     "url": _h_url,
+    "provision": _h_provision,
     "logs": _h_logs,
-    "authorize": _h_authorize,
     "snapshot": _h_snapshot,
     "snapshots": _h_snapshots,
     "restore": _h_restore,
@@ -450,7 +339,8 @@ HANDLERS = {
 
 
 async def _health_loop() -> None:
-    """Respawn dead children and raise fronts for new users. Never exits.
+    """Respawn the child if it died, and provision it if it has no database.
+    Never exits.
 
     Watches process liveness rather than an HTTP probe: a slow probe while
     Trilium is importing a large attachment is not evidence of death, and
@@ -461,12 +351,12 @@ async def _health_loop() -> None:
     while True:
         try:
             await asyncio.sleep(instances.HEALTH_INTERVAL_S)
-            for res in await asyncio.to_thread(FLEET.reconcile):
-                if res.get("action") == "respawned":
-                    log.warning("trilium[%s]: respawned (previous exit %s)",
-                                res.get("user"), res.get("previous_exit"))
-            for user in await asyncio.to_thread(front.sync):
-                log.info("trilium[%s]: front raised", user)
+            res = await asyncio.to_thread(CHILD.reconcile)
+            if res.get("action") == "respawned":
+                log.warning("trilium: respawned (previous exit %s)",
+                            res.get("previous_exit"))
+            elif res.get("action") == "respawn-failed":
+                log.error("trilium: respawn failed: %s", res.get("error"))
         except Exception:  # noqa: BLE001 — never let the loop die
             # CancelledError is a BaseException and so passes through, which is
             # what the supervisor above wants: a *return* from here would read
@@ -475,7 +365,7 @@ async def _health_loop() -> None:
 
 
 async def _on_start() -> None:
-    """Start every user's server, raise their fronts, then loop.
+    """Start the vault's server, give it a database if it has none, then loop.
 
     No failure here is fatal. The service still registers, so `status` can
     report *why* it is broken, and the loop keeps retrying.
@@ -484,21 +374,21 @@ async def _on_start() -> None:
         log.warning("trilium: no server bundle at %s or %s — run install.sh; "
                     "the service will register and report this via status",
                     instances.FORK_ENTRY, instances.TARBALL_ENTRY)
+    elif not instances.VAULT.exists:
+        log.warning("trilium: no vault worktree at %s — create it with "
+                    "`awm scope create --project vault --scope main`; the "
+                    "service will register and report this via status",
+                    instances.VAULT.scope)
     else:
         try:
-            for res in await asyncio.to_thread(FLEET.start_all):
-                log.info("trilium[%s]: %s pid=%s listening=%s",
-                         res.get("user"), res.get("action"), res.get("pid"),
-                         res.get("listening"))
+            res = await asyncio.to_thread(CHILD.start)
+            log.info("trilium: %s pid=%s listening=%s initialized=%s",
+                     res.get("action"), res.get("pid"), res.get("listening"),
+                     res.get("initialized"))
         except Exception:  # noqa: BLE001
             log.exception("trilium: initial start failed; the loop will retry")
 
-    try:
-        await asyncio.to_thread(front.sync)
-    except Exception:  # noqa: BLE001 — the servers are still usable on loopback
-        log.exception("trilium: mesh fronts failed to start")
-
-    # A dead supervision loop looks exactly like a fleet that has not crashed,
+    # A dead supervision loop looks exactly like a vault that has not crashed,
     # so it is spawned supervised rather than as a bare task nobody reads.
     spawn_supervised("trilium:health", _health_loop)
 

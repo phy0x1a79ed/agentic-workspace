@@ -54,7 +54,7 @@ workspace_root() {
 WS="$(workspace_root "$HERE")"
 
 NODE_ENV_NAME="${TRILIUM_NODE_ENV:-trilium}"
-# Runtime state (ports, tokens, logs) vs install artifacts (the unpacked
+# Runtime state (the logs) vs install artifacts (the unpacked
 # server, the recorded node bin). They are separated because on sirius the
 # install runs as the dev user and the gateway runs as the application account
 # that owns the state root — see awm/trilium/instances.py.

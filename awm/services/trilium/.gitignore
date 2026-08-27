@@ -1,12 +1,6 @@
 # install.sh sidecar (absolute interpreter path; host-specific)
 .runtime-env
 
-# Leaf certs for the per-user mesh fronts, minted from the shared root CA.
-.certs/
-
-# Host-specific extra SANs.
-.sans
-
 # Install artifacts: the unpacked published server (with its own node runtime),
 # the absolute node bin install.sh recorded, and what was downloaded. Beside the
 # service rather than in workspace state, because the user that installs and the

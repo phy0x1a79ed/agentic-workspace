@@ -1,94 +1,149 @@
 # trilium
 
-A knowledge base per person — documents rather than bullet points, PDFs and
+One shared knowledge base — documents rather than bullet points, PDFs and
 figures beside the notes that cite them, and a history you can go back to.
-Upstream is TriliumNext/Trilium, forked into `projects/trilium`, run as one
-server per user and put on the ZeroTier mesh behind awm's edge session.
+Upstream is TriliumNext/Trilium, forked into `projects/trilium`, run as a single
+server on loopback and served by awm's edge at `/vault`.
 
-Trilium is single-user per instance. That is not a limitation this service works
-around — it is the reason for the design. awm's edge session is one shared
-password for the whole workspace, so two people behind it are the same person.
-One server each, with one database and one login each, tells them apart.
+Trilium is single-user per instance, and that is what this design wants: one
+instance, one database, one knowledge base that everyone signed in works in
+together. It is collaborative by being shared, not by being replicated.
 
 ## Purpose & Contents
 
-This file holds the decisions a reader cannot recover from the code: why a
-person's server is fronted rather than mounted, why there are three kinds of
-database copy and only one of them is a restore path, and why the two hosts that
-run this are wired differently.
+This file holds the decisions a reader cannot recover from the code: why the
+vault is a second upstream on an existing listener rather than a mount or a host
+of its own, why it has no password, why there are three kinds of database copy
+and only one of them is a restore path, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
-Each scope's `.awm/context.md` there says which branch does what. Where a
-person's content lives is in `projects/userdata/README.md`. This file covers only
-the boundary between awm and Trilium.
+Where the vault's content lives is `projects/vault`. This file covers only the
+boundary between awm and Trilium.
 
 ## The contract
 
-**A person exists because a scope exists.** `discovered_users()` lists the
-directories under `projects/userdata/trilium/`. Creating one is the whole of
-adding a person, and the supervision loop picks it up without a restart. There is
-no roster to keep in step with the filesystem.
+**One vault, and an account is the whole of joining it.** There is no per-person
+scope, port, subdomain or DNS record — `scripts/sirius/add-user.sh <name>` makes
+an auth account and stops, and that account reaches the vault immediately. This
+is the property to protect when changing anything here: the moment adding a
+person needs a second act somewhere else, the design has regressed to what it
+replaced.
 
-```
-scripts/sirius/add-user.sh <name>                       # a person, everywhere
-awm scope create --project userdata \
-    --scope trilium/<name> --branch-name trilium/<name>  # the Trilium half alone
-```
+**The vault owns the root-level path surface, and its shell lives at `/vault`.**
+Trilium has no URL-base setting: it serves its application shell from `/`, and
+every asset reference in that shell is *relative*, so the assets are requested at
+the URL root whatever path the shell came from. `/api/*`, `/src/*`, `/assets/*`,
+`/bootstrap` and the rest therefore belong to the vault in any arrangement. What
+is left to choose is where the shell is, and putting it at `/vault` rather than
+`/` is what lets a mesh node keep its landing page with no second listener and no
+port of its own. The list is `awm/httpsfront/vault.py`, next to the public
+allow-list and for the same reason: a change to what a browser can reach should
+be a reviewed diff.
 
-`add-user.sh` is host-agnostic and idempotent, and it also makes the auth
-account and the `user/<name>` scope that notes and drawio write into. Run it
-again for a person who predates this service. The branch name is passed
-explicitly because a nested scope name would otherwise become `feat/<scope>`.
+CAUTION: `/vault/` with a trailing slash must never serve the shell. Relative
+references resolve against the document's *directory*, so from `/vault` they
+become `/src/…` and are found, and from `/vault/` they become `/vault/src/…` and
+are not. The page paints and then hangs half-built, which is a far worse failure
+than a redirect. The edge answers that path with a 308.
 
-**Ports are allocated once and remembered.** Front `12501 + slot`, upstream
-`12511 + slot`, with the slot recorded in `.awm/services/trilium/ports.json` and
-never reused. Deriving the slot from a sorted position looks equivalent and is
-not: adding a person whose name sorts early would renumber everyone after them
-and move a URL somebody had bookmarked, with no error anywhere.
+**There is no Trilium password, and that is a consequence rather than a
+shortcut.** Its own login existed to say *which person*, back when there was one
+instance each. With one shared vault it says nothing at all, and the awm edge
+already knows who signed in — so a second password would ask the same question
+twice and answer it worse. The child runs with `noAuthentication`, and a fresh
+vault is provisioned over loopback (`provision.py`) so nobody's first visit is a
+setup wizard.
 
-**The database is deliberately uninitialized.** A fresh instance serves a setup
-page and waits. Do not set the password from a script: that password *is* the
-per-user identity, and this service holds no password at all. The person sets it
-on their first visit.
+What that setting costs, exactly: **protected notes stop working.** They are
+encrypted with the Trilium password, and there is not one.
 
-**What this service holds is an ETAPI token.** `trilium authorize` either takes a
-token the person created under Options → ETAPI, or exchanges a password for one
-over loopback and discards the password. The token is written 0600 under
-`.awm/services/trilium/tokens/`, and the person can revoke it from that same
-screen. Prefer the token: a password passed to a verb travels through the
-gateway, and a token does not have to.
+**The invariant it rests on.** `noAuthentication` stands down *every* guard
+Trilium has — the shell, the internal API, the whole of ETAPI, the setup wizard's
+password gate, and the WebSocket's own check. What replaces them is not weaker
+but earlier: the edge authenticates the session before forwarding a byte. That
+holds only while the edge is the **only** route in, so it is enforced rather than
+asserted, in three places:
 
-**Why not a gateway `kind=url` mount.** The same two blockers dsh records: the
-gateway's url proxy forwards the full request path without stripping the mount
-prefix, and its WebSocket bridge forwards no headers at all. Trilium's client
-holds a WebSocket open for every change it renders, so the second is fatal on its
-own. A dedicated `awm.httpsfront` listener per person is the design, not a
-shortcut around one. Don't re-derive this.
+- the child binds loopback, and `child_env` both sets `TRILIUM_HOST` and *removes*
+  `TRILIUM_NETWORK_HOST` — upstream's `Network.host` defaults to `0.0.0.0` and
+  `TRILIUM_HOST` only out-ranks it by an ordering upstream is free to change;
+- no awm code binds that child anywhere else, and `tests/test_no_listener.py`
+  greps the package for the two symbols that would bring the retired per-person
+  TLS front back;
+- `install-awm.sh` *removes* any leftover Trilium nginx vhost and the retired
+  `TRILIUM_FRONTS` / `TRILIUM_DOMAIN` keys rather than merely not writing them.
+  Nothing else on a provisioned box ever deletes either, and a stale vhost
+  pointing straight at the loopback port would be a public, unauthenticated
+  knowledge base.
 
-**No `Origin` rewrite, unlike dsh.** dsh needs one because its harness compares
-`Origin` to `Host`. Trilium's CSRF protection is a `csrf-csrf` double-submit
-cookie, which travels correctly through an unmodified proxy. Setting
-`rewrite_origin` here would hide nothing and buy nothing.
+`TRILIUM_EDGE_ONLY=0` is the one supported way to reach the vault by another
+route, and it takes the password back with it. One knob, so nobody can set half
+of this.
 
-**`trustedReverseProxy=loopback` is required, not cosmetic.** httpsfront
-terminates TLS and forwards `X-Forwarded-Proto: https`. Without the trust setting
-express reports the request as plain HTTP and Trilium declines to mark its
-session cookie `Secure`. `loopback` rather than `true`, because the front always
-connects from 127.0.0.1 and a blanket trust would let a forged
-`X-Forwarded-For` past anything that reads a client address.
+**What a shared origin costs, stated because it was chosen.** The vault is on the
+same origin as the rest of awm, which the retired per-person subdomains were not.
+Trilium renders note content and runs user-authored *frontend* scripts — the
+setting we pass disables *backend* scripting only — so a malicious or imported
+note becomes script execution on the awm origin, able to make credentialed
+same-origin calls as whoever is reading it. `awm_session` is HttpOnly, so it
+cannot be read; it can be used. A shared vault raises this rather than lowering
+it, because one bad note reaches every reader.
+
+That is accepted, not overlooked. The mitigations are the minimal forwarded path
+list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded —
+see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
+public allow-list. The only complete fix is a separate origin, and the escape
+hatch if the trust assumption ever changes is **one** DNS record — a `vault.`
+host bound to the same edge — not one per person.
+
+**Read verbs are public; everything else is an operator's.** The vault is shared,
+so `restore` discards everyone's work and `snapshot` and `export` each rebuild
+the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
+from a browser; `start`, `stop`, `restart`, `provision`, `logs`, `snapshot`,
+`export` and `restore` are refused for any caller that arrived through an edge.
+
+The discriminator needs no new credential, because the edge already supplies one:
+`httpsfront` overwrites `X-Awm-As` on every request it forwards and never
+forwards an empty one, so **an absent identity means the call did not cross an
+edge** — it came from `/invoke` on loopback, which is the host's own CLI. That is
+`_operator_only` in `hub_adapter.py`, and it is the enforcement. The public
+allow-list is defence in depth, and could not be the enforcement: a mesh node's
+edge runs no profile and never consults it.
+
+CAUTION: this is deliberately *not* `userroot.wrap_handlers`. That answers
+"whose store?", which a shared vault never asks, and under
+`AWM_USER_ROOT_STRICT=1` it raises for exactly the caller we need to admit.
+
+**The children are on `compute`'s PROTECTED list.** The child is spawned in its
+own session, so the `awm-service` pattern does not cover it, and a long-lived
+node process that is idle until someone types is exactly the shape of a reaper
+victim. The entry matches the bundle path, because nothing on the command line is
+called `trilium`. Changing how `server.py` spawns the child without changing that
+pattern makes it reapable again, and nothing reports it.
 
 **Backend scripting and the SQL console are switched off explicitly.** Both
 default off on a server build. They are set anyway, because a `config.ini` in the
 data directory can turn either on, and on a public host either is arbitrary code
 execution.
 
-**The children are on `compute`'s PROTECTED list.** Each is spawned in its own
-session, so the `awm-service` pattern does not cover it, and a long-lived node
-process that is idle until someone types is exactly the shape of a reaper victim.
+**Why not a gateway `kind=url` mount.** The blocker dsh records: the gateway's
+WebSocket bridge forwards no headers at all, and Trilium's client holds a socket
+open for every change it renders. The edge route is the design, not a shortcut
+around one. Don't re-derive this.
 
-CAUTION: the entry matches the bundle path, because nothing on the command line
-is called `trilium`. Changing how `server.py` spawns the child without changing
-that pattern makes the children reapable again, and nothing reports it.
+**No `Origin` rewrite, unlike dsh.** dsh needs one because its harness compares
+`Origin` to `Host`. Trilium's CSRF protection is a `csrf-csrf` double-submit
+cookie, which travels correctly through an unmodified proxy. Setting
+`rewrite_origin` here would hide nothing and buy nothing.
+
+**`trustedReverseProxy=loopback` is required, not cosmetic** — but not for the
+reason an older version of this file gave. It makes express read
+`X-Forwarded-For`, so Trilium's per-IP rate limiter on the shell sees the real
+visitor instead of every visitor collapsed onto `127.0.0.1`. It does *not*
+control the `Secure` flag on Trilium's session cookie: `session_parser.ts` uses a
+literal `config.Network.https`. `loopback` rather than `true`, because the edge
+always connects from there and a blanket trust would let a forged header past
+anything that reads a client address.
 
 ## Three kinds of copy, and only one is a restore path
 
@@ -116,32 +171,35 @@ diffed, searched and merged by a person. Recovery is a snapshot, never this.
 
 **`restore` is whole-vault, and that is a limitation with a reason.** Putting one
 note's revision back is `POST /api/revisions/{id}/restore`, on the internal API,
-behind `checkApiAuth` — which wants an express session, which wants the person's
-password. This service holds a token and no password, on purpose. So the
-single-note restore stays where the person's own session already is: one click in
-Trilium's revisions dialog. What the verb restores is the whole database, and it
-moves the vault it replaced into `live/superseded/<timestamp>/` rather than
+behind `checkApiAuth` — which wants an express session, and this service opens
+none. So the single-note restore stays where the reader already is: one click in
+Trilium's own revisions dialog. What the verb restores is the whole database, and
+it moves the vault it replaced into `live/superseded/<timestamp>/` rather than
 deleting it.
+
+WARNING: on a shared vault a restore discards *everyone's* work since the
+snapshot, not one person's. That is why it is operator-only and why it needs
+`--confirm`, and why the page does not offer it.
 
 ## Registrations
 
-Two, from one process, plus one that appears on its own:
+One, plus a page that appears on its own:
 
 | kind | name | prefix / port | what |
 |---|---|---|---|
-| `service` | `trilium` | `/svc/trilium` | the verbs, the supervisor, the fronts |
-| — | (TLS front, per user) | `0.0.0.0:12501 + slot` | that person's Trilium, behind `awm_session` |
+| `service` | `trilium` | `/svc/trilium` | the verbs and the supervisor |
 | — | (page) | `/ui/trilium` | the reception page, mounted where `dist/` exists |
 
-A front is not a gateway registration. It is a listener this process owns, the
-same shape as `httpsfront`'s own, and it dies with the service. Each person's
-server listens on loopback `12511 + slot`.
+**This service binds no listener at all.** The vault answers on loopback
+`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/vault` to it —
+so the port is defined in `awm.config` rather than here, because two processes
+must agree on it and neither owns it. There is deliberately nothing in this
+package that could bind a socket; see the invariant above.
 
-The reception page reports the server, the front, the snapshots and the ETAPI
-token as separate states, because those are four different failures with four
-different fixes. It offers Snapshot and Export and does not offer Restore:
-replacing a whole vault is not a thing a page with a refresh timer should do
-behind one click.
+The reception page reports the server, the database, the snapshots and the bundle
+as separate states, because those are four different failures with four different
+fixes. It reports and does not control: every verb that acts on the vault is
+refused for a caller arriving through an edge.
 
 ## Install
 
@@ -198,54 +256,63 @@ re-runs a service's install script only when the *set* of installed dists
 changes — a rebuilt bundle never lands after the first deploy, the same trap that
 leaves drawio serving a stale client patch.
 
-It makes the change live on this node and stops there. Pushing to GitHub, to
-capella's bare and to mira is fleet promotion, it is node-shape-specific, and a
-script that guesses at it ships something other than what was promoted.
+`scripts/promote.sh` closes the same gap for a fleet promotion, and closes it
+*unconditionally* rather than on a pathspec: the fork lives in a separate
+repository, so no diff over the awm tree can see it move. The install is stamped
+and costs seconds when nothing did.
+
+`deploy.sh` makes the change live on this node and stops there. Pushing to
+GitHub, to capella's bare and to mira is fleet promotion, it is node-shape-
+specific, and a script that guesses at it ships something other than what was
+promoted.
 
 CAUTION: the merge commit is made in a throwaway worktree of the local bare,
 never in the release checkout. That checkout is a deploy target that gets
 `reset --hard`, so a commit authored there is discarded later with no warning.
 
-## sirius is wired differently
+## sirius is not wired differently
 
-Two things differ, and each has a reason the mesh nodes do not share:
+It used to be, and the whole of that difference is gone. nginx proxies `/`
+wholesale to the awm edge, and the vault is a path on that edge, so the public
+host serves it by the same route and the same code as a mesh node. There is no
+`TRILIUM_FRONTS`, no `TRILIUM_DOMAIN`, no generated vhost and no DNS record.
 
-- **`TRILIUM_FRONTS=0`.** nginx behind Cloudflare is the public edge there, and
-  the firewall admits 80 and 443 alone. A listener in the 12501 band would bind a
-  port nothing can reach and mint a certificate nothing would trust.
-- **One subdomain per person**, generated by `scripts/sirius/trilium-nginx.sh`
-  from `awm trilium users`. Never a path prefix: Trilium has no URL-base setting,
-  so an SPA served under `/trilium/<user>/` asks for its own assets at `/` and
-  paints a shell that never finishes loading.
-
-WARNING: each `<user>.$TRILIUM_DOMAIN` needs a DNS record before it resolves. Set
-`TRILIUM_DOMAIN` when the records exist; until then the servers answer on
-loopback only and `install-awm.sh` writes no vhost.
+The one thing that is host-shaped: `client_max_body_size` in
+`scripts/sirius/etc/nginx/awm-proxy.conf` is 512m, because the vault is behind
+that one location and Trilium uploads whole PDFs and imports whole vaults in a
+single request. nginx generates the 413 itself, so the application never sees it
+and the editor simply appears to break.
 
 ## Verify
 
 ```
 awm services list | grep trilium
 awm trilium status
-awm trilium url --user tony
-awm trilium snapshots --user tony
+awm trilium snapshots
 ```
 
-`status` answers four separate questions per person — is the process up, did it
-bind, is that person's front serving, and do they have a pinned snapshot — plus
-which bundle is being served and whether it matches the revision on disk.
+`status` answers four separate questions — is the process up, did it bind, does
+it have a database, and is there a pinned snapshot — plus which bundle is being
+served and whether it matches the revision on disk. Asked through an edge it
+answers the first four and omits the pids and paths.
 
-An end-to-end check of the data verbs, on a vault whose password is set:
+The check that actually matters is not any of those: **open `/vault` in a
+browser, signed in, and confirm it paints and stays live.** A curl returning 200
+proves the shell was served; only a browser proves the WebSocket connected, and a
+vault whose socket never connects looks perfectly healthy and silently stops
+showing anyone else's edits.
+
+An end-to-end check of the data verbs, on the host:
 
 ```
-awm trilium authorize --user tony --token <from Options → ETAPI>
-awm trilium snapshot   --user tony --name before-upgrade
-awm trilium export     --user tony
-git -C projects/userdata/trilium/tony log --oneline -2
+awm trilium snapshot --name before-upgrade
+awm trilium export
+git -C projects/vault/main log --oneline -2
 ```
 
-Both verbs commit in that person's scope. `snapshot` adds a pinned database copy,
+Both commit in the vault's scope. `snapshot` adds a pinned database copy,
 `export` replaces `notes/` and commits the markdown with the pin in one commit.
+Neither is reachable from a browser — run them where you can ssh.
 
 ## AGPL-3.0
 

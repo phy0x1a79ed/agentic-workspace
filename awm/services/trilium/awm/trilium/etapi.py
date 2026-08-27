@@ -1,19 +1,23 @@
-"""Trilium's external REST API, and the one credential this service keeps.
+"""Trilium's external REST API, reached over loopback with no credential.
 
-**A token, never a password.** Trilium's login is the per-user identity — it is
-the reason one server runs per person — so the service must not hold it. What
-it holds is an ETAPI token: `POST /etapi/auth/login` exchanges a password for
-one, the password is discarded on the way, and the person can revoke the token
-from Trilium's own options screen without changing anything else. A token they
-created there themselves works just as well and never puts the password on a
-wire at all, which is the documented path.
+**There is no token any more, and that is a consequence rather than a
+shortcut.** Trilium's own authentication is off on this deployment — the awm
+edge is the only way to reach the child, so a second gate would ask the same
+question twice — and upstream's ETAPI guard stands down with it
+(`etapi_utils.ts` admits when `noAuthentication` is set). So this service holds
+no credential at all, and the whole token store it used to keep is gone: an
+unforgeable one already sits in front of the process.
 
-**The internal API is deliberately out of reach.** `POST
-/api/revisions/{id}/restore` is the one operation a person can do in the
-browser and this service cannot: `checkApiAuth` wants an express session, and a
-session is only obtainable with the password. That is the reason `vault.restore`
-restores a whole-vault snapshot rather than a single note revision — see its
-docstring. Nothing here works around it.
+That is exactly why `/etapi/` is **not** on the edge's forwarded path list. What
+makes these calls safe is that they come from inside, over loopback, from the
+supervisor. Forwarding the same surface to a browser would hand vault-origin
+JavaScript an unauthenticated API to the shared vault.
+
+**The internal API is still out of reach, for an unchanged reason.** `POST
+/api/revisions/{id}/restore` wants an express session, and this service opens
+none. That is why `vault.restore` restores a whole-vault snapshot rather than a
+single note revision — see its docstring. Putting one note back is one click in
+Trilium's own revisions dialog, where the person already is.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from awm.trilium.instances import Instance
+from awm import config
 
 #: Every ETAPI call is against a loopback node on the same host. Generous
 #: because an export of a large vault is a zip built in one request, and a
@@ -32,74 +36,31 @@ from awm.trilium.instances import Instance
 TIMEOUT_S = float(os.environ.get("TRILIUM_ETAPI_TIMEOUT_S", "300"))
 
 
-class NotAuthorized(RuntimeError):
-    """No usable ETAPI token for this user. `trilium authorize` fixes it."""
-
-
 class EtapiError(RuntimeError):
     """Trilium answered, and said no."""
-
-
-# -- the token store --------------------------------------------------------
-
-
-def read_token(inst: Instance) -> str | None:
-    try:
-        token = inst.token_file.read_text().strip()
-    except OSError:
-        return None
-    return token or None
-
-
-def store_token(inst: Instance, token: str) -> Path:
-    """Write the token 0600, creating the directory 0700.
-
-    The mode is set before the content is written, not after: a token that
-    exists world-readable for even an instant has been disclosed.
-    """
-    path = inst.token_file
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(token.strip() + "\n")
-    return path
-
-
-def forget_token(inst: Instance) -> bool:
-    try:
-        inst.token_file.unlink()
-        return True
-    except OSError:
-        return False
 
 
 # -- the client -------------------------------------------------------------
 
 
 class Etapi:
-    """One user's ETAPI. Every method raises rather than returning a status."""
-
-    def __init__(self, inst: Instance, token: str) -> None:
-        self.inst = inst
-        self._token = token
+    """The vault's ETAPI. Every method raises rather than returning a status."""
 
     @property
     def base(self) -> str:
-        return f"http://127.0.0.1:{self.inst.upstream_port}"
+        return config.VAULT_URL
 
     def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
-        headers = dict(kw.pop("headers", {}))
-        headers["Authorization"] = self._token
         try:
-            r = httpx.request(method, f"{self.base}{path}", headers=headers,
+            r = httpx.request(method, f"{self.base}{path}",
                               timeout=TIMEOUT_S, **kw)
         except httpx.HTTPError as e:
             raise EtapiError(f"{method} {path}: {e}") from e
         if r.status_code == 401:
-            raise NotAuthorized(
-                f"Trilium rejected the stored token for {self.inst.user!r}. It was "
-                f"probably revoked in the options screen — run `trilium authorize` "
-                f"with a new one.")
+            raise EtapiError(
+                f"{method} {path} -> 401. The vault is asking for credentials, "
+                f"which means Trilium's own authentication is on — check "
+                f"TRILIUM_EDGE_ONLY and restart the service.")
         if r.status_code >= 400:
             raise EtapiError(f"{method} {path} -> {r.status_code}: {r.text[:400]}")
         return r
@@ -124,37 +85,7 @@ class Etapi:
         return self._request("GET", f"/etapi/notes/{note_id}/revisions").json()
 
 
-def login(inst: Instance, password: str, token_name: str = "awm") -> str:
-    """Exchange a password for a token. The password is not written anywhere.
-
-    Trilium answers 401 for a wrong password and 400 while the database is
-    still uninitialized — a vault nobody has set a password on yet has nothing
-    to authenticate against, and the first browser visit is what fixes that.
-    """
-    url = f"http://127.0.0.1:{inst.upstream_port}/etapi/auth/login"
-    try:
-        r = httpx.post(url, json={"password": password, "tokenName": token_name},
-                       timeout=TIMEOUT_S)
-    except httpx.HTTPError as e:
-        raise EtapiError(f"POST /etapi/auth/login: {e}") from e
-    if r.status_code == 401:
-        raise NotAuthorized(f"Trilium rejected the password for {inst.user!r}.")
-    if r.status_code >= 400:
-        raise EtapiError(
-            f"POST /etapi/auth/login -> {r.status_code}: {r.text[:400]} "
-            f"(a vault whose password has never been set answers here — open "
-            f"the instance in a browser first)")
-    token = (r.json() or {}).get("authToken")
-    if not token:
-        raise EtapiError("Trilium accepted the password and returned no token.")
-    return token
-
-
-def client(inst: Instance) -> Etapi:
-    token = read_token(inst)
-    if not token:
-        raise NotAuthorized(
-            f"no ETAPI token for {inst.user!r}. Create one in Trilium under "
-            f"Options -> ETAPI and pass it to `trilium authorize`, or pass that "
-            f"user's password to the same verb to have one issued.")
-    return Etapi(inst, token)
+def client() -> Etapi:
+    """The vault's ETAPI. No arguments and no credential: there is one vault,
+    and reaching it is a matter of being inside this process."""
+    return Etapi()
