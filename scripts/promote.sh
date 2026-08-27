@@ -91,6 +91,18 @@ if [ -n "$before" ] && [ -n "$(git -C "$WSROOT" diff --name-only "$before" HEAD 
     echo "   drawio client patches changed: re-running its install.sh"
     (cd "$WSROOT" && bash awm/services/drawio/install.sh)
 fi
+# trilium falls into the same trap as drawio — `awm deploy` re-runs a service's
+# install only when the *set* of installed dists changes, so a rebuilt or
+# re-downloaded server bundle never lands — but it cannot be caught the same
+# way. The Trilium fork is a *separate repository* (projects/trilium), so no
+# diff over this checkout can see it move, and `before` is read from the reflog
+# and is empty whenever stage 3 was a no-op. So this is unconditional. The
+# install is stamped on the fork HEAD, its dirty flag and its lockfile (or the
+# asset name, on a tarball node) and costs seconds when nothing moved.
+if [ -z "${PROMOTE_SKIP_TRILIUM:-}" ] && [ -f "$WSROOT/awm/services/trilium/install.sh" ]; then
+    echo "   trilium: re-running install.sh (stamped; a no-op when nothing moved)"
+    (cd "$WSROOT" && bash awm/services/trilium/install.sh)
+fi
 [ "$TO" = release ] && { echo; echo "stopped after altair @ $(sha "$WSROOT")"; exit 0; }
 
 step "5. sirius"

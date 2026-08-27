@@ -11,8 +11,10 @@
 #      public service set, no search extra); mamba env `dvc`
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
 #   4. `awm gateway init` as the app user, enabled.json reconciled to the set
-#   5. the per-user Trilium vhosts, when TRILIUM_DOMAIN names a parent domain
-#   6. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
+#   5. remove the retired per-person Trilium vhosts and env keys, if any
+#   6. the `vault` project and its scope, so the shared knowledge base has a
+#      worktree to live in
+#   7. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
 set -euo pipefail
 
 INSTALL_ROOT=/opt/awm
@@ -49,7 +51,7 @@ fi
 # under awm/services/ is written as disabled. scopes is here for the CLI
 # (add-user.sh) only: the public edge (httpsfront, AWM_EDGE_PROFILE=public)
 # never forwards /svc/scopes.
-PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer scopes trilium"
+PUBLIC_SERVICES="auth httpsfront drawio fileviewer scopes trilium"
 # No torch/sentence-transformers on a 4 GB box: FTS search only.
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
 # dvc in its own env, as on altair: its dependency set is not the gateway's.
@@ -89,54 +91,77 @@ if ! sudo cmp -s "$want" "$ENABLED"; then
 fi
 rm -f "$want"
 
-step "trilium settings"
-# Not in provision.sh, though that script creates /etc/awm/env: deploy.sh runs
-# this one and never that one, so a key added there would reach an already
-# provisioned box only if someone re-ran provision.sh by hand.
-#
-# Added once and never rewritten, the same rule provision.sh uses, so a hand
-# edit on the box survives a deploy.
+step "retire the per-person trilium wiring"
+# Removal, not omission. /etc/awm/env keys are add-once and no deploy ever
+# deletes an nginx vhost, so a box provisioned under the old shape keeps both
+# forever unless something takes them away. Leaving either is the one failure
+# this design must not have: the vault now runs with its own authentication
+# off, and a vhost pointing straight at its loopback port would be an
+# unauthenticated public knowledge base.
 AWM_ENV_FILE=/etc/awm/env
-if ! sudo test -f "$AWM_ENV_FILE"; then
-    echo "   no $AWM_ENV_FILE — run provision.sh first"
-else
-    # nginx is the public edge here and ufw admits 80 and 443 from Cloudflare
-    # alone, so a per-user TLS front in the 12501 band would bind a port nothing
-    # can reach and mint a certificate nothing would trust.
-    if ! sudo grep -q '^TRILIUM_FRONTS=' "$AWM_ENV_FILE"; then
-        echo 'TRILIUM_FRONTS=0' | sudo tee -a "$AWM_ENV_FILE" >/dev/null
-        echo "   $AWM_ENV_FILE: TRILIUM_FRONTS=0"
+for f in /etc/nginx/sites-enabled/trilium.conf /etc/nginx/sites-available/trilium.conf; do
+    if sudo test -e "$f"; then
+        sudo rm -f "$f"
+        echo "   removed $f"
+        nginx_dirty=1
     fi
+done
+if sudo test -f "$AWM_ENV_FILE" && sudo grep -qE '^(TRILIUM_FRONTS|TRILIUM_DOMAIN)=' "$AWM_ENV_FILE"; then
+    sudo sed -i -E '/^(TRILIUM_FRONTS|TRILIUM_DOMAIN)=/d' "$AWM_ENV_FILE"
+    echo "   $AWM_ENV_FILE: dropped TRILIUM_FRONTS / TRILIUM_DOMAIN"
 fi
-
-step "trilium vhosts"
-# The parent name the per-user vhosts hang off, e.g. `tony.notes.example.com`.
-# Unset: no vhost, and each person's Trilium answers on loopback only.
-#
-# One subdomain per person, never one path prefix. Trilium has no URL-base
-# setting, so an SPA served under `/trilium/<user>/` asks for its own assets at
-# `/` and paints a shell that never finishes loading.
-#
-# WARNING: every <user>.$TRILIUM_DOMAIN needs its own DNS record, or one
-# wildcard, before it resolves. Cloudflare must proxy each one: ufw admits 80
-# and 443 from Cloudflare's ranges alone.
-TRILIUM_DOMAIN="${TRILIUM_DOMAIN:-}"
-if [ -z "$TRILIUM_DOMAIN" ]; then
-    echo "   TRILIUM_DOMAIN unset — no vhost; each Trilium answers on loopback only"
-else
-    tmpconf=$(mktemp)
-    AWM_BIN="$MF/envs/awm/bin/awm" bash "$HERE/trilium-nginx.sh" "$TRILIUM_DOMAIN" "$tmpconf"
-    sudo install -m 644 "$tmpconf" /etc/nginx/sites-available/trilium.conf
-    sudo ln -sfn /etc/nginx/sites-available/trilium.conf /etc/nginx/sites-enabled/trilium.conf
-    rm -f "$tmpconf"
+if [ -n "${nginx_dirty:-}" ]; then
     # `nginx -t` before the reload. A bad config reloaded leaves the box with no
     # web server at all, and nginx is the only way the public reaches anything.
     sudo nginx -t -q && sudo systemctl reload nginx
-    echo "   $(grep -c '^server {' /etc/nginx/sites-available/trilium.conf) vhost(s) under $TRILIUM_DOMAIN"
+fi
+
+step "vault scope"
+# The shared knowledge base is a project, not per-user data: `projects/vault`
+# has its own history, and `projects/userdata/<name>` means one person's data on
+# one person's branch. The branch is named per host so two hosts' vaults can
+# never be mistaken for one another.
+#
+# Best-effort throughout. The gateway runs every service's install under
+# `set -e`, so a hard failure here would abort the whole deploy on a box that
+# is otherwise fine — the same trap an unguarded mkdir sprang once already. A
+# vault that could not be created is reported by `awm trilium status`, which is
+# where someone would look anyway.
+#
+# The absolute path, not `awm`: /usr/local/bin/awm is symlinked by the last
+# stage of this script, so on a first install it does not exist yet.
+AWM_BIN="$MF/envs/awm/bin/awm"
+VAULT_BRANCH="vault/$(hostname -s)"
+vault_ok=1
+if ! "$AWM_BIN" project search --query vault 2>/dev/null | grep -q '"name": "vault"'; then
+    "$AWM_BIN" project create --name vault >/dev/null 2>&1 \
+        && echo "   created project vault" \
+        || { echo "   WARNING: could not create project vault"; vault_ok=; }
+fi
+if [ -n "$vault_ok" ] && ! "$AWM_BIN" scope search --project vault --query main 2>/dev/null | grep -q '"scope": "main"'; then
+    "$AWM_BIN" scope create --project vault --scope main --branch-name "$VAULT_BRANCH" >/dev/null 2>&1 \
+        && echo "   created scope vault/main on $VAULT_BRANCH" \
+        || { echo "   WARNING: could not create scope vault/main"; vault_ok=; }
+fi
+VROOT="$ROOT/projects/vault/main"
+if sudo -u "$APP_USER" test -d "$VROOT"; then
+    # live/ is runtime state: the database, its write-ahead log, the session
+    # store and Trilium's own rolling backups. Never committed and never
+    # DVC-pinned — a pin taken while the server runs records a state that never
+    # existed, and it looks healthy until someone restores it. data/backups/
+    # holds the named snapshots awm moved there, which is the chunk.
+    sudo -u "$APP_USER" mkdir -p "$VROOT/live" "$VROOT/data/backups" "$VROOT/notes"
+    if ! sudo -u "$APP_USER" test -f "$VROOT/.gitignore"; then
+        printf '/live/\n/.notes.incoming/\n/.notes.retired/\n' \
+            | sudo -u "$APP_USER" tee "$VROOT/.gitignore" >/dev/null
+        echo "   wrote $VROOT/.gitignore"
+    fi
+else
+    echo "   WARNING: no vault worktree at $VROOT — the service will report this via status"
 fi
 
 step "built pages"
-for p in notes drawio trilium; do
+for p in drawio trilium; do
     [ -f "awm/pages/$p/dist/index.html" ] || echo "   WARNING: awm/pages/$p/dist missing — deploy.sh ships it from the dev box"
 done
 
