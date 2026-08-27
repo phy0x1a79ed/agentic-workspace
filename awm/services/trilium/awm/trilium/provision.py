@@ -18,6 +18,11 @@ is why this module holds no state.
 `checkSetupAuth`, which stands down when Trilium's own authentication is off.
 That is the same setting `server.child_env` sets, and this call goes over
 loopback to a child that only the edge can reach.
+
+Provisioning also settles one thing about the launchbar — see
+:func:`hide_day_note_launchers`. It is here rather than in a config file
+because Trilium keeps the launchbar *in the database*, so the only way to say
+"not this one" is to move a note.
 """
 
 from __future__ import annotations
@@ -99,3 +104,62 @@ def ensure_document(*, demo: bool = False) -> dict[str, Any]:
 
     log.info("trilium: created an empty vault at %s", config.VAULT_URL)
     return {"action": "created", "initialized": True}
+
+
+# -- the launchbar ----------------------------------------------------------
+
+#: ``(launcher, on the bar, off the bar)``. Trilium's launchbar is a pair of
+#: note lists in the hidden subtree, and "hidden" here means moved from the
+#: first to the second. The IDs are fixed by upstream's rule that the hidden
+#: subtree has a predictable structure, so nothing has to be looked up.
+DAY_NOTE_LAUNCHERS = (
+    ("_lbToday", "_lbVisibleLaunchers", "_lbAvailableLaunchers"),
+    ("_lbCalendar", "_lbVisibleLaunchers", "_lbAvailableLaunchers"),
+    ("_lbMobileCalendar", "_lbMobileVisibleLaunchers",
+     "_lbMobileAvailableLaunchers"),
+)
+
+
+def hide_day_note_launchers() -> dict[str, Any]:
+    """Take the day-note buttons off the launchbar, on every start.
+
+    Trilium's "Today" launcher and its calendar widget both call `getDayNote`,
+    which *creates* `Calendar / <year> / <month> / <date>` on first click and
+    leaves it there. In a personal vault that is a feature; in one shared by
+    everybody it is a dated folder tree that appears in everyone's note list
+    because one person once looked at a calendar. Nothing else on this
+    deployment reaches `getDayNote` — the command has no default shortcut — so
+    moving these two off the bar is the whole of the fix.
+
+    Moving rather than deleting, because upstream recreates a launcher whose
+    *note* has gone, under the parent its definition names. It does not
+    recreate a branch: `checkHiddenSubtree` enforces branch placement only for
+    items marked `enforceBranches`, which no launcher is, and comments that
+    launchers moving between visible and available change branch by design.
+    So the move is what survives a restart, and a delete is what would not.
+
+    Re-applied on every provision, which is once per service start. Somebody
+    who deliberately puts the Today button back will find it gone again next
+    start; that is enforcement, and it is deliberate — the tree it creates is
+    shared, and taking it out again is not a tidy-up anyone volunteered for.
+
+    Never raises. A vault that cannot be reached is the cold-start case, and a
+    launchbar is not worth failing a provision over.
+    """
+    from awm.trilium import etapi as _etapi
+
+    api = _etapi.client()
+    moved, failed = [], []
+    for note_id, visible, available in DAY_NOTE_LAUNCHERS:
+        try:
+            # Create before delete: a note's last branch takes the note with it.
+            api.put_branch(note_id, available)
+            api.delete_branch(api.branch_id(note_id, visible))
+        except _etapi.EtapiError as exc:
+            failed.append(f"{note_id}: {exc}")
+        else:
+            moved.append(note_id)
+    if failed:
+        log.warning("trilium: could not hide the day-note launchers: %s",
+                    "; ".join(failed))
+    return {"moved": moved, "failed": failed}

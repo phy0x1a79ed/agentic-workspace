@@ -102,4 +102,4 @@ def test_the_vaults_address_names_no_host_or_port():
     """It is the same origin as the page asking. A host and a port here would
     be a guess, and the retired one guessed wrong on any multi-homed node."""
     out = asyncio.run(hub_adapter.HANDLERS["url"]({}, "user:tony"))
-    assert out == {"path": "/vault"}
+    assert out == {"path": "/trilium/"}

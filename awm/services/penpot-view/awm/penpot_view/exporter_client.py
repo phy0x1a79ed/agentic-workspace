@@ -372,6 +372,15 @@ class ExporterClient:
         self._public_uri = (
             public_uri if public_uri is not None else DEFAULT_PUBLIC_URI
         ).rstrip("/")
+        #: The path the edge mounts Penpot at, taken off a public-origin URL
+        #: before anything reads its path. Penpot builds every URL it emits by
+        #: joining onto its public URI, so under a mount they arrive as
+        #: ``/penpot/assets/…`` while the container behind the edge still
+        #: serves ``/assets/…`` -- the edge is what strips the difference, and
+        #: this is where we do the same. Empty when Penpot owns the origin
+        #: root, which is why this was invisible until it moved.
+        self._public_prefix = urllib.parse.urlsplit(
+            self._public_uri).path.rstrip("/") if self._public_uri else ""
         self._exporter_url = (exporter_url or DEFAULT_EXPORTER_URL).rstrip("/")
         self._username = username if username is not None else DEFAULT_USERNAME
         self._password = password if password is not None else DEFAULT_PASSWORD
@@ -626,7 +635,13 @@ class ExporterClient:
                 "Penpot's origin followed by '@' resolves to a different host "
                 "entirely.")
 
-        for origin in (self._base_url, self._public_uri):
+        # A mounted candidate is tried first. When the base and the public URI
+        # share an origin and differ only by the mount, checking the bare one
+        # first would match with an empty prefix and leave the mount attached.
+        candidates = [(self._base_url, ""),
+                      (self._public_uri, self._public_prefix)]
+        candidates.sort(key=lambda c: not c[1])
+        for origin, prefix in candidates:
             if not origin:
                 continue
             want = urllib.parse.urlsplit(origin)
@@ -634,6 +649,21 @@ class ExporterClient:
                     want.scheme, want.hostname, want.port):
                 continue
             path = parsed.path or "/"
+            # Take the mount off before anything reads the path. Both the
+            # allow-list below and the URL rebuilt at the end have to speak the
+            # container's paths, not the edge's -- a mounted `/penpot/assets/x`
+            # would otherwise fail the allow-list and drop every image and font
+            # out of the render, and a URL that squeaked past would ask the
+            # container for a path only the edge knows.
+            if prefix:
+                if path == prefix:
+                    path = "/"
+                elif path.startswith(prefix + "/"):
+                    path = path[len(prefix):]
+                else:
+                    # On Penpot's public origin but outside its mount, so it is
+                    # some other app on that host, not Penpot.
+                    continue
             if allowed_paths is not None and not path.startswith(allowed_paths):
                 raise ExporterError(
                     f"{what} {url!r} is on Penpot's own origin but its path is "
@@ -642,7 +672,7 @@ class ExporterClient:
                     "response is inlined into a render anyone may read.")
             base = urllib.parse.urlsplit(self._base_url)
             return urllib.parse.urlunsplit(
-                (base.scheme, base.netloc, parsed.path, parsed.query, ""))
+                (base.scheme, base.netloc, path, parsed.query, ""))
 
         known = (f"{self._base_url!r}"
                  + (f" or {self._public_uri!r}" if self._public_uri else ""))

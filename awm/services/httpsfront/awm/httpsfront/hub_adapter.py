@@ -51,7 +51,7 @@ UPSTREAM = os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/")
 PROFILE = (os.environ.get("AWM_EDGE_PROFILE") or "").strip().lower() or None
 # 0 → plain HTTP on loopback behind a TLS-terminating nginx; no certs minted.
 TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", "no")
-# The shared knowledge base, served at /vault on this same listener. On by
+# The shared knowledge base, served at /trilium/ on this same listener. On by
 # default: off is the visibly broken direction — nobody can reach the vault, and
 # somebody says so within the minute. The dangerous direction is a vault
 # reachable by something that is not this edge, and that is closed in
@@ -59,63 +59,32 @@ TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", 
 VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
 VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 
-# Penpot on this same listener. Off by default, unlike the vault: Penpot needs
-# the origin root and, depending on what the vault currently claims, may want
-# root-level paths the vault already has. Both are checked below and warned
-# about only when they are actually true. Enabling this stays an explicit
-# choice rather than something a bare upgrade should flip on.
+# Penpot on this same listener. Off by default, unlike the vault: it needs a
+# running container stack and a `PENPOT_PUBLIC_URI` that agrees with the mount
+# (see awm.httpsfront.penpot), so enabling it stays an explicit choice rather
+# than something a bare upgrade should flip on.
 PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
-
-# Whether Penpot also owns ``/`` on this listener. On by default *when Penpot
-# is enabled at all*, because Penpot served anywhere but the origin root does
-# not work -- its own router cannot parse the pathname and answers every route
-# with its login screen, however valid the session (see awm.httpsfront.penpot's
-# SHELL docstring for the live evidence). Off is for an edge that fronts
-# something else at ``/`` and wants Penpot's asset paths reachable anyway,
-# which is a diagnostic shape rather than a working one.
-PENPOT_ROOT = os.environ.get(
-    "AWM_EDGE_PENPOT_ROOT", "1").strip().lower() not in ("0", "false", "no")
 
 
 def _claimed_by_both() -> list[str]:
     """Paths both the vault and Penpot claim on this listener.
 
-    Derived, never asserted. Whether these two collide is a property of what
-    each module currently claims, not a fact about them: a vault confined to
-    its own URL base (``/trilium/``) overlaps Penpot nowhere, while one still
-    holding the root-level names (``/api/``, ``/assets/``, …) overlaps it
-    everywhere. Computing the intersection means this warning goes quiet by
-    itself the moment the collision stops being real, instead of crying wolf
-    at every boot and teaching the next reader to ignore it.
+    Derived, never asserted. Both mount under a prefix of their own, so the
+    intersection is empty and stays empty — but it is computed rather than
+    declared so that a future mount that *does* collide says so at startup
+    instead of failing as one app silently swallowing the other's traffic.
     """
-    candidates = set(penpot.PENPOT_EXACT) | set(penpot.PENPOT_PREFIXES)
-    return sorted(p for p in candidates if vault.owns(p))
+    candidates = {vault.SHELL, vault.SHELL_BARE, penpot.SHELL, penpot.SHELL_BARE}
+    return sorted(p for p in candidates if vault.owns(p) and penpot.owns(p))
 
 
 if PENPOT and VAULT:
-    # The proxy resolves the vault first, so anything both claim is answered
-    # by Trilium. The symptom is a Penpot that loads its shell and then does
-    # nothing, which is miserable to debug from the browser side -- so say it
-    # here, once, at startup. VAULT defaults on, so this fires for anyone who
-    # enables Penpot without knowing what the vault currently claims.
     _both = _claimed_by_both()
     if _both:
         log.warning(
-            "AWM_EDGE_PENPOT and AWM_EDGE_VAULT are both enabled and the "
-            "vault already claims %s, which Penpot also needs. The vault is "
-            "resolved first, so Penpot will load its shell and then fail "
-            "every request it makes. Set AWM_EDGE_VAULT=0, or give the vault "
-            "a URL base of its own.", ", ".join(_both))
-    if PENPOT_ROOT:
-        # Separate from the overlap above and true even without it: `/` is
-        # the edge's own front door, and handing it to Penpot takes the
-        # landing page (or the public profile's home redirect) away.
-        log.warning(
-            "AWM_EDGE_PENPOT_ROOT is on, so Penpot owns '/' on this listener "
-            "and the edge's own landing page is not served. Set "
-            "AWM_EDGE_PENPOT_ROOT=0 to keep it -- but note Penpot's router "
-            "cannot parse a sub-path, so Penpot itself will then only render "
-            "its login screen.")
+            "AWM_EDGE_PENPOT and AWM_EDGE_VAULT both claim %s on this "
+            "listener. The vault is resolved first, so Penpot will load its "
+            "shell and then fail every request it makes.", ", ".join(_both))
 PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
 
 # Live status, filled once the listener comes up.
@@ -128,7 +97,10 @@ _STATUS: dict[str, Any] = {
     # see whether the edge thinks it is serving the vault or Penpot at all.
     "vault_upstream": VAULT_UPSTREAM,
     "penpot_upstream": PENPOT_UPSTREAM,
-    "penpot_at_root": PENPOT and PENPOT_ROOT,
+    # Where each mounted app answers, so an operator can see the mount the
+    # containers' own PENPOT_PUBLIC_URI has to agree with.
+    "vault_mount": vault.SHELL if VAULT else None,
+    "penpot_mount": penpot.SHELL if PENPOT else None,
     "serving": False,
     "profile": PROFILE or "default",
 }
@@ -187,7 +159,6 @@ def _serve_forever(info: dict) -> None:
                 tls=TLS,
                 vault_upstream=VAULT_UPSTREAM,
                 penpot_upstream=PENPOT_UPSTREAM,
-                penpot_root=PENPOT and PENPOT_ROOT,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")

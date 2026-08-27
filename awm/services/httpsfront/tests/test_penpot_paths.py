@@ -1,12 +1,18 @@
-"""What Penpot owns at the URL root, and the public door that has to name it
-explicitly.
+"""What Penpot owns, and the two things that have to agree for it to work.
 
-Two failure classes this pins, each with its own prevented-bug docstring on
-the test: (1) ``owns()``/the shell rewrite silently drifting from what
-Penpot's real fork and nginx config actually serve, and (2) the public
-``OPEN_PREFIXES`` list missing ``/penpot`` or ``/penpot-view`` — which, per
-the public-sirius integrator's branch, 404s the entire feature from the
-internet even though every other check in this module would have allowed it.
+The interesting property is not "these are Penpot's paths" — that is upstream's
+business and changes when upstream changes. It is that Penpot's surface, the
+vault's and awm's own are *disjoint*, which is what lets one origin carry all
+three. Only the edge can assert it, because only here are all three in scope.
+
+The mount makes that nearly free. What is not free is the agreement between the
+mount and the ``PENPOT_PUBLIC_URI`` the containers are given: Penpot compares
+its own location against that value by exact string equality and renders its
+not-found page on any mismatch. Nothing in this process can read the
+containers' environment, so what is pinned here is the *shape* the deployment
+has to produce — no trailing slash in the variable, a trailing slash in the
+mount — and the compose file is checked against it in
+``test_penpot_public_uri.py``.
 """
 
 from __future__ import annotations
@@ -17,116 +23,174 @@ from awm.httpsfront import penpot, policy, vault
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
-#: Root-level paths Penpot's real nginx config and built frontend actually
-#: reference — read off projects/penpot/dev, not guessed. Excludes
-#: `/assets/` and `/api/`, which `owns()` also claims but which `classify()`
-#: resolves to the vault instead — see `test_the_known_vault_collision`.
+#: Every path Penpot's real nginx config and built frontend reference — read
+#: off projects/penpot/dev, not guessed. They are relative references in the
+#: shell, so the browser asks for them at exactly these addresses once the
+#: shell's directory is the mount.
 PENPOT_PATHS = [
-    "/penpot",
-    "/js/main.js",
-    "/js/config.js",
-    "/css/main.css",
-    "/images/favicon.png",
-    "/fonts/some-font.woff2",
-    "/plugins/create-palette-plugin/manifest.json",
-    "/ws/notifications",
+    penpot.SHELL,
+    penpot.SHELL + "js/main.js",
+    penpot.SHELL + "js/config.js",
+    penpot.SHELL + "css/main.css",
+    penpot.SHELL + "images/favicon.png",
+    penpot.SHELL + "fonts/some-font.woff2",
+    penpot.SHELL + "plugins/create-palette-plugin/manifest.json",
+    penpot.SHELL + "ws/notifications",
+    penpot.SHELL + "api/rpc/command/get-profile",
+    penpot.SHELL + "assets/by-id/abc123",
+    # Penpot's own outbound proxies, declared in its nginx `location.d`
+    # overrides rather than its main config, which is why they are easy to
+    # miss. Missing the first is not a visible failure — the app runs and
+    # every piece of text silently renders in a fallback face.
+    penpot.SHELL + "internal/gfonts/css?family=Work+Sans",
+    penpot.SHELL + "github/penpot-files/anything",
 ]
 
-#: The two prefixes Penpot's real nginx config also needs that collide with
-#: the vault's own reserved root-level names. `owns()` claims them (Penpot
-#: cannot function without them when it is the only app on the edge); the
-#: *routing* precedence that resolves the collision belongs to proxy.py and
-#: policy.classify(), documented and pinned separately below.
-PENPOT_COLLIDING_PATHS = ["/assets/by-id/abc123", "/api/rpc/command/get-profile"]
-
 #: Prefixes awm serves on the same origin. A Penpot path that fell inside any
-#: of these — or a future awm mount that fell inside a Penpot prefix — would
-#: shadow the other silently.
+#: of these — or a future awm mount that fell inside Penpot's — would shadow
+#: the other silently, which is the failure this module exists to prevent.
 AWM_PREFIXES = [
     "/ui/", "/svc/", "/files/", "/__auth/", "/__landing/", "/drawio-app/",
     "/hub/", "/invoke", "/tools", "/ca.crt", "/ca.pem", "/robots.txt",
+    "/api/", "/assets/", "/src/", "/favicon.ico", "/bootstrap",
 ]
 
 
 @pytest.mark.parametrize("path", PENPOT_PATHS)
-def test_penpot_owns_its_root_level_paths(path):
-    """Prevents: a root-level path Penpot's own frontend actually requests
-    (read off its build and nginx config) silently falling through to the
-    gateway instead of Penpot — a blank page or a 404 with no proxy error."""
+def test_penpot_owns_everything_under_its_mount(path):
     assert penpot.owns(path), path
     assert policy.classify(path) is policy.Verdict.PENPOT
 
 
-@pytest.mark.parametrize("path", PENPOT_COLLIDING_PATHS)
-def test_the_known_vault_collision(path):
-    """Documents, rather than hides, a real limitation: `/assets/` and
-    `/api/` are claimed by both `penpot.owns()` and `vault.VAULT_PREFIXES`.
-    `classify()` resolves it in the vault's favour (checked first, so the
-    pre-existing feature's behaviour does not shift under this change) — which
-    means Penpot's own `/assets`/`/api` traffic is silently swallowed by
-    Trilium on any host running both. If this test ever starts failing
-    because `owns()` stopped claiming these paths, that is a *regression* in
-    Penpot's own functionality, not a fix for the collision — the two must be
-    told apart."""
-    assert penpot.owns(path)
-    assert vault.owns(path)
-    assert policy.classify(path) is policy.Verdict.VAULT
+def test_the_root_level_names_are_awms():
+    """The mount is what keeps them.
+
+    Penpot's frontend asks for `/js/`, `/css/`, `/api/`, `/assets/` and
+    `/ws/notifications` relative to its document. Mounted at the site root it
+    owned all of those outright, which collided with the vault and with awm's
+    own surface. Under the mount they are simply not Penpot's.
+    """
+    for path in ("/js/main.js", "/css/main.css", "/api/rpc/command/get-profile",
+                 "/assets/by-id/abc", "/ws/notifications", "/images/x.png",
+                 "/fonts/x.woff2", "/plugins/x/manifest.json", "/favicon.ico"):
+        assert not penpot.owns(path), path
 
 
-@pytest.mark.parametrize("path", AWM_PREFIXES)
-def test_penpot_and_awm_do_not_overlap(path):
-    """Prevents: Penpot's root-level ownership shadowing an awm mount, or
-    vice versa — containment in both directions, not mere inequality, because
-    a near-miss (`/api` against `/ap`, a future awm page under `/assets/`) is
-    the dangerous shape a set-inequality check would miss."""
-    owned = sorted(penpot.PENPOT_EXACT) + list(penpot.PENPOT_PREFIXES)
-    for p in owned:
-        assert not p.startswith(path), f"penpot path {p} falls inside awm's {path}"
-        assert not path.startswith(p), f"awm path {path} falls inside penpot's {p}"
+def test_penpot_and_awm_do_not_overlap():
+    """Containment in both directions, not set equality.
+
+    A near-miss is the dangerous shape: `/penpot/` against `/ui/penpot`, or a
+    future awm page mounted inside Penpot. Checking only that the two differ
+    would pass on both.
+    """
+    for a in AWM_PREFIXES:
+        assert not penpot.PREFIX.startswith(a), f"penpot falls inside awm's {a}"
+        assert not a.startswith(penpot.PREFIX), f"awm path {a} falls inside penpot"
+
+
+def test_penpot_and_the_vault_do_not_overlap():
+    """The collision this edge used to carry, asserted gone.
+
+    Both apps once claimed `/api/` and `/assets/` at the site root, and the
+    proxy resolved it by checking the vault first — so Penpot loaded its shell
+    and then had every backend call answered by Trilium. Two prefixes make the
+    two surfaces disjoint by construction.
+    """
+    assert not vault.PREFIX.startswith(penpot.PREFIX)
+    assert not penpot.PREFIX.startswith(vault.PREFIX)
+    for path in PENPOT_PATHS:
+        assert not vault.owns(path), path
+
+
+def test_the_management_page_is_not_the_application():
+    """`/ui/penpot` renders awm's own controls; `/penpot/` is Penpot itself."""
+    assert not penpot.owns("/ui/penpot")
+    assert not penpot.owns("/ui/penpot/")
+
+
+def test_the_view_service_is_not_the_application():
+    """`/penpot-view/…` is awm's render service, a different mount that merely
+    starts with the same letters. A prefix test written without the trailing
+    slash would swallow it whole."""
+    assert not penpot.owns("/penpot-view/f/p/b")
+    assert not penpot.owns("/penpot-view")
 
 
 def test_root_is_never_penpots():
-    """Prevents: `/` — the one path the sign-in form reloads — being
-    hijacked by Penpot's shell rewrite, which would proxy the login page's
-    own reload straight into Penpot instead of back to the login form."""
+    """`/` belongs to whoever is hosting, on every profile.
+
+    This is what gives the edge back its landing page and the public profile
+    its home redirect — the whole reason the shell is not mounted at the root.
+    """
     assert not penpot.owns("/")
     assert policy.classify("/") is policy.Verdict.OPEN
 
 
-def test_the_shell_is_rewritten_and_nothing_else_is():
-    """Prevents: a rewrite rule broadening past the shell itself and mangling
-    a real asset path (e.g. turning `/js/main.js` into `/main.js`, which
-    Penpot's nginx does not serve)."""
+def test_the_mount_is_stripped_and_nothing_else_is():
     assert penpot.upstream_path(penpot.SHELL) == "/"
-    for path in PENPOT_PATHS:
-        if path != penpot.SHELL:
-            assert penpot.upstream_path(path) == path
+    assert penpot.upstream_path(penpot.SHELL + "js/main.js") == "/js/main.js"
+    for path in ("/", "/ui/drawio/", "/svc/penpot/fn/status", "/penpot-view/x"):
+        assert penpot.upstream_path(path) == path
 
 
-def test_a_trailing_slash_is_not_the_shell():
-    """Prevents: `/penpot/` serving the shell — Penpot's relative asset
-    references would then resolve one directory too deep (`/penpot/js/...`,
-    which nothing serves) and the page would paint and then hang."""
-    assert not penpot.owns(penpot.SHELL_SLASH)
+def test_the_bare_name_is_owned_so_it_can_be_redirected():
+    """`/penpot` must reach the edge's own redirect, not fall through to the
+    gateway — and must never itself serve the shell: every relative reference
+    would resolve one level too high, and Penpot's own location check compares
+    against a value that always ends in a slash."""
+    assert penpot.owns(penpot.SHELL_BARE)
+    assert policy.classify(penpot.SHELL_BARE) is policy.Verdict.PENPOT
+
+
+def test_the_raw_mount_must_be_in_the_bytes_too():
+    """Routing reads the decoded path; forwarding sends the raw one.
+
+    A target whose mount only appears after percent-decoding classifies as
+    Penpot's, so the byte-level strip has to be able to say "not mine" rather
+    than forward the prefix along with the request.
+    """
+    assert penpot.upstream_raw_path(b"/penpot/api/x%23y") == b"/api/x%23y"
+    assert penpot.upstream_raw_path(b"/penpot/") == b"/"
+    assert penpot.upstream_raw_path(b"/penpot") == b"/"
+    assert penpot.upstream_raw_path(b"/%70enpot/js/main.js") is None
 
 
 def test_a_peer_bearer_is_not_a_person():
-    """Prevents: a machine bearer (another node's process, or the shared
-    operator session) reaching a person's Penpot design files — the same
-    exclusion vault.py enforces for Trilium, and for the same reason."""
+    """A machine bearer — another node's process, or the shared operator
+    session — has no business in a person's design files."""
     assert policy.allows(penpot.SHELL, "tony")
     assert not policy.allows(penpot.SHELL, "peer")
     assert not policy.allows(penpot.SHELL, "operator")
     assert not policy.allows(penpot.SHELL, None)
 
 
-# -- the public door -----------------------------------------------------
+# -- the mount and PENPOT_PUBLIC_URI have to agree -------------------------
+
+
+def test_the_variable_carries_no_trailing_slash():
+    """Penpot's backend concatenates ``PENPOT_PUBLIC_URI`` raw into email
+    templates, so a trailing slash there is a doubled slash in every link it
+    sends. The client normalises the value to end in one before comparing, so
+    dropping it costs nothing on the browser side."""
+    assert penpot.SHELL_BARE == penpot.SHELL.rstrip("/")
+    assert not penpot.SHELL_BARE.endswith("/")
+
+
+def test_the_mount_carries_one():
+    """The comparison is ``location.origin + location.pathname`` against a
+    value normalised to end in ``/``. A shell served at the slash-less path
+    fails it and renders the not-found page, which embeds a login dialog — so
+    the symptom reads as a session problem and is not one."""
+    assert penpot.SHELL.endswith("/")
+
+
+# -- the public door -------------------------------------------------------
 #
-# Prevents the single failure this task exists to guard against: on the
-# public-sirius integrator's branch, OPEN_PREFIXES is the *only* gate — an
-# unlisted prefix is a 404 regardless of anything classify() would otherwise
-# say. A cheap membership check, but its absence takes the whole feature down
-# invisibly (every other test in this file would still pass).
+# On the public profile OPEN_PREFIXES is the only gate: an unlisted prefix is
+# a 404 regardless of anything classify() would otherwise say. A cheap
+# membership check, but its absence takes the whole feature down invisibly —
+# every other test in this file would still pass.
+
 
 def test_penpot_shell_is_in_open_prefixes():
     assert "/penpot" in policy.OPEN_PREFIXES
@@ -136,71 +200,25 @@ def test_penpot_view_is_in_open_prefixes():
     assert "/penpot-view" in policy.OPEN_PREFIXES
 
 
-@pytest.mark.parametrize("path", ["/penpot", "/penpot/anything",
+@pytest.mark.parametrize("path", ["/penpot", "/penpot/", "/penpot/anything",
                                   "/penpot-view/f/p/b"])
 def test_open_prefixes_actually_cover_the_real_urls(path):
-    """Prevents: the listed prefix strings existing but not actually
-    matching the URLs a browser sends (a trailing-slash or spelling mismatch
-    would pass a bare membership test while still 404ing every real request).
-    """
+    """Prevents: the listed prefix strings existing but not actually matching
+    the URLs a browser sends. A trailing-slash or spelling mismatch would pass
+    a bare membership test while still 404ing every real request."""
     assert path.startswith(tuple(policy.OPEN_PREFIXES))
 
 
-# --- what the live pass found -------------------------------------------
-
-def test_penpots_google_font_proxy_is_claimed():
-    """`/internal/gfonts/...` is Penpot's own proxy to Google Fonts, declared
-    in an nginx `location.d` override rather than its main config, which is
-    why it was missed. Not claiming it 404s every web font at the edge, and
-    the app keeps working -- in fallback faces, silently."""
-    assert penpot.owns("/internal/gfonts/css?family=Work+Sans")
-    assert penpot.owns("/internal/gfonts/font/worksans/v24/abc.woff2")
+# -- the collision warning is derived, not asserted ------------------------
 
 
-def test_penpots_template_proxy_is_claimed():
-    assert penpot.owns("/github/penpot-files/anything")
-
-
-def test_the_internal_asset_path_is_not_claimed():
-    """nginx marks `/internal/assets` `internal`, so it 404s any outside
-    request anyway -- claiming it at the edge would only widen the surface
-    for nothing."""
-    assert not penpot.owns("/internal/assets/whatever")
-
-
-def test_the_root_is_claimed_only_at_root():
-    """Penpot's router cannot parse a pathname other than its (empty) build
-    prefix, so a working deployment gives it `/`. That is opt-in at this
-    layer, since claiming `/` unconditionally would take the root away from
-    every other edge that merely enables Penpot's asset paths."""
-    assert not penpot.owns("/")
-    assert penpot.owns("/", at_root=True)
-
-
-def test_at_root_does_not_widen_anything_else():
-    assert not penpot.owns("/vault", at_root=True)
-    assert not penpot.owns("/some/other/app", at_root=True)
-
-
-# --- the collision warning is derived, not asserted ----------------------
-
-def test_the_overlap_is_computed_from_what_each_module_claims():
+def test_the_overlap_is_computed_and_is_empty():
     """Whether Penpot and the vault collide is a property of their current
-    claims, not a fact about them. A vault confined to its own URL base
-    overlaps Penpot nowhere; computing the intersection lets the startup
-    warning go quiet by itself rather than crying wolf forever."""
+    claims, not a fact about them. Both now mount under a prefix, so the
+    intersection is empty — and it is computed rather than declared so a future
+    mount that *does* collide says so at startup instead of failing as one app
+    silently swallowing the other's traffic."""
     from awm.httpsfront import hub_adapter
 
     overlap = hub_adapter._claimed_by_both()
-    assert all(vault.owns(p) for p in overlap)
-    assert all(penpot.owns(p) for p in overlap)
-    # This tree's vault still holds the root-level names, so there IS one.
-    assert "/api/" in overlap
-
-
-def test_a_vault_confined_to_its_own_base_does_not_overlap(monkeypatch):
-    from awm.httpsfront import hub_adapter
-
-    monkeypatch.setattr(vault, "VAULT_PREFIXES", ("/trilium/",))
-    monkeypatch.setattr(vault, "VAULT_EXACT", frozenset({"/trilium"}))
-    assert hub_adapter._claimed_by_both() == []
+    assert overlap == []

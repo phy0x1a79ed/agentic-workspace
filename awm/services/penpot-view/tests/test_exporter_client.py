@@ -502,6 +502,67 @@ def test_a_subresource_on_the_public_origin_is_localised():
     assert seen == [f"{BASE_URL}/internal/gfonts/font/a.woff2"]
 
 
+# --- the edge's mount comes off before the path is read --------------------
+#
+# Penpot builds every URL it emits by joining onto its public URI, so under a
+# mount they arrive as `/penpot/assets/…` while the container behind the edge
+# still serves `/assets/…`. Both readers of the path have to see the
+# container's version: the allow-list, or every image and font is refused out
+# of the render, and the rebuilt URL, or the fetch asks for a path only the
+# edge knows.
+
+MOUNTED = "https://nexus.example/penpot"
+
+
+def _mounted_client(asset=None):
+    return EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router(asset=asset)))
+
+
+def test_a_mounted_subresource_passes_the_allow_list_and_is_stripped():
+    """The allow-list is `/assets/`, and a mounted URL's path starts with
+    `/penpot/`. Without the strip every asset in a render is refused as
+    off-list — a render that loses its images while reporting success."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"xy",
+                              headers={"content-type": "image/jpeg"})
+
+    _mounted_client(asset).fetch_subresource(f"{MOUNTED}/assets/by-id/deadbeef")
+    assert seen == [f"{BASE_URL}/assets/by-id/deadbeef"]
+
+
+def test_a_mounted_url_outside_the_allow_list_is_still_refused():
+    """Stripping the mount must not become a way past the allow-list: an RPC
+    endpoint under the mount carries the service account's session and its
+    response would be inlined into a render anyone may read."""
+    with pytest.raises(EC.ExporterError, match="not under"):
+        _mounted_client().fetch_subresource(
+            f"{MOUNTED}/api/rpc/command/get-profile")
+
+
+def test_a_sibling_path_on_the_public_host_is_not_penpots():
+    """`/trilium/…` is on the same origin as a mounted Penpot and belongs to
+    another app entirely. Matching on origin alone would fetch it with
+    Penpot's session attached."""
+    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+        _mounted_client().fetch_subresource(
+            "https://nexus.example/trilium/assets/x.png")
+
+
+def test_the_mount_is_not_stripped_by_prefix_alone():
+    """`/penpotx/assets/…` shares a prefix with the mount but is not inside
+    it. A `startswith` on the bare mount would strip it into
+    `x/assets/…` and fetch that."""
+    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+        _mounted_client().fetch_subresource(
+            "https://nexus.example/penpotx/assets/x.png")
+
+
 # --- the read cache counts tags too ---------------------------------------
 
 def test_a_tag_occupies_a_read_cache_slot():

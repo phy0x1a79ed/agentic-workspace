@@ -99,8 +99,8 @@ ENV_FILE = os.environ.get("PENPOT_COMPOSE_ENV_FILE", ".env.local")
 #: change to the container set doesn't require editing this module.
 EXPECTED_SERVICES = _env_tuple(
     "PENPOT_EXPECTED_SERVICES",
-    ("penpot-frontend", "penpot-backend", "penpot-exporter",
-     "penpot-postgres", "penpot-valkey"),
+    ("penpot-frontend", "penpot-frontend-internal", "penpot-backend",
+     "penpot-exporter", "penpot-postgres", "penpot-valkey"),
 )
 
 #: Where a held stop is recorded, so it survives this process. The gateway

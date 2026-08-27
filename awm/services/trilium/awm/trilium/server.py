@@ -254,12 +254,17 @@ class Child:
         return self.snapshot() | {"action": "started"}
 
     def provision(self) -> dict[str, Any]:
-        """Give the vault a database if it has none. Never fatal.
+        """Give the vault a database if it has none, and settle its launchbar.
 
-        Deferred to here rather than to `add-user.sh` because a scope can exist
-        long before a gateway does, and a script would have to know a port. The
-        probe is what makes it idempotent, and Trilium refuses a second attempt
-        on its own, so a racing supervision tick costs a wasted request.
+        Never fatal. Deferred to here rather than to `add-user.sh` because a
+        scope can exist long before a gateway does, and a script would have to
+        know a port. The probe is what makes it idempotent, and Trilium refuses
+        a second attempt on its own, so a racing supervision tick costs a
+        wasted request.
+
+        The launchbar step runs on every start rather than once, because it is
+        a *setting* Trilium keeps in the database where anyone can undo it —
+        see `provision.hide_day_note_launchers`.
         """
         from awm.trilium import provision as _provision
 
@@ -270,6 +275,8 @@ class Child:
             log.warning("trilium: provisioning failed: %s", self._last_error)
             return {"action": "provision-failed", "error": self._last_error}
         self._provisioned = bool(result.get("initialized"))
+        if self._provisioned:
+            result = result | {"launchbar": _provision.hide_day_note_launchers()}
         return result
 
     def _await_listening(self) -> None:

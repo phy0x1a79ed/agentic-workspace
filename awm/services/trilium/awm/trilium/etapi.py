@@ -84,6 +84,39 @@ class Etapi:
     def revisions(self, note_id: str) -> list[dict]:
         return self._request("GET", f"/etapi/notes/{note_id}/revisions").json()
 
+    # -- branches ------------------------------------------------------------
+    #
+    # A note's place in the tree is its branch, and a note may have several. So
+    # "move X under Y" is create-then-delete, in that order: a note's last
+    # branch takes the note with it when it goes.
+
+    def branch_id(self, note_id: str, parent_note_id: str) -> str:
+        """Trilium composes a branch's ID from its two ends, so it can be named
+        without being looked up first."""
+        return f"{parent_note_id}_{note_id}"
+
+    def put_branch(self, note_id: str, parent_note_id: str) -> dict:
+        """Place ``note_id`` under ``parent_note_id``. Idempotent — upstream
+        answers 200 with the existing branch rather than refusing."""
+        return self._request("POST", "/etapi/branches",
+                             json={"noteId": note_id,
+                                   "parentNoteId": parent_note_id}).json()
+
+    def delete_branch(self, branch_id: str) -> None:
+        """Unplace. Quiet (204) for a branch that is already gone."""
+        self._request("DELETE", f"/etapi/branches/{branch_id}")
+
+    def create_note(self, *, parent_note_id: str, title: str, type: str,
+                    content: str, mime: str | None = None) -> dict:
+        return self._request("POST", "/etapi/create-note", json={
+            "parentNoteId": parent_note_id, "title": title, "type": type,
+            "content": content, **({"mime": mime} if mime else {}),
+        }).json()
+
+    def search(self, query: str, **params: Any) -> dict:
+        return self._request("GET", "/etapi/notes",
+                             params={"search": query, **params}).json()
+
 
 def client() -> Etapi:
     """The vault's ETAPI. No arguments and no credential: there is one vault,

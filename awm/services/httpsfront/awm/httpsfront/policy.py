@@ -85,22 +85,16 @@ _FILES = re.compile(r"^/files/projects/userdata/([^/]+)(?:/.*)?$")
 _TOPIC_PREFIX = {"drawio": "drawio"}
 
 
-def classify(path: str, *, penpot_at_root: bool = False) -> Verdict:
-    """Static verdict for ``path`` before any identity is known.
-
-    ``penpot_at_root`` must match the listener's own setting. Without it ``/``
-    falls through to :data:`OPEN_EXACT` on a listener where Penpot actually
-    owns the root, and the peer/operator exclusion that guards a person's
-    design files would not apply to the one path that serves them.
-    """
-    # Before the exact list, so the vault's own root-level paths are not
-    # shadowed by anything here — and after nothing, so ``/`` is untouched.
+def classify(path: str) -> Verdict:
+    """Static verdict for ``path`` before any identity is known."""
+    # Before the exact list, so the vault's own paths are not shadowed by
+    # anything here — and after nothing, so ``/`` is untouched.
     if vault.owns(path):
         return Verdict.VAULT
-    # Same reasoning, same position, for Penpot — checked second so a path
-    # both would claim (see penpot.py's collision note) keeps resolving to
-    # the vault, unchanged from before Penpot existed.
-    if penpot.owns(path, at_root=penpot_at_root):
+    # Same reasoning, same position, for Penpot. The two mounts are disjoint
+    # by construction now that each has a prefix of its own, so the order
+    # between them decides nothing.
+    if penpot.owns(path):
         return Verdict.PENPOT
     if path in OPEN_EXACT:
         return Verdict.OPEN
@@ -121,9 +115,9 @@ def classify(path: str, *, penpot_at_root: bool = False) -> Verdict:
     return Verdict.DENY
 
 
-def allows(path: str, sub: str | None, *, penpot_at_root: bool = False) -> bool:
+def allows(path: str, sub: str | None) -> bool:
     """Whether an authenticated session acting as ``sub`` may reach ``path``."""
-    verdict = classify(path, penpot_at_root=penpot_at_root)
+    verdict = classify(path)
     if verdict is Verdict.OPEN:
         return True
     if verdict is Verdict.DENY or not sub:

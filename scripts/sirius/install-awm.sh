@@ -156,6 +156,21 @@ if sudo -u "$APP_USER" test -d "$VROOT"; then
             | sudo -u "$APP_USER" tee "$VROOT/.gitignore" >/dev/null
         echo "   wrote $VROOT/.gitignore"
     fi
+    # Commit it, or a fresh box is left with a dirty vault worktree for ever —
+    # the file is never staged by anything else, and an uncommitted ignore rule
+    # is one `git add -A` away from being someone's confusing diff.
+    sudo -u "$APP_USER" git -C "$VROOT" add -- .gitignore 2>/dev/null || true
+    if ! sudo -u "$APP_USER" git -C "$VROOT" diff --cached --quiet 2>/dev/null; then
+        sudo -u "$APP_USER" git -C "$VROOT" \
+            -c user.name=awm -c user.email=awm@localhost \
+            commit -q -m "vault: scaffold" -m "Author-Handle: system" \
+            && echo "   committed the vault scaffold"
+    fi
+    # Scope metadata is excluded in the bare, matching the userdata convention,
+    # rather than in a tracked .gitignore that would then differ per host.
+    EX="$ROOT/projects/vault/.bare/info/exclude"
+    sudo -u "$APP_USER" grep -qx '\.awm/' "$EX" 2>/dev/null \
+        || printf '.awm/\n' | sudo -u "$APP_USER" tee -a "$EX" >/dev/null
 else
     echo "   WARNING: no vault worktree at $VROOT — the service will report this via status"
 fi

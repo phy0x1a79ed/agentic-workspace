@@ -81,4 +81,4 @@ export const snapshots = () =>
 
 /** Where the vault is served. A path, not a URL: it is the same origin as this
  *  page, behind the same session, so there is no host or port to get wrong. */
-export const VAULT_PATH = '/vault';
+export const VAULT_PATH = '/trilium/';

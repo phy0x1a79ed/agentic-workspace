@@ -3,7 +3,7 @@
 One shared knowledge base — documents rather than bullet points, PDFs and
 figures beside the notes that cite them, and a history you can go back to.
 Upstream is TriliumNext/Trilium, forked into `projects/trilium`, run as a single
-server on loopback and served by awm's edge at `/vault`.
+server on loopback and served by awm's edge at `/trilium/`.
 
 Trilium is single-user per instance, and that is what this design wants: one
 instance, one database, one knowledge base that everyone signed in works in
@@ -29,22 +29,29 @@ is the property to protect when changing anything here: the moment adding a
 person needs a second act somewhere else, the design has regressed to what it
 replaced.
 
-**The vault owns the root-level path surface, and its shell lives at `/vault`.**
+**The vault is one prefix, `/trilium/`, and the trailing slash is load-bearing.**
 Trilium has no URL-base setting: it serves its application shell from `/`, and
-every asset reference in that shell is *relative*, so the assets are requested at
-the URL root whatever path the shell came from. `/api/*`, `/src/*`, `/assets/*`,
-`/bootstrap` and the rest therefore belong to the vault in any arrangement. What
-is left to choose is where the shell is, and putting it at `/vault` rather than
-`/` is what lets a mesh node keep its landing page with no second listener and no
-port of its own. The list is `awm/httpsfront/vault.py`, next to the public
-allow-list and for the same reason: a change to what a browser can reach should
-be a reviewed diff.
+every reference in that shell is *relative* — `./src/index-*.js`, `favicon.ico`,
+`manifest.webmanifest`, `./bootstrap`, the runtime's `assets/v<version>/` and
+`api/`, and the WebSocket URI it builds from `location.pathname`. Relative
+references resolve against the document's *directory*, so a shell at `/trilium/`
+puts every one of them inside `/trilium/`, where the edge strips the prefix back
+off. The mount is `awm/httpsfront/vault.py`, next to the public allow-list and
+for the same reason: a change to what a browser can reach should be a reviewed
+diff.
 
-CAUTION: `/vault/` with a trailing slash must never serve the shell. Relative
-references resolve against the document's *directory*, so from `/vault` they
-become `/src/…` and are found, and from `/vault/` they become `/vault/src/…` and
-are not. The page paints and then hangs half-built, which is a far worse failure
-than a redirect. The edge answers that path with a 308.
+CAUTION: the shell must never be served at `/trilium` without the slash. Two
+things break. Every relative reference resolves to the site root instead of the
+mount, so the page paints and then hangs half-built. And Trilium's own hashchange
+parser refuses any URL that does not contain the literal `/#root`, so the browser
+back button changes the address and the application ignores it. The edge answers
+the slash-less path with a 308.
+
+The prefix is also what keeps the vault's surface and awm's disjoint by
+construction. `/api/`, `/assets/`, `/src/`, `/bootstrap` and `/favicon.ico` at
+the site root are awm's, not the vault's. Do not add a root-level path to
+`vault.py` to make something work — a relative reference that escapes the mount
+is a bug in the mount.
 
 **There is no Trilium password, and that is a consequence rather than a
 shortcut.** Its own login existed to say *which person*, back when there was one
@@ -90,8 +97,8 @@ cannot be read; it can be used. A shared vault raises this rather than lowering
 it, because one bad note reaches every reader.
 
 That is accepted, not overlooked. The mitigations are the minimal forwarded path
-list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded —
-see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
+list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded, and
+are matched against the path *inside* the mount — see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
 public allow-list. The only complete fix is a separate origin, and the escape
 hatch if the trust assumption ever changes is **one** DNS record — a `vault.`
 host bound to the same edge — not one per person.
@@ -125,6 +132,21 @@ pattern makes it reapable again, and nothing reports it.
 default off on a server build. They are set anyway, because a `config.ini` in the
 data directory can turn either on, and on a public host either is arbitrary code
 execution.
+
+**The day-note launchers are moved off the launchbar on every start.** Trilium
+ships a "Today" button and a calendar widget. Both call `getDayNote`, which
+*creates* `Calendar / <year> / <month> / <date>` on first click and leaves it
+there. In a personal vault that is a feature. In one everybody shares it is a
+dated folder tree in everyone's note list because one person once opened a
+calendar. `provision.hide_day_note_launchers` moves both to the available set,
+plus the mobile bar's copy of the calendar.
+
+CAUTION: move, never delete. Upstream recreates a launcher whose *note* is
+missing, under the parent its definition names, so a delete comes back visible.
+It does not recreate a branch: `checkHiddenSubtree` enforces branch placement
+only for items marked `enforceBranches`, which no launcher is. Re-applying on
+every start is deliberate — the launchbar lives in the database, so anyone can
+put the button back, and the tree it creates is shared.
 
 **Why not a gateway `kind=url` mount.** The blocker dsh records: the gateway's
 WebSocket bridge forwards no headers at all, and Trilium's client holds a socket
@@ -191,7 +213,7 @@ One, plus a page that appears on its own:
 | — | (page) | `/ui/trilium` | the reception page, mounted where `dist/` exists |
 
 **This service binds no listener at all.** The vault answers on loopback
-`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/vault` to it —
+`awm.config.VAULT_PORT` (12511), and `awm.httpsfront` proxies `/trilium/` to it —
 so the port is defined in `awm.config` rather than here, because two processes
 must agree on it and neither owns it. There is deliberately nothing in this
 package that could bind a socket; see the invariant above.
@@ -296,7 +318,7 @@ it have a database, and is there a pinned snapshot — plus which bundle is bein
 served and whether it matches the revision on disk. Asked through an edge it
 answers the first four and omits the pids and paths.
 
-The check that actually matters is not any of those: **open `/vault` in a
+The check that actually matters is not any of those: **open `/trilium/` in a
 browser, signed in, and confirm it paints and stays live.** A curl returning 200
 proves the shell was served; only a browser proves the WebSocket connected, and a
 vault whose socket never connects looks perfectly healthy and silently stops

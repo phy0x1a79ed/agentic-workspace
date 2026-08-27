@@ -69,25 +69,40 @@ restarting from the core-change loop anyway.
 
 ## What bites either way
 
-- **CAUTION: Penpot must own the origin root, or its router silently shows
-  the login screen forever.** The client-side router slices
-  `location.pathname` against a build-time path prefix that ships empty.
-  Served at a sub-path like `/penpot`, the app renders its login screen on
-  every route even with a valid session — the shell paints, every asset
-  returns 200, and nothing in the network tab looks wrong. Use
-  `awm.httpsfront.penpot.owns(..., at_root=True)`, which means one edge fronts
-  Penpot or Trilium, never both, until one gets a real URL base.
+- **CAUTION: `PENPOT_PUBLIC_URI` must name the mount exactly, or every route
+  renders the not-found page.** Penpot's client compares
+  `location.origin + location.pathname` against its configured public URI by
+  exact string equality before it routes anything (`on-navigate` in
+  `frontend/src/app/main/ui/routes.cljs`). The value is read at *runtime* from
+  the `penpotPublicURI` JS global, which `files/nginx-entrypoint.sh` writes
+  into `js/config.js` from the environment variable. So Penpot serves under a
+  path prefix with no rebuild and no source change: set
+  `PENPOT_PUBLIC_URI=<edge origin>/penpot` and strip the prefix at the edge.
+  Omit the trailing slash from the variable — the backend concatenates it raw
+  into email templates — and keep it on every link, because the comparison
+  normalises the configured value to end in one.
 
-- **CAUTION: `PENPOT_PUBLIC_URI` is load-bearing in two directions that
-  conflict behind an authenticating edge.** The browser bakes it into
-  `js/config.js` as the API origin it calls, so it must be the edge's public
-  origin. But the exporter container's headless browser also loads that same
-  `config.js` when rendering `<internal-uri>/render.html`, so that origin
-  must simultaneously be reachable and un-gated from inside the exporter
-  container. A gated edge here fails every export with
-  `ResourceRequest timed out`. There is no code fix — resolve it as a
-  deployment decision (which origin, how it's gated) before shipping either
-  loop's change.
+  The failure is worth recognising by sight: a mismatch renders Penpot's 404
+  page, **which embeds a login dialog**. It reads as an expired session and is
+  not one. An earlier pass here diagnosed it as "the router cannot parse a
+  sub-path" and gave Penpot the origin root to work around it. That was wrong,
+  and the workaround cost the edge its landing page.
+
+- **CAUTION: the exporter needs its own origin, and giving it the public one
+  breaks every export.** The exporter drives a headless browser at
+  `<internal-uri>/render.html`, which loads the same `js/config.js`. Point it
+  at a frontend whose config names the *public* origin and that browser has no
+  session on the edge, so the page never reaches network idle and every export
+  dies on `ResourceRequest timed out`. Ungating the render page instead is
+  worse — it is reachable unauthenticated.
+
+  The fork already carries the split. Set the exporter's `PENPOT_INTERNAL_URI`
+  to a **second frontend container with `PENPOT_PUBLIC_URI` unset**, whose
+  config then falls back to `location.origin` and whose own location check
+  passes on the internal address. `replace-internal-uris`
+  (`exporter/src/app/renderer/svg.cljs`) rewrites that origin back to the
+  public one in the emitted SVG, so nothing internal reaches a caller. Costs
+  one nginx container. Never give that container `PENPOT_PUBLIC_URI`.
 
 - **WARNING: anything Penpot fetches server-side must clear its SSRF guard,
   and loopback is not reachable from its containers regardless.** Any

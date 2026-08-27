@@ -101,3 +101,73 @@ def test_a_real_failure_is_reported_and_not_raised(monkeypatch):
     out = provision.ensure_document()
     assert out["initialized"] is False and out["action"] == "failed"
     assert "500" in out["detail"]
+
+
+# -- the launchbar ----------------------------------------------------------
+#
+# Trilium keeps the launchbar in the database, so "this button is off" is a
+# note that has been moved rather than a setting that has been written. That
+# makes the order of the two calls the whole of the correctness argument, and
+# makes "runs again next start" a feature rather than waste.
+
+
+class _FakeApi:
+    def __init__(self, fail: set[str] | None = None) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.fail = fail or set()
+
+    def branch_id(self, note_id, parent):
+        return f"{parent}_{note_id}"
+
+    def put_branch(self, note_id, parent):
+        if note_id in self.fail:
+            from awm.trilium.etapi import EtapiError
+            raise EtapiError("nope")
+        self.calls.append(("put", f"{parent}_{note_id}"))
+        return {}
+
+    def delete_branch(self, branch_id):
+        self.calls.append(("delete", branch_id))
+
+
+def _fake_api(monkeypatch, api):
+    from awm.trilium import etapi
+    monkeypatch.setattr(etapi, "client", lambda: api)
+    return api
+
+
+def test_the_day_note_launchers_move_off_the_bar(monkeypatch):
+    api = _fake_api(monkeypatch, _FakeApi())
+    out = provision.hide_day_note_launchers()
+    assert out["moved"] == [n for n, _, _ in provision.DAY_NOTE_LAUNCHERS]
+    assert not out["failed"]
+    assert ("put", "_lbAvailableLaunchers__lbToday") in api.calls
+    assert ("delete", "_lbVisibleLaunchers__lbToday") in api.calls
+
+
+def test_the_new_place_is_made_before_the_old_one_is_taken_away(monkeypatch):
+    """A note's last branch takes the note with it. Delete-then-create would
+    destroy the launcher, and upstream would put it back — visible."""
+    api = _fake_api(monkeypatch, _FakeApi())
+    provision.hide_day_note_launchers()
+    for note_id, visible, available in provision.DAY_NOTE_LAUNCHERS:
+        made = api.calls.index(("put", f"{available}_{note_id}"))
+        gone = api.calls.index(("delete", f"{visible}_{note_id}"))
+        assert made < gone, note_id
+
+
+def test_a_vault_that_refuses_does_not_stop_provisioning(monkeypatch):
+    """A launchbar is not worth failing a provision over, and a cold vault
+    refusing is the ordinary case rather than a fault."""
+    api = _fake_api(monkeypatch, _FakeApi(fail={"_lbToday"}))
+    out = provision.hide_day_note_launchers()
+    assert out["failed"] and "_lbToday" in out["failed"][0]
+    assert "_lbCalendar" in out["moved"], "one failure must not abandon the rest"
+
+
+def test_both_widgets_that_can_create_a_day_note_are_covered(monkeypatch):
+    """`getDayNote` is reachable from the Today launcher and from the calendar
+    widget, and the calendar has a second copy on the mobile bar. Missing any
+    one of them leaves the tree creatable by somebody."""
+    ids = {n for n, _, _ in provision.DAY_NOTE_LAUNCHERS}
+    assert ids == {"_lbToday", "_lbCalendar", "_lbMobileCalendar"}

@@ -6,7 +6,7 @@
 #
 # This is the whole of adding a person. There is no DNS record to create, no
 # port to allocate and no web-server config to write: the shared vault is
-# served by the edge at /vault to anyone with an account, so an account is all
+# served by the edge at /trilium/ to anyone with an account, so an account is all
 # it takes. Nothing here touches the vault.
 #
 #   scripts/sirius/add-user.sh <name>
@@ -76,4 +76,4 @@ else
     awm auth user-add --username "$NAME"
 fi
 echo "ready: $ROOT (branch user/$NAME)"
-echo "       the shared vault is at /vault — nothing further to set up"
+echo "       the shared vault is at /trilium/ — nothing further to set up"

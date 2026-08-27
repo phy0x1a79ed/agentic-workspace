@@ -1,112 +1,111 @@
 """Which paths belong to Penpot's own frontend, and where its shell lives.
 
-Penpot is the second whole external app wired onto this edge exactly the way
-:mod:`awm.httpsfront.vault` wires in Trilium: no URL-base setting of its own,
-a shell whose asset references are all *relative to the document*, so they
-resolve at the URL root no matter what path served the shell. Read
-``vault``'s own module docstring for the mechanics that follow from that —
-they are identical here down to the trailing-slash redirect, so this module
-states only what is Penpot-specific.
+Penpot is the second whole external app wired onto this edge, and it mounts the
+same way :mod:`awm.httpsfront.vault` mounts Trilium: one prefix, a trailing
+slash that is load-bearing, and :func:`upstream_path` stripping the prefix back
+off. Read ``vault``'s module docstring for the mechanics. This module states
+only what is Penpot-specific, which is the one thing Penpot has and Trilium
+does not — a URL-base setting of its own that has to agree with the mount.
 
-**Where the prefixes below come from.** Read off the Penpot fork's own build
-and nginx config (``projects/penpot/dev``), not guessed: the built
-``index.html`` references ``css/…``, ``js/…`` and ``images/…`` relative to the
-document (``docker/images/bundle-frontend/index.html``), its own
-``nginx.conf.template`` proxies ``/api`` and ``/assets`` straight to the
-backend and ``/plugins`` to a static dir of Penpot's bundled first-party
-plugins, and the realtime collaboration socket is ``/ws/notifications``.
-Client-side routing is hash-based — Penpot has no path-based SPA route at
-all, and that same nginx config 301s any other multi-segment path straight to
-a 404 — so this fixed set is everything a browser ever asks the origin for.
+**PENPOT_PUBLIC_URI is the other half of this file.** Penpot's client checks its
+own location before it routes anything: ``on-navigate`` in
+``frontend/src/app/main/ui/routes.cljs`` compares ``location.origin +
+location.pathname`` against ``cf/public-uri`` by exact string equality, and a
+mismatch renders the not-found page — which embeds a login dialog, so the
+symptom reads as an auth failure and is not one. ``cf/public-uri`` is read at
+*runtime* from the ``penpotPublicURI`` JS global, which the frontend
+container's ``nginx-entrypoint.sh`` writes into ``js/config.js`` from the
+``PENPOT_PUBLIC_URI`` environment variable, falling back to
+``location.origin``. So the deployment contract is:
 
-**Known collision with the vault, not resolved here.** ``/api/`` and
-``/assets/`` are also root-level entries in
-:data:`awm.httpsfront.vault.VAULT_PREFIXES` — both apps chose the same
-conventional names for the same reason: they *are* conventional. A deployment
-that runs both ``AWM_EDGE_VAULT=1`` and ``AWM_EDGE_PENPOT=1`` on one edge
-therefore has two apps claiming the same root-level paths, and something has
-to give: ``proxy.py`` checks the vault first, unchanged from before this
-module existed, so Penpot's own ``/api``/``/assets`` traffic is silently
-swallowed by Trilium on such a host. The only real fix is what the
-public-sirius integrator's branch has already done for Trilium — give one app
-a URL-base rather than root ownership — and that is out of scope here. Flagged
-explicitly in the T12 report rather than papered over.
+    PENPOT_PUBLIC_URI = <edge origin> + "/penpot"
+
+with **no** trailing slash in the variable — Penpot's backend concatenates it
+raw into email templates, and a doubled slash there is visible to users.
+Penpot normalises it to end in ``/`` before the comparison, which is why the
+browser has to be at ``/penpot/`` and why :data:`SHELL_BARE` redirects.
+
+A mount whose prefix and ``PENPOT_PUBLIC_URI`` disagree fails as a 404 page on
+every route, including the shell. There is no partial-failure mode to notice
+in staging, which is the argument for the constant below over a per-host
+string.
+
+**Stripping is mandatory, not an optimisation.** Penpot's own
+``nginx.conf.template`` 301s any unmatched two-segment path to ``/404``, and
+its ``/api``, ``/assets`` and ``/ws/notifications`` locations are absolute. An
+unstripped ``/penpot/api/…`` matches none of them and redirects instead of
+reaching the backend.
+
+**The exporter renders against a different origin.** Penpot's exporter drives a
+headless browser at its own render page, and behind an authenticating edge that
+browser cannot load the public origin — it has no session, so the page never
+reaches network idle and every export times out. The fork carries
+``PENPOT_INTERNAL_URI`` (exporter-side, upstream #10630) for exactly this: point
+it at a second frontend container with ``PENPOT_PUBLIC_URI`` unset, whose config
+then falls back to ``location.origin`` and whose own location check passes on
+the internal address. ``replace-internal-uris`` rewrites that origin back to the
+public one in the emitted SVG, so nothing internal leaks into what a caller
+gets. None of that is this module's business — it is recorded here because this
+docstring is where the next reader comes looking for "why did my export break
+when I set the public URI".
+
+**Nothing is refused inside the mount.** The vault carries a ``NOT_FORWARDED``
+list because Trilium's own authentication is off on this deployment, which
+leaves its ETAPI open to anything vault-origin JavaScript asks for. Penpot's is
+on: it owns its accounts and teams and checks its own session on every backend
+call, so there is no equivalent surface to close. The prefix is the whole
+allow-list.
 """
 
 from __future__ import annotations
 
-#: Where the application shell is served. Exactly this, no trailing slash —
-#: see ``vault.SHELL``'s docstring for why a trailing slash would break every
-#: relative asset reference.
-#:
-#: **This is not, on its own, a working deployment, and the way it fails is
-#: quiet.** Penpot's relative assets do resolve correctly from here, so the
-#: shell paints and every asset is a 200 — but its client-side router slices
-#: ``location.pathname`` against a build-time path prefix that is empty in the
-#: shipped bundle, so a pathname of ``/penpot`` matches no route and the app
-#: falls back to its login screen. Verified live, with a valid session cookie
-#: and ``get-profile`` answering 200: at ``/penpot`` the workspace renders as
-#: the login form, and at ``/`` the same URL hash renders the full workspace
-#: (199 shapes) with the collaboration websocket open.
-#:
-#: So Penpot has to have the *origin root*, which is what ``at_root`` on
-#: :func:`owns` grants. This deepens the vault collision in the module
-#: docstring from "two apps want /api" to "two apps want /": an edge can front
-#: Penpot or Trilium, not both, until one of them gets a real URL base.
-#: ``SHELL`` stays as the door an operator links to; at root it redirects
-#: here rather than serving the shell at a path the router cannot parse.
-SHELL = "/penpot"
+#: Where the application shell is served, and the mount for everything under
+#: it. The trailing slash is deliberate — see the module docstring.
+PREFIX = "/penpot/"
 
-#: Answered with a permanent redirect to :data:`SHELL`, for the same reason
-#: as ``vault.SHELL_SLASH``.
-SHELL_SLASH = "/penpot/"
+#: Where the application shell is served. The same string: under a prefix
+#: mount the shell *is* the directory.
+SHELL = PREFIX
 
-#: Root-level paths Penpot owns outright.
-PENPOT_EXACT = frozenset({SHELL})
+#: Answered with a permanent redirect to :data:`SHELL`. A person types
+#: ``/penpot``; every relative reference in the shell would then resolve one
+#: level too high, and Penpot's own location check would fail on the missing
+#: slash regardless.
+SHELL_BARE = PREFIX.rstrip("/")
 
-#: Root-level prefixes Penpot owns. ``/api/`` and ``/assets/`` collide with
-#: the vault's own reserved names — see the module docstring.
-PENPOT_PREFIXES = (
-    "/js/",
-    "/css/",
-    "/images/",
-    "/fonts/",
-    "/plugins/",
-    "/assets/",
-    "/api/",
-    "/ws/notifications",
-    # Penpot's own outbound proxies, in its nginx `location.d` overrides
-    # rather than its main config, which is why they are easy to miss:
-    # `/internal/gfonts/css` and `/internal/gfonts/font/…` front Google Fonts,
-    # and `/github/penpot-files/` fronts raw.githubusercontent for the
-    # built-in templates. Missing the first is not a visible failure -- the
-    # app runs and every piece of text silently renders in a fallback face.
-    # `/internal/assets` needs no entry and must not get one: nginx marks it
-    # `internal`, so it 404s any request from outside regardless.
-    "/internal/gfonts/",
-    "/github/penpot-files/",
-)
+_PREFIX_BYTES = PREFIX.encode("ascii")
 
 
-def owns(path: str, *, at_root: bool = False) -> bool:
-    """Whether ``path`` is served by Penpot rather than by the gateway.
-
-    ``at_root`` adds ``/`` to what Penpot claims. See :data:`SHELL` for why a
-    deployment that wants a working Penpot has to set it.
-    """
-    if at_root and path == "/":
-        return True
-    if path in PENPOT_EXACT:
-        return True
-    return path.startswith(PENPOT_PREFIXES)
+def owns(path: str) -> bool:
+    """Whether ``path`` is served by Penpot rather than by the gateway."""
+    return path == SHELL_BARE or path.startswith(PREFIX)
 
 
 def upstream_path(path: str) -> str:
-    """The path to ask Penpot for.
+    """The path to ask Penpot for: ``path`` with the mount taken off.
 
-    The single rewrite in the whole design, mirroring ``vault.upstream_path``:
-    the shell lives at ``/penpot`` for us and at ``/`` for Penpot's own nginx.
-    Everything else is carried through unchanged, which is what keeps the
-    relative-asset arithmetic in the browser correct.
+    The single rewrite in the whole design. ``/penpot/`` is Penpot's ``/``,
+    ``/penpot/api/rpc/command/get-profile`` is its
+    ``/api/rpc/command/get-profile``. Keeping it in one place is what lets the
+    HTTP leg and the WebSocket leg agree on what "inside Penpot" means.
     """
-    return "/" if path == SHELL else path
+    if path.startswith(PREFIX):
+        return path[len(PREFIX) - 1:]
+    return path
+
+
+def upstream_raw_path(raw: bytes) -> bytes | None:
+    """:func:`upstream_path` on the bytes as they arrived, or ``None``.
+
+    The edge routes on the *decoded* path and forwards the *raw* one, so the
+    mount has to be present in both — a target whose prefix only appears after
+    percent-decoding (``/%70enpot/…``) classifies as Penpot's and would be
+    forwarded with the prefix still attached. ``None`` says "route said yes,
+    bytes say no", which the caller answers with a 404. Identical to
+    ``vault.upstream_raw_path`` and load-bearing for the same reason.
+    """
+    if raw == _PREFIX_BYTES.rstrip(b"/"):
+        return b"/"
+    if not raw.startswith(_PREFIX_BYTES):
+        return None
+    return raw[len(_PREFIX_BYTES) - 1:]

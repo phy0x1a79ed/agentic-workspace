@@ -8,7 +8,7 @@ than a node process somebody started by hand.
 Two things live under this one supervised process: the Trilium server on
 loopback (see `server`), and the data lifecycle verbs that snapshot, restore
 and export what is in it (see `vault`). There is no front here and no
-discovery: the awm edge serves the vault at `/vault`, and there is one vault, so
+discovery: the awm edge serves the vault at `/trilium/`, and there is one vault, so
 there is nothing to enumerate.
 
 **Who may call what.** The vault is shared, so a write verb is one person's
@@ -262,7 +262,7 @@ async def _h_url(args: dict, as_: str | None = None) -> dict:
     port here would be a guess, and the old one guessed wrong on any node with
     more than one address.
     """
-    return {"path": "/vault"}
+    return {"path": "/trilium/"}
 
 
 async def _h_logs(args: dict, as_: str | None = None) -> dict:

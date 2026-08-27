@@ -23,6 +23,14 @@ The public profile (``AWM_EDGE_PROFILE=public``) narrows the door to the
 allow-list in :mod:`awm.httpsfront.policy` and, with ``AWM_EDGE_TLS=0``, serves
 plain HTTP on loopback for a TLS-terminating nginx in front.
 
+**Routing reads the decoded path; forwarding sends the raw one.** Both are
+deliberate and neither may be "simplified" into the other. Every routing and
+policy decision needs the *decoded* path, because that is what the caller
+means; every upstream request needs the *raw* bytes, because rebuilding a URL
+from the decoded string loses the difference between ``%23`` and ``#`` and
+between ``%2e%2e`` and a directory climb. The gap between the two is closed by
+refusing any target that re-segments when decoded — see :func:`_re_segments`.
+
 Built on Starlette + uvicorn (TLS) with ``httpx`` for HTTP and the ``websockets``
 client for WS bridging — all already present in the ``awm`` env (the gateway
 depends on them). Runs in a daemon thread launched from the hub adapter's
@@ -38,7 +46,7 @@ import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 import uvicorn
@@ -74,6 +82,63 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 _ALL_METHODS = _METHODS  # alias for route registration clarity
 
 _PEER_NAME = socket.gethostname().split(".")[0].title()
+
+# Routing reads the *decoded* path; forwarding sends the *raw* one. Those two
+# facts are the whole of the encoding contract on this edge, and they are the
+# kind of invariant that reads as an accident and gets "simplified" back into a
+# bug — so they live together, here, with the reason.
+
+
+def _raw_target(scope, decoded: str) -> bytes:
+    """The request path exactly as it arrived, percent-encoding intact.
+
+    Starlette's ``url.path`` is percent-*decoded*, so rebuilding an upstream URL
+    out of it destroys the difference between ``%23`` and ``#``: httpx reparses
+    the string it is handed and takes everything after a ``#`` as a fragment,
+    which it never sends. Trilium's client escapes its search string into the
+    path, so that alone truncated every attribute search to ``/api/search/``.
+
+    ASGI keeps the original bytes in ``raw_path`` — uvicorn sets it on both its
+    h11 and its httptools implementation, HTTP and WebSocket alike. A server
+    that omits it leaves us re-encoding the decoded path, which is lossy in
+    exactly this way but no worse than what it replaces.
+    """
+    raw = scope.get("raw_path")
+    if raw:
+        return raw.split(b"?", 1)[0]
+    return quote(decoded).encode("ascii")
+
+
+def _re_segments(raw: bytes, decoded: str) -> bool:
+    """Whether this target means one thing to the router and another upstream.
+
+    The two paths agree on everything except a target that *re-segments* when
+    decoded. An encoded separator (``%2f``, ``%5c``) is one segment to the
+    router and two to the upstream; a ``..`` — plain or arrived as ``%2e%2e`` —
+    is a segment to the router and a level up to any client that normalises
+    before sending, which is how ``/trilium/api/%2e%2e/etapi/app-info`` used to
+    classify as the vault's and arrive as the unauthenticated ETAPI's.
+
+    Refused outright rather than canonicalised: nothing this edge serves needs
+    either form, and a 404 is the same answer every other path off the list
+    gets.
+    """
+    low = raw.lower()
+    if b"%2f" in low or b"%5c" in low:
+        return True
+    return ".." in decoded.split("/")
+
+
+def _upstream_url(origin: str, raw_path: bytes, query: bytes) -> httpx.URL:
+    """``origin`` + the target, byte for byte.
+
+    ``copy_with(raw_path=…)`` sets the target verbatim instead of reparsing a
+    string — the reparse is what swallowed the fragment and what normalised the
+    ``..``. It carries the query with it, so nothing else may append one.
+    """
+    return httpx.URL(origin).copy_with(
+        raw_path=raw_path + (b"?" + query if query else b""))
+
 
 PUBLIC_PROFILE = "public"
 # Where a signed-in browser lands on the public profile. The vault, because
@@ -190,11 +255,28 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _site_name(request: Request) -> str:
+    """What to call this node on the sign-in screen.
+
+    The public host's own hostname is a droplet name nobody types; what a person
+    typed is in ``Host``, and it is the only label that will match the address
+    bar they are looking at. Off the public profile the peer name is right and
+    the Host header is usually an IP.
+    """
+    if not _is_public(request.app):
+        return _PEER_NAME
+    host = (request.headers.get("host") or "").split(":")[0]
+    label = host.split(".")[0]
+    return label.title() if label else _PEER_NAME
+
+
 def _deny(request: Request) -> Response:
-    """Login page for a browser GET, else 401 (API / peer)."""
+    """Sign-in screen for a browser GET, else 401 (API / peer)."""
     if request.method == "GET" and _wants_html(request):
-        return HTMLResponse(pages.login_page(public=_is_public(request.app)),
-                            status_code=200)
+        return HTMLResponse(
+            pages.login_page(public=_is_public(request.app),
+                             name=_site_name(request)),
+            status_code=200)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
@@ -446,41 +528,30 @@ def _penpot_up(app) -> str | None:
     return getattr(app.state, "penpot_http_up", None)
 
 
-def _penpot_root(app) -> bool:
-    """Whether Penpot owns ``/`` on this edge — see ``penpot.SHELL``."""
-    return bool(getattr(app.state, "penpot_root", False))
+async def _vault_bare(request: Request) -> Response:
+    """``/trilium`` → ``/trilium/``, permanently.
 
-
-async def _vault_slash(request: Request) -> Response:
-    """``/vault/`` → ``/vault``, permanently.
-
-    Not cosmetic. Every asset reference in the vault's shell is relative, and
-    they resolve against the document's *directory*: from ``/vault`` that is the
-    site root and the assets are found, from ``/vault/`` it is ``/vault/`` and
-    none of them are. The page paints and then hangs, which is a much worse
-    failure than a redirect.
+    Not cosmetic, and the opposite of what this redirect used to say. Every
+    reference in the vault's shell is relative, and they resolve against the
+    document's *directory*: from ``/trilium/`` that is the mount and the edge
+    strips it back off, from ``/trilium`` it is the site root and every one of
+    them lands outside the vault. The page paints and then hangs — and Trilium's
+    own hashchange parser, which wants the literal ``/#root``, ignores the back
+    button either way.
     """
     return RedirectResponse(vault.SHELL, status_code=308)
 
 
-async def _penpot_slash(request: Request) -> Response:
-    """``/penpot/`` → ``/penpot``, permanently. Same reasoning as
-    ``_vault_slash``: Penpot's relative asset references resolve against the
-    document's directory, and only ``/penpot`` (not ``/penpot/``) puts that
-    directory at the site root."""
-    return RedirectResponse(penpot.SHELL, status_code=308)
+async def _penpot_bare(request: Request) -> Response:
+    """``/penpot`` → ``/penpot/``, permanently.
 
-
-async def _penpot_shell_at_root(request: Request) -> Response:
-    """``/penpot`` → ``/`` when Penpot owns the root.
-
-    Serving the shell at ``/penpot`` would answer 200 with a page that quietly
-    renders the login form however valid the session is -- Penpot's router
-    cannot parse that pathname (see ``penpot.SHELL``). Redirecting is the only
-    honest answer, and it keeps ``/penpot`` usable as the link an operator
-    hands out.
+    Same reasoning as ``_vault_bare``, plus one Penpot has of its own: its
+    client compares ``location.origin + location.pathname`` against its
+    configured public URI, which always ends in a slash. Without the redirect
+    the shell loads and renders Penpot's not-found page — which contains a
+    login form, so it reads as a session problem and is not one.
     """
-    return RedirectResponse("/", status_code=302)
+    return RedirectResponse(penpot.SHELL, status_code=308)
 
 
 async def _vault_manifest(request: Request) -> Response:
@@ -545,13 +616,16 @@ async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
     path = request.url.path
-    at_root = _penpot_root(app)
-    if public and policy.classify(path, penpot_at_root=at_root) is policy.Verdict.DENY:
+    raw = _raw_target(request.scope, path)
+    # Before the upstream branch, or the gateway leg keeps the hole.
+    if _re_segments(raw, path):
+        return _not_found()
+    if public and policy.classify(path) is policy.Verdict.DENY:
         return _not_found()
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
-    if public and not policy.allows(path, sub, penpot_at_root=at_root):
+    if public and not policy.allows(path, sub):
         return _not_found()
     # The vault and Penpot are the upstreams on this listener that are not the
     # gateway. Which upstream is decided here and nowhere else, from a path
@@ -567,15 +641,20 @@ async def _http_proxy(request: Request) -> Response:
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
-        up, path = vault_up, vault.upstream_path(path)
-    elif penpot_up and penpot.owns(path, at_root=at_root):
+        inner = vault.upstream_raw_path(raw)
+        if inner is None:
+            # The mount is in the decoded path but not in the bytes.
+            return _not_found()
+        up, raw = vault_up, inner
+    elif penpot_up and penpot.owns(path):
         if not public and sub in (PEER_SUB, "operator"):
             return _not_found()
-        up, path = penpot_up, penpot.upstream_path(path)
+        inner = penpot.upstream_raw_path(raw)
+        if inner is None:
+            return _not_found()
+        up, raw = penpot_up, inner
     client: httpx.AsyncClient = app.state.client
-    url = up + path
-    if request.url.query:
-        url += "?" + request.url.query
+    url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
     body = await request.body()
     upstream_req = client.build_request(
         request.method, url, headers=_req_headers(request, sub), content=body,
@@ -629,32 +708,42 @@ async def _ws_proxy(ws: WebSocket) -> None:
     pumping text+binary frames both directions until either side closes."""
     app = ws.app
     path = ws.url.path
-    raw_path = ws.url.path
-    if ws.url.query:
-        path += "?" + ws.url.query
-    up_url = app.state.ws_up + path
+    raw = _raw_target(ws.scope, path)
+    if _re_segments(raw, path):
+        await ws.close(code=1008)
+        return
+    query = ws.scope.get("query_string") or b""
+    up = app.state.ws_up
     vault_ws = getattr(app.state, "vault_ws_up", None)
-    is_vault = bool(vault_ws) and vault.owns(raw_path)
+    is_vault = bool(vault_ws) and vault.owns(path)
     penpot_ws = getattr(app.state, "penpot_ws_up", None)
-    # Vault takes precedence on a raw_path both would claim — same ordering
-    # as the HTTP leg, and for the same reason (see penpot.py's collision
-    # note): the pre-existing feature's behaviour must not shift under it.
+    # Vault takes precedence on a path both would claim — same ordering as the
+    # HTTP leg, and for the same reason (see penpot.py's collision note): the
+    # pre-existing feature's behaviour must not shift under it.
     is_penpot = (bool(penpot_ws) and not is_vault
-                 and penpot.owns(raw_path, at_root=_penpot_root(app)))
+                 and penpot.owns(path))
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
-        # shell served at /vault opens its socket there. Same rewrite as the
+        # shell served at /trilium/ opens its socket there. Same rewrite as the
         # HTTP leg, or the vault's live updates never arrive and nothing says so.
-        up_url = vault_ws + vault.upstream_path(raw_path)
-        if ws.url.query:
-            up_url += "?" + ws.url.query
+        inner = vault.upstream_raw_path(raw)
+        if inner is None:
+            await ws.close(code=1008)
+            return
+        up, raw = vault_ws, inner
     elif is_penpot:
         # Penpot's collab socket (/ws/notifications) is what keeps a shared
         # board's live edits in sync — the same "silent wrong upstream" hazard
         # as the vault's socket, and the whole reason this leg exists at all.
-        up_url = penpot_ws + penpot.upstream_path(raw_path)
-        if ws.url.query:
-            up_url += "?" + ws.url.query
+        inner = penpot.upstream_raw_path(raw)
+        if inner is None:
+            await ws.close(code=1008)
+            return
+        up, raw = penpot_ws, inner
+    # ``websockets.connect`` parses the URI without decoding its path, so the
+    # bytes reach the upstream as they arrived — the same contract the HTTP leg
+    # gets from ``copy_with(raw_path=…)``.
+    up_url = up + (raw + (b"?" + query if query else b"")).decode("ascii")
 
     # Edge auth: Starlette HTTP handling never sees a WS scope, so the guard is
     # enforced here, before accept(). A browser sends the session cookie on the
@@ -797,8 +886,7 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               rewrite_origin: bool = False,
               profile: str | None = None,
               vault_upstream: str | None = None,
-              penpot_upstream: str | None = None,
-              penpot_root: bool = False) -> Starlette:
+              penpot_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -825,19 +913,21 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     something privileged on the upstream's behalf.
 
     ``vault_upstream`` adds the shared knowledge base as a *second* upstream on
-    this same listener, reached at :data:`vault.SHELL` and at the root-level
-    paths :mod:`awm.httpsfront.vault` lists. It is what makes one origin, one
-    session and one login cover both awm and the vault. Off by default, so every
-    existing caller is unchanged.
+    this same listener, mounted at :data:`vault.SHELL`. It is what makes one
+    origin, one session and one login cover both awm and the vault. Off by
+    default, so every existing caller is unchanged.
 
-    ``penpot_upstream`` adds Penpot the same way, at :data:`penpot.SHELL` and
-    the root-level paths :mod:`awm.httpsfront.penpot` lists. Unlike the vault,
-    it does not claim ``/logout``: Penpot's own logout ends a real Penpot
-    session and stays Penpot's, where the vault's own login is off entirely
-    and its logout button would otherwise be a dead end. See ``penpot.py``'s
-    module docstring for the root-path collision this creates with the vault
-    when both are enabled on the same host — a known, unresolved trade-off,
-    not an oversight.
+    ``penpot_upstream`` adds Penpot the same way, mounted at
+    :data:`penpot.SHELL`. Both mounts are prefixes, so the two apps and the
+    edge's own surface are disjoint by construction and all three can run on
+    one listener. Unlike the vault, Penpot does not claim ``/logout``: its own
+    logout ends a real Penpot session and stays Penpot's, where the vault's own
+    login is off entirely and its logout button would otherwise be a dead end.
+
+    Penpot additionally requires ``PENPOT_PUBLIC_URI`` on its containers to
+    carry this same mount — the edge cannot enforce that from here, and a
+    disagreement renders Penpot's not-found page on every route. See
+    ``penpot.py``'s module docstring.
 
     ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
     own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
@@ -867,21 +957,12 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/__auth/link", _auth_link, methods=["GET"]))
     routes.append(Route("/__auth/logout", _logout, methods=["POST", "GET"]))
     routes.append(Route("/__auth/whoami", _whoami, methods=["GET"]))
-    # `penpot_root` means Penpot IS the app at `/` on this listener, so the
-    # edge's own answers for `/` must stand aside. Registering either of them
-    # would win outright: Starlette takes the first full match, and both are
-    # registered ahead of the catch-all that consults `penpot.owns`. Getting
-    # this wrong is silent — `/` keeps answering 200 with the edge's own page
-    # while Penpot is simply never reached.
-    root_is_penpot = bool(penpot_upstream and penpot_root)
-    if root_is_penpot:
-        pass
-    elif public:
+    if public:
         routes.append(Route("/", _public_home, methods=["GET"]))
     elif landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
         routes.append(Route("/", _root, methods=["GET"]))
-    if landing and not public and not root_is_penpot:
+    if landing and not public:
         # Tag/filter endpoints backing the landing page's tagging UI.
         routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
         routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))
@@ -891,20 +972,14 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     if vault_upstream:
         # Before the catch-all, and after /__auth/*: these three are the edge's
         # own answers on paths the vault would otherwise be asked for.
-        routes.append(Route(vault.SHELL_SLASH, _vault_slash, methods=["GET"]))
+        routes.append(Route(vault.SHELL_BARE, _vault_bare, methods=["GET"]))
         routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
-        routes.append(Route("/logout", _vault_logout, methods=["GET", "POST"]))
+        routes.append(Route(vault.LOGOUT, _vault_logout, methods=["GET", "POST"]))
     if penpot_upstream:
-        # Only the trailing-slash redirect — no manifest override (Penpot
-        # ships none to fix up) and no /logout hijack (Penpot's own logout is
+        # Only the bare-mount redirect — no manifest override (Penpot ships
+        # none to fix up) and no /logout hijack (Penpot's own logout is
         # meaningful and stays Penpot's; see the docstring above).
-        if penpot_root:
-            # Both doors land on `/`, the only pathname Penpot's own router
-            # recognises. Registered before the catch-all so they win.
-            routes.append(Route(penpot.SHELL, _penpot_shell_at_root, methods=["GET"]))
-            routes.append(Route(penpot.SHELL_SLASH, _penpot_shell_at_root, methods=["GET"]))
-        else:
-            routes.append(Route(penpot.SHELL_SLASH, _penpot_slash, methods=["GET"]))
+        routes.append(Route(penpot.SHELL_BARE, _penpot_bare, methods=["GET"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -944,11 +1019,9 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         p = penpot_upstream.rstrip("/")
         app.state.penpot_http_up = p
         app.state.penpot_ws_up = "ws" + p[len("http"):]
-        app.state.penpot_root = penpot_root
     else:
         app.state.penpot_http_up = None
         app.state.penpot_ws_up = None
-        app.state.penpot_root = False
     return app
 
 
@@ -959,8 +1032,7 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           profile: str | None = None,
           tls: bool = True,
           vault_upstream: str | None = None,
-          penpot_upstream: str | None = None,
-          penpot_root: bool = False) -> None:
+          penpot_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -977,8 +1049,7 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
-                    penpot_upstream=penpot_upstream,
-                    penpot_root=penpot_root)
+                    penpot_upstream=penpot_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else
