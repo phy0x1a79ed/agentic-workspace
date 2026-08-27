@@ -1,0 +1,43 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+- insert:
+    # --- T1 (awm-tools): config verified against
+    # release/packages/mcp/mcp-client/src/index.ts:109-118
+    - id: mcp-awm
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: awm
+        command: /home/tony/lib/miniforge3/envs/awm/bin/awm-mcp
+        args: []
+        env:
+          AWM_WORKSPACE: /home/tony/agentic_workspace
+        cwd: /home/tony/agentic_workspace
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
+
+    # --- T2 (global-prompt): `name` is relative to the profile directory.
+    # Plugin matches the persona row's registration pattern
+    # (release/packages/preset/persona/src/index.ts:60-67).
+    - id: global-instructions
+      name: ./plugins/global-instructions.mjs
+      config:
+        path: /home/tony/agentic_workspace/.awm/services/dsh/home/global-instructions.md
+        maxBytes: 65536
+        required: true
+        prefix: |
+          This file was authored as global instructions for Claude Code, a different
+          agent harness, and is layered here on top of the DeepSeek Harness system
+          prompt. Follow its substance, adapted to this harness's tools: TaskCreate
+          and TodoWrite map to `todo_write`; the Explore agent and the Task tool map
+          to `subagent`; Read, Write, and Edit map to `read`, `write`, and `edit`;
+          Bash maps to `bash`. Skip any directive that names a Claude-Code-only
+          capability (slash commands, IDE integrations, hooks, MCP tool listings,
+          etc.) with no equivalent in this harness.

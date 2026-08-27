@@ -315,6 +315,8 @@ Session execution traces go in the journal via `scope_post` (kind=journal).
 4. **Debrief**: the agent runs the native `debrief` skill.
 5. **Complete**: `scope_complete` updates status, optionally merges the branch.
 
+**Per-user data is a scope too.** The public app keeps each signed-in person in project `userdata`, scope `<name>`, branch `user/<name>`. A service that partitions by user resolves the caller through `awm.config.userroot` (`resolve(as_)` → the user or `None`, `root_for(user)` → that worktree, `state_dir(service, user)` → its own index) and commits its subdirectory with `awm.config.autocommit`. `userroot.wrap_handlers` binds the caller for every verb. Notes and drawio are the reference implementations; a new per-user service (Logseq) reuses the same three calls and never chooses a path itself.
+
 ## Scope Naming Convention
 
 New scopes use a prefix family to signal what kind of work they own.

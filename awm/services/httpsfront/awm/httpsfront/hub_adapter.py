@@ -46,6 +46,10 @@ SANS_FILE = SERVICE_DIR / ".sans"                # host-specific extra SANs (git
 
 PORT = int(os.environ.get("AWM_HTTPS_PORT", "8443"))
 UPSTREAM = os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/")
+# "public" narrows the front to the policy allow-list (see proxy.build_app).
+PROFILE = (os.environ.get("AWM_EDGE_PROFILE") or "").strip().lower() or None
+# 0 → plain HTTP on loopback behind a TLS-terminating nginx; no certs minted.
+TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", "no")
 
 # Live status, filled once the listener comes up.
 _STATUS: dict[str, Any] = {
@@ -54,6 +58,7 @@ _STATUS: dict[str, Any] = {
     "san": None,
     "upstream": UPSTREAM,
     "serving": False,
+    "profile": PROFILE or "default",
 }
 
 
@@ -96,13 +101,15 @@ def _serve_forever(info: dict) -> None:
     thread for the life of the process (= the life of the gateway lease)."""
     while True:
         try:
-            _STATUS.update(serving=True, tls=True, san=info["san"])
+            _STATUS.update(serving=True, tls=TLS, san=info.get("san"))
             proxy.serve(
                 port=PORT,
-                cert=info["cert"],
-                key=info["key"],
-                ca=info["ca"],
+                cert=info.get("cert", ""),
+                key=info.get("key", ""),
+                ca=info.get("ca", ""),
                 upstream=UPSTREAM,
+                profile=PROFILE,
+                tls=TLS,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")
@@ -118,15 +125,20 @@ def _on_start() -> None:
     """
     store.init()
 
-    sans = certs.resolve_sans(san_file=SANS_FILE)
-    info = certs.ensure_certs(CERT_DIR, sans=sans)
-    log.info("certs ready (SAN=%s)", info["san"])
+    if TLS:
+        sans = certs.resolve_sans(san_file=SANS_FILE)
+        info = certs.ensure_certs(CERT_DIR, sans=sans)
+        log.info("certs ready (SAN=%s)", info["san"])
+    else:
+        info = {}
+        log.info("AWM_EDGE_TLS=0: plain HTTP on loopback, no certs")
 
     t = threading.Thread(
         target=_serve_forever, args=(info,), daemon=True, name="httpsfront"
     )
     t.start()
-    log.info("https front thread launched on :%d → %s (tls on)", PORT, UPSTREAM)
+    log.info("front thread launched on :%d → %s (tls %s, profile %s)",
+             PORT, UPSTREAM, "on" if TLS else "off", PROFILE or "default")
 
 
 async def main() -> None:

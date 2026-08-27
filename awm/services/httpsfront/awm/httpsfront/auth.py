@@ -14,8 +14,10 @@ few seconds, and then:
 * checks a peer's ``Authorization: Bearer`` against the valid peer credentials.
 
 A login (``POST /__auth/login``) is the one path that calls the ``auth`` service:
-it forwards the submitted password to ``auth.verify`` and, on success, gets back a
-freshly signed token to set as the cookie.
+it forwards the submitted username + password (and the client IP, for the
+lockout) to ``auth.verify`` and, on success, gets back a freshly signed token
+to set as the cookie. The token's ``sub`` is the verified identity the proxy
+stamps on every upstream request as ``X-Awm-As: user:<sub>``.
 
 Fail-closed: if the ``auth`` service is unreachable and no material is cached, the
 edge authenticates nothing (login page / 401), never fails open.
@@ -33,6 +35,10 @@ from awm.config import tokens
 log = logging.getLogger("awm.httpsfront.auth")
 
 COOKIE_NAME = "awm_session"
+# Readable twin of the session cookie: the signed-in username, for the pages'
+# user chip. Carries no authority — the edge stamps identity from the session.
+AS_COOKIE_NAME = "awm_as"
+PEER_SUB = "peer"
 # Re-fetch edge material at most this often (peer creds rotate every ~12h, so a
 # few seconds of staleness is harmless and keeps the hot path RPC-free).
 _REFRESH_INTERVAL = 30.0
@@ -76,8 +82,8 @@ class AuthGate:
             return self._material
 
     async def authenticate(self, *, cookie: str | None,
-                           bearer: str | None) -> tuple[bool, str | None]:
-        """Return ``(ok, refreshed_cookie_token_or_None)``.
+                           bearer: str | None) -> tuple[bool, str | None, str | None]:
+        """Return ``(ok, refreshed_cookie_token_or_None, sub)``.
 
         A valid **peer bearer** authenticates with no cookie (peers don't carry
         sessions). A valid **session cookie** authenticates and, unless the
@@ -86,41 +92,58 @@ class AuthGate:
         """
         mat = await self._material_fresh()
         if not mat:
-            return False, None
+            return False, None, None
         secret = mat["secret"]
 
         if bearer and bearer in set(mat.get("peer_credentials") or []):
-            return True, None
+            return True, None, PEER_SUB
 
         if cookie:
             claims = tokens.verify(secret, cookie)
             if claims:
+                sub = str(claims.get("sub") or "operator")
                 sat = int(claims.get("sat", 0))
                 max_session = float(mat.get("max_session_seconds") or 0)
                 if not max_session or (time.time() - sat) < max_session:
                     refreshed = tokens.mint(
-                        secret, sub=str(claims.get("sub", "operator")),
+                        secret, sub=sub,
                         ttl=float(mat.get("session_ttl_seconds") or 0), sat=sat)
-                    return True, refreshed
+                    return True, refreshed, sub
                 # Valid but past the ceiling: allow this request, stop sliding —
                 # it expires naturally at its own exp, forcing re-login.
-                return True, None
-        return False, None
+                return True, None, sub
+        return False, None, None
 
-    async def verify_password(self, password: str) -> str | None:
-        """Forward a login password to ``auth.verify``; return a session token
-        on success, else ``None``."""
+    async def verify_login(self, *, username: str | None, password: str,
+                           client_ip: str | None) -> dict[str, Any]:
+        """Forward a login to ``auth.verify``. Returns ``{ok, token, sub}`` on
+        success, ``{ok: False, locked: True, retry_after}`` when the username
+        or IP is locked out, else ``{ok: False}``."""
+        args: dict[str, Any] = {"password": password}
+        if username:
+            args["username"] = username
+        if client_ip:
+            args["client_ip"] = client_ip
         try:
             from awm import gatewayclient
-            res = await gatewayclient.call("auth", "verify", {"password": password})
+            res = await gatewayclient.call("auth", "verify", args)
         except Exception as exc:  # noqa: BLE001
             log.warning("edge: auth.verify RPC failed: %s", exc)
-            return None
-        if isinstance(res, dict) and res.get("ok") and res.get("token"):
-            # A successful login refreshes the material (a first-ever login right
-            # after a mint should see the new peer creds too).
-            return str(res["token"])
-        return None
+            return {"ok": False}
+        if not isinstance(res, dict):
+            return {"ok": False}
+        if res.get("ok") and res.get("token"):
+            return {"ok": True, "token": str(res["token"]),
+                    "sub": str(res.get("sub") or "operator")}
+        if res.get("locked"):
+            return {"ok": False, "locked": True,
+                    "retry_after": int(res.get("retry_after") or 60)}
+        return {"ok": False}
+
+    async def verify_password(self, password: str) -> str | None:
+        """Shared-password login (the autologin link); a token or ``None``."""
+        res = await self.verify_login(username=None, password=password, client_ip=None)
+        return res.get("token") if res.get("ok") else None
 
     async def session_ttl_seconds(self) -> float:
         mat = await self._material_fresh()

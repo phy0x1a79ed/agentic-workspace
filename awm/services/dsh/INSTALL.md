@@ -13,7 +13,8 @@ weakening the posture that makes loopback-only the right default.
 
 This file holds the decisions a reader cannot recover from the code: why the
 harness sits behind a dedicated front instead of a gateway mount, why a mesh
-page is trusted for settings, and how a forked source tree becomes a served GUI.
+page is trusted for settings, how a forked source tree becomes a served GUI, and
+which of the harness's own configuration this repository tracks.
 
 The harness's own architecture belongs to `projects/deepseek-harness` and its
 upstream docs. Each scope's `.awm/context.md` there says which branch does what.
@@ -101,6 +102,48 @@ CAUTION: the entry matches the launcher path
 called `dsh` any more. Changing how `harness.py` spawns the child without
 changing that pattern makes the harness reapable again, and nothing reports it.
 
+## Tracked configuration
+
+`config/` holds the hand-authored `$DSH_HOME` content, so both nodes run one
+reviewed configuration instead of two that drift. `$DSH_HOME` reaches it through
+relative symlinks, which resolve identically on every node because the workspace
+layout is the same everywhere.
+
+| `$DSH_HOME` entry | kind | tracked as |
+|---|---|---|
+| `.agent-presets` | directory symlink | `config/agent-presets/` |
+| `profiles/web/cordis.patch.yml` | file symlink | `config/profiles/web/cordis.patch.yml` |
+| `profiles/web/plugins` | directory symlink | `config/profiles/web/plugins/` |
+| `settings.yaml` | copy | `config/settings.yaml` |
+
+**`settings.yaml` is a copy because it cannot be a symlink.** The harness commits
+it through `dsh-atomic-write`, whose rename replaces a symlinked path itself
+rather than writing through to the referent. That defeats a symlink-hijack
+attack. It also silently detaches any symlink you put there on the first GUI
+write. Presets survive the same rename because the symlink is on the *directory*,
+so the rename lands inside the tracked tree.
+
+CAUTION: the symlinks point into `<workspace>/awm/`, which a deploy node fetches
+and resets hard onto upstream `release`. An edit made against the live symlink
+therefore lives in a deploy target. Commit it from the `svc-dsh` scope before the
+next deploy, or the reset discards it. The same reset restores committed content,
+so a deploy is otherwise idempotent here.
+
+Copy `settings.yaml` back into `config/` by hand after changing the route or the
+model in the GUI. Nothing does that for you, and `ensure()` never overwrites a
+section that already exists.
+
+Three kinds of state stay untracked on purpose. `sessions/`, `storages/`, and the
+logs are per-node history. `cordis.yml`, `package.json`, `pnpm-workspace.yaml`,
+and `node_modules/` under `profiles/` are boot output. `global-instructions.md`
+is a per-node symlink to `~/.claude/CLAUDE.md`, which is that node's own file.
+
+**Credentials live in `$DSH_HOME/.credentials.yaml`, never in `config/`.**
+`dsh-credentials-local` resolves that path from `$DSH_HOME`, which this service
+sets to `<state>/home` — not `~/.dsh`. A credentials document under `~/.dsh` is
+read by nothing here. `.awm/` is gitignored, so the document cannot reach a git
+object from that location.
+
 ## Registrations
 
 Two, from one process:
@@ -108,10 +151,17 @@ Two, from one process:
 | kind | name | prefix / port | what |
 |---|---|---|---|
 | `service` | `dsh` | `/svc/dsh` | the verbs, plus supervision and the model route |
-| — | (TLS front) | `0.0.0.0:12301` | the harness GUI, behind `awm_session` |
+| — | (TLS front) | `0.0.0.0:12130` | the harness GUI, behind `awm_session` |
 
 The front is not a gateway registration — it is a listener this process owns,
 the same shape as `httpsfront`'s own, and it dies with the service.
+
+**The port has to be one the host lets through.** A node that reaches its mesh
+through another host — a WSL node behind a Windows ZeroTier client — publishes
+this listener only for ports that host forwards and firewalls. Every awm front
+already sits inside one such range; a port outside it answers on loopback and
+from nowhere else, which is what `dsh url` reporting a loopback address means.
+Check the host's forwarding before blaming the front.
 
 A third thing appears without this process doing anything: the reception page at
 `/ui/dsh`, which the gateway mounts on any node where the page is *built*.
@@ -236,7 +286,7 @@ false means the built bundles are older than the commit that is checked out.
 Then, from a browser on the mesh:
 
 1. `https://<mesh-ip>:12100/` — the awm landing index lists `dsh`.
-2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12301/`.
+2. `/ui/dsh` — the reception page. **Open harness** goes to `https://<mesh-ip>:12130/`.
 3. Open **Settings → Models**. It must list the provider directory with an
    `openrouter` row. **Settings → Plugins** must render configuration cards.
    Both empty, or "settings are unavailable in this browser", means the page did
@@ -245,7 +295,7 @@ Then, from a browser on the mesh:
    not at all, is the WebSocket path — a rewrite that reached HTTP and not WS.
 
 A device that has never talked to awm needs the root once:
-`https://<mesh-ip>:12301/ca.crt`.
+`https://<mesh-ip>:12130/ca.crt`.
 
 ## Environment
 
@@ -255,7 +305,7 @@ A device that has never talked to awm needs the root once:
 | `DSH_STATE_DIR` | `<workspace>/.awm/services/dsh` | `$DSH_HOME`, log, `node-bin` |
 | `DSH_HOME` | `<state>/home` | the harness's own data dir |
 | `DSH_UPSTREAM_PORT` | `12311` | loopback port the harness binds |
-| `DSH_FRONT_PORT` | `12301` | mesh TLS port |
+| `DSH_FRONT_PORT` | `12130` | mesh TLS port |
 | `DSH_WORKDIR` | the workspace root | the harness's cwd, so any project is pickable |
 | `DSH_NODE_ENV` | `dsh` | mamba env holding node (install-time only) |
 | `DSH_SKIP_BUILD` | unset | `1` leaves the fork's build alone (install-time only) |

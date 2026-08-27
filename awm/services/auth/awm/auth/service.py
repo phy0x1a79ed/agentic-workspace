@@ -19,12 +19,30 @@ Then a background loop mints every cadence. Each mint:
   giving up; see ``h_status``'s ``push_last_*`` fields),
 * rewrites the ``$AWM_PEER_CRED`` file with the current peer credential,
 * prunes fully-expired generations.
+
+User accounts
+-------------
+Beside the shared rotating password there are static per-user passwords
+(``store.awm_users``), scrypt-hashed, set only through the admin CLI verbs
+(``user_add`` / ``user_passwd`` generate the password server-side so it never
+travels as a shell argument). ``verify`` with a ``username`` takes that path and
+mints ``sub=<username>``. Failed logins count per username and per client IP;
+reaching the threshold locks the key for a while.
+
+``AWM_AUTH_PROFILE=public`` (the internet-facing host) turns the shared path
+off entirely: no minting, no Discord push, ``verify`` without a username fails,
+and the edge receives no peer credentials.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
+import os
+import re
+import secrets
 import time
 import urllib.parse
 from pathlib import Path
@@ -46,6 +64,17 @@ PEER_CRED_FILE = SERVICES_DIR / "auth" / "peer_cred.current"
 _HOUR = 3600.0
 _DAY = 86400.0
 
+_PROFILE_ENV = "AWM_AUTH_PROFILE"
+
+# Same shape ``awm.config.userroot`` accepts: the username doubles as a
+# directory name under projects/userdata/.
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+# scrypt cost. Tuned for a 2-vCPU host: ~50 ms per hash, 16 MiB memory.
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
+_PW_PARAMS = f"scrypt:n={_SCRYPT_N},r={_SCRYPT_R},p={_SCRYPT_P}"
+_DUMMY_SALT = secrets.token_hex(16)
+
 # Singleton re-homing selector (federation). auth runs on every node (each mints
 # its own creds), but social is a singleton: a node without a local social
 # exports AWM_SOCIAL_PEER=<peer> so the daily password push routes to
@@ -65,6 +94,74 @@ _push_task: "asyncio.Task[None] | None" = None
 def _settings() -> Any:
     """Current config values (defaults merged with stored overrides)."""
     return CONTRACT.load_model()
+
+
+def profile() -> str:
+    return (os.environ.get(_PROFILE_ENV) or "").strip().lower()
+
+
+def shared_password_enabled() -> bool:
+    """The rotating shared password (and everything hanging off it: minting,
+    the Discord push, peer credentials) is off on the public profile."""
+    return profile() != "public"
+
+
+# ---------------------------------------------------------------------------
+# Per-user passwords
+# ---------------------------------------------------------------------------
+
+
+def _hash_password(password: str, salt_hex: str) -> str:
+    return hashlib.scrypt(
+        password.encode("utf-8"), salt=bytes.fromhex(salt_hex),
+        n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=32,
+    ).hex()
+
+
+def _check_username(username: Any) -> str:
+    name = str(username or "").strip()
+    if not USERNAME_RE.match(name):
+        raise ValueError(
+            "username must match ^[a-z][a-z0-9_-]{0,31}$ (got %r)" % name)
+    return name
+
+
+def set_password(username: str, password: str | None = None) -> str:
+    """Create ``username`` or replace its password. Returns the password."""
+    name = _check_username(username)
+    password = password or secrets.token_urlsafe(12)
+    salt = secrets.token_hex(16)
+    store.user_upsert(name, pw_hash=_hash_password(password, salt),
+                      pw_salt=salt, pw_params=_PW_PARAMS)
+    return password
+
+
+def check_password(username: str, password: str) -> bool:
+    """Constant work whether or not the user exists or is disabled."""
+    user = store.user_get(username)
+    if user is None:
+        _hash_password(password, _DUMMY_SALT)
+        return False
+    computed = _hash_password(password, user["pw_salt"])
+    ok = hmac.compare_digest(computed, user["pw_hash"])
+    return ok and not user["disabled"]
+
+
+def _lock_keys(username: str | None, client_ip: str | None) -> list[str]:
+    keys = []
+    if username:
+        keys.append(f"u:{username}")
+    if client_ip:
+        keys.append(f"ip:{client_ip}")
+    return keys
+
+
+def _locked_for(keys: list[str], now: float) -> float:
+    """Seconds until every lock on ``keys`` has lapsed (0 when none holds)."""
+    remaining = 0.0
+    for key in keys:
+        remaining = max(remaining, store.fail_get(key)["locked_until"] - now)
+    return remaining
 
 
 def _autologin_link(login_password: str) -> str | None:
@@ -237,6 +334,10 @@ async def on_start() -> None:
     """Adapter ``on_start``: init DB, ensure secret, mint-if-stale, spawn loop."""
     store.init()
     store.ensure_secret()
+    if not shared_password_enabled():
+        log.warning("auth: profile %r — shared password disabled, per-user "
+                    "accounts only (%d on file)", profile(), len(store.user_list()))
+        return
     await _mint_if_stale()
     asyncio.create_task(_rotation_loop())
     log.info("auth: rotation loop started (peer-cred file: %s)", PEER_CRED_FILE)
@@ -271,25 +372,51 @@ def h_peer_credential(args: dict) -> dict:
 
 
 def h_verify(args: dict) -> dict:
-    """Validate a submitted login password against every valid generation.
+    """Validate a login and mint a signed session token for the edge.
 
-    On success mint a signed session token (sliding lifetime); the edge sets it
-    as the ``awm_session`` cookie. Constant work on failure — the same set is
-    scanned either way (``compare_digest``) to avoid trivial timing leaks.
+    With ``username``: the static per-user password, ``sub=<username>``.
+    Without: the shared rotating password (every valid generation is scanned
+    with ``compare_digest``), ``sub="operator"`` — only while the shared path
+    is enabled. Failures count per username and per ``client_ip``; a locked
+    key answers ``{ok: false, retry_after}`` without checking the password.
     """
-    import hmac
-    submitted = str((args or {}).get("password") or "")
+    args = args or {}
+    submitted = str(args.get("password") or "")
+    username = str(args.get("username") or "").strip() or None
+    client_ip = str(args.get("client_ip") or "").strip() or None
     s = _settings()
-    ok = False
-    for gen in store.valid_generations():
-        if hmac.compare_digest(gen["login_password"], submitted):
-            ok = True
+    now = time.time()
+
+    keys = _lock_keys(username, client_ip)
+    remaining = _locked_for(keys, now)
+    if remaining > 0:
+        return {"ok": False, "locked": True, "retry_after": int(remaining) + 1}
+
+    if username is not None:
+        ok = USERNAME_RE.match(username) is not None and check_password(username, submitted)
+        sub = username
+    elif shared_password_enabled():
+        ok = False
+        for gen in store.valid_generations(now):
+            if hmac.compare_digest(gen["login_password"], submitted):
+                ok = True
+        sub = "operator"
+    else:
+        ok = False
+        sub = ""
+
     if not ok:
+        lock_seconds = s.lockout_minutes * 60.0
+        for key in keys:
+            store.fail_record(key, threshold=max(1, int(s.lockout_threshold)),
+                              lock_seconds=lock_seconds, now=now)
         return {"ok": False}
+    for key in keys:
+        store.fail_clear(key)
     secret = store.ensure_secret()
     ttl = s.session_ttl_hours * _HOUR
-    token = tokens.mint(secret, sub="operator", ttl=ttl)
-    return {"ok": True, "token": token, "session_ttl_seconds": ttl}
+    token = tokens.mint(secret, sub=sub, ttl=ttl)
+    return {"ok": True, "sub": sub, "token": token, "session_ttl_seconds": ttl}
 
 
 def h_edge_material(args: dict) -> dict:
@@ -301,9 +428,11 @@ def h_edge_material(args: dict) -> dict:
     blocks this path to any unauthenticated external caller.
     """
     s = _settings()
+    peers = ([g["peer_credential"] for g in store.valid_generations()]
+             if shared_password_enabled() else [])
     return {
         "secret": store.ensure_secret(),
-        "peer_credentials": [g["peer_credential"] for g in store.valid_generations()],
+        "peer_credentials": peers,
         "session_ttl_seconds": s.session_ttl_hours * _HOUR,
         "max_session_seconds": s.max_session_days * _DAY,
     }
@@ -311,6 +440,8 @@ def h_edge_material(args: dict) -> dict:
 
 async def h_rotate(args: dict) -> dict:
     """Force a mint now (ops/testing). Returns the new generation's window."""
+    if not shared_password_enabled():
+        raise ValueError("shared password is disabled on the %r profile" % profile())
     gen = await mint_now(reason="manual rotate")
     return {
         "generation": gen["generation"],
@@ -335,4 +466,46 @@ def h_status(args: dict) -> dict:
         "push_last_attempt_at": _push_status["at"],
         "push_last_error": _push_status["error"],
         "peer_cred_path": str(PEER_CRED_FILE),
+        "profile": profile() or "default",
+        "shared_password_enabled": shared_password_enabled(),
+        "users": len(store.user_list()),
     }
+
+
+def _public_user(u: dict) -> dict:
+    return {"username": u["username"], "created_at": u["created_at"],
+            "disabled": u["disabled"]}
+
+
+def h_user_add(args: dict) -> dict:
+    """Create a user with a server-generated password, returned once."""
+    name = _check_username((args or {}).get("username"))
+    if store.user_get(name) is not None:
+        raise ValueError(f"user {name!r} exists; use user_passwd to reset")
+    password = set_password(name)
+    return {"username": name, "password": password}
+
+
+def h_user_passwd(args: dict) -> dict:
+    """Replace a user's password with a fresh server-generated one."""
+    name = _check_username((args or {}).get("username"))
+    if store.user_get(name) is None:
+        raise ValueError(f"no such user {name!r}")
+    password = set_password(name)
+    store.fail_clear(f"u:{name}")
+    return {"username": name, "password": password}
+
+
+def h_user_disable(args: dict) -> dict:
+    args = args or {}
+    name = _check_username(args.get("username"))
+    disabled = args.get("disabled", True)
+    if not isinstance(disabled, bool):
+        disabled = str(disabled).lower() not in ("0", "false", "no")
+    if not store.user_set_disabled(name, disabled):
+        raise ValueError(f"no such user {name!r}")
+    return _public_user(store.user_get(name))  # type: ignore[arg-type]
+
+
+def h_user_list(args: dict) -> dict:
+    return {"users": [_public_user(u) for u in store.user_list()]}

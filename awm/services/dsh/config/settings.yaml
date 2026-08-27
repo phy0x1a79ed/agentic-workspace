@@ -1,0 +1,21 @@
+llm-pi-ai:
+  providers:
+    openrouter:
+      apiKeyEnv: OPENROUTER_API_KEY
+      api: openai-completions
+      baseURL: https://openrouter.ai/api/v1
+      compat:
+        supportsDeveloperRole: false
+        maxTokensField: max_tokens
+      models:
+        - id: deepseek/deepseek-v4-flash-0731
+          contextWindow: 1310720
+        - id: stealth/ox-alpha
+          contextWindow: 1048576
+agent-default-model:
+  provider: openrouter
+  model: stealth/ox-alpha
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+agent-presets:
+  default: plan-first

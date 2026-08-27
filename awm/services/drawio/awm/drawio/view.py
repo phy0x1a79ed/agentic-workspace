@@ -881,9 +881,19 @@ class RenderResult:
 _MAX_DRAIN = 1 << 20
 
 
-def _make_handler(renderer: Renderer):
+def _make_handler(renderer: Renderer, renderer_for=None):
+    """``renderer_for(as_)`` picks a renderer for the request's ``X-Awm-As``
+    (a per-user store); ``None`` from it, or no resolver, means ``renderer``."""
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+
+        @property
+        def renderer(self) -> Renderer:
+            if renderer_for is not None:
+                chosen = renderer_for(self.headers.get("X-Awm-As"))
+                if chosen is not None:
+                    return chosen
+            return renderer
 
         def log_message(self, *args):  # noqa: D401 — silence stdlib access log
             return
@@ -980,7 +990,7 @@ def _make_handler(renderer: Renderer):
                 self._fail(400, str(exc))
                 return
             try:
-                save, page, rev = renderer.resolve_meta(rel)
+                save, page, rev = self.renderer.resolve_meta(rel)
             except ViewError as exc:
                 self._fail(exc.status, str(exc))
                 return
@@ -1005,7 +1015,7 @@ def _make_handler(renderer: Renderer):
             rev = (query.get("rev") or [None])[0] or None
 
             try:
-                result = renderer.render(rel, spec=spec, rev=rev)
+                result = self.renderer.render(rel, spec=spec, rev=rev)
             except ViewError as exc:
                 self._fail(exc.status, str(exc))
                 return
@@ -1053,9 +1063,11 @@ class ViewServer:
     service's asyncio loop, mirroring :func:`awm.drawio.mount.hold_mount`.
     """
 
-    def __init__(self, store: Store, renderer: Renderer | None = None):
+    def __init__(self, store: Store, renderer: Renderer | None = None,
+                 renderer_for=None):
         self.store = store
         self.renderer = renderer or Renderer(store)
+        self.renderer_for = renderer_for
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.port: int | None = None
@@ -1064,7 +1076,7 @@ class ViewServer:
 
     def start_listener(self) -> int:
         """Bind an ephemeral loopback port and serve in a background thread."""
-        handler = _make_handler(self.renderer)
+        handler = _make_handler(self.renderer, self.renderer_for)
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self._httpd.server_address[1]
         self._thread = threading.Thread(
