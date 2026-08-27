@@ -1,10 +1,12 @@
 """The vault as a second upstream on the same listener.
 
-What these pin: the shell is rewritten to the upstream's root and nothing else
-is; a trailing slash is a redirect and never the shell; the WebSocket takes the
-same route as HTTP; the upstream is chosen by *path*, never by anything a
-caller can send; and the failure a person is most likely to meet — a vault that
-has not finished starting — reads as "try again" rather than "awm is broken".
+What these pin: the mount is stripped and nothing else is; the bare name is a
+redirect and never the shell; the path arrives at the upstream *byte for byte*,
+which is what makes search work and what keeps the refusal list unreachable; the
+WebSocket takes the same route as HTTP; the upstream is chosen by *path*, never
+by anything a caller can send; and the failure a person is most likely to meet —
+a vault that has not finished starting — reads as "try again" rather than "awm is
+broken".
 """
 
 from __future__ import annotations
@@ -90,13 +92,26 @@ def test_the_shell_is_asked_for_at_the_upstreams_root():
     assert seen["url"] == VAULT + "/"
 
 
-@pytest.mark.parametrize("path", ["/api/tree", "/src/a.js", "/bootstrap",
+@pytest.mark.parametrize("inner", ["/api/tree", "/src/a.js", "/bootstrap",
                                   "/assets/v1/x.css", "/favicon.ico"])
-def test_root_level_vault_paths_go_to_the_vault_unchanged(path):
+def test_mounted_paths_reach_the_vault_with_the_mount_taken_off(inner):
     seen, handler = _recorder()
     with _client(_app(), handler) as c:
+        assert c.get(vault.SHELL + inner.lstrip("/")).status_code == 200
+    assert seen["url"] == VAULT + inner
+
+
+@pytest.mark.parametrize("path", ["/api/tree", "/src/a.js", "/bootstrap",
+                                  "/assets/v1/x.css", "/favicon.ico"])
+def test_the_same_names_at_the_site_root_are_not_the_vaults(path):
+    """The mount is what gives awm its own root-level surface back. Off the
+    public profile these reach the gateway; on it they are simply not there."""
+    seen, handler = _recorder()
+    with _client(_app(profile=None), handler) as c:
         assert c.get(path).status_code == 200
-    assert seen["url"] == VAULT + path
+    assert seen["url"].startswith(GATEWAY)
+    with _client(_app(), handler) as c:
+        assert c.get(path).status_code == 404
 
 
 @pytest.mark.parametrize("path", ["/ui/drawio/", "/svc/drawio/fn/save"])
@@ -157,10 +172,13 @@ def test_the_real_client_ip_reaches_the_vault():
 
 # -- the edge's own answers ---------------------------------------------------
 
-def test_a_trailing_slash_redirects_permanently():
+def test_the_bare_name_redirects_permanently_onto_the_mount():
+    """The opposite of what this used to assert, and the reason is the whole of
+    T2: from `/trilium` the shell's relative references resolve to the site
+    root, and Trilium's hashchange parser wants the literal `/#root`."""
     _, handler = _recorder()
     with _client(_app(), handler) as c:
-        r = c.get(vault.SHELL_SLASH)
+        r = c.get(vault.SHELL_BARE)
     assert r.status_code == 308 and r.headers["location"] == vault.SHELL
 
 
@@ -176,7 +194,7 @@ def test_the_manifest_is_ours_not_the_vaults():
 def test_the_vaults_logout_ends_the_awm_session():
     _, handler = _recorder()
     with _client(_app(), handler) as c:
-        r = c.get("/logout")
+        r = c.get(vault.LOGOUT)
     assert r.status_code == 302 and r.headers["location"] == "/__auth/logout"
 
 
@@ -271,7 +289,7 @@ def _ws_target(monkeypatch, app, path: str) -> dict:
 
 def test_the_vaults_socket_follows_its_shell(monkeypatch):
     """The client derives its socket URL from the page's own pathname, so a
-    shell served at /vault opens its socket at /vault — which has to arrive at
+    shell served at /trilium/ opens its socket there — which has to arrive at
     the upstream's root, exactly as the shell request does."""
     seen = _ws_target(monkeypatch, _app(), vault.SHELL)
     assert seen["url"] == "ws://127.0.0.1:12511/"
@@ -285,3 +303,116 @@ def test_an_awm_socket_still_reaches_the_gateway(monkeypatch):
 def test_the_socket_carries_the_verified_identity(monkeypatch):
     seen = _ws_target(monkeypatch, _app(), vault.SHELL)
     assert seen["headers"]["x-awm-as"] == "user:tony"
+
+
+# -- the path, byte for byte --------------------------------------------------
+#
+# The edge routes on the *decoded* path and forwards the *raw* one. Building the
+# upstream URL out of the decoded string is what truncated every attribute
+# search in the vault, and — the same defect wearing a different hat — what made
+# the refusal list bypassable. These pin both halves.
+
+@pytest.mark.parametrize("encoded", [
+    "%23calendarRoot",            # `#` — the one that broke search
+    "%23book%20AND%20%23read",    # `#` and spaces together
+    "a%3Fb",                      # `?` — a query separator inside the path
+    "a%25b",                      # a literal percent
+    "%C3%A9t%C3%A9",              # non-ASCII
+])
+def test_an_encoded_path_reaches_the_vault_unchanged(encoded):
+    """httpx reparses a URL *string*: it takes everything after a `#` as a
+    fragment and never sends it, so `/api/search/%23x` arrived as `/api/search/`
+    and Trilium answered `Router not found`. Handing it the raw bytes instead is
+    the fix, and this is the assertion that says so."""
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        assert c.get(vault.SHELL + "api/search/" + encoded).status_code == 200
+    assert seen["url"] == VAULT + "/api/search/" + encoded
+
+
+def test_the_query_string_survives_alongside_it():
+    """`copy_with(raw_path=…)` carries the query, so the one thing that must not
+    happen is appending it a second time."""
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        c.get(vault.SHELL + "api/search/%23x?fastSearch=false&debug=1")
+    assert seen["url"] == VAULT + "/api/search/%23x?fastSearch=false&debug=1"
+
+
+@pytest.mark.parametrize("profile", ["public", None])
+@pytest.mark.parametrize("path", [
+    "/trilium/api/%2e%2e/etapi/app-info",
+    "/trilium/%2e%2e/%2e%2e/etc/passwd",
+    "/ui/drawio/%2e%2e/hub/services",
+])
+def test_a_path_that_climbs_out_is_refused(profile, path):
+    """This was live. `/trilium/api/%2e%2e/etapi/app-info` decodes to a path
+    starting inside the vault, so it classified as the vault's — and httpx
+    normalised the `..` away before sending, delivering it to the ETAPI, which
+    has no authentication at all on this deployment because Trilium's own login
+    is off. A 404 here, on both profiles, is the whole of the fix."""
+    seen, handler = _recorder()
+    with _client(_app(profile=profile), handler) as c:
+        assert c.get(path).status_code == 404
+    assert "url" not in seen, "nothing may be forwarded"
+
+
+def test_an_unencoded_dot_dot_is_refused_too():
+    """Asserted on the guard rather than through the client, because every HTTP
+    client — the test client, and every browser — resolves a literal `../` away
+    before it is ever sent. Only a hand-written request can carry one, which is
+    exactly the caller the guard is for."""
+    assert proxy._re_segments(b"/trilium/api/../etapi/app-info",
+                              "/trilium/api/../etapi/app-info")
+    assert not proxy._re_segments(b"/trilium/api/notes/..x", "/trilium/api/notes/..x")
+    assert not proxy._re_segments(b"/trilium/api/search/%23x", "/trilium/api/search/#x")
+
+
+@pytest.mark.parametrize("path", [
+    "/trilium/api%2Fnotes",
+    "/trilium/api%2fnotes",
+    "/trilium/api%5cnotes",
+    "/ui/drawio%2f..%2fhub",
+])
+def test_an_encoded_separator_is_refused(path):
+    """One segment to the router, two to the upstream. Nothing this edge serves
+    needs it, and letting it through means routing and forwarding disagree about
+    what the path is."""
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        assert c.get(path).status_code == 404
+    assert "url" not in seen
+
+
+def test_the_mount_must_be_in_the_bytes_not_only_the_decoding():
+    """`/%74rilium/api/tree` decodes to a vault path but does not carry the
+    mount, so the byte-level strip cannot take it off — forwarding it would send
+    Trilium a path it does not serve, from a classification that said it did."""
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        assert c.get("/%74rilium/api/tree").status_code == 404
+    assert "url" not in seen
+
+
+def test_a_refused_route_stays_refused_under_the_mount(monkeypatch):
+    """Everything below the mount is the vault's by default, so this list is the
+    only thing between a browser and Trilium's unauthenticated ETAPI."""
+    seen, handler = _recorder()
+    with _client(_app(), handler) as c:
+        for inner in vault.NOT_FORWARDED:
+            r = c.get(vault.SHELL + inner.lstrip("/"))
+            assert r.status_code in (302, 404), (inner, r.status_code)
+            assert "url" not in seen, inner
+
+
+def test_the_sockets_path_arrives_raw_too(monkeypatch):
+    """The WS leg builds its URI by string concatenation, so it needs the same
+    bytes the HTTP leg gets — and the same refusal, or the guard is half a
+    guard."""
+    seen = _ws_target(monkeypatch, _app(), vault.SHELL + "api/x%23y")
+    assert seen["url"] == "ws://127.0.0.1:12511/api/x%23y"
+
+
+def test_a_socket_that_climbs_out_is_refused(monkeypatch):
+    seen = _ws_target(monkeypatch, _app(), "/trilium/api/%2e%2e/etapi/app-info")
+    assert "url" not in seen, "the handshake must not reach any upstream"

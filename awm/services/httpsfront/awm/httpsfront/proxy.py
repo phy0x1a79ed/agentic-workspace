@@ -23,6 +23,14 @@ The public profile (``AWM_EDGE_PROFILE=public``) narrows the door to the
 allow-list in :mod:`awm.httpsfront.policy` and, with ``AWM_EDGE_TLS=0``, serves
 plain HTTP on loopback for a TLS-terminating nginx in front.
 
+**Routing reads the decoded path; forwarding sends the raw one.** Both are
+deliberate and neither may be "simplified" into the other. Every routing and
+policy decision needs the *decoded* path, because that is what the caller
+means; every upstream request needs the *raw* bytes, because rebuilding a URL
+from the decoded string loses the difference between ``%23`` and ``#`` and
+between ``%2e%2e`` and a directory climb. The gap between the two is closed by
+refusing any target that re-segments when decoded — see :func:`_re_segments`.
+
 Built on Starlette + uvicorn (TLS) with ``httpx`` for HTTP and the ``websockets``
 client for WS bridging — all already present in the ``awm`` env (the gateway
 depends on them). Runs in a daemon thread launched from the hub adapter's
@@ -38,7 +46,7 @@ import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 import uvicorn
@@ -74,6 +82,63 @@ _METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 _ALL_METHODS = _METHODS  # alias for route registration clarity
 
 _PEER_NAME = socket.gethostname().split(".")[0].title()
+
+# Routing reads the *decoded* path; forwarding sends the *raw* one. Those two
+# facts are the whole of the encoding contract on this edge, and they are the
+# kind of invariant that reads as an accident and gets "simplified" back into a
+# bug — so they live together, here, with the reason.
+
+
+def _raw_target(scope, decoded: str) -> bytes:
+    """The request path exactly as it arrived, percent-encoding intact.
+
+    Starlette's ``url.path`` is percent-*decoded*, so rebuilding an upstream URL
+    out of it destroys the difference between ``%23`` and ``#``: httpx reparses
+    the string it is handed and takes everything after a ``#`` as a fragment,
+    which it never sends. Trilium's client escapes its search string into the
+    path, so that alone truncated every attribute search to ``/api/search/``.
+
+    ASGI keeps the original bytes in ``raw_path`` — uvicorn sets it on both its
+    h11 and its httptools implementation, HTTP and WebSocket alike. A server
+    that omits it leaves us re-encoding the decoded path, which is lossy in
+    exactly this way but no worse than what it replaces.
+    """
+    raw = scope.get("raw_path")
+    if raw:
+        return raw.split(b"?", 1)[0]
+    return quote(decoded).encode("ascii")
+
+
+def _re_segments(raw: bytes, decoded: str) -> bool:
+    """Whether this target means one thing to the router and another upstream.
+
+    The two paths agree on everything except a target that *re-segments* when
+    decoded. An encoded separator (``%2f``, ``%5c``) is one segment to the
+    router and two to the upstream; a ``..`` — plain or arrived as ``%2e%2e`` —
+    is a segment to the router and a level up to any client that normalises
+    before sending, which is how ``/trilium/api/%2e%2e/etapi/app-info`` used to
+    classify as the vault's and arrive as the unauthenticated ETAPI's.
+
+    Refused outright rather than canonicalised: nothing this edge serves needs
+    either form, and a 404 is the same answer every other path off the list
+    gets.
+    """
+    low = raw.lower()
+    if b"%2f" in low or b"%5c" in low:
+        return True
+    return ".." in decoded.split("/")
+
+
+def _upstream_url(origin: str, raw_path: bytes, query: bytes) -> httpx.URL:
+    """``origin`` + the target, byte for byte.
+
+    ``copy_with(raw_path=…)`` sets the target verbatim instead of reparsing a
+    string — the reparse is what swallowed the fragment and what normalised the
+    ``..``. It carries the query with it, so nothing else may append one.
+    """
+    return httpx.URL(origin).copy_with(
+        raw_path=raw_path + (b"?" + query if query else b""))
+
 
 PUBLIC_PROFILE = "public"
 # Where a signed-in browser lands on the public profile. The vault, because
@@ -190,11 +255,28 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def _site_name(request: Request) -> str:
+    """What to call this node on the sign-in screen.
+
+    The public host's own hostname is a droplet name nobody types; what a person
+    typed is in ``Host``, and it is the only label that will match the address
+    bar they are looking at. Off the public profile the peer name is right and
+    the Host header is usually an IP.
+    """
+    if not _is_public(request.app):
+        return _PEER_NAME
+    host = (request.headers.get("host") or "").split(":")[0]
+    label = host.split(".")[0]
+    return label.title() if label else _PEER_NAME
+
+
 def _deny(request: Request) -> Response:
-    """Login page for a browser GET, else 401 (API / peer)."""
+    """Sign-in screen for a browser GET, else 401 (API / peer)."""
     if request.method == "GET" and _wants_html(request):
-        return HTMLResponse(pages.login_page(public=_is_public(request.app)),
-                            status_code=200)
+        return HTMLResponse(
+            pages.login_page(public=_is_public(request.app),
+                             name=_site_name(request)),
+            status_code=200)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
@@ -442,14 +524,16 @@ def _vault_up(app) -> str | None:
     return getattr(app.state, "vault_http_up", None)
 
 
-async def _vault_slash(request: Request) -> Response:
-    """``/vault/`` → ``/vault``, permanently.
+async def _vault_bare(request: Request) -> Response:
+    """``/trilium`` → ``/trilium/``, permanently.
 
-    Not cosmetic. Every asset reference in the vault's shell is relative, and
-    they resolve against the document's *directory*: from ``/vault`` that is the
-    site root and the assets are found, from ``/vault/`` it is ``/vault/`` and
-    none of them are. The page paints and then hangs, which is a much worse
-    failure than a redirect.
+    Not cosmetic, and the opposite of what this redirect used to say. Every
+    reference in the vault's shell is relative, and they resolve against the
+    document's *directory*: from ``/trilium/`` that is the mount and the edge
+    strips it back off, from ``/trilium`` it is the site root and every one of
+    them lands outside the vault. The page paints and then hangs — and Trilium's
+    own hashchange parser, which wants the literal ``/#root``, ignores the back
+    button either way.
     """
     return RedirectResponse(vault.SHELL, status_code=308)
 
@@ -491,6 +575,10 @@ async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
     path = request.url.path
+    raw = _raw_target(request.scope, path)
+    # Before the upstream branch, or the gateway leg keeps the hole.
+    if _re_segments(raw, path):
+        return _not_found()
     if public and policy.classify(path) is policy.Verdict.DENY:
         return _not_found()
     ok, refreshed, sub = await _authenticate_sub(request)
@@ -508,11 +596,13 @@ async def _http_proxy(request: Request) -> Response:
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
-        up, path = vault_up, vault.upstream_path(path)
+        inner = vault.upstream_raw_path(raw)
+        if inner is None:
+            # The mount is in the decoded path but not in the bytes.
+            return _not_found()
+        up, raw = vault_up, inner
     client: httpx.AsyncClient = app.state.client
-    url = up + path
-    if request.url.query:
-        url += "?" + request.url.query
+    url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
     body = await request.body()
     upstream_req = client.build_request(
         request.method, url, headers=_req_headers(request, sub), content=body,
@@ -564,19 +654,27 @@ async def _ws_proxy(ws: WebSocket) -> None:
     pumping text+binary frames both directions until either side closes."""
     app = ws.app
     path = ws.url.path
-    raw_path = ws.url.path
-    if ws.url.query:
-        path += "?" + ws.url.query
-    up_url = app.state.ws_up + path
+    raw = _raw_target(ws.scope, path)
+    if _re_segments(raw, path):
+        await ws.close(code=1008)
+        return
+    query = ws.scope.get("query_string") or b""
+    up = app.state.ws_up
     vault_ws = getattr(app.state, "vault_ws_up", None)
-    is_vault = bool(vault_ws) and vault.owns(raw_path)
+    is_vault = bool(vault_ws) and vault.owns(path)
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
-        # shell served at /vault opens its socket there. Same rewrite as the
+        # shell served at /trilium/ opens its socket there. Same rewrite as the
         # HTTP leg, or the vault's live updates never arrive and nothing says so.
-        up_url = vault_ws + vault.upstream_path(raw_path)
-        if ws.url.query:
-            up_url += "?" + ws.url.query
+        inner = vault.upstream_raw_path(raw)
+        if inner is None:
+            await ws.close(code=1008)
+            return
+        up, raw = vault_ws, inner
+    # ``websockets.connect`` parses the URI without decoding its path, so the
+    # bytes reach the upstream as they arrived — the same contract the HTTP leg
+    # gets from ``copy_with(raw_path=…)``.
+    up_url = up + (raw + (b"?" + query if query else b"")).decode("ascii")
 
     # Edge auth: Starlette HTTP handling never sees a WS scope, so the guard is
     # enforced here, before accept(). A browser sends the session cookie on the
@@ -792,9 +890,9 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     if vault_upstream:
         # Before the catch-all, and after /__auth/*: these three are the edge's
         # own answers on paths the vault would otherwise be asked for.
-        routes.append(Route(vault.SHELL_SLASH, _vault_slash, methods=["GET"]))
+        routes.append(Route(vault.SHELL_BARE, _vault_bare, methods=["GET"]))
         routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
-        routes.append(Route("/logout", _vault_logout, methods=["GET", "POST"]))
+        routes.append(Route(vault.LOGOUT, _vault_logout, methods=["GET", "POST"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [

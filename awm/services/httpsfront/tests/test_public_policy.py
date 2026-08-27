@@ -240,7 +240,7 @@ def test_emit_topics_must_carry_the_users_prefix():
 def test_root_redirects_to_the_vault_or_asks_for_login():
     with _client(_app("public")) as c:
         r = c.get("/")
-        assert r.status_code == 302 and r.headers["location"] == "/vault"
+        assert r.status_code == 302 and r.headers["location"] == "/trilium/"
     with _client(_app("public"), token=None) as c:
         r = c.get("/", headers={"Accept": "text/html"})
         assert r.status_code == 200 and "username" in r.text
