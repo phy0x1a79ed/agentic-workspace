@@ -180,3 +180,27 @@ def test_the_root_is_claimed_only_at_root():
 def test_at_root_does_not_widen_anything_else():
     assert not penpot.owns("/vault", at_root=True)
     assert not penpot.owns("/some/other/app", at_root=True)
+
+
+# --- the collision warning is derived, not asserted ----------------------
+
+def test_the_overlap_is_computed_from_what_each_module_claims():
+    """Whether Penpot and the vault collide is a property of their current
+    claims, not a fact about them. A vault confined to its own URL base
+    overlaps Penpot nowhere; computing the intersection lets the startup
+    warning go quiet by itself rather than crying wolf forever."""
+    from awm.httpsfront import hub_adapter
+
+    overlap = hub_adapter._claimed_by_both()
+    assert all(vault.owns(p) for p in overlap)
+    assert all(penpot.owns(p) for p in overlap)
+    # This tree's vault still holds the root-level names, so there IS one.
+    assert "/api/" in overlap
+
+
+def test_a_vault_confined_to_its_own_base_does_not_overlap(monkeypatch):
+    from awm.httpsfront import hub_adapter
+
+    monkeypatch.setattr(vault, "VAULT_PREFIXES", ("/trilium/",))
+    monkeypatch.setattr(vault, "VAULT_EXACT", frozenset({"/trilium"}))
+    assert hub_adapter._claimed_by_both() == []
