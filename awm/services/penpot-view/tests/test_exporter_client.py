@@ -417,7 +417,7 @@ def test_a_cross_origin_subresource_is_refused_before_any_request():
         return httpx.Response(200, content=b"x", headers={"content-type": "text/plain"})
 
     client = _client(asset=asset)
-    with pytest.raises(EC.ExporterError, match="same-origin"):
+    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
         client.fetch_subresource("http://169.254.169.254/latest/meta-data/")
     assert calls == []
 
@@ -444,3 +444,57 @@ def test_a_failed_subresource_is_an_error_not_empty_bytes():
     client = _client(asset=asset)
     with pytest.raises(EC.ExporterError, match="HTTP 404"):
         client.fetch_subresource(f"{BASE_URL}/assets/by-file-media-id/gone")
+
+
+# --- Penpot's public origin vs the one we reach it on ----------------------
+
+PUBLIC = "https://edge.example"
+
+
+def test_an_asset_uri_on_penpots_public_origin_is_fetched_from_the_frontend():
+    """Behind the edge, `PENPOT_PUBLIC_URI` must be the *edge's* origin or the
+    browser's own API calls never reach Penpot. Penpot then stamps that origin
+    onto the exporter's asset URI too -- correct for a browser, wrong for this
+    service, which is on the container host. The path is what carries meaning,
+    so the origin is normalised rather than refused."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=SVG_BYTES,
+                              headers={"content-type": "image/svg+xml"})
+
+    transport = httpx.MockTransport(_router(
+        export=_export_ok_handler(uri=f"{PUBLIC}/assets/by-id/deadbeef"),
+        asset=asset))
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               public_uri=PUBLIC, username="svc-account",
+                               password="hunter2", transport=transport)
+    assert _export(client) == SVG_BYTES
+    assert seen == [f"{BASE_URL}/assets/by-id/deadbeef"]
+
+
+def test_a_third_origin_is_still_refused_when_a_public_uri_is_configured():
+    """Normalising Penpot's own two origins must not become "fetch anything"."""
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               public_uri=PUBLIC, username="svc-account",
+                               password="hunter2",
+                               transport=httpx.MockTransport(_router()))
+    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+        client.fetch_subresource("http://169.254.169.254/latest/meta-data/")
+
+
+def test_a_subresource_on_the_public_origin_is_localised():
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"xy",
+                              headers={"content-type": "image/jpeg"})
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               public_uri=PUBLIC, username="svc-account",
+                               password="hunter2",
+                               transport=httpx.MockTransport(_router(asset=asset)))
+    client.fetch_subresource(f"{PUBLIC}/internal/gfonts/font/a.woff2")
+    assert seen == [f"{BASE_URL}/internal/gfonts/font/a.woff2"]

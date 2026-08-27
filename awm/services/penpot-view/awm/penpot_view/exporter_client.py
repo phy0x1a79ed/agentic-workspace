@@ -67,6 +67,25 @@ DEFAULT_EXPORTER_URL = os.environ.get("PENPOT_EXPORTER_URL", "http://localhost:9
 DEFAULT_USERNAME = os.environ.get("PENPOT_SERVICE_USERNAME")
 DEFAULT_PASSWORD = os.environ.get("PENPOT_SERVICE_PASSWORD")
 
+#: Penpot's own ``PENPOT_PUBLIC_URI`` -- the origin it believes it is served
+#: from, which is *not* the origin this service reaches it on once Penpot sits
+#: behind the awm edge.
+#:
+#: Penpot bakes this value into the frontend (``js/config.js``'s
+#: ``penpotPublicURI``) and every URL it hands out: the exporter's asset URI,
+#: the ``<image href>`` of an image fill, the ``url()`` of a web font. Behind
+#: the edge it *must* be the edge's public origin, or the browser's own API
+#: calls go to an origin the browser cannot reach and the app never boots past
+#: its shell -- verified live, and it is the single setting that decides
+#: whether Penpot works behind the edge at all.
+#:
+#: This service runs on the same host as the containers and reaches them on
+#: loopback, so every URL Penpot hands it arrives stamped with an origin that
+#: is correct for a browser and wrong for us. `_localise` maps that origin
+#: back onto :data:`DEFAULT_BASE_URL` rather than refusing it, which is what
+#: lets one deployment satisfy both readers.
+DEFAULT_PUBLIC_URI = (os.environ.get("PENPOT_PUBLIC_URI") or "").rstrip("/")
+
 #: Every backend RPC hangs off this prefix; the command is the last segment.
 RPC_PREFIX = "/api/rpc/command"
 LOGIN_PATH = f"{RPC_PREFIX}/login-with-password"
@@ -302,10 +321,14 @@ class ExporterClient:
 
     def __init__(self, *, base_url: str | None = None,
                  exporter_url: str | None = None,
+                 public_uri: str | None = None,
                  username: str | None = None, password: str | None = None,
                  transport: httpx.BaseTransport | None = None,
                  client: httpx.Client | None = None) -> None:
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._public_uri = (
+            public_uri if public_uri is not None else DEFAULT_PUBLIC_URI
+        ).rstrip("/")
         self._exporter_url = (exporter_url or DEFAULT_EXPORTER_URL).rstrip("/")
         self._username = username if username is not None else DEFAULT_USERNAME
         self._password = password if password is not None else DEFAULT_PASSWORD
@@ -495,14 +518,37 @@ class ExporterClient:
         # The one check that stands between "fetched the render" and
         # "fetched a silent 204 from the backend" -- see the module
         # docstring. Refuse before spending a request on the wrong host.
-        if not uri.startswith(self._base_url):
-            raise ExporterError(
-                f"asset uri {uri!r} does not start with the frontend base "
-                f"{self._base_url!r} -- refusing to fetch it, since "
-                "anything else risks the backend's storage layer answering "
-                "a bodyless 204 that would look like a successful export")
+        return self._fetch_asset(self._localise(uri, what="asset uri"))
 
-        return self._fetch_asset(uri)
+    def _localise(self, url: str, *, what: str) -> str:
+        """Map a URL Penpot handed out onto the origin this service reaches
+        Penpot on, refusing anything that is neither.
+
+        Penpot stamps its *public* origin onto every URL it emits, and behind
+        the edge that origin is the edge's -- correct for a browser, wrong for
+        a process on the container host talking to loopback. The path is the
+        part that carries meaning; the origin is Penpot's public identity, not
+        a routing instruction for us. So a URL on either origin is accepted
+        and normalised to :data:`DEFAULT_BASE_URL`, and a URL on any third
+        origin is refused.
+
+        Refusing matters as much as rewriting: an asset fetch aimed anywhere
+        but the frontend nginx risks the backend's storage layer answering a
+        bodyless 204 that would look exactly like a successful export (see the
+        module docstring), and a sub-resource fetch carries the service
+        account's cookie.
+        """
+        if url.startswith(self._base_url):
+            return url
+        if self._public_uri and url.startswith(self._public_uri):
+            return self._base_url + url[len(self._public_uri):]
+        known = (f"{self._base_url!r}"
+                 + (f" or {self._public_uri!r}" if self._public_uri else ""))
+        raise ExporterError(
+            f"{what} {url!r} is on neither the frontend base nor Penpot's "
+            f"public origin ({known}) -- refusing to fetch it. Set "
+            "PENPOT_PUBLIC_URI to whatever Penpot itself is configured with "
+            "if this is a legitimate URL from behind the edge.")
 
     def _export_shapes(self, *, file_id: str, page_id: str, object_id: str,
                        name: str, scale: float, suffix: str) -> str:
@@ -602,22 +648,15 @@ class ExporterClient:
         place of its real ones, with no error anywhere. Inlining is what
         turns the export into something that renders the same for everyone.
 
-        **Same-origin only, and that restriction is load-bearing.** The URL
-        comes out of a document a Penpot user authored, and this method
-        attaches the service account's cookie to it. Fetching an arbitrary
-        URL from it would let any board hand this service an internal address
-        and read the response back out of its own render -- so anything that
-        is not Penpot's own origin is refused here rather than filtered
-        further up.
+        **Penpot's own origins only, and that restriction is load-bearing.**
+        The URL comes out of a document a Penpot user authored, and this
+        method attaches the service account's cookie to it. Fetching an
+        arbitrary URL from it would let any board hand this service an
+        internal address and read the response back out of its own render --
+        so `_localise` refuses anything that is neither the frontend base nor
+        Penpot's configured public origin, here rather than further up.
         """
-        parsed = httpx.URL(url)
-        base = httpx.URL(self._base_url)
-        if (parsed.scheme, parsed.host, parsed.port) != (base.scheme, base.host, base.port):
-            raise ExporterError(
-                f"refusing to fetch sub-resource {url!r}: not same-origin "
-                f"with {self._base_url} -- the service session's cookie is "
-                "never sent anywhere but Penpot itself")
-
+        url = self._localise(url, what="sub-resource")
         resp = self._authed_request("GET", url, timeout=SUBRESOURCE_TIMEOUT)
         if resp.status_code != 200:
             raise ExporterError(

@@ -446,6 +446,11 @@ def _penpot_up(app) -> str | None:
     return getattr(app.state, "penpot_http_up", None)
 
 
+def _penpot_root(app) -> bool:
+    """Whether Penpot owns ``/`` on this edge — see ``penpot.SHELL``."""
+    return bool(getattr(app.state, "penpot_root", False))
+
+
 async def _vault_slash(request: Request) -> Response:
     """``/vault/`` → ``/vault``, permanently.
 
@@ -464,6 +469,18 @@ async def _penpot_slash(request: Request) -> Response:
     document's directory, and only ``/penpot`` (not ``/penpot/``) puts that
     directory at the site root."""
     return RedirectResponse(penpot.SHELL, status_code=308)
+
+
+async def _penpot_shell_at_root(request: Request) -> Response:
+    """``/penpot`` → ``/`` when Penpot owns the root.
+
+    Serving the shell at ``/penpot`` would answer 200 with a page that quietly
+    renders the login form however valid the session is -- Penpot's router
+    cannot parse that pathname (see ``penpot.SHELL``). Redirecting is the only
+    honest answer, and it keeps ``/penpot`` usable as the link an operator
+    hands out.
+    """
+    return RedirectResponse("/", status_code=302)
 
 
 async def _vault_manifest(request: Request) -> Response:
@@ -550,7 +567,7 @@ async def _http_proxy(request: Request) -> Response:
             # would have made on the public profile is made here instead.
             return _not_found()
         up, path = vault_up, vault.upstream_path(path)
-    elif penpot_up and penpot.owns(path):
+    elif penpot_up and penpot.owns(path, at_root=_penpot_root(app)):
         if not public and sub in (PEER_SUB, "operator"):
             return _not_found()
         up, path = penpot_up, penpot.upstream_path(path)
@@ -621,7 +638,8 @@ async def _ws_proxy(ws: WebSocket) -> None:
     # Vault takes precedence on a raw_path both would claim — same ordering
     # as the HTTP leg, and for the same reason (see penpot.py's collision
     # note): the pre-existing feature's behaviour must not shift under it.
-    is_penpot = bool(penpot_ws) and not is_vault and penpot.owns(raw_path)
+    is_penpot = (bool(penpot_ws) and not is_vault
+                 and penpot.owns(raw_path, at_root=_penpot_root(app)))
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
         # shell served at /vault opens its socket there. Same rewrite as the
@@ -778,7 +796,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               rewrite_origin: bool = False,
               profile: str | None = None,
               vault_upstream: str | None = None,
-              penpot_upstream: str | None = None) -> Starlette:
+              penpot_upstream: str | None = None,
+              penpot_root: bool = False) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -868,7 +887,13 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         # Only the trailing-slash redirect — no manifest override (Penpot
         # ships none to fix up) and no /logout hijack (Penpot's own logout is
         # meaningful and stays Penpot's; see the docstring above).
-        routes.append(Route(penpot.SHELL_SLASH, _penpot_slash, methods=["GET"]))
+        if penpot_root:
+            # Both doors land on `/`, the only pathname Penpot's own router
+            # recognises. Registered before the catch-all so they win.
+            routes.append(Route(penpot.SHELL, _penpot_shell_at_root, methods=["GET"]))
+            routes.append(Route(penpot.SHELL_SLASH, _penpot_shell_at_root, methods=["GET"]))
+        else:
+            routes.append(Route(penpot.SHELL_SLASH, _penpot_slash, methods=["GET"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -908,9 +933,11 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         p = penpot_upstream.rstrip("/")
         app.state.penpot_http_up = p
         app.state.penpot_ws_up = "ws" + p[len("http"):]
+        app.state.penpot_root = penpot_root
     else:
         app.state.penpot_http_up = None
         app.state.penpot_ws_up = None
+        app.state.penpot_root = False
     return app
 
 
@@ -921,7 +948,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           profile: str | None = None,
           tls: bool = True,
           vault_upstream: str | None = None,
-          penpot_upstream: str | None = None) -> None:
+          penpot_upstream: str | None = None,
+          penpot_root: bool = False) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -938,7 +966,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
                     vault_upstream=vault_upstream,
-                    penpot_upstream=penpot_upstream)
+                    penpot_upstream=penpot_upstream,
+                    penpot_root=penpot_root)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else

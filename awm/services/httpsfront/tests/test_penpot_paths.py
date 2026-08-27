@@ -144,3 +144,39 @@ def test_open_prefixes_actually_cover_the_real_urls(path):
     would pass a bare membership test while still 404ing every real request).
     """
     assert path.startswith(tuple(policy.OPEN_PREFIXES))
+
+
+# --- what the live pass found -------------------------------------------
+
+def test_penpots_google_font_proxy_is_claimed():
+    """`/internal/gfonts/...` is Penpot's own proxy to Google Fonts, declared
+    in an nginx `location.d` override rather than its main config, which is
+    why it was missed. Not claiming it 404s every web font at the edge, and
+    the app keeps working -- in fallback faces, silently."""
+    assert penpot.owns("/internal/gfonts/css?family=Work+Sans")
+    assert penpot.owns("/internal/gfonts/font/worksans/v24/abc.woff2")
+
+
+def test_penpots_template_proxy_is_claimed():
+    assert penpot.owns("/github/penpot-files/anything")
+
+
+def test_the_internal_asset_path_is_not_claimed():
+    """nginx marks `/internal/assets` `internal`, so it 404s any outside
+    request anyway -- claiming it at the edge would only widen the surface
+    for nothing."""
+    assert not penpot.owns("/internal/assets/whatever")
+
+
+def test_the_root_is_claimed_only_at_root():
+    """Penpot's router cannot parse a pathname other than its (empty) build
+    prefix, so a working deployment gives it `/`. That is opt-in at this
+    layer, since claiming `/` unconditionally would take the root away from
+    every other edge that merely enables Penpot's asset paths."""
+    assert not penpot.owns("/")
+    assert penpot.owns("/", at_root=True)
+
+
+def test_at_root_does_not_widen_anything_else():
+    assert not penpot.owns("/vault", at_root=True)
+    assert not penpot.owns("/some/other/app", at_root=True)

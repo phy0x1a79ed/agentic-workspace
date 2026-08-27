@@ -66,19 +66,31 @@ VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 # choice rather than something a bare upgrade should flip on.
 PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
 
+# Whether Penpot also owns ``/`` on this listener. On by default *when Penpot
+# is enabled at all*, because Penpot served anywhere but the origin root does
+# not work -- its own router cannot parse the pathname and answers every route
+# with its login screen, however valid the session (see awm.httpsfront.penpot's
+# SHELL docstring for the live evidence). Off is for an edge that fronts
+# something else at ``/`` and wants Penpot's asset paths reachable anyway,
+# which is a diagnostic shape rather than a working one.
+PENPOT_ROOT = os.environ.get(
+    "AWM_EDGE_PENPOT_ROOT", "1").strip().lower() not in ("0", "false", "no")
+
 if PENPOT and VAULT:
-    # Both apps serve their own /api/ and /assets/ from the URL root, and the
-    # proxy resolves vault first, so with both on Penpot's shell loads and
-    # then every data fetch it makes is answered by Trilium instead. The
-    # symptom is an app that looks like it started and then does nothing,
-    # which is a miserable thing to debug from the browser side -- so say it
-    # here, once, at startup. VAULT defaults on, so this fires for anyone who
-    # enables Penpot without knowing to turn Trilium's edge off.
+    # These two cannot share an edge. Both claim /api/ and /assets/ at the
+    # root, the proxy resolves the vault first, and Penpot additionally needs
+    # `/` itself (see awm.httpsfront.penpot's SHELL docstring), which the
+    # vault's own shell and the landing page also want. With both on, Penpot
+    # loads a shell whose every data fetch Trilium answers -- an app that
+    # looks like it started and then does nothing, which is miserable to
+    # debug from the browser side. VAULT defaults on, so this fires for
+    # anyone who enables Penpot without knowing to turn Trilium's edge off.
     log.warning(
-        "AWM_EDGE_PENPOT and AWM_EDGE_VAULT are both enabled. They both claim "
-        "/api and /assets at the root and vault wins, so Penpot will load its "
-        "shell and then fail every request it makes. Set AWM_EDGE_VAULT=0, or "
-        "give one of them a URL base first."
+        "AWM_EDGE_PENPOT and AWM_EDGE_VAULT are both enabled. They cannot "
+        "share one edge: both claim /api and /assets at the root, the vault "
+        "wins, and Penpot needs / itself as well. Penpot will load its shell "
+        "and then fail every request it makes. Set AWM_EDGE_VAULT=0, give one "
+        "of them a URL base, or front them on separate origins."
     )
 PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
 
@@ -92,6 +104,7 @@ _STATUS: dict[str, Any] = {
     # see whether the edge thinks it is serving the vault or Penpot at all.
     "vault_upstream": VAULT_UPSTREAM,
     "penpot_upstream": PENPOT_UPSTREAM,
+    "penpot_at_root": PENPOT and PENPOT_ROOT,
     "serving": False,
     "profile": PROFILE or "default",
 }
@@ -150,6 +163,7 @@ def _serve_forever(info: dict) -> None:
                 tls=TLS,
                 vault_upstream=VAULT_UPSTREAM,
                 penpot_upstream=PENPOT_UPSTREAM,
+                penpot_root=PENPOT and PENPOT_ROOT,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")

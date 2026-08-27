@@ -38,6 +38,23 @@ from __future__ import annotations
 #: Where the application shell is served. Exactly this, no trailing slash —
 #: see ``vault.SHELL``'s docstring for why a trailing slash would break every
 #: relative asset reference.
+#:
+#: **This is not, on its own, a working deployment, and the way it fails is
+#: quiet.** Penpot's relative assets do resolve correctly from here, so the
+#: shell paints and every asset is a 200 — but its client-side router slices
+#: ``location.pathname`` against a build-time path prefix that is empty in the
+#: shipped bundle, so a pathname of ``/penpot`` matches no route and the app
+#: falls back to its login screen. Verified live, with a valid session cookie
+#: and ``get-profile`` answering 200: at ``/penpot`` the workspace renders as
+#: the login form, and at ``/`` the same URL hash renders the full workspace
+#: (199 shapes) with the collaboration websocket open.
+#:
+#: So Penpot has to have the *origin root*, which is what ``at_root`` on
+#: :func:`owns` grants. This deepens the vault collision in the module
+#: docstring from "two apps want /api" to "two apps want /": an edge can front
+#: Penpot or Trilium, not both, until one of them gets a real URL base.
+#: ``SHELL`` stays as the door an operator links to; at root it redirects
+#: here rather than serving the shell at a path the router cannot parse.
 SHELL = "/penpot"
 
 #: Answered with a permanent redirect to :data:`SHELL`, for the same reason
@@ -58,11 +75,27 @@ PENPOT_PREFIXES = (
     "/assets/",
     "/api/",
     "/ws/notifications",
+    # Penpot's own outbound proxies, in its nginx `location.d` overrides
+    # rather than its main config, which is why they are easy to miss:
+    # `/internal/gfonts/css` and `/internal/gfonts/font/…` front Google Fonts,
+    # and `/github/penpot-files/` fronts raw.githubusercontent for the
+    # built-in templates. Missing the first is not a visible failure -- the
+    # app runs and every piece of text silently renders in a fallback face.
+    # `/internal/assets` needs no entry and must not get one: nginx marks it
+    # `internal`, so it 404s any request from outside regardless.
+    "/internal/gfonts/",
+    "/github/penpot-files/",
 )
 
 
-def owns(path: str) -> bool:
-    """Whether ``path`` is served by Penpot rather than by the gateway."""
+def owns(path: str, *, at_root: bool = False) -> bool:
+    """Whether ``path`` is served by Penpot rather than by the gateway.
+
+    ``at_root`` adds ``/`` to what Penpot claims. See :data:`SHELL` for why a
+    deployment that wants a working Penpot has to set it.
+    """
+    if at_root and path == "/":
+        return True
     if path in PENPOT_EXACT:
         return True
     return path.startswith(PENPOT_PREFIXES)
