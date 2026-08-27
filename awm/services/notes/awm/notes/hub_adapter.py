@@ -594,13 +594,16 @@ def _commit_user_store(user: str) -> None:
 
 
 def _flush_once() -> list[str]:
-    """Persist every dirty room, per user, then commit each user's store.
-    Opens its own connections so it is safe to run in a worker thread (a
-    sqlite connection is bound to its creating thread)."""
+    """Persist every dirty room, per user, then commit every user's store.
+
+    Every user root is committed, not only the flushed ones: ``create``,
+    ``save`` and ``trash`` write files straight through without a room, and
+    the commit is a no-op for a clean tree. Opens its own connections so it
+    is safe to run in a worker thread (a sqlite connection is bound to its
+    creating thread)."""
     flushed = rooms.flush_everything(dao.connect)
-    for user in flushed:
-        if user:
-            _commit_user_store(user)
+    for user in sorted({u for u in flushed if u} | set(userroot.users())):
+        _commit_user_store(user)
     return [nid for ids in flushed.values() for nid in ids]
 
 

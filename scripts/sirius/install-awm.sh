@@ -64,6 +64,9 @@ for d in .awm data projects tasks main; do
 done
 
 step "init as $APP_USER"
+# The scopes service commits as the app user (project seeds, scaffolds).
+sudo -u "$APP_USER" env HOME=$STATE_ROOT git config --global user.name awm
+sudo -u "$APP_USER" env HOME=$STATE_ROOT git config --global user.email awm@localhost
 sudo -u "$APP_USER" env AWM_WORKSPACE=$INSTALL_ROOT HOME=$STATE_ROOT XDG_CONFIG_HOME=$STATE_ROOT/config \
     "$MF/envs/awm/bin/python" -m awm.gateway gateway init
 ENABLED=$STATE_ROOT/state/services/enabled.json
