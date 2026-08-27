@@ -57,7 +57,9 @@ DEFAULT_EXPORTER_URL = os.environ.get("PENPOT_EXPORTER_URL", "http://localhost:6
 DEFAULT_USERNAME = os.environ.get("PENPOT_SERVICE_USERNAME")
 DEFAULT_PASSWORD = os.environ.get("PENPOT_SERVICE_PASSWORD")
 
-LOGIN_PATH = "/api/rpc/command/login-with-password"
+#: Every backend RPC hangs off this prefix; the command is the last segment.
+RPC_PREFIX = "/api/rpc/command"
+LOGIN_PATH = f"{RPC_PREFIX}/login-with-password"
 #: export-shapes carries its own `cmd` field in the transit body rather than a
 #: per-command URL scheme, so this path is very nearly arbitrary: the exporter's
 #: `wrap-health` intercepts exactly one route (``/readyz``) and every other path
@@ -74,6 +76,10 @@ LOGIN_TIMEOUT = float(os.environ.get("PENPOT_LOGIN_TIMEOUT", "15"))
 #: and font-settle waits -- several seconds is routine, not a sign of trouble.
 EXPORT_TIMEOUT = float(os.environ.get("PENPOT_EXPORT_TIMEOUT", "60"))
 ASSET_TIMEOUT = float(os.environ.get("PENPOT_ASSET_TIMEOUT", "30"))
+#: The freshness probe is a single-row lookup on the 304 path, so it gets a
+#: much shorter leash than a render -- if it is slow, re-rendering is cheaper
+#: than waiting for it.
+FRESHNESS_TIMEOUT = float(os.environ.get("PENPOT_FRESHNESS_TIMEOUT", "10"))
 
 COOKIE_NAME = "auth-token"
 
@@ -346,6 +352,60 @@ class ExporterClient:
             return self._authed_request(method, url, timeout=timeout,
                                         headers=headers, retried=True, **kwargs)
         return resp
+
+    # --- freshness ----------------------------------------------------------
+
+    def file_etag(self, file_id: str, known: str | None = None
+                  ) -> tuple[bool, str | None]:
+        """Has this file changed since ``known``? Returns ``(changed, etag)``.
+
+        Penpot instruments ``get-file`` with its conditional-loading
+        middleware (``app.rpc.cond``): the RPC layer lifts ``If-None-Match``
+        into ``::cond/key``, and when that key still matches, the middleware
+        answers **304 with an empty body** having run only the cheap
+        ``get-minimal-file-with-perms`` single-row lookup rather than loading
+        the file. The key itself is built from ``revn``/``vern``/
+        ``modified-at`` (``get-file-etag`` in ``rpc/commands/files.clj``), so
+        it moves on a real edit. Verified live against the running stack:
+        unchanged answers 304 in 0 bytes, and an edit moves the tag.
+
+        This is what lets :mod:`awm.penpot_view.view` invalidate on change
+        rather than expire on a timer. Two honest limits:
+
+        * The tag is per **file**, not per board -- the only granularity
+          Penpot exposes -- so editing any board in a file marks every
+          cached board of that file for re-render. Correct, but coarser
+          than the cache key.
+        * A *changed* file answers 200 with the whole file body, which is
+          discarded here. That cost is only paid when something actually
+          changed, i.e. immediately before a far more expensive re-render.
+
+        Never raises for a freshness question: a probe that fails answers
+        "changed", so the caller re-renders rather than serving something
+        stale on the strength of a failed check.
+        """
+        if not is_uuid(file_id):
+            raise ExporterError(f"file-id {file_id!r} is not a Penpot UUID")
+        url = f"{self._base_url}{RPC_PREFIX}/get-file"
+        headers = {"content-type": "application/transit+json",
+                   "accept": "application/transit+json"}
+        if known:
+            headers["if-none-match"] = known
+        try:
+            resp = self._authed_request(
+                "POST", url, timeout=FRESHNESS_TIMEOUT, headers=headers,
+                content=_transit_dumps({Keyword("id"): uuid.UUID(file_id)}))
+        except httpx.HTTPError as exc:
+            log.warning("penpot-view: freshness probe for %s failed (%s); "
+                        "treating as changed", file_id, exc)
+            return True, None
+        if resp.status_code == 304:
+            return False, known
+        if resp.status_code != 200:
+            log.warning("penpot-view: freshness probe for %s returned HTTP %s; "
+                        "treating as changed", file_id, resp.status_code)
+            return True, None
+        return True, resp.headers.get("etag")
 
     # --- export ------------------------------------------------------------
 
