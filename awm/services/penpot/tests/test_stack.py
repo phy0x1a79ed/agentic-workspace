@@ -200,3 +200,49 @@ def test_parse_ps_output_accepts_both_json_shapes():
     assert stack._parse_ps_output(as_array) == entries
     assert stack._parse_ps_output(as_jsonl) == entries
     assert stack._parse_ps_output("") == []
+
+
+# --- the operator's stop must survive the supervisor -----------------------
+
+def test_a_held_stop_is_visible_in_status(config):
+    """An operator who stopped the stack must be able to tell a stack that
+    will stay down from one the supervision loop is about to bring back."""
+    s = stack.Stack(config, runner=FakeRunner(ps_entries=[]))
+    assert s.status()["held"] is False
+    s.stop(hold=True)
+    assert s.status()["held"] is True
+
+
+def test_start_releases_a_held_stop(config):
+    """The hold must not be a state an operator can wedge the stack into."""
+    s = stack.Stack(config, runner=FakeRunner(ps_entries=[
+        _entry(name, "running") for name in SERVICES]))
+    s.stop(hold=True)
+    assert s._held is True
+    s.start(wait=False)
+    assert s._held is False
+
+
+def test_the_stop_verb_holds_the_stack_down():
+    """The bug this pins was found live: `stop` returned `stack_state:
+    stopped`, and the supervision loop had the whole stack back up nine
+    seconds later, because the handler took `Stack.stop`'s non-holding
+    default. The verb is only meaningful if it holds."""
+    import asyncio
+
+    from awm.penpot import hub_adapter
+
+    calls: list[dict] = []
+
+    class _Spy:
+        def stop(self, **kwargs):
+            calls.append(kwargs)
+            return {"action": "stopped"}
+
+    original = hub_adapter.STACK
+    hub_adapter.STACK = _Spy()
+    try:
+        asyncio.run(hub_adapter._h_stop({}, as_=None))
+    finally:
+        hub_adapter.STACK = original
+    assert calls == [{"hold": True}]

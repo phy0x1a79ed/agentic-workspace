@@ -309,6 +309,11 @@ class Stack:
             "running": state["stack_state"] != "stopped",
             "stack_state": state["stack_state"],
             "error": state["error"],
+            # Whether a stop is being *held* — i.e. the supervision loop will
+            # leave the stack down rather than bring it back. Without this an
+            # operator cannot tell a stack that will stay stopped from one
+            # that is seconds away from being restarted under them.
+            "held": self._held,
         }
         if verbose:
             out.update({

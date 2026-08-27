@@ -151,8 +151,19 @@ async def _h_start(args: dict, as_: str | None = None) -> dict:
 
 
 async def _h_stop(args: dict, as_: str | None = None) -> dict:
+    """Stop the stack and *hold* it stopped.
+
+    `hold=True` is what makes this verb mean anything. Without it the
+    supervision loop below sees a cleanly-downed stack on its next pass and
+    brings it straight back — verified live: the stack was up again 9 seconds
+    after a `stop` returned `stack_state: stopped`. An operator stops the
+    stack for a reason (freeing memory on a small host, taking it out of the
+    way of an image rebuild), and a supervisor that overrules that within one
+    interval makes the verb a 20-second outage rather than a stop. `start`
+    releases the hold, so this is not a state anyone can get wedged in.
+    """
     _operator_only(as_, "stop")
-    return await asyncio.to_thread(STACK.stop)
+    return await asyncio.to_thread(lambda: STACK.stop(hold=True))
 
 
 async def _h_restart(args: dict, as_: str | None = None) -> dict:
