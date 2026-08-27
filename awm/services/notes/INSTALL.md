@@ -33,6 +33,8 @@ sidecar (baked `AWM_PYTHON`) so the supervisor can respawn it under systemd.
   open working copy.
 - Orphaned writes: `AWM_DIR/services/notes/orphaned/` — see *The trap*, below.
 
+With a user bound (`awm.config.userroot`, from the edge's `X-Awm-As: user:<name>`) the note bodies move to `<user root>/notes/` — the user's scope worktree, committed after each flush — and the DB, checkouts and orphans to `AWM_DIR/services/notes/users/<name>/`. Collab topics become `note:<name>:<id>`; `collab_open` returns the topic. `AWM_USER_ROOT_STRICT=1` refuses every other caller; unset, they use the paths above. `AWM_SEARCH=0` at install time skips the search extra (FTS only).
+
 ## Editing a note
 
 **The file is not the note.** While a note is open in the browser its live copy

@@ -105,3 +105,12 @@ def test_flush_commits_only_notes_in_the_users_worktree(ws):
     assert f"notes/{t['id']}.md" in log and "drawio" not in log
     assert (root / "notes" / f"{t['id']}.md").read_text() == "v2"
     assert hub_adapter._flush_once() == []
+
+
+def test_a_plain_create_is_committed_by_the_next_flush(ws):
+    t = _create("user:steven", "plain", "no room")
+    root = ws / "projects/userdata/steven"
+    assert hub_adapter._flush_once() == []
+    log = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%s", "--name-only"],
+                         capture_output=True, text=True, check=True).stdout
+    assert "notes: autosave" in log and f"notes/{t['id']}.md" in log

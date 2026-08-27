@@ -42,6 +42,17 @@ The service's verbs mirror onto the CLI automatically:
     awm auth status       # rotation state summary
     awm auth rotate       # force a fresh mint now
 
+## User accounts
+
+Beside the rotating shared password, static per-user passwords:
+
+    awm auth user-add --username tony      # prints the generated password once
+    awm auth user-passwd --username tony   # new password, clears the lockout
+    awm auth user-disable --username tony [--disabled false]
+    awm auth user-list
+
+`verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no Discord push, no peer credentials, and a login without a username fails.
+
 ## Configuration (settings page / `awm config`)
 
 | Field | Default | Purpose |
@@ -50,6 +61,8 @@ The service's verbs mirror onto the CLI automatically:
 | `validity_hours` | `24` | hours a pair stays valid (> cadence → overlap) |
 | `session_ttl_hours` | `24` | sliding session lifetime (cookie refresh horizon) |
 | `max_session_days` | `30` | hard ceiling on total session age |
+| `lockout_threshold` | `6` | failed logins per username / client IP before a lock |
+| `lockout_minutes` | `15` | how long the lock holds |
 | `push_enabled` | `true` | push the login password to Discord on each mint |
 | `discord_account` | `discord-bot` | social account id for the push |
 | `discord_channel` | `1522674357762261112` | Discord `#notifications` channel id |

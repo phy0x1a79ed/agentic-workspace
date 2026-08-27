@@ -484,7 +484,7 @@ any other verb.
 
 | Var | Default | Effect |
 |---|---|---|
-| `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the store |
+| `AWM_DRAWIO_ROOT` | `<AWM_DIR>/services/drawio/diagrams` | the legacy store; a bound user gets `<user root>/drawio` inside their worktree instead (`awm.config.userroot`), with the topic `drawio:<name>:<save>` |
 | `AWM_DRAWIO_CHECKOUTS` | `<AWM_DIR>/services/drawio/checkouts` | working copies |
 | `AWM_DRAWIO_AUTOPUBLISH` | `<AWM_DIR>/services/drawio/autopublish.json` | the autopublish link registry |
 | `AWM_DRAWIO_VIEWCACHE` | `<AWM_DIR>/services/drawio/viewcache` | rendered-page cache for the view URL |
