@@ -29,7 +29,7 @@ FIGURES = Path("data") / "figures"
 DVC_FALLBACKS = (
     Path.home() / "lib/miniforge3/envs/dvc/bin/dvc",
     Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
-    Path("/opt/miniforge3/envs/awm/bin/dvc"),
+    Path("/opt/miniforge3/envs/dvc/bin/dvc"),
 )
 
 

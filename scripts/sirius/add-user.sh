@@ -19,7 +19,7 @@ WS=${AWM_WORKSPACE:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
 PROJECTS=$(readlink -f "$WS/projects")
 OWNER=$(stat -c %U "$PROJECTS")
 if [ "$OWNER" = "$(id -un)" ]; then run() { "$@"; }; else run() { sudo -u "$OWNER" env HOME="$(getent passwd "$OWNER" | cut -d: -f6)" "$@"; }; fi
-DVC=${AWM_DVC_BIN:-$(command -v dvc || ls "$HOME"/lib/miniforge3/envs/{dvc,awm}/bin/dvc /opt/miniforge3/envs/awm/bin/dvc 2>/dev/null | head -1)}
+DVC=${AWM_DVC_BIN:-$(command -v dvc || ls "$HOME"/lib/miniforge3/envs/{dvc,awm}/bin/dvc /opt/miniforge3/envs/dvc/bin/dvc 2>/dev/null | head -1)}
 [ -x "${DVC:-}" ] || { echo "dvc not found (set AWM_DVC_BIN)" >&2; exit 1; }
 GIT=(git -c user.name=awm -c user.email=awm@localhost)
 

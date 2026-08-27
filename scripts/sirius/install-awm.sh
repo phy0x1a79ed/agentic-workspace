@@ -8,7 +8,7 @@
 # a home directory. Idempotent. Steps:
 #   1. miniforge at /opt/miniforge3 (dev-user owned)
 #   2. mamba env `awm` + awm/gateway/install.sh (editable installs of the
-#      public service set, no search extra) + dvc
+#      public service set, no search extra); mamba env `dvc`
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
 #   4. `awm gateway init` as the app user, enabled.json reconciled to the set
 #   5. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
@@ -51,8 +51,8 @@ fi
 PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer scopes"
 # No torch/sentence-transformers on a 4 GB box: FTS search only.
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
-"$MF/envs/awm/bin/python" -c 'import dvc' 2>/dev/null \
-    || "$MF/envs/awm/bin/pip" install -q 'dvc>=3'
+# dvc in its own env, as on altair: its dependency set is not the gateway's.
+[ -x "$MF/envs/dvc/bin/dvc" ] || mamba create -y -q -n dvc -c conda-forge dvc
 
 step "state symlinks"
 for d in .awm data projects tasks main; do

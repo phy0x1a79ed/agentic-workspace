@@ -166,7 +166,7 @@ AWM_EDGE_TLS=0
 AWM_HTTPS_PORT=8444
 AWM_AUTH_PROFILE=public
 AWM_USER_ROOT_STRICT=1
-AWM_DVC_BIN=/opt/miniforge3/envs/awm/bin/dvc
+AWM_DVC_BIN=/opt/miniforge3/envs/dvc/bin/dvc
 ENV
 
 step "nginx"
