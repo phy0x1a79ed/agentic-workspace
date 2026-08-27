@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import inspect
 import os
 import re
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Callable, Iterator
 
 import awm.config as _config
 
@@ -121,3 +122,35 @@ def bind(user: str | None) -> Iterator[str | None]:
         yield user
     finally:
         _current.reset(token)
+
+
+def wrap_handler(handler: Callable[..., Any]) -> Callable[..., Any]:
+    """Run a gateway verb handler with the caller's user bound.
+
+    The gateway threads the edge-verified ``X-Awm-As`` as ``as_``; a known
+    user binds their store for the call, anything else means the legacy store
+    (or, in strict mode, a refusal). The binding is a ContextVar, so it follows
+    the handler into ``asyncio.to_thread``. The wrapper always takes two
+    positional parameters, which is how the adapter learns to pass ``as_``.
+    """
+    try:
+        two = len(inspect.signature(handler).parameters) >= 2
+    except (TypeError, ValueError):
+        two = False
+
+    if inspect.iscoroutinefunction(handler):
+        async def _async(args: dict, as_: str | None = None):
+            with bind(resolve(as_)):
+                return await (handler(args, as_) if two else handler(args))
+        _async.__name__ = getattr(handler, "__name__", "handler")
+        return _async
+
+    def _sync(args: dict, as_: str | None = None):
+        with bind(resolve(as_)):
+            return handler(args, as_) if two else handler(args)
+    _sync.__name__ = getattr(handler, "__name__", "handler")
+    return _sync
+
+
+def wrap_handlers(handlers: dict[str, Callable[..., Any]]) -> dict[str, Callable[..., Any]]:
+    return {name: wrap_handler(h) for name, h in handlers.items()}

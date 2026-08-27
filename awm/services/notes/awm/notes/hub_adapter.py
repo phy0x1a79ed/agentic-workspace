@@ -25,7 +25,6 @@ Run via ``run.sh`` (which the gateway spawns and respawns):
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 
@@ -535,30 +534,6 @@ async def _handle_collab_edit(args: dict) -> dict:
     return res
 
 
-def _bound(handler):
-    """Run ``handler`` with the caller's user bound (``awm.config.userroot``).
-
-    The gateway threads the edge-verified ``X-Awm-As`` as ``as_``; a known user
-    binds their store for the call, anything else means the legacy store (or,
-    in strict mode, a refusal). The binding is a ContextVar, so it follows the
-    handler into ``asyncio.to_thread``.
-    """
-    two = len(inspect.signature(handler).parameters) >= 2
-
-    if inspect.iscoroutinefunction(handler):
-        async def _async(args: dict, as_: str | None = None):
-            with userroot.bind(userroot.resolve(as_)):
-                return await (handler(args, as_) if two else handler(args))
-        _async.__name__ = handler.__name__
-        return _async
-
-    def _sync(args: dict, as_: str | None = None):
-        with userroot.bind(userroot.resolve(as_)):
-            return handler(args, as_) if two else handler(args)
-    _sync.__name__ = handler.__name__
-    return _sync
-
-
 _HANDLERS = {
     "search": _handle_search,
     "get": _handle_get,
@@ -585,7 +560,7 @@ _HANDLERS = {
     "collab_open": _handle_collab_open,
     "collab_edit": _handle_collab_edit,
 }
-HANDLERS = {name: _bound(h) for name, h in _HANDLERS.items()}
+HANDLERS = userroot.wrap_handlers(_HANDLERS)
 
 
 def _purge_expired() -> None:
