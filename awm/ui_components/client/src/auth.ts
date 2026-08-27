@@ -87,7 +87,21 @@ export async function apiFetch<T = unknown>(path: string, init: ApiFetchInit = {
   return (text ? JSON.parse(text) : null) as T;
 }
 
-/** GET /auth/whoami. Throws AuthError if not signed in. */
+/**
+ * GET /__auth/whoami — the edge's answer for who this session is. Throws
+ * AuthError when not signed in, and any HttpError when there is no edge at
+ * all (a page served straight off the loopback gateway).
+ */
 export async function whoami(): Promise<{ user: string; [k: string]: unknown }> {
-  return await apiFetch<{ user: string }>('/auth/whoami', { method: 'GET' });
+  return await apiFetch<{ user: string }>('/__auth/whoami', { method: 'GET' });
+}
+
+/** POST /__auth/logout, then back to the front door. */
+export async function logout(): Promise<void> {
+  try {
+    await fetch('/__auth/logout', { method: 'POST', credentials: 'include' });
+  } finally {
+    _awmAsCache = '';
+    location.replace('/');
+  }
 }

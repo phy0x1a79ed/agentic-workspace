@@ -38,7 +38,7 @@ NOTES_DENIED_FNS = frozenset({
     "status", "update", "resolve", "merge", "discard",
 })
 DRAWIO_DENIED_FNS = frozenset({
-    "export", "url", "checkout", "edit", "externalize", "path", "status",
+    "export", "checkout", "edit", "externalize", "path", "status",
     "update", "resolve", "merge", "discard", "checkouts", "import",
     "status_service",
 })
