@@ -169,15 +169,29 @@ def test_logout_clears_both_cookies():
 
 DENIED = [
     "/hub/services", "/invoke", "/tools", "/svc/scopes/fn/scope_search",
-    "/svc/auth/fn/password", "/svc/auth/fn/verify", "/svc/notes/fn/purge",
-    "/svc/notes/fn/read", "/svc/drawio/fn/export", "/svc/drawio/fn/autopublish_status",
+    "/svc/auth/fn/password", "/svc/auth/fn/verify",
+    "/svc/drawio/fn/export", "/svc/drawio/fn/autopublish_status",
     "/drawio-app/view/x.svg", "/__auth/link", "/ca.crt", "/ca.pem",
     "/ui/agents/", "/files/", "/files/projects/awm/dev/x",
     "/__landing/tags", "/svc/notes/session/x",
+    # notes left the public host. These are here rather than merely absent
+    # because they are the paths whose verdict *changed*: an allow-list that
+    # only records what is open cannot fail when something is re-opened by
+    # accident, and this is the door.
+    "/ui/notes/", "/ui/notes/assets/x.js", "/svc/notes/fn/list",
+    "/svc/notes/fn/collab_open", "/svc/notes/emit/note:tony:1",
+    # The vault's own surface that a browser must never reach through us. Each
+    # is a live Trilium route; see awm.httpsfront.vault.NOT_FORWARDED.
+    "/etapi/app-info", "/custom/x", "/mcp", "/share/abc",
+    "/login", "/setup", "/set-password", "/robots.txt",
+    # …and the vault verbs that act on everyone's knowledge base at once.
+    "/svc/trilium/fn/restore", "/svc/trilium/fn/stop",
+    "/svc/trilium/fn/logs", "/svc/trilium/fn/export",
 ]
 ALLOWED = [
-    "/ui/notes/", "/ui/notes/assets/x.js", "/ui/drawio/", "/drawio-app/index.html",
-    "/svc/notes/fn/list", "/svc/notes/fn/collab_open", "/svc/drawio/fn/save",
+    "/ui/drawio/", "/drawio-app/index.html", "/svc/drawio/fn/save",
+    "/ui/trilium", "/ui/trilium/", "/svc/trilium/fn/status",
+    "/svc/trilium/fn/snapshots",
 ]
 
 
@@ -200,10 +214,10 @@ def test_allowed_paths_proxy_when_signed_in(path):
 
 def test_allowed_paths_want_a_login_when_signed_out():
     with _client(_app("public"), token=None) as c:
-        r = c.get("/ui/notes/", headers={"Accept": "text/html"})
+        r = c.get("/ui/drawio/", headers={"Accept": "text/html"})
         assert r.status_code == 200 and "username" in r.text
         assert "ca.crt" not in r.text
-        assert c.get("/svc/notes/fn/list").status_code == 401
+        assert c.get("/svc/drawio/fn/save").status_code == 401
 
 
 def test_user_scoped_paths_admit_only_their_user():
@@ -215,17 +229,18 @@ def test_user_scoped_paths_admit_only_their_user():
 
 
 def test_emit_topics_must_carry_the_users_prefix():
-    assert policy.allows("/svc/notes/emit/note:tony:abc", "tony")
-    assert not policy.allows("/svc/notes/emit/note:steven:abc", "tony")
-    assert not policy.allows("/svc/notes/emit/note:abc", "tony")
     assert policy.allows("/svc/drawio/emit/drawio:tony:x.drawio", "tony")
+    assert not policy.allows("/svc/drawio/emit/drawio:steven:x.drawio", "tony")
+    assert not policy.allows("/svc/drawio/emit/drawio:x", "tony")
     assert not policy.allows("/svc/drawio/emit/drawio:tony:x", None)
+    # notes has no emit surface on the public host any more.
+    assert not policy.allows("/svc/notes/emit/note:tony:abc", "tony")
 
 
-def test_root_redirects_to_notes_or_asks_for_login():
+def test_root_redirects_to_the_vault_or_asks_for_login():
     with _client(_app("public")) as c:
         r = c.get("/")
-        assert r.status_code == 302 and r.headers["location"] == "/ui/notes/"
+        assert r.status_code == 302 and r.headers["location"] == "/vault"
     with _client(_app("public"), token=None) as c:
         r = c.get("/", headers={"Accept": "text/html"})
         assert r.status_code == 200 and "username" in r.text

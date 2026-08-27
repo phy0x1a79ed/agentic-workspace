@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from awm import config
 from awm.gatewayclient import ServiceAdapter
 
 from awm.httpsfront import certs, proxy, store
@@ -50,6 +51,13 @@ UPSTREAM = os.environ.get("AWM_HUB_URL", "http://127.0.0.1:7819/")
 PROFILE = (os.environ.get("AWM_EDGE_PROFILE") or "").strip().lower() or None
 # 0 → plain HTTP on loopback behind a TLS-terminating nginx; no certs minted.
 TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", "no")
+# The shared knowledge base, served at /vault on this same listener. On by
+# default: off is the visibly broken direction — nobody can reach the vault, and
+# somebody says so within the minute. The dangerous direction is a vault
+# reachable by something that is not this edge, and that is closed in
+# awm.trilium, where the child is bound, rather than here.
+VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
+VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 
 # Live status, filled once the listener comes up.
 _STATUS: dict[str, Any] = {
@@ -57,6 +65,9 @@ _STATUS: dict[str, Any] = {
     "tls": False,
     "san": None,
     "upstream": UPSTREAM,
+    # The second upstream on this listener, and the only place an operator can
+    # see whether the edge thinks it is serving the vault at all.
+    "vault_upstream": VAULT_UPSTREAM,
     "serving": False,
     "profile": PROFILE or "default",
 }
@@ -89,7 +100,10 @@ def _h_status(args: dict) -> dict:
     st["ca_url"] = (
         f"https://{host or '<host-ip>'}:{st['listener_port']}/ca.crt"
     )
-    st["url_shape"] = f"https://{host or '<host-ip>'}:{st['listener_port']}/ui/notes/"
+    # The front's own root, not a page. This runs on every node, and which page
+    # is worth landing on differs between them — naming one here was only ever
+    # right on the host that happened to serve it.
+    st["url_shape"] = f"https://{host or '<host-ip>'}:{st['listener_port']}/"
     return st
 
 
@@ -110,6 +124,7 @@ def _serve_forever(info: dict) -> None:
                 upstream=UPSTREAM,
                 profile=PROFILE,
                 tls=TLS,
+                vault_upstream=VAULT_UPSTREAM,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")

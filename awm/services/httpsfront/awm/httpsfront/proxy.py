@@ -56,7 +56,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, policy, store
+from awm.httpsfront import pages, policy, store, vault
 from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -76,7 +76,12 @@ _ALL_METHODS = _METHODS  # alias for route registration clarity
 _PEER_NAME = socket.gethostname().split(".")[0].title()
 
 PUBLIC_PROFILE = "public"
-PUBLIC_HOME = "/ui/notes/"
+# Where a signed-in browser lands on the public profile. The vault, because
+# the vault is what this host is for. Kept as a redirect from `/` rather than
+# serving the shell there: `/` is the one path the sign-in form reloads, and a
+# `/` that fell through to the catch-all would proxy the gateway's own page
+# index — an enumeration of the whole internal surface — to the internet.
+PUBLIC_HOME = vault.SHELL
 
 
 def _as_header(sub: str | None) -> str:
@@ -226,6 +231,7 @@ async def _login(request: Request) -> Response:
     samesite = _samesite(request.app)
     _set_session_cookie(resp, res["token"], ttl, samesite)
     _set_as_cookie(resp, sub, ttl, samesite)
+    _clear_vault_cookies(resp)
     return resp
 
 
@@ -273,10 +279,26 @@ async def _auth_link(request: Request) -> Response:
     return resp
 
 
+def _clear_vault_cookies(resp: Response) -> None:
+    """Drop Trilium's own cookies when the awm identity changes.
+
+    They are not namespaced by person and they sit at ``path=/``, so after a
+    second person signs in on the same browser profile the first person's
+    session identifier would still be sent. The vault does not know it, mints a
+    fresh session and overwrites — self-healing, but the already-rendered page
+    holds a CSRF token bound to the old identifier, so the next write 403s and
+    the client has to re-bootstrap. Identity changes at exactly two moments and
+    both are here, so the window simply does not open.
+    """
+    for name in ("trilium.sid", "trilium-csrf"):
+        resp.delete_cookie(name, path="/")
+
+
 async def _logout(request: Request) -> Response:
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(COOKIE_NAME, path="/")
     resp.delete_cookie(AS_COOKIE_NAME, path="/")
+    _clear_vault_cookies(resp)
     return resp
 
 
@@ -288,7 +310,7 @@ async def _whoami(request: Request) -> Response:
 
 
 async def _public_home(request: Request) -> Response:
-    """``/`` on the public profile: the notes page, or the login form first."""
+    """``/`` on the public profile: the vault, or the login form first."""
     ok, _, _ = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
@@ -413,6 +435,58 @@ async def _landing_set_name(request: Request) -> Response:
     return JSONResponse({"display_name": dao.display_name(page)})
 
 
+# -- the vault --------------------------------------------------------------
+
+
+def _vault_up(app) -> str | None:
+    return getattr(app.state, "vault_http_up", None)
+
+
+async def _vault_slash(request: Request) -> Response:
+    """``/vault/`` → ``/vault``, permanently.
+
+    Not cosmetic. Every asset reference in the vault's shell is relative, and
+    they resolve against the document's *directory*: from ``/vault`` that is the
+    site root and the assets are found, from ``/vault/`` it is ``/vault/`` and
+    none of them are. The page paints and then hangs, which is a much worse
+    failure than a redirect.
+    """
+    return RedirectResponse(vault.SHELL, status_code=308)
+
+
+async def _vault_manifest(request: Request) -> Response:
+    """The PWA manifest, ours rather than the vault's — see ``vault.manifest``."""
+    return JSONResponse(vault.manifest(),
+                        media_type="application/manifest+json")
+
+
+async def _vault_logout(request: Request) -> Response:
+    """The vault's logout button ends the awm session.
+
+    There is no Trilium session to end — its own login is off — so without this
+    the button would be a dead end inside the app. One login means one logout.
+    """
+    return RedirectResponse("/__auth/logout", status_code=302)
+
+
+def _vault_unavailable(request: Request, reason: str) -> Response:
+    """Why the vault is not answering, as a page rather than a bare 502.
+
+    ``502 upstream gateway unreachable`` is what this used to be, and it reads
+    as "awm is broken" when the true answer is almost always "the vault is
+    still starting" — a cold child takes up to two minutes to bind. The status
+    is 503 with a ``Retry-After`` so a browser and a monitor both do the right
+    thing, and the page refreshes itself so nobody has to.
+    """
+    if request.method == "GET" and _wants_html(request):
+        body = pages.vault_unavailable_page(reason)
+        return HTMLResponse(body, status_code=503,
+                            headers={"Retry-After": "5",
+                                     "Cache-Control": "no-store"})
+    return JSONResponse({"error": "vault unavailable", "reason": reason},
+                        status_code=503, headers={"Retry-After": "5"})
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
@@ -424,8 +498,19 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
+    # The vault is the one upstream on this listener that is not the gateway.
+    # Which upstream is decided here and nowhere else, from a path the caller
+    # cannot use to name anything but the one shared knowledge base.
+    up = app.state.http_up
+    vault_up = _vault_up(app)
+    if vault_up and vault.owns(path):
+        if not public and sub in (PEER_SUB, "operator"):
+            # The mesh edge runs no allow-list, so the check `policy.allows`
+            # would have made on the public profile is made here instead.
+            return _not_found()
+        up, path = vault_up, vault.upstream_path(path)
     client: httpx.AsyncClient = app.state.client
-    url = app.state.http_up + path
+    url = up + path
     if request.url.query:
         url += "?" + request.url.query
     body = await request.body()
@@ -435,6 +520,8 @@ async def _http_proxy(request: Request) -> Response:
     try:
         resp = await client.send(upstream_req, stream=True)
     except httpx.ConnectError:
+        if up is not app.state.http_up:
+            return _vault_unavailable(request, "not listening yet")
         return Response("upstream gateway unreachable", status_code=502)
     out = StreamingResponse(
         resp.aiter_raw(),
@@ -477,9 +564,19 @@ async def _ws_proxy(ws: WebSocket) -> None:
     pumping text+binary frames both directions until either side closes."""
     app = ws.app
     path = ws.url.path
+    raw_path = ws.url.path
     if ws.url.query:
         path += "?" + ws.url.query
     up_url = app.state.ws_up + path
+    vault_ws = getattr(app.state, "vault_ws_up", None)
+    is_vault = bool(vault_ws) and vault.owns(raw_path)
+    if is_vault:
+        # The client derives its socket URL from the page's own pathname, so a
+        # shell served at /vault opens its socket there. Same rewrite as the
+        # HTTP leg, or the vault's live updates never arrive and nothing says so.
+        up_url = vault_ws + vault.upstream_path(raw_path)
+        if ws.url.query:
+            up_url += "?" + ws.url.query
 
     # Edge auth: Starlette HTTP handling never sees a WS scope, so the guard is
     # enforced here, before accept(). A browser sends the session cookie on the
@@ -496,6 +593,9 @@ async def _ws_proxy(ws: WebSocket) -> None:
     ))
     if not ok or (public and not policy.allows(ws.url.path, sub)):
         await ws.close(code=1008)  # policy violation
+        return
+    if is_vault and sub in (PEER_SUB, "operator"):
+        await ws.close(code=1008)
         return
 
     # Forward cookies and the verified identity so the gateway sees the real
@@ -617,7 +717,8 @@ def _gated(
 def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               extra_routes: Sequence[ExtraRoute] | None = None,
               rewrite_origin: bool = False,
-              profile: str | None = None) -> Starlette:
+              profile: str | None = None,
+              vault_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -642,6 +743,12 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     assume an authenticated caller: the gate is not something a caller can
     forget, because the whole reason such a route exists is that it does
     something privileged on the upstream's behalf.
+
+    ``vault_upstream`` adds the shared knowledge base as a *second* upstream on
+    this same listener, reached at :data:`vault.SHELL` and at the root-level
+    paths :mod:`awm.httpsfront.vault` lists. It is what makes one origin, one
+    session and one login cover both awm and the vault. Off by default, so every
+    existing caller is unchanged.
 
     ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
     own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
@@ -682,6 +789,12 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/__landing/filter", _gated(_landing_select_filter), methods=["POST"]))
         routes.append(Route("/__landing/filter", _gated(_landing_deselect_filter), methods=["DELETE"]))
         routes.append(Route("/__landing/name", _gated(_landing_set_name), methods=["POST"]))
+    if vault_upstream:
+        # Before the catch-all, and after /__auth/*: these three are the edge's
+        # own answers on paths the vault would otherwise be asked for.
+        routes.append(Route(vault.SHELL_SLASH, _vault_slash, methods=["GET"]))
+        routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
+        routes.append(Route("/logout", _vault_logout, methods=["GET", "POST"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -710,6 +823,13 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     )
     app.state.gate = AuthGate()
     app.state.profile = profile
+    if vault_upstream:
+        v = vault_upstream.rstrip("/")
+        app.state.vault_http_up = v
+        app.state.vault_ws_up = "ws" + v[len("http"):]
+    else:
+        app.state.vault_http_up = None
+        app.state.vault_ws_up = None
     return app
 
 
@@ -718,7 +838,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           extra_routes: Sequence[ExtraRoute] | None = None,
           rewrite_origin: bool = False,
           profile: str | None = None,
-          tls: bool = True) -> None:
+          tls: bool = True,
+          vault_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -733,7 +854,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     sign-in route the wrapped binary cannot serve itself.
     """
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
-                    rewrite_origin=rewrite_origin, profile=profile)
+                    rewrite_origin=rewrite_origin, profile=profile,
+                    vault_upstream=vault_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else

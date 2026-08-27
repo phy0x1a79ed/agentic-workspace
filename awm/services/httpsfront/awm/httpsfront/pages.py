@@ -423,3 +423,25 @@ async function renameCard(page, name) {{
 applyFilter();
 </script>
 </body></html>"""
+
+
+def vault_unavailable_page(reason: str) -> str:
+    """Shown when the vault is not answering yet.
+
+    Refreshes itself, because the overwhelmingly common cause is a cold start:
+    the child takes up to two minutes to bind its port, and the right thing for
+    a person to do in that window is nothing at all.
+    """
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="refresh" content="5" />
+<title>vault — starting</title>
+<style>{_STYLE}</style>
+</head><body>
+<h1>vault</h1>
+<p>The knowledge base is not answering yet: {reason}.</p>
+<p class="muted">A vault that has just been started takes up to two minutes to
+come up. This page retries every five seconds.</p>
+</body></html>"""
