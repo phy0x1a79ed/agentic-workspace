@@ -266,6 +266,10 @@ def _resolve(user: str | None) -> list[server.Child]:
 
 async def _h_status(args: dict) -> dict:
     def _read() -> list[dict]:
+        # Discovery first: a scope created a moment ago is a person who is
+        # waiting for a URL, and making them wait for the next supervision pass
+        # to be told they exist reads as the service having missed them.
+        FLEET.sync()
         rows = FLEET.snapshot()
         for row in rows:
             inst = instances.instance(row.get("user", ""))
