@@ -82,18 +82,13 @@ def force_refresh(file_id: str, page_id: str, board_id: str, *,
 def _evict(cache, key: tuple[str, str, str, str]) -> None:
     """Drop one cache slot so the next render is a genuine cold miss.
 
-    :class:`~awm.penpot_view.view.Cache` exposes no public invalidation hook
-    -- every path into it goes through ``get()``'s stale-while-revalidate
-    logic, which still trusts the freshness probe, and a probe that (correctly,
-    by Penpot's own lights) says "unchanged" is exactly the case an operator
-    calling force-refresh means to override. This reaches past the cache's
-    public surface on purpose rather than adding one: ``Cache`` lives in
-    ``view.py``, which this task does not own, so a real ``invalidate()``
-    method belongs there as a follow-up, not bolted on here through a back
-    door two files away.
+    An operator calling force-refresh means to override the freshness probe,
+    which by Penpot's own lights may quite correctly be answering
+    "unchanged". :meth:`~awm.penpot_view.view.Cache.invalidate` also retires
+    any render still running for that key, so a slow one cannot land on top
+    of the replacement's bytes after the fact.
     """
-    with cache._entries_lock:  # noqa: SLF001 -- see docstring above
-        cache._entries.pop(key, None)
+    cache.invalidate(key)
 
 
 def cache_stats() -> dict:

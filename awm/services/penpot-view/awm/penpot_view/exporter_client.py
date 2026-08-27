@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -303,6 +304,10 @@ class ExporterClient:
         self._client = client if client is not None else httpx.Client(transport=transport)
         self._token: str | None = None
         self._profile_id: uuid.UUID | None = None
+        #: Guards the token/profile-id pair. One client is shared by every
+        #: request thread and every background refresh, so both the cold
+        #: login and the 401 re-login must be single-flight.
+        self._auth_lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
@@ -353,29 +358,52 @@ class ExporterClient:
         self._profile_id = profile_id
         log.info("penpot-view: logged in to %s as service account", self._base_url)
 
-    def _ensure_authed(self) -> None:
-        if self._token is None or self._profile_id is None:
-            self._login()
+    def _ensure_authed(self) -> str:
+        """Return a token to use, logging in once if the session is empty.
+
+        Returns the token rather than leaving the caller to re-read
+        ``self._token``. This client is shared by every request thread the
+        ``ThreadingHTTPServer`` runs plus every background refresh, and the
+        read-then-use of a token is otherwise a race: one thread can clear it
+        while handling a 401 in the window between another thread's check and
+        its cookie header, which sends ``auth-token=None`` and burns that
+        thread's single retry on a request that was never going to work.
+
+        The lock is held across the login so a cold start cannot stampede
+        every waiting thread into its own redundant login.
+        """
+        with self._auth_lock:
+            if self._token is None or self._profile_id is None:
+                self._login()
+            return self._token
 
     def _authed_request(self, method: str, url: str, *, timeout: float,
                         headers: dict[str, str] | None = None,
                         retried: bool = False, **kwargs: Any) -> httpx.Response:
-        self._ensure_authed()
+        token = self._ensure_authed()
         # Set explicitly per request, as a header rather than via httpx's
         # cookies= kwarg (deprecated in 0.28 and jar-scoped anyway) -- a
         # re-login must swap the token on the very next call, not merge with
-        # whatever the client's jar remembered.
+        # whatever the client's jar remembered. The token comes back from
+        # _ensure_authed rather than being re-read off self, so a concurrent
+        # re-login cannot blank it between the check and this line.
         merged_headers = dict(headers or {})
-        merged_headers["cookie"] = f"{COOKIE_NAME}={self._token}"
+        merged_headers["cookie"] = f"{COOKIE_NAME}={token}"
         resp = self._client.request(method, url, headers=merged_headers,
                                     timeout=timeout, **kwargs)
         if resp.status_code == 401 and not retried:
             log.warning(
                 "penpot-view: %s %s got 401; auth-token stale or rejected, "
                 "re-logging in once", method, url)
-            self._token = None
-            self._profile_id = None
-            self._login()
+            with self._auth_lock:
+                # Only the thread whose token was the one rejected should pay
+                # for a fresh login. If another thread already replaced it
+                # while this request was in flight, reuse that one instead of
+                # invalidating a session that is working for everybody else.
+                if self._token == token:
+                    self._token = None
+                    self._profile_id = None
+                    self._login()
             return self._authed_request(method, url, timeout=timeout,
                                         headers=headers, retried=True, **kwargs)
         return resp

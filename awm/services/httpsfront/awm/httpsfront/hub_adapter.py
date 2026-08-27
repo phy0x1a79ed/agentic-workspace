@@ -65,6 +65,21 @@ VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 # and the vault is the one already relied on, so enabling this is an explicit
 # choice rather than something a bare upgrade should flip on.
 PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
+
+if PENPOT and VAULT:
+    # Both apps serve their own /api/ and /assets/ from the URL root, and the
+    # proxy resolves vault first, so with both on Penpot's shell loads and
+    # then every data fetch it makes is answered by Trilium instead. The
+    # symptom is an app that looks like it started and then does nothing,
+    # which is a miserable thing to debug from the browser side -- so say it
+    # here, once, at startup. VAULT defaults on, so this fires for anyone who
+    # enables Penpot without knowing to turn Trilium's edge off.
+    log.warning(
+        "AWM_EDGE_PENPOT and AWM_EDGE_VAULT are both enabled. They both claim "
+        "/api and /assets at the root and vault wins, so Penpot will load its "
+        "shell and then fail every request it makes. Set AWM_EDGE_VAULT=0, or "
+        "give one of them a URL base first."
+    )
 PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
 
 # Live status, filled once the listener comes up.

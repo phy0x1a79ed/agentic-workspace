@@ -147,6 +147,34 @@ done
 
 if [ ${#TO_BUILD[@]} -eq 0 ]; then
     echo
+    # "Nothing to build" is a claim about git, not about the box. The state
+    # files can agree with HEAD while the running container is something else
+    # entirely: a dirty build that was deployed and then reverted, a manual
+    # `docker compose up`, a hand-edited overlay. Exiting 0 here without
+    # looking would report success for a stack running unknown images, so the
+    # running image is checked even on the path that builds nothing.
+    step "2b. verify what is actually running"
+    DRIFT=0
+    for mod in "${MODULES[@]}"; do
+        svc="${MOD_TO_SERVICE[$mod]}"
+        want="${IMAGE_NAMESPACE}/${mod}:$(cat "$(module_state_file "$mod")" 2>/dev/null || echo '?')"
+        got=$(running_image "$svc")
+        if [ -z "$got" ]; then
+            printf '   %-16s not running\n' "$svc"
+        elif [ "$got" != "$want" ]; then
+            printf '   %-16s DRIFT expected=%-34s running=%s\n' "$svc" "$want" "$got"
+            DRIFT=1
+        else
+            printf '   %-16s ok %s\n' "$svc" "$got"
+        fi
+    done
+    if [ "$DRIFT" -ne 0 ]; then
+        echo
+        echo "nothing needed rebuilding, but a running image is not the one recorded as built." >&2
+        echo "re-run with FORCE=1, or bring the stack up from the overlay, before trusting this stack." >&2
+        exit 1
+    fi
+    echo
     echo "nothing changed since the last build of any of: ${MODULES[*]}"
     exit 0
 fi

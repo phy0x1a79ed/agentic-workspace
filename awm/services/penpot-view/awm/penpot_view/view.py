@@ -109,6 +109,7 @@ import os
 import ssl
 import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -131,10 +132,17 @@ VIEW_PREFIX = R.VIEW_PREFIX
 #: view mount (``drawio-view``) is kept apart from the ``drawio`` name.
 MOUNT_NAME = os.environ.get("PENPOT_VIEW_MOUNT_NAME", "penpot-view")
 
-#: How long a rendered entry is served without kicking a background refresh.
-#: See the module docstring's "Freshness" section: this is a fallback, not
-#: the originally-asked-for invalidate-on-change behaviour.
+#: How long a cached entry is served before the source file's freshness is
+#: questioned again. With a ``freshness`` hook this is a rate limit on
+#: *asking*, not an expiry -- see the module docstring's "Freshness" section.
 DEFAULT_TTL = float(os.environ.get("PENPOT_VIEW_TTL", "20"))
+
+#: How many distinct (file, page, board, variant) slots to keep in memory.
+#: The variant space is caller-controlled and unbounded -- every swap/crop
+#: combination anyone requests mints a key -- so this is what stops a
+#: long-lived process from growing without limit. Least-recently-used goes
+#: first; an evicted key costs one cold render if it is asked for again.
+MAX_ENTRIES = int(os.environ.get("PENPOT_VIEW_MAX_ENTRIES", "256"))
 
 #: How long a *cold* request (nothing cached yet) will block waiting for the
 #: first render. Generous on purpose: ExporterClient's own EXPORT_TIMEOUT
@@ -238,7 +246,7 @@ class _Entry:
     """
 
     __slots__ = ("lock", "data", "etag", "problems", "rendered_at", "fetch",
-                "dirty", "source_etag", "checked_at")
+                "dirty", "source_etag", "checked_at", "superseded")
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -257,6 +265,10 @@ class _Entry:
         #: rate-limits the probe; `source_etag` decides the re-render.
         self.source_etag: str | None = None
         self.checked_at: float = 0.0
+        #: Set by Cache.invalidate when this slot is retired while a render
+        #: for it is still running -- that render's write-through must not
+        #: land on top of its replacement's.
+        self.superseded = False
 
 
 class Cache:
@@ -298,7 +310,8 @@ class Cache:
         self.ttl = ttl
         self.cold_timeout = cold_timeout
         self.freshness = freshness
-        self._entries: dict[tuple[str, str, str, str], _Entry] = {}
+        self._entries: "OrderedDict[tuple[str, str, str, str], _Entry]" = \
+            OrderedDict()
         self._entries_lock = threading.Lock()
         #: Bumped every time a render actually runs — the test seam for
         #: asserting a cache hit did not re-invoke the exporter.
@@ -311,7 +324,30 @@ class Cache:
             if entry is None:
                 entry = _Entry()
                 self._entries[key] = entry
+                self._evict_oldest_locked()
+            else:
+                self._entries.move_to_end(key)
             return entry
+
+    def _evict_oldest_locked(self) -> None:
+        """Hold ``_entries`` to :data:`MAX_ENTRIES`, oldest use first.
+
+        The variant space is caller-controlled and unbounded -- every distinct
+        ``swap``/``crop`` combination anyone ever requests mints a key -- so
+        without a cap this dict is a slow memory leak that only shows up in a
+        long-lived deployment. Drawio's listener bounds the same space; this
+        is the equivalent.
+
+        An entry evicted while a render is still running for it is marked
+        superseded, so that render's write-through is declined for the same
+        reason :meth:`invalidate`'s is. Callers already holding the entry keep
+        working from their own reference; only the *next* request for that key
+        pays a cold miss. The caller must hold ``_entries_lock``.
+        """
+        while len(self._entries) > MAX_ENTRIES:
+            _old_key, old = self._entries.popitem(last=False)
+            with old.lock:
+                old.superseded = True
 
     def _cache_file(self, key: tuple[str, str, str, str]) -> Path:
         file_id, page_id, board_id, fingerprint = key
@@ -384,11 +420,15 @@ class Cache:
             return True
         with entry.lock:
             entry.checked_at = now
-            if changed and etag is not None:
-                # Record it now: the render that follows is what these bytes
-                # will correspond to, and a second request arriving mid-render
-                # must not queue a duplicate re-render for the same edit.
-                entry.source_etag = etag
+        # Deliberately does NOT write entry.source_etag. That field must only
+        # ever describe the bytes actually cached, and this probe ran outside
+        # the lock: with two overlapping requests, the slower probe can return
+        # a *newer* etag than the render that has meanwhile completed, and
+        # stamping it here would mark stale bytes as current. Every later
+        # probe would then answer 304 and the entry would serve that stale
+        # render forever, with the TTL demoted to a rate limit and nothing
+        # left to rescue it. :meth:`_seed_source_etag` is the single writer,
+        # and it writes the value that belongs to the render it precedes.
         return changed
 
     def _trigger_refresh(self, key: tuple[str, str, str, str], entry: _Entry,
@@ -440,13 +480,20 @@ class Cache:
             with self._renders_lock:
                 self.renders += 1
             etag = hashlib.sha256(data).hexdigest()
-            self._persist(key, data)
+            self._persist(key, data, entry)
         except BaseException as exc:  # noqa: BLE001 — every joiner must see it
             with entry.lock:
                 dirty = entry.dirty
                 entry.dirty = False
                 entry.fetch = None
                 cold = entry.data is None
+                # A failed render leaves warm bytes that are known-stale (the
+                # probe said changed) with checked_at already stamped, so
+                # without this the entry would sit out a whole TTL before
+                # anyone asked again. Re-arm instead of retrying on the spot:
+                # a retry here spins against a persistently failing exporter,
+                # whereas re-arming re-probes on the next real request.
+                entry.checked_at = 0.0
             fetch.fail(exc)
             if dirty and cold:
                 # A key that has never rendered successfully, whose only
@@ -477,15 +524,40 @@ class Cache:
             log.info("penpot-view: %s changed again mid-render; re-rendering", key)
             self._trigger_refresh(key, entry, render)
 
-    def _persist(self, key: tuple[str, str, str, str], data: bytes) -> None:
+    def invalidate(self, key: tuple[str, str, str, str]) -> None:
+        """Forget one slot so the next request is a genuine cold miss.
+
+        The operator-facing force-refresh. It exists as a real method rather
+        than a reach into ``_entries`` because dropping the slot is only half
+        the job: a refresh already running for that key holds a reference to
+        the *old* entry and will still try to write its bytes through to disk
+        when it finishes, possibly after the replacement render has written
+        the correct ones. Marking the entry superseded is what makes
+        :meth:`_persist` decline that late write.
+        """
+        with self._entries_lock:
+            entry = self._entries.pop(key, None)
+        if entry is not None:
+            with entry.lock:
+                entry.superseded = True
+
+    def _persist(self, key: tuple[str, str, str, str], data: bytes,
+                 entry: _Entry | None = None) -> None:
         """Write-through to disk with a unique temp name, then atomic rename.
 
-        At most one render is ever in flight per key (the coordination in
-        :meth:`get`/:meth:`_trigger_refresh` guarantees it), so this is
-        defence in depth rather than a path exercised today — see the module
-        docstring's temp-filename hazard for what breaks if that invariant is
-        ever weakened.
+        At most one render is in flight per key, so the unique temp name is
+        defence in depth (see the module docstring's temp-filename hazard).
+        The ``superseded`` check is not: :meth:`invalidate` can retire an
+        entry while its render is still running, and without this that
+        orphaned render would land on top of the replacement's bytes and
+        leave the durability copy disagreeing with what is served.
         """
+        if entry is not None:
+            with entry.lock:
+                if entry.superseded:
+                    log.info("penpot-view: discarding a render for %s that was "
+                             "invalidated while it ran", key)
+                    return
         path = self._cache_file(key)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

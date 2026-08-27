@@ -493,3 +493,88 @@ def test_with_no_probe_the_cache_degrades_to_plain_ttl(tmp_path):
             break
         time.sleep(0.05)
     assert calls["n"] == 2
+
+
+# --- findings from the first adversarial review ---------------------------
+
+def test_a_slow_probe_cannot_stamp_a_newer_etag_onto_older_bytes(tmp_path):
+    """The lost-update race that pins a render stale forever.
+
+    Two requests overlap. Both read source_etag='v1' and probe. The fast one
+    sees 'v2', renders, and seeds 'v2'. The file then moves to 'v3'. The slow
+    probe finally returns 'v3' -- and if _changed wrote that back, the entry
+    would claim to hold v3 while actually holding v2. Every later probe would
+    answer 304 and the entry would serve v2 forever, with the TTL demoted to
+    a rate limit and nothing left to rescue it.
+    """
+    cache = V.Cache(tmp_path, ttl=0.0, freshness=lambda f, k: (True, "v3"))
+    key = ("f", "p", "b", "__plain__")
+    entry = cache._entry_for(key)
+    with entry.lock:
+        entry.data, entry.etag, entry.problems = b"<svg/>", "e", ()
+        entry.source_etag = "v2"          # what the cached bytes really are
+        entry.rendered_at = entry.checked_at = time.monotonic()
+
+    assert cache._changed(key, entry, "v1") is True
+    assert entry.source_etag == "v2", (
+        "a probe stamped its own etag onto bytes it did not render; that "
+        "entry can never be seen as stale again")
+
+
+def test_a_failed_warm_refresh_does_not_sit_out_a_whole_ttl(tmp_path):
+    """The probe already said 'changed' and already stamped checked_at, so a
+    render that then fails would otherwise leave known-stale bytes unexamined
+    until a full TTL had passed."""
+    def render():
+        raise ExporterError("exporter down")
+
+    cache = V.Cache(tmp_path, ttl=999.0, freshness=lambda f, k: (True, "v2"))
+    key = ("f", "p", "b", "__plain__")
+    entry = cache._entry_for(key)
+    with entry.lock:
+        entry.data, entry.etag, entry.problems = b"<svg/>", "e", ()
+        entry.rendered_at = entry.checked_at = time.monotonic()
+
+    fetch = V._Fetch()
+    cache._run_fetch(key, entry, fetch, render)
+    assert entry.checked_at == 0.0, "the entry must be re-probed on the next request"
+
+
+def test_a_render_invalidated_mid_flight_does_not_clobber_its_replacement(tmp_path):
+    """force_refresh retires a slot while a render for it is still running.
+    That orphaned render must not write its now-obsolete bytes over the
+    replacement's, leaving the durability copy disagreeing with what is
+    served."""
+    cache = V.Cache(tmp_path, ttl=0.0)
+    key = ("f", "p", "b", "__plain__")
+    entry = cache._entry_for(key)
+
+    cache._persist(key, b"<svg>replacement</svg>")
+    cache.invalidate(key)                       # retires `entry`
+    cache._persist(key, b"<svg>orphan</svg>", entry)
+
+    assert cache._cache_file(key).read_bytes() == b"<svg>replacement</svg>"
+
+
+def test_the_entry_table_is_bounded(tmp_path, monkeypatch):
+    """The variant space is caller-controlled -- every swap/crop combination
+    anyone asks for mints a key -- so an unbounded table is a slow leak that
+    only shows up in a long-lived process."""
+    monkeypatch.setattr(V, "MAX_ENTRIES", 4)
+    cache = V.Cache(tmp_path, ttl=0.0)
+    for i in range(20):
+        cache._entry_for(("f", "p", "b", f"variant-{i}"))
+    assert len(cache._entries) == 4
+
+
+def test_eviction_keeps_the_most_recently_used(tmp_path, monkeypatch):
+    """Least-recently-used goes first, so a hot board is not evicted by a
+    burst of one-off variants."""
+    monkeypatch.setattr(V, "MAX_ENTRIES", 3)
+    cache = V.Cache(tmp_path, ttl=0.0)
+    hot = ("f", "p", "b", "hot")
+    cache._entry_for(hot)
+    for i in range(3):
+        cache._entry_for(("f", "p", "b", f"cold-{i}"))
+        cache._entry_for(hot)          # keep touching the hot one
+    assert hot in cache._entries
