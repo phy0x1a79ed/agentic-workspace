@@ -16,9 +16,24 @@ import asyncio
 
 import pytest
 
-from awm.trilium import hub_adapter
+from awm.trilium import hub_adapter, instances
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
+
+
+@pytest.fixture(autouse=True)
+def _off_the_real_vault(tmp_path, monkeypatch):
+    """Point the singleton at a throwaway path for every test in this file.
+
+    These tests invoke the write verbs to prove the *gate*, not the work, and
+    several of them create directories before they fail. Against the live
+    singleton that scaffolds `live/` under a path that is not yet a git
+    worktree — which is precisely what makes `git worktree add` refuse
+    afterwards. It cost a hand cleanup once; a fixture is cheaper than
+    remembering.
+    """
+    monkeypatch.setattr(instances, "VAULT",
+                        instances.Vault(scope=tmp_path / "vault"))
 
 #: Reachable from a browser. Read-only, and the vault's own recovery state.
 READ_VERBS = ["status", "snapshots", "url"]

@@ -193,6 +193,22 @@ def _find_backup(directory: Path, name: str) -> Path | None:
     return None
 
 
+def _require_vault(vault: Vault) -> None:
+    """Refuse to act on a vault that has no worktree.
+
+    Without this the directory-creating verbs happily scaffold `live/` and
+    `data/backups/` under a path that is not a git worktree — and a non-empty
+    directory is exactly what makes `git worktree add` refuse later, so the
+    phantom tree blocks the real one from ever being created. Observed: a test
+    calling `snapshot` against the live singleton left a directory that took a
+    hand cleanup to undo.
+    """
+    if not vault.exists:
+        raise FileNotFoundError(
+            f"no vault worktree at {vault.scope} — create it with "
+            f"`awm scope create --project vault --scope main`")
+
+
 def snapshot(vault: Vault, name: str | None = None, *,
              note_id: str | None = None, commit: bool = True) -> dict[str, Any]:
     """Take a named point this vault can be returned to.
@@ -207,6 +223,7 @@ def snapshot(vault: Vault, name: str | None = None, *,
     hardlink into the shared cache, so a name that repeated would be a write
     that fails — every snapshot gets a name no other snapshot has.
     """
+    _require_vault(vault)
     api = etapi.client()
 
     if note_id:
@@ -263,6 +280,7 @@ def snapshots(vault: Vault) -> dict[str, Any]:
     is overwritten on a schedule and pinned by nothing, so finding the state you
     want there is a race against the next rotation.
     """
+    _require_vault(vault)
     found: list[dict[str, Any]] = []
     for directory, kind in ((vault.snapshots_dir, "snapshot"),
                             (vault.rolling_dir, "rolling")):
@@ -303,6 +321,7 @@ def restore_files(vault: Vault, source: Path) -> dict[str, Any]:
     WARNING: this replaces the whole vault. Every note written since the
     snapshot was taken is in the superseded copy and nowhere else.
     """
+    _require_vault(vault)
     if source.suffix == CONTAINER_EXT:
         raise ValueError(
             f"{source.name} is a compressed or encrypted backup container, not a "
@@ -360,6 +379,7 @@ def export(vault: Vault, *, note_id: str = "root",
     Trilium holds, so a file that survived only because a previous export made
     it would be a lie about the vault's current contents.
     """
+    _require_vault(vault)
     api = etapi.client()
     blob = api.export_zip(note_id=note_id, fmt="markdown")
 
