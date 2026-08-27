@@ -1,0 +1,391 @@
+"""A persistent service-account session against Penpot: export, then fetch.
+
+Producing an SVG for a board is two HTTP hops against two different Penpot
+components, and getting either hop wrong produces a *blank or stale* SVG
+rather than a visible error -- the exact failure class this module exists to
+refuse.
+
+**Hop 1 -- export.** ``POST export-shapes`` to the exporter (port 6061 inside
+the compose network), which drives a real headless-browser render and, with
+``wait: true``, blocks until it is done and the result is uploaded. It answers
+with a resource map naming where the rendered asset now lives: ``{:uri
+"<PENPOT_PUBLIC_URI>/assets/by-id/<id>"}``.
+
+**Hop 2 -- fetch, and only through the frontend.** That URI must be fetched
+through Penpot's frontend nginx, never by talking to the backend/storage layer
+directly. The local stack stores objects on the filesystem
+(``PENPOT_OBJECTS_STORAGE_BACKEND=fs``), and the backend's own object handler
+answers a bare asset request with **HTTP 204, an ``x-accel-redirect`` header,
+and zero bytes** -- it delegates turning that into actual bytes to an
+``internal`` nginx location the backend itself does not have. A client that
+"helpfully" shortcuts past the frontend gets a clean-looking 204 and produces
+an empty SVG that reports as a successful export. So every asset fetch here
+first checks the returned URI actually starts with the frontend base URL, and
+then treats *any* non-200, non-``image/svg+xml``, or zero-byte response as a
+hard failure -- never as "unchanged" or "try again quietly". The asset fetch
+also needs the same ``auth-token`` cookie as the export call: ``tempfile`` is
+not in Penpot's public-buckets list, so an unauthenticated GET comes back as
+an attachment download, not the raw SVG.
+
+Both hops speak ``application/transit+json``, which has no Python library.
+The ``_transit_dumps``/``_transit_loads`` pair below hand-roll transit's
+``json-verbose`` encoding for exactly the subset Penpot's RPC layer uses --
+keywords, uuids, strings, numbers, booleans, nil, maps and vectors -- and
+nothing more.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import uuid
+from collections.abc import Mapping
+from typing import Any
+
+import httpx
+
+from .renderspec import is_uuid
+
+log = logging.getLogger("awm.penpot_view.exporter_client")
+
+#: The frontend nginx -- the only thing an asset fetch may ever go through.
+DEFAULT_BASE_URL = os.environ.get("PENPOT_BASE_URL", "http://localhost:9001")
+#: The exporter, reached directly inside the compose network for the export
+#: POST itself (only the *asset fetch* that follows is nginx-only).
+DEFAULT_EXPORTER_URL = os.environ.get("PENPOT_EXPORTER_URL", "http://localhost:6061")
+DEFAULT_USERNAME = os.environ.get("PENPOT_SERVICE_USERNAME")
+DEFAULT_PASSWORD = os.environ.get("PENPOT_SERVICE_PASSWORD")
+
+LOGIN_PATH = "/api/rpc/command/login-with-password"
+#: export-shapes carries its own `cmd` field in the transit body rather than a
+#: per-command URL scheme, so this path is very nearly arbitrary: the exporter's
+#: `wrap-health` intercepts exactly one route (``/readyz``) and every other path
+#: falls straight through to the command dispatcher (verified against the fork's
+#: ``exporter/src/app/http.cljs``). Anything but ``/readyz`` works; the env var
+#: is an escape hatch if a future version grows real routing.
+EXPORT_PATH = os.environ.get("PENPOT_EXPORTER_EXPORT_PATH", "/export")
+
+#: Explicit everywhere, on purpose -- see the shared hub client in
+#: awm/gateway/awm/gateway/hub/proxy.py, whose timeout=None means a wedged
+#: exporter would otherwise pin a hub request forever.
+LOGIN_TIMEOUT = float(os.environ.get("PENPOT_LOGIN_TIMEOUT", "15"))
+#: A cold render drives a real headless-browser page load with networkidle
+#: and font-settle waits -- several seconds is routine, not a sign of trouble.
+EXPORT_TIMEOUT = float(os.environ.get("PENPOT_EXPORT_TIMEOUT", "60"))
+ASSET_TIMEOUT = float(os.environ.get("PENPOT_ASSET_TIMEOUT", "30"))
+
+COOKIE_NAME = "auth-token"
+
+
+class ExporterError(RuntimeError):
+    """A Penpot login, export, or asset fetch failed. Always names what."""
+
+
+# --- transit (json-verbose subset) ------------------------------------------
+#
+# Kept private and minimal: keywords, uuids, strings, numbers, booleans, nil,
+# maps and vectors -- exactly what export-shapes' request and response use.
+# Nothing here attempts the rest of the transit spec (sets, dates, symbols,
+# extension types); an unrecognised `~`-prefixed string decodes to itself
+# rather than raising, since a Penpot response can carry fields (timestamps,
+# etc.) this module has no use for and must not choke on.
+
+
+class Keyword(str):
+    """A transit keyword -- encodes as ``~:name``, unlike a plain string."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover -- debugging aid only
+        return f"Keyword({str.__str__(self)!r})"
+
+
+def _transit_key(key: Any) -> str:
+    if isinstance(key, Keyword):
+        return f"~:{key}"
+    if isinstance(key, uuid.UUID):
+        return f"~u{key}"
+    if isinstance(key, str):
+        return f"~{key}" if key.startswith("~") else key
+    raise TypeError(f"transit encode: unsupported map key type {type(key)!r}")
+
+
+def _encode_transit(value: Any) -> Any:
+    if isinstance(value, Keyword):
+        return f"~:{value}"
+    if isinstance(value, uuid.UUID):
+        return f"~u{value}"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return f"~{value}" if value.startswith("~") else value
+    if isinstance(value, Mapping):
+        return {_transit_key(k): _encode_transit(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_transit(v) for v in value]
+    raise TypeError(f"transit encode: unsupported type {type(value)!r}")
+
+
+def _decode_transit_str(text: str) -> Any:
+    if text.startswith("~:"):
+        return Keyword(text[2:])
+    if text.startswith("~u"):
+        try:
+            return uuid.UUID(text[2:])
+        except ValueError as exc:
+            raise ValueError(f"malformed transit uuid {text!r}") from exc
+    if text.startswith("~~"):
+        return text[1:]
+    return text
+
+
+def _decode_transit(value: Any) -> Any:
+    if isinstance(value, str):
+        return _decode_transit_str(value)
+    if isinstance(value, dict):
+        return {_decode_transit_str(k) if isinstance(k, str) else k:
+                 _decode_transit(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decode_transit(v) for v in value]
+    return value
+
+
+def _transit_dumps(value: Any) -> str:
+    return json.dumps(_encode_transit(value))
+
+
+def _transit_loads(text: str) -> Any:
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not valid JSON (transit is JSON-hosted): {exc}") from exc
+    return _decode_transit(raw)
+
+
+_TRANSIT_HEADERS = {
+    "content-type": "application/transit+json",
+    "accept": "application/transit+json",
+}
+
+
+# --- the client --------------------------------------------------------
+
+
+class ExporterClient:
+    """A logged-in service-account session against one Penpot instance.
+
+    Login is lazy -- the first call that needs it triggers it -- and a 401
+    from either hop triggers exactly one re-login and one retry of that same
+    request; a second 401 (or any other failure) is raised, never silently
+    swallowed or retried into staleness.
+
+    ``transport`` (an ``httpx.BaseTransport``, e.g. ``httpx.MockTransport``)
+    or a fully-built ``client`` may be injected so tests never touch the
+    network, mirroring how :mod:`awm.drawio.export` lets a fake render
+    callable stand in for the real container.
+    """
+
+    def __init__(self, *, base_url: str | None = None,
+                 exporter_url: str | None = None,
+                 username: str | None = None, password: str | None = None,
+                 transport: httpx.BaseTransport | None = None,
+                 client: httpx.Client | None = None) -> None:
+        self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
+        self._exporter_url = (exporter_url or DEFAULT_EXPORTER_URL).rstrip("/")
+        self._username = username if username is not None else DEFAULT_USERNAME
+        self._password = password if password is not None else DEFAULT_PASSWORD
+        self._client = client if client is not None else httpx.Client(transport=transport)
+        self._token: str | None = None
+        self._profile_id: uuid.UUID | None = None
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> "ExporterClient":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    # --- auth ------------------------------------------------------------
+
+    def _login(self) -> None:
+        if not self._username or not self._password:
+            raise ExporterError(
+                "penpot service-account credentials are not configured "
+                "(PENPOT_SERVICE_USERNAME / PENPOT_SERVICE_PASSWORD)")
+        url = f"{self._base_url}{LOGIN_PATH}"
+        body = _transit_dumps({
+            Keyword("email"): self._username,
+            Keyword("password"): self._password,
+        })
+        try:
+            resp = self._client.request(
+                "POST", url, content=body, timeout=LOGIN_TIMEOUT,
+                headers=_TRANSIT_HEADERS)
+        except httpx.HTTPError as exc:
+            raise ExporterError(f"login to {url} failed: {exc}") from exc
+        if resp.status_code != 200:
+            raise ExporterError(f"login to {url} failed: HTTP {resp.status_code}")
+        token = resp.cookies.get(COOKIE_NAME)
+        if not token:
+            raise ExporterError(
+                f"login to {url} returned HTTP 200 but set no "
+                f"{COOKIE_NAME!r} cookie")
+        try:
+            profile = _transit_loads(resp.text)
+        except ValueError as exc:
+            raise ExporterError(
+                f"login response from {url} could not be parsed as "
+                f"transit: {exc}") from exc
+        profile_id = profile.get("id") if isinstance(profile, Mapping) else None
+        if not isinstance(profile_id, uuid.UUID):
+            raise ExporterError(
+                f"login response from {url} had no usable profile id: "
+                f"{profile!r}")
+        self._token = token
+        self._profile_id = profile_id
+        log.info("penpot-view: logged in to %s as service account", self._base_url)
+
+    def _ensure_authed(self) -> None:
+        if self._token is None or self._profile_id is None:
+            self._login()
+
+    def _authed_request(self, method: str, url: str, *, timeout: float,
+                        headers: dict[str, str] | None = None,
+                        retried: bool = False, **kwargs: Any) -> httpx.Response:
+        self._ensure_authed()
+        # Set explicitly per request, as a header rather than via httpx's
+        # cookies= kwarg (deprecated in 0.28 and jar-scoped anyway) -- a
+        # re-login must swap the token on the very next call, not merge with
+        # whatever the client's jar remembered.
+        merged_headers = dict(headers or {})
+        merged_headers["cookie"] = f"{COOKIE_NAME}={self._token}"
+        resp = self._client.request(method, url, headers=merged_headers,
+                                    timeout=timeout, **kwargs)
+        if resp.status_code == 401 and not retried:
+            log.warning(
+                "penpot-view: %s %s got 401; auth-token stale or rejected, "
+                "re-logging in once", method, url)
+            self._token = None
+            self._profile_id = None
+            self._login()
+            return self._authed_request(method, url, timeout=timeout,
+                                        headers=headers, retried=True, **kwargs)
+        return resp
+
+    # --- export ------------------------------------------------------------
+
+    def export_svg(self, *, file_id: str, page_id: str, object_id: str,
+                    name: str, scale: float = 1.0, suffix: str = "") -> bytes:
+        """Render one board/shape to SVG and return the raw bytes.
+
+        Raises :class:`ExporterError`, always naming what failed, for
+        anything short of a genuine SVG payload -- a non-200 on either hop,
+        the exporter's 401-once-retried case exhausted, an asset URI that
+        does not point at the frontend, a 204/zero-byte/wrong-content-type
+        asset response, or an expired (404/410) tempfile.
+        """
+        for label, value in (("file-id", file_id), ("page-id", page_id),
+                             ("object-id", object_id)):
+            if not is_uuid(value):
+                raise ExporterError(f"{label} {value!r} is not a Penpot UUID")
+
+        self._ensure_authed()
+        uri = self._export_shapes(file_id=file_id, page_id=page_id,
+                                  object_id=object_id, name=name,
+                                  scale=scale, suffix=suffix)
+
+        # The one check that stands between "fetched the render" and
+        # "fetched a silent 204 from the backend" -- see the module
+        # docstring. Refuse before spending a request on the wrong host.
+        if not uri.startswith(self._base_url):
+            raise ExporterError(
+                f"asset uri {uri!r} does not start with the frontend base "
+                f"{self._base_url!r} -- refusing to fetch it, since "
+                "anything else risks the backend's storage layer answering "
+                "a bodyless 204 that would look like a successful export")
+
+        return self._fetch_asset(uri)
+
+    def _export_shapes(self, *, file_id: str, page_id: str, object_id: str,
+                       name: str, scale: float, suffix: str) -> str:
+        url = f"{self._exporter_url}{EXPORT_PATH}"
+        body = _transit_dumps({
+            Keyword("cmd"): Keyword("export-shapes"),
+            Keyword("profile-id"): self._profile_id,
+            Keyword("exports"): [{
+                Keyword("page-id"): uuid.UUID(page_id),
+                Keyword("file-id"): uuid.UUID(file_id),
+                Keyword("object-id"): uuid.UUID(object_id),
+                Keyword("type"): Keyword("svg"),
+                Keyword("suffix"): suffix,
+                Keyword("scale"): scale,
+                Keyword("name"): name,
+            }],
+            Keyword("wait"): True,
+        })
+        resp = self._authed_request(
+            "POST", url, timeout=EXPORT_TIMEOUT, content=body,
+            headers=_TRANSIT_HEADERS)
+        if resp.status_code != 200:
+            raise ExporterError(
+                f"export-shapes for {file_id}/{page_id}/{object_id} failed: "
+                f"HTTP {resp.status_code} from {url}")
+        try:
+            resource = _transit_loads(resp.text)
+        except ValueError as exc:
+            raise ExporterError(
+                f"export-shapes response for {file_id}/{page_id}/{object_id} "
+                f"could not be parsed as transit: {exc}") from exc
+        if not isinstance(resource, Mapping):
+            raise ExporterError(
+                f"export-shapes response for {file_id}/{page_id}/{object_id} "
+                f"was not a map: {resource!r}")
+        uri = resource.get("uri")
+        if not uri:
+            raise ExporterError(
+                f"export-shapes response for {file_id}/{page_id}/{object_id} "
+                f"had no 'uri': {resource!r}")
+        return uri
+
+    def _fetch_asset(self, uri: str) -> bytes:
+        resp = self._authed_request("GET", uri, timeout=ASSET_TIMEOUT,
+                                    headers={"accept": "image/svg+xml"})
+
+        # HTTP 204 + x-accel-redirect is serve-object-from-fs's signal to an
+        # nginx `internal` location it does not itself have -- getting it
+        # here means the request reached the backend/storage layer directly.
+        # See the module docstring: this is a hard error, never an empty
+        # success.
+        if resp.status_code == 204:
+            raise ExporterError(
+                f"asset {uri} answered HTTP 204 with no body -- this is "
+                "serve-object-from-fs's x-accel-redirect signal (see "
+                "backend/src/app/http/assets.clj), meaning the request "
+                "reached Penpot's storage layer directly instead of being "
+                "resolved by the frontend nginx's internal /internal/assets "
+                "location; fetch the asset through the frontend, never the "
+                "backend")
+        if resp.status_code in (404, 410):
+            raise ExporterError(
+                f"asset {uri} is gone (HTTP {resp.status_code}) -- likely "
+                "past Penpot's 10-minute tempfile expiry; this is a hard "
+                "failure to surface, not something to retry into staleness")
+        if resp.status_code != 200:
+            raise ExporterError(f"asset {uri} fetch failed: HTTP {resp.status_code}")
+
+        content_type = resp.headers.get("content-type", "")
+        if not content_type.startswith("image/svg+xml"):
+            raise ExporterError(
+                f"asset {uri} content-type is {content_type!r}, not "
+                "image/svg+xml -- tempfile is not in public-buckets, so an "
+                "unauthenticated or otherwise wrong response here shows up "
+                "as an attachment download, not SVG bytes; refusing to hand "
+                "it back as a render")
+
+        data = resp.content
+        if not data:
+            raise ExporterError(f"asset {uri} returned zero bytes")
+        return data

@@ -1,0 +1,274 @@
+"""The export -> fetch round trip, and the ways it goes silently wrong.
+
+Every scenario pinned here is a way the client could return a blank or stale
+SVG while looking like it succeeded: fetching the asset from the wrong host,
+accepting an empty or mistyped body, or retrying an authentication failure
+into an infinite loop instead of surfacing it. None of this touches a live
+Penpot -- ``httpx.MockTransport`` stands in for both the frontend and the
+exporter.
+"""
+
+from __future__ import annotations
+
+import uuid as uuidlib
+
+import httpx
+import pytest
+
+from awm.penpot_view import exporter_client as EC
+
+BASE_URL = "http://penpot.example"
+EXPORTER_URL = "http://exporter.example"
+
+FILE_ID = "0197f9d2-1a2b-73aa-8b9c-1234567890ab"
+PAGE_ID = "0197f9d2-1a2b-73aa-8b9c-1234567890ac"
+OBJECT_ID = "0197f9d2-1a2b-73aa-8b9c-1234567890ad"
+ASSET_ID = "0197f9d2-1a2b-73aa-8b9c-1234567890ae"
+PROFILE_ID = uuidlib.UUID("0197f9d2-1a2b-73aa-8b9c-1234567890af")
+
+ASSET_URI = f"{BASE_URL}/assets/by-id/{ASSET_ID}"
+SVG_BYTES = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+
+# --- fake Penpot -------------------------------------------------------
+
+def _login_handler(*, token: str = "svc-token", profile_id=PROFILE_ID):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = EC._transit_dumps({EC.Keyword("id"): profile_id})
+        return httpx.Response(
+            200, text=body,
+            headers={
+                "content-type": "application/transit+json",
+                "set-cookie": f"auth-token={token}; Path=/; HttpOnly",
+            },
+        )
+    return handler
+
+
+def _export_ok_handler(*, uri: str = ASSET_URI):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = EC._transit_dumps({EC.Keyword("uri"): uri})
+        return httpx.Response(200, text=body,
+                              headers={"content-type": "application/transit+json"})
+    return handler
+
+
+def _asset_handler(*, status: int = 200, body: bytes | None = SVG_BYTES,
+                   content_type: str | None = "image/svg+xml",
+                   extra_headers: dict | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = dict(extra_headers or {})
+        if content_type is not None:
+            headers["content-type"] = content_type
+        return httpx.Response(status, content=(body or b""), headers=headers)
+    return handler
+
+
+def _router(*, login=None, export=None, asset=None):
+    login = login or _login_handler()
+    export = export or _export_ok_handler()
+    asset = asset or _asset_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == EC.LOGIN_PATH:
+            return login(request)
+        if request.url.path == EC.EXPORT_PATH:
+            return export(request)
+        return asset(request)
+    return handler
+
+
+def _client(*, login=None, export=None, asset=None) -> EC.ExporterClient:
+    transport = httpx.MockTransport(_router(login=login, export=export, asset=asset))
+    return EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                             username="svc-account", password="hunter2",
+                             transport=transport)
+
+
+def _export(client: EC.ExporterClient) -> bytes:
+    return client.export_svg(file_id=FILE_ID, page_id=PAGE_ID,
+                             object_id=OBJECT_ID, name="board")
+
+
+# --- the happy path ----------------------------------------------------
+
+def test_happy_path_export_returns_the_rendered_svg_bytes():
+    assert _export(_client()) == SVG_BYTES
+
+
+# --- the headline regression --------------------------------------------
+
+def test_204_with_x_accel_redirect_is_a_hard_error_not_an_empty_success():
+    """serve-object-from-fs answers a bare (non-nginx) asset request with
+    HTTP 204 and zero bytes -- a client that reads that as "done" produces a
+    blank SVG that looks exactly like a successful export."""
+    asset = _asset_handler(status=204, body=b"", content_type=None,
+                           extra_headers={"x-accel-redirect": "/internal/assets/x"})
+    with pytest.raises(EC.ExporterError, match="204"):
+        _export(_client(asset=asset))
+
+
+# --- other ways an asset response lies ----------------------------------
+
+def test_zero_byte_asset_body_is_a_hard_error():
+    asset = _asset_handler(body=b"")
+    with pytest.raises(EC.ExporterError, match="zero bytes"):
+        _export(_client(asset=asset))
+
+
+def test_non_svg_content_type_is_a_hard_error():
+    """An unauthenticated or misrouted fetch comes back as an attachment
+    download, not SVG bytes -- the wrong content-type must not be handed
+    back to the caller as if it were the render."""
+    asset = _asset_handler(content_type="application/octet-stream")
+    with pytest.raises(EC.ExporterError, match="content-type"):
+        _export(_client(asset=asset))
+
+
+def test_asset_fetch_carries_the_auth_token_cookie():
+    """`tempfile` is not in Penpot's public-buckets list -- the asset GET
+    needs the same auth-token cookie as the export POST, not just the
+    export POST."""
+    seen = {}
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen["cookie"] = request.headers.get("cookie", "")
+        return httpx.Response(200, content=SVG_BYTES,
+                              headers={"content-type": "image/svg+xml"})
+
+    _export(_client(asset=asset))
+    assert "auth-token=svc-token" in seen["cookie"]
+
+
+def test_expired_tempfile_surfaces_as_a_failure_not_a_silent_retry():
+    """Racing past Penpot's 10-minute tempfile expiry must be reported, not
+    quietly retried -- the drawio session's client once read a transient
+    failure as "unchanged" and left stale content on screen with nothing
+    logged."""
+    calls = {"asset": 0}
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        calls["asset"] += 1
+        return httpx.Response(404)
+
+    with pytest.raises(EC.ExporterError, match="404"):
+        _export(_client(asset=asset))
+    assert calls["asset"] == 1
+
+
+def test_asset_uri_that_does_not_point_at_the_frontend_is_refused():
+    """Belt-and-braces on top of the 204 check: even if a misconfigured
+    exporter handed back a backend-hosted URI, this client must refuse to
+    fetch it rather than "helpfully" following it to the wrong host."""
+    export = _export_ok_handler(uri="http://penpot-backend:6060/assets/by-id/x")
+    with pytest.raises(EC.ExporterError, match="frontend"):
+        _export(_client(export=export))
+
+
+# --- auth ---------------------------------------------------------------
+
+def test_401_on_export_triggers_exactly_one_relogin_then_succeeds():
+    """A stale auth-token cookie must not become a bare failure, and must
+    not become an infinite retry loop either -- exactly one re-login, then
+    the original request completes."""
+    calls = {"login": 0, "export": 0}
+    tokens = iter(["first-token", "second-token"])
+
+    def login(request: httpx.Request) -> httpx.Response:
+        calls["login"] += 1
+        token = next(tokens)
+        body = EC._transit_dumps({EC.Keyword("id"): PROFILE_ID})
+        return httpx.Response(200, text=body, headers={
+            "content-type": "application/transit+json",
+            "set-cookie": f"auth-token={token}; Path=/",
+        })
+
+    def export(request: httpx.Request) -> httpx.Response:
+        calls["export"] += 1
+        if calls["export"] == 1:
+            return httpx.Response(401)
+        assert "auth-token=second-token" in request.headers.get("cookie", "")
+        body = EC._transit_dumps({EC.Keyword("uri"): ASSET_URI})
+        return httpx.Response(200, text=body,
+                              headers={"content-type": "application/transit+json"})
+
+    data = _export(_client(login=login, export=export))
+    assert data == SVG_BYTES
+    assert calls["login"] == 2
+    assert calls["export"] == 2
+
+
+def test_a_second_401_after_relogin_is_not_retried_again():
+    """One retry, never a loop -- a persistently-rejected service account
+    must surface as an error."""
+    def export_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    with pytest.raises(EC.ExporterError, match="401"):
+        _export(_client(export=export_handler))
+
+
+# --- explicit timeouts ---------------------------------------------------
+
+def test_every_request_carries_an_explicit_non_none_timeout():
+    """A wedged exporter must not pin a hub request forever -- see the
+    shared client in awm/gateway/awm/gateway/hub/proxy.py, whose
+    timeout=None is exactly the failure mode this refuses."""
+    client = _client()
+    seen_timeouts = []
+    real_request = client._client.request
+
+    def spy(method, url, **kwargs):
+        seen_timeouts.append(kwargs.get("timeout"))
+        return real_request(method, url, **kwargs)
+
+    client._client.request = spy
+    _export(client)
+
+    assert len(seen_timeouts) >= 3  # login, export, asset
+    assert all(t is not None for t in seen_timeouts)
+
+
+# --- transit -------------------------------------------------------------
+
+def test_transit_round_trips_keywords_uuids_maps_and_vectors():
+    value = {
+        EC.Keyword("cmd"): EC.Keyword("export-shapes"),
+        EC.Keyword("profile-id"): PROFILE_ID,
+        EC.Keyword("wait"): True,
+        EC.Keyword("exports"): [
+            {
+                EC.Keyword("page-id"): uuidlib.UUID(PAGE_ID),
+                EC.Keyword("scale"): 2,
+                EC.Keyword("name"): "board",
+            },
+        ],
+    }
+    decoded = EC._transit_loads(EC._transit_dumps(value))
+    assert decoded["cmd"] == "export-shapes"
+    assert decoded["profile-id"] == PROFILE_ID
+    assert decoded["wait"] is True
+    export_entry = decoded["exports"][0]
+    assert export_entry["page-id"] == uuidlib.UUID(PAGE_ID)
+    assert export_entry["scale"] == 2
+    assert export_entry["name"] == "board"
+
+
+def test_encoded_export_body_uses_keyword_and_uuid_transit_forms():
+    """The wire format itself, not just the round trip -- a decoder that
+    happens to agree with its own encoder would miss a shape the real
+    exporter refuses."""
+    body = EC._transit_dumps({
+        EC.Keyword("cmd"): EC.Keyword("export-shapes"),
+        EC.Keyword("profile-id"): PROFILE_ID,
+    })
+    assert '"~:cmd"' in body
+    assert '"~:export-shapes"' in body
+    assert f'"~u{PROFILE_ID}"' in body
+
+
+def test_transit_string_that_looks_like_an_escape_is_not_misread():
+    """A literal string starting with '~' must round-trip as itself, not be
+    mistaken for a keyword/uuid/escape tag."""
+    decoded = EC._transit_loads(EC._transit_dumps({EC.Keyword("k"): "~odd"}))
+    assert decoded["k"] == "~odd"
