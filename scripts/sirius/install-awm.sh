@@ -89,6 +89,26 @@ if ! sudo cmp -s "$want" "$ENABLED"; then
 fi
 rm -f "$want"
 
+step "trilium settings"
+# Not in provision.sh, though that script creates /etc/awm/env: deploy.sh runs
+# this one and never that one, so a key added there would reach an already
+# provisioned box only if someone re-ran provision.sh by hand.
+#
+# Added once and never rewritten, the same rule provision.sh uses, so a hand
+# edit on the box survives a deploy.
+AWM_ENV_FILE=/etc/awm/env
+if ! sudo test -f "$AWM_ENV_FILE"; then
+    echo "   no $AWM_ENV_FILE — run provision.sh first"
+else
+    # nginx is the public edge here and ufw admits 80 and 443 from Cloudflare
+    # alone, so a per-user TLS front in the 12501 band would bind a port nothing
+    # can reach and mint a certificate nothing would trust.
+    if ! sudo grep -q '^TRILIUM_FRONTS=' "$AWM_ENV_FILE"; then
+        echo 'TRILIUM_FRONTS=0' | sudo tee -a "$AWM_ENV_FILE" >/dev/null
+        echo "   $AWM_ENV_FILE: TRILIUM_FRONTS=0"
+    fi
+fi
+
 step "trilium vhosts"
 # The parent name the per-user vhosts hang off, e.g. `tony.notes.example.com`.
 # Unset: no vhost, and each person's Trilium answers on loopback only.
