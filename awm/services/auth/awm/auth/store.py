@@ -12,8 +12,14 @@ Owns two things in the service's own SQLite DB:
   which is exactly what lets a client keep working across a rotation without
   re-authenticating.
 
+* **User accounts** — ``awm_users`` holds one scrypt-hashed static password
+  per username (set by the admin CLI, never rotated), and ``awm_login_fail``
+  the failed-attempt counters that back the lockout, keyed ``u:<name>`` and
+  ``ip:<addr>``.
+
 This module is pure storage — the rotation *policy* (when to mint, the Discord
-push, the ``$AWM_PEER_CRED`` file) lives in :mod:`awm.auth.service`.
+push, the ``$AWM_PEER_CRED`` file), password hashing and the lockout policy live
+in :mod:`awm.auth.service`.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from typing import Any
 from awm.persistence.databases import get_connection, init_service_db
 
 SERVICE = "auth"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE awm_secret (
@@ -39,12 +45,46 @@ CREATE TABLE awm_credentials (
     minted_at      REAL NOT NULL,
     expires_at     REAL NOT NULL
 );
+CREATE TABLE awm_users (
+    username   TEXT PRIMARY KEY,
+    pw_hash    TEXT NOT NULL,
+    pw_salt    TEXT NOT NULL,
+    pw_params  TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    disabled   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE awm_login_fail (
+    key          TEXT PRIMARY KEY,
+    fails        INTEGER NOT NULL DEFAULT 0,
+    locked_until REAL NOT NULL DEFAULT 0,
+    last_at      REAL NOT NULL DEFAULT 0
+);
 """
+
+_MIGRATIONS: dict[tuple[int, int], str] = {
+    (1, 2): """\
+CREATE TABLE IF NOT EXISTS awm_users (
+    username   TEXT PRIMARY KEY,
+    pw_hash    TEXT NOT NULL,
+    pw_salt    TEXT NOT NULL,
+    pw_params  TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    disabled   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS awm_login_fail (
+    key          TEXT PRIMARY KEY,
+    fails        INTEGER NOT NULL DEFAULT 0,
+    locked_until REAL NOT NULL DEFAULT 0,
+    last_at      REAL NOT NULL DEFAULT 0
+);
+""",
+}
 
 
 def init() -> None:
     """Create the auth DB (idempotent)."""
-    init_service_db(SERVICE, _SCHEMA, schema_version=_SCHEMA_VERSION)
+    init_service_db(SERVICE, _SCHEMA, schema_version=_SCHEMA_VERSION,
+                    migrations=_MIGRATIONS)
 
 
 # --- signing secret --------------------------------------------------------
@@ -147,5 +187,119 @@ def prune_expired(now: float | None = None) -> int:
         cur = conn.execute("DELETE FROM awm_credentials WHERE expires_at <= ?", (now,))
         conn.commit()
         return cur.rowcount
+    finally:
+        conn.close()
+
+
+# --- user accounts ---------------------------------------------------------
+
+
+def _user_row(row: Any) -> dict[str, Any]:
+    return {
+        "username": row["username"],
+        "pw_hash": row["pw_hash"],
+        "pw_salt": row["pw_salt"],
+        "pw_params": row["pw_params"],
+        "created_at": row["created_at"],
+        "disabled": bool(row["disabled"]),
+    }
+
+
+def user_get(username: str) -> dict[str, Any] | None:
+    conn = get_connection(SERVICE)
+    try:
+        row = conn.execute(
+            "SELECT * FROM awm_users WHERE username = ?", (username,)).fetchone()
+        return _user_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def user_list() -> list[dict[str, Any]]:
+    conn = get_connection(SERVICE)
+    try:
+        rows = conn.execute("SELECT * FROM awm_users ORDER BY username").fetchall()
+        return [_user_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def user_upsert(username: str, *, pw_hash: str, pw_salt: str, pw_params: str,
+                now: float | None = None) -> dict[str, Any]:
+    """Create ``username`` or replace its password material. Keeps ``disabled``
+    and ``created_at`` on an existing row."""
+    now = time.time() if now is None else now
+    conn = get_connection(SERVICE)
+    try:
+        conn.execute(
+            "INSERT INTO awm_users (username, pw_hash, pw_salt, pw_params, created_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(username) DO UPDATE SET pw_hash = excluded.pw_hash, "
+            "pw_salt = excluded.pw_salt, pw_params = excluded.pw_params",
+            (username, pw_hash, pw_salt, pw_params, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return user_get(username)  # type: ignore[return-value]
+
+
+def user_set_disabled(username: str, disabled: bool) -> bool:
+    conn = get_connection(SERVICE)
+    try:
+        cur = conn.execute(
+            "UPDATE awm_users SET disabled = ? WHERE username = ?",
+            (1 if disabled else 0, username))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# --- login-failure counters --------------------------------------------------
+
+
+def fail_get(key: str) -> dict[str, Any]:
+    conn = get_connection(SERVICE)
+    try:
+        row = conn.execute(
+            "SELECT * FROM awm_login_fail WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return {"key": key, "fails": 0, "locked_until": 0.0, "last_at": 0.0}
+        return {"key": key, "fails": row["fails"],
+                "locked_until": row["locked_until"], "last_at": row["last_at"]}
+    finally:
+        conn.close()
+
+
+def fail_record(key: str, *, threshold: int, lock_seconds: float,
+                now: float | None = None) -> dict[str, Any]:
+    """Count one failed attempt on ``key``. Reaching ``threshold`` locks the key
+    for ``lock_seconds`` and resets the counter for the next window."""
+    now = time.time() if now is None else now
+    cur = fail_get(key)
+    fails = cur["fails"] + 1
+    locked_until = cur["locked_until"]
+    if fails >= threshold:
+        locked_until = now + lock_seconds
+        fails = 0
+    conn = get_connection(SERVICE)
+    try:
+        conn.execute(
+            "INSERT INTO awm_login_fail (key, fails, locked_until, last_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET fails = excluded.fails, "
+            "locked_until = excluded.locked_until, last_at = excluded.last_at",
+            (key, fails, locked_until, now))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"key": key, "fails": fails, "locked_until": locked_until, "last_at": now}
+
+
+def fail_clear(key: str) -> None:
+    conn = get_connection(SERVICE)
+    try:
+        conn.execute("DELETE FROM awm_login_fail WHERE key = ?", (key,))
+        conn.commit()
     finally:
         conn.close()

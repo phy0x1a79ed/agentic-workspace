@@ -244,6 +244,7 @@ async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
     # test of the push-status wiring, not a DB integration test.
     monkeypatch.setattr(store, "latest", lambda: None)
     monkeypatch.setattr(store, "valid_generations", lambda: [])
+    monkeypatch.setattr(store, "user_list", lambda: [])
 
     await service._push_password_to_discord(PASSWORD, 0.0)
 

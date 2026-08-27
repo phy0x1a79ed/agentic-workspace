@@ -46,6 +46,16 @@ class AuthSettings(BaseModel):
         description="Hard ceiling on total session age; sliding refresh stops "
                     "past this and re-login is required.",
     )
+    lockout_threshold: int = Field(
+        default=6,
+        description="Consecutive failed logins (per username and per client "
+                    "IP) before further attempts are refused for a while.",
+    )
+    lockout_minutes: float = Field(
+        default=15.0,
+        description="How long a username or client IP stays locked after "
+                    "reaching lockout_threshold.",
+    )
     push_enabled: bool = Field(
         default=True,
         description="Push the day's login password to Discord on each mint.",

@@ -28,8 +28,16 @@ run "$WS/awm/service_components/gatewayclient" --no-deps
 # Feature services the gateway loads. Each install.sh owns its own
 # `.runtime-env` sidecar. The glob may match nothing; guard so set -u/-e does
 # not choke on the literal unexpanded pattern.
+# AWM_SERVICES, when set, is a space-separated allow-list of service names:
+# a host that enables only a few services installs only those. Set but empty
+# installs the gateway alone.
 for s in "$WS"/awm/services/*/install.sh; do
     [ -e "$s" ] || continue
+    name="$(basename "$(dirname "$s")")"
+    if [ -n "${AWM_SERVICES+x}" ] && ! grep -qw -- "$name" <<<"$AWM_SERVICES"; then
+        echo "- skipping service (not in AWM_SERVICES): $name"
+        continue
+    fi
     echo "+ installing service: $s"
     bash "$s"
 done

@@ -16,7 +16,11 @@ run "$WS/awm/service_components/gatewayclient" --no-deps
 # This service embeds + queries vectors, so it also needs persistence's
 # `search` extra (sentence-transformers + sqlite-vec, on the CPU torch wheel).
 # Opt-in on purpose — see that script for why it is not a declared dependency.
-bash "$WS/awm/service_components/persistence/install-search.sh" "$ENV"
+# AWM_SEARCH=0 skips it (a small public host): FTS keeps working, semantic
+# search reports the typed "search extra not installed" error.
+if [[ "${AWM_SEARCH:-1}" != "0" ]]; then
+    bash "$WS/awm/service_components/persistence/install-search.sh" "$ENV"
+fi
 run "$WS/awm/services/scopes"
 
 # Bake the target env's absolute interpreter into a gitignored `.runtime-env`

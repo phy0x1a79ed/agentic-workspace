@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# Provision sirius (the nexus.tony-xy-liu.com origin). Run as root, from a
+# copy of scripts/sirius/ on the box:
+#
+#   provision.sh <dev-user-pubkey-file>
+#
+# Idempotent: every step checks before it changes, so a re-run on a finished
+# box is a no-op. Steps, in order:
+#   1. dev user (key-only login, passwordless sudo)
+#   2. sshd lock-down — only when invoked through the dev user's own sudo,
+#      which is the proof that the dev login works
+#   3. dist-upgrade, unattended security updates, swap
+#   4. ufw (22 open, 80/443 from Cloudflare only) + fail2ban sshd jail
+#   5. app user, install root, /etc/awm, nginx vhost
+# The nexus TLS vhost is installed only once /etc/awm/origin.pem exists.
+# Until then nginx serves the placeholder on :80.
+set -euo pipefail
+
+DEV_USER=${DEV_USER:-tony}
+APP_USER=awm
+INSTALL_ROOT=/opt/awm
+STATE_ROOT=/var/lib/awm
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ETC="$HERE/etc"
+
+[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+[ $# -ge 1 ] && [ -r "$1" ] || { echo "usage: $0 <dev-user-pubkey-file>" >&2; exit 1; }
+PUBKEY_FILE="$1"
+
+step() { echo; echo "== $*"; }
+changed=0
+note() { changed=1; echo "   + $*"; }
+
+# install <src> <dst> <mode> [owner]; returns 0 when it changed the file.
+put() {
+    local src=$1 dst=$2 mode=$3 owner=${4:-root:root}
+    if [ -f "$dst" ] && cmp -s "$src" "$dst" \
+        && [ "$(stat -c '%a %U:%G' "$dst")" = "$mode $owner" ]; then
+        return 1
+    fi
+    install -D -m "$mode" -o "${owner%%:*}" -g "${owner##*:}" "$src" "$dst"
+    note "installed $dst"
+}
+
+# ---------------------------------------------------------------- 1. dev user
+step "dev user $DEV_USER"
+if ! id "$DEV_USER" >/dev/null 2>&1; then
+    adduser --disabled-password --gecos "" "$DEV_USER"
+    note "created $DEV_USER"
+fi
+id -nG "$DEV_USER" | tr ' ' '\n' | grep -qx sudo || { usermod -aG sudo "$DEV_USER"; note "added to sudo"; }
+SSH_DIR="/home/$DEV_USER/.ssh"
+install -d -m 700 -o "$DEV_USER" -g "$DEV_USER" "$SSH_DIR"
+if ! grep -qxF "$(cat "$PUBKEY_FILE")" "$SSH_DIR/authorized_keys" 2>/dev/null; then
+    cat "$PUBKEY_FILE" >> "$SSH_DIR/authorized_keys"
+    note "authorized key"
+fi
+chown "$DEV_USER:$DEV_USER" "$SSH_DIR/authorized_keys"; chmod 600 "$SSH_DIR/authorized_keys"
+SUDOERS_LINE="$DEV_USER ALL=(ALL) NOPASSWD:ALL"
+if [ "$(cat /etc/sudoers.d/$DEV_USER 2>/dev/null)" != "$SUDOERS_LINE" ]; then
+    echo "$SUDOERS_LINE" > "/etc/sudoers.d/$DEV_USER.tmp"
+    visudo -cf "/etc/sudoers.d/$DEV_USER.tmp" >/dev/null
+    install -m 440 "/etc/sudoers.d/$DEV_USER.tmp" "/etc/sudoers.d/$DEV_USER"
+    rm -f "/etc/sudoers.d/$DEV_USER.tmp"
+    note "sudoers"
+fi
+put "$ETC/profile.d/awm.sh" /etc/profile.d/awm.sh 644 || true
+grep -qx 'AWM_WORKSPACE=/opt/awm' /etc/environment || { echo 'AWM_WORKSPACE=/opt/awm' >> /etc/environment; note "AWM_WORKSPACE in /etc/environment (ssh command shells)"; }
+
+# ------------------------------------------------------------------- 2. sshd
+step "sshd"
+if [ "${SUDO_USER:-}" = "$DEV_USER" ]; then
+    if put "$ETC/ssh/90-hardening.conf" /etc/ssh/sshd_config.d/90-hardening.conf 644; then
+        sshd -t
+        systemctl reload ssh
+        note "sshd reloaded: root login off, AllowUsers $DEV_USER"
+    fi
+    if [ -f /etc/sudoers.d/90-cloud-init-users ]; then
+        rm -f /etc/sudoers.d/90-cloud-init-users; note "removed cloud-init sudoers"
+    fi
+else
+    echo "   SKIPPED: sshd stays open. Log in as $DEV_USER and re-run via sudo to lock it."
+fi
+
+# --------------------------------------------------------------- 3. packages
+step "packages"
+export DEBIAN_FRONTEND=noninteractive
+apt-get -qq update
+if [ "$(apt-get -s dist-upgrade | grep -c '^Inst ')" -gt 0 ]; then
+    apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade
+    note "dist-upgrade"
+fi
+for p in ufw fail2ban unattended-upgrades nginx curl git; do
+    dpkg -s "$p" >/dev/null 2>&1 || { apt-get -y install "$p"; note "installed $p"; }
+done
+put "$ETC/apt/52unattended-upgrades-sirius" /etc/apt/apt.conf.d/52unattended-upgrades-sirius 644 || true
+systemctl is-enabled -q unattended-upgrades || { systemctl enable -q unattended-upgrades; note "unattended-upgrades enabled"; }
+
+if [ ! -f /swapfile ]; then
+    fallocate -l 2G /swapfile; chmod 600 /swapfile; mkswap -q /swapfile
+    note "swapfile"
+fi
+grep -q '^/swapfile' /etc/fstab || { echo '/swapfile none swap sw 0 0' >> /etc/fstab; note "fstab swap"; }
+swapon --show | grep -q /swapfile || swapon /swapfile
+[ "$(cat /etc/sysctl.d/90-swappiness.conf 2>/dev/null)" = "vm.swappiness=10" ] \
+    || { echo "vm.swappiness=10" > /etc/sysctl.d/90-swappiness.conf; sysctl -q vm.swappiness=10; note "swappiness"; }
+
+# --------------------------------------------------------- 4. firewall + jail
+step "cloudflare ranges"
+CF_V4=$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4)
+[ -n "$CF_V4" ] || { echo "empty Cloudflare list" >&2; exit 1; }
+tmp=$(mktemp)
+{
+    echo "# generated by scripts/sirius/provision.sh from https://www.cloudflare.com/ips-v4"
+    for cidr in $CF_V4; do echo "set_real_ip_from $cidr;"; done
+    echo "real_ip_header CF-Connecting-IP;"
+} > "$tmp"
+put "$tmp" /etc/nginx/snippets/cloudflare-real-ip.conf 644 || true
+rm -f "$tmp"
+
+step "ufw"
+ufw status verbose | grep -q 'Default: deny (incoming)' || { ufw --force default deny incoming >/dev/null; note "default deny"; }
+ufw status verbose | grep -q 'allow (outgoing)' || { ufw --force default allow outgoing >/dev/null; note "default allow out"; }
+rules=$(ufw status | sed 1,4d)
+echo "$rules" | grep -q '^22/tcp *ALLOW *Anywhere' || { ufw allow 22/tcp >/dev/null; note "allow 22"; }
+for cidr in $CF_V4; do
+    echo "$rules" | grep -q "^80,443/tcp *ALLOW *$cidr" \
+        || { ufw allow from "$cidr" to any port 80,443 proto tcp >/dev/null; note "allow 80,443 from $cidr"; }
+done
+ufw status | grep -q '^Status: active' || { ufw --force enable >/dev/null; note "ufw enabled"; }
+
+step "fail2ban"
+put "$ETC/fail2ban/sshd.local" /etc/fail2ban/jail.d/sshd.local 644 && systemctl restart fail2ban || true
+systemctl is-enabled -q fail2ban || { systemctl enable -q --now fail2ban; note "fail2ban enabled"; }
+
+# ------------------------------------------------- 5. app user + install root
+step "app user $APP_USER"
+if ! id "$APP_USER" >/dev/null 2>&1; then
+    adduser --system --group --home "$STATE_ROOT" --shell /usr/sbin/nologin "$APP_USER"
+    note "created $APP_USER"
+fi
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$STATE_ROOT" "$STATE_ROOT/state" "$STATE_ROOT/config" "$STATE_ROOT/data" "$STATE_ROOT/projects" "$STATE_ROOT/tasks" "$STATE_ROOT/main"
+install -d -m 755 -o "$DEV_USER" -g "$APP_USER" "$INSTALL_ROOT" /opt/miniforge3
+install -d -m 750 -o root -g "$APP_USER" /etc/awm
+if [ ! -d "$INSTALL_ROOT/.git" ]; then
+    sudo -u "$DEV_USER" git -C "$INSTALL_ROOT" init -q
+    sudo -u "$DEV_USER" git -C "$INSTALL_ROOT" config receive.denyCurrentBranch updateInstead
+    note "init $INSTALL_ROOT (push into it from a dev box: see deploy.sh)"
+fi
+if [ ! -f /etc/awm/env ]; then
+    cat > /etc/awm/env <<'ENV'
+# Read by awm.service (EnvironmentFile). Secrets and per-box settings only.
+ENV
+    chmod 640 /etc/awm/env; chown "root:$APP_USER" /etc/awm/env
+    note "/etc/awm/env"
+fi
+# The public profile: every line is added once and never rewritten, so a
+# hand edit on the box survives a re-run.
+while IFS= read -r line; do
+    key=${line%%=*}
+    grep -q "^$key=" /etc/awm/env || { echo "$line" >> /etc/awm/env; note "/etc/awm/env: $key"; }
+done <<'ENV'
+FILEVIEWER_MOUNT_ROOT=/var/lib/awm
+AWM_EDGE_PROFILE=public
+AWM_EDGE_TLS=0
+AWM_HTTPS_PORT=8444
+AWM_AUTH_PROFILE=public
+AWM_USER_ROOT_STRICT=1
+AWM_DVC_BIN=/opt/miniforge3/envs/dvc/bin/dvc
+ENV
+
+step "nginx"
+install -d -m 755 /var/www/nexus
+put "$ETC/nginx/index.html" /var/www/nexus/index.html 644 || true
+put "$ETC/nginx/awm-proxy.conf" /etc/nginx/snippets/awm-proxy.conf 644 || true
+if [ -f /etc/awm/origin.pem ] && [ -f /etc/awm/origin.key ]; then
+    put "$ETC/nginx/nexus.conf" /etc/nginx/sites-available/nexus.conf 644 || true
+else
+    echo "   no /etc/awm/origin.{pem,key}: installing the :80 placeholder vhost only"
+    tmp=$(mktemp)
+    printf 'server {\n    listen 80 default_server;\n    server_name _;\n    root /var/www/nexus;\n    index index.html;\n}\n' > "$tmp"
+    put "$tmp" /etc/nginx/sites-available/nexus.conf 644 || true
+    rm -f "$tmp"
+fi
+[ -e /etc/nginx/sites-enabled/default ] && { rm -f /etc/nginx/sites-enabled/default; note "removed default vhost"; }
+[ "$(readlink /etc/nginx/sites-enabled/nexus.conf 2>/dev/null)" = /etc/nginx/sites-available/nexus.conf ] \
+    || { ln -sfn /etc/nginx/sites-available/nexus.conf /etc/nginx/sites-enabled/nexus.conf; note "enabled nexus vhost"; }
+nginx -t -q
+systemctl reload nginx
+
+echo
+[ -f /var/run/reboot-required ] && echo "REBOOT REQUIRED: $(cat /var/run/reboot-required.pkgs 2>/dev/null | tr '\n' ' ')"
+[ "$changed" -eq 1 ] && echo "provision: changed" || echo "provision: no changes"
+exit 0

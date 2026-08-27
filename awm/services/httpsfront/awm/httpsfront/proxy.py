@@ -13,6 +13,16 @@ Because the notes page (and every awm page) makes *same-origin* relative calls
 gateway wholesale is what makes those calls Just Work under HTTPS — there is no
 per-path allowlist to keep in sync.
 
+Two things the edge asserts on every proxied request: the caller is
+authenticated, and ``X-Awm-As`` names the identity the session was minted
+for (``user:<sub>``, or ``peer`` for a bearer). The browser's own value of
+that header is discarded — downstream services trust it, so only the edge may
+write it.
+
+The public profile (``AWM_EDGE_PROFILE=public``) narrows the door to the
+allow-list in :mod:`awm.httpsfront.policy` and, with ``AWM_EDGE_TLS=0``, serves
+plain HTTP on loopback for a TLS-terminating nginx in front.
+
 Built on Starlette + uvicorn (TLS) with ``httpx`` for HTTP and the ``websockets``
 client for WS bridging — all already present in the ``awm`` env (the gateway
 depends on them). Runs in a daemon thread launched from the hub adapter's
@@ -46,8 +56,8 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, store
-from awm.httpsfront.auth import COOKIE_NAME, AuthGate, bearer_of
+from awm.httpsfront import pages, policy, store
+from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
 
@@ -65,6 +75,13 @@ _ALL_METHODS = _METHODS  # alias for route registration clarity
 
 _PEER_NAME = socket.gethostname().split(".")[0].title()
 
+PUBLIC_PROFILE = "public"
+PUBLIC_HOME = "/ui/notes/"
+
+
+def _as_header(sub: str | None) -> str:
+    return PEER_SUB if sub == PEER_SUB else f"user:{sub or 'operator'}"
+
 
 def _origin_override(app) -> str | None:
     """The scheme+authority a rewriting front presents as ``Origin``, or None.
@@ -78,9 +95,12 @@ def _origin_override(app) -> str | None:
     return getattr(app.state, "origin_override", None)
 
 
-def _req_headers(request: Request) -> dict[str, str]:
+def _req_headers(request: Request, sub: str | None = None) -> dict[str, str]:
     hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
     hdrs["X-Forwarded-Proto"] = "https"
+    # Overwrite, never default: the browser's value is unverified.
+    hdrs.pop("x-awm-as", None)
+    hdrs["X-Awm-As"] = _as_header(sub)
     override = _origin_override(request.app)
     # Only rewrite a header the browser actually sent: minting an Origin where
     # there was none turns a same-origin navigation into a cross-origin one.
@@ -110,43 +130,102 @@ def _wants_html(request: Request) -> bool:
     return "text/html" in (request.headers.get("accept") or "")
 
 
-def _set_session_cookie(resp: Response, token: str, max_age: int) -> None:
+def _samesite(app) -> str:
+    return "strict" if getattr(app.state, "profile", None) == PUBLIC_PROFILE else "lax"
+
+
+def _set_session_cookie(resp: Response, token: str, max_age: int,
+                        samesite: str = "lax") -> None:
     resp.set_cookie(
         COOKIE_NAME, token, max_age=max_age, path="/",
-        httponly=True, secure=True, samesite="lax",
+        httponly=True, secure=True, samesite=samesite,
     )
+
+
+def _set_as_cookie(resp: Response, sub: str, max_age: int,
+                   samesite: str = "lax") -> None:
+    resp.set_cookie(
+        AS_COOKIE_NAME, sub, max_age=max_age, path="/",
+        httponly=False, secure=True, samesite=samesite,
+    )
+
+
+def _unpack(result) -> tuple[bool, str | None, str | None]:
+    """``(ok, refreshed, sub)`` from a gate answer; a two-tuple (an older gate)
+    means the operator."""
+    ok, refreshed = result[0], result[1]
+    sub = result[2] if len(result) > 2 else None
+    return ok, refreshed, (sub or "operator") if ok else None
 
 
 async def _authenticate(request: Request) -> tuple[bool, str | None]:
     """(ok, refreshed_cookie_token_or_None) for the current request."""
+    ok, refreshed, _ = await _authenticate_sub(request)
+    return ok, refreshed
+
+
+async def _authenticate_sub(request: Request) -> tuple[bool, str | None, str | None]:
+    """(ok, refreshed_cookie_token_or_None, sub) for the current request."""
     gate: AuthGate = request.app.state.gate
-    return await gate.authenticate(
+    return _unpack(await gate.authenticate(
         cookie=request.cookies.get(COOKIE_NAME),
         bearer=bearer_of(request.headers.get("authorization")),
-    )
+    ))
+
+
+def _is_public(app) -> bool:
+    return getattr(app.state, "profile", None) == PUBLIC_PROFILE
+
+
+def _not_found() -> Response:
+    return Response("not found", status_code=404)
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
 
 
 def _deny(request: Request) -> Response:
     """Login page for a browser GET, else 401 (API / peer)."""
     if request.method == "GET" and _wants_html(request):
-        return HTMLResponse(pages.login_page(), status_code=200)
+        return HTMLResponse(pages.login_page(public=_is_public(request.app)),
+                            status_code=200)
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
 
 
 async def _login(request: Request) -> Response:
-    """``POST /__auth/login`` — validate the password via the auth service and,
-    on success, set the session cookie."""
+    """``POST /__auth/login`` — ``{username?, password}``. Validate via the auth
+    service and, on success, set the session cookie plus the readable
+    ``awm_as`` twin. A locked username/IP answers 429 with ``Retry-After``."""
     gate: AuthGate = request.app.state.gate
     try:
         data = await request.json()
     except Exception:  # noqa: BLE001 — accept form encoding as a fallback
         form = await request.form()
-        data = {"password": form.get("password", "")}
-    token = await gate.verify_password(str((data or {}).get("password") or ""))
-    if not token:
+        data = {"password": form.get("password", ""),
+                "username": form.get("username", "")}
+    data = data or {}
+    username = str(data.get("username") or "").strip() or None
+    password = str(data.get("password") or "")
+    verify_login = getattr(gate, "verify_login", None)
+    if verify_login is None:
+        token = await gate.verify_password(password)
+        res = {"ok": True, "token": token, "sub": "operator"} if token else {"ok": False}
+    else:
+        res = await verify_login(username=username, password=password,
+                                 client_ip=_client_ip(request))
+    if res.get("locked"):
+        retry = int(res.get("retry_after") or 60)
+        return JSONResponse({"ok": False, "locked": True, "retry_after": retry},
+                            status_code=429, headers={"Retry-After": str(retry)})
+    if not res.get("ok"):
         return JSONResponse({"ok": False}, status_code=401)
-    resp = JSONResponse({"ok": True})
-    _set_session_cookie(resp, token, int(await gate.session_ttl_seconds()))
+    sub = str(res.get("sub") or "operator")
+    resp = JSONResponse({"ok": True, "user": sub})
+    ttl = int(await gate.session_ttl_seconds())
+    samesite = _samesite(request.app)
+    _set_session_cookie(resp, res["token"], ttl, samesite)
+    _set_as_cookie(resp, sub, ttl, samesite)
     return resp
 
 
@@ -188,21 +267,32 @@ async def _auth_link(request: Request) -> Response:
     if not token:
         return RedirectResponse("/", status_code=302, headers=headers)
     resp = RedirectResponse(dest, status_code=302, headers=headers)
-    _set_session_cookie(resp, token, int(await gate.session_ttl_seconds()))
+    ttl = int(await gate.session_ttl_seconds())
+    _set_session_cookie(resp, token, ttl)
+    _set_as_cookie(resp, "operator", ttl)
     return resp
 
 
 async def _logout(request: Request) -> Response:
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(COOKIE_NAME, path="/")
+    resp.delete_cookie(AS_COOKIE_NAME, path="/")
     return resp
 
 
 async def _whoami(request: Request) -> Response:
-    ok, _ = await _authenticate(request)
+    ok, _, sub = await _authenticate_sub(request)
     if ok:
-        return JSONResponse({"user": "operator"})
+        return JSONResponse({"user": sub})
     return JSONResponse({"error": "unauthenticated"}, status_code=401)
+
+
+async def _public_home(request: Request) -> Response:
+    """``/`` on the public profile: the notes page, or the login form first."""
+    ok, _, _ = await _authenticate_sub(request)
+    if not ok:
+        return _deny(request)
+    return RedirectResponse(PUBLIC_HOME, status_code=302)
 
 
 async def _root(request: Request) -> Response:
@@ -325,16 +415,22 @@ async def _landing_set_name(request: Request) -> Response:
 
 async def _http_proxy(request: Request) -> Response:
     app = request.app
-    ok, refreshed = await _authenticate(request)
+    public = _is_public(app)
+    path = request.url.path
+    if public and policy.classify(path) is policy.Verdict.DENY:
+        return _not_found()
+    ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
+    if public and not policy.allows(path, sub):
+        return _not_found()
     client: httpx.AsyncClient = app.state.client
-    url = app.state.http_up + request.url.path
+    url = app.state.http_up + path
     if request.url.query:
         url += "?" + request.url.query
     body = await request.body()
     upstream_req = client.build_request(
-        request.method, url, headers=_req_headers(request), content=body,
+        request.method, url, headers=_req_headers(request, sub), content=body,
     )
     try:
         resp = await client.send(upstream_req, stream=True)
@@ -355,7 +451,8 @@ async def _http_proxy(request: Request) -> Response:
     ]
     if refreshed:
         _set_session_cookie(out, refreshed,
-                            int(await app.state.gate.session_ttl_seconds()))
+                            int(await app.state.gate.session_ttl_seconds()),
+                            _samesite(app))
     return out
 
 
@@ -389,24 +486,30 @@ async def _ws_proxy(ws: WebSocket) -> None:
     # WS handshake (same-origin); a peer/client sends a bearer. No cookie
     # refresh on a WS (it is not an HTTP response).
     gate: AuthGate = app.state.gate
-    ok, _ = await gate.authenticate(
+    public = _is_public(app)
+    if public and policy.classify(ws.url.path) is policy.Verdict.DENY:
+        await ws.close(code=1008)
+        return
+    ok, _, sub = _unpack(await gate.authenticate(
         cookie=ws.cookies.get(COOKIE_NAME),
         bearer=bearer_of(ws.headers.get("authorization")),
-    )
-    if not ok:
+    ))
+    if not ok or (public and not policy.allows(ws.url.path, sub)):
         await ws.close(code=1008)  # policy violation
         return
 
-    # Forward cookies / identity so the gateway sees the real caller. ``origin``
-    # and the forwarded-* hints matter only for a reverse-proxied third party:
-    # an upstream that origin-checks its WS upgrades (an allowlist of the exact
-    # scheme+host+port a browser may connect from) rejects every handshake if
-    # the header never arrives. The gateway ignores all four.
+    # Forward cookies and the verified identity so the gateway sees the real
+    # caller. ``origin`` and the forwarded-* hints matter only for a
+    # reverse-proxied third party: an upstream that origin-checks its WS
+    # upgrades (an allowlist of the exact scheme+host+port a browser may
+    # connect from) rejects every handshake if the header never arrives. The
+    # gateway ignores all but X-Awm-As.
     fwd = {}
-    for k in ("cookie", "x-awm-as", "authorization", "origin"):
+    for k in ("cookie", "authorization", "origin"):
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
+    fwd["X-Awm-As"] = _as_header(sub)
     override = _origin_override(app)
     if override and "origin" in fwd:
         fwd["origin"] = override
@@ -504,6 +607,7 @@ def _gated(
             _set_session_cookie(
                 resp, refreshed,
                 int(await request.app.state.gate.session_ttl_seconds()),
+                _samesite(request.app),
             )
         return resp
 
@@ -512,8 +616,15 @@ def _gated(
 
 def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               extra_routes: Sequence[ExtraRoute] | None = None,
-              rewrite_origin: bool = False) -> Starlette:
+              rewrite_origin: bool = False,
+              profile: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
+
+    ``profile="public"`` builds the internet-facing door: no CA download, no
+    autologin link, no landing page (``/`` sends a signed-in browser to the
+    notes page), ``SameSite=Strict`` cookies, and every proxied path checked
+    against :mod:`awm.httpsfront.policy` — a path off the list is 404 whether
+    or not the caller is signed in.
 
     The landing page is right for the gateway front, whose ``/`` has nothing
     else to serve. It is wrong for a front that sits in front of a *single*
@@ -546,19 +657,23 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     # http://… → ws://… ,  https://… → wss://…
     ws_up = "ws" + http_up[len("http"):]
 
-    routes = [
+    public = profile == PUBLIC_PROFILE
+    routes = []
+    if not public:
         # Public (no auth): CA download so a device can install the root once.
-        Route("/ca.crt", _ca, methods=["GET"]),
-        Route("/ca.pem", _ca, methods=["GET"]),
-        # Auth endpoints — handled by the edge itself, never proxied.
-        Route("/__auth/login", _login, methods=["POST"]),
+        routes.append(Route("/ca.crt", _ca, methods=["GET"]))
+        routes.append(Route("/ca.pem", _ca, methods=["GET"]))
+    # Auth endpoints — handled by the edge itself, never proxied.
+    routes.append(Route("/__auth/login", _login, methods=["POST"]))
+    if not public:
         # Autologin from the Discord password push — validates and 302s; see
         # _auth_link for why it may never render a page.
-        Route("/__auth/link", _auth_link, methods=["GET"]),
-        Route("/__auth/logout", _logout, methods=["POST", "GET"]),
-        Route("/__auth/whoami", _whoami, methods=["GET"]),
-    ]
-    if landing:
+        routes.append(Route("/__auth/link", _auth_link, methods=["GET"]))
+    routes.append(Route("/__auth/logout", _logout, methods=["POST", "GET"]))
+    routes.append(Route("/__auth/whoami", _whoami, methods=["GET"]))
+    if public:
+        routes.append(Route("/", _public_home, methods=["GET"]))
+    elif landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
         routes.append(Route("/", _root, methods=["GET"]))
         # Tag/filter endpoints backing the landing page's tagging UI.
@@ -594,15 +709,22 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         _origin_of(http_up) if rewrite_origin else None
     )
     app.state.gate = AuthGate()
+    app.state.profile = profile
     return app
 
 
 def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           landing: bool = True,
           extra_routes: Sequence[ExtraRoute] | None = None,
-          rewrite_origin: bool = False) -> None:
+          rewrite_origin: bool = False,
+          profile: str | None = None,
+          tls: bool = True) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
+
+    ``tls=False`` binds plain HTTP on ``127.0.0.1:port`` instead, trusting
+    ``X-Forwarded-*`` from loopback only — the shape for a TLS-terminating
+    nginx in front (the public host). ``cert``/``key`` are unused then.
 
     ``upstream``, ``landing`` and ``extra_routes`` are what make this reusable
     beyond the gateway: the ``claude-science`` service calls it against its own
@@ -611,13 +733,17 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     sign-in route the wrapped binary cannot serve itself.
     """
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
-                    rewrite_origin=rewrite_origin)
+                    rewrite_origin=rewrite_origin, profile=profile)
+    bind: dict = (
+        {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
+        if tls else
+        {"host": "127.0.0.1", "proxy_headers": True,
+         "forwarded_allow_ips": "127.0.0.1"}
+    )
     config = uvicorn.Config(
         app,
-        host="0.0.0.0",
         port=port,
-        ssl_certfile=cert,
-        ssl_keyfile=key,
+        **bind,
         # SECURITY, not tidiness: uvicorn writes access records — including the
         # full query string — to `uvicorn.access` at INFO. `GET /__auth/link?p=…`
         # carries a live login password, so raising this to "info" or "debug" to
@@ -629,5 +755,7 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
         # Off the main thread uvicorn skips signal handlers automatically.
     )
     server = uvicorn.Server(config)
-    log.info("https front listening on https://0.0.0.0:%d → %s (tls on)", port, upstream)
+    log.info("front listening on %s:%d → %s (tls %s, profile %s)",
+             bind["host"], port, upstream, "on" if tls else "off",
+             profile or "default")
     server.run()
