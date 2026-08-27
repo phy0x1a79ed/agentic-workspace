@@ -17,7 +17,8 @@ Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=/var/lib/awm
 ProtectHome=yes
 
 [Install]

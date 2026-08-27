@@ -7,9 +7,10 @@
 # checkout but /opt/awm, so a future session cannot seed a second install in
 # a home directory. Idempotent. Steps:
 #   1. miniforge at /opt/miniforge3 (dev-user owned)
-#   2. mamba env `awm` + awm/gateway/install.sh (editable installs)
+#   2. mamba env `awm` + awm/gateway/install.sh (editable installs of the
+#      public service set, no search extra) + dvc
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
-#   4. `awm gateway init` as the app user, enabled.json (all off for now)
+#   4. `awm gateway init` as the app user, enabled.json reconciled to the set
 #   5. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
 set -euo pipefail
 
@@ -43,10 +44,15 @@ if [ ! -x "$MF/envs/awm/bin/python" ]; then
 else
     mamba env update -y -q -f awm/gateway/environment.yml --prune
 fi
-# The service set installed and enabled on this box. Empty: the gateway
-# alone. Every other service under awm/services/ is written as disabled.
-PUBLIC_SERVICES=""
-AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" bash awm/gateway/install.sh
+# The service set installed and enabled on this box. Every other service
+# under awm/services/ is written as disabled. scopes is here for the CLI
+# (add-user.sh) only: the public edge (httpsfront, AWM_EDGE_PROFILE=public)
+# never forwards /svc/scopes.
+PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer scopes"
+# No torch/sentence-transformers on a 4 GB box: FTS search only.
+AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
+"$MF/envs/awm/bin/python" -c 'import dvc' 2>/dev/null \
+    || "$MF/envs/awm/bin/pip" install -q 'dvc>=3'
 
 step "state symlinks"
 for d in .awm data projects tasks main; do
@@ -61,20 +67,28 @@ step "init as $APP_USER"
 sudo -u "$APP_USER" env AWM_WORKSPACE=$INSTALL_ROOT HOME=$STATE_ROOT XDG_CONFIG_HOME=$STATE_ROOT/config \
     "$MF/envs/awm/bin/python" -m awm.gateway gateway init
 ENABLED=$STATE_ROOT/state/services/enabled.json
-if ! sudo test -f "$ENABLED"; then
-    sudo -u "$APP_USER" install -d -m 750 "$(dirname "$ENABLED")"
-    {
-        echo "{"
-        sep=""
-        for d in awm/services/*/; do
-            n=$(basename "$d")
-            v=false; [ -n "$PUBLIC_SERVICES" ] && grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
-            printf '%s  "%s": %s' "$sep" "$n" "$v"; sep=$',\n'
-        done
-        echo; echo "}"
-    } | sudo -u "$APP_USER" tee "$ENABLED" >/dev/null
-    echo "   seeded $ENABLED (public service set)"
+sudo -u "$APP_USER" install -d -m 750 "$(dirname "$ENABLED")"
+want=$(mktemp)
+{
+    echo "{"
+    sep=""
+    for d in awm/services/*/; do
+        n=$(basename "$d")
+        v=false; [ -n "$PUBLIC_SERVICES" ] && grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
+        printf '%s  "%s": %s' "$sep" "$n" "$v"; sep=$',\n'
+    done
+    echo; echo "}"
+} > "$want"
+if ! sudo cmp -s "$want" "$ENABLED"; then
+    sudo -u "$APP_USER" tee "$ENABLED" < "$want" >/dev/null
+    echo "   wrote $ENABLED (public service set: ${PUBLIC_SERVICES:-none})"
 fi
+rm -f "$want"
+
+step "built pages"
+for p in notes drawio; do
+    [ -f "awm/pages/$p/dist/index.html" ] || echo "   WARNING: awm/pages/$p/dist missing — deploy.sh ships it from the dev box"
+done
 
 step "entry points + unit"
 sudo ln -sfn "$MF/envs/awm/bin/awm" /usr/local/bin/awm

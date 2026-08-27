@@ -150,15 +150,29 @@ fi
 if [ ! -f /etc/awm/env ]; then
     cat > /etc/awm/env <<'ENV'
 # Read by awm.service (EnvironmentFile). Secrets and per-box settings only.
-FILEVIEWER_MOUNT_ROOT=/var/lib/awm
 ENV
     chmod 640 /etc/awm/env; chown "root:$APP_USER" /etc/awm/env
     note "/etc/awm/env"
 fi
+# The public profile: every line is added once and never rewritten, so a
+# hand edit on the box survives a re-run.
+while IFS= read -r line; do
+    key=${line%%=*}
+    grep -q "^$key=" /etc/awm/env || { echo "$line" >> /etc/awm/env; note "/etc/awm/env: $key"; }
+done <<'ENV'
+FILEVIEWER_MOUNT_ROOT=/var/lib/awm
+AWM_EDGE_PROFILE=public
+AWM_EDGE_TLS=0
+AWM_HTTPS_PORT=8444
+AWM_AUTH_PROFILE=public
+AWM_USER_ROOT_STRICT=1
+AWM_DVC_BIN=/opt/miniforge3/envs/awm/bin/dvc
+ENV
 
 step "nginx"
 install -d -m 755 /var/www/nexus
 put "$ETC/nginx/index.html" /var/www/nexus/index.html 644 || true
+put "$ETC/nginx/awm-proxy.conf" /etc/nginx/snippets/awm-proxy.conf 644 || true
 if [ -f /etc/awm/origin.pem ] && [ -f /etc/awm/origin.key ]; then
     put "$ETC/nginx/nexus.conf" /etc/nginx/sites-available/nexus.conf 644 || true
 else
