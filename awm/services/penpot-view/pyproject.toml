@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-penpot-view"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM penpot-view service: on-demand SVG rendering of a Penpot board to a stable URL, drawio's live-view/import capability for Penpot."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/penpot_view/.
+[tool.setuptools.packages.find]
+include = ["awm.penpot_view*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+]
