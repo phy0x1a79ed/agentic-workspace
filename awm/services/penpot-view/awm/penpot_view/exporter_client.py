@@ -127,6 +127,35 @@ def _encode_transit(value: Any) -> Any:
     raise TypeError(f"transit encode: unsupported type {type(value)!r}")
 
 
+#: Transit's read cache, verbatim from the spec's reference implementations:
+#: codes are ``^`` plus one or two base-44 digits starting at ASCII ``0``.
+_CACHE_BASE = 44
+_CACHE_FIRST = 48
+#: Only strings of four characters or more are ever cached.
+_CACHE_MIN = 4
+#: The marker that makes an array a map: ``["^ ", k, v, k, v, …]``.
+_MAP_AS_ARRAY = "^ "
+
+
+def _code_to_index(code: str) -> int:
+    if len(code) == 2:
+        return ord(code[1]) - _CACHE_FIRST
+    return ((ord(code[1]) - _CACHE_FIRST) * _CACHE_BASE
+            + (ord(code[2]) - _CACHE_FIRST))
+
+
+def _is_cacheable(text: str, as_map_key: bool) -> bool:
+    """Whether the writer would have cached this, so our indices stay aligned.
+
+    Getting this predicate wrong is worse than not caching at all: the cache
+    is positional, so one wrongly-admitted string shifts every later index and
+    silently decodes the rest of the document into the wrong values.
+    """
+    if len(text) < _CACHE_MIN:
+        return False
+    return as_map_key or (text[0] == "~" and text[1] in ":$#")
+
+
 def _decode_transit_str(text: str) -> Any:
     if text.startswith("~:"):
         return Keyword(text[2:])
@@ -135,19 +164,62 @@ def _decode_transit_str(text: str) -> Any:
             return uuid.UUID(text[2:])
         except ValueError as exc:
             raise ValueError(f"malformed transit uuid {text!r}") from exc
-    if text.startswith("~~"):
+    # `~~` and `~^` are escapes for a literal leading `~` / `^`. Every other
+    # `~x` tag (`~m` millis, `~i` big int, …) passes through as-is: this client
+    # only ever reads a handful of fields out of a response, and an unknown tag
+    # in some field it ignores must not fail the whole decode.
+    if text.startswith("~~") or text.startswith("~^"):
         return text[1:]
     return text
 
 
-def _decode_transit(value: Any) -> Any:
+def _decode_transit(value: Any, cache: list | None = None,
+                    as_map_key: bool = False) -> Any:
+    """Decode transit, honouring both map forms and the read cache.
+
+    Penpot's backend answers in transit's *compact* form -- maps arrive as
+    ``["^ ", k, v, …]`` rather than as JSON objects, and a key repeated later
+    in the document arrives as a back-reference like ``"^0"`` into a cache
+    built in parse order. A decoder that handles only JSON-object maps returns
+    a list here, and the caller's ``.get("id")`` fails on a response that was
+    in fact perfectly good -- which is exactly how this was found, against the
+    live instance rather than against this module's own encoder.
+    """
+    if cache is None:
+        cache = []
+
     if isinstance(value, str):
-        return _decode_transit_str(value)
-    if isinstance(value, dict):
-        return {_decode_transit_str(k) if isinstance(k, str) else k:
-                 _decode_transit(v) for k, v in value.items()}
+        if value.startswith("^") and value != _MAP_AS_ARRAY:
+            try:
+                return cache[_code_to_index(value)]
+            except (IndexError, ValueError) as exc:
+                raise ValueError(
+                    f"transit cache reference {value!r} points past the "
+                    f"{len(cache)} cached value(s)") from exc
+        decoded = _decode_transit_str(value)
+        if _is_cacheable(value, as_map_key):
+            cache.append(decoded)
+        return decoded
+
     if isinstance(value, list):
-        return [_decode_transit(v) for v in value]
+        if value and value[0] == _MAP_AS_ARRAY:
+            items = value[1:]
+            if len(items) % 2:
+                raise ValueError(
+                    "transit map-as-array has an odd number of entries")
+            result: dict = {}
+            # Strictly left-to-right: the cache is positional, so decoding a
+            # value before its key would misalign every later reference.
+            for i in range(0, len(items), 2):
+                key = _decode_transit(items[i], cache, True)
+                result[key] = _decode_transit(items[i + 1], cache, False)
+            return result
+        return [_decode_transit(v, cache, False) for v in value]
+
+    if isinstance(value, dict):
+        return {_decode_transit(k, cache, True): _decode_transit(v, cache, False)
+                for k, v in value.items()}
+
     return value
 
 

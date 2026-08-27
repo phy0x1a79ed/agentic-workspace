@@ -272,3 +272,80 @@ def test_transit_string_that_looks_like_an_escape_is_not_misread():
     mistaken for a keyword/uuid/escape tag."""
     decoded = EC._transit_loads(EC._transit_dumps({EC.Keyword("k"): "~odd"}))
     assert decoded["k"] == "~odd"
+
+
+# --- the compact wire form Penpot actually answers in ----------------------
+#
+# Everything above this line round-trips through *this module's own* encoder,
+# which writes maps as JSON objects. The live backend does not answer that way,
+# and testing a codec only against itself is how a decoder ships broken. The
+# two payloads below are real captures from the running instance.
+
+LIVE_DEMO_PROFILE = (
+    '["^ ","~:email","demo-1787813302687.demo@example.com",'
+    '"~:password","_m5-kWrih0Ru5pHYXUizzw"]'
+)
+
+LIVE_LOGIN_RESPONSE = (
+    '["^ ","~:is-admin",false,"~:email","demo-1787813302687.demo@example.com",'
+    '"~:is-demo",true,"~:auth-backend","penpot",'
+    '"~:fullname","Demo User 1787813302687","~:modified-at","~m1787813302844",'
+    '"~:lang","","~:is-active",true,'
+    '"~:default-project-id","~uf2de7aee-22fe-80f6-8008-8bc29d8ffee2",'
+    '"~:id","~uf2de7aee-22fe-80f6-8008-8bc29d8eb1e7"]'
+)
+
+
+def test_a_map_arrives_as_an_array_not_a_json_object():
+    """Penpot answers in transit's compact form, where a map is
+    `["^ ", k, v, ...]`. A decoder that understands only JSON-object maps
+    returns a *list* here, and `_login`'s `profile.get("id")` then fails on a
+    response that was perfectly good."""
+    decoded = EC._transit_loads(LIVE_DEMO_PROFILE)
+    assert isinstance(decoded, dict)
+    assert decoded["email"] == "demo-1787813302687.demo@example.com"
+
+
+def test_the_real_login_response_yields_a_uuid_profile_id():
+    """The exact bytes the live instance returned. `_login` reads `id` off
+    this and requires a real UUID, so this is the end-to-end shape check."""
+    decoded = EC._transit_loads(LIVE_LOGIN_RESPONSE)
+    assert isinstance(decoded["id"], uuidlib.UUID)
+    assert str(decoded["id"]) == "f2de7aee-22fe-80f6-8008-8bc29d8eb1e7"
+    assert isinstance(decoded["default-project-id"], uuidlib.UUID)
+
+
+def test_an_unknown_tag_in_an_ignored_field_does_not_fail_the_decode():
+    """`~m<millis>` is a timestamp this client never reads. An unknown tag
+    must pass through rather than abort a response whose other fields matter."""
+    decoded = EC._transit_loads(LIVE_LOGIN_RESPONSE)
+    assert decoded["modified-at"] == "~m1787813302844"
+
+
+def test_a_repeated_key_arrives_as_a_cache_reference():
+    """Transit caches strings of 4+ chars in parse order and spells later
+    occurrences `^0`, `^1`, ... A decoder that ignores the cache reads the
+    literal `"^0"` as a key and silently loses the real one."""
+    doc = '[["^ ","~:name","a"],["^ ","^0","b"]]'
+    first, second = EC._transit_loads(doc)
+    assert first == {"name": "a"}
+    assert second == {"name": "b"}
+
+
+def test_a_cache_reference_past_the_end_is_refused_not_guessed():
+    """A misaligned cache silently decodes the rest of the document into the
+    wrong values, so an out-of-range index must fail loudly."""
+    with pytest.raises(ValueError, match="cache reference"):
+        EC._transit_loads('["^ ","^9","b"]')
+
+
+def test_short_strings_are_not_cached_so_indices_stay_aligned():
+    """The writer caches only strings of 4+ characters, counting the tag --
+    so `~:a` (3) is not cached but `~:ab` (4) is. Admitting a shorter one
+    shifts every later index: a whole-document corruption, not a local one."""
+    doc = '[["^ ","~:a","x"],["^ ","~:name","y"],["^ ","^0","z"]]'
+    first, second, third = EC._transit_loads(doc)
+    assert first == {"a": "x"}
+    assert second == {"name": "y"}
+    # `~:a` is too short to cache, so ^0 must be `~:name`, not `~:a`.
+    assert third == {"name": "z"}
