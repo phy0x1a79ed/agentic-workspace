@@ -47,12 +47,25 @@ HEALTH_TIMEOUT_S="${PENPOT_HEALTH_TIMEOUT_S:-180}"
 HEALTH_STREAK_NEEDED=3
 HEALTH_INTERVAL_S=3
 
-declare -A MOD_TO_SERVICE=([frontend]=penpot-frontend [backend]=penpot-backend [exporter]=penpot-exporter)
+# One module can run as more than one service, so these are space-separated
+# *lists*, not names. `frontend` is two: the published one and
+# `penpot-frontend-internal`, the un-configured origin the exporter renders
+# against (see docker-compose.local.yml). They share an image, so a rebuild
+# that restarted only the published one would leave the exporter rendering
+# against the previous build — silently, and only for exports.
+declare -A MOD_TO_SERVICES=(
+    [frontend]="penpot-frontend penpot-frontend-internal"
+    [backend]="penpot-backend"
+    [exporter]="penpot-exporter"
+)
+
+#: The services for a module, one per line.
+services_of() { printf '%s\n' ${MOD_TO_SERVICES[$1]}; }
 
 MODULES=("$@")
 [ ${#MODULES[@]} -eq 0 ] && MODULES=(frontend backend exporter)
 for m in "${MODULES[@]}"; do
-    [ -n "${MOD_TO_SERVICE[$m]:-}" ] || { echo "unknown module '$m' (want: frontend backend exporter)" >&2; exit 1; }
+    [ -n "${MOD_TO_SERVICES[$m]:-}" ] || { echo "unknown module '$m' (want: frontend backend exporter)" >&2; exit 1; }
 done
 
 step() { echo; echo "== $*"; }
@@ -156,17 +169,18 @@ if [ ${#TO_BUILD[@]} -eq 0 ]; then
     step "2b. verify what is actually running"
     DRIFT=0
     for mod in "${MODULES[@]}"; do
-        svc="${MOD_TO_SERVICE[$mod]}"
         want="${IMAGE_NAMESPACE}/${mod}:$(cat "$(module_state_file "$mod")" 2>/dev/null || echo '?')"
-        got=$(running_image "$svc")
-        if [ -z "$got" ]; then
-            printf '   %-16s not running\n' "$svc"
-        elif [ "$got" != "$want" ]; then
-            printf '   %-16s DRIFT expected=%-34s running=%s\n' "$svc" "$want" "$got"
-            DRIFT=1
-        else
-            printf '   %-16s ok %s\n' "$svc" "$got"
-        fi
+        while read -r svc; do
+            got=$(running_image "$svc")
+            if [ -z "$got" ]; then
+                printf '   %-24s not running\n' "$svc"
+            elif [ "$got" != "$want" ]; then
+                printf '   %-24s DRIFT expected=%-34s running=%s\n' "$svc" "$want" "$got"
+                DRIFT=1
+            else
+                printf '   %-24s ok %s\n' "$svc" "$got"
+            fi
+        done < <(services_of "$mod")
     done
     if [ "$DRIFT" -ne 0 ]; then
         echo
@@ -229,9 +243,10 @@ done
 
 step "5. restart changed service(s)"
 for mod in "${TO_BUILD[@]}"; do
-    svc="${MOD_TO_SERVICE[$mod]}"
-    echo "   docker compose up -d --no-deps $svc"
-    compose up -d --no-deps "$svc"
+    while read -r svc; do
+        echo "   docker compose up -d --no-deps $svc"
+        compose up -d --no-deps "$svc"
+    done < <(services_of "$mod")
 done
 
 step "6. health check"
@@ -244,9 +259,11 @@ step "6. health check"
 health_once() {
     curl -fsS -m 5 -o /dev/null "$PENPOT_URL/readyz" || return 1   # backend, proxied by frontend nginx
     curl -fsS -m 5 -o /dev/null "$PENPOT_URL/" || return 1          # frontend itself
-    local mod
+    local mod svc
     for mod in "${TO_BUILD[@]}"; do
-        service_up "${MOD_TO_SERVICE[$mod]}" || return 1
+        while read -r svc; do
+            service_up "$svc" || return 1
+        done < <(services_of "$mod")
     done
 }
 
@@ -276,11 +293,12 @@ fi
 step "7. verify"
 FAIL=0
 for mod in "${TO_BUILD[@]}"; do
-    svc="${MOD_TO_SERVICE[$mod]}"
     want="${IMAGE_NAMESPACE}/${mod}:${TAGS[$mod]}"
-    got=$(running_image "$svc")
-    printf '   %-16s built=%-40s running=%s\n' "$svc" "$want" "$got"
-    [ "$got" = "$want" ] || FAIL=1
+    while read -r svc; do
+        got=$(running_image "$svc")
+        printf '   %-24s built=%-40s running=%s\n' "$svc" "$want" "$got"
+        [ "$got" = "$want" ] || FAIL=1
+    done < <(services_of "$mod")
 done
 [ "$FAIL" -eq 0 ] || { echo "a running container's image does not match what this run just built" >&2; exit 1; }
 
