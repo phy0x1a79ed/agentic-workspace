@@ -145,10 +145,9 @@ def _pin_and_commit(inst: Instance, message: str, paths: list[str]) -> dict[str,
     staged = list(paths)
 
     if not (scope / ".git").exists():
-        # A host that cannot hold a checkout still takes snapshots and still
-        # exports — the files are written and are on disk. Only the history is
-        # missing, and saying so is better than a `git add` failure that reads
-        # like the snapshot itself went wrong.
+        # The snapshot or the export is already written and is on disk. Only
+        # the history is missing, and saying so is better than a `git add`
+        # failure that reads as though the snapshot itself went wrong.
         report["detail"] = f"{scope} is not a git checkout — files written, not committed"
         return report
 

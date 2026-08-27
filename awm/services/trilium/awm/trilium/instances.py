@@ -98,16 +98,6 @@ def _flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "off", "false", "no")
 
 
-#: Whether a user's directory has to be a git checkout to count as a scope.
-#:
-#: True everywhere a scope is a worktree, which is what makes a user's content
-#: something with a branch and a history. sirius is the exception it exists
-#: for: that host holds no GitHub credential and its `projects/` is a symlink
-#: into a state directory owned by the application account, so a scope there is
-#: a plain directory. Snapshot and export still run; they report the commit as
-#: skipped instead of making one.
-REQUIRE_SCOPE_GIT = _flag("TRILIUM_REQUIRE_SCOPE_GIT", True)
-
 #: Whether to raise a mesh TLS front per user.
 #:
 #: True on a mesh node, where the front is the only way a browser reaches a
@@ -229,9 +219,7 @@ def discovered_users() -> list[str]:
 
     A directory is a user's scope when it holds a `.git` — a worktree's is a
     file, not a directory, so both forms are accepted. The check exists so a
-    stray directory beside the scopes is not handed a port and a server; where
-    a host cannot hold a checkout at all, `REQUIRE_SCOPE_GIT` drops it and the
-    name pattern is the only guard left.
+    stray directory beside the scopes is not handed a port and a server.
 
     Names are constrained because they become a port allocation key and a log
     filename.
@@ -241,8 +229,7 @@ def discovered_users() -> list[str]:
     except OSError:
         return []
     return [p.name for p in entries
-            if _USER_RE.match(p.name)
-            and ((p / ".git").exists() or not REQUIRE_SCOPE_GIT)]
+            if _USER_RE.match(p.name) and (p / ".git").exists()]
 
 
 def instances() -> list[Instance]:

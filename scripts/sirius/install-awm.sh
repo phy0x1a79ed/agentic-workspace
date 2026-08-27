@@ -11,7 +11,8 @@
 #      public service set, no search extra); mamba env `dvc`
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
 #   4. `awm gateway init` as the app user, enabled.json reconciled to the set
-#   5. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
+#   5. the per-user Trilium vhosts, when TRILIUM_DOMAIN names a parent domain
+#   6. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
 set -euo pipefail
 
 INSTALL_ROOT=/opt/awm
@@ -48,7 +49,7 @@ fi
 # under awm/services/ is written as disabled. scopes is here for the CLI
 # (add-user.sh) only: the public edge (httpsfront, AWM_EDGE_PROFILE=public)
 # never forwards /svc/scopes.
-PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer scopes"
+PUBLIC_SERVICES="auth httpsfront notes drawio fileviewer scopes trilium"
 # No torch/sentence-transformers on a 4 GB box: FTS search only.
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
 # dvc in its own env, as on altair: its dependency set is not the gateway's.
@@ -88,8 +89,34 @@ if ! sudo cmp -s "$want" "$ENABLED"; then
 fi
 rm -f "$want"
 
+step "trilium vhosts"
+# The parent name the per-user vhosts hang off, e.g. `tony.notes.example.com`.
+# Unset: no vhost, and each person's Trilium answers on loopback only.
+#
+# One subdomain per person, never one path prefix. Trilium has no URL-base
+# setting, so an SPA served under `/trilium/<user>/` asks for its own assets at
+# `/` and paints a shell that never finishes loading.
+#
+# WARNING: every <user>.$TRILIUM_DOMAIN needs its own DNS record, or one
+# wildcard, before it resolves. Cloudflare must proxy each one: ufw admits 80
+# and 443 from Cloudflare's ranges alone.
+TRILIUM_DOMAIN="${TRILIUM_DOMAIN:-}"
+if [ -z "$TRILIUM_DOMAIN" ]; then
+    echo "   TRILIUM_DOMAIN unset — no vhost; each Trilium answers on loopback only"
+else
+    tmpconf=$(mktemp)
+    AWM_BIN="$MF/envs/awm/bin/awm" bash "$HERE/trilium-nginx.sh" "$TRILIUM_DOMAIN" "$tmpconf"
+    sudo install -m 644 "$tmpconf" /etc/nginx/sites-available/trilium.conf
+    sudo ln -sfn /etc/nginx/sites-available/trilium.conf /etc/nginx/sites-enabled/trilium.conf
+    rm -f "$tmpconf"
+    # `nginx -t` before the reload. A bad config reloaded leaves the box with no
+    # web server at all, and nginx is the only way the public reaches anything.
+    sudo nginx -t -q && sudo systemctl reload nginx
+    echo "   $(grep -c '^server {' /etc/nginx/sites-available/trilium.conf) vhost(s) under $TRILIUM_DOMAIN"
+fi
+
 step "built pages"
-for p in notes drawio; do
+for p in notes drawio trilium; do
     [ -f "awm/pages/$p/dist/index.html" ] || echo "   WARNING: awm/pages/$p/dist missing — deploy.sh ships it from the dev box"
 done
 
