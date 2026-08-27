@@ -95,8 +95,22 @@ _STYLE = """
 """
 
 
-def login_page() -> str:
-    """Password sign-in form; POSTs JSON to ``/__auth/login`` and reloads."""
+def login_page(public: bool = False) -> str:
+    """Sign-in form; POSTs JSON to ``/__auth/login`` and reloads.
+
+    ``public`` drops the shared-password hint and the CA link: on the public
+    host there is no shared password and a real certificate."""
+    if public:
+        hint = ""
+        recover = ""
+    else:
+        hint = """<p class="muted">Leave the username blank to use the current day's
+shared password. Get it on the daemon host with <code>awm auth password</code>;
+it is also posted to Discord <code>#notifications</code> when minted.</p>"""
+        recover = """<p class="recover">A new device has to trust this node's CA once, or the browser
+blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
+(Served unauthenticated on purpose — a device that doesn't trust us yet can't
+sign in to fetch it.)</p>"""
     return f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8" />
@@ -105,30 +119,31 @@ def login_page() -> str:
 <style>{_STYLE}</style>
 </head><body>
 <h1>awm</h1>
-<p class="muted">Enter the current day's login password. Get it on the daemon
-host with <code>awm auth password</code>; it is also posted to Discord
-<code>#notifications</code> when minted.</p>
-<form id="f" autocomplete="off">
-  <input id="p" type="password" placeholder="password" autofocus
-         aria-label="password" />
+{hint}
+<form id="f" autocomplete="on">
+  <input id="u" type="text" placeholder="username" autofocus
+         autocomplete="username" autocapitalize="none" aria-label="username" />
+  <input id="p" type="password" placeholder="password"
+         autocomplete="current-password" aria-label="password" />
   <button id="b" type="submit">Sign in</button>
 </form>
 <div class="err" id="e"></div>
-<p class="recover">A new device has to trust this node's CA once, or the browser
-blocks pages and sockets alike: <a href="/ca.crt">install the certificate</a>.
-(Served unauthenticated on purpose — a device that doesn't trust us yet can't
-sign in to fetch it.)</p>
+{recover}
 <script>
-const f=document.getElementById('f'),p=document.getElementById('p'),
-      b=document.getElementById('b'),e=document.getElementById('e');
+const f=document.getElementById('f'),u=document.getElementById('u'),
+      p=document.getElementById('p'),b=document.getElementById('b'),
+      e=document.getElementById('e');
 f.addEventListener('submit',async(ev)=>{{
   ev.preventDefault(); e.textContent=''; b.disabled=true;
   try {{
     const r=await fetch('/__auth/login',{{method:'POST',
       headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{password:p.value}})}});
-    if(r.ok){{ location.replace('/'); return; }}
-    e.textContent = r.status===401 ? 'Incorrect password.' : ('Error '+r.status);
+      body:JSON.stringify({{username:u.value.trim(),password:p.value}})}});
+    if(r.ok){{ location.replace(location.pathname==='/'?'/':location.href); return; }}
+    if(r.status===429){{
+      let s=60; try{{ s=(await r.json()).retry_after||s; }}catch(_){{}}
+      e.textContent='Too many attempts. Try again in '+Math.ceil(s/60)+' min.';
+    }} else e.textContent = r.status===401 ? 'Incorrect username or password.' : ('Error '+r.status);
   }} catch(_){{ e.textContent='Network error.'; }}
   b.disabled=false; p.select();
 }});
