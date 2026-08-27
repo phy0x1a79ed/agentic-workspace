@@ -148,15 +148,43 @@ say "installing the service from the release tree"
 run bash "$RELEASE/awm/services/trilium/install.sh"
 
 # ---------------------------------------------------------------------------
-# 4. Make it live
+# 4. Build the reception page — also unconditionally
 # ---------------------------------------------------------------------------
 
-# A service the gateway has never seen has no adapter to restart, and its page
-# has never been built. That is a full deploy whether or not one was asked for.
+say "building the reception page"
+PAGE_DIR="$RELEASE/awm/pages/trilium"
+VITE="$RELEASE/awm/node_modules/.bin/vite"
+# Recorded before the build, because it is what decides whether the gateway has
+# ever seen this page: mounts are discovered at boot, so a dist that did not
+# exist at the last boot is not being served however fresh it is now.
+PAGE_WAS_BUILT=0; [ -f "$PAGE_DIR/dist/index.html" ] && PAGE_WAS_BUILT=1
+
+if [ ! -x "$VITE" ]; then
+    echo "refusing: no vite at $VITE — run 'npm install' in $RELEASE/awm." >&2
+    echo "A deploy that skips the page leaves the browser on the previous bundle" >&2
+    echo "and says nothing about it." >&2
+    exit 1
+fi
+# One page, not the sixteen `scripts/build.sh` walks. Same invocation shape:
+# cwd is the page dir so outDir 'dist' and \$lib resolve page-locally.
+if [ "$DRY" = 1 ]; then
+    echo "  would run: (cd $PAGE_DIR && $VITE build --config $RELEASE/awm/vite.config.ts)"
+else
+    ( cd "$PAGE_DIR" && "$VITE" build --config "$RELEASE/awm/vite.config.ts" ) \
+        | tail -4
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Make it live
+# ---------------------------------------------------------------------------
+
+# Two things a one-service restart cannot do: register a service the gateway
+# has never discovered, and mount a page whose dist did not exist at boot.
+# Either one means the whole gateway has to come back.
 KNOWN=0
 "$AWM_BIN" services list 2>/dev/null | awk '{print $1}' | grep -qx trilium && KNOWN=1
-if [ "$KNOWN" = 0 ]; then
-    echo "  trilium is new to this gateway — using the full deploy path"
+if [ "$KNOWN" = 0 ] || [ "$PAGE_WAS_BUILT" = 0 ]; then
+    echo "  first deploy of the service or the page — using the full deploy path"
     FULL=1
 fi
 
@@ -172,7 +200,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Verify
+# 6. Verify
 # ---------------------------------------------------------------------------
 
 say "verifying"
