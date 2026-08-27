@@ -90,7 +90,11 @@ PYBIN="$(mamba run -n "$ENV" python -c 'import sys; print(sys.executable)')"
 printf 'AWM_PYTHON=%s\nAWM_ENV_BIN=%s\n' "$PYBIN" "$(dirname "$PYBIN")" \
     > "$HERE/.runtime-env"
 
-mkdir -p "$STATE_DIR"
+# Best effort, never fatal. On sirius the install runs as the dev user and the
+# state root belongs to the application account, so this fails there — and the
+# service creates what it needs at runtime, as the account that owns it. Under
+# `set -e` an unguarded mkdir here aborts the whole gateway install.
+mkdir -p "$STATE_DIR" 2>/dev/null || true
 
 if [ "$MODE" = "auto" ]; then
     if [ -e "$FORK_DIR/.git" ]; then MODE=build; else MODE=tarball; fi

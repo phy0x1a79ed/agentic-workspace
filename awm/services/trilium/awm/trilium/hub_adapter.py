@@ -403,10 +403,17 @@ async def _h_restore(args: dict) -> dict:
     child = FLEET.get(inst.user)
 
     def _swap() -> dict:
-        stopped = child.stop() if child else {"action": "no child"}
-        report = vault.restore_files(inst, source)
+        # `hold` keeps the supervision loop from respawning the child between
+        # the stop and the swap. The start is in a `finally` because a failed
+        # restore that also left the server down would be two problems, and the
+        # second one has no message anywhere.
+        stopped = child.stop(hold=True) if child else {"action": "no child"}
+        try:
+            report = vault.restore_files(inst, source)
+        finally:
+            started = child.start() if child else {"action": "no child"}
         report["stopped"] = stopped
-        report["started"] = child.start() if child else {"action": "no child"}
+        report["started"] = started
         return report
     return await asyncio.to_thread(_swap)
 

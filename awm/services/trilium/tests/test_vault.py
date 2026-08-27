@@ -145,3 +145,17 @@ def test_an_empty_export_does_not_replace_the_notes_tree(inst, monkeypatch):
         vault.export(inst, commit=False)
 
     assert (inst.notes_dir / "kept.md").read_text() == "still here"
+
+
+def test_a_held_child_is_not_respawned_by_the_supervision_loop(inst):
+    """The loop respawns anything not alive, once every pass. A restore that
+    did not hold the child would race it: the server comes back between the
+    stop and the swap, and the swap then refuses because the port is bound."""
+    from awm.trilium import server
+
+    child = server.Child(inst)
+    child.stop(hold=True)
+    assert child.reconcile()["action"] == "held"
+
+    child._held = False
+    assert child.reconcile()["action"] in ("respawned", "respawn-failed")
