@@ -95,3 +95,12 @@ def test_trilium_never_writes_into_the_pinned_chunk(workspace):
     inst = instances.instances()[0]
     assert inst.snapshots_dir not in inst.rolling_dir.parents
     assert inst.rolling_dir.is_relative_to(inst.data_dir)
+
+
+
+def test_install_artifacts_are_not_in_runtime_state(workspace):
+    """The user that installs and the user that runs differ on sirius. Anything
+    written at install time has to land where the installer can write it."""
+    assert instances.TARBALL_DIR.is_relative_to(instances.INSTALL_DIR)
+    assert instances.NODE_BIN_FILE.is_relative_to(instances.INSTALL_DIR)
+    assert not instances.INSTALL_DIR.is_relative_to(instances.STATE_DIR)

@@ -154,11 +154,15 @@ def sync() -> list[str]:
     """Raise a front for every user that has none. Returns the users started.
 
     Idempotent, and called from the same loop that reconciles the children, so
-    a user added while the service runs gets a listener without a restart.
+    a user added while the service runs gets a listener without a restart. A
+    node where something else is the public edge sets `TRILIUM_FRONTS=0` and
+    gets none — see `instances.FRONTS_ENABLED`.
     A front is never torn down: a listener whose upstream went away answers 502
     rather than refusing the connection, which is the more legible failure, and
     threads holding a bound port cannot be reclaimed cleanly anyway.
     """
+    if not instances.FRONTS_ENABLED:
+        return []
     started = []
     for inst in instances.instances():
         with _LOCK:

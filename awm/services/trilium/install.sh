@@ -54,7 +54,12 @@ workspace_root() {
 WS="$(workspace_root "$HERE")"
 
 NODE_ENV_NAME="${TRILIUM_NODE_ENV:-trilium}"
+# Runtime state (ports, tokens, logs) vs install artifacts (the unpacked
+# server, the recorded node bin). They are separated because on sirius the
+# install runs as the dev user and the gateway runs as the application account
+# that owns the state root — see awm/trilium/instances.py.
 STATE_DIR="${TRILIUM_STATE_DIR:-$WS/.awm/services/trilium}"
+INSTALL_DIR="$HERE"
 # The fork worktree this node serves. `release` by default. A dev sandbox
 # points TRILIUM_FORK_DIR at `dev`.
 FORK_DIR="${TRILIUM_FORK_DIR:-$WS/projects/trilium/release}"
@@ -64,7 +69,7 @@ FORK_ENTRY="$FORK_DIR/apps/server/dist/main.cjs"
 # a node serving the tarball and a node serving the fork must serve the same
 # version, or a note written on one is a note the other cannot open.
 BASE_REF="${TRILIUM_BASE_REF:-v0.105.0}"
-TARBALL_DIR="$STATE_DIR/server"
+TARBALL_DIR="$INSTALL_DIR/server"
 TARBALL_ENTRY="$TARBALL_DIR/main.cjs"
 
 # auto | build | tarball. `auto` builds when a fork is checked out and falls
@@ -101,7 +106,7 @@ if [ "$MODE" = "tarball" ]; then
            exit 1 ;;
     esac
     ASSET="TriliumNotes-Server-${BASE_REF}-linux-${TARCH}.tar.xz"
-    STAMP_FILE="$STATE_DIR/tarball-stamp"
+    STAMP_FILE="$INSTALL_DIR/tarball-stamp"
     if [ "$(cat "$STAMP_FILE" 2>/dev/null || true)" = "$ASSET" ] \
        && [ -f "$TARBALL_ENTRY" ]; then
         echo "Trilium server $BASE_REF ($TARCH) already unpacked — nothing to do."
@@ -119,7 +124,7 @@ if [ "$MODE" = "tarball" ]; then
         # The release carries no checksum file, so integrity rests on the TLS
         # transport and on gh's own verification of the release. Record what was
         # unpacked so a swapped artifact is at least visible after the fact.
-        sha256sum "$TMP/$ASSET" | cut -d' ' -f1 > "$STATE_DIR/tarball-sha256"
+        sha256sum "$TMP/$ASSET" | cut -d' ' -f1 > "$INSTALL_DIR/tarball-sha256"
         echo "Unpacking into $TARBALL_DIR …"
         rm -rf "$TARBALL_DIR"
         mkdir -p "$TARBALL_DIR"
@@ -173,7 +178,7 @@ NODE_BIN="$(dirname "$(mamba run -n "$NODE_ENV_NAME" node -p 'process.execPath')
 # The supervisor respawns under systemd's minimal PATH, where neither `node` nor
 # the `mamba` that could find it exists. Recording the absolute directory here
 # is what lets it build a working PATH for the child.
-printf '%s\n' "$NODE_BIN" > "$STATE_DIR/node-bin"
+printf '%s\n' "$NODE_BIN" > "$INSTALL_DIR/node-bin"
 
 # pnpm because the workspace declares `packageManager: pnpm@11.22.0` and pins a
 # tree of ~90 projects with an overrides block that only pnpm honours. Whatever

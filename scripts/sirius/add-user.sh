@@ -2,7 +2,14 @@
 # Create (or complete) a user of the public app: an auth account, a scope
 # worktree `projects/userdata/<name>` on branch `user/<name>` with the
 # notes/, drawio/ and data/figures/ folders, DVC initialised with a local
-# cache. Idempotent — every step checks before it acts.
+# cache, and a second scope `projects/userdata/trilium/<name>` on branch
+# `trilium/<name>` for that person's Trilium. Idempotent — every step checks
+# before it acts.
+#
+# CAUTION: two layouts, on purpose and only for now. `user/<name>` is what
+# notes and drawio already write into. `<service>/<name>` is the layout
+# everything new uses, because it is the one that lets two people's copies of
+# one service be merged later. Migrating notes and drawio is its own job.
 #
 #   scripts/sirius/add-user.sh <name>
 #
@@ -64,6 +71,35 @@ if ! run git -C "$ROOT" diff --cached --quiet; then
 fi
 awm scope heal --project userdata >/dev/null 2>&1 || true
 
+step "scope userdata/trilium/$NAME"
+# A nested scope name means the branch is named after the scope rather than
+# `feat/<scope>`, so it is passed explicitly. Git stores refs as paths, which
+# is why `trilium/<name>` can coexist with `user/<name>` and could never
+# coexist with a branch called plain `trilium`.
+awm scope search --project userdata --query "trilium/$NAME" 2>/dev/null | grep -q "\"scope\": \"trilium/$NAME\"" \
+    || awm scope create --project userdata --scope "trilium/$NAME" --branch-name "trilium/$NAME" >/dev/null
+TROOT="$PROJECTS/userdata/trilium/$NAME"
+run test -d "$TROOT" || { echo "trilium scope worktree missing at $TROOT" >&2; exit 1; }
+
+# live/ is runtime state: the database, its write-ahead log, the session store
+# and Trilium's own rolling backups. Never committed and never DVC-pinned — a
+# pin taken while the server runs records a state that never existed, and it
+# looks healthy until someone restores it. data/backups/ holds the named
+# snapshots awm moved there, which is the chunk. notes/ is the markdown export.
+run mkdir -p "$TROOT/live" "$TROOT/data/backups" "$TROOT/notes"
+if ! run test -f "$TROOT/.gitignore"; then
+    printf '/live/\n/.notes.incoming/\n/.notes.retired/\n' | run tee "$TROOT/.gitignore" >/dev/null
+fi
+if ! run test -f "$TROOT/.dvc/config"; then
+    run "$DVC" --cd "$TROOT" init -q --subdir 2>/dev/null || run "$DVC" --cd "$TROOT" init -q
+fi
+run "$DVC" --cd "$TROOT" config --local -q cache.dir "$DATA/.dvc_cache"
+run "$DVC" --cd "$TROOT" config --local -q cache.type hardlink,symlink
+run "${GIT[@]}" -C "$TROOT" add -- .gitignore .dvc .dvcignore 2>/dev/null || true
+if ! run git -C "$TROOT" diff --cached --quiet; then
+    run "${GIT[@]}" -C "$TROOT" commit -q -m "userdata: scaffold trilium/$NAME" -m "Author-Handle: system"
+fi
+
 step "auth account"
 if awm auth user-list | grep -q "\"username\": \"$NAME\""; then
     echo "   account exists (reset with: awm auth user-passwd --username $NAME)"
@@ -71,3 +107,4 @@ else
     awm auth user-add --username "$NAME"
 fi
 echo "ready: $ROOT (branch user/$NAME)"
+echo "       $TROOT (branch trilium/$NAME)"

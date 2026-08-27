@@ -32,12 +32,24 @@ from awm.config import AWM_DIR, WORKSPACE_ROOT
 HERE = Path(__file__).resolve().parent          # …/trilium/awm/trilium
 SERVICE_DIR = HERE.parents[1]                   # …/awm/services/trilium
 
-#: Per-service state: the port allocation, the recorded node bin, the tarball
-#: fallback and the logs. Never a user's content — that lives in their scope.
+#: Per-service *runtime* state: the port allocation, the ETAPI tokens and the
+#: logs. Written by whoever runs the service. Never a user's content — that
+#: lives in their scope.
 STATE_DIR = Path(os.environ.get("TRILIUM_STATE_DIR") or (AWM_DIR / "services" / "trilium"))
 PORTS_FILE = STATE_DIR / "ports.json"
-NODE_BIN_FILE = STATE_DIR / "node-bin"
 LOG_DIR = STATE_DIR / "logs"
+
+#: Per-service *install* artifacts: the unpacked server tarball, the recorded
+#: node bin, the tarball stamp. Beside the service and gitignored, the way
+#: drawio keeps its patched webapp.
+#:
+#: Not in STATE_DIR, and the reason is sirius. There the install runs as the
+#: dev user and the gateway runs as the application account, which owns the
+#: state root — an install writing there fails on permissions. Everything
+#: written at install time and only read at runtime belongs on the install
+#: side of that line.
+INSTALL_DIR = SERVICE_DIR
+NODE_BIN_FILE = INSTALL_DIR / "node-bin"
 
 #: One scope per person, branch `trilium/<user>`. See `projects/userdata/README.md`.
 USERDATA_DIR = Path(os.environ.get("TRILIUM_USERDATA_DIR")
@@ -55,7 +67,7 @@ FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
 #: fork to build. Upstream ships a Node runtime inside it, so a node serving
 #: from here needs no node toolchain of its own — which is the whole reason
 #: sirius can install in a minute.
-TARBALL_DIR = STATE_DIR / "server"
+TARBALL_DIR = INSTALL_DIR / "server"
 TARBALL_ENTRY = TARBALL_DIR / "main.cjs"
 TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
 
@@ -77,6 +89,23 @@ MAX_USERS = 9
 
 HEALTH_INTERVAL_S = float(os.environ.get("TRILIUM_HEALTH_INTERVAL_S", "20"))
 START_TIMEOUT_S = float(os.environ.get("TRILIUM_START_TIMEOUT_S", "120"))
+
+
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "off", "false", "no")
+
+
+#: Whether to raise a mesh TLS front per user.
+#:
+#: True on a mesh node, where the front is the only way a browser reaches a
+#: loopback server. False where something else is already the public edge —
+#: sirius fronts every request with nginx behind Cloudflare, and its firewall
+#: admits 80 and 443 alone, so a listener in the 12501 band would bind a port
+#: nothing can reach and mint a certificate nothing would trust.
+FRONTS_ENABLED = _flag("TRILIUM_FRONTS", True)
 
 _USER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -189,15 +218,18 @@ def discovered_users() -> list[str]:
     """Every user with a scope on disk, in name order.
 
     A directory is a user's scope when it holds a `.git` — a worktree's is a
-    file, not a directory, so both forms are accepted. Names are constrained
-    because they become a port allocation key and a log filename.
+    file, not a directory, so both forms are accepted. The check exists so a
+    stray directory beside the scopes is not handed a port and a server.
+
+    Names are constrained because they become a port allocation key and a log
+    filename.
     """
     try:
         entries = sorted(p for p in USERDATA_DIR.iterdir() if p.is_dir())
     except OSError:
         return []
     return [p.name for p in entries
-            if (p / ".git").exists() and _USER_RE.match(p.name)]
+            if _USER_RE.match(p.name) and (p / ".git").exists()]
 
 
 def instances() -> list[Instance]:
