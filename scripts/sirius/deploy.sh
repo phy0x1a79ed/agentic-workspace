@@ -37,4 +37,13 @@ else
     ssh "$HOST" 'sudo systemctl restart awm && sleep 2 && systemctl is-active awm'
 fi
 echo "deployed $BRANCH @ ${after:0:9}"
-curl -sS -o /dev/null -w 'https://nexus.tony-xy-liu.com -> %{http_code}\n' https://nexus.tony-xy-liu.com/ || true
+# Poll rather than probe once. The unit is restarted two seconds earlier, and
+# nginx answers 502 until the edge has a listener again — a deploy that always
+# ends in 502 teaches whoever runs it to ignore the one line that would report a
+# real failure.
+for _ in $(seq 1 20); do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' https://nexus.tony-xy-liu.com/ || echo 000)
+    [ "$code" = 502 ] || break
+    sleep 2
+done
+echo "https://nexus.tony-xy-liu.com -> $code" 
