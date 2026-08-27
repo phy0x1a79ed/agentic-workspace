@@ -57,7 +57,8 @@ run "$DVC" --cd "$ROOT" config --local -q cache.dir "$DATA/.dvc_cache"
 run "$DVC" --cd "$ROOT" config --local -q cache.type hardlink,symlink
 
 step "commit"
-run "${GIT[@]}" -C "$ROOT" add -A -- notes drawio data .dvc .dvcignore 2>/dev/null || true
+# Only the scaffold's own files: the services commit what users write.
+run "${GIT[@]}" -C "$ROOT" add -- notes/.gitkeep drawio/.gitkeep data/figures/.gitkeep .dvc .dvcignore 2>/dev/null || true
 if ! run git -C "$ROOT" diff --cached --quiet; then
     run "${GIT[@]}" -C "$ROOT" commit -q -m "userdata: scaffold $NAME" -m "Author-Handle: system"
 fi
