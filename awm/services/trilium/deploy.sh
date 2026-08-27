@@ -125,7 +125,9 @@ fi
 FORK_DEV="$WS/projects/trilium/dev"
 FORK_REL="$WS/projects/trilium/release"
 
-if [ "$FORK" = 1 ] && [ -d "$FORK_DEV/.git" ] && [ -d "$FORK_REL/.git" ]; then
+# `-e`, not `-d`: a linked worktree's `.git` is a file pointing at the common
+# git dir, so a directory test reports every worktree as not-a-repo.
+if [ "$FORK" = 1 ] && [ -e "$FORK_DEV/.git" ] && [ -e "$FORK_REL/.git" ]; then
     say "promoting the Trilium fork"
     if git -C "$FORK_REL" merge-base --is-ancestor dev HEAD; then
         echo "  fork release already contains dev — nothing to promote"
