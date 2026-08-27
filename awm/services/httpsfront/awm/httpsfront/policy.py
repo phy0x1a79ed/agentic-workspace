@@ -7,7 +7,7 @@ is not listed here is a 404 whether or not it carries a session, so nothing
 else in awm — the hub control plane, ``/invoke``, other services, the
 fileviewer root — is even discoverable from outside.
 
-Four answers per path:
+Five answers per path:
 
 * ``DENY``  — not part of the public surface. 404.
 * ``OPEN``  — allowed for any authenticated session.
@@ -17,6 +17,8 @@ Four answers per path:
   person. A fourth verdict rather than ``USER`` because the two mean opposite
   things: ``USER`` admits a path that *names* the caller, and a vault path names
   nobody at all. Reusing ``USER`` would make that distinction untestable.
+* ``PENPOT`` — Penpot's own root-level frontend paths, gated the same way as
+  ``VAULT`` and for the same reason: a person's design files, not a machine's.
 
 The lists are constants with tests, not a per-host environment string, so a
 change to the surface is a reviewed diff.
@@ -27,7 +29,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from awm.httpsfront import vault
+from awm.httpsfront import penpot, vault
 from awm.httpsfront.auth import PEER_SUB
 
 
@@ -36,6 +38,7 @@ class Verdict(str, Enum):
     OPEN = "open"
     USER = "user"
     VAULT = "vault"
+    PENPOT = "penpot"
 
 
 # Service verbs the browser pages call. Everything a page does not need — bulk
@@ -48,7 +51,14 @@ DRAWIO_DENIED_FNS = frozenset({
 })
 DRAWIO_DENIED_PREFIXES = ("autopublish",)
 
-OPEN_PREFIXES = ("/ui/drawio/", "/drawio-app/", "/ui/trilium/")
+#: "/penpot" and "/penpot-view" are listed explicitly rather than left to the
+#: early VAULT/PENPOT classify() branches (or, for the view mount, to falling
+#: through to a generic svc-routed verdict) — a forward-compat requirement
+#: from the public-sirius integrator's branch, where this list is the *only*
+#: gate: an unlisted prefix 404s there regardless of anything else in this
+#: module. See test_penpot_paths.py.
+OPEN_PREFIXES = ("/ui/drawio/", "/drawio-app/", "/ui/trilium/",
+                 "/penpot", "/penpot-view")
 OPEN_EXACT = frozenset({"/", "/ui/drawio", "/drawio-app", "/ui/trilium",
                         "/__auth/login", "/__auth/logout", "/__auth/whoami"})
 
@@ -81,6 +91,11 @@ def classify(path: str) -> Verdict:
     # shadowed by anything here — and after nothing, so ``/`` is untouched.
     if vault.owns(path):
         return Verdict.VAULT
+    # Same reasoning, same position, for Penpot — checked second so a path
+    # both would claim (see penpot.py's collision note) keeps resolving to
+    # the vault, unchanged from before Penpot existed.
+    if penpot.owns(path):
+        return Verdict.PENPOT
     if path in OPEN_EXACT:
         return Verdict.OPEN
     if path.startswith(DENIED_PREFIXES):
@@ -111,6 +126,10 @@ def allows(path: str, sub: str | None) -> bool:
         # A person, not a machine. A peer bearer is another node's process and
         # has no business in a human's knowledge base; `operator` is the shared
         # -password session, which this profile does not issue anyway.
+        return sub not in (PEER_SUB, "operator")
+    if verdict is Verdict.PENPOT:
+        # Same exclusion, same reason: a peer/operator machine bearer has no
+        # business in a person's design files.
         return sub not in (PEER_SUB, "operator")
     m = _EMIT.match(path)
     if m:

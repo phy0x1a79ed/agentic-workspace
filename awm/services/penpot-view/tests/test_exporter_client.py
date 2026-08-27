@@ -349,3 +349,38 @@ def test_short_strings_are_not_cached_so_indices_stay_aligned():
     assert second == {"name": "y"}
     # `~:a` is too short to cache, so ^0 must be `~:name`, not `~:a`.
     assert third == {"name": "z"}
+
+
+# --- tagged values, captured from a real export ---------------------------
+
+LIVE_EXPORT_RESPONSE = (
+    '{"~:mtype":"image/svg+xml","~:name":"Thumbnail",'
+    '"~:filename":"Thumbnail.svg",'
+    '"~:id":"~u6d7e5d6d-88ab-8038-8008-8bc7f93fcfb8",'
+    '"~:uri":{"~#uri":"http://localhost:9001/assets/by-id/'
+    '1e35cd0e-422e-48c4-ad44-a8bf7ff6613e"}}'
+)
+
+
+def test_the_asset_uri_arrives_as_a_tagged_value_not_a_bare_string():
+    """The exporter returns `{"~:uri": {"~#uri": "http://..."}}` -- a transit
+    tagged value in verbose form. Left wrapped, the caller gets a dict where it
+    expected a string and the export dies *after* a successful multi-second
+    render, which is the most expensive place to fail. Real captured bytes."""
+    decoded = EC._transit_loads(LIVE_EXPORT_RESPONSE)
+    assert decoded["uri"] == (
+        "http://localhost:9001/assets/by-id/1e35cd0e-422e-48c4-ad44-a8bf7ff6613e")
+    assert decoded["mtype"] == "image/svg+xml"
+
+
+def test_a_tagged_value_in_compact_form_unwraps_too():
+    """The same value can arrive as `["~#tag", rep]` when the writer is not in
+    verbose mode, so both spellings must reduce to the representation."""
+    assert EC._transit_loads('["~#uri","http://x/y"]') == "http://x/y"
+
+
+def test_a_two_element_map_is_not_mistaken_for_a_tagged_value():
+    """Only a *single*-entry map whose key is a tag is a tagged value. A
+    two-key map that happens to start with one must stay a map."""
+    decoded = EC._transit_loads('["^ ","~:a",1,"~:b",2]')
+    assert decoded == {"a": 1, "b": 2}

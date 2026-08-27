@@ -53,20 +53,28 @@ log = logging.getLogger("awm.penpot_view.exporter_client")
 DEFAULT_BASE_URL = os.environ.get("PENPOT_BASE_URL", "http://localhost:9001")
 #: The exporter, reached directly inside the compose network for the export
 #: POST itself (only the *asset fetch* that follows is nginx-only).
-DEFAULT_EXPORTER_URL = os.environ.get("PENPOT_EXPORTER_URL", "http://localhost:6061")
+#: The exporter listens on 6061 *inside* the compose network and publishes no
+#: host port, so 6061 is unreachable from anywhere but a sibling container.
+#: Penpot's own frontend nginx proxies ``/api/export`` to it (``proxy_pass
+#: http://penpot-exporter:6061`` with no URI part, so the full path is
+#: forwarded and the exporter's dispatcher — which routes on everything except
+#: ``/readyz`` — accepts it). Going through the frontend therefore works from
+#: the host *and* from inside the network, and it is the same origin the asset
+#: fetch must use anyway. Verified live: this route answers with the
+#: exporter's own spec-validation error, so it is genuinely the exporter.
+DEFAULT_EXPORTER_URL = os.environ.get("PENPOT_EXPORTER_URL", "http://localhost:9001")
 DEFAULT_USERNAME = os.environ.get("PENPOT_SERVICE_USERNAME")
 DEFAULT_PASSWORD = os.environ.get("PENPOT_SERVICE_PASSWORD")
 
 #: Every backend RPC hangs off this prefix; the command is the last segment.
 RPC_PREFIX = "/api/rpc/command"
 LOGIN_PATH = f"{RPC_PREFIX}/login-with-password"
-#: export-shapes carries its own `cmd` field in the transit body rather than a
-#: per-command URL scheme, so this path is very nearly arbitrary: the exporter's
-#: `wrap-health` intercepts exactly one route (``/readyz``) and every other path
-#: falls straight through to the command dispatcher (verified against the fork's
-#: ``exporter/src/app/http.cljs``). Anything but ``/readyz`` works; the env var
-#: is an escape hatch if a future version grows real routing.
-EXPORT_PATH = os.environ.get("PENPOT_EXPORTER_EXPORT_PATH", "/export")
+#: Paired with DEFAULT_EXPORTER_URL above: this is the location Penpot's
+#: frontend nginx proxies to the exporter. The exporter itself dispatches on
+#: the transit body's ``cmd`` and routes on every path except ``/readyz``
+#: (``exporter/src/app/http.cljs``), so the segment matters only to nginx, not
+#: to the exporter. Override both together if the deployment differs.
+EXPORT_PATH = os.environ.get("PENPOT_EXPORTER_EXPORT_PATH", "/api/export")
 
 #: Explicit everywhere, on purpose -- see the shared hub client in
 #: awm/gateway/awm/gateway/hub/proxy.py, whose timeout=None means a wedged
@@ -141,6 +149,12 @@ _CACHE_FIRST = 48
 _CACHE_MIN = 4
 #: The marker that makes an array a map: ``["^ ", k, v, k, v, …]``.
 _MAP_AS_ARRAY = "^ "
+#: Prefix of a transit *tag*. A tagged value arrives either as
+#: ``{"~#tag": rep}`` (verbose) or ``["~#tag", rep]`` (compact); both are
+#: unwrapped to the representation, which is what a client reading a handful
+#: of fields wants. The tag itself is discarded on purpose -- this module
+#: needs the URI string behind ``~#uri``, not a typed URI object.
+_TAG = "~#"
 
 
 def _code_to_index(code: str) -> int:
@@ -208,6 +222,10 @@ def _decode_transit(value: Any, cache: list | None = None,
         return decoded
 
     if isinstance(value, list):
+        # A tagged value in compact form: ["~#tag", representation].
+        if (len(value) == 2 and isinstance(value[0], str)
+                and value[0].startswith(_TAG)):
+            return _decode_transit(value[1], cache, False)
         if value and value[0] == _MAP_AS_ARRAY:
             items = value[1:]
             if len(items) % 2:
@@ -223,6 +241,15 @@ def _decode_transit(value: Any, cache: list | None = None,
         return [_decode_transit(v, cache, False) for v in value]
 
     if isinstance(value, dict):
+        # A tagged value in verbose form: {"~#tag": representation}. This is
+        # how the exporter hands back the asset URI -- `{"~:uri": {"~#uri":
+        # "http://..."}}` -- so a decoder that leaves it wrapped gives the
+        # caller a dict where it expected a string, and the export fails
+        # *after* a successful multi-second render.
+        if len(value) == 1:
+            only_key = next(iter(value))
+            if isinstance(only_key, str) and only_key.startswith(_TAG):
+                return _decode_transit(value[only_key], cache, False)
         return {_decode_transit(k, cache, True): _decode_transit(v, cache, False)
                 for k, v in value.items()}
 

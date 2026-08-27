@@ -59,15 +59,24 @@ TLS = os.environ.get("AWM_EDGE_TLS", "1").strip().lower() not in ("0", "false", 
 VAULT = os.environ.get("AWM_EDGE_VAULT", "1").strip().lower() not in ("0", "false", "no")
 VAULT_UPSTREAM = config.VAULT_URL if VAULT else None
 
+# Penpot, served at /penpot on this same listener. Off by default, unlike the
+# vault: Penpot's root-level asset paths collide with the vault's own
+# (``/api/``, ``/assets/`` — see awm.httpsfront.penpot's module docstring),
+# and the vault is the one already relied on, so enabling this is an explicit
+# choice rather than something a bare upgrade should flip on.
+PENPOT = os.environ.get("AWM_EDGE_PENPOT", "0").strip().lower() not in ("0", "false", "no")
+PENPOT_UPSTREAM = config.PENPOT_URL if PENPOT else None
+
 # Live status, filled once the listener comes up.
 _STATUS: dict[str, Any] = {
     "listener_port": PORT,
     "tls": False,
     "san": None,
     "upstream": UPSTREAM,
-    # The second upstream on this listener, and the only place an operator can
-    # see whether the edge thinks it is serving the vault at all.
+    # The extra upstreams on this listener, and the only place an operator can
+    # see whether the edge thinks it is serving the vault or Penpot at all.
     "vault_upstream": VAULT_UPSTREAM,
+    "penpot_upstream": PENPOT_UPSTREAM,
     "serving": False,
     "profile": PROFILE or "default",
 }
@@ -125,6 +134,7 @@ def _serve_forever(info: dict) -> None:
                 profile=PROFILE,
                 tls=TLS,
                 vault_upstream=VAULT_UPSTREAM,
+                penpot_upstream=PENPOT_UPSTREAM,
             )
         except Exception:  # noqa: BLE001
             log.exception("https front listener crashed; restarting in 2s")

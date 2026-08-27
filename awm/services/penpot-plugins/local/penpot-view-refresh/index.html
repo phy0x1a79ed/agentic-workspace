@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Penpot View Refresh</title>
+<style>
+  /* Deliberately unstyled beyond basic legibility — this panel has one job.
+     No @penpot/plugin-styles import, to keep the plugin dependency-free. */
+  body {
+    font: 13px -apple-system, system-ui, sans-serif;
+    margin: 0;
+    padding: 12px;
+    color: #1f1f1f;
+    background: #fff;
+  }
+  h1 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 10px;
+    overflow-wrap: anywhere;
+  }
+  label {
+    display: block;
+    margin: 10px 0 4px;
+    font-weight: 600;
+  }
+  input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 5px 6px;
+    font: inherit;
+  }
+  button {
+    margin-top: 12px;
+    margin-right: 6px;
+    padding: 6px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+  #status {
+    margin-top: 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  .error { color: #b00020; }
+  .ok { color: #1a7a1a; }
+</style>
+</head>
+<body>
+  <h1 id="shapeLabel">No shape selected</h1>
+
+  <label for="url">Source /penpot-view/ URL</label>
+  <input id="url" type="text"
+         placeholder="http://host/penpot-view/&lt;file&gt;/&lt;page&gt;/&lt;board&gt;" />
+  <button id="link">Link to selected shape</button>
+
+  <div>
+    <button id="refresh" disabled>Refresh imports</button>
+  </div>
+
+  <div id="status"></div>
+
+<script>
+  // Talks to plugin.js exactly per docs/plugins/create-a-plugin.md § 2.4:
+  // penpot.ui.sendMessage() arrives here as a `message` event on `window`;
+  // we answer with parent.postMessage(), which plugin.js receives via
+  // penpot.ui.onMessage(). No framework, no build step — this page is the
+  // asset as shipped.
+  var shapeLabel = document.getElementById("shapeLabel");
+  var urlInput = document.getElementById("url");
+  var status = document.getElementById("status");
+  var linkBtn = document.getElementById("link");
+  var refreshBtn = document.getElementById("refresh");
+
+  function setStatus(text, kind) {
+    status.textContent = text || "";
+    status.className = kind || "";
+  }
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "state") {
+      shapeLabel.textContent = msg.shapeId
+        ? "Shape: " + (msg.shapeName || msg.shapeId)
+        : "No shape selected";
+      urlInput.value = msg.sourceUrl || "";
+      refreshBtn.disabled = !msg.sourceUrl;
+      if (!msg.sourceUrl) setStatus("");
+    } else if (msg.type === "error") {
+      setStatus(msg.message, "error");
+    } else if (msg.type === "busy") {
+      linkBtn.disabled = msg.busy;
+      refreshBtn.disabled = msg.busy || !urlInput.value;
+      if (msg.busy) setStatus("Refreshing…");
+    } else if (msg.type === "refreshed") {
+      setStatus("Refreshed.", "ok");
+    }
+  });
+
+  linkBtn.addEventListener("click", function () {
+    parent.postMessage({ type: "link", url: urlInput.value }, "*");
+  });
+
+  refreshBtn.addEventListener("click", function () {
+    parent.postMessage({ type: "refresh" }, "*");
+  });
+
+  parent.postMessage({ type: "ready" }, "*");
+</script>
+</body>
+</html>

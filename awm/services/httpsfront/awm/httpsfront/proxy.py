@@ -56,7 +56,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, policy, store, vault
+from awm.httpsfront import pages, penpot, policy, store, vault
 from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -442,6 +442,10 @@ def _vault_up(app) -> str | None:
     return getattr(app.state, "vault_http_up", None)
 
 
+def _penpot_up(app) -> str | None:
+    return getattr(app.state, "penpot_http_up", None)
+
+
 async def _vault_slash(request: Request) -> Response:
     """``/vault/`` → ``/vault``, permanently.
 
@@ -452,6 +456,14 @@ async def _vault_slash(request: Request) -> Response:
     failure than a redirect.
     """
     return RedirectResponse(vault.SHELL, status_code=308)
+
+
+async def _penpot_slash(request: Request) -> Response:
+    """``/penpot/`` → ``/penpot``, permanently. Same reasoning as
+    ``_vault_slash``: Penpot's relative asset references resolve against the
+    document's directory, and only ``/penpot`` (not ``/penpot/``) puts that
+    directory at the site root."""
+    return RedirectResponse(penpot.SHELL, status_code=308)
 
 
 async def _vault_manifest(request: Request) -> Response:
@@ -487,6 +499,31 @@ def _vault_unavailable(request: Request, reason: str) -> Response:
                         status_code=503, headers={"Retry-After": "5"})
 
 
+def _penpot_unavailable(request: Request, reason: str) -> Response:
+    """Penpot's own not-answering-yet response — same shape as
+    ``_vault_unavailable`` and for the same reason (a cold container stack
+    can take a while to bind), but inline rather than through ``pages.py``:
+    that module is outside this change's file ownership, and its
+    ``vault_unavailable_page`` is Trilium-branded copy that would misname the
+    outage here.
+    """
+    if request.method == "GET" and _wants_html(request):
+        body = (
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            '<meta http-equiv="refresh" content="5">'
+            "<title>penpot — starting</title></head><body>"
+            "<h1>penpot</h1>"
+            f"<p>Penpot is not answering yet: {reason}.</p>"
+            "<p>This page retries every five seconds.</p>"
+            "</body></html>"
+        )
+        return HTMLResponse(body, status_code=503,
+                            headers={"Retry-After": "5",
+                                     "Cache-Control": "no-store"})
+    return JSONResponse({"error": "penpot unavailable", "reason": reason},
+                        status_code=503, headers={"Retry-After": "5"})
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
@@ -498,17 +535,25 @@ async def _http_proxy(request: Request) -> Response:
         return _deny(request)
     if public and not policy.allows(path, sub):
         return _not_found()
-    # The vault is the one upstream on this listener that is not the gateway.
-    # Which upstream is decided here and nowhere else, from a path the caller
-    # cannot use to name anything but the one shared knowledge base.
+    # The vault and Penpot are the upstreams on this listener that are not the
+    # gateway. Which upstream is decided here and nowhere else, from a path
+    # the caller cannot use to name anything but one of these two apps. The
+    # vault is checked first — unchanged from before Penpot existed — so a
+    # host running both keeps the vault's pre-existing behaviour; see
+    # penpot.py's module docstring for the root-path collision that follows.
     up = app.state.http_up
     vault_up = _vault_up(app)
+    penpot_up = _penpot_up(app)
     if vault_up and vault.owns(path):
         if not public and sub in (PEER_SUB, "operator"):
             # The mesh edge runs no allow-list, so the check `policy.allows`
             # would have made on the public profile is made here instead.
             return _not_found()
         up, path = vault_up, vault.upstream_path(path)
+    elif penpot_up and penpot.owns(path):
+        if not public and sub in (PEER_SUB, "operator"):
+            return _not_found()
+        up, path = penpot_up, penpot.upstream_path(path)
     client: httpx.AsyncClient = app.state.client
     url = up + path
     if request.url.query:
@@ -520,8 +565,10 @@ async def _http_proxy(request: Request) -> Response:
     try:
         resp = await client.send(upstream_req, stream=True)
     except httpx.ConnectError:
-        if up is not app.state.http_up:
+        if up is vault_up:
             return _vault_unavailable(request, "not listening yet")
+        if up is penpot_up:
+            return _penpot_unavailable(request, "not listening yet")
         return Response("upstream gateway unreachable", status_code=502)
     out = StreamingResponse(
         resp.aiter_raw(),
@@ -570,11 +617,23 @@ async def _ws_proxy(ws: WebSocket) -> None:
     up_url = app.state.ws_up + path
     vault_ws = getattr(app.state, "vault_ws_up", None)
     is_vault = bool(vault_ws) and vault.owns(raw_path)
+    penpot_ws = getattr(app.state, "penpot_ws_up", None)
+    # Vault takes precedence on a raw_path both would claim — same ordering
+    # as the HTTP leg, and for the same reason (see penpot.py's collision
+    # note): the pre-existing feature's behaviour must not shift under it.
+    is_penpot = bool(penpot_ws) and not is_vault and penpot.owns(raw_path)
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
         # shell served at /vault opens its socket there. Same rewrite as the
         # HTTP leg, or the vault's live updates never arrive and nothing says so.
         up_url = vault_ws + vault.upstream_path(raw_path)
+        if ws.url.query:
+            up_url += "?" + ws.url.query
+    elif is_penpot:
+        # Penpot's collab socket (/ws/notifications) is what keeps a shared
+        # board's live edits in sync — the same "silent wrong upstream" hazard
+        # as the vault's socket, and the whole reason this leg exists at all.
+        up_url = penpot_ws + penpot.upstream_path(raw_path)
         if ws.url.query:
             up_url += "?" + ws.url.query
 
@@ -594,7 +653,7 @@ async def _ws_proxy(ws: WebSocket) -> None:
     if not ok or (public and not policy.allows(ws.url.path, sub)):
         await ws.close(code=1008)  # policy violation
         return
-    if is_vault and sub in (PEER_SUB, "operator"):
+    if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
         await ws.close(code=1008)
         return
 
@@ -718,7 +777,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
               extra_routes: Sequence[ExtraRoute] | None = None,
               rewrite_origin: bool = False,
               profile: str | None = None,
-              vault_upstream: str | None = None) -> Starlette:
+              vault_upstream: str | None = None,
+              penpot_upstream: str | None = None) -> Starlette:
     """Assemble the front. ``landing=False`` drops the awm index page at ``/``.
 
     ``profile="public"`` builds the internet-facing door: no CA download, no
@@ -749,6 +809,15 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     paths :mod:`awm.httpsfront.vault` lists. It is what makes one origin, one
     session and one login cover both awm and the vault. Off by default, so every
     existing caller is unchanged.
+
+    ``penpot_upstream`` adds Penpot the same way, at :data:`penpot.SHELL` and
+    the root-level paths :mod:`awm.httpsfront.penpot` lists. Unlike the vault,
+    it does not claim ``/logout``: Penpot's own logout ends a real Penpot
+    session and stays Penpot's, where the vault's own login is off entirely
+    and its logout button would otherwise be a dead end. See ``penpot.py``'s
+    module docstring for the root-path collision this creates with the vault
+    when both are enabled on the same host — a known, unresolved trade-off,
+    not an oversight.
 
     ``rewrite_origin=True`` replaces a present ``Origin`` with the upstream's
     own scheme+authority on both the HTTP and the WebSocket path. Two wrapped
@@ -795,6 +864,11 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route(vault.SHELL_SLASH, _vault_slash, methods=["GET"]))
         routes.append(Route(vault.MANIFEST, _gated(_vault_manifest), methods=["GET"]))
         routes.append(Route("/logout", _vault_logout, methods=["GET", "POST"]))
+    if penpot_upstream:
+        # Only the trailing-slash redirect — no manifest override (Penpot
+        # ships none to fix up) and no /logout hijack (Penpot's own logout is
+        # meaningful and stays Penpot's; see the docstring above).
+        routes.append(Route(penpot.SHELL_SLASH, _penpot_slash, methods=["GET"]))
     for path, methods, handler in (extra_routes or ()):
         routes.append(Route(path, _gated(handler), methods=list(methods)))
     routes += [
@@ -830,6 +904,13 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     else:
         app.state.vault_http_up = None
         app.state.vault_ws_up = None
+    if penpot_upstream:
+        p = penpot_upstream.rstrip("/")
+        app.state.penpot_http_up = p
+        app.state.penpot_ws_up = "ws" + p[len("http"):]
+    else:
+        app.state.penpot_http_up = None
+        app.state.penpot_ws_up = None
     return app
 
 
@@ -839,7 +920,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
           rewrite_origin: bool = False,
           profile: str | None = None,
           tls: bool = True,
-          vault_upstream: str | None = None) -> None:
+          vault_upstream: str | None = None,
+          penpot_upstream: str | None = None) -> None:
     """Bind ``0.0.0.0:port`` with TLS and reverse-proxy to ``upstream`` forever
     (blocks). Designed to run in a daemon thread from the hub adapter.
 
@@ -855,7 +937,8 @@ def serve(*, port: int, cert: str, key: str, ca: str, upstream: str,
     """
     app = build_app(upstream, ca, landing=landing, extra_routes=extra_routes,
                     rewrite_origin=rewrite_origin, profile=profile,
-                    vault_upstream=vault_upstream)
+                    vault_upstream=vault_upstream,
+                    penpot_upstream=penpot_upstream)
     bind: dict = (
         {"host": "0.0.0.0", "ssl_certfile": cert, "ssl_keyfile": key}
         if tls else
