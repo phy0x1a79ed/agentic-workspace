@@ -83,6 +83,16 @@ PROTECTED: tuple[tuple[str, str], ...] = (
     ("dsh-harness",    r"services/dsh/runtime/node_modules"
                        r"|deepseek-harness/\S*/apps/cli/lib/bin\.js"
                        r"|(^|/)dsh\s+.*--profile\s+web\b"),
+    # The trilium service spawns one node process per user in its own session,
+    # so they are not covered by the awm-service pattern that protects their
+    # supervisor — and they are exactly the shape of a victim: long-lived node
+    # processes, idle between edits, carrying the session id of whoever started
+    # the gateway. Killing one drops a person's browser mid-note. Matched on the
+    # bundle path, because nothing on the command line is called `trilium`: the
+    # server is launched as `node …/main.cjs`, either from the fork's build or
+    # from the published tarball this service unpacks into its state directory.
+    ("trilium-server", r"projects/trilium/\S*/apps/server/dist/main\.cjs"
+                       r"|services/trilium/server/\S*main\.cjs"),
     ("ssh-tunnel",     r"(^|/)ssh\s+.*(-[A-Za-z]*[NMWfL]|ControlMaster|ProxyCommand)"),
     ("init",           r"^/sbin/init\b|^/lib/systemd/systemd\b|^systemd\b"),
 )

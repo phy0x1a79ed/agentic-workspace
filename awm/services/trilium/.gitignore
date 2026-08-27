@@ -1,0 +1,8 @@
+# install.sh sidecar (absolute interpreter path; host-specific)
+.runtime-env
+
+# Leaf certs for the per-user mesh fronts, minted from the shared root CA.
+.certs/
+
+# Host-specific extra SANs.
+.sans

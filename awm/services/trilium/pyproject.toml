@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-trilium"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM trilium service: supervise one Trilium server per user on loopback and put an authenticated TLS front on the mesh in front of each."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    # Service-on-service: each mesh front is a configuration of httpsfront's
+    # cert handling, auth gate and reverse proxy, not a second implementation.
+    "awm-httpsfront",
+    "httpx",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/trilium/.
+[tool.setuptools.packages.find]
+include = ["awm.trilium*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]
