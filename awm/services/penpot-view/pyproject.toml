@@ -10,6 +10,9 @@ description = "AWM penpot-view service: on-demand SVG rendering of a Penpot boar
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    # The service-account session against Penpot's backend and exporter, and
+    # the asset fetch that follows an export. See awm/penpot_view/exporter_client.py.
+    "httpx",
 ]
 
 [project.optional-dependencies]
