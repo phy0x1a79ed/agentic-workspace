@@ -95,3 +95,31 @@ def test_trilium_never_writes_into_the_pinned_chunk(workspace):
     inst = instances.instances()[0]
     assert inst.snapshots_dir not in inst.rolling_dir.parents
     assert inst.rolling_dir.is_relative_to(inst.data_dir)
+
+
+def test_a_host_that_cannot_hold_a_checkout_still_has_users(workspace, monkeypatch):
+    """sirius holds no GitHub credential and its `projects/` is a symlink into a
+    state directory owned by another account, so a scope there is a plain
+    directory. Requiring a `.git` would leave that host with no users at all."""
+    (workspace / "tony").mkdir()
+    assert instances.discovered_users() == []
+
+    monkeypatch.setattr(instances, "REQUIRE_SCOPE_GIT", False)
+    assert instances.discovered_users() == ["tony"]
+
+
+def test_dropping_the_git_requirement_does_not_drop_the_name_check(workspace, monkeypatch):
+    """The name is a port-allocation key and a log filename, so it is checked
+    whether or not a `.git` is."""
+    monkeypatch.setattr(instances, "REQUIRE_SCOPE_GIT", False)
+    (workspace / "Not A User").mkdir()
+    (workspace / ".hidden").mkdir()
+    assert instances.discovered_users() == []
+
+
+def test_install_artifacts_are_not_in_runtime_state(workspace):
+    """The user that installs and the user that runs differ on sirius. Anything
+    written at install time has to land where the installer can write it."""
+    assert instances.TARBALL_DIR.is_relative_to(instances.INSTALL_DIR)
+    assert instances.NODE_BIN_FILE.is_relative_to(instances.INSTALL_DIR)
+    assert not instances.INSTALL_DIR.is_relative_to(instances.STATE_DIR)

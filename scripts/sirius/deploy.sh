@@ -17,7 +17,18 @@ git push -q "$REMOTE" "$BRANCH:$BRANCH"
 ssh "$HOST" "git -C /opt/awm checkout -q $BRANCH"
 after=$(ssh "$HOST" 'git -C /opt/awm rev-parse HEAD')
 
-if [ -z "$before" ] || [ -n "$(git diff --name-only "$before" "$after" -- 'awm/gateway/install.sh' 'awm/gateway/environment.yml' '**/pyproject.toml' 'scripts/sirius/' 2>/dev/null)" ]; then
+# What forces a reinstall rather than a restart. `awm/services/*/install.sh` is
+# on the list because a service's own install script is the only thing that
+# fetches what that service runs — a new pinned Trilium tarball, a patched
+# drawio client — and an editable Python install picks up none of it.
+TRIGGERS=(
+    'awm/gateway/install.sh'
+    'awm/gateway/environment.yml'
+    'awm/services/*/install.sh'
+    '**/pyproject.toml'
+    'scripts/sirius/'
+)
+if [ -z "$before" ] || [ -n "$(git diff --name-only "$before" "$after" -- "${TRIGGERS[@]}" 2>/dev/null)" ]; then
     ssh "$HOST" /opt/awm/scripts/sirius/install-awm.sh
 else
     ssh "$HOST" 'sudo systemctl restart awm && sleep 2 && systemctl is-active awm'

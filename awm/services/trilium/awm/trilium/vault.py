@@ -144,6 +144,14 @@ def _pin_and_commit(inst: Instance, message: str, paths: list[str]) -> dict[str,
     report: dict[str, Any] = {"committed": False}
     staged = list(paths)
 
+    if not (scope / ".git").exists():
+        # A host that cannot hold a checkout still takes snapshots and still
+        # exports — the files are written and are on disk. Only the history is
+        # missing, and saying so is better than a `git add` failure that reads
+        # like the snapshot itself went wrong.
+        report["detail"] = f"{scope} is not a git checkout — files written, not committed"
+        return report
+
     if inst.snapshots_dir.is_dir() and any(inst.snapshots_dir.iterdir()):
         if not _is_dvc_repo(scope):
             report["pin"] = "skipped: worktree does not track a .dvc/config"
