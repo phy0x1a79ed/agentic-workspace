@@ -29,6 +29,17 @@ directories under `projects/userdata/trilium/`. Creating one is the whole of
 adding a person, and the supervision loop picks it up without a restart. There is
 no roster to keep in step with the filesystem.
 
+```
+scripts/sirius/add-user.sh <name>                       # a person, everywhere
+awm scope create --project userdata \
+    --scope trilium/<name> --branch-name trilium/<name>  # the Trilium half alone
+```
+
+`add-user.sh` is host-agnostic and idempotent, and it also makes the auth
+account and the `user/<name>` scope that notes and drawio write into. Run it
+again for a person who predates this service. The branch name is passed
+explicitly because a nested scope name would otherwise become `feat/<scope>`.
+
 **Ports are allocated once and remembered.** Front `12501 + slot`, upstream
 `12511 + slot`, with the slot recorded in `.awm/services/trilium/ports.json` and
 never reused. Deriving the slot from a sorted position looks equivalent and is
