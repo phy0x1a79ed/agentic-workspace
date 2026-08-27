@@ -65,10 +65,11 @@ declare -A DISTS=(
   [claude-science]="$WS/awm/services/claude-science::$WS/awm/services/claude-science/tests"
   [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
   [hermes]="$WS/awm/services/hermes::$WS/awm/services/hermes/tests"
+  [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes)
+ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
