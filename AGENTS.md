@@ -315,7 +315,13 @@ Session execution traces go in the journal via `scope_post` (kind=journal).
 4. **Debrief**: the agent runs the native `debrief` skill.
 5. **Complete**: `scope_complete` updates status, optionally merges the branch.
 
-**Per-user data is a scope too.** The public app keeps each signed-in person in project `userdata`, scope `<name>`, branch `user/<name>`. A service that partitions by user resolves the caller through `awm.config.userroot` (`resolve(as_)` → the user or `None`, `root_for(user)` → that worktree, `state_dir(service, user)` → its own index) and commits its subdirectory with `awm.config.autocommit`. `userroot.wrap_handlers` binds the caller for every verb. Notes and drawio are the reference implementations; a new per-user service (Logseq) reuses the same three calls and never chooses a path itself.
+**Per-user data is a scope too**, in project `userdata`, and there are two shapes because there are two ways a service can partition.
+
+A service that partitions **by caller** serves every person from one process and resolves who is asking per request: `awm.config.userroot` (`resolve(as_)` → the user or `None`, `root_for(user)` → that worktree, `state_dir(service, user)` → its own index), committing its subdirectory with `awm.config.autocommit`, with `userroot.wrap_handlers` binding the caller for every verb. Notes and drawio are the reference implementations and live at scope `<name>`, branch `user/<name>`.
+
+A service that partitions **by process** runs one child per person because the upstream application is single-user, and identity is then the application's own login rather than anything awm resolves. Trilium is the reference implementation. It lives at scope `<service>/<name>`, branch `<service>/<name>` — the layout new services use, because it is the one that lets two people's copies of one service be merged later. Discovery is the filesystem: a person exists because their scope directory does.
+
+Both layouts exist today. Migrating notes and drawio onto the second is its own job.
 
 ## Scope Naming Convention
 
