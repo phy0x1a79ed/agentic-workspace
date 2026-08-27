@@ -223,7 +223,7 @@ async def _health_loop() -> None:
             if action == "unhealthy":
                 log.warning("penpot: unhealthy — missing=%s unhealthy=%s",
                             state["missing"], state["unhealthy"])
-            elif action == "stopped" and not STACK._held:  # noqa: SLF001
+            elif action == "stopped" and not STACK.held:
                 log.warning("penpot: stack is down — bringing it back up")
                 try:
                     await asyncio.to_thread(STACK.start)
@@ -247,6 +247,14 @@ async def _on_start() -> None:
         log.warning("penpot: no compose file at %s — the service will "
                     "register and report this via status",
                     STACK.config.compose_dir / STACK.config.compose_file)
+    elif STACK.held:
+        # The gateway respawns this service on any crash, deploy or restart.
+        # Starting unconditionally here would undo an operator's deliberate
+        # stop at exactly the moment nobody is watching, which is the failure
+        # `hold` exists to prevent — so honour it and say so.
+        log.warning("penpot: stack is held stopped (%s); not starting it. "
+                    "Call the start verb to release the hold.",
+                    STACK.hold_file)
     else:
         try:
             res = await asyncio.to_thread(STACK.start)

@@ -545,12 +545,13 @@ async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
     path = request.url.path
-    if public and policy.classify(path) is policy.Verdict.DENY:
+    at_root = _penpot_root(app)
+    if public and policy.classify(path, penpot_at_root=at_root) is policy.Verdict.DENY:
         return _not_found()
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
-    if public and not policy.allows(path, sub):
+    if public and not policy.allows(path, sub, penpot_at_root=at_root):
         return _not_found()
     # The vault and Penpot are the upstreams on this listener that are not the
     # gateway. Which upstream is decided here and nowhere else, from a path
@@ -567,7 +568,7 @@ async def _http_proxy(request: Request) -> Response:
             # would have made on the public profile is made here instead.
             return _not_found()
         up, path = vault_up, vault.upstream_path(path)
-    elif penpot_up and penpot.owns(path, at_root=_penpot_root(app)):
+    elif penpot_up and penpot.owns(path, at_root=at_root):
         if not public and sub in (PEER_SUB, "operator"):
             return _not_found()
         up, path = penpot_up, penpot.upstream_path(path)
@@ -866,11 +867,21 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
         routes.append(Route("/__auth/link", _auth_link, methods=["GET"]))
     routes.append(Route("/__auth/logout", _logout, methods=["POST", "GET"]))
     routes.append(Route("/__auth/whoami", _whoami, methods=["GET"]))
-    if public:
+    # `penpot_root` means Penpot IS the app at `/` on this listener, so the
+    # edge's own answers for `/` must stand aside. Registering either of them
+    # would win outright: Starlette takes the first full match, and both are
+    # registered ahead of the catch-all that consults `penpot.owns`. Getting
+    # this wrong is silent — `/` keeps answering 200 with the edge's own page
+    # while Penpot is simply never reached.
+    root_is_penpot = bool(penpot_upstream and penpot_root)
+    if root_is_penpot:
+        pass
+    elif public:
         routes.append(Route("/", _public_home, methods=["GET"]))
     elif landing:
         # Authenticated landing page (dynamic index of /ui/* pages).
         routes.append(Route("/", _root, methods=["GET"]))
+    if landing and not public and not root_is_penpot:
         # Tag/filter endpoints backing the landing page's tagging UI.
         routes.append(Route("/__landing/tags", _gated(_landing_add_tag), methods=["POST"]))
         routes.append(Route("/__landing/tags", _gated(_landing_remove_tag), methods=["DELETE"]))

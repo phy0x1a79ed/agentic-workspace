@@ -307,3 +307,64 @@ def test_an_awm_socket_still_reaches_the_gateway(monkeypatch):
 def test_the_socket_carries_the_verified_identity(monkeypatch):
     seen = _ws_target(monkeypatch, _app(), "/ws/notifications")
     assert seen["headers"]["x-awm-as"] == "user:tony"
+
+
+# -- the root actually reaches Penpot, not just `owns()` ----------------------
+
+def _root_app(*, profile=None, penpot_root=True, landing=True):
+    app = proxy.build_app(GATEWAY + "/", "/dev/null", profile=profile,
+                          landing=landing, penpot_upstream=PENPOT,
+                          penpot_root=penpot_root)
+    app.state.gate = _Gate("tony")
+    return app
+
+
+def test_a_request_for_the_root_reaches_penpot_when_it_owns_the_root():
+    """`penpot.owns("/", at_root=True)` returning True proves nothing on its
+    own: `build_app` registers its own `/` route ahead of the catch-all that
+    consults `owns`, and Starlette takes the first full match. Asserting on
+    `owns` alone let a change ship that made Penpot *less* reachable — the
+    landing page answered `/` with a clean 200 and Penpot was never asked."""
+    seen, handler = _recorder()
+    with _client(_root_app(), handler) as c:
+        resp = c.get("/")
+    assert resp.status_code == 200
+    assert seen["url"] == PENPOT + "/"
+
+
+def test_the_root_still_belongs_to_the_edge_when_penpot_is_not_at_root():
+    """The default must not take `/` away from a listener that merely has
+    Penpot's asset paths enabled. The landing page reaches the gateway for
+    its own index, so what matters is that Penpot is not the upstream."""
+    seen, handler = _recorder()
+    with _client(_root_app(penpot_root=False), handler) as c:
+        resp = c.get("/")
+    assert resp.status_code == 200
+    assert not seen.get("url", "").startswith(PENPOT)
+
+
+def test_the_public_home_redirect_yields_to_penpot_at_root():
+    seen, handler = _recorder()
+    with _client(_root_app(profile="public"), handler) as c:
+        resp = c.get("/")
+    assert resp.status_code == 200
+    assert seen["url"] == PENPOT + "/"
+
+
+def test_the_shell_path_redirects_to_the_root_when_penpot_owns_it():
+    """Serving the shell at `/penpot` would answer 200 with a page whose own
+    router cannot parse that pathname, so it renders the login screen however
+    valid the session is. A redirect is the only honest answer."""
+    seen, handler = _recorder()
+    with _client(_root_app(), handler) as c:
+        resp = c.get("/penpot")
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/"
+
+
+def test_penpot_at_root_does_not_shadow_the_edges_own_auth_surface():
+    seen, handler = _recorder()
+    with _client(_root_app(), handler) as c:
+        resp = c.get("/__auth/whoami")
+    assert resp.status_code == 200
+    assert seen == {}

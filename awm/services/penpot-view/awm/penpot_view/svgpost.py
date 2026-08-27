@@ -162,9 +162,19 @@ BBox = tuple[float, float, float, float]
 #: rules in the document's own `<style>` block. Both forms are matched in one
 #: pass so a single rewrite pulls the whole document self-contained.
 _EXTERNAL_REF = re.compile(
-    r'(?P<attr>\b(?:xlink:href|href)=")(?P<hurl>https?://[^"]+)"'
-    r'|(?P<func>url\(\s*)(?P<uurl>https?://[^)\s]+)\s*\)'
+    # An <image>'s href, and *only* an <image>'s. Matching a bare href= would
+    # also rewrite an <a href> into a data:text/html link, which is neither
+    # wanted nor safe.
+    r'(?P<attr><image\b[^>]*?\b(?:xlink:)?href=")(?P<hurl>https?://[^"]+)"'
+    # A CSS url(), quoted or not. Penpot's own @font-face rules are unquoted,
+    # but a quoted one that silently stayed external would be exactly the
+    # fallback-font failure this inlining exists to fix.
+    r"""|(?P<func>url\(\s*)(?P<q>["']?)(?P<uurl>https?://[^)"'\s]+)(?P=q)\s*\)"""
 )
+
+
+#: `type/subtype` and nothing else. See `inline_externals`.
+_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
 
 
 class SvgPostError(ValueError):
@@ -233,30 +243,61 @@ def swap_svg(svg: bytes, swaps: tuple[tuple[str, str], ...]
 
     text = _BARE_COLOUR_ATTR.sub(_attr_sub, text)
 
-    # Both forms Penpot is known to emit are now rewritten, so there is no
-    # longer a "found it, cannot reach it" case to report for a *recognised*
-    # colour. What is still worth reporting is a paint spelled in a form this
-    # module cannot parse at all -- a CSS colour name, say. Such a value is
-    # skipped silently by the pass above, and a caller who asked to swap the
-    # colour it denotes would otherwise get an unchanged picture and a clean
-    # report. `none` is excluded: it is Penpot suppressing a paint, not a
-    # colour spelling this module failed to understand.
+    # A problem means "you asked for a swap and part of the document did not
+    # get it", so it has to be computed against `swaps` -- not against the
+    # document alone, which both over-fires (any `currentColor` anywhere
+    # reports a problem on a render whose swap applied perfectly) and
+    # under-fires (a colour this module cannot see is not a colour it can
+    # report by name).
     problems: list[str] = []
+    for source, target in swaps:
+        if _hex_in_style(text, source):
+            problems.append(
+                f"swap {source}->{target}: #{source} appears inside a style= "
+                "declaration, which neither pass rewrites, so this render is "
+                "only partly swapped")
+    # Reported once for the document, not once per swap, and worded as a
+    # caveat: an unparseable spelling *may* denote a colour that was asked
+    # for, and claiming it definitely did would be its own false report.
+    for attr_name, value in _unparseable_paints(text):
+        problems.append(
+            f'{attr_name}="{value}" is a colour spelling this module cannot '
+            "parse; if it denotes one of the requested source colours, that "
+            "occurrence was left unchanged")
+    return text.encode("utf-8"), problems
+
+
+def _hex_in_style(text: str, colour: str) -> bool:
+    """Whether ``colour`` appears as a hex literal inside a ``style=`` value.
+
+    Neither pass rewrites that form -- :data:`_RGB` reads only ``rgb()`` and
+    :data:`_BARE_COLOUR_ATTR` needs a bare attribute -- so
+    ``style="fill: #ff0000"`` comes back unchanged. Left unreported that is
+    exactly the "unchanged picture alongside a clean report" this channel
+    exists to prevent.
+    """
+    lowered = text.lower()
+    return f"#{colour}" in "".join(
+        m.group(1) for m in _STYLE_ATTR.finditer(lowered))
+
+
+def _unparseable_paints(text: str) -> list[tuple[str, str]]:
+    """Distinct bare paint attributes whose value is not a colour this module
+    can parse -- a CSS colour name, say. ``none`` and ``url(...)`` are not
+    colour spellings that failed, so neither is reported.
+    """
+    out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for match in _BARE_COLOUR_ATTR.finditer(text):
         attr_name, value = match.groups()
-        if value == "none" or value.startswith("url(") or value in seen:
+        if value in ("none", "") or value.startswith("url(") or value in seen:
             continue
         try:
             R.canonical_colour(value)
         except R.SpecError:
             seen.add(value)
-            problems.append(
-                f'{attr_name}="{value}" is not a colour spelling this module '
-                "can parse, so any swap of the colour it denotes was not "
-                "applied to it")
-
-    return text.encode("utf-8"), problems
+            out.append((attr_name, value))
+    return out
 
 
 # --- crop ----------------------------------------------------------------
@@ -386,9 +427,17 @@ def crop_svg(svg: bytes, name: str) -> bytes:
 
 # --- scale -----------------------------------------------------------------
 
-#: The root `<svg>`'s presentation width/height, as the exporter writes them:
-#: a bare number of user units, no unit suffix.
-_ROOT_DIM = re.compile(rb'(?P<attr>\b(width|height)=")(?P<value>[\d.]+)"')
+#: The root `<svg>` element, skipping any XML declaration, comment or
+#: processing instruction ahead of it. Anchoring here rather than "everything
+#: before the first `>`" matters: Penpot re-serialises a document with an XML
+#: declaration on the way back in, and partitioning on `>` would then hand
+#: back the declaration and silently scale nothing.
+_ROOT_SVG = re.compile(rb"\A(?:\s|<\?[^>]*\?>|<!--.*?-->)*<svg\b[^>]*>", re.S)
+
+#: The root's presentation width/height. The leading whitespace is load-
+#: bearing -- `\b` also matches after a hyphen, so `stroke-width="4"` on the
+#: root would be scaled as if it were the width.
+_ROOT_DIM = re.compile(rb'(?P<attr>\s(?:width|height)=")(?P<value>[\d.]+)"')
 
 
 def scale_svg(svg: bytes, factor: float) -> bytes:
@@ -411,20 +460,20 @@ def scale_svg(svg: bytes, factor: float) -> bytes:
     """
     if factor == 1.0:
         return svg
-    head, sep, tail = svg.partition(b">")
-    if not sep:
+    root = _ROOT_SVG.match(svg)
+    if root is None:
         return svg
-    seen = 0
 
     def rewrite(match: "re.Match[bytes]") -> bytes:
-        nonlocal seen
-        seen += 1
-        if seen > 2:
-            return match.group(0)
         value = float(match.group("value")) * factor
-        return match.group("attr") + f"{value:g}".encode() + b'"'
+        # Never `:g`: it switches to scientific notation past six digits, and
+        # `width="1.39e+06"` is not a valid SVG length -- the browser renders
+        # nothing at all. `renderspec` clamps the factor so the product stays
+        # in a sane range; this keeps the spelling plain regardless.
+        text = f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+        return match.group("attr") + text.encode() + b'"'
 
-    return _ROOT_DIM.sub(rewrite, head) + sep + tail
+    return _ROOT_DIM.sub(rewrite, root.group(0)) + svg[root.end():]
 
 
 # --- inlining ---------------------------------------------------------------
@@ -457,8 +506,18 @@ def inline_externals(svg: bytes, fetch) -> tuple[bytes, list[str]]:
                 problems.append(f"could not inline {url}: {exc}")
                 cache[url] = None
             else:
-                encoded = base64.b64encode(data).decode("ascii")
-                cache[url] = f"data:{content_type};base64,{encoded}".encode()
+                # The fetcher is expected to have vetted this already, but the
+                # value lands inside an attribute in a document served to every
+                # viewer, so it is checked again where the splice happens
+                # rather than trusted across a callable boundary.
+                if not _MEDIA_TYPE.match(content_type or ""):
+                    problems.append(
+                        f"could not inline {url}: content-type "
+                        f"{content_type!r} is not a bare type/subtype")
+                    cache[url] = None
+                else:
+                    encoded = base64.b64encode(data).decode("ascii")
+                    cache[url] = f"data:{content_type};base64,{encoded}".encode()
         return cache[url]
 
     def rewrite(match: "re.Match[str]") -> str:

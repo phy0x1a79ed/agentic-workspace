@@ -36,10 +36,13 @@ nothing more.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import re
 import threading
+import urllib.parse
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -116,6 +119,20 @@ SUBRESOURCE_TIMEOUT = float(os.environ.get("PENPOT_SUBRESOURCE_TIMEOUT", "20"))
 #: which is visible, rather than producing a render nobody can load.
 MAX_SUBRESOURCE_BYTES = int(
     os.environ.get("PENPOT_MAX_SUBRESOURCE_BYTES", str(8 * 1024 * 1024)))
+#: The only paths a render's sub-resource may live under. Penpot serves image
+#: fills from `/assets/` and proxies web fonts through `/internal/gfonts/`, and
+#: nothing else in a render points anywhere else. Every RPC endpoint the
+#: service account can reach shares this origin, so without a path scope an
+#: `<image href>` naming `/api/rpc/command/get-teams` would be fetched with
+#: the service session and base64'd into a render anyone may read.
+SUBRESOURCE_PATHS = ("/assets/", "/internal/gfonts/")
+#: What a sub-resource may claim to be. The value is spliced into a `data:`
+#: URI inside the render, so it is attacker-influencing markup, not a label.
+SUBRESOURCE_TYPES = ("image/", "font/", "text/css", "application/font")
+#: `type/subtype`, nothing else -- no parameters, no quotes, no spaces. A
+#: content-type reaches the document inside `href="data:...;base64,..."`, so a
+#: quote or a `)` in it breaks out of the attribute and injects markup.
+_CONTENT_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")
 
 COOKIE_NAME = "auth-token"
 
@@ -262,11 +279,20 @@ def _decode_transit(value: Any, cache: list | None = None,
         # then pointed one entry short. On a small response that is invisible;
         # on a real `get-file` it walks off the end of the cache.
         if len(value) == 2 and isinstance(value[0], str) and value[0] != _MAP_AS_ARRAY:
-            head = _decode_transit(value[0], cache, False)
+            raw = value[0]
+            head = _decode_transit(raw, cache, False)
             rep = _decode_transit(value[1], cache, False)
-            if isinstance(head, str) and head.startswith(_TAG):
-                return rep
-            return [head, rep]
+            # Judged on the *raw* token, not the decoded one. `~~#x` is
+            # transit's escape for a literal string "~#x": decoding unescapes
+            # it, so testing the decoded value would read an escaped literal
+            # as a tag and collapse a perfectly ordinary two-element vector
+            # into its second element. A repeat occurrence arrives as a cache
+            # reference, which is why the decoded head is consulted for that
+            # case and only that case.
+            is_tag = raw.startswith(_TAG) or (
+                raw.startswith("^") and isinstance(head, str)
+                and head.startswith(_TAG))
+            return rep if is_tag else [head, rep]
         if value and value[0] == _MAP_AS_ARRAY:
             items = value[1:]
             if len(items) % 2:
@@ -425,6 +451,31 @@ class ExporterClient:
                 self._login()
             return self._token
 
+    @contextlib.contextmanager
+    def _authed_stream(self, method: str, url: str, *, timeout: float):
+        """A streamed :meth:`_authed_request`, so a body can be size-capped as
+        it arrives rather than after it has all been pulled into memory.
+
+        The 401-once-then-retry rule is the same, and expressed the same way:
+        a 401 is only worth re-logging-in for if this request's own token is
+        still the one on the client, and the retry happens exactly once.
+        """
+        for attempt in (0, 1):
+            token = self._ensure_authed()
+            headers = {"cookie": f"{COOKIE_NAME}={token}"}
+            with self._client.stream(method, url, headers=headers,
+                                     timeout=timeout) as resp:
+                if resp.status_code == 401 and attempt == 0:
+                    log.warning("penpot-view: %s %s got 401 (streamed); "
+                                "re-logging in once", method, url)
+                    with self._auth_lock:
+                        if self._token == token:
+                            self._token = None
+                            self._profile_id = None
+                    continue
+                yield resp
+                return
+
     def _authed_request(self, method: str, url: str, *, timeout: float,
                         headers: dict[str, str] | None = None,
                         retried: bool = False, **kwargs: Any) -> httpx.Response:
@@ -537,7 +588,8 @@ class ExporterClient:
         # docstring. Refuse before spending a request on the wrong host.
         return self._fetch_asset(self._localise(uri, what="asset uri"))
 
-    def _localise(self, url: str, *, what: str) -> str:
+    def _localise(self, url: str, *, what: str,
+                  allowed_paths: tuple[str, ...] | None = None) -> str:
         """Map a URL Penpot handed out onto the origin this service reaches
         Penpot on, refusing anything that is neither.
 
@@ -549,16 +601,49 @@ class ExporterClient:
         and normalised to :data:`DEFAULT_BASE_URL`, and a URL on any third
         origin is refused.
 
-        Refusing matters as much as rewriting: an asset fetch aimed anywhere
-        but the frontend nginx risks the backend's storage layer answering a
-        bodyless 204 that would look exactly like a successful export (see the
-        module docstring), and a sub-resource fetch carries the service
-        account's cookie.
+        **Compared as a parsed origin triple, never as a string prefix.** A
+        prefix test is not an origin test, and the gap between them is
+        exploitable: ``http://localhost:9001@evil.tld/steal`` starts with the
+        base URL and resolves to ``evil.tld``, and with no port in the base,
+        ``http://penpot.example.evil.com`` starts with ``http://penpot.example``
+        too. Either one turns this method into an SSRF primitive that also
+        hands the service account's session cookie to the attacker's server,
+        because :meth:`_authed_request` attaches it to whatever host it is
+        given. Userinfo is refused outright rather than normalised away --
+        there is no legitimate reason for Penpot to emit it, so its presence
+        means the URL is not the one it appears to be.
+
+        ``allowed_paths`` narrows what may be fetched *on* that origin. Origin
+        alone is not enough for a sub-resource: every RPC endpoint the service
+        account can reach lives on the same origin, and inlining one of those
+        into a render would make the render an authenticated-read oracle.
         """
-        if url.startswith(self._base_url):
-            return url
-        if self._public_uri and url.startswith(self._public_uri):
-            return self._base_url + url[len(self._public_uri):]
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.username is not None or parsed.password is not None:
+            raise ExporterError(
+                f"{what} {url!r} carries userinfo before the host -- refusing "
+                "it. Penpot never emits such a URL, and one that looks like "
+                "Penpot's origin followed by '@' resolves to a different host "
+                "entirely.")
+
+        for origin in (self._base_url, self._public_uri):
+            if not origin:
+                continue
+            want = urllib.parse.urlsplit(origin)
+            if (parsed.scheme, parsed.hostname, parsed.port) != (
+                    want.scheme, want.hostname, want.port):
+                continue
+            path = parsed.path or "/"
+            if allowed_paths is not None and not path.startswith(allowed_paths):
+                raise ExporterError(
+                    f"{what} {url!r} is on Penpot's own origin but its path is "
+                    f"not under {allowed_paths} -- refusing it, since this "
+                    "request carries the service account's session and its "
+                    "response is inlined into a render anyone may read.")
+            base = urllib.parse.urlsplit(self._base_url)
+            return urllib.parse.urlunsplit(
+                (base.scheme, base.netloc, parsed.path, parsed.query, ""))
+
         known = (f"{self._base_url!r}"
                  + (f" or {self._public_uri!r}" if self._public_uri else ""))
         raise ExporterError(
@@ -665,26 +750,51 @@ class ExporterClient:
         place of its real ones, with no error anywhere. Inlining is what
         turns the export into something that renders the same for everyone.
 
-        **Penpot's own origins only, and that restriction is load-bearing.**
-        The URL comes out of a document a Penpot user authored, and this
-        method attaches the service account's cookie to it. Fetching an
-        arbitrary URL from it would let any board hand this service an
-        internal address and read the response back out of its own render --
-        so `_localise` refuses anything that is neither the frontend base nor
-        Penpot's configured public origin, here rather than further up.
+        **Three separate restrictions, and every one of them is load-bearing.**
+        The URL comes out of a document a Penpot user authored, this method
+        attaches the service account's cookie to it, and whatever comes back is
+        base64'd into a render that anyone who can reach this service may read.
+        So: `_localise` pins the *origin* (parsed, not prefix-matched) and the
+        *path* to :data:`SUBRESOURCE_PATHS`, because every RPC endpoint the
+        service account can reach shares Penpot's origin and inlining one would
+        turn a render into an authenticated-read oracle; the response's
+        content-type must be a bare ``type/subtype`` from
+        :data:`SUBRESOURCE_TYPES`, because it is spliced into a ``data:`` URI
+        inside an attribute and a quote in it injects markup; and the body is
+        read in bounded chunks rather than whole, so an oversized response is
+        refused instead of being pulled into memory and then declined.
         """
-        url = self._localise(url, what="sub-resource")
-        resp = self._authed_request("GET", url, timeout=SUBRESOURCE_TIMEOUT)
-        if resp.status_code != 200:
-            raise ExporterError(
-                f"sub-resource {url} fetch failed: HTTP {resp.status_code}")
-        data = resp.content
+        url = self._localise(url, what="sub-resource",
+                             allowed_paths=SUBRESOURCE_PATHS)
+        with self._authed_stream("GET", url, timeout=SUBRESOURCE_TIMEOUT) as resp:
+            if resp.status_code != 200:
+                raise ExporterError(
+                    f"sub-resource {url} fetch failed: HTTP {resp.status_code}")
+
+            content_type = (resp.headers.get("content-type", "")
+                            .split(";")[0].strip().lower())
+            if not _CONTENT_TYPE.match(content_type):
+                raise ExporterError(
+                    f"sub-resource {url} declared content-type "
+                    f"{content_type!r}, which is not a bare type/subtype -- "
+                    "refusing it, since this value is spliced into a data: "
+                    "URI inside an attribute in the render")
+            if not content_type.startswith(SUBRESOURCE_TYPES):
+                raise ExporterError(
+                    f"sub-resource {url} is {content_type!r}, not one of "
+                    f"{SUBRESOURCE_TYPES} -- refusing to inline it")
+
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_bytes():
+                total += len(chunk)
+                if total > MAX_SUBRESOURCE_BYTES:
+                    raise ExporterError(
+                        f"sub-resource {url} exceeds the "
+                        f"{MAX_SUBRESOURCE_BYTES}-byte inlining cap")
+                chunks.append(chunk)
+
+        data = b"".join(chunks)
         if not data:
             raise ExporterError(f"sub-resource {url} returned zero bytes")
-        if len(data) > MAX_SUBRESOURCE_BYTES:
-            raise ExporterError(
-                f"sub-resource {url} is {len(data)} bytes, over the "
-                f"{MAX_SUBRESOURCE_BYTES}-byte inlining cap")
-        content_type = (resp.headers.get("content-type", "")
-                        .split(";")[0].strip() or "application/octet-stream")
         return content_type, data

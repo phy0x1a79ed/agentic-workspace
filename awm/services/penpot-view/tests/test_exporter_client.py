@@ -549,3 +549,85 @@ def test_a_tag_shorter_than_the_cache_minimum_takes_no_slot():
     rule applies to tags exactly as it does to keywords."""
     payload = json.dumps(["^ ", "~:aaa", {"~#m": 1}, "~:bbb", "^1"])
     assert EC._transit_loads(payload) == {"aaa": 1, "bbb": "bbb"}
+
+
+# --- the origin check is an origin check, not a prefix check ---------------
+
+def _spy_client(seen: list[str], *, public: str | None = None):
+    def asset(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"xy",
+                              headers={"content-type": "image/jpeg"})
+    return EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                             public_uri=public, username="svc-account",
+                             password="hunter2",
+                             transport=httpx.MockTransport(_router(asset=asset)))
+
+
+def test_userinfo_cannot_smuggle_a_foreign_host_past_the_origin_check():
+    """`http://penpot.example@evil.tld/x` starts with the base URL and
+    resolves to evil.tld. A prefix test would send the service account's
+    session cookie there and inline the reply into a render."""
+    seen: list[str] = []
+    client = _spy_client(seen)
+    with pytest.raises(EC.ExporterError, match="userinfo"):
+        client.fetch_subresource(f"{BASE_URL}@evil.tld/steal")
+    assert seen == []
+
+
+def test_a_sibling_domain_is_not_the_same_origin():
+    """With no port in the base, `http://penpot.example.evil.com` starts with
+    `http://penpot.example`."""
+    seen: list[str] = []
+    client = EC.ExporterClient(base_url="http://penpot.example",
+                               exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               transport=httpx.MockTransport(_router()))
+    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+        client.fetch_subresource("http://penpot.example.evil.com/assets/x")
+
+
+def test_a_subresource_path_outside_the_allow_list_is_refused():
+    """Every RPC endpoint the service account can reach shares Penpot's
+    origin. Inlining one would make the render an authenticated-read oracle
+    for whatever that endpoint returns."""
+    seen: list[str] = []
+    client = _spy_client(seen)
+    with pytest.raises(EC.ExporterError, match="not under"):
+        client.fetch_subresource(f"{BASE_URL}/api/rpc/command/get-teams")
+    assert seen == []
+
+
+def test_a_content_type_that_could_break_out_of_the_attribute_is_refused():
+    """The content-type is spliced into `href="data:<type>;base64,..."`. A
+    quote in it injects markup into a render served to every viewer."""
+    def asset(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"AA", headers={
+            "content-type": 'image/png" onload="alert(1)'})
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               transport=httpx.MockTransport(_router(asset=asset)))
+    with pytest.raises(EC.ExporterError, match="bare type/subtype"):
+        client.fetch_subresource(f"{BASE_URL}/assets/by-file-media-id/abc")
+
+
+def test_a_subresource_that_is_not_an_image_font_or_stylesheet_is_refused():
+    def asset(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{}", headers={
+            "content-type": "application/json"})
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               transport=httpx.MockTransport(_router(asset=asset)))
+    with pytest.raises(EC.ExporterError, match="not one of"):
+        client.fetch_subresource(f"{BASE_URL}/assets/by-file-media-id/abc")
+
+
+def test_an_asset_uri_keeps_its_query_string_when_localised():
+    """Penpot's gfonts proxy is driven entirely by the query string."""
+    seen: list[str] = []
+    client = _spy_client(seen, public="https://edge.example")
+    client.fetch_subresource(
+        "https://edge.example/internal/gfonts/css?family=Work+Sans:700")
+    assert seen == [f"{BASE_URL}/internal/gfonts/css?family=Work+Sans:700"]

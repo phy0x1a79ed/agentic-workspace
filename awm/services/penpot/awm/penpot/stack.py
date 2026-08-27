@@ -103,6 +103,15 @@ EXPECTED_SERVICES = _env_tuple(
      "penpot-postgres", "penpot-valkey"),
 )
 
+#: Where a held stop is recorded, so it survives this process. The gateway
+#: respawns a service on any crash, deploy or restart, and an operator who
+#: stopped the stack to free memory does not expect the next respawn to bring
+#: it back.
+HOLD_FILE = _env_path(
+    "PENPOT_HOLD_FILE",
+    Path(os.environ.get("AWM_DIR", "~/.awm")).expanduser() / "penpot" / "held",
+)
+
 HEALTH_INTERVAL_S = float(os.environ.get("PENPOT_HEALTH_INTERVAL_S", "20"))
 #: `up -d`/`down` are usually fast once images are built, but a cold `up -d`
 #: can still pull/create five containers — give it real headroom rather than
@@ -214,8 +223,11 @@ class Stack:
         self._lock = threading.RLock()
         self._last_error: str | None = None
         # Set while something needs the stack to stay down — mirrors
-        # Trilium's `Child._held`, released by the next `start`.
-        self._held = False
+        # Trilium's `Child._held`, released by the next `start`. Read back
+        # from disk so a gateway respawn does not quietly un-hold a stack an
+        # operator deliberately stopped.
+        self._hold_file = HOLD_FILE
+        self._held = self._hold_file.exists()
 
     # -- compose invocation ---------------------------------------------
 
@@ -329,7 +341,7 @@ class Stack:
 
     def start(self, *, wait: bool = True) -> dict[str, Any]:
         with self._lock:
-            self._held = False
+            self._set_held(False)
             if not self.config.exists:
                 self._last_error = (f"no compose file at "
                                     f"{self.config.compose_dir / self.config.compose_file}")
@@ -355,16 +367,48 @@ class Stack:
     def stop(self, *, hold: bool = False) -> dict[str, Any]:
         """`down`, not `stop` — this removes the containers rather than
         pausing them, which is what makes a deliberate stop distinguishable
-        from a crash in `reconcile()`'s three-way classification (see there)."""
+        from a crash in `reconcile()`'s three-way classification (see there).
+
+        A `hold` is recorded only once the stack is actually down, and on
+        disk as well as in memory. Setting it first would leave a failed
+        `down` reporting a held stop over running containers; keeping it only
+        in memory would lose it the moment the gateway respawns this service,
+        which is exactly when an operator is least likely to be watching.
+        """
         with self._lock:
-            self._held = hold
             result = self._compose("down", timeout=START_TIMEOUT_S)
             if result.returncode != 0:
                 self._last_error = ((result.stderr or "").strip()
                                     or f"docker compose down exited {result.returncode}")
                 return {"action": "stop-failed", "error": self._last_error}
             self._last_error = None
+            self._set_held(hold)
         return self.status() | {"action": "stopped"}
+
+    @property
+    def held(self) -> bool:
+        """Whether a deliberate stop is being held. Survives this process."""
+        return self._held
+
+    @property
+    def hold_file(self) -> Path:
+        """Where that hold is recorded, for an operator to see or clear."""
+        return self._hold_file
+
+    def _set_held(self, held: bool) -> None:
+        """Record the hold in memory and on disk. Never raises: a hold that
+        cannot be persisted is still worth honouring for this process's
+        lifetime, and failing the stop over it would be worse."""
+        self._held = held
+        try:
+            if held:
+                self._hold_file.parent.mkdir(parents=True, exist_ok=True)
+                self._hold_file.write_text("held\n")
+            else:
+                self._hold_file.unlink(missing_ok=True)
+        except OSError:
+            log.warning("penpot: could not persist hold state to %s",
+                        self._hold_file, exc_info=True)
 
     def restart(self) -> dict[str, Any]:
         self.stop()

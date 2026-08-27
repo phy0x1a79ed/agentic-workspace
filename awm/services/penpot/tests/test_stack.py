@@ -246,3 +246,32 @@ def test_the_stop_verb_holds_the_stack_down():
     finally:
         hub_adapter.STACK = original
     assert calls == [{"hold": True}]
+
+
+def test_a_held_stop_survives_a_respawn(config, tmp_path, monkeypatch):
+    """The gateway respawns this service on any crash, deploy or restart. A
+    hold kept only in memory would un-hold there -- exactly when nobody is
+    watching -- and `_on_start` would bring the stack back up."""
+    hold = tmp_path / "held"
+    monkeypatch.setattr(stack, "HOLD_FILE", hold)
+    first = stack.Stack(config, runner=FakeRunner(ps_entries=[]))
+    first.stop(hold=True)
+    assert hold.exists()
+
+    respawned = stack.Stack(config, runner=FakeRunner(ps_entries=[]))
+    assert respawned.held is True
+
+    respawned.start(wait=False)
+    assert respawned.held is False
+    assert not hold.exists()
+
+
+def test_a_failed_down_does_not_record_a_hold(config, tmp_path, monkeypatch):
+    """Recording the hold before the `down` would leave an operator told the
+    stack is held stopped while every container is still running."""
+    monkeypatch.setattr(stack, "HOLD_FILE", tmp_path / "held")
+    s = stack.Stack(config, runner=FakeRunner(ps_entries=[], returncode=1))
+    result = s.stop(hold=True)
+    assert result["action"] == "stop-failed"
+    assert s.held is False
+    assert not (tmp_path / "held").exists()

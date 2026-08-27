@@ -47,6 +47,14 @@ from urllib.parse import quote
 #: handler, which imports this module.
 VIEW_PREFIX = os.environ.get("PENPOT_VIEW_PREFIX", "/penpot-view")
 
+#: Bounds on `scale`. The upper bound keeps the product of a board's own
+#: dimensions and the factor inside six digits, which is where `%g`-style
+#: formatting would switch to scientific notation and stop being a valid SVG
+#: length. The lower bound keeps it a positive number: a negative width is
+#: not a small picture, it is no picture.
+MIN_SCALE = 0.01
+MAX_SCALE = 20.0
+
 #: Cap on swaps in one request -- see :mod:`awm.drawio.renderspec` for why.
 MAX_SWAPS = 24
 
@@ -173,6 +181,16 @@ def from_query(query: Mapping[str, list[str]]) -> RenderSpec:
         try:
             scale = float(raw_scale)
         except (TypeError, ValueError):
+            scale = 1.0
+        # `float()` accepts `inf`, `nan` and arbitrarily large values, and a
+        # scale is a multiplier on the root element's width and height. A
+        # negative, infinite or huge product is not a valid SVG length, so the
+        # browser renders nothing at all -- a blank picture from a request
+        # that looked fine, which is the failure this service exists to
+        # refuse. Out-of-range falls back to 1.0 for the same reason an
+        # unparseable value does: `scale` is a presentation hint, and refusing
+        # the whole render over one is worse than ignoring it.
+        if not (MIN_SCALE <= scale <= MAX_SCALE):
             scale = 1.0
 
     swaps = parse_swaps(query.get("swap") or ())

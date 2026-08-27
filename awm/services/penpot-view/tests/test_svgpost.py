@@ -337,3 +337,94 @@ def test_a_document_with_no_external_references_is_byte_identical():
     data, problems = S.inline_externals(SAMPLE_SVG, fetch)
     assert data == SAMPLE_SVG
     assert problems == []
+
+
+# --- what the second review found ---------------------------------------
+
+def test_scale_survives_an_xml_declaration_before_the_root():
+    """Penpot adds an XML declaration when it re-serialises a document on
+    import, so a render that has been through the refresh plugin has one.
+    Partitioning on the first `>` would hand back the declaration and scale
+    nothing, silently."""
+    svg = b'<?xml version="1.0"?><svg width="100" height="50" viewBox="0 0 100 50">'
+    out = S.scale_svg(svg, 2.0)
+    assert b'width="200"' in out
+    assert b'height="100"' in out
+    assert b'viewBox="0 0 100 50"' in out
+
+
+def test_scale_does_not_match_a_hyphenated_attribute():
+    """`\\b` also matches after a hyphen, so `stroke-width` on the root would
+    be scaled as if it were the width -- and then the real height would be
+    skipped, changing the aspect ratio."""
+    out = S.scale_svg(b'<svg stroke-width="4" width="200" height="50">', 2.0)
+    assert b'stroke-width="4"' in out
+    assert b'width="400"' in out
+    assert b'height="100"' in out
+
+
+def test_scale_leaves_a_unit_bearing_length_alone():
+    out = S.scale_svg(b'<svg width="100%" height="50">', 2.0)
+    assert b'width="100%"' in out
+
+
+def test_scale_never_emits_scientific_notation():
+    """`width="1.39e+06"` is not a valid SVG length; the browser renders
+    nothing. renderspec clamps the factor, and this keeps the spelling plain
+    even so."""
+    out = S.scale_svg(b'<svg width="1390" height="724">', 20.0)
+    assert b"e+" not in out
+    assert b'width="27800"' in out
+
+
+def test_a_quoted_font_url_is_inlined_too():
+    """An unquoted url() is what Penpot emits today. A quoted one that stayed
+    external would be the silent fallback-font failure inlining exists to
+    fix, and would not even be reported."""
+    svg = b'<svg><style>@font-face{src:url("https://p.example/f.woff2")}</style></svg>'
+    out, problems = S.inline_externals(svg, lambda url: ("font/woff2", b"AA"))
+    assert b"data:font/woff2;base64,QUE=" in out
+    assert b"https://" not in out
+    assert problems == []
+
+
+def test_only_an_images_href_is_inlined():
+    """A bare href= match would rewrite an `<a href>` into a data:text/html
+    link -- neither wanted nor safe."""
+    svg = b'<svg><a href="https://ext.example/page">x</a></svg>'
+    out, problems = S.inline_externals(svg, lambda url: ("text/html", b"AA"))
+    assert out == svg
+    assert problems == []
+
+
+def test_a_content_type_that_breaks_out_of_the_attribute_is_refused_at_the_splice():
+    """Defence in depth: the fetcher vets this, but the value lands inside an
+    attribute in a document served to every viewer, so it is checked again
+    where the splice happens rather than trusted across a callable."""
+    svg = b'<svg><image href="https://p.example/a.png"/></svg>'
+    out, problems = S.inline_externals(
+        svg, lambda url: ('image/png" onload="alert(1)', b"AA"))
+    assert out == svg
+    assert len(problems) == 1
+    assert "not a bare type/subtype" in problems[0]
+
+
+def test_an_unparseable_paint_does_not_claim_a_swap_was_missed():
+    """`currentColor` may denote anything. Reporting it as a definite miss on
+    every render that carries one makes the problems channel noise."""
+    svg = b'<svg><rect fill="currentColor"/><rect style="fill: rgb(255, 0, 0);"/></svg>'
+    data, problems = S.swap_svg(svg, (("ff0000", "00ff00"),))
+    assert b"rgb(0, 255, 0)" in data
+    assert len(problems) == 1
+    assert "cannot parse" in problems[0]
+    assert "only partly swapped" not in problems[0]
+
+
+def test_hex_inside_a_style_declaration_is_reported_as_a_partial_swap():
+    """Matched by neither pass, so it comes back unchanged. Unreported, that
+    is an unchanged picture alongside a clean report."""
+    svg = b'<svg><g style="fill: #ff0000"/></svg>'
+    data, problems = S.swap_svg(svg, (("ff0000", "00ff00"),))
+    assert data == svg
+    assert len(problems) == 1
+    assert "only partly swapped" in problems[0]
