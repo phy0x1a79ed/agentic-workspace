@@ -23,6 +23,10 @@ Merge model (Google-Docs-lite, sized for a couple of clients):
 Thread-safety: read/write note handlers run in a worker thread
 (``asyncio.to_thread``) while ``collab_edit`` and the flusher run on the loop
 thread, so every registry mutation is guarded by :data:`_LOCK`.
+
+Rooms are keyed by ``config.room_key`` (``<user>/<note id>``), so two users'
+stores never share a room, and each room remembers its user so the flusher
+can rebind before it touches that user's paths.
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from diff_match_patch import diff_match_patch
+
+from awm.config import userroot
 
 from . import config, db, index, store
 
@@ -57,6 +63,7 @@ class Stale(RuntimeError):
 class Room:
     note_id: str
     content: str
+    user: str | None = None
     version: int = 0
     dirty: bool = False
     # version -> content, bounded to the most recent ``config.SNAPSHOT_RING``.
@@ -93,13 +100,14 @@ def _merge(base: str, mine: str, current: str) -> str:
 def open_room(note_id: str, *, initial_content: str | None = None) -> Room:
     """Return the note's room, loading its content from disk on first open."""
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        key = config.room_key(note_id)
+        r = _ROOMS.get(key)
         if r is None:
             content = store.read(note_id) if initial_content is None else initial_content
-            r = Room(note_id=note_id, content=content, version=0)
+            r = Room(note_id=note_id, content=content, user=userroot.current(), version=0)
             r.snaps[0] = content
             r.persisted_rev = db.text_rev(store.read(note_id))
-            _ROOMS[note_id] = r
+            _ROOMS[key] = r
         return r
 
 
@@ -114,7 +122,7 @@ def apply_edit(note_id: str, base_version: int, content: str) -> dict:
     """Merge a client's edit into the room. Returns the new authoritative
     ``{version, content, changed}`` (``changed`` false = a no-op edit)."""
     with _LOCK:
-        r = _ROOMS.get(note_id) or open_room(note_id)
+        r = _ROOMS.get(config.room_key(note_id)) or open_room(note_id)
         if int(base_version) >= r.version:
             merged = content                       # no concurrent change
         else:
@@ -133,7 +141,7 @@ def apply_edit(note_id: str, base_version: int, content: str) -> dict:
 def live_content(note_id: str) -> str | None:
     """The room's in-memory content if one is open, else ``None`` (read disk)."""
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         return r.content if r is not None else None
 
 
@@ -166,7 +174,7 @@ def text_at_rev(note_id: str, rev: str) -> str | None:
     if db.text_rev(disk) == rev:
         return disk
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         if r is None:
             return None
         if db.text_rev(r.content) == rev:
@@ -186,7 +194,7 @@ def file_diverged(note_id: str) -> bool:
     room is open — which is the overwhelmingly common case.
     """
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         if r is None:
             return False
         content = r.content
@@ -198,7 +206,7 @@ def sync_from_disk(note_id: str, content: str) -> None:
     ``save`` that already persisted to disk). Bumps the version so a later
     subscriber adopts it; marks clean since disk already matches."""
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         if r is None:
             return
         if r.content != content:
@@ -213,7 +221,7 @@ def drop(note_id: str) -> None:
     """Forget a room (note trashed/purged). Any unflushed edits are discarded —
     callers trash/purge the durable copy separately."""
     with _LOCK:
-        _ROOMS.pop(note_id, None)
+        _ROOMS.pop(config.room_key(note_id), None)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +240,7 @@ def _preserve_out_of_band_write(note_id: str) -> Path | None:
     either way. Returns the copy's path, or ``None`` if the file is as expected.
     """
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         expected = r.persisted_rev if r is not None else ""
     if not expected:
         return None
@@ -308,7 +316,7 @@ def land(conn, note_id: str, content: str, expect_rev: str) -> dict:
     browser has this note open), which the caller fans out to subscribers.
     """
     with _LOCK:
-        r = _ROOMS.get(note_id)
+        r = _ROOMS.get(config.room_key(note_id))
         current = r.content if r is not None else store.read(note_id)
         if db.text_rev(current) != expect_rev:
             raise Stale(
@@ -338,17 +346,38 @@ def land(conn, note_id: str, content: str, expect_rev: str) -> dict:
 
 
 def flush_all(conn) -> list[str]:
-    """Persist every dirty room. Safe to call from a worker thread — it snapshots
-    the dirty set under the lock, does the (blocking) disk/index writes outside
-    it, then clears ``dirty`` only for rooms that didn't change meanwhile."""
+    """Persist every dirty room of the bound user (the legacy store when none
+    is bound). Safe to call from a worker thread — it snapshots the dirty set
+    under the lock, does the (blocking) disk/index writes outside it, then
+    clears ``dirty`` only for rooms that didn't change meanwhile."""
+    user = userroot.current()
     with _LOCK:
-        pending = [(r.note_id, r.content, r.version) for r in _ROOMS.values() if r.dirty]
+        pending = [(r.note_id, r.content, r.version)
+                   for r in _ROOMS.values() if r.dirty and r.user == user]
     flushed: list[str] = []
     for note_id, content, version in pending:
         _persist(conn, note_id, content)
         with _LOCK:
-            r = _ROOMS.get(note_id)
+            r = _ROOMS.get(config.room_key(note_id))
             if r is not None and r.version == version:
                 r.dirty = False
         flushed.append(note_id)
     return flushed
+
+
+def flush_everything(connect) -> dict[str | None, list[str]]:
+    """Flush every user's dirty rooms, each under its own binding and its own
+    connection. Returns ``{user: [note ids]}`` for the stores that changed."""
+    with _LOCK:
+        users = {r.user for r in _ROOMS.values() if r.dirty}
+    out: dict[str | None, list[str]] = {}
+    for user in sorted(users, key=lambda u: u or ""):
+        with userroot.bind(user):
+            conn = connect()
+            try:
+                flushed = flush_all(conn)
+            finally:
+                conn.close()
+        if flushed:
+            out[user] = flushed
+    return out

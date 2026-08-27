@@ -25,9 +25,11 @@ Run via ``run.sh`` (which the gateway spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any
 
+from awm.config import autocommit, userroot
 from awm.gatewayclient import ServiceAdapter
 
 from awm.notes import config, dao, notes, rooms
@@ -507,9 +509,11 @@ def _handle_discard(args: dict) -> dict:
 def _handle_collab_open(args: dict) -> dict:
     conn = dao.connect()
     try:
-        return notes.collab_open(conn, args["id"])
+        res = notes.collab_open(conn, args["id"])
     finally:
         conn.close()
+    res["topic"] = config.collab_topic(args["id"])
+    return res
 
 
 async def _handle_collab_edit(args: dict) -> dict:
@@ -531,7 +535,31 @@ async def _handle_collab_edit(args: dict) -> dict:
     return res
 
 
-HANDLERS = {
+def _bound(handler):
+    """Run ``handler`` with the caller's user bound (``awm.config.userroot``).
+
+    The gateway threads the edge-verified ``X-Awm-As`` as ``as_``; a known user
+    binds their store for the call, anything else means the legacy store (or,
+    in strict mode, a refusal). The binding is a ContextVar, so it follows the
+    handler into ``asyncio.to_thread``.
+    """
+    two = len(inspect.signature(handler).parameters) >= 2
+
+    if inspect.iscoroutinefunction(handler):
+        async def _async(args: dict, as_: str | None = None):
+            with userroot.bind(userroot.resolve(as_)):
+                return await (handler(args, as_) if two else handler(args))
+        _async.__name__ = handler.__name__
+        return _async
+
+    def _sync(args: dict, as_: str | None = None):
+        with userroot.bind(userroot.resolve(as_)):
+            return handler(args, as_) if two else handler(args)
+    _sync.__name__ = handler.__name__
+    return _sync
+
+
+_HANDLERS = {
     "search": _handle_search,
     "get": _handle_get,
     "tree": _handle_tree,
@@ -557,28 +585,48 @@ HANDLERS = {
     "collab_open": _handle_collab_open,
     "collab_edit": _handle_collab_edit,
 }
+HANDLERS = {name: _bound(h) for name, h in _HANDLERS.items()}
 
 
-def _startup() -> None:
-    """Init the DB, then sweep any trash past the 30-day TTL."""
-    dao.init()
+def _purge_expired() -> None:
     conn = dao.connect()
     try:
         res = notes.purge_expired(conn)
         if res["purged"]:
-            log.info("notes startup purge: removed %d expired note(s)", len(res["purged"]))
+            log.info("notes startup purge (%s): removed %d expired note(s)",
+                     userroot.current() or "legacy", len(res["purged"]))
     finally:
         conn.close()
+
+
+def _startup() -> None:
+    """Init the DBs, then sweep any trash past the 30-day TTL."""
+    for user in [None, *userroot.users()]:
+        with userroot.bind(user):
+            _purge_expired()
+
+
+def _commit_user_store(user: str) -> None:
+    """Record a user's flushed notes in their worktree; pin moved figures."""
+    try:
+        root = userroot.root_for(user)
+        sha = autocommit.commit_subdir(root, "notes", user, "notes: autosave")
+        if sha:
+            log.info("notes: committed %s for %s", sha[:10], user)
+        autocommit.pin_figures(root, user)
+    except Exception:  # noqa: BLE001 — a commit failure must not stop the flush
+        log.exception("notes: autocommit for %s failed", user)
 
 
 def _flush_once() -> list[str]:
-    """Persist every dirty room. Opens its own connection so it is safe to run
-    in a worker thread (a sqlite connection is bound to its creating thread)."""
-    conn = dao.connect()
-    try:
-        return rooms.flush_all(conn)
-    finally:
-        conn.close()
+    """Persist every dirty room, per user, then commit each user's store.
+    Opens its own connections so it is safe to run in a worker thread (a
+    sqlite connection is bound to its creating thread)."""
+    flushed = rooms.flush_everything(dao.connect)
+    for user in flushed:
+        if user:
+            _commit_user_store(user)
+    return [nid for ids in flushed.values() for nid in ids]
 
 
 async def _flush_loop() -> None:
