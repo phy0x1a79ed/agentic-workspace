@@ -107,6 +107,11 @@ class Child:
         self._proc: subprocess.Popen | None = None
         self._started_at: float | None = None
         self._last_error: str | None = None
+        # Set while something needs this child to stay down. The supervision
+        # loop respawns anything that is not alive, so without it a restore
+        # races the loop: the child comes back between the stop and the file
+        # swap, and the swap then refuses because the port is bound again.
+        self._held = False
 
     # -- state --------------------------------------------------------------
 
@@ -186,6 +191,7 @@ class Child:
 
     def start(self, *, wait: bool = True) -> dict[str, Any]:
         with self._lock:
+            self._held = False
             if self._alive():
                 return self.snapshot() | {"action": "already-running"}
             try:
@@ -212,8 +218,16 @@ class Child:
         self._last_error = (f"did not bind {port} within "
                             f"{instances.START_TIMEOUT_S}s")
 
-    def stop(self, *, timeout: float = 20.0) -> dict[str, Any]:
+    def stop(self, *, timeout: float = 20.0, hold: bool = False) -> dict[str, Any]:
+        """Stop this child. With `hold`, keep the loop from bringing it back.
+
+        A hold is released by the next `start`, so the pairing is stop-then-start
+        rather than a lock somebody has to remember to drop. Whatever holds one
+        must start the child again even when its own work failed, or the person
+        is left with no server and no error that says why.
+        """
         with self._lock:
+            self._held = hold
             proc = self._proc
             if proc is None or proc.poll() is not None:
                 self._proc = None
@@ -250,6 +264,8 @@ class Child:
         with self._lock:
             if self._alive():
                 return {"user": self.inst.user, "action": "none"}
+            if self._held:
+                return {"user": self.inst.user, "action": "held"}
             code = self._proc.poll() if self._proc else None
             try:
                 self._spawn()
