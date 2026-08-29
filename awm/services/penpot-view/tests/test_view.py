@@ -290,6 +290,39 @@ def test_svgpost_problems_reach_a_response_header_and_the_log(harness, caplog):
     assert any("problem" in rec.message.lower() for rec in caplog.records)
 
 
+def test_a_degraded_render_is_still_reportable_after_the_request(harness):
+    """The header answers the request that provoked the problem and nobody
+    else. A person meeting the picture later -- in a note, where no header is
+    visible -- needs the service itself to be able to say so, which is what
+    `status` reads.
+    """
+    problem_svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+        b'<rect fill="rebeccapurple"/></svg>'
+    )
+    h = harness(exporter=FakeExporter(svg=problem_svg))
+
+    assert h.renderer.degraded() == []
+
+    resp, _ = h.request("GET", f"{PATH}?swap=663399:00ff00")
+    assert resp.status == 200
+
+    degraded = h.renderer.degraded()
+    assert len(degraded) == 1
+    assert degraded[0]["problems"]
+    assert degraded[0]["board_id"]
+
+
+def test_a_clean_render_reports_nothing_degraded(harness):
+    """Guards the other direction: a `degraded` that reported every entry
+    would be as useless as one that reported none, and would pass a test
+    that only ever renders a broken board."""
+    h = harness()
+    resp, _ = h.request("GET", PATH)
+    assert resp.status == 200
+    assert h.renderer.degraded() == []
+
+
 # --- the public server class, not just the handler factory -----------------
 
 def test_viewserver_start_listener_serves_real_requests(tmp_path):

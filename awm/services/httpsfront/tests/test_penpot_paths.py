@@ -192,21 +192,32 @@ def test_the_mount_carries_one():
 # every other test in this file would still pass.
 
 
-def test_penpot_shell_is_in_open_prefixes():
-    assert "/penpot" in policy.OPEN_PREFIXES
-
-
-def test_penpot_view_is_in_open_prefixes():
-    assert "/penpot-view" in policy.OPEN_PREFIXES
-
-
 @pytest.mark.parametrize("path", ["/penpot", "/penpot/", "/penpot/anything",
-                                  "/penpot-view/f/p/b"])
-def test_open_prefixes_actually_cover_the_real_urls(path):
-    """Prevents: the listed prefix strings existing but not actually matching
-    the URLs a browser sends. A trailing-slash or spelling mismatch would pass
-    a bare membership test while still 404ing every real request."""
-    assert path.startswith(tuple(policy.OPEN_PREFIXES))
+                                  "/penpot-view", "/penpot-view/f/p/b"])
+def test_the_real_urls_are_reachable(path):
+    """Prevents: the listed prefixes existing but not matching what a browser
+    actually sends. Asserted through ``classify`` rather than by membership in
+    ``OPEN_PREFIXES``, because reachability is the property that matters and a
+    bare membership check passes happily while every real request 404s.
+
+    Both mounts appear: Penpot's own paths reach it as ``PENPOT`` via
+    ``penpot.owns()``, the render service's as ``OPEN``.
+    """
+    assert policy.classify(path) is not policy.Verdict.DENY
+
+
+@pytest.mark.parametrize("path", ["/penpot-admin", "/penpotsecret",
+                                  "/penpot-internal/x", "/penpot-viewer-evil",
+                                  "/penpot-view-admin"])
+def test_sharing_the_stem_does_not_open_a_path(path):
+    """The prefixes are matched with ``startswith`` against a deny-by-default
+    door, so writing them bare ("/penpot" rather than "/penpot/") opens every
+    path that merely begins with those characters — a future "/penpot-admin"
+    would face the internet by virtue of its name alone. Slashed prefixes plus
+    the bare forms in ``OPEN_EXACT`` give the same reachability without the
+    stem space. This test is the reason the two are written that way.
+    """
+    assert policy.classify(path) is policy.Verdict.DENY
 
 
 # -- the collision warning is derived, not asserted ------------------------

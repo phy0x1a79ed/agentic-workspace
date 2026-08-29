@@ -44,6 +44,10 @@ def status() -> dict:
         "penpot_exporter_url": EC.DEFAULT_EXPORTER_URL,
         "service_account_configured": bool(EC.DEFAULT_USERNAME and EC.DEFAULT_PASSWORD),
         "view_mount": mount.view_server().status(),
+        # A degraded render is otherwise reported only to the request that
+        # provoked it (a header) and to the log. Surfacing it here is what
+        # makes "this diagram looks wrong" answerable.
+        "degraded_renders": mount.view_server().renderer.degraded(),
     }
 
 

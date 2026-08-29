@@ -57,9 +57,16 @@ DRAWIO_DENIED_PREFIXES = ("autopublish",)
 #: from the public-sirius integrator's branch, where this list is the *only*
 #: gate: an unlisted prefix 404s there regardless of anything else in this
 #: module. See test_penpot_paths.py.
+#: Written slashed, with the bare form in ``OPEN_EXACT`` beside it, because
+#: this is a ``startswith`` against a deny-by-default door: a bare "/penpot"
+#: here opens every path merely *starting* with those eight characters, so a
+#: future "/penpot-admin" would be reachable from the internet by having a
+#: name, which is the one thing this module exists to prevent. Penpot's own
+#: paths never needed it -- ``penpot.owns()`` claims them a branch earlier.
 OPEN_PREFIXES = ("/ui/drawio/", "/drawio-app/", "/ui/trilium/",
-                 "/penpot", "/penpot-view")
+                 "/penpot/", "/penpot-view/")
 OPEN_EXACT = frozenset({"/", "/ui/drawio", "/drawio-app", "/ui/trilium",
+                        "/penpot", "/penpot-view",
                         "/__auth/login", "/__auth/logout", "/__auth/whoami"})
 
 # The vault's own verbs. An allow-list, opposite to the deny-lists above,

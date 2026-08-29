@@ -318,6 +318,34 @@ class Cache:
         self.renders = 0
         self._renders_lock = threading.Lock()
 
+    def degraded(self) -> list[dict]:
+        """Every cached render currently carrying problems, newest use last.
+
+        A degraded render answers 200 with an ``X-Penpot-Problems`` header and
+        a log line, which is right for the request but reaches nobody
+        afterwards: a header is invisible in the note that embeds the picture,
+        and a log line is only found by somebody who already suspects. This is
+        the operator-facing half -- ``status`` reports it, so "one of my
+        diagrams looks wrong" has an answer that does not start with grepping
+        logs.
+
+        Derived from what the cache already holds rather than separately
+        tracked, so it cannot disagree with what is actually being served. It
+        therefore inherits the cache's own bounds: an entry evicted under
+        ``MAX_ENTRIES`` takes its problems out of this list with it.
+        """
+        with self._entries_lock:
+            items = list(self._entries.items())
+        out = []
+        for (file_id, page_id, board_id, fingerprint), entry in items:
+            with entry.lock:
+                problems = entry.problems
+            if problems:
+                out.append({"file_id": file_id, "page_id": page_id,
+                            "board_id": board_id, "fingerprint": fingerprint,
+                            "problems": list(problems)})
+        return out
+
     def _entry_for(self, key: tuple[str, str, str, str]) -> _Entry:
         with self._entries_lock:
             entry = self._entries.get(key)
@@ -610,6 +638,10 @@ class Renderer:
         """Bumped each time the exporter is actually invoked — the test seam
         for asserting a cache hit did not re-render."""
         return self.cache.renders
+
+    def degraded(self) -> list[dict]:
+        """Cached renders currently carrying problems; see :meth:`Cache.degraded`."""
+        return self.cache.degraded()
 
     def _render_once(self, file_id: str, page_id: str, board_id: str,
                      spec: R.RenderSpec):
