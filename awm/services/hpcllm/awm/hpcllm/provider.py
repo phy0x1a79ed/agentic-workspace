@@ -57,7 +57,18 @@ trap cleanup EXIT
 
 echo "=== stage: copying to SLURM_TMPDIR ==="
 cp {container_path} $SLURM_TMPDIR/llamacpp.sif
-cp {model_gguf_path} $SLURM_TMPDIR/model.gguf
+
+# A model over ~50 GB is published as a split GGUF, named
+# ...-00001-of-000NN.gguf. llama.cpp is handed the first part and finds the rest
+# by that exact pattern, so the whole set travels and every name is preserved.
+# Renaming to a fixed model.gguf -- which this did -- silently reduces a split
+# model to its first shard, and it loads far enough to look like it worked.
+GGUF_SRC="{model_gguf_path}"
+GGUF_NAME=$(basename "$GGUF_SRC")
+case "$GGUF_NAME" in
+    *-00001-of-*) cp "${{GGUF_SRC%%-00001-of-*}}"-*-of-*.gguf "$SLURM_TMPDIR/" ;;
+    *)            cp "$GGUF_SRC" "$SLURM_TMPDIR/$GGUF_NAME" ;;
+esac
 
 echo "=== stage: loading module ==="
 module purge && module load {cfg.apptainer_module}
@@ -73,7 +84,7 @@ apptainer exec --nv --cleanenv \\
     --env LD_LIBRARY_PATH=/app \\
     "$SLURM_TMPDIR/llamacpp.sif" \\
     /app/llama-server \\
-        --model "$SLURM_TMPDIR/model.gguf" \\
+        --model "$SLURM_TMPDIR/$GGUF_NAME" \\
         --host 0.0.0.0 \\
         --port {port} \\
         --n-gpu-layers 999 \\
