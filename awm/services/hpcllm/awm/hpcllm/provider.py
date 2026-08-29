@@ -79,6 +79,7 @@ apptainer exec --nv --cleanenv \\
         --n-gpu-layers 999 \\
         --ctx-size {model.ctx_size} \\
         --cont-batching \\
+        --parallel {model.parallel} \\
         --alias {model.api_name}
 """
 
