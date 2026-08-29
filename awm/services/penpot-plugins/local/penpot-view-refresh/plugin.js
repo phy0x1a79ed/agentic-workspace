@@ -15,6 +15,12 @@
 //                  never touches the image bytes itself and there is no CORS
 //                  or exposure concern from the sandbox.
 //
+//                  WARNING: that server-side fetch carries no awm session, so
+//                  the edge answers it 401 and Refresh fails on every gated
+//                  deployment. INSTALL.md § "Three things the fetch requires"
+//                  item 3 has the trace and the two ways out. Link still
+//                  works; Refresh does not.
+//
 // No automatic refresh (on focus, on interval, ...) is wired up yet — see
 // INSTALL.md for why: this ships manual-only until that has been verified
 // against a real running instance.

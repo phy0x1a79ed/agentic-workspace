@@ -92,7 +92,9 @@ shape's fill image to the result.
 The fetch itself happens in Penpot's own backend, not in the plugin sandbox
 — see `penpot.uploadMediaUrl`'s doc comment in `plugin-types/index.d.ts` —
 so there is no CORS concern and the plugin never sees the image bytes
-directly.
+directly. **WARNING: that is also why Refresh cannot work behind the awm
+edge as this plugin stands. See "Three things the fetch requires" below
+before you deploy it.**
 
 **Manual only, by design for now.** The plugin ships with no automatic
 refresh — no on-focus listener, no polling interval. The Penpot plugin API
@@ -113,7 +115,8 @@ shape groups and all ten inlined `data:` sub-resources intact. Penpot
 re-serialises the document (single-quoted attributes, an added XML
 declaration) but does not rasterize or strip it.
 
-**Two things the fetch requires, and both are silent when missing.**
+**Three things the fetch requires. The first two have answers. The third
+does not, and it is what stops Refresh from working today.**
 
 1. **Penpot's backend does the fetching, so the render URL must be
    reachable from inside that container.** The awm gateway binds loopback
@@ -128,6 +131,41 @@ declaration) but does not rasterize or strip it.
    `PENPOT_SSRF_ALLOWED_HOSTS`, an exact, case-insensitive host allow-list
    that bypasses the IP check — name the host serving `/penpot-view` there
    rather than widening the guard or making the render public.
+
+3. **The backend holds no awm session, so the edge answers it 401.**
+   `/penpot-view/...` sits behind the edge's auth gate. The gate reads a
+   session cookie or an `Authorization` bearer. `uploadMediaUrl` takes a URL
+   and nothing else, so the backend's fetch carries neither. Every Refresh
+   click therefore fails, on any deployment where the render endpoint is
+   gated — which is every deployment, because ungating it would publish
+   every board.
+
+   The plugin sandbox cannot fetch it either, so "have the plugin do it
+   instead" is not a one-line change: `createSandbox` in
+   `plugins/libs/plugins-runtime/src/lib/create-sandbox.ts` forces
+   `credentials: 'omit'` and blanks `Authorization` on the `fetch` it
+   exposes, and its wrapped response object offers only `text`/`json` — no
+   `blob`, no `arrayBuffer`.
+
+   Two routes remain open. Neither is built, and the choice between them
+   changes what the feature is:
+
+   - **Fetch in the UI iframe, upload bytes.** The panel iframe runs with
+     `allow-same-origin` (see `modal/plugin-modal.ts`) and is served from
+     this mount on the edge's own origin, so a `fetch` there does carry the
+     awm session cookie. It would hand the bytes to `plugin.js` for
+     `penpot.uploadMediaData(name, bytes, mimeType)`. **CAUTION: that call
+     routes an `image/svg+xml` blob into Penpot's SVG-to-shapes importer
+     (`process-blobs` in `frontend/src/app/main/data/workspace/media.cljs`),
+     not into media storage, so it yields shapes rather than a fill image.**
+     Keeping the fill-image model means rasterizing the SVG in the iframe
+     first, which gives up the vector fidelity recorded above.
+
+   - **Let the edge accept a scoped token in the query string.** Render
+     params already ride in the query string, so a signed, expiring,
+     render-scoped token fits the existing URL shape and keeps
+     `uploadMediaUrl` and the vector path intact. This is an edge auth
+     change, not a plugin change.
 
 **Storage format.** The source URL is stored under the plugin-data key
 `penpot-view-refresh:sourceUrl`, one per shape. Linking again overwrites it;
@@ -160,13 +198,15 @@ respawn the service under systemd's minimal PATH.
 
 Then, against a running Penpot instance: open the Plugin Manager, paste the
 manifest URL above (substituting whatever host/port actually fronts the
-gateway), install, select a shape, link a real `/penpot-view/...` URL to it,
-and click Refresh imports. Confirm the shape's fill updates and check the
-fidelity question above while you're there.
+gateway), install, select a shape, and link a real `/penpot-view/...` URL to
+it. Refresh imports fails there for the reason in item 3 above. Do not read
+that failure as a broken install.
 
-**What was and was not verified in this pass.** The mount, manifest shape,
-and plugin logic were checked structurally — against Penpot's own plugin
-docs and `plugin-types/index.d.ts`, and with `pytest` against this service's
-own test file — but not driven end-to-end in a browser against a live
-Penpot instance. Treat "install works, link works, refresh works, image
-looks right" as unconfirmed until someone does that pass.
+**What was and was not verified.** The mount, manifest shape, and plugin
+logic were checked structurally — against Penpot's own plugin docs and
+`plugin-types/index.d.ts`, and with `pytest` against this service's own test
+file. Refresh was traced through all three of its candidate fetch paths
+(backend RPC, plugin sandbox, UI iframe) in Penpot's own source and shown to
+have no working one. Nothing here was driven in a browser: whether install
+and link behave as written is still unconfirmed, and confirming them buys
+little while Refresh has no route.

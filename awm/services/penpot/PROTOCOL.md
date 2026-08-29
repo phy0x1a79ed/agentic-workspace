@@ -115,6 +115,27 @@ restarting from the core-change loop anyway.
   escape hatch is `PENPOT_SSRF_ALLOWED_HOSTS`, an exact case-insensitive host
   allow-list — add the real hostname there, don't widen the guard.
 
+  Clearing both still leaves a third wall, and it has no answer yet: that
+  fetch carries no awm session, so any awm-served URL behind the edge's gate
+  answers it 401. The plugin sandbox cannot fetch it in the backend's place —
+  `plugins/libs/plugins-runtime/src/lib/create-sandbox.ts` forces
+  `credentials: 'omit'` and exposes no binary response reader. This is what
+  stops `penpot-view-refresh` working; the full trace and the two candidate
+  routes out are in `awm/services/penpot-plugins/INSTALL.md`. Design any new
+  server-side-fetch feature around this before building it.
+
+- **WARNING: `enable-demo-users` and `disable-secure-session-cookies` must
+  never reach a public deployment.** They are in the local compose file's
+  `PENPOT_FLAGS` because local verification runs over plain HTTP and needs an
+  account to log in with. Demo users are self-service throwaway accounts, so
+  shipping that flag makes the instance open to anyone who can reach it, and
+  the local database holds nothing but demo profiles today. Provision real
+  accounts instead with `docker exec penpot-backend python3 manage.py
+  create-profile`, which drives the backend's PREPL. Enabling
+  `enable-prepl-server` for that opens no network port: `prepl-host` defaults
+  to `localhost` in `backend/src/app/main.clj`, so the socket is
+  container-local. Never set `PENPOT_PREPL_HOST`, and never publish 6062-6064.
+
 - **CAUTION: a rebuilt image is not a fact about the running container.**
   `promote-local.sh` re-verifies the actually-running image against what it
   just built (or, on a no-op run, against the last recorded build) rather
