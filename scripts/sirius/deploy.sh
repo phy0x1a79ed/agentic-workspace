@@ -14,7 +14,7 @@ HOST=${SIRIUS_HOST:-sirius}
 BRANCH=${1:-release}
 REMOTE="$HOST:/opt/awm"
 ROOT="$(git rev-parse --show-toplevel)"
-PAGES="drawio trilium"
+PAGES="trilium"
 
 [ "$(git rev-parse "$BRANCH")" = "$(git rev-parse HEAD)" ] \
     || { echo "refusing: HEAD is not $BRANCH; run from the tree whose pages were built" >&2; exit 1; }

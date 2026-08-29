@@ -1,0 +1,137 @@
+# DRAFT for T11 — sirius's overlay on upstream's docker-compose.yaml.
+# Applied as:  docker compose -f docker-compose.yml -f docker-compose.sirius.yml
+#
+# Why an overlay on the stock file rather than a file of our own: sirius runs
+# the *published* penpotapp images, so the base file is upstream's, unmodified
+# and pinned by PENPOT_VERSION. Everything this box needs differently lives
+# here, where it can be read as a diff against what upstream ships. The local
+# dev box runs fork-built images from its own overlay; that split is the same
+# bargain the vault already runs on, and it holds only while the fork carries
+# no functional change this box needs.
+#
+# CAUTION — three things here are load-bearing and fail quietly if changed:
+#
+#  1. `ports: !override` on every published port. Compose merges port lists by
+#     *target* port, so a plain `ports:` keeps the base file's published value
+#     and silently republishes on 0.0.0.0. Docker's DNAT is evaluated before
+#     UFW's filter rules, so that is a public exposure while `ufw status`
+#     still prints a locked-down ruleset.
+#  2. `penpot-frontend-internal` must NEVER be given a PENPOT_PUBLIC_URI.
+#     Unset, its config falls back to `location.origin`, which is what lets the
+#     exporter's headless browser resolve assets against an origin it can
+#     actually reach. Setting one breaks every export while renders keep
+#     reporting success.
+#  3. PENPOT_PUBLIC_URI carries no trailing slash — the backend concatenates it
+#     raw into email templates. The browser separately compares
+#     `location.origin + location.pathname` against it by exact string
+#     equality, so the edge must serve `/penpot/` *with* the slash and strip
+#     the prefix before proxying. A mismatch renders Penpot's not-found page,
+#     which embeds a login dialog — so the symptom reads as an auth failure
+#     and is not one.
+
+x-flags: &sirius-flags
+  # Divergence from the local overlay, deliberate, three ways:
+  #
+  #  - `enable-demo-users` is GONE. It is an account-creation path, and this
+  #    box is on the internet. The edge gates it today; a flag whose whole
+  #    purpose is throwaway accounts should not be the thing standing between
+  #    a policy slip and a stranger.
+  #  - `disable-secure-session-cookies` is GONE. Upstream's own comment says to
+  #    remove it when exposing Penpot to the internet. This box is HTTPS end to
+  #    end (Cloudflare, then nginx), so secure cookies work.
+  #  - `enable-prepl-server` is ADDED, which the local overlay drops. It is how
+  #    `manage.py create-profile` runs, and that is how add-user.sh gives a
+  #    person a Penpot account without a second provisioning step. It binds
+  #    container-localhost by default (backend/src/app/main.clj: `prepl-host`
+  #    defaults to "localhost"), so it opens no network port.
+  #
+  #    That safety holds only while BOTH stay true: PENPOT_PREPL_HOST is never
+  #    set, and 6063 is never published. Either one alone turns a
+  #    container-local debug channel into a reachable one. `urepl` (6062) and
+  #    `nrepl` (6064) default the same way and carry the same condition.
+  #
+  # `disable-email-verification` stays: this box has no SMTP, so verification
+  # would strand every account it was applied to.
+  PENPOT_FLAGS: "disable-email-verification enable-prepl-server"
+
+# Memory: these are ceilings, not reservations, and they deliberately sum above
+# the box's available memory (~2941 MiB). What has to fit is the concurrent
+# peak, and that is measured, not guessed: 857 MiB idle across the stack, with
+# a single export spiking the exporter to 1.135 GiB — call it ~1.9 GiB at peak.
+# The caps exist so a runaway degrades to one container restarting instead of
+# the host swapping itself to death. They are kept at the values the local box
+# proved rather than retuned blind for two cores; T13 measures under a real
+# render and tightens them with numbers.
+
+services:
+  penpot-frontend:
+    environment:
+      << : *sirius-flags
+      PENPOT_PUBLIC_URI: "${PENPOT_PUBLIC_URI:?set in /etc/awm/penpot.env}"
+    ports: !override
+      - "127.0.0.1:9001:8080"
+    # depends_on merges by service name across files (union, not replace), so
+    # !override is what actually drops penpot-mcp — disabling the service by
+    # profile is not enough on its own.
+    depends_on: !override
+      - penpot-backend
+      - penpot-exporter
+    mem_limit: 192m
+
+  # The exporter's render target. Same image, no published port, and no public
+  # URI — see CAUTION 2. Idles around 5 MiB.
+  penpot-frontend-internal:
+    image: "penpotapp/frontend:${PENPOT_VERSION:-2.16}"
+    restart: always
+    volumes:
+      - penpot_assets:/opt/data/assets
+    depends_on:
+      - penpot-backend
+    networks:
+      - penpot
+    environment:
+      << : *sirius-flags
+    mem_limit: 96m
+
+  penpot-backend:
+    environment:
+      << : *sirius-flags
+      PENPOT_PUBLIC_URI: "${PENPOT_PUBLIC_URI:?set in /etc/awm/penpot.env}"
+      PENPOT_SECRET_KEY: "${PENPOT_SECRET_KEY:?set in /etc/awm/penpot.env}"
+      # HikariCP defaults to a 60-connection pool sized for a multi-tenant
+      # host; 66 open connections were measured at idle against one user.
+      PENPOT_DATABASE_MIN_POOL_SIZE: "2"
+      PENPOT_DATABASE_MAX_POOL_SIZE: "10"
+    mem_limit: 1536m
+
+  penpot-exporter:
+    environment:
+      << : *sirius-flags
+      PENPOT_SECRET_KEY: "${PENPOT_SECRET_KEY:?set in /etc/awm/penpot.env}"
+      # Renders against the internal frontend, reachable on the compose
+      # network; its SVG renderer rewrites internal origins to the public one
+      # on the way out, so what leaves here carries no unreachable host.
+      PENPOT_INTERNAL_URI: "http://penpot-frontend-internal:8080"
+      PENPOT_PUBLIC_URI: "${PENPOT_PUBLIC_URI:?set in /etc/awm/penpot.env}"
+      PENPOT_REDIS_URI: "redis://penpot-valkey/0"
+    # The one container that actually approaches its ceiling: a headless
+    # Chromium render peaks at 1.135 GiB (measured). This is the number the
+    # box's headroom is designed around.
+    mem_limit: 1536m
+
+  penpot-postgres:
+    mem_limit: 256m
+
+  penpot-valkey:
+    mem_limit: 192m
+
+  # Neither is needed here, and `profiles` keeps `docker compose up` from
+  # starting them at all. penpot-mcp is dropped from the frontend's depends_on
+  # above; without that, disabling it by profile fails the stack instead.
+  penpot-mcp:
+    profiles: ["disabled"]
+
+  penpot-mailcatch:
+    ports: !override
+      - "127.0.0.1:1081:1080"
+    profiles: ["disabled"]

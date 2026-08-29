@@ -167,7 +167,122 @@ AWM_HTTPS_PORT=8444
 AWM_AUTH_PROFILE=public
 AWM_USER_ROOT_STRICT=1
 AWM_DVC_BIN=/opt/miniforge3/envs/dvc/bin/dvc
+PENPOT_BASE_URL=http://127.0.0.1:9001
+PENPOT_EXPORTER_URL=http://127.0.0.1:9001
+PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
+AWM_EDGE_PENPOT=1
 ENV
+
+# ------------------------------------------------------------------ 6. docker
+# Docker CE from Docker's own apt repo, not Ubuntu's docker.io: the compose
+# *plugin* is what everything here invokes (`docker compose`, not
+# `docker-compose`), and docker.io ships neither it nor a current engine.
+step "docker"
+if [ ! -f /etc/apt/keyrings/docker.asc ]; then
+    install -d -m 755 /etc/apt/keyrings
+    curl -fsSL --max-time 30 https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+    note "docker apt key"
+fi
+DOCKER_LIST="deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable"
+if [ "$(cat /etc/apt/sources.list.d/docker.list 2>/dev/null)" != "$DOCKER_LIST" ]; then
+    echo "$DOCKER_LIST" > /etc/apt/sources.list.d/docker.list
+    apt-get -qq update
+    note "docker apt source"
+fi
+for p in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+    dpkg -s "$p" >/dev/null 2>&1 || { apt-get -y install "$p"; note "installed $p"; }
+done
+systemctl is-enabled -q docker || { systemctl enable -q --now docker; note "docker enabled"; }
+
+# Docker's DNAT is consulted before ufw's filter rules, so a container
+# published on a bare `-p 9001:8080` (which binds 0.0.0.0) is reachable from
+# the internet while `ufw status` still shows only 22/80/443. Two things hold
+# that line and both are needed: every published port is written
+# `127.0.0.1:...` in the compose override, and this chain drops anything
+# arriving on an external interface as a backstop.
+#
+# Reapplied by a unit rather than restored by netfilter-persistent: netfilter
+# is empty after boot, and a snapshot restore can carry stale copies of
+# Docker's own generated chains from before dockerd regenerated them. Do NOT
+# add netfilter-persistent alongside this -- two writers on one chain with no
+# ordering against dockerd is worse than the problem it solves.
+put "$ETC/docker/docker-user-iptables.sh" /usr/local/sbin/docker-user-iptables.sh 755 || true
+if put "$ETC/systemd/docker-user-rules.service" \
+       /etc/systemd/system/docker-user-rules.service 644; then
+    systemctl daemon-reload
+fi
+systemctl is-enabled -q docker-user-rules || {
+    systemctl enable -q --now docker-user-rules; note "docker-user-rules enabled"; }
+systemctl is-active -q docker-user-rules || systemctl start docker-user-rules
+
+# ------------------------------------------------------------------ 7. penpot
+# The container stack is systemd's, not the awm gateway's. Docker socket
+# access is root-equivalent whoever holds it, and this box's whole shape is an
+# app user that cannot write the code it runs -- so nobody is put in the
+# `docker` group, and only `penpot-view` (a plain HTTP client, no
+# orchestration) is installed as an awm service. Same split the vault already
+# uses, where the lifecycle verbs are refused through the edge and run here.
+step "penpot stack"
+PENPOT_COMPOSE="docker compose -p awm-penpot \
+    -f /etc/awm/penpot/docker-compose.yml \
+    -f /etc/awm/penpot/docker-compose.sirius.yml"
+install -d -m 755 /etc/awm/penpot
+put "$ETC/penpot/docker-compose.yml"        /etc/awm/penpot/docker-compose.yml 644 || true
+put "$ETC/penpot/docker-compose.sirius.yml" /etc/awm/penpot/docker-compose.sirius.yml 644 || true
+
+# Penpot's own secret. Generated on the box and never rewritten -- the same
+# add-once rule /etc/awm/env follows, so a re-run cannot invalidate every live
+# Penpot session by minting a new one.
+if [ ! -f /etc/awm/penpot.env ]; then
+    { printf 'PENPOT_SECRET_KEY=%s\n' "$(openssl rand -hex 32)"
+      printf 'PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot\n'
+      printf 'PENPOT_VERSION=2.16\n'; } > /etc/awm/penpot.env
+    chmod 640 /etc/awm/penpot.env; chown "root:$APP_USER" /etc/awm/penpot.env
+    note "/etc/awm/penpot.env"
+fi
+
+# `if put` rather than `put && ...`: put returns 1 when the file is already
+# correct, which under `set -e` would abort the re-run this script promises is
+# a no-op.
+if put "$ETC/systemd/penpot-stack.service" \
+       /etc/systemd/system/penpot-stack.service 644; then
+    systemctl daemon-reload
+fi
+systemctl is-enabled -q penpot-stack || { systemctl enable -q penpot-stack; note "penpot-stack enabled"; }
+systemctl is-active -q penpot-stack || { systemctl start penpot-stack; note "penpot-stack started"; }
+
+# penpot-view does not merely serve Penpot's content -- it logs in to fetch
+# it, so it needs a Penpot account of its own. Locally that account is a demo
+# user, which is exactly the thing `enable-demo-users` must not ship for; so
+# without this step the render service has no way to authenticate on this box
+# and every diagram in every note is blank.
+#
+# Driven over the backend's PREPL, which `enable-prepl-server` turns on and
+# which binds container-localhost only (prepl-host defaults to "localhost" in
+# backend/src/app/main.clj), so this opens no network port. Add-once, like
+# every other credential here.
+if ! grep -q '^PENPOT_SERVICE_USERNAME=' /etc/awm/env; then
+    step "penpot service account"
+    for _ in $(seq 1 60); do
+        $PENPOT_COMPOSE exec -T penpot-backend true >/dev/null 2>&1 && break
+        sleep 5
+    done
+    PENPOT_SVC_USER="penpot-view@nexus.tony-xy-liu.com"
+    PENPOT_SVC_PASS="$(openssl rand -hex 24)"
+    if $PENPOT_COMPOSE exec -T penpot-backend \
+            python3 manage.py create-profile \
+            -e "$PENPOT_SVC_USER" -n "awm render service" \
+            -p "$PENPOT_SVC_PASS" --skip-tutorial --skip-walkthrough; then
+        printf 'PENPOT_SERVICE_USERNAME=%s\n' "$PENPOT_SVC_USER" >> /etc/awm/env
+        printf 'PENPOT_SERVICE_PASSWORD=%s\n' "$PENPOT_SVC_PASS" >> /etc/awm/env
+        note "penpot service account $PENPOT_SVC_USER"
+    else
+        echo "  !! create-profile failed -- penpot-view will not render." >&2
+        echo "     Re-run this script once the stack is healthy." >&2
+    fi
+fi
 
 step "nginx"
 install -d -m 755 /var/www/nexus

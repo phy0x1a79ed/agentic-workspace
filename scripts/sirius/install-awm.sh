@@ -51,7 +51,7 @@ fi
 # under awm/services/ is written as disabled. scopes is here for the CLI
 # (add-user.sh) only: the public edge (httpsfront, AWM_EDGE_PROFILE=public)
 # never forwards /svc/scopes.
-PUBLIC_SERVICES="auth httpsfront drawio fileviewer scopes trilium"
+PUBLIC_SERVICES="auth httpsfront fileviewer scopes trilium penpot-view"
 # No torch/sentence-transformers on a 4 GB box: FTS search only.
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
 # dvc in its own env, as on altair: its dependency set is not the gateway's.
@@ -80,7 +80,13 @@ want=$(mktemp)
     sep=""
     for d in awm/services/*/; do
         n=$(basename "$d")
-        v=false; [ -n "$PUBLIC_SERVICES" ] && grep -qw -- "$n" <<<"$PUBLIC_SERVICES" && v=true
+        # Exact token match, not `grep -qw`: -w treats a hyphen as a word boundary,
+    # so the word `penpot` matches inside `penpot-view`. With the stack
+    # supervisor deliberately kept off this box and only the render service
+    # installed, a word match would enable the very service being excluded.
+    # An empty list renders as two spaces and matches nothing, so the old
+    # -n guard is no longer needed.
+    v=false; case " $PUBLIC_SERVICES " in *" $n "*) v=true ;; esac
         printf '%s  "%s": %s' "$sep" "$n" "$v"; sep=$',\n'
     done
     echo; echo "}"

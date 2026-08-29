@@ -75,5 +75,41 @@ if awm auth user-list | grep -q "\"username\": \"$NAME\""; then
 else
     awm auth user-add --username "$NAME"
 fi
+step "penpot account"
+# Penpot keeps its own accounts and has no "trust the edge" mode the way the
+# vault does, so an awm account alone cannot open a diagram. Creating it here
+# is what keeps this script the whole of adding a person -- the CAUTION at the
+# top of this file -- now that drawio (which needed no account at all) is gone
+# from this box.
+#
+# Driven over the backend's PREPL, which binds container-localhost only, so
+# this opens no network port. Skipped entirely where there is no stack, which
+# is how a dev box runs this script unchanged.
+PENPOT_COMPOSE_DIR=${PENPOT_COMPOSE_DIR:-/etc/awm/penpot}
+if [ -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" ] && command -v docker >/dev/null; then
+    PENPOT_EMAIL="$NAME@nexus.tony-xy-liu.com"
+    pcompose() {
+        sudo docker compose -p awm-penpot \
+            -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" \
+            -f "$PENPOT_COMPOSE_DIR/docker-compose.sirius.yml" "$@"
+    }
+    if pcompose exec -T penpot-backend python3 manage.py search-profile \
+            -e "$PENPOT_EMAIL" 2>/dev/null | grep -q "$PENPOT_EMAIL"; then
+        echo "   penpot account exists ($PENPOT_EMAIL)"
+    else
+        PENPOT_PASS=$(openssl rand -hex 12)
+        if pcompose exec -T penpot-backend python3 manage.py create-profile \
+                -e "$PENPOT_EMAIL" -n "$NAME" -p "$PENPOT_PASS" \
+                --skip-tutorial --skip-walkthrough; then
+            echo "   penpot: $PENPOT_EMAIL / $PENPOT_PASS   (shown once)"
+        else
+            echo "   !! penpot account not created; diagrams will be unavailable" >&2
+        fi
+    fi
+else
+    echo "   no penpot stack here — skipped"
+fi
+
 echo "ready: $ROOT (branch user/$NAME)"
 echo "       the shared vault is at /trilium/ — nothing further to set up"
+echo "       diagrams are at /penpot/ — a separate Penpot password, printed above"

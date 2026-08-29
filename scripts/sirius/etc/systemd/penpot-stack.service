@@ -1,0 +1,31 @@
+[Unit]
+# Owns the Penpot containers so the awm gateway never has to. Docker socket
+# access is root-equivalent whoever holds it, and this box's whole shape is an
+# app user that cannot write the code it runs — so the stack is systemd's, and
+# awm's penpot service reports status by probing loopback ports over HTTP and
+# refuses the lifecycle verbs here. Same split the vault already uses, where
+# restore/snapshot/export are refused through the edge and run on the host.
+Description=Penpot container stack (owned by systemd, not by the awm gateway)
+After=docker.service docker-user-rules.service
+Requires=docker.service
+# Not Requires=: the lockdown failing should not silently leave the stack down,
+# but it must be ordered first so no port is ever published before the
+# DOCKER-USER chain is rebuilt. Every port here binds 127.0.0.1 in any case.
+Wants=docker-user-rules.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/awm/penpot
+EnvironmentFile=/etc/awm/penpot.env
+# -p pins the compose project name so provision.sh can address these
+# containers by the same name the unit created them under; without it the
+# name is derived from the directory and the two can disagree.
+ExecStart=/usr/bin/docker compose -p awm-penpot -f docker-compose.yml -f docker-compose.sirius.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -p awm-penpot -f docker-compose.yml -f docker-compose.sirius.yml down
+# A cold start pulls and creates six containers on two cores; the compose
+# default would give up long before that.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
