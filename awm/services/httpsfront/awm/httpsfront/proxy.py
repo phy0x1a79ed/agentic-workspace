@@ -795,6 +795,13 @@ async def _bridge_penpot_session(request: Request, out: Response, kind: str,
     _set_penpot_cookie(out, token,
                        int(await gate.session_ttl_seconds()),
                        _samesite(request.app))
+    # Belt and braces on a response that now carries one person's identity.
+    # Penpot's own nginx already sends no-store for the shell and Cloudflare
+    # does not cache a response with Set-Cookie — but a cached copy of this
+    # response would hand the next visitor somebody else's design files, and
+    # that failure is bad enough that it should not rest on two other parties
+    # continuing to behave.
+    out.headers["cache-control"] = "no-store"
 
 
 async def _ca(request: Request) -> Response:

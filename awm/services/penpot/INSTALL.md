@@ -10,34 +10,45 @@ running frontend container.
 
 ## Purpose & Contents
 
-This file holds the decisions a reader cannot recover from the code: why
-this service does not touch per-user scaffolding, why the port bindings it
-assumes matter for safety, and what it does and does not manage. Penpot's
-own architecture belongs to `projects/penpot` and upstream's docs. The
-compose files themselves — image tags, memory caps, `PENPOT_FLAGS` — live in
-`projects/penpot/dev/docker/images/`, not here; this file covers only the
-boundary between awm and the stack.
+This file holds the decisions a reader cannot recover from the code: how a
+person gets a Penpot account and who holds the credential, why the port
+bindings it assumes matter for safety, and what this service does and does
+not manage. Penpot's own architecture belongs to `projects/penpot` and to
+upstream's docs. The compose files themselves — image tags, memory caps,
+`PENPOT_FLAGS` — live beside the deployment they describe:
+`projects/penpot/dev/docker/images/` on a dev box, `scripts/sirius/etc/penpot/`
+for the public host. This file covers only the boundary between awm and the
+stack.
 
-## This service does not touch per-user scaffolding
+## A person gets a Penpot account, and awm holds the credential
 
-**Explicitly: no `userroot`, no `add-user.sh`, no per-user scope.** Penpot is
-a multi-tenant application with its own accounts, teams and Postgres
-database — sign-up, login, and team membership are all Penpot's own concern,
-reached through its own UI once a browser gets to `/penpot`. Adding a person
-to Penpot is a Penpot action (register, or an admin invite), never an awm
-scaffolding step. This mirrors Trilium's boundary in spirit but lands on the
-opposite side of it: Trilium is *single-user per instance* and needed awm to
-say who was asking; Penpot is multi-tenant per instance and needs nothing
-from awm beyond "let this session through to the front door."
+Penpot keeps its own accounts, teams and Postgres database, and it has no
+"trust the proxy" mode the way Trilium does. An awm session alone therefore
+does not open a design file. Rather than give each person a second password,
+awm holds one on their behalf and nobody is ever shown it.
 
-Concretely, this means:
+1. `scripts/sirius/add-user.sh <name>` creates the Penpot profile over the
+   backend's PREPL, then hands the password to the `auth` service.
+2. `auth` exchanges that credential for a Penpot session on demand and
+   replaces it every night. Read `awm/auth/penpot.py` for the mechanics, and
+   for the repair when a stored credential drifts out of step with Penpot's
+   own profile row.
+3. The edge attaches that session to the Penpot shell request, and refuses
+   Penpot's own login, registration, recovery and password-change commands.
+   Read `awm/httpsfront/penpot.py`.
+
+**CAUTION** `disable-login-with-password` must never reach this stack. The
+exporter authenticates by cookie and takes no access token, so the flag leaves
+`penpot-view` unable to log in and blanks every diagram. The edge refuses the
+command instead, which stops a browser without stopping the render service.
+
+This service itself still owns no per-user state:
 
 - No `awm.config.userroot` import anywhere in this package.
-- No entry in `scripts/sirius/add-user.sh`.
 - No per-user directory under `projects/userdata/`.
 - The compose stack's Postgres database is the *only* place Penpot user
-  state lives — back it up like any other production database if that ever
-  matters, not through awm's DVC-pinned scope data model.
+  state lives. Back it up like any other production database, not through
+  awm's DVC-pinned scope data model.
 
 ## Configuration — built for a second host
 

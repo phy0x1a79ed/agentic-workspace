@@ -208,3 +208,26 @@ def test_signing_out_drops_the_penpot_cookie():
     raw = [v.decode() for k, v in resp.headers.raw
            if k.lower() == b"set-cookie" and v.startswith(b"auth-token=")]
     assert raw and ("Max-Age=0" in raw[0] or 'auth-token=""' in raw[0])
+
+
+# -- a response carrying an identity is never cacheable ------------------------
+
+
+def test_a_response_that_sets_the_cookie_is_uncacheable():
+    """A cached copy would hand the next visitor somebody else's design files.
+    Penpot's nginx and Cloudflare both already prevent it; this stops it resting
+    on either of them continuing to."""
+    with _client(_app(), _upstream()) as c:
+        resp = c.get(penpot.SHELL)
+    assert _cookie(resp, penpot.COOKIE_NAME) == "penpot-tok-1"
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_a_response_that_sets_nothing_keeps_the_upstreams_headers():
+    def handler(request):
+        return httpx.Response(200, content=_body(),
+                              headers={"cache-control": "max-age=31536000"})
+
+    with _client(_app(), handler, penpot_cookie="penpot-tok-1") as c:
+        resp = c.get(penpot.SHELL)
+    assert resp.headers["cache-control"] == "max-age=31536000"

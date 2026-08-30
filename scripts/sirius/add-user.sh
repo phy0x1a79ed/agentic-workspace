@@ -87,7 +87,16 @@ step "penpot account"
 # this opens no network port. Skipped entirely where there is no stack, which
 # is how a dev box runs this script unchanged.
 PENPOT_COMPOSE_DIR=${PENPOT_COMPOSE_DIR:-/etc/awm/penpot}
-if [ -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" ] && command -v docker >/dev/null; then
+# /etc/awm is root:awm 0750 and the dev user who runs this script is not in
+# group awm, so a plain `[ -f ]` answers "no stack" on the one box that has
+# one -- and then says so, which reads as a fact about the box rather than
+# about the check. Ask again through sudo, which the block needs anyway.
+# `sudo -n` so a box without passwordless sudo answers no instead of prompting.
+penpot_stack_here() {
+    [ -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" ] && return 0
+    sudo -n test -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" 2>/dev/null
+}
+if penpot_stack_here && command -v docker >/dev/null; then
     PENPOT_EMAIL="$NAME@nexus.tony-xy-liu.com"
     pcompose() {
         sudo docker compose -p awm-penpot \
@@ -163,7 +172,7 @@ if [ -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" ] && command -v docker >/dev/nu
         unset PENPOT_PASS
     fi
 else
-    echo "   no penpot stack here — skipped"
+    echo "   no penpot stack at $PENPOT_COMPOSE_DIR — skipped"
 fi
 
 echo "ready: $ROOT (branch user/$NAME)"
