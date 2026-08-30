@@ -49,12 +49,26 @@ gets. None of that is this module's business — it is recorded here because thi
 docstring is where the next reader comes looking for "why did my export break
 when I set the public URI".
 
-**Nothing is refused inside the mount.** The vault carries a ``NOT_FORWARDED``
-list because Trilium's own authentication is off on this deployment, which
-leaves its ETAPI open to anything vault-origin JavaScript asks for. Penpot's is
-on: it owns its accounts and teams and checks its own session on every backend
-call, so there is no equivalent surface to close. The prefix is the whole
-allow-list.
+**Penpot's own credential surface is refused.** Penpot checks its own session
+on every backend call, so for a long time the prefix was the whole allow-list
+here. It is not any more: awm now holds a Penpot credential per person, signs
+them in with it, and replaces it nightly, so Penpot's own password commands are
+no longer a second way in — they are a way to break the first one. A person who
+changed their Penpot password would desynchronise the credential awm rotates on
+their behalf and wedge their own account, with no HTTP path back; a person who
+registered a second profile would have an identity awm knows nothing about; and
+a recovery mail is a route to both, on a deployment whose only mail sink is a
+container nobody reads.
+
+Refusing them here rather than with Penpot's ``disable-login-with-password``
+flag is not a preference. The exporter authenticates by cookie and takes no
+access token, so turning password login off inside Penpot would leave the render
+service with no way in and blank every diagram. One layer out costs nothing: the
+edge and ``penpot-view`` both reach these commands on loopback, never through
+this door.
+
+:data:`NOT_FORWARDED` therefore lists *commands*, not paths — see the two
+prefixes above it, which is the part that is easy to get wrong.
 """
 
 from __future__ import annotations
@@ -75,10 +89,65 @@ SHELL_BARE = PREFIX.rstrip("/")
 
 _PREFIX_BYTES = PREFIX.encode("ascii")
 
+#: The cookie Penpot's backend sets and its exporter accepts, at ``path=/`` and
+#: ``HttpOnly``. Named here because the edge both sets it (on behalf of a
+#: signed-in person) and clears it (when the awm identity changes), and both
+#: have to agree with what Penpot itself uses or the browser ends up holding
+#: two. Penpot allows it to be renamed via ``PENPOT_AUTH_TOKEN_COOKIE_NAME``;
+#: this deployment does not, and a deployment that did would have to say so
+#: here as well.
+COOKIE_NAME = "auth-token"
+
+
+#: Where Penpot dispatches a named RPC command, *inside* the mount. Two, not
+#: one: upstream routes ``/api/rpc/command/:method-name`` (what the frontend
+#: calls) and ``/api/main/methods/:method-name`` (the documented API) into the
+#: same method map, so a refusal that closed only the first would leave every
+#: command below reachable under the second. Anything added to Penpot's route
+#: table that reaches ``methods`` belongs here too.
+RPC_PREFIXES = ("/api/rpc/command/", "/api/main/methods/")
+
+#: Penpot commands the edge does not forward, with the reason. Recorded rather
+#: than merely absent so the next reader sees a decision, and so a test can
+#: assert each one stays unreachable. See the module docstring for why this
+#: list exists at all and why it is not ``disable-login-with-password``.
+NOT_FORWARDED = {
+    "login-with-password": "awm signs people in; a second credential is the "
+                           "thing this deployment removed",
+    "register-profile": "an identity awm holds no credential for",
+    "prepare-register-profile": "the first half of the same",
+    "request-profile-recovery": "mail goes to a container nobody reads",
+    "recover-profile": "the second half of the same",
+    "update-profile-password": "desynchronises the credential awm rotates, "
+                               "with no HTTP path back",
+    "request-email-change": "the stored credential is keyed by the email; "
+                            "changing it wedges the same way",
+}
+
+
+def refused(path: str) -> bool:
+    """Whether ``path`` names one of Penpot's own credential commands.
+
+    Case-folded because a refusal that a different capitalisation walks past is
+    not a refusal. Penpot's own routes are case-sensitive, so folding here can
+    only ever refuse *more* than Penpot would answer.
+    """
+    if not path.startswith(PREFIX):
+        return False
+    inner = upstream_path(path).casefold()
+    for prefix in RPC_PREFIXES:
+        if inner.startswith(prefix):
+            return inner[len(prefix):].split("/", 1)[0] in NOT_FORWARDED
+    return False
+
 
 def owns(path: str) -> bool:
     """Whether ``path`` is served by Penpot rather than by the gateway."""
-    return path == SHELL_BARE or path.startswith(PREFIX)
+    if path == SHELL_BARE:
+        return True
+    if not path.startswith(PREFIX):
+        return False
+    return not refused(path)
 
 
 def upstream_path(path: str) -> str:

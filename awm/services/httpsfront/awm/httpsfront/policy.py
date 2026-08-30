@@ -19,6 +19,9 @@ Five answers per path:
   nobody at all. Reusing ``USER`` would make that distinction untestable.
 * ``PENPOT`` — Penpot's own root-level frontend paths, gated the same way as
   ``VAULT`` and for the same reason: a person's design files, not a machine's.
+  Penpot's credential commands are the exception: they answer ``DENY``, because
+  awm signs people in to Penpot itself and a second credential is the thing
+  this deployment exists to remove (see ``penpot.NOT_FORWARDED``).
 
 The lists are constants with tests, not a per-host environment string, so a
 change to the surface is a reviewed diff.
@@ -103,6 +106,13 @@ def classify(path: str) -> Verdict:
     # between them decides nothing.
     if penpot.owns(path):
         return Verdict.PENPOT
+    # A path inside Penpot's mount that ``owns`` refused is DENY here, and the
+    # order matters: "/penpot/" is in OPEN_PREFIXES below, so without this the
+    # refused command would classify OPEN and be forwarded to the *gateway*
+    # instead of 404ing. The vault needs no equivalent because no "/trilium/"
+    # entry appears in that list.
+    if penpot.refused(path):
+        return Verdict.DENY
     if path in OPEN_EXACT:
         return Verdict.OPEN
     if path.startswith(DENIED_PREFIXES):

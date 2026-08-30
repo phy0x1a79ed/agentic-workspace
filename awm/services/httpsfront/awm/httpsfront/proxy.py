@@ -220,6 +220,34 @@ def _set_as_cookie(resp: Response, sub: str, max_age: int,
     )
 
 
+def _set_penpot_cookie(resp: Response, token: str, max_age: int,
+                       samesite: str = "lax") -> None:
+    """Hand the browser the Penpot session awm holds on this person's behalf.
+
+    Same name, path and flags Penpot's own ``assign-session-cookie`` uses, so
+    Penpot's renewal replaces this cookie rather than the browser ending up
+    holding two at different paths. The lifetime is awm's session TTL rather
+    than Penpot's much longer default: the Penpot identity is granted by the awm
+    session and has no business outliving it.
+    """
+    resp.set_cookie(
+        penpot.COOKIE_NAME, token, max_age=max_age, path="/",
+        httponly=True, secure=True, samesite=samesite,
+    )
+
+
+def _clear_penpot_cookies(resp: Response) -> None:
+    """Drop Penpot's session cookie when the awm identity changes.
+
+    The same hole ``_clear_vault_cookies`` closes, with a worse consequence:
+    Penpot's cookie *is* an identity, not a handle to a shared vault, so a
+    browser that keeps it across a sign-out hands the next person to sign in the
+    previous person's design files. The edge re-mints the right one on the next
+    shell load, so clearing costs nothing.
+    """
+    resp.delete_cookie(penpot.COOKIE_NAME, path="/")
+
+
 def _unpack(result) -> tuple[bool, str | None, str | None]:
     """``(ok, refreshed, sub)`` from a gate answer; a two-tuple (an older gate)
     means the operator."""
@@ -314,6 +342,7 @@ async def _login(request: Request) -> Response:
     _set_session_cookie(resp, res["token"], ttl, samesite)
     _set_as_cookie(resp, sub, ttl, samesite)
     _clear_vault_cookies(resp)
+    _clear_penpot_cookies(resp)
     return resp
 
 
@@ -381,6 +410,7 @@ async def _logout(request: Request) -> Response:
     resp.delete_cookie(COOKIE_NAME, path="/")
     resp.delete_cookie(AS_COOKIE_NAME, path="/")
     _clear_vault_cookies(resp)
+    _clear_penpot_cookies(resp)
     return resp
 
 
@@ -612,6 +642,29 @@ def _penpot_unavailable(request: Request, reason: str) -> Response:
                         status_code=503, headers={"Retry-After": "5"})
 
 
+#: Penpot RPC paths, *inside the mount*. A 401 from one of these is the SPA
+#: telling us the cookie it was given no longer works — the one moment the edge
+#: can see a stale Penpot session, since the shell document itself is static
+#: nginx output that says nothing about who is asking.
+_PENPOT_RPC_PREFIX = "/api/rpc/"
+
+
+def _penpot_bridge_kind(request: Request, path: str) -> str | None:
+    """``"shell"``, ``"rpc"`` or ``None`` — where the sign-in bridge applies.
+
+    Only the shell document, not every asset: a page load is one document and a
+    hundred files, and putting an RPC to the auth service in front of each of
+    those would be a round trip per sprite. Penpot routes on the URL *fragment*,
+    so ``/penpot/`` is the only document there is and once per page load is
+    exactly right.
+    """
+    if request.method == "GET" and path == penpot.SHELL:
+        return "shell"
+    if penpot.upstream_path(path).startswith(_PENPOT_RPC_PREFIX):
+        return "rpc"
+    return None
+
+
 async def _http_proxy(request: Request) -> Response:
     app = request.app
     public = _is_public(app)
@@ -621,6 +674,11 @@ async def _http_proxy(request: Request) -> Response:
     if _re_segments(raw, path):
         return _not_found()
     if public and policy.classify(path) is policy.Verdict.DENY:
+        return _not_found()
+    # Penpot's own credential commands, refused here as well as in the policy
+    # door: a mesh node's edge runs no profile and consults no policy, so the
+    # line above is not reached there at all.
+    if _penpot_up(app) and penpot.refused(path):
         return _not_found()
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
@@ -636,6 +694,7 @@ async def _http_proxy(request: Request) -> Response:
     up = app.state.http_up
     vault_up = _vault_up(app)
     penpot_up = _penpot_up(app)
+    bridge: str | None = None
     if vault_up and vault.owns(path):
         if not public and sub in (PEER_SUB, "operator"):
             # The mesh edge runs no allow-list, so the check `policy.allows`
@@ -653,6 +712,7 @@ async def _http_proxy(request: Request) -> Response:
         if inner is None:
             return _not_found()
         up, raw = penpot_up, inner
+        bridge = _penpot_bridge_kind(request, path)
     client: httpx.AsyncClient = app.state.client
     url = _upstream_url(up, raw, request.scope.get("query_string") or b"")
     body = await request.body()
@@ -684,7 +744,57 @@ async def _http_proxy(request: Request) -> Response:
         _set_session_cookie(out, refreshed,
                             int(await app.state.gate.session_ttl_seconds()),
                             _samesite(app))
+    if bridge and sub:
+        await _bridge_penpot_session(request, out, bridge, sub,
+                                     resp.status_code)
     return out
+
+
+async def _bridge_penpot_session(request: Request, out: Response, kind: str,
+                                 sub: str, status: int) -> None:
+    """Give this browser the Penpot session awm holds for ``sub``.
+
+    Two moments, and only two. On the **shell** document, before the SPA boots,
+    so it comes up already signed in — the cookie is replaced only when it
+    differs from the one awm holds, which is what makes a nightly rotation
+    invisible: the rotation ends the browser's session and leaves awm's intact,
+    so the very next page load carries the survivor.
+
+    On an **RPC 401**, which is the SPA reporting that the cookie it was given
+    has stopped working. That is the case a page load cannot fix on its own,
+    because the shell is static nginx output and 200s for anyone. Note that
+    ``get-profile`` is *not* one of the commands that says so: with a dead
+    cookie Penpot answers it 200 with the anonymous profile, so anything asking
+    "is this session still alive?" has to ask a command that genuinely requires
+    authentication (``get-teams`` does). Verified against a live stack. The re-login
+    is conditional on the presented cookie still being the one awm has cached
+    (see ``AuthGate.penpot_session``), so a page's worth of simultaneous 401s
+    costs one login rather than one each.
+
+    Everything here degrades to doing nothing: no credential recorded, an auth
+    service that is down, a machine bearer. Penpot then shows its own login
+    screen, which is exactly what it did before this bridge existed.
+    """
+    if sub in (PEER_SUB, "operator"):
+        return
+    presented = request.cookies.get(penpot.COOKIE_NAME)
+    gate: AuthGate = request.app.state.gate
+    # Same shape as the ``verify_login`` lookup in ``_login``: a gate that
+    # predates this capability simply does not bridge, rather than 500ing every
+    # Penpot page on a host whose edge has not caught up.
+    if getattr(gate, "penpot_session", None) is None:
+        return
+    if kind == "rpc":
+        if status != 401:
+            return
+        token = await gate.penpot_session(sub, stale_token=presented)
+    else:
+        token = await gate.penpot_session(sub)
+    if not token or token == presented:
+        return
+    _set_penpot_cookie(out, token,
+                       int(await gate.session_ttl_seconds()),
+                       _samesite(request.app))
 
 
 async def _ca(request: Request) -> Response:

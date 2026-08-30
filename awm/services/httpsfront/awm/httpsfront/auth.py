@@ -145,6 +145,42 @@ class AuthGate:
         res = await self.verify_login(username=None, password=password, client_ip=None)
         return res.get("token") if res.get("ok") else None
 
+    async def penpot_session(self, username: str, *,
+                             stale_token: str | None = None,
+                             refresh: bool = False) -> str | None:
+        """The Penpot session token to hand ``username``'s browser, or ``None``.
+
+        Penpot keeps accounts of its own, so an awm session alone does not open
+        a design file; the ``auth`` service holds a Penpot credential per person
+        and exchanges it for a session. The edge never sees the credential —
+        only the session it becomes, which is the same split as everything else
+        here: auth mints, the edge enforces.
+
+        ``stale_token`` is the token the browser presented and the caller
+        believes is dead. Passing it makes the re-login *conditional*: if
+        another request has already replaced the cached token, that one comes
+        back instead. Without it a burst of failing requests would each drive
+        their own login.
+
+        ``None`` means there is no Penpot identity to give — no credential
+        recorded, or the ``auth`` service is unreachable. Both degrade to
+        Penpot's own login screen rather than to an error page.
+        """
+        args: dict[str, Any] = {"username": username}
+        if stale_token:
+            args["stale_token"] = stale_token
+        if refresh:
+            args["refresh"] = True
+        try:
+            from awm import gatewayclient
+            res = await gatewayclient.call("auth", "penpot_session", args)
+        except Exception as exc:  # noqa: BLE001 — no credential, or auth is down
+            log.info("edge: no Penpot session for %s: %s", username, exc)
+            return None
+        if isinstance(res, dict) and res.get("token"):
+            return str(res["token"])
+        return None
+
     async def session_ttl_seconds(self) -> float:
         mat = await self._material_fresh()
         return float((mat or {}).get("session_ttl_seconds") or 86400.0)
