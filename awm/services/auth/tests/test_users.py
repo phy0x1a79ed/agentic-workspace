@@ -33,6 +33,8 @@ def auth(awm_workspace, monkeypatch):
         lockout_minutes = 15.0
         mint_cadence_hours = 12.0
         push_enabled = False
+        penpot_rotation_hour = 4
+        penpot_rotation_enabled = True
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
     store.init()

@@ -66,10 +66,13 @@ declare -A DISTS=(
   [dsh]="$WS/awm/services/dsh::$WS/awm/services/dsh/tests"
   [hermes]="$WS/awm/services/hermes::$WS/awm/services/hermes/tests"
   [trilium]="$WS/awm/services/trilium::$WS/awm/services/trilium/tests"
+  [penpot]="$WS/awm/services/penpot::$WS/awm/services/penpot/tests"
+  [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
+  [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium)
+ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium penpot penpot-view penpot-plugins)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then

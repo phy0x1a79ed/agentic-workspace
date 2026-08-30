@@ -9,9 +9,16 @@ Defaults encode the agreed contract: mint a fresh pair every **12 h**, each
 valid **24 h** (two generations overlap), and push the day's login password to
 the Discord ``#notifications`` channel — the same ``discord-bot`` account and
 channel the ``ssh`` service already alerts through.
+
+The Penpot rotation hour is here rather than beside the cadences above because
+it is a different kind of knob: the shared credential rotates on an *interval*,
+which no one has to be awake for, while a Penpot rotation ends everyone's live
+Penpot session and so has to land at an *hour* nobody is drawing in.
 """
 
 from __future__ import annotations
+
+import os
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +28,20 @@ from awm.persistence.service_config import ConfigContract
 # password lands in the same #notifications channel operators already watch.
 _DEFAULT_DISCORD_ACCOUNT = "discord-bot"
 _DEFAULT_DISCORD_CHANNEL = "1522674357762261112"
+
+#: Lets a host state its own Penpot rotation hour in ``/etc/awm/env`` rather
+#: than leaving it to whoever last opened the settings page. Read once, at
+#: import, so it is the *default* a fresh box starts from and a stored override
+#: still wins — which is the right precedence: the env file is provisioning,
+#: the settings page is a decision someone made afterwards.
+_ROTATION_HOUR_ENV = "AWM_PENPOT_ROTATION_HOUR"
+
+
+def _default_rotation_hour() -> int:
+    try:
+        return int((os.environ.get(_ROTATION_HOUR_ENV) or "").strip()) % 24
+    except ValueError:
+        return 4
 
 
 class AuthSettings(BaseModel):
@@ -55,6 +76,18 @@ class AuthSettings(BaseModel):
         default=15.0,
         description="How long a username or client IP stays locked after "
                     "reaching lockout_threshold.",
+    )
+    penpot_rotation_hour: int = Field(
+        default=_default_rotation_hour(),
+        description="Local hour (0-23) at which every stored Penpot password "
+                    "is replaced. Rotating logs people out of Penpot, so this "
+                    "wants to be an hour nobody is drawing in.",
+    )
+    penpot_rotation_enabled: bool = Field(
+        default=True,
+        description="Replace stored Penpot passwords nightly. Turn off only to "
+                    "hold a credential still while diagnosing one that has "
+                    "drifted out of step with Penpot's own profile.",
     )
     push_enabled: bool = Field(
         default=True,

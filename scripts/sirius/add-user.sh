@@ -75,5 +75,97 @@ if awm auth user-list | grep -q "\"username\": \"$NAME\""; then
 else
     awm auth user-add --username "$NAME"
 fi
+step "penpot account"
+# Penpot keeps accounts of its own, but nobody is ever told a Penpot password.
+# awm holds one per person: this block creates the profile, hands the credential
+# to the auth service, and says nothing further. The edge exchanges it for a
+# Penpot session on each page load and the auth service replaces it nightly, so
+# one awm sign-in is the whole of getting into a diagram -- which is what keeps
+# this script the whole of adding a person, the CAUTION at the top of this file.
+#
+# Driven over the backend's PREPL, which binds container-localhost only, so
+# this opens no network port. Skipped entirely where there is no stack, which
+# is how a dev box runs this script unchanged.
+PENPOT_COMPOSE_DIR=${PENPOT_COMPOSE_DIR:-/etc/awm/penpot}
+if [ -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" ] && command -v docker >/dev/null; then
+    PENPOT_EMAIL="$NAME@nexus.tony-xy-liu.com"
+    pcompose() {
+        sudo docker compose -p awm-penpot \
+            -f "$PENPOT_COMPOSE_DIR/docker-compose.yml" \
+            -f "$PENPOT_COMPOSE_DIR/docker-compose.sirius.yml" "$@"
+    }
+    # Penpot demands 8+ characters with a lowercase, an uppercase, a digit and
+    # a special one, and refuses anything else -- so `openssl rand -hex`, which
+    # draws neither of the last two, would produce a credential the nightly
+    # rotation could never replace. Same alphabet and same rule as
+    # `awm.auth.penpot.new_password`; the two have to agree or a rotation is
+    # refused the first time it runs. `cut` rather than a second `head`: under
+    # `pipefail` an early-exiting reader kills `tr` with SIGPIPE and fails the
+    # whole pipeline.
+    penpot_password() {
+        local pw
+        while :; do
+            pw=$(head -c 512 /dev/urandom \
+                 | LC_ALL=C tr -dc 'A-Za-z0-9!#%*+=?@^_' | cut -c1-28)
+            case "$pw" in
+                *[a-z]*) ;; *) continue ;;
+            esac
+            case "$pw" in
+                *[A-Z]*) ;; *) continue ;;
+            esac
+            case "$pw" in
+                *[0-9]*) ;; *) continue ;;
+            esac
+            case "$pw" in
+                *[\!\#%\*+=?@^_]*) ;; *) continue ;;
+            esac
+            printf '%s' "$pw"
+            return
+        done
+    }
+    # The password reaches two processes as an argument, here and nowhere else.
+    # It is never echoed, never written to a file and never returned by the verb
+    # that records it -- `awm auth penpot-record` answers with the email and the
+    # rotation time only.
+    record_penpot() {
+        awm auth penpot-record --username "$NAME" --email "$PENPOT_EMAIL" \
+            --password "$1" >/dev/null
+    }
+    if pcompose exec -T penpot-backend python3 manage.py search-profile \
+            -e "$PENPOT_EMAIL" 2>/dev/null | grep -q "$PENPOT_EMAIL"; then
+        if awm auth penpot-list 2>/dev/null | grep -q "\"username\": \"$NAME\""; then
+            echo "   penpot account exists; awm already holds the credential"
+        else
+            # The profile exists but awm holds no credential for it, so nobody
+            # can sign in to it. A Penpot password cannot be read back, so the
+            # repair is to set a new one and record that -- the same two-step
+            # documented in awm/auth/penpot.py, run here automatically because
+            # this is the state a box reaches when the profile predates this
+            # design or the auth DB was rebuilt.
+            PENPOT_PASS=$(penpot_password)
+            if pcompose exec -T penpot-backend python3 manage.py update-profile \
+                    -e "$PENPOT_EMAIL" -p "$PENPOT_PASS" && record_penpot "$PENPOT_PASS"; then
+                echo "   penpot credential reset and handed to awm"
+            else
+                echo "   !! penpot credential not recorded; diagrams will ask for a password" >&2
+            fi
+            unset PENPOT_PASS
+        fi
+    else
+        PENPOT_PASS=$(penpot_password)
+        if pcompose exec -T penpot-backend python3 manage.py create-profile \
+                -e "$PENPOT_EMAIL" -n "$NAME" -p "$PENPOT_PASS" \
+                --skip-tutorial --skip-walkthrough && record_penpot "$PENPOT_PASS"; then
+            echo "   penpot account created; awm holds the credential"
+        else
+            echo "   !! penpot account not created; diagrams will be unavailable" >&2
+        fi
+        unset PENPOT_PASS
+    fi
+else
+    echo "   no penpot stack here — skipped"
+fi
+
 echo "ready: $ROOT (branch user/$NAME)"
 echo "       the shared vault is at /trilium/ — nothing further to set up"
+echo "       diagrams are at /penpot/ — the same sign-in, no second password"

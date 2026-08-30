@@ -75,3 +75,5 @@ __pycache__/
 Thumbs.db
 
 secrets
+# Runtime artifacts from a locally-launched service, never part of a tree.
+*.pid

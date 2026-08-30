@@ -191,6 +191,13 @@ BASE_URL = f"http://{HOST}:{PORT}"
 VAULT_PORT = int(os.environ.get("AWM_VAULT_PORT", "12511"))
 VAULT_URL = f"http://{HOST}:{VAULT_PORT}"
 
+# Penpot's frontend nginx port, on the local production stack. Named here for
+# the same reason as VAULT_PORT: two processes have to agree on it and
+# neither owns it — the penpot service's stack supervisor publishes it, and
+# httpsfront proxies to it.
+PENPOT_PORT = int(os.environ.get("AWM_PENPOT_PORT", "9001"))
+PENPOT_URL = f"http://{HOST}:{PENPOT_PORT}"
+
 IDLE_SHUTDOWN_SECONDS = int(os.environ.get("AWM_IDLE_SHUTDOWN", "1800"))  # 30 min
 
 ACCESS_LOG = AWM_DIR / "access.log"
