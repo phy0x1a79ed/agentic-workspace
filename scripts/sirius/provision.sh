@@ -287,8 +287,16 @@ systemctl is-active -q penpot-stack || { systemctl start penpot-stack; note "pen
 # every other credential here.
 if ! grep -q '^PENPOT_SERVICE_USERNAME=' /etc/awm/env; then
     step "penpot service account"
-    for _ in $(seq 1 60); do
-        $PENPOT_COMPOSE exec -T penpot-backend true >/dev/null 2>&1 && break
+    # Wait for the backend's PREPL, not merely for the container to accept an
+    # exec. `docker exec` succeeds as soon as the container is running, while
+    # manage.py needs a backend that has finished its migrations and opened
+    # 6063 -- minutes apart on two cores. Waiting on the container alone is
+    # what made this step fail on the first run, with `[Errno 111] Connection
+    # refused` and a stack that was in fact perfectly healthy a minute later.
+    # `search-profile` on an address nobody has exits 0 once the PREPL answers.
+    for _ in $(seq 1 90); do
+        $PENPOT_COMPOSE exec -T penpot-backend python3 manage.py search-profile \
+            -e readiness-probe@invalid >/dev/null 2>&1 && break
         sleep 5
     done
     PENPOT_SVC_USER="penpot-view@nexus.tony-xy-liu.com"
