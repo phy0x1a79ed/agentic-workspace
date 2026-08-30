@@ -47,6 +47,22 @@ set -euo pipefail
 ACTIVE_DIR="{active_dir}"
 mkdir -p "$ACTIVE_DIR"
 hostname > "$ACTIVE_DIR/hostname"
+
+# fir schedules by GPU, so four jobs share one four-card node and a fixed port
+# is a collision waiting to happen -- llama-server exits with "couldn't bind
+# HTTP server socket" and the serve looks like a model failure. Take the first
+# free port in the range and tell the tunnel which one it was.
+PORT={port}
+for p in $(seq {port} $(({port} + 99))); do
+    if ! (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null; then
+        PORT=$p
+        break
+    fi
+    exec 3<&- 2>/dev/null
+done
+echo "$PORT" > "$ACTIVE_DIR/port"
+echo "serving on port $PORT"
+
 echo "running" > "$ACTIVE_DIR/status"
 
 cleanup() {{
@@ -86,7 +102,7 @@ apptainer exec --nv --cleanenv \\
     /app/llama-server \\
         --model "$SLURM_TMPDIR/$GGUF_NAME" \\
         --host 0.0.0.0 \\
-        --port {port} \\
+        --port "$PORT" \\
         --n-gpu-layers 999 \\
         --ctx-size {model.ctx_size} \\
         --cont-batching \\

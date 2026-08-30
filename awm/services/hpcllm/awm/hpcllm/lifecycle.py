@@ -62,7 +62,7 @@ class ServeRun:
 
     __slots__ = (
         "task", "serve_id", "cfg", "model", "job_id",
-        "node", "local_port", "cancel_event",
+        "node", "local_port", "remote_port", "cancel_event",
     )
 
     def __init__(self, serve_id: str, cfg: ClusterConfig,
@@ -74,6 +74,7 @@ class ServeRun:
         self.job_id = ""
         self.node = ""
         self.local_port = 0
+        self.remote_port = 8000
         self.cancel_event = asyncio.Event()
 
 
@@ -132,7 +133,7 @@ class ServeLifecycle:
         if run.node and run.local_port:
             try:
                 ssh.ssh_cancel_forward(
-                    host, run.local_port, run.node, 8000)
+                    host, run.local_port, run.node, run.remote_port)
             except Exception as e:
                 log.warning("cancel forward for %s failed: %s",
                             serve_id, e)
@@ -293,16 +294,23 @@ class ServeLifecycle:
                     )
 
                     if not tunnel_created:
+                        # The job picks its own free port, because the node may
+                        # be shared with three other GPU jobs. Absent file means
+                        # an older sbatch that still hardcoded 8000.
+                        remote = await ssh.ssh_read_file_async(
+                            host, f"{active_dir}/port")
+                        run.remote_port = int(remote) if remote else 8000
                         local_port = await _assign_port(run.cfg)
                         run.local_port = local_port
                         await asyncio.to_thread(
-                            ssh.ssh_forward, host, local_port, node, 8000,
+                            ssh.ssh_forward, host, local_port, node,
+                            run.remote_port,
                         )
                         tunnel_created = True
                         self._dao.update_status(
                             serve_id, "running",
                             node=node,
-                            api_port=8000,
+                            api_port=run.remote_port,
                             local_port=local_port,
                         )
                         await self._emit_status(
@@ -372,7 +380,8 @@ class ServeLifecycle:
         try:
             if run.node and run.local_port:
                 ssh.ssh_cancel_forward(
-                    run.cfg.ssh_host, run.local_port, run.node, 8000)
+                    run.cfg.ssh_host, run.local_port, run.node,
+                    run.remote_port)
         except Exception as e:
             log.warning("cleanup forward for %s: %s", run.serve_id, e)
         _release_port(run.local_port)
