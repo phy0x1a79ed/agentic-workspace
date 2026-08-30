@@ -23,6 +23,9 @@ _SQUEUE_POLL_INTERVAL = 10.0
 _PROBE_INTERVAL = 5.0
 _PROBE_ATTEMPTS = 60
 _MAX_RETRIES = 3
+#: Consecutive squeue failures before a serve is declared lost. One timed-out
+#: ssh must never be enough -- the job outlives the login node's bad minute.
+_MAX_POLL_FAILURES = 10
 _RETRY_DELAY = 2.0
 
 _PORT_LOCK = asyncio.Lock()
@@ -255,11 +258,30 @@ class ServeLifecycle:
         ready_emitted = False
         probe_attempts = 0
 
+        poll_failures = 0
         while not run.cancel_event.is_set():
-            rc, out, err = await ssh.ssh_run_async(
-                host, f"squeue -j {job_id} -h -o %T",
-                timeout=15.0,
-            )
+            try:
+                rc, out, err = await ssh.ssh_run_async(
+                    host, f"squeue -j {job_id} -h -o %T",
+                    timeout=15.0,
+                )
+            except Exception as exc:
+                # A 15 s ssh timeout is a statement about the login node, not
+                # about the job. Letting it escape marks a serve that is still
+                # running -- and still answering on its tunnel -- as terminally
+                # errored, which is how two live H100 allocations were written
+                # off while serving requests. Transient until proven otherwise.
+                poll_failures += 1
+                log.warning("squeue poll %d/%d failed for %s: %s",
+                            poll_failures, _MAX_POLL_FAILURES, job_id, exc)
+                if poll_failures >= _MAX_POLL_FAILURES:
+                    raise RuntimeError(
+                        f"squeue unreachable for {job_id} after "
+                        f"{_MAX_POLL_FAILURES} consecutive attempts: {exc}"
+                    ) from exc
+                await asyncio.sleep(_SQUEUE_POLL_INTERVAL)
+                continue
+            poll_failures = 0
 
             if rc != 0:
                 if ("Invalid job id" in err or "does not exist" in err
