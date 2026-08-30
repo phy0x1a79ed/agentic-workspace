@@ -12,6 +12,8 @@ dependencies = [
     "awm-persistence",
     "awm-gatewayclient",
     "pydantic>=2",
+    # The Penpot credential is exchanged for a Penpot session over loopback.
+    "httpx",
 ]
 
 [project.optional-dependencies]

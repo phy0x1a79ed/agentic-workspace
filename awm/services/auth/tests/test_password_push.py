@@ -36,6 +36,8 @@ def pushed(monkeypatch):
         # override these via monkeypatch.setattr(service, "_settings", ...).
         push_retry_attempts = 1
         push_retry_backoff_seconds = 0.0
+        penpot_rotation_hour = 4
+        penpot_rotation_enabled = True
 
     monkeypatch.setattr(service, "_settings", lambda: _S())
 
@@ -245,6 +247,7 @@ async def test_h_status_reports_the_last_push_outcome(pushed, monkeypatch):
     monkeypatch.setattr(store, "latest", lambda: None)
     monkeypatch.setattr(store, "valid_generations", lambda: [])
     monkeypatch.setattr(store, "user_list", lambda: [])
+    monkeypatch.setattr(store, "penpot_list", lambda: [])
 
     await service._push_password_to_discord(PASSWORD, 0.0)
 
