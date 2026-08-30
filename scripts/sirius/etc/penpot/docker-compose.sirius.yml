@@ -50,9 +50,22 @@ x-flags: &sirius-flags
   #    container-local debug channel into a reachable one. `urepl` (6062) and
   #    `nrepl` (6064) default the same way and carry the same condition.
   #
+  #  - `disable-registration` is ADDED. awm holds a Penpot credential for each
+  #    person and signs them in with it, so a self-registered profile is an
+  #    identity awm knows nothing about and cannot rotate. The edge already
+  #    refuses both registration commands (httpsfront/penpot.py's
+  #    NOT_FORWARDED); this is the same refusal at the backend, so the two
+  #    ways in are closed independently.
+  #
   # `disable-email-verification` stays: this box has no SMTP, so verification
   # would strand every account it was applied to.
-  PENPOT_FLAGS: "disable-email-verification enable-prepl-server"
+  #
+  # `disable-login-with-password` is deliberately NOT here, and that is not an
+  # oversight. The exporter authenticates by cookie only and takes no access
+  # token, so switching password login off inside Penpot would leave the render
+  # service unable to log in and blank every diagram. The edge refuses the
+  # command instead, which stops a browser without stopping penpot-view.
+  PENPOT_FLAGS: "disable-email-verification disable-registration enable-prepl-server"
 
 # Memory: these are ceilings, not reservations, and they deliberately sum above
 # the box's available memory (~2941 MiB). What has to fit is the concurrent

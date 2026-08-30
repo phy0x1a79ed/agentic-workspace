@@ -171,7 +171,21 @@ PENPOT_BASE_URL=http://127.0.0.1:9001
 PENPOT_EXPORTER_URL=http://127.0.0.1:9001
 PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
 AWM_EDGE_PENPOT=1
+AWM_PENPOT_ROTATION_HOUR=4
 ENV
+# The loop is add-once *per key*, not per file, so a key added to that block
+# does reach a box whose /etc/awm/env already exists -- as long as no line
+# already starts with that key. What it will never do is *change* a value
+# somebody set, which is the point: a hand edit on the box survives a re-run.
+# So to move the rotation hour on a provisioned box, edit the line, do not
+# expect this script to.
+#
+# /etc/awm/penpot.env below is the sharper case and does not work this way at
+# all: it is written once, as a whole, and never revisited. A key added there
+# has to be appended by hand:
+#
+#     printf 'KEY=value\n' | sudo tee -a /etc/awm/penpot.env
+#     sudo systemctl restart penpot-stack
 
 # ------------------------------------------------------------------ 6. docker
 # Docker CE from Docker's own apt repo, not Ubuntu's docker.io: the compose
@@ -253,6 +267,14 @@ fi
 systemctl is-enabled -q penpot-stack || { systemctl enable -q penpot-stack; note "penpot-stack enabled"; }
 systemctl is-active -q penpot-stack || { systemctl start penpot-stack; note "penpot-stack started"; }
 
+# penpot-view's own account is deliberately outside the nightly rotation that
+# replaces every *person's* Penpot password. Its credential lives in
+# /etc/awm/env, which is root-owned and which the app user cannot write, so the
+# auth service could change the password in Penpot and then be unable to record
+# what it changed it to -- wedging the render service permanently. Bringing it
+# in is a separate decision (it needs a writable home for the credential
+# first), not a side effect of this one.
+#
 # penpot-view does not merely serve Penpot's content -- it logs in to fetch
 # it, so it needs a Penpot account of its own. Locally that account is a demo
 # user, which is exactly the thing `enable-demo-users` must not ship for; so
