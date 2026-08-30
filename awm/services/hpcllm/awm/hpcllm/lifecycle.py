@@ -328,16 +328,28 @@ class ServeLifecycle:
                     host, f"{build_active_dir(run.cfg, serve_id)}/status"
                 )
 
-                if status_val == "loading":
-                    await self._emit_status(
-                        run, "loading",
-                        "Model loading onto GPU",
-                        api_url=f"http://localhost:{run.local_port}",
-                        node=run.node,
-                    )
-                    probe_attempts = 0
-                    await asyncio.sleep(_PROBE_INTERVAL)
-                    continue
+                # The status file is a hint, never the authority. The sbatch
+                # writes "loading" and then execs llama-server, so it has no
+                # chance to write anything afterwards -- and a serve whose
+                # readiness was gated on that file leaving "loading" therefore
+                # never became ready at all, however healthy the endpoint was.
+                # Probe first, and treat the file as colour for the message.
+                if not await _probe_endpoint(run.local_port):
+                    if status_val == "loading":
+                        await self._emit_status(
+                            run, "loading",
+                            "Model loading onto GPU",
+                            api_url=f"http://localhost:{run.local_port}",
+                            node=run.node,
+                        )
+                        probe_attempts += 1
+                        if probe_attempts >= _PROBE_ATTEMPTS:
+                            raise RuntimeError(
+                                f"Server did not become ready after "
+                                f"{_PROBE_ATTEMPTS * _PROBE_INTERVAL:.0f}s"
+                            )
+                        await asyncio.sleep(_PROBE_INTERVAL)
+                        continue
 
                 if await _probe_endpoint(run.local_port):
                     ready_emitted = True
