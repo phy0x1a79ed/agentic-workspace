@@ -53,6 +53,29 @@ Beside the rotating shared password, static per-user passwords:
 
 `verify` with a `username` mints a session as that user; failures count per username and per client IP and lock the key after `lockout_threshold` attempts for `lockout_minutes`. `AWM_AUTH_PROFILE=public` disables the shared path entirely: no minting, no Discord push, no peer credentials, and a login without a username fails.
 
+## Penpot credentials
+
+Penpot keeps its own accounts and has no "trust the proxy" mode, so this
+service also holds one Penpot credential per person. Nobody is ever shown it.
+
+    awm auth penpot-record --username tony --email tony@host --password …
+    awm auth penpot-session --username tony        # what the edge asks for
+    awm auth penpot-rotate [--username tony]       # force a replacement
+    awm auth penpot-list                           # no secrets
+
+`scripts/sirius/add-user.sh` calls `penpot-record` once, right after it creates
+the Penpot profile with the same password. A background loop replaces every
+stored password at `penpot_rotation_hour` local time, and catches up on start
+when the box was off at that hour. This loop runs on the `public` profile too:
+that flag turns off the *shared* password, and these are per-user foreign
+credentials.
+
+**CAUTION** The stored password is what a rotation offers Penpot as its *old*
+password. If the two drift apart, rotation is refused with
+`old-password-not-match` and there is no HTTP path back. Re-run
+`add-user.sh <name>` on the box holding the stack. It resets the Penpot
+password and records the new one, which is the only repair.
+
 ## Configuration (settings page / `awm config`)
 
 | Field | Default | Purpose |
