@@ -51,7 +51,7 @@ API_MANIFEST: dict[str, Any] = {
                 "the edge gets the readable half; the compose directory and "
                 "per-container detail are for the console."
             ),
-            "parameters": [],
+            "params": [],
         },
         {
             "name": "start",
@@ -60,7 +60,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Bring the compose stack up (`docker compose up -d`) if it "
                 "is not already. Operator only."
             ),
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
@@ -70,14 +70,14 @@ API_MANIFEST: dict[str, Any] = {
                 "Take the compose stack down (`docker compose down`). "
                 "Operator only — this takes Penpot away from everyone using it."
             ),
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
             "name": "restart",
             "tool": "penpot_restart",
             "description": "Stop then start the compose stack. Operator only.",
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
@@ -87,7 +87,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Tail `docker compose logs` for the stack, or one container. "
                 "Operator only: it carries stack traces and internal addresses."
             ),
-            "parameters": [
+            "params": [
                 {"name": "service", "type": "string",
                  "description": "One service name, e.g. penpot-backend. Default: all."},
                 {"name": "tail", "type": "number",
@@ -101,7 +101,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Where Penpot is served. A path, not a URL: it is on the "
                 "same origin as the page asking, behind the same session."
             ),
-            "parameters": [],
+            "params": [],
         },
     ],
     "emitters": [],
