@@ -171,6 +171,13 @@ if penpot_stack_here && command -v docker >/dev/null; then
         fi
         unset PENPOT_PASS
     fi
+    step "penpot shared team"
+    # Penpot gives each new profile a private team of its own. One shared team
+    # is the decision this box makes instead, so the person can see everyone
+    # else's figures and penpot-view can render them into a note. Sweeps every
+    # profile, so it also repairs anyone added before it existed.
+    "$(dirname "$0")/penpot-team.sh" || \
+        echo "   !! shared team not joined; this person sees only their own figures" >&2
 else
     echo "   no penpot stack at $PENPOT_COMPOSE_DIR — skipped"
 fi
