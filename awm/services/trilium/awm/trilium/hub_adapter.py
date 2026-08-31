@@ -50,7 +50,7 @@ API_MANIFEST: dict[str, Any] = {
                 "A caller arriving through the edge gets the readable half; "
                 "pids, ports and absolute paths are for the console."
             ),
-            "parameters": [],
+            "params": [],
         },
         {
             "name": "start",
@@ -59,7 +59,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Start the vault's server if it is not running. Operator only: "
                 "the supervision loop already does this within seconds."
             ),
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
@@ -69,14 +69,14 @@ API_MANIFEST: dict[str, Any] = {
                 "Stop the vault's server. Operator only — this takes the "
                 "knowledge base away from everyone using it."
             ),
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
             "name": "restart",
             "tool": "trilium_restart",
             "description": "Stop then start the vault's server. Operator only.",
-            "parameters": [],
+            "params": [],
             "timeout": 300,
         },
         {
@@ -86,7 +86,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Where the vault is served. A path, not a URL: it is on the "
                 "same origin as the page asking, behind the same session."
             ),
-            "parameters": [],
+            "params": [],
         },
         {
             "name": "provision",
@@ -96,7 +96,7 @@ API_MANIFEST: dict[str, Any] = {
                 "the supervision loop does it unprompted — this verb is for "
                 "when it failed and you want the error. Operator only."
             ),
-            "parameters": [],
+            "params": [],
         },
         {
             "name": "snapshot",
@@ -107,7 +107,7 @@ API_MANIFEST: dict[str, Any] = {
                 "pin. With note_id, saves that note's revision instead. "
                 "Operator only: it copies the whole database each time."
             ),
-            "parameters": [
+            "params": [
                 {"name": "name", "type": "string",
                  "description": "Snapshot name. Defaults to a UTC timestamp."},
                 {"name": "note_id", "type": "string",
@@ -125,7 +125,7 @@ API_MANIFEST: dict[str, Any] = {
                 "snapshots and Trilium's own rolling rotation, kept apart "
                 "because only the first kind is a restore path."
             ),
-            "parameters": [],
+            "params": [],
         },
         {
             "name": "restore",
@@ -136,7 +136,7 @@ API_MANIFEST: dict[str, Any] = {
                 "note — Trilium's own revisions dialog does that. Operator "
                 "only, and it discards everyone's work since the snapshot."
             ),
-            "parameters": [
+            "params": [
                 {"name": "snapshot", "type": "string", "required": True,
                  "description": "Snapshot name, from `trilium snapshots`."},
                 {"name": "confirm", "type": "boolean",
@@ -152,7 +152,7 @@ API_MANIFEST: dict[str, Any] = {
                 "derived, lossy view for reading and diffing — recovery is a "
                 "snapshot. Operator only: it rebuilds the whole tree."
             ),
-            "parameters": [
+            "params": [
                 {"name": "note_id", "type": "string",
                  "description": "Subtree to export. Default the whole vault."},
                 {"name": "commit", "type": "boolean",
@@ -167,7 +167,7 @@ API_MANIFEST: dict[str, Any] = {
                 "Tail the vault server's log. Operator only: it carries "
                 "absolute paths and stack traces."
             ),
-            "parameters": [
+            "params": [
                 {"name": "tail", "type": "number",
                  "description": "Lines from the end. Default 200."},
             ],
@@ -181,7 +181,7 @@ API_MANIFEST: dict[str, Any] = {
                 "only, and it refuses a title that matches twice rather than "
                 "overwrite the wrong note on a vault everybody shares."
             ),
-            "parameters": [
+            "params": [
                 {"name": "title", "type": "string", "required": True,
                  "description": "Matched exactly against the parent's children."},
                 {"name": "content", "type": "string", "required": True,
