@@ -41,7 +41,7 @@ READ_VERBS = ["status", "snapshots", "url"]
 #: Everything that starts, stops, reads a log from, rebuilds or replaces the
 #: shared vault.
 WRITE_VERBS = ["start", "stop", "restart", "provision", "logs",
-               "snapshot", "export", "restore"]
+               "snapshot", "export", "restore", "note_upsert"]
 
 #: What the edge stamps. `_as_header` never emits an empty value, so any of
 #: these means the call crossed an edge listener.

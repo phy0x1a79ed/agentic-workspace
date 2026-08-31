@@ -113,6 +113,59 @@ class Etapi:
             "content": content, **({"mime": mime} if mime else {}),
         }).json()
 
+    def note(self, note_id: str) -> dict:
+        return self._request("GET", f"/etapi/notes/{note_id}").json()
+
+    def children(self, note_id: str) -> list[dict]:
+        """Every direct child of a note, one GET each.
+
+        Deliberately not :meth:`search`. A title reaches Trilium's search
+        grammar as part of a query string, where a quote inside it changes
+        what is being asked, and the answer would then be a fuzzy match. This
+        is what :meth:`upsert_note` matches against before it overwrites a
+        body on a vault everybody shares, so it has to be exact.
+        """
+        return [self.note(child)
+                for child in self.note(note_id).get("childNoteIds") or []]
+
+    def note_content(self, note_id: str) -> str:
+        return self._request("GET", f"/etapi/notes/{note_id}/content").text
+
+    def set_content(self, note_id: str, content: str) -> None:
+        """Replace a note's body. ETAPI answers 204, so there is nothing to
+        return -- read it back with :meth:`note_content` for proof."""
+        self._request("PUT", f"/etapi/notes/{note_id}/content",
+                      headers={"Content-Type": "text/plain"},
+                      content=content.encode("utf-8"))
+
+    def upsert_note(self, *, parent_note_id: str, title: str, content: str,
+                    type: str = "text", mime: str | None = None) -> dict:
+        """Create the note with exactly this title under this parent, or
+        replace the body of the one already there.
+
+        Refuses when the parent holds several notes of that title. A shared
+        vault has no owner to ask, and the wrong guess silently discards
+        somebody's writing.
+        """
+        matches = [n for n in self.children(parent_note_id)
+                   if n.get("title") == title]
+        if len(matches) > 1:
+            ids = ", ".join(n.get("noteId", "?") for n in matches)
+            raise EtapiError(
+                f"{len(matches)} notes under {parent_note_id} are titled "
+                f"{title!r} ({ids}) -- refusing to guess which one to "
+                f"overwrite")
+        if not matches:
+            made = self.create_note(parent_note_id=parent_note_id, title=title,
+                                    type=type, content=content, mime=mime)
+            return {"note_id": made["note"]["noteId"],
+                    "created": True, "changed": True}
+        note_id = matches[0]["noteId"]
+        if self.note_content(note_id) == content:
+            return {"note_id": note_id, "created": False, "changed": False}
+        self.set_content(note_id, content)
+        return {"note_id": note_id, "created": False, "changed": True}
+
     def search(self, query: str, **params: Any) -> dict:
         return self._request("GET", "/etapi/notes",
                              params={"search": query, **params}).json()

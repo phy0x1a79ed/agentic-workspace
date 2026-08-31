@@ -29,7 +29,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import instances, server, vault
+from awm.trilium import etapi, instances, server, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -170,6 +170,26 @@ API_MANIFEST: dict[str, Any] = {
             "parameters": [
                 {"name": "tail", "type": "number",
                  "description": "Lines from the end. Default 200."},
+            ],
+        },
+        {
+            "name": "note_upsert",
+            "tool": "trilium_note_upsert",
+            "description": (
+                "Write a note: create it under a parent, or replace the body "
+                "of the one already there with that exact title. Operator "
+                "only, and it refuses a title that matches twice rather than "
+                "overwrite the wrong note on a vault everybody shares."
+            ),
+            "parameters": [
+                {"name": "title", "type": "string", "required": True,
+                 "description": "Matched exactly against the parent's children."},
+                {"name": "content", "type": "string", "required": True,
+                 "description": "The note's body. HTML for a text note."},
+                {"name": "parent", "type": "string",
+                 "description": "Parent note id. Default root."},
+                {"name": "type", "type": "string",
+                 "description": "Trilium note type. Default text."},
             ],
         },
     ],
@@ -320,6 +340,21 @@ async def _h_export(args: dict, as_: str | None = None) -> dict:
         commit=args.get("commit", True) is not False)
 
 
+async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_upsert")
+    title = (args.get("title") or "").strip()
+    if not title:
+        raise ValueError("title is required, and is matched exactly")
+    content = args.get("content")
+    if content is None:
+        raise ValueError("content is required")
+    return await asyncio.to_thread(
+        etapi.client().upsert_note,
+        parent_note_id=(args.get("parent") or "").strip() or "root",
+        title=title, content=str(content),
+        type=(args.get("type") or "").strip() or "text")
+
+
 HANDLERS = {
     "status": _h_status,
     "start": _h_start,
@@ -332,6 +367,7 @@ HANDLERS = {
     "snapshots": _h_snapshots,
     "restore": _h_restore,
     "export": _h_export,
+    "note_upsert": _h_note_upsert,
 }
 
 
