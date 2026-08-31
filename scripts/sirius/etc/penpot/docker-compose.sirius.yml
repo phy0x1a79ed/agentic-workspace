@@ -1,13 +1,21 @@
-# DRAFT for T11 — sirius's overlay on upstream's docker-compose.yaml.
+# sirius's overlay on upstream's docker-compose.yaml.
 # Applied as:  docker compose -f docker-compose.yml -f docker-compose.sirius.yml
 #
 # Why an overlay on the stock file rather than a file of our own: sirius runs
-# the *published* penpotapp images, so the base file is upstream's, unmodified
-# and pinned by PENPOT_VERSION. Everything this box needs differently lives
-# here, where it can be read as a diff against what upstream ships. The local
-# dev box runs fork-built images from its own overlay; that split is the same
-# bargain the vault already runs on, and it holds only while the fork carries
-# no functional change this box needs.
+# the *published* penpotapp images, so everything this box needs differently
+# lives here, where it can be read as a diff against what upstream ships. The
+# local dev box runs fork-built images from its own overlay; that split is the
+# same bargain the vault already runs on, and it holds only while the fork
+# carries no functional change this box needs.
+#
+# CAUTION The base file and the images do not come from the same place. The
+# images are pinned by PENPOT_VERSION, at 2.16. The base file beside them is a
+# snapshot of upstream's main branch, which is two minors further on. So a key
+# named in the base file, or added to this overlay from upstream's current
+# docs, may not exist in the running image at all -- Penpot reads every
+# PENPOT_* variable into an open map and discards what it does not know,
+# without a word. PENPOT_INTERNAL_URI is the one that cost a working exporter:
+# see CAUTION 4.
 #
 # CAUTION — four things here are load-bearing and fail quietly if changed:
 #
@@ -151,9 +159,15 @@ services:
       # single-flights per board, so one board's traffic is unaffected.
       PENPOT_BROWSER_POOL_MAX: "1"
       PENPOT_REDIS_URI: "redis://penpot-valkey/0"
-    # The one container that actually approaches its ceiling: a headless
-    # Chromium render peaks at 1.135 GiB (measured). This is the number the
-    # box's headroom is designed around.
+    # The one container that comes near its ceiling. Measured on this box on
+    # 2026-08-30, over several cold renders: memory.peak 687 MiB, against a
+    # 1670 MiB low-water mark for MemAvailable. altair measures about 1.1 GiB
+    # for the same container, so treat that as the ceiling to design for and
+    # this as what a small board actually costs.
+    #
+    # CAUTION Reading memory.peak here needs care: it became resettable in
+    # Linux 6.11 and this box runs 6.8, so a peak is cumulative since the
+    # container started. Recreate the container to arm it.
     mem_limit: 1536m
 
   penpot-postgres:

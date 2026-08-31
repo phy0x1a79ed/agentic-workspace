@@ -39,13 +39,18 @@ reaching the backend.
 **The exporter renders against a different origin.** Penpot's exporter drives a
 headless browser at its own render page, and behind an authenticating edge that
 browser cannot load the public origin — it has no session, so the page never
-reaches network idle and every export times out. The fork carries
-``PENPOT_INTERNAL_URI`` (exporter-side, upstream #10630) for exactly this: point
-it at a second frontend container with ``PENPOT_PUBLIC_URI`` unset, whose config
-then falls back to ``location.origin`` and whose own location check passes on
-the internal address. ``replace-internal-uris`` rewrites that origin back to the
-public one in the emitted SVG, so nothing internal leaks into what a caller
-gets. None of that is this module's business — it is recorded here because this
+reaches network idle and every export times out. The answer is a second
+frontend container with ``PENPOT_PUBLIC_URI`` unset, whose config then falls
+back to ``location.origin`` and whose own location check passes on the internal
+address, with the exporter pointed at it.
+
+Which key points it there, and what comes back, both depend on the version.
+``PENPOT_INTERNAL_URI`` and the ``replace-internal-uris`` rewrite that scrubs
+the internal origin out of the emitted SVG both arrived in **2.17.0**
+(upstream #10630). On an earlier image the key is read and discarded in
+silence, the exporter's own ``PENPOT_PUBLIC_URI`` is the only lever, and the
+internal origin stays in every image and font URL for penpot-view to
+recognise. None of that is this module's business — it is recorded here because this
 docstring is where the next reader comes looking for "why did my export break
 when I set the public URI".
 

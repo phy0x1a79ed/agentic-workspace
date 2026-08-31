@@ -96,13 +96,25 @@ restarting from the core-change loop anyway.
   dies on `ResourceRequest timed out`. Ungating the render page instead is
   worse — it is reachable unauthenticated.
 
-  The fork already carries the split. Set the exporter's `PENPOT_INTERNAL_URI`
-  to a **second frontend container with `PENPOT_PUBLIC_URI` unset**, whose
-  config then falls back to `location.origin` and whose own location check
-  passes on the internal address. `replace-internal-uris`
-  (`exporter/src/app/renderer/svg.cljs`) rewrites that origin back to the
-  public one in the emitted SVG, so nothing internal reaches a caller. Costs
-  one nginx container. Never give that container `PENPOT_PUBLIC_URI`.
+  Point the exporter at a **second frontend container with
+  `PENPOT_PUBLIC_URI` unset**, whose config then falls back to
+  `location.origin` and whose own location check passes on the internal
+  address. Costs one nginx container. Never give that container
+  `PENPOT_PUBLIC_URI`.
+
+  **Which key names that container depends on the version.**
+  `PENPOT_INTERNAL_URI` first shipped in **2.17.0** (upstream #10630); on an
+  earlier image Penpot reads it into an open map and discards it without a
+  word, and the only origin lever the exporter has is its own
+  `PENPOT_PUBLIC_URI`. Setting both, at the same value, works on either side
+  of that line.
+
+  **`replace-internal-uris` (`exporter/src/app/renderer/svg.cljs`) arrived
+  with the same commit.** From 2.17.0 it rewrites the internal origin back to
+  the public one in the emitted SVG, so nothing internal reaches a caller.
+  Before it, the internal origin stays in every image and font URL, and
+  whatever consumes the SVG has to recognise it — which is what
+  `PENPOT_INTERNAL_URI` on the *penpot-view* side is for.
 
 - **WARNING: anything Penpot fetches server-side must clear its SSRF guard,
   and loopback is not reachable from its containers regardless.** Any

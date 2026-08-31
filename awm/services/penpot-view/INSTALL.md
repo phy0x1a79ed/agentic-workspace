@@ -76,17 +76,22 @@ exporter container directly:
   The backend's own object handler answers a direct asset request with
   `HTTP 204` and an `x-accel-redirect` header meant for an nginx `internal`
   location it does not itself have — zero bytes, no error, and a blank SVG
-  that looks like a successful export. `exporter_client.py` refuses any asset
-  URI that does not start with `PENPOT_BASE_URL`, so this cannot be
-  misconfigured into that failure mode. Do not add an option that would let it.
+  that looks like a successful export. Two rules in `exporter_client.py` keep
+  that from being reachable, and both matter. It **rebases** every accepted URL
+  onto `PENPOT_BASE_URL` before a socket opens, so whatever origin Penpot
+  stamped on the URL, the request goes to the frontend. And it accepts a URL
+  only if its origin is one it recognises *and* its path is on the caller's
+  allow-list. Do not add an option that skips either.
 
 Configure the service account and, if the compose stack's default port
 differs, the frontend origin:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PENPOT_BASE_URL` | `http://localhost:9001` | frontend origin for login and the asset fetch |
+| `PENPOT_BASE_URL` | `http://localhost:9001` | frontend origin for login and the asset fetch. Every accepted URL is rebased onto this before a request leaves. |
 | `PENPOT_EXPORTER_URL` | `http://localhost:9001` | frontend origin for the export POST (same origin as above — differs only if your stack proxies exports elsewhere) |
+| `PENPOT_PUBLIC_URI` | *(unset)* | the origin, with its mount path, that Penpot stamps on browser-bound URLs. Recognised, then stripped of its mount and rebased. |
+| `PENPOT_INTERNAL_URI` | *(unset)* | the origin the exporter's own browser rendered against, when that differs from the public one — see below |
 | `PENPOT_SERVICE_USERNAME` | *(unset)* | login for the service account `export_svg`/`file_etag` authenticate as |
 | `PENPOT_SERVICE_PASSWORD` | *(unset)* | — |
 
@@ -94,6 +99,17 @@ Without a username and password configured, every render fails at the first
 export with a named `ExporterError` rather than a silent blank image — check
 `awm penpot-view status`'s `service_account_configured` field first when
 nothing renders.
+
+**`PENPOT_INTERNAL_URI` is a recognition token, never a routing target.** Set
+it where the exporter is pointed at an origin only the compose network can
+resolve, which is how a stack whose public origin sits behind a sign-in page
+renders at all. The render then comes back with that hostname baked into every
+image and font URL, and penpot-view has to know the name to accept the URL —
+but it never resolves it, because it rebases onto `PENPOT_BASE_URL` first. It
+must match the exporter's own origin byte for byte; `awm penpot-view status`
+reports both so the comparison is one command. Unset, a render against such a
+stack is served with its images and fonts missing, 200, with only an
+`X-Penpot-Problems` header to say so.
 
 **CAUTION** on any host where the port matters — sirius, or any machine
 reachable beyond loopback — publish the frontend as `127.0.0.1:9001:8080`, not
