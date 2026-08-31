@@ -26,6 +26,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter
 
+from . import demo as D
 from . import exporter_client as EC
 from . import mount
 from . import renderspec as R
@@ -42,6 +43,14 @@ def status() -> dict:
     return {
         "penpot_base_url": EC.DEFAULT_BASE_URL,
         "penpot_exporter_url": EC.DEFAULT_EXPORTER_URL,
+        # Two strings that live in two files and have to agree: this one, and
+        # the exporter container's own PENPOT_PUBLIC_URI in
+        # scripts/sirius/etc/penpot/docker-compose.sirius.yml. Nothing else
+        # compares them, and a mismatch is not an error -- it serves a render
+        # with the images and fonts stripped out of it. Reported here so the
+        # comparison is one command instead of two file reads.
+        "penpot_public_uri": EC.DEFAULT_PUBLIC_URI,
+        "penpot_internal_uri": EC.DEFAULT_INTERNAL_URI,
         "service_account_configured": bool(EC.DEFAULT_USERNAME and EC.DEFAULT_PASSWORD),
         "view_mount": mount.view_server().status(),
         # A degraded render is otherwise reported only to the request that
@@ -95,6 +104,24 @@ def _evict(cache, key: tuple[str, str, str, str]) -> None:
     cache.invalidate(key)
 
 
+def seed_demo(*, token: str | None = None, team: str | None = None) -> dict:
+    """Create the demo Penpot file, or report where the existing one is.
+
+    Not reachable from the internet: ``/svc/penpot-view/fn/*`` is on no
+    allow-list in the public edge's policy, so this is a console verb and a
+    verb the chain script calls, and nothing else.
+
+    ``token`` is a Penpot session belonging to a real person, which is how
+    this authors as one. The render account is a read-only member of the
+    shared team on purpose -- see ``scripts/sirius/penpot-team.sh`` -- so
+    without a token the seed can read the demo but not create it. ``awm auth
+    penpot-session --username <name>`` is where the token comes from, and
+    ``scripts/sirius/demo-chain.sh`` is what fetches it.
+    """
+    with EC.ExporterClient(token=token) as client:
+        return D.seed(client, team=team)
+
+
 def cache_stats() -> dict:
     """Cache health an operator can act on: how full the durability copy on
     disk is, and whether renders are actually being served from it."""
@@ -132,6 +159,10 @@ API_MANIFEST: dict[str, Any] = {
             {"name": "crop", "type": "string", "required": False},
         ]},
         {"name": "cache_stats"},
+        {"name": "seed_demo", "params": [
+            {"name": "token", "type": "string", "required": False},
+            {"name": "team", "type": "string", "required": False},
+        ]},
     ],
     "emitters": [],
     "sessions": [],
@@ -148,6 +179,8 @@ HANDLERS: dict[str, Any] = {
     "status": lambda args: status(),
     "force_refresh": _force_refresh_handler,
     "cache_stats": lambda args: cache_stats(),
+    "seed_demo": lambda args: seed_demo(token=args.get("token"),
+                                        team=args.get("team")),
 }
 
 

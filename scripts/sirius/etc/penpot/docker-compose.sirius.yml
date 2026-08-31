@@ -9,7 +9,7 @@
 # bargain the vault already runs on, and it holds only while the fork carries
 # no functional change this box needs.
 #
-# CAUTION — three things here are load-bearing and fail quietly if changed:
+# CAUTION — four things here are load-bearing and fail quietly if changed:
 #
 #  1. `ports: !override` on every published port. Compose merges port lists by
 #     *target* port, so a plain `ports:` keeps the base file's published value
@@ -28,6 +28,15 @@
 #     the prefix before proxying. A mismatch renders Penpot's not-found page,
 #     which embeds a login dialog — so the symptom reads as an auth failure
 #     and is not one.
+#  4. The exporter's own PENPOT_PUBLIC_URI is deliberately NOT the public
+#     origin. It names `penpot-frontend-internal`, which is the only address
+#     its headless browser can reach — the public origin answers with awm's
+#     sign-in page and the render times out. penpot-view must recognise that
+#     same origin in the URLs the render comes back carrying, so
+#     `PENPOT_INTERNAL_URI` in /etc/awm/env has to match this value byte for
+#     byte. Compare the two with `awm penpot-view status`, which reports the
+#     value penpot-view holds. A mismatch serves a render with the images and
+#     fonts missing, 200, with only an X-Penpot-Problems header to say so.
 
 x-flags: &sirius-flags
   # Divergence from the local overlay, deliberate, three ways:
@@ -121,11 +130,26 @@ services:
     environment:
       << : *sirius-flags
       PENPOT_SECRET_KEY: "${PENPOT_SECRET_KEY:?set in /etc/awm/penpot.env}"
-      # Renders against the internal frontend, reachable on the compose
-      # network; its SVG renderer rewrites internal origins to the public one
-      # on the way out, so what leaves here carries no unreachable host.
+      # NOT the public origin -- see CAUTION 4. On 2.16 this is the exporter's
+      # only origin lever, and all three things riding on it want an address
+      # the container can actually reach: the render page it drives its
+      # browser at, the `upload-tempfile` POST that returns the finished
+      # render, and the absolute image and font URLs the page bakes into the
+      # SVG. The public origin answers all three with awm's sign-in page.
+      PENPOT_PUBLIC_URI: "http://penpot-frontend-internal:8080"
+      # Inert here and correct from 2.17.0. The key first shipped with
+      # upstream #10630; the 2.16 bundle builds the render URL from
+      # `public_uri` and contains this name nowhere, and Penpot slurps every
+      # PENPOT_* variable into an open map, so it is accepted and discarded in
+      # silence. Kept pointed at the same place so a version bump fixes itself
+      # instead of quietly re-breaking.
       PENPOT_INTERNAL_URI: "http://penpot-frontend-internal:8080"
-      PENPOT_PUBLIC_URI: "${PENPOT_PUBLIC_URI:?set in /etc/awm/penpot.env}"
+      # The pool defaults to five concurrent headless Chromiums and one of
+      # them measures 1.135 GiB, against two cores and ~1.7 GiB free. The
+      # cost of 1: a second concurrent export of a *different* board waits ten
+      # seconds and then answers 503 rather than queueing. penpot-view
+      # single-flights per board, so one board's traffic is unaffected.
+      PENPOT_BROWSER_POOL_MAX: "1"
       PENPOT_REDIS_URI: "redis://penpot-valkey/0"
     # The one container that actually approaches its ceiling: a headless
     # Chromium render peaks at 1.135 GiB (measured). This is the number the
