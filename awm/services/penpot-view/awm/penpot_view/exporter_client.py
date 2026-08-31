@@ -89,6 +89,30 @@ DEFAULT_PASSWORD = os.environ.get("PENPOT_SERVICE_PASSWORD")
 #: lets one deployment satisfy both readers.
 DEFAULT_PUBLIC_URI = (os.environ.get("PENPOT_PUBLIC_URI") or "").rstrip("/")
 
+#: The origin the *exporter* renders against, which on this deployment is not
+#: the public one and not the one we reach Penpot on either.
+#:
+#: The exporter drives a headless browser at its own ``PENPOT_PUBLIC_URI``. On
+#: sirius that is the compose-network address of a second frontend container
+#: (``http://penpot-frontend-internal:8080``), because the public origin
+#: answers the browser with awm's sign-in page and the render times out. The
+#: page the browser loads then bakes *that* origin into every absolute image
+#: and font URL in the SVG it produces, so the URLs coming back name a host
+#: this process cannot resolve and must still recognise.
+#:
+#: Purely a **recognition token, never a routing target**. `_localise` rebases
+#: every accepted URL onto :data:`DEFAULT_BASE_URL` before a socket opens, so
+#: nothing here is ever dialled. Penpot 2.17.0 added its own
+#: ``PENPOT_INTERNAL_URI`` and rewrites these origins back to the public one
+#: inside the exporter, at which point this recognises an origin that no
+#: longer arrives -- harmless, and the reason it is kept rather than removed
+#: on the version bump.
+#:
+#: Must equal the exporter container's ``PENPOT_PUBLIC_URI`` byte for byte.
+#: :func:`awm.penpot_view.service.status` reports it for exactly that
+#: comparison.
+DEFAULT_INTERNAL_URI = (os.environ.get("PENPOT_INTERNAL_URI") or "").rstrip("/")
+
 #: Every backend RPC hangs off this prefix; the command is the last segment.
 RPC_PREFIX = "/api/rpc/command"
 LOGIN_PATH = f"{RPC_PREFIX}/login-with-password"
@@ -107,6 +131,10 @@ LOGIN_TIMEOUT = float(os.environ.get("PENPOT_LOGIN_TIMEOUT", "15"))
 #: and font-settle waits -- several seconds is routine, not a sign of trouble.
 EXPORT_TIMEOUT = float(os.environ.get("PENPOT_EXPORT_TIMEOUT", "60"))
 ASSET_TIMEOUT = float(os.environ.get("PENPOT_ASSET_TIMEOUT", "30"))
+#: How long to wait for one authoring RPC round trip. Longer than the
+#: freshness probe: `update-file` locks the file row and replays the whole
+#: change vector through the schema validator before it answers.
+RPC_TIMEOUT = float(os.environ.get("PENPOT_RPC_TIMEOUT", "60"))
 #: The freshness probe is a single-row lookup on the 304 path, so it gets a
 #: much shorter leash than a render -- if it is slow, re-rendering is cheaper
 #: than waiting for it.
@@ -126,6 +154,13 @@ MAX_SUBRESOURCE_BYTES = int(
 #: `<image href>` naming `/api/rpc/command/get-teams` would be fetched with
 #: the service session and base64'd into a render anyone may read.
 SUBRESOURCE_PATHS = ("/assets/", "/internal/gfonts/")
+#: The only paths the finished render itself may be fetched from. The exporter
+#: uploads it as a tempfile and hands back an ``/assets/by-id/<uuid>`` URI, and
+#: nothing else is a legitimate answer. Narrow for the same reason
+#: :data:`SUBRESOURCE_PATHS` is: this fetch carries the service account's
+#: session, and the widened origin list below now accepts Penpot's public
+#: origin *outside* its mount as well.
+ASSET_PATHS = ("/assets/",)
 #: What a sub-resource may claim to be. The value is spliced into a `data:`
 #: URI inside the render, so it is attacker-influencing markup, not a label.
 SUBRESOURCE_TYPES = ("image/", "font/", "text/css", "application/font")
@@ -160,6 +195,39 @@ class Keyword(str):
         return f"Keyword({str.__str__(self)!r})"
 
 
+class Tagged:
+    """A transit *tagged value* -- encodes as ``{"~#tag": rep}``.
+
+    Penpot's change processor does not accept a plain map where it expects a
+    shape: ``:add-obj`` runs its ``:obj`` through ``cts/valid-shape?``, whose
+    first predicate is ``shape?`` -- an ``instance?`` check against the
+    ``Shape`` record. The only way a JSON-hosted payload becomes a record on
+    the far side is transit's tag dispatch, so the shape has to arrive tagged
+    ``shape``, with ``rect`` (its selrect), ``point`` (each of its four
+    points) and ``matrix`` (its two transforms) nested inside. Penpot
+    registers exactly those four read handlers in
+    ``app.common.types.shape``, ``geom.rect``, ``geom.point`` and
+    ``geom.matrix``.
+
+    Decoding throws the tag away (see :func:`_decode_transit`), which is
+    right for a client that reads a handful of fields. This type exists only
+    for the writing direction.
+    """
+
+    __slots__ = ("tag", "rep")
+
+    def __init__(self, tag: str, rep: Any) -> None:
+        self.tag = tag
+        self.rep = rep
+
+    def __repr__(self) -> str:  # pragma: no cover -- debugging aid only
+        return f"Tagged({self.tag!r}, {self.rep!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return (isinstance(other, Tagged) and other.tag == self.tag
+                and other.rep == self.rep)
+
+
 def _transit_key(key: Any) -> str:
     if isinstance(key, Keyword):
         return f"~:{key}"
@@ -179,6 +247,8 @@ def _encode_transit(value: Any) -> Any:
         return value
     if isinstance(value, str):
         return f"~{value}" if value.startswith("~") else value
+    if isinstance(value, Tagged):
+        return {f"{_TAG}{value.tag}": _encode_transit(value.rep)}
     if isinstance(value, Mapping):
         return {_transit_key(k): _encode_transit(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -344,8 +414,25 @@ _TRANSIT_HEADERS = {
     "accept": "application/transit+json",
 }
 
+#: Public names for the codec. :mod:`awm.penpot_view.authoring` builds change
+#: vectors out of the same value types this module encodes, and reaching
+#: across a module boundary for an underscored name is how a private helper
+#: quietly becomes an interface without anyone deciding to make it one.
+transit_dumps = _transit_dumps
+transit_loads = _transit_loads
+
 
 # --- the client --------------------------------------------------------
+
+
+def _rpc_problem(decoded: Any, raw: str) -> str:
+    """Name what Penpot objected to, from its transit error envelope."""
+    if isinstance(decoded, Mapping):
+        parts = [f"{k}={decoded[k]!r}" for k in ("type", "code", "hint")
+                 if decoded.get(k) is not None]
+        if parts:
+            return " ".join(parts)
+    return (raw[:400] or "<empty body>")
 
 
 class ExporterClient:
@@ -365,7 +452,9 @@ class ExporterClient:
     def __init__(self, *, base_url: str | None = None,
                  exporter_url: str | None = None,
                  public_uri: str | None = None,
+                 internal_uri: str | None = None,
                  username: str | None = None, password: str | None = None,
+                 token: str | None = None,
                  transport: httpx.BaseTransport | None = None,
                  client: httpx.Client | None = None) -> None:
         self._base_url = (base_url or DEFAULT_BASE_URL).rstrip("/")
@@ -381,11 +470,24 @@ class ExporterClient:
         #: root, which is why this was invisible until it moved.
         self._public_prefix = urllib.parse.urlsplit(
             self._public_uri).path.rstrip("/") if self._public_uri else ""
+        self._internal_uri = (
+            internal_uri if internal_uri is not None else DEFAULT_INTERNAL_URI
+        ).rstrip("/")
+        self._internal_prefix = urllib.parse.urlsplit(
+            self._internal_uri).path.rstrip("/") if self._internal_uri else ""
         self._exporter_url = (exporter_url or DEFAULT_EXPORTER_URL).rstrip("/")
         self._username = username if username is not None else DEFAULT_USERNAME
         self._password = password if password is not None else DEFAULT_PASSWORD
         self._client = client if client is not None else httpx.Client(transport=transport)
-        self._token: str | None = None
+        #: A session borrowed from somebody else, and the flag that says so.
+        #: The seed authors as a real person -- the render account is a
+        #: read-only member of the shared team on purpose -- and `auth` hands
+        #: out that person's Penpot session without ever revealing their
+        #: password. A borrowed session is never re-logged-in: falling back to
+        #: the service account on a 401 would swap the author silently and
+        #: then fail on permissions instead of on authentication.
+        self._fixed_token = token or None
+        self._token: str | None = self._fixed_token
         self._profile_id: uuid.UUID | None = None
         #: Guards the token/profile-id pair. One client is shared by every
         #: request thread and every background refresh, so both the cold
@@ -404,6 +506,12 @@ class ExporterClient:
     # --- auth ------------------------------------------------------------
 
     def _login(self) -> None:
+        if self._fixed_token:
+            raise ExporterError(
+                "the penpot session this client was given was rejected: it "
+                "has expired, or the profile behind it changed. Refusing to "
+                "fall back to the service account, which would author as "
+                "somebody else.")
         if not self._username or not self._password:
             raise ExporterError(
                 "penpot service-account credentials are not configured "
@@ -456,7 +564,8 @@ class ExporterClient:
         every waiting thread into its own redundant login.
         """
         with self._auth_lock:
-            if self._token is None or self._profile_id is None:
+            if self._token is None or (self._profile_id is None
+                                       and not self._fixed_token):
                 self._login()
             return self._token
 
@@ -515,6 +624,73 @@ class ExporterClient:
             return self._authed_request(method, url, timeout=timeout,
                                         headers=headers, retried=True, **kwargs)
         return resp
+
+    # --- rpc ----------------------------------------------------------------
+
+    def rpc(self, command: str, params: Mapping[str, Any] | None = None, *,
+            timeout: float | None = None) -> Any:
+        """Call one RPC command and return its decoded result.
+
+        The point of this over a raw :meth:`_authed_request` is the error
+        path. Penpot answers a rejected command with a transit body naming
+        ``:type`` and ``:code`` -- ``:vern-conflict``, ``:params-validation``,
+        ``:not-authorized`` -- and each of those says something different
+        about what to do next. Reporting only "HTTP 400" throws the one piece
+        of information the caller needed away, which matters most while a
+        change vector is being hand-derived and every failure is a schema
+        mismatch somewhere inside it.
+        """
+        url = f"{self._base_url}{RPC_PREFIX}/{command}"
+        try:
+            resp = self._authed_request(
+                "POST", url, timeout=(timeout or RPC_TIMEOUT),
+                headers=dict(_TRANSIT_HEADERS),
+                content=_transit_dumps(dict(params or {})))
+        except httpx.HTTPError as exc:
+            raise ExporterError(f"penpot {command} failed: {exc}") from exc
+        return self._rpc_result(command, resp)
+
+    def _rpc_result(self, command: str, resp: httpx.Response) -> Any:
+        try:
+            decoded = _transit_loads(resp.text) if resp.text else None
+        except ValueError as exc:
+            if resp.status_code == 200:
+                raise ExporterError(
+                    f"penpot {command} answered HTTP 200 with a body that is "
+                    f"not transit: {exc}") from exc
+            decoded = None
+        if resp.status_code == 200:
+            return decoded
+        raise ExporterError(
+            f"penpot {command} failed: HTTP {resp.status_code} "
+            f"{_rpc_problem(decoded, resp.text)}")
+
+    def upload_media(self, *, file_id: uuid.UUID, name: str, filename: str,
+                     data: bytes, mtype: str) -> Mapping[str, Any]:
+        """Upload one image and return its file-media-object.
+
+        The only RPC command here that is not transit: ``content`` is a file
+        part, so the whole call is ``multipart/form-data`` and the scalar
+        params ride along as form fields. Penpot's own frontend sends it the
+        same way (``repo.cljs``'s ``:form-data? true``), and the field names
+        are the kebab-case parameter names, unchanged.
+        """
+        url = f"{self._base_url}{RPC_PREFIX}/upload-file-media-object"
+        try:
+            resp = self._authed_request(
+                "POST", url, timeout=RPC_TIMEOUT,
+                headers={"accept": "application/transit+json"},
+                data={"file-id": str(file_id), "is-local": "true",
+                      "name": name},
+                files={"content": (filename, data, mtype)})
+        except httpx.HTTPError as exc:
+            raise ExporterError(f"penpot media upload failed: {exc}") from exc
+        result = self._rpc_result("upload-file-media-object", resp)
+        if not isinstance(result, Mapping) or not isinstance(
+                result.get("id"), uuid.UUID):
+            raise ExporterError(
+                f"penpot media upload returned no media object: {result!r}")
+        return result
 
     # --- freshness ----------------------------------------------------------
 
@@ -595,20 +771,23 @@ class ExporterClient:
         # The one check that stands between "fetched the render" and
         # "fetched a silent 204 from the backend" -- see the module
         # docstring. Refuse before spending a request on the wrong host.
-        return self._fetch_asset(self._localise(uri, what="asset uri"))
+        return self._fetch_asset(
+            self._localise(uri, what="asset uri", allowed_paths=ASSET_PATHS))
 
     def _localise(self, url: str, *, what: str,
-                  allowed_paths: tuple[str, ...] | None = None) -> str:
+                  allowed_paths: tuple[str, ...]) -> str:
         """Map a URL Penpot handed out onto the origin this service reaches
         Penpot on, refusing anything that is neither.
 
-        Penpot stamps its *public* origin onto every URL it emits, and behind
-        the edge that origin is the edge's -- correct for a browser, wrong for
-        a process on the container host talking to loopback. The path is the
-        part that carries meaning; the origin is Penpot's public identity, not
-        a routing instruction for us. So a URL on either origin is accepted
-        and normalised to :data:`DEFAULT_BASE_URL`, and a URL on any third
-        origin is refused.
+        Penpot stamps an origin onto every URL it emits, and none of the ones
+        it chooses is the one this process reaches it on -- the public origin
+        is the edge's, correct for a browser and wrong for a caller on the
+        container host talking to loopback, and the exporter's is a
+        compose-network name that resolves nowhere outside the stack. The path
+        is the part that carries meaning; the origin is an identity, not a
+        routing instruction for us. So a URL on any origin :meth:`_origins`
+        knows is accepted and normalised to :data:`DEFAULT_BASE_URL`, and a URL
+        on any other origin is refused.
 
         **Compared as a parsed origin triple, never as a string prefix.** A
         prefix test is not an origin test, and the gap between them is
@@ -622,10 +801,13 @@ class ExporterClient:
         there is no legitimate reason for Penpot to emit it, so its presence
         means the URL is not the one it appears to be.
 
-        ``allowed_paths`` narrows what may be fetched *on* that origin. Origin
-        alone is not enough for a sub-resource: every RPC endpoint the service
-        account can reach lives on the same origin, and inlining one of those
-        into a render would make the render an authenticated-read oracle.
+        ``allowed_paths`` narrows what may be fetched *on* that origin, and it
+        is required rather than optional. Origin alone was never enough --
+        every RPC endpoint the service account can reach lives on the same
+        origin, and inlining one of those into a render would make the render
+        an authenticated-read oracle -- and it is less than enough now that
+        :meth:`_origins` accepts Penpot's public origin outside its mount as
+        well. A caller with nothing to allow-list has no business here.
         """
         parsed = urllib.parse.urlsplit(url)
         if parsed.username is not None or parsed.password is not None:
@@ -635,15 +817,7 @@ class ExporterClient:
                 "Penpot's origin followed by '@' resolves to a different host "
                 "entirely.")
 
-        # A mounted candidate is tried first. When the base and the public URI
-        # share an origin and differ only by the mount, checking the bare one
-        # first would match with an empty prefix and leave the mount attached.
-        candidates = [(self._base_url, ""),
-                      (self._public_uri, self._public_prefix)]
-        candidates.sort(key=lambda c: not c[1])
-        for origin, prefix in candidates:
-            if not origin:
-                continue
+        for origin, prefix in self._origins():
             want = urllib.parse.urlsplit(origin)
             if (parsed.scheme, parsed.hostname, parsed.port) != (
                     want.scheme, want.hostname, want.port):
@@ -664,7 +838,7 @@ class ExporterClient:
                     # On Penpot's public origin but outside its mount, so it is
                     # some other app on that host, not Penpot.
                     continue
-            if allowed_paths is not None and not path.startswith(allowed_paths):
+            if not path.startswith(allowed_paths):
                 raise ExporterError(
                     f"{what} {url!r} is on Penpot's own origin but its path is "
                     f"not under {allowed_paths} -- refusing it, since this "
@@ -674,13 +848,56 @@ class ExporterClient:
             return urllib.parse.urlunsplit(
                 (base.scheme, base.netloc, path, parsed.query, ""))
 
-        known = (f"{self._base_url!r}"
-                 + (f" or {self._public_uri!r}" if self._public_uri else ""))
+        known = ", ".join(
+            f"{o!r}" + (f" (mounted at {pfx!r})" if pfx else "")
+            for o, pfx in self._origins())
         raise ExporterError(
-            f"{what} {url!r} is on neither the frontend base nor Penpot's "
-            f"public origin ({known}) -- refusing to fetch it. Set "
-            "PENPOT_PUBLIC_URI to whatever Penpot itself is configured with "
-            "if this is a legitimate URL from behind the edge.")
+            f"{what} {url!r} is on none of the origins Penpot may hand out "
+            f"({known}) -- refusing to fetch it. PENPOT_PUBLIC_URI must be "
+            "whatever Penpot itself is configured with, and "
+            "PENPOT_INTERNAL_URI whatever the exporter container is, if this "
+            "is a legitimate URL.")
+
+    def _origins(self) -> list[tuple[str, str]]:
+        """Every origin a URL from Penpot may legitimately arrive on, paired
+        with the mount prefix to take off its path.
+
+        Four entries, and they are three different ideas:
+
+        * **the loopback base** -- how this process reaches Penpot, and the
+          origin every accepted URL is rebased onto;
+        * **the public origin with its mount** -- what the frontend and most
+          of the backend stamp on a browser-bound URL;
+        * **the public origin without it** -- what a 2.16 backend actually
+          emits for an export's asset URI. It builds the URI as ``(u/join
+          public-uri "/assets/by-id/")``, and an absolute reference path
+          *replaces* the base path under RFC 3986 rather than extending it, so
+          the ``/penpot`` mount is dropped on the way out. Upstream's fix is
+          unreleased, so no pinned image carries it;
+        * **the internal origin** -- what the exporter's headless browser
+          rendered against, which it bakes into the image and font URLs of the
+          SVG it produces. See :data:`DEFAULT_INTERNAL_URI`.
+
+        Order matters where two entries share an origin triple: the mounted
+        one has to be tried first, or the bare one matches with an empty
+        prefix and leaves the mount attached to the path.
+
+        None of these is a routing target. :meth:`_localise` rebases onto
+        :data:`DEFAULT_BASE_URL` before any socket opens, and widening this
+        list is only safe alongside the ``allowed_paths`` every caller now
+        passes -- the bare public entry accepts any path on that origin.
+        """
+        candidates = [(self._base_url, "")]
+        if self._public_uri:
+            candidates.append((self._public_uri, self._public_prefix))
+            if self._public_prefix:
+                candidates.append((self._public_uri, ""))
+        if self._internal_uri:
+            candidates.append((self._internal_uri, self._internal_prefix))
+        candidates.sort(key=lambda c: not c[1])
+        seen: set[tuple[str, str]] = set()
+        return [c for c in candidates
+                if c[0] and not (c in seen or seen.add(c))]
 
     def _export_shapes(self, *, file_id: str, page_id: str, object_id: str,
                        name: str, scale: float, suffix: str) -> str:

@@ -163,7 +163,7 @@ def test_asset_uri_that_does_not_point_at_the_frontend_is_refused():
     exporter handed back a backend-hosted URI, this client must refuse to
     fetch it rather than "helpfully" following it to the wrong host."""
     export = _export_ok_handler(uri="http://penpot-backend:6060/assets/by-id/x")
-    with pytest.raises(EC.ExporterError, match="frontend"):
+    with pytest.raises(EC.ExporterError, match="none of the origins"):
         _export(_client(export=export))
 
 
@@ -419,7 +419,7 @@ def test_a_cross_origin_subresource_is_refused_before_any_request():
         return httpx.Response(200, content=b"x", headers={"content-type": "text/plain"})
 
     client = _client(asset=asset)
-    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+    with pytest.raises(EC.ExporterError, match="none of the origins"):
         client.fetch_subresource("http://169.254.169.254/latest/meta-data/")
     assert calls == []
 
@@ -482,7 +482,7 @@ def test_a_third_origin_is_still_refused_when_a_public_uri_is_configured():
                                public_uri=PUBLIC, username="svc-account",
                                password="hunter2",
                                transport=httpx.MockTransport(_router()))
-    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+    with pytest.raises(EC.ExporterError, match="none of the origins"):
         client.fetch_subresource("http://169.254.169.254/latest/meta-data/")
 
 
@@ -547,20 +547,29 @@ def test_a_mounted_url_outside_the_allow_list_is_still_refused():
 
 def test_a_sibling_path_on_the_public_host_is_not_penpots():
     """`/trilium/…` is on the same origin as a mounted Penpot and belongs to
-    another app entirely. Matching on origin alone would fetch it with
-    Penpot's session attached."""
-    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+    another app entirely. The public origin is accepted outside the mount now
+    -- a 2.16 backend emits exactly that for an export's asset URI -- so the
+    path allow-list is the only thing left standing between the render and
+    another app's data. It has to be enough on its own."""
+    with pytest.raises(EC.ExporterError, match="not under"):
         _mounted_client().fetch_subresource(
             "https://nexus.example/trilium/assets/x.png")
 
 
 def test_the_mount_is_not_stripped_by_prefix_alone():
     """`/penpotx/assets/…` shares a prefix with the mount but is not inside
-    it. A `startswith` on the bare mount would strip it into
-    `x/assets/…` and fetch that."""
-    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
-        _mounted_client().fetch_subresource(
+    it. A `startswith` on the bare mount would strip it into `x/assets/…`."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"xy",
+                              headers={"content-type": "image/jpeg"})
+
+    with pytest.raises(EC.ExporterError, match="not under"):
+        _mounted_client(asset).fetch_subresource(
             "https://nexus.example/penpotx/assets/x.png")
+    assert seen == []
 
 
 # --- the read cache counts tags too ---------------------------------------
@@ -644,7 +653,7 @@ def test_a_sibling_domain_is_not_the_same_origin():
                                exporter_url=EXPORTER_URL,
                                username="svc-account", password="hunter2",
                                transport=httpx.MockTransport(_router()))
-    with pytest.raises(EC.ExporterError, match="neither the frontend base"):
+    with pytest.raises(EC.ExporterError, match="none of the origins"):
         client.fetch_subresource("http://penpot.example.evil.com/assets/x")
 
 
@@ -692,3 +701,212 @@ def test_an_asset_uri_keeps_its_query_string_when_localised():
     client.fetch_subresource(
         "https://edge.example/internal/gfonts/css?family=Work+Sans:700")
     assert seen == [f"{BASE_URL}/internal/gfonts/css?family=Work+Sans:700"]
+
+
+# --- the exporter's own origin, which resolves nowhere from here -----------
+#
+# On 2.16 the exporter has one origin lever, its own `PENPOT_PUBLIC_URI`, and
+# it has to name an address its headless browser can reach -- the public one
+# answers with awm's sign-in page. The page it loads then bakes that origin
+# into every absolute image and font URL of the SVG, and 2.16 has no renderer
+# pass to put the public origin back (that arrived with upstream #10630, in
+# 2.17.0). So these URLs reach this service naming a compose-network host, and
+# it must recognise them without ever dialling one.
+
+INTERNAL = "http://penpot-frontend-internal:8080"
+
+
+def _internal_client(seen: list[str]):
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=b"xy",
+                              headers={"content-type": "image/jpeg"})
+    return EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        internal_uri=INTERNAL, username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router(asset=asset)))
+
+
+def test_a_subresource_on_the_exporters_origin_never_leaves_for_that_host():
+    """`penpot-frontend-internal` does not resolve outside the compose
+    network. The variable is a recognition token, so the fetch has to come
+    out rebased onto the loopback base -- a request that actually left for
+    that hostname would fail with a DNS error every time."""
+    seen: list[str] = []
+    _internal_client(seen).fetch_subresource(f"{INTERNAL}/assets/by-id/dead")
+    assert seen == [f"{BASE_URL}/assets/by-id/dead"]
+    assert not any("penpot-frontend-internal" in url for url in seen)
+
+
+def test_the_exporters_origin_is_still_path_scoped():
+    seen: list[str] = []
+    with pytest.raises(EC.ExporterError, match="not under"):
+        _internal_client(seen).fetch_subresource(
+            f"{INTERNAL}/api/rpc/command/get-teams")
+    assert seen == []
+
+
+def test_an_asset_uri_on_the_public_origin_outside_the_mount_is_accepted():
+    """A 2.16 backend builds the export's asset URI as `(u/join public-uri
+    "/assets/by-id/")`. An absolute reference path *replaces* the base path
+    under RFC 3986 rather than extending it, so the `/penpot` mount is dropped
+    and the URI arrives at the origin root. Upstream's fix is unreleased, so
+    no pinned image carries it."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=SVG_BYTES,
+                              headers={"content-type": "image/svg+xml"})
+
+    client = EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router(
+            export=_export_ok_handler(
+                uri="https://nexus.example/assets/by-id/deadbeef"),
+            asset=asset)))
+    assert _export(client) == SVG_BYTES
+    assert seen == [f"{BASE_URL}/assets/by-id/deadbeef"]
+
+
+def test_the_mounted_asset_uri_still_wins_over_the_bare_one():
+    """Both entries share an origin triple. The mounted one has to be tried
+    first, or the bare one matches with an empty prefix and leaves `/penpot`
+    on the path the container is asked for."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=SVG_BYTES,
+                              headers={"content-type": "image/svg+xml"})
+
+    client = EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router(
+            export=_export_ok_handler(uri=f"{MOUNTED}/assets/by-id/deadbeef"),
+            asset=asset)))
+    assert _export(client) == SVG_BYTES
+    assert seen == [f"{BASE_URL}/assets/by-id/deadbeef"]
+
+
+def test_an_asset_uri_outside_the_asset_paths_is_refused():
+    """The finished render is a tempfile under `/assets/`. Anything else on
+    Penpot's origin is fetched with the service account's session and handed
+    back as the render itself."""
+    seen: list[str] = []
+
+    def asset(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        seen.append(str(request.url))
+        return httpx.Response(200, content=SVG_BYTES,
+                              headers={"content-type": "image/svg+xml"})
+
+    client = EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router(
+            export=_export_ok_handler(
+                uri=f"{BASE_URL}/api/rpc/command/get-profile"),
+            asset=asset)))
+    with pytest.raises(EC.ExporterError, match="not under"):
+        _export(client)
+    assert seen == []
+
+
+def test_origins_lists_every_shape_a_url_may_arrive_in():
+    client = EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri=MOUNTED,
+        internal_uri=INTERNAL, username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router()))
+    assert client._origins() == [
+        (MOUNTED, "/penpot"),
+        (BASE_URL, ""),
+        (MOUNTED, ""),
+        (INTERNAL, ""),
+    ]
+
+
+def test_an_unset_internal_uri_adds_no_candidate():
+    client = EC.ExporterClient(
+        base_url=BASE_URL, exporter_url=EXPORTER_URL, public_uri="",
+        internal_uri="", username="svc-account", password="hunter2",
+        transport=httpx.MockTransport(_router()))
+    assert client._origins() == [(BASE_URL, "")]
+
+
+# --- the authoring side: tagged values, rpc errors, borrowed sessions ------
+
+def test_a_tagged_value_encodes_as_the_tag_penpot_reads_records_by():
+    wire = json.loads(EC.transit_dumps(
+        EC.Tagged("shape", {EC.Keyword("id"): uuidlib.UUID(int=1)})))
+    assert wire == {"~#shape": {"~:id": f"~u{uuidlib.UUID(int=1)}"}}
+
+
+def test_a_tag_survives_a_round_trip_as_its_representation():
+    # Decoding throws the tag away on purpose -- the client wants the value.
+    assert EC.transit_loads(EC.transit_dumps(
+        EC.Tagged("point", {EC.Keyword("x"): 1}))) == {"x": 1}
+
+
+def test_an_rpc_failure_names_penpots_own_code_not_just_the_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == EC.LOGIN_PATH:
+            return _login_handler()(request)
+        return httpx.Response(
+            400,
+            text=EC._transit_dumps({EC.Keyword("type"): EC.Keyword("validation"),
+                                    EC.Keyword("code"): EC.Keyword("vern-conflict")}),
+            headers={"content-type": "application/transit+json"})
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               transport=httpx.MockTransport(handler))
+    with pytest.raises(EC.ExporterError, match="vern-conflict"):
+        client.rpc("update-file", {EC.Keyword("id"): uuidlib.UUID(int=2)})
+
+
+def test_an_rpc_failure_with_no_transit_body_still_reports_something():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == EC.LOGIN_PATH:
+            return _login_handler()(request)
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               transport=httpx.MockTransport(handler))
+    with pytest.raises(EC.ExporterError, match="HTTP 502"):
+        client.rpc("get-teams")
+
+
+def test_a_borrowed_session_is_used_as_given_and_never_logged_in():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, text=EC._transit_dumps([]),
+                              headers={"content-type": "application/transit+json"})
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               token="somebody-elses-session",
+                               transport=httpx.MockTransport(handler))
+    client.rpc("get-teams")
+    assert EC.LOGIN_PATH not in seen
+
+
+def test_a_rejected_borrowed_session_never_falls_back_to_the_service_account():
+    # Falling back would author the demo as the render account, which is a
+    # read-only member of the shared team -- so the failure would surface as
+    # a permissions error, far from its cause.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == EC.LOGIN_PATH:  # pragma: no cover -- the bug
+            raise AssertionError("logged in with a borrowed session")
+        return httpx.Response(401, text="")
+
+    client = EC.ExporterClient(base_url=BASE_URL, exporter_url=EXPORTER_URL,
+                               username="svc-account", password="hunter2",
+                               token="expired",
+                               transport=httpx.MockTransport(handler))
+    with pytest.raises(EC.ExporterError, match="somebody else"):
+        client.rpc("get-teams")
