@@ -107,7 +107,9 @@ host bound to the same edge — not one per person.
 so `restore` discards everyone's work and `snapshot` and `export` each rebuild
 the whole thing on a two-core box. `status`, `snapshots` and `url` are reachable
 from a browser; `start`, `stop`, `restart`, `provision`, `logs`, `snapshot`,
-`export` and `restore` are refused for any caller that arrived through an edge.
+`export`, `restore` and `note_upsert` are refused for any caller that arrived
+through an edge. `tests/test_operator_only.py` holds the two lists and fails
+until a newly added verb is put in one of them.
 
 The discriminator needs no new credential, because the edge already supplies one:
 `httpsfront` overwrites `X-Awm-As` on every request it forwards and never

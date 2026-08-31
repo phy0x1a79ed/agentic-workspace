@@ -9,6 +9,12 @@
 # served by the edge at /trilium/ to anyone with an account, so an account is all
 # it takes. Nothing here touches the vault.
 #
+# Diagrams work the same way, and take one more step, because Penpot keeps
+# accounts of its own and gives each new one a private team. So this also
+# creates the person's Penpot profile, hands awm the credential nobody is ever
+# told, and calls penpot-team.sh to put them in the one shared team -- after
+# which they see everyone's figures and everyone sees theirs.
+#
 #   scripts/sirius/add-user.sh <name>
 #
 # Host-agnostic: the gateway is reached on loopback through the awm CLI, and
