@@ -53,6 +53,7 @@ AWM_PREFIXES = [
     "/ui/", "/svc/", "/files/", "/__auth/", "/__landing/", "/drawio-app/",
     "/hub/", "/invoke", "/tools", "/ca.crt", "/ca.pem", "/robots.txt",
     "/api/", "/assets/", "/src/", "/favicon.ico", "/bootstrap",
+    "/penpot-view/", "/penpot-plugins/",
 ]
 
 
@@ -108,12 +109,15 @@ def test_the_management_page_is_not_the_application():
     assert not penpot.owns("/ui/penpot/")
 
 
-def test_the_view_service_is_not_the_application():
-    """`/penpot-view/…` is awm's render service, a different mount that merely
-    starts with the same letters. A prefix test written without the trailing
-    slash would swallow it whole."""
+def test_the_awm_mounts_are_not_the_application():
+    """`/penpot-view/…` renders a board and `/penpot-plugins/…` serves our own
+    plugin manifests. Both are awm mounts that merely start with the same
+    letters as Penpot's. A prefix test written without the trailing slash
+    would swallow them whole."""
     assert not penpot.owns("/penpot-view/f/p/b")
     assert not penpot.owns("/penpot-view")
+    assert not penpot.owns("/penpot-plugins/penpot-view-link/manifest.json")
+    assert not penpot.owns("/penpot-plugins")
 
 
 def test_root_is_never_penpots():
@@ -193,22 +197,25 @@ def test_the_mount_carries_one():
 
 
 @pytest.mark.parametrize("path", ["/penpot", "/penpot/", "/penpot/anything",
-                                  "/penpot-view", "/penpot-view/f/p/b"])
+                                  "/penpot-view", "/penpot-view/f/p/b",
+                                  "/penpot-plugins",
+                                  "/penpot-plugins/penpot-view-link/manifest.json"])
 def test_the_real_urls_are_reachable(path):
     """Prevents: the listed prefixes existing but not matching what a browser
     actually sends. Asserted through ``classify`` rather than by membership in
     ``OPEN_PREFIXES``, because reachability is the property that matters and a
     bare membership check passes happily while every real request 404s.
 
-    Both mounts appear: Penpot's own paths reach it as ``PENPOT`` via
-    ``penpot.owns()``, the render service's as ``OPEN``.
+    All three mounts appear: Penpot's own paths reach it as ``PENPOT`` via
+    ``penpot.owns()``, the render service's and the plugin mount's as ``OPEN``.
     """
     assert policy.classify(path) is not policy.Verdict.DENY
 
 
 @pytest.mark.parametrize("path", ["/penpot-admin", "/penpotsecret",
                                   "/penpot-internal/x", "/penpot-viewer-evil",
-                                  "/penpot-view-admin"])
+                                  "/penpot-view-admin", "/penpot-pluginsXYZ",
+                                  "/penpot-plugins-admin/x"])
 def test_sharing_the_stem_does_not_open_a_path(path):
     """The prefixes are matched with ``startswith`` against a deny-by-default
     door, so writing them bare ("/penpot" rather than "/penpot/") opens every

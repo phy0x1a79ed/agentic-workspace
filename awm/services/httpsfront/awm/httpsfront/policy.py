@@ -54,12 +54,12 @@ DRAWIO_DENIED_FNS = frozenset({
 })
 DRAWIO_DENIED_PREFIXES = ("autopublish",)
 
-#: "/penpot" and "/penpot-view" are listed explicitly rather than left to the
-#: early VAULT/PENPOT classify() branches (or, for the view mount, to falling
-#: through to a generic svc-routed verdict) — a forward-compat requirement
-#: from the public-sirius integrator's branch, where this list is the *only*
-#: gate: an unlisted prefix 404s there regardless of anything else in this
-#: module. See test_penpot_paths.py.
+#: "/penpot", "/penpot-view" and "/penpot-plugins" are listed explicitly
+#: rather than left to the early VAULT/PENPOT classify() branches (or, for the
+#: two awm mounts, to falling through to a generic svc-routed verdict) — a
+#: forward-compat requirement from the public-sirius integrator's branch, where
+#: this list is the *only* gate: an unlisted prefix 404s there regardless of
+#: anything else in this module. See test_penpot_paths.py.
 #: Written slashed, with the bare form in ``OPEN_EXACT`` beside it, because
 #: this is a ``startswith`` against a deny-by-default door: a bare "/penpot"
 #: here opens every path merely *starting* with those eight characters, so a
@@ -67,9 +67,9 @@ DRAWIO_DENIED_PREFIXES = ("autopublish",)
 #: name, which is the one thing this module exists to prevent. Penpot's own
 #: paths never needed it -- ``penpot.owns()`` claims them a branch earlier.
 OPEN_PREFIXES = ("/ui/drawio/", "/drawio-app/", "/ui/trilium/",
-                 "/penpot/", "/penpot-view/")
+                 "/penpot/", "/penpot-view/", "/penpot-plugins/")
 OPEN_EXACT = frozenset({"/", "/ui/drawio", "/drawio-app", "/ui/trilium",
-                        "/penpot", "/penpot-view",
+                        "/penpot", "/penpot-view", "/penpot-plugins",
                         "/__auth/login", "/__auth/logout", "/__auth/whoami"})
 
 # The vault's own verbs. An allow-list, opposite to the deny-lists above,

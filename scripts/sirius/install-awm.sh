@@ -51,7 +51,7 @@ fi
 # under awm/services/ is written as disabled. scopes is here for the CLI
 # (add-user.sh) only: the public edge (httpsfront, AWM_EDGE_PROFILE=public)
 # never forwards /svc/scopes.
-PUBLIC_SERVICES="auth httpsfront fileviewer scopes trilium penpot-view"
+PUBLIC_SERVICES="auth httpsfront fileviewer scopes trilium penpot-view penpot-plugins"
 # No torch/sentence-transformers on a 4 GB box: FTS search only.
 AWM_ENV=awm AWM_SERVICES="$PUBLIC_SERVICES" AWM_SEARCH=0 bash awm/gateway/install.sh
 # dvc in its own env, as on altair: its dependency set is not the gateway's.

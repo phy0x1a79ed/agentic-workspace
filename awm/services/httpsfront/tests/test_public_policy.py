@@ -187,11 +187,20 @@ DENIED = [
     # …and the vault verbs that act on everyone's knowledge base at once.
     "/svc/trilium/fn/restore", "/svc/trilium/fn/stop",
     "/svc/trilium/fn/logs", "/svc/trilium/fn/export",
+    # Adjacent to the plugin mount, not inside it. The prefix is a
+    # ``startswith`` against a deny-by-default door, so writing it bare would
+    # hand this path to the internet on the strength of its name alone.
+    "/penpot-pluginsXYZ", "/penpot-plugins-admin/x",
 ]
 ALLOWED = [
     "/ui/drawio/", "/drawio-app/index.html", "/svc/drawio/fn/save",
     "/ui/trilium", "/ui/trilium/", "/svc/trilium/fn/status",
     "/svc/trilium/fn/snapshots",
+    # The manifest URL Penpot's Plugin Manager fetches, and the assets the
+    # panel loads beside it. OPEN, so any authenticated session reaches them —
+    # they are a manifest and a script we wrote, not a person's design files.
+    "/penpot-plugins/penpot-view-link/manifest.json",
+    "/penpot-plugins/penpot-view-link/index.html",
 ]
 
 

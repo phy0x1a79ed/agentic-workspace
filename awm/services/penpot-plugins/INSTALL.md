@@ -47,19 +47,21 @@ a scaffold, not an installable plugin). Its install URL is:
     /penpot-plugins/<name>/manifest.json
 
 Paste that into Penpot's in-app Plugin Manager (`Ctrl+Alt+P`, or Menu ▸
-Plugins ▸ Plugins manager). Locally, against the compose stack at
-`http://localhost:9001`, that is:
+Plugins ▸ Plugins manager). On nexus the mount and Penpot share one origin,
+so the manifest URL is exactly the path above:
 
-    http://localhost:9001  (Plugin Manager's own UI)
-    → manifest URL: http://<awm gateway host>:<port>/penpot-plugins/penpot-view-refresh/manifest.json
+    https://nexus.tony-xy-liu.com/penpot-plugins/penpot-view-link/manifest.json
 
-The gateway and the Penpot stack are two separate local processes today —
-the manifest URL has to be reachable from wherever Penpot's frontend and
-backend actually run, which is why every URL a plugin stores (see
-`penpot-view-refresh` below) must be absolute, not origin-relative. Once
-`awm/services/penpot/` and httpsfront's `/penpot` wiring land (a sibling
-task in this same plan), both sides sit behind one edge and this note
-simplifies to "the gateway's own origin."
+**CAUTION: the Plugin Manager cannot install from the local mount.** Penpot
+runs locally at `http://localhost:9001` and the gateway at
+`http://127.0.0.1:7819`. Those are two origins, the gateway sends no
+`Access-Control-Allow-Origin`, and the Plugin Manager fetches the manifest
+from the browser (`fetch-manifest` in
+`frontend/src/app/main/data/plugins.cljs`). The fetch fails before it reads a
+byte, however the URL is written. Install is checked on nexus.
+
+A URL a plugin *stores* must still be absolute (see `penpot-view-refresh`
+below), because Penpot's backend resolves that one, not the browser.
 
 ## Adding a new plugin
 
@@ -77,8 +79,46 @@ simplifies to "the gateway's own origin."
    every request; only a *new* plugin folder needs the service already
    running to be servable at all (the mount registers `local/` as a whole
    directory once, at process start).
-7. Paste `/penpot-plugins/<your-plugin-name>/manifest.json` (as an absolute
-   URL) into Penpot's Plugin Manager.
+7. Paste `/penpot-plugins/<your-plugin-name>/manifest.json` into Penpot's
+   Plugin Manager on nexus, where the mount and Penpot share an origin.
+
+## The `penpot-view-link` plugin
+
+`local/penpot-view-link/` hands over a `/penpot-view/<file>/<page>/<board>`
+render URL for anything on the current page. A render URL is addressed by
+three UUIDs. Penpot's workspace URL carries the file and the page. It carries
+no board id, and no Penpot panel shows one, so nobody can write one of these
+URLs by hand. That is the whole reason the plugin exists.
+
+The panel lists every board on the current page by name, each with a copy
+button, and follows the sitemap on `pagechange`. A nested board is listed too,
+annotated with the board that contains it. A nested board renders as well as a
+top-level one, and two boards may share a name.
+
+**It self-configures from the origin it is served on.** `plugin.js` sends the
+UI nothing but ids and names. `index.html` builds every URL from its own
+`location.origin`. The panel iframe is served from this mount, and this mount
+shares an origin with `/penpot-view` — on the gateway locally and behind the
+edge on nexus alike. **CAUTION: never give this plugin a configured host.** An
+environment variable would have to be correct on every box, and it would be
+wrong on the next one the day it is added.
+
+**Boards only, and that is a defect rather than a choice.** The page root
+frame has an id of its own, and a URL naming it should render the whole page.
+It renders a 0.01x0.01 empty SVG instead, the exporter's visibility wait times
+out, and `penpot-view` answers 502. The root cause and the proposed fix live
+in the `penpot/page-render` scope. A page row is one more line in this panel
+once that fix lands.
+
+**The clipboard has two paths.** `navigator.clipboard` needs a secure origin,
+which a gateway reached by LAN address is not. The panel falls back to
+`document.execCommand("copy")` over a hidden textarea. It leaves the URL on
+screen and selectable either way, so a refused copy stays recoverable by hand.
+
+**What was verified in a browser.** The board list, the nesting annotation,
+the empty page, the missing file, and both clipboard paths, all against the
+local mount. Install through the Plugin Manager can only be checked on nexus,
+for the CORS reason above.
 
 ## The `penpot-view-refresh` plugin
 
@@ -191,22 +231,25 @@ respawn the service under systemd's minimal PATH.
 ## Verify
 
     awm services list                       # penpot-plugins → running
-    awm penpot-plugins status               # mount prefix, root, plugin list, lease state
+    awm penpot plugins-status               # mount prefix, root, plugin list, lease state
 
-    curl -s http://127.0.0.1:7819/penpot-plugins/penpot-view-refresh/manifest.json
-    curl -s http://127.0.0.1:7819/penpot-plugins/penpot-view-refresh/plugin.js | head -c 80
+    curl -s http://127.0.0.1:7819/penpot-plugins/penpot-view-link/manifest.json
+    curl -s http://127.0.0.1:7819/penpot-plugins/penpot-view-link/plugin.js | head -c 80
 
-Then, against a running Penpot instance: open the Plugin Manager, paste the
-manifest URL above (substituting whatever host/port actually fronts the
-gateway), install, select a shape, and link a real `/penpot-view/...` URL to
-it. Refresh imports fails there for the reason in item 3 above. Do not read
-that failure as a broken install.
+The status verb reads `awm penpot plugins-status`, not `awm penpot-plugins
+status`. The CLI collapses `penpot_plugins_status` under the `penpot` command
+group, so the service has no command group of its own.
 
-**What was and was not verified.** The mount, manifest shape, and plugin
-logic were checked structurally — against Penpot's own plugin docs and
-`plugin-types/index.d.ts`, and with `pytest` against this service's own test
-file. Refresh was traced through all three of its candidate fetch paths
-(backend RPC, plugin sandbox, UI iframe) in Penpot's own source and shown to
-have no working one. Nothing here was driven in a browser: whether install
-and link behave as written is still unconfirmed, and confirming them buys
-little while Refresh has no route.
+Then, on nexus: open the Plugin Manager, paste the manifest URL, install, and
+copy a board link out of the `penpot-view-link` panel. Open that link in the
+same browser. Install is the one step no local check can stand in for.
+
+**What was and was not verified.** `penpot-view-link` was driven in a browser
+against the local mount, down to both clipboard paths and every empty state.
+`penpot-view-refresh` was checked structurally only — against Penpot's own
+plugin docs and `plugin-types/index.d.ts`, and with `pytest` against this
+service's own test file. Its Refresh was traced through all three candidate
+fetch paths (backend RPC, plugin sandbox, UI iframe) in Penpot's own source
+and shown to have no working one, so whether linking a shape behaves as
+written is still unconfirmed. Confirming it buys little while Refresh has no
+route.
