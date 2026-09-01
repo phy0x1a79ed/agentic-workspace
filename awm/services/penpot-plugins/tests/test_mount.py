@@ -8,6 +8,7 @@ the status snapshot, and the shape of that snapshot before/after "mounted".
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -36,16 +37,42 @@ def test_local_root_honours_override(monkeypatch, tmp_path: Path):
 # ---- the real local/ tree in this repo -------------------------------------
 
 
+# Every plugin this service ships. Penpot's Plugin Manager fetches manifest.json
+# and then the files it names, so a missing one is a 404 mid-install rather than
+# a startup error here.
+SHIPPED_PLUGINS = ("penpot-view-refresh", "penpot-view-link")
+
+
 @pytest.mark.smoke
-def test_real_local_tree_has_penpot_view_refresh_and_template():
+@pytest.mark.parametrize("name", SHIPPED_PLUGINS)
+def test_real_local_tree_ships_plugin(name: str):
     root = mount.local_root()
-    assert (root / "penpot-view-refresh" / "manifest.json").is_file()
-    assert (root / "penpot-view-refresh" / "plugin.js").is_file()
-    assert (root / "penpot-view-refresh" / "icon.png").is_file()
-    # The template is a scaffold, not an installable plugin: no plugin.js.
+    manifest_path = root / name / "manifest.json"
+    assert manifest_path.is_file()
+
+    manifest = json.loads(manifest_path.read_text())
+    # version 2 is what makes `code`, `icon` and the penpot.ui.open path
+    # resolve relative to wherever the manifest was served from. Without it
+    # every asset path has to be absolute and the plugin stops being portable
+    # between the local gateway and the edge.
+    assert manifest["version"] == 2
+    for key in ("code", "icon"):
+        assert (root / name / manifest[key]).is_file()
+
+
+@pytest.mark.smoke
+def test_template_is_a_scaffold_not_an_installable_plugin():
+    root = mount.local_root()
     assert (root / "_template" / "manifest.json").is_file()
     assert (root / "_template" / "plugin.ts").is_file()
     assert not (root / "_template" / "plugin.js").exists()
+
+
+@pytest.mark.smoke
+def test_status_lists_every_shipped_plugin():
+    snap = mount._State().snapshot()
+    assert set(SHIPPED_PLUGINS) <= set(snap["plugins"])
+    assert "_template" not in snap["plugins"]
 
 
 # ---- status() snapshot ------------------------------------------------------
