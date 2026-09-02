@@ -27,7 +27,6 @@ KNOWN_HOSTS: dict[str, HostConfig] = {
     "sockeye3": HostConfig("sockeye3", "txyliu",   needs_vpn=True,  vpn_profile="ubc",  twofa_device="cwl"),
     "fir":      HostConfig("fir",      "phyberos",  needs_vpn=False,                    twofa_device="alliance", guarded=True),
     "chamois":  HostConfig("chamois",  "tliu",      needs_vpn=True,  vpn_profile="ubc"),
-    "micb0":    HostConfig("micb0",    "tliu",      needs_vpn=True,  vpn_profile="ubc"),
 }
 
 LIVE_DIR = os.path.expanduser("~/.ssh/live_connections")

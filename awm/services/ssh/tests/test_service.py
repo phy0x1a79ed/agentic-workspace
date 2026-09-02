@@ -55,7 +55,6 @@ class TestConfig:
         assert "sockeye" in KNOWN_HOSTS
         assert "fir" in KNOWN_HOSTS
         assert "chamois" in KNOWN_HOSTS
-        assert "micb0" in KNOWN_HOSTS
 
     def test_sockeye_needs_vpn_and_cwl(self) -> None:
         cfg = resolve_host("sockeye")
@@ -72,13 +71,6 @@ class TestConfig:
 
     def test_chamois_needs_vpn_no_2fa(self) -> None:
         cfg = resolve_host("chamois")
-        assert cfg.needs_vpn
-        assert cfg.vpn_profile == "ubc"
-        assert cfg.twofa_device == ""
-        assert cfg.user == "tliu"
-
-    def test_micb0_needs_vpn_no_2fa(self) -> None:
-        cfg = resolve_host("micb0")
         assert cfg.needs_vpn
         assert cfg.vpn_profile == "ubc"
         assert cfg.twofa_device == ""
@@ -825,13 +817,13 @@ class TestStatusVerb:
         svc._host("fir").state = ConnState.CONNECTED
         svc._host("sockeye").state = ConnState.AUTHENTICATING
         svc._host("chamois").state = ConnState.DISPOSING
-        svc._write_lock(resolve_host("micb0"), "held")      # breaker lock → unavailable
+        svc._write_lock(resolve_host("sockeye2"), "held")   # breaker lock → unavailable
 
         conns = (await svc.status())["connections"]
         assert conns["fir"]["status"] == "connected"
         assert conns["sockeye"]["status"] == "connecting"
         assert conns["chamois"]["status"] == "disconnecting"
-        assert conns["micb0"]["status"] == "unavailable"
+        assert conns["sockeye2"]["status"] == "unavailable"
         assert conns["sockeye1"]["status"] == "disconnected"   # plain, no lock
 
     async def test_status_is_in_memory_not_probed(
@@ -1804,7 +1796,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         proc = _FakeProc()
         svc = SSHService()
-        cfg = resolve_host("micb0")          # no 2FA device: no burst to fake
+        cfg = resolve_host("chamois")        # no 2FA device: no burst to fake
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc)
         monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
@@ -1825,7 +1817,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         proc = _FakeProc()
         svc = SSHService()
-        cfg = resolve_host("micb0")
+        cfg = resolve_host("chamois")
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc, alive_after_term=True)
         monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
@@ -1845,7 +1837,7 @@ class TestChildReaping:
             self, isolated_dirs, monkeypatch) -> None:
         live, _ = isolated_dirs
         svc = SSHService()
-        cfg = resolve_host("micb0")
+        cfg = resolve_host("chamois")
         proc = _FakeProc()
         self._patch_spawn(monkeypatch, proc)
         self._patch_killpg(monkeypatch, proc)
@@ -1859,7 +1851,7 @@ class TestChildReaping:
 
         await svc._do_connect_attempt(cfg, gated=False)
 
-        assert not (live / "micb0.master.pid").exists()
+        assert not (live / "chamois.master.pid").exists()
 
     async def test_boot_reaps_a_master_stranded_by_a_previous_life(
             self, isolated_dirs, monkeypatch) -> None:
@@ -2005,7 +1997,7 @@ class TestNothingWasSpent:
             self, isolated_dirs, monkeypatch) -> None:
         svc = SSHService()
         rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=7)
-        assert await svc._duo_saw_nothing(resolve_host("micb0"), rec) is False
+        assert await svc._duo_saw_nothing(resolve_host("chamois"), rec) is False
 
     async def test_the_gated_path_frees_the_slot_when_duo_saw_nothing(
             self, isolated_dirs, monkeypatch) -> None:
