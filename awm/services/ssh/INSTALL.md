@@ -30,10 +30,12 @@ connecting, so the caller gets a seamless single-verb API.
 
 ## MFA-lockout hold (operator note)
 
-A single failed connect to a host puts that host into a **hold**: further
-automated `connect`s are refused **before** any VPN/2FA/ssh runs, so a host that
-failed once can never march toward the provider's MFA-lockout ceiling. The
-operator is paged on the Discord `unimatrix0#notifications` channel.
+A single failed connect that could have spent an MFA attempt puts that host into
+a **hold**: further automated `connect`s are refused **before** any VPN/2FA/ssh
+runs, so a host that failed once can never march toward the provider's
+MFA-lockout ceiling. The operator is paged on the Discord
+`unimatrix0#notifications` channel. See *What is allowed to hold a host* for the
+three failures that are exempt because they demonstrably spent nothing.
 
 **Recovery is operator-gated, out of band.** There is no verb and no self-serve
 clear — deliberately, so an autonomous caller cannot lift its own hold. To
@@ -53,6 +55,16 @@ to reconnect; the siblings stay held and each need their own `/approve`.
 Holds are per-host (a `fir` hold does not affect `sockeye`). Note `status` reports
 a held host only as `unavailable` with no reason string — the failure reason lives
 in the lockfile and the one-shot Discord alert, not in the verb output.
+
+**One hold in one case lifts itself**, recorded as `approver-unavailable`: the
+failure was our own Duo approver being unable to function, which is verifiably
+over once the approver proves itself, so requiring a human then would be
+theatre. Attribution asks the approver with a live `2fa ping` rather than
+inferring from how long it has been since anyone did. That distinction is
+load-bearing. The old test read a timestamp that only an explicit `ping`
+refreshed, so it decayed with idle time and filed a healthy-but-quiet approver as
+broken — and since this cause grants one automatic retry, the next request spent
+a second Duo push at a host that was already down for maintenance.
 
 ## Dependencies
 
@@ -133,3 +145,57 @@ The `-f -N -M` connect's stderr is captured to
 makes the forked child hang), and notable lines (`Permission denied`, `Too many
 authentication failures`, MFA/Duo/account strings) are logged and recorded with
 the hold so the operator can see why a connect failed.
+
+The capture is emptied when an attempt **starts**, not when ssh spawns. It is
+read as evidence about the attempt being judged, and a failure that never
+reached the exec would otherwise inherit the verdict of whichever attempt last
+got that far — on 2026-09-01 a `vpn/up` timeout on sockeye was recorded, and
+paged, quoting a successful login from six days earlier.
+
+## What is allowed to hold a host
+
+A hold refuses automated access until an operator runs `/approve`, so it is only
+ever justified by an MFA attempt that could actually have been spent. Three
+answers are treated as proof that none was:
+
+1. **ssh never ran.** The VPN call, the 2FA arming and the exec all precede any
+   packet ssh could send, so a failure before the exec cannot have reached a
+   login. No stderr is consulted.
+2. **ssh said it died before auth** — `kex_exchange_identification`,
+   `Exceeded MaxStartups`, a host-key failure, and the rest of the list in
+   `service.py`. Any auth-phase marker vetoes this.
+3. **Duo saw nothing.** Every gated connect arms a burst on the approver, which
+   polls Duo once a second for the length of the window and counts what it sees.
+   An unchanged count across the attempt is Duo's own API asserting no login was
+   presented. This is the only witness for a connect that hangs on the network,
+   which says nothing at all — the shape of a vendor maintenance outage.
+
+The count is per **device**, and `sockeye`/`sockeye1` share one. A sibling's
+transaction therefore reads as ours and produces a spurious hold. That is the
+mild direction: mistaking an auth failure for a pre-auth one keeps retrying and
+walks the account toward lockout, so every uncertainty resolves to holding.
+
+## Reaping the ssh we spawned
+
+An ssh that hangs before authenticating never creates its ControlMaster socket,
+so nothing that speaks through the socket can reach it — not `ssh -O exit`, not
+the stale-socket sweep. Two such processes outlived their attempt by minutes on
+2026-09-01, each holding an armed Duo window.
+
+- Cancelling an attempt — the 120s timeout, a shutdown — signals the child's
+  **process group**, SIGTERM then SIGKILL. The spawn passes
+  `start_new_session=True` for exactly this: without it the group is the
+  service's own and the signal is suicide. The group is also what covers the
+  askpass helper ssh forks beneath itself.
+- The pid is recorded at `~/.ssh/live_connections/<host>.master.pid` and removed
+  when the attempt resolves. A service that is itself killed leaves the file, and
+  the next start reaps what it names — but only after confirming the live process
+  still carries this service's `AWM_SSH_ASKPASS_MARKER` in its environment. A pid
+  is the least durable key there is, and matching on the command line instead
+  would match any ssh on the box, including one a person is using.
+
+**CAUTION** The askpass keeps its rate-cap state in `~/.ssh/awm-duo-locks/`, and
+answering counts toward a cap that trips a 30-minute hold refusing all Duo
+answers for the device. Anything that exercises the real helper must point
+`AWM_DUO_LOCK_DIR` somewhere disposable. The test suite does. Three runs against
+the default directory inside ten minutes break the live login path.

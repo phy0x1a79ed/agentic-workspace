@@ -77,16 +77,42 @@ yet, the shadow self-registers a journaled base — tear it down afterward with
 
 ## Verbs
 
-| Verb | Does |
-|---|---|
-| `2fa_ping` | liveness + enrolled? |
-| `2fa_status` | enrolled?, burst active?, held logins, approve-all remaining, approved count |
-| `2fa_pending` | list held (burst) logins awaiting a decision |
-| `2fa_activate <code>` | enroll a fresh device |
-| `2fa_burst [window] [interval] [exit_on_approve]` | open a bounded poll window |
-| `2fa_approve <urgid>` | approve a held login |
-| `2fa_deny <urgid>` | deny a held login |
-| `2fa_approve_all` | open a 5-min approve-all window, clear all held |
+Run `awm 2fa --help`, or `2fa(verb="describe")`, for the current list and each
+verb's parameters. Two things that list does not tell you:
+
+**Do not arm a burst by hand.** The ssh and vpn services arm their own, one
+approval at a time, immediately before the single login each is about to make.
+That is what keeps the count of spent MFA attempts equal to the count of logins,
+on an account that locks out after 10 consecutive failures. A window somebody
+armed for their own reasons approves a login nothing is accounting for.
+
+**The mutating verbs are CLI-only.** `burst`, `approve`, `deny`, `approve_all`
+and `activate` carry `"surfaces": ["cli", "http"]`, so they are absent from the
+MCP surface an agent sees while `awm 2fa burst` still works from a shell. The
+read verbs — `ping`, `status`, `pending`, `devices`, `reachability` — stay
+visible, because diagnosing the approver spends nothing.
+
+**CAUTION** `claude-science`'s MCP bridge builds its catalog from the expanded
+`GET /tools`, which is unfiltered by design. Allowlisting `2fa` there would
+expose the CLI-only verbs. Its default allowlist excludes the domain.
+
+### Reading the approver's health
+
+`ping` is the only verb that answers "does the approver work right now" — it
+makes a real read-only Duo call, fires no push and spends no budget.
+`reachability` reports *when* the last verified round-trip happened, which a
+burst window now refreshes on every poll. Before that it moved only on an
+explicit `ping`, so it decayed with idle time and a quiet approver was
+indistinguishable from a broken one.
+
+`status` reports `transactions_seen`, a per-device count of the Duo transactions
+this process has observed. Only the difference between two readings means
+anything: `burst` returns the count as of arming, and an unchanged reading
+afterwards proves Duo was never presented with a login. That is how the ssh
+breaker tells "the host was switched off" from "the login failed" — a connect
+that hangs on the network writes nothing to stderr and is otherwise silent. A
+count that went backwards means this process restarted, and must be read as no
+evidence rather than as zero.
 
 ## Discord `/approve` (social-service subscription)
 

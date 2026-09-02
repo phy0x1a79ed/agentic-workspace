@@ -348,6 +348,41 @@ def _domain_catalog() -> dict[str, list[dict[str, Any]]]:
     return domains
 
 
+def _domain_blurbs() -> dict[str, str]:
+    """``{domain: prose}`` from each service's optional manifest ``description``.
+
+    Everything else the surface shows about a domain is generated — the name and
+    the verb list — so a service had no way to say how it is meant to be USED,
+    only what it can do. That gap is not cosmetic: an agent reading `2fa` sees
+    ten capable-looking verbs and no hint that `ssh(verb=connect)` already arms
+    the approver for it, and calling them by hand spends Duo budget the fleet
+    arbiter is not counting.
+
+    The key is additive. A manifest without it is unchanged, and the gateway
+    reads no other top-level manifest key for presentation.
+
+    A service projecting several domains (scopes → scope / project / ref) gets
+    its blurb on every one of them. That is deterministic where picking one
+    would be arbitrary — and a service whose domains want different prose should
+    say it per verb, which is what ``description`` on a function is for. A
+    domain with no MCP-visible verb gets nothing, since it has no tool to
+    describe.
+    """
+    out: dict[str, str] = {}
+    for rec in get_registry().service_records():
+        api = rec.api or {}
+        blurb = api.get("description")
+        if not isinstance(blurb, str) or not blurb.strip():
+            continue
+        for fn in api.get("functions", []) or []:
+            if not (isinstance(fn, dict) and fn.get("name")):
+                continue
+            if not _fn_on_surface(fn, "mcp"):
+                continue
+            out.setdefault(_tool_name(rec, fn).partition("_")[0], blurb.strip())
+    return out
+
+
 def _domain_envelope(verb_names: list[str]) -> dict[str, Any]:
     """The ``{verb, args, peer}`` envelope schema, with ``verb`` enumerated.
 
@@ -445,10 +480,15 @@ def list_domain_tools(*, peers: bool = False) -> list[Tool]:
     """
     catalog = _domain_catalog()
     local_verbs = _local_domain_verbs(catalog)
+    # A blurb is only ever this node's. A domain some peer provides is described
+    # by that peer's own catalog, which we do not hold — and inventing one here
+    # would put words in another node's mouth.
+    blurbs = _domain_blurbs()
 
     if not peers:
         return [Tool(name=domain,
-                     description=_local_domain_description(domain, verbs),
+                     description=_local_domain_description(
+                         domain, verbs, blurbs.get(domain)),
                      inputSchema=_domain_envelope(verbs))
                 for domain, verbs in local_verbs.items()]
 
@@ -457,18 +497,29 @@ def list_domain_tools(*, peers: bool = False) -> list[Tool]:
     for domain in peer_catalog.fleet_domains(local_verbs, snap):
         res = peer_catalog.resolve(domain, local_verbs, snap)
         out.append(Tool(name=domain,
-                        description=_fleet_domain_description(res),
+                        description=_fleet_domain_description(
+                            res, blurbs.get(domain)),
                         inputSchema=_domain_envelope(_advertised_verbs(res))))
     out.append(_providers_tool())
     return out
 
 
-def _local_domain_description(domain: str, verb_names: list[str]) -> str:
-    return (
+def _local_domain_description(domain: str, verb_names: list[str],
+                              blurb: str | None = None) -> str:
+    return _with_blurb(
         f"Generic '{domain}' domain tool. Verbs: {', '.join(verb_names)}. "
         f"Call with {{verb, args}}; verb='describe' (optionally "
-        f"args={{verb:<name>}}) returns full parameter schemas."
-    )
+        f"args={{verb:<name>}}) returns full parameter schemas.",
+        blurb)
+
+
+def _with_blurb(generated: str, blurb: str | None) -> str:
+    """Put the service's own prose FIRST, then the generated mechanics.
+
+    Order is the whole point. The guidance has to be read before the verb list,
+    or an agent has already decided which verb to call.
+    """
+    return f"{blurb} {generated}" if blurb else generated
 
 
 def _advertised_verbs(res: dict[str, Any]) -> list[str]:
@@ -491,7 +542,8 @@ def _advertised_verbs(res: dict[str, Any]) -> list[str]:
     return seen
 
 
-def _fleet_domain_description(res: dict[str, Any]) -> str:
+def _fleet_domain_description(res: dict[str, Any],
+                              blurb: str | None = None) -> str:
     """One domain's description in the fleet-wide view — where it runs, and where
     else it may be sent. Says it in prose because this is what the model reads to
     decide whether it needs ``peer`` at all."""
@@ -520,16 +572,18 @@ def _fleet_domain_description(res: dict[str, Any]) -> str:
                 f"peer=<name>; there is no default.")
     else:
         tail = ""
-    return head + tail
+    return _with_blurb(head + tail, blurb)
 
 
 def _describe_domain(domain: str, verb: str | None = None,
                      catalog: dict[str, list[dict[str, Any]]] | None = None) -> dict:
     """Answer ``verb='describe'`` from the catalog alone (no service round-trip).
 
-    Returns ``{domain, verbs:[{verb, description, params}]}`` where ``params`` is
-    the verb's full ``inputSchema`` — the same schema the expanded per-verb tool
-    advertised. ``verb`` narrows to a single entry."""
+    Returns ``{domain, description?, verbs:[{verb, description, params}]}`` where
+    ``params`` is the verb's full ``inputSchema`` — the same schema the expanded
+    per-verb tool advertised. ``verb`` narrows to a single entry. The top-level
+    ``description`` is the service's own manifest prose about how the domain is
+    meant to be used, present only when the service supplies one."""
     cat = catalog if catalog is not None else _domain_catalog()
     verbs = cat.get(domain)
     if verbs is None:
@@ -537,8 +591,10 @@ def _describe_domain(domain: str, verb: str | None = None,
     items = [v for v in verbs if verb is None or v["verb"] == verb]
     if verb is not None and not items:
         raise ValueError(f"Unknown verb {verb!r} for domain {domain!r}")
+    blurb = _domain_blurbs().get(domain)
     return {
         "domain": domain,
+        **({"description": blurb} if blurb else {}),
         "verbs": [
             {"verb": v["verb"], "description": v["tool"].description,
              "params": v["tool"].inputSchema}

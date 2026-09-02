@@ -60,6 +60,13 @@ PROTOCOL_VERSION = "2025-06-18"
 #:
 #: Excluded on purpose, and worth naming so the omissions read as decisions:
 #:   ssh / vpn / 2fa / social  — act on the fleet's credentials and channels
+#:
+#: WARNING for anyone widening this via CLAUDE_SCIENCE_MCP_ALLOW: the catalog
+#: below is read from the EXPANDED ``GET /tools``, which is unfiltered by
+#: design, so a function marked ``"surfaces": ["cli", "http"]`` is invisible on
+#: the ordinary MCP surface but still reachable here. 2fa's arming and approval
+#: verbs are marked that way. Allowlisting a domain here therefore grants more
+#: than the same domain grants over MCP.
 #:   agent / orch / scope write — spawn work or mutate branches
 #:   services / gateway control — can stop the very service serving this
 #:   compute                    — schedules jobs on shared machines

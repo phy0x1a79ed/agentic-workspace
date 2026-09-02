@@ -40,6 +40,16 @@ async def _noop_alert(_text):
     return None
 
 
+def _spawned() -> "ssh_service._AttemptRecord":
+    """An attempt record for a connect that DID reach the ssh exec.
+
+    The classification tests are all about what ssh's own output means, which
+    presupposes ssh ran. A default record means the opposite — that nothing was
+    spawned — and short-circuits the predicate to True.
+    """
+    return ssh_service._AttemptRecord(spawned=True)
+
+
 class TestConfig:
     def test_known_hosts_has_expected_entries(self) -> None:
         assert "sockeye" in KNOWN_HOSTS
@@ -165,16 +175,20 @@ class TestCircuitBreaker:
         live, _ = isolated_dirs
         svc = SSHService()
         cfg = resolve_host("fir")
-        (live / "fir.connect.stderr").write_text(
-            "kex_exchange_identification: Connection closed by remote host\n"
-            "Connection closed by 206.12.125.2 port 22\n")
 
         tripped: list[str] = []
 
         async def _trip(c, r):
             tripped.append(r)
 
-        async def _fail_attempt(c, marker):
+        async def _fail_attempt(c, marker, rec):
+            # Write the capture where a real attempt writes it: after the spawn.
+            # _do_connect_attempt truncates it on entry, so stderr seeded before
+            # the call would describe some earlier attempt and is discarded.
+            rec.spawned = True
+            (live / "fir.connect.stderr").write_text(
+                "kex_exchange_identification: Connection closed by remote host\n"
+                "Connection closed by 206.12.125.2 port 22\n")
             raise ssh_service._AttemptFailed("no master")
 
         monkeypatch.setattr(svc, "_trip_breaker", _trip)
@@ -194,15 +208,17 @@ class TestCircuitBreaker:
         live, _ = isolated_dirs
         svc = SSHService()
         cfg = resolve_host("fir")
-        (live / "fir.connect.stderr").write_text(
-            "phyberos@fir.computecanada.ca: Permission denied (keyboard-interactive).\n")
 
         tripped: list[str] = []
 
         async def _trip(c, r):
             tripped.append(r)
 
-        async def _fail_attempt(c, marker):
+        async def _fail_attempt(c, marker, rec):
+            rec.spawned = True   # ssh ran and failed; only that can hold
+            (live / "fir.connect.stderr").write_text(
+                "phyberos@fir.computecanada.ca: "
+                "Permission denied (keyboard-interactive).\n")
             raise ssh_service._AttemptFailed("no master")
 
         monkeypatch.setattr(svc, "_trip_breaker", _trip)
@@ -421,7 +437,7 @@ class TestPreAuthClassification:
     def test_unambiguous_preauth_markers(self, isolated_dirs, blob) -> None:
         live, _ = isolated_dirs
         svc, cfg = self._svc_cfg(live, blob)
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is True
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is True
 
     @pytest.mark.parametrize("blob", [
         "Permission denied (keyboard-interactive).",
@@ -434,7 +450,7 @@ class TestPreAuthClassification:
     def test_auth_phase_markers_are_not_preauth(self, isolated_dirs, blob) -> None:
         live, _ = isolated_dirs
         svc, cfg = self._svc_cfg(live, blob)
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is False
 
     def test_auth_marker_vetoes_a_preauth_marker(self, isolated_dirs) -> None:
         """THE safety-critical case: if both appear, auth wins and we hold. An ssh
@@ -445,7 +461,7 @@ class TestPreAuthClassification:
             live,
             "Permission denied (keyboard-interactive).\n"
             "kex_exchange_identification: Connection closed by remote host\n")
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is False
 
     def test_askpass_deviation_decides_when_ssh_named_no_phase(
             self, isolated_dirs) -> None:
@@ -455,7 +471,7 @@ class TestPreAuthClassification:
         svc, cfg = self._svc_cfg(live, "something we do not recognise")
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text("deviation")
-        assert svc._is_preauth_failure(cfg, marker) is False
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is False
 
     def test_a_non_duo_deviation_does_not_veto(self, isolated_dirs) -> None:
         """The live failure this came from (altair's first fir connect, 2026-07-29).
@@ -476,7 +492,7 @@ class TestPreAuthClassification:
             "menu). Not answering (fail-closed).\nHost key verification failed.\n")
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text("unrecognized prompt (not a known Duo menu)")
-        assert svc._is_preauth_failure(cfg, marker) is True
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is True
 
     def test_a_duo_menu_deviation_still_vetoes(self, isolated_dirs) -> None:
         """The askpass's other refusal reasons all follow a real Duo menu, so they
@@ -486,7 +502,7 @@ class TestPreAuthClassification:
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text(
             "device 'alliance' is on Duo push-hold (auto-clears 900s)")
-        assert svc._is_preauth_failure(cfg, marker) is False
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is False
 
     def test_a_mixed_deviation_record_vetoes(self, isolated_dirs) -> None:
         """The marker is appended to, so one run can record several reasons. A
@@ -497,7 +513,7 @@ class TestPreAuthClassification:
         Path(marker).write_text(
             "unrecognized prompt (not a known Duo menu)\n"
             "no Duo option matched our devices (awm|Mira)\n")
-        assert svc._is_preauth_failure(cfg, marker) is False
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is False
 
     def test_the_askpass_own_message_is_not_read_as_ssh_output(
             self, isolated_dirs) -> None:
@@ -511,7 +527,7 @@ class TestPreAuthClassification:
             "kex_exchange_identification: Connection closed by remote host\n")
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text("unrecognized prompt (not a known Duo menu)")
-        assert svc._is_preauth_failure(cfg, marker) is True
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is True
 
     def test_an_auth_marker_still_vetoes_even_with_a_preauth_phase_and_marker(
             self, isolated_dirs) -> None:
@@ -522,24 +538,24 @@ class TestPreAuthClassification:
             "Duo two-factor login for phyberos\nHost key verification failed.\n")
         marker = svc._deviation_marker(cfg)
         Path(marker).write_text("deviation")
-        assert svc._is_preauth_failure(cfg, marker) is False
+        assert svc._is_preauth_failure(cfg, marker, _spawned()) is False
 
     def test_missing_stderr_is_not_preauth(self, isolated_dirs) -> None:
         """No evidence is not evidence of safety — hold."""
         live, _ = isolated_dirs
         svc, cfg = self._svc_cfg(live, None)
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is False
 
     def test_empty_stderr_is_not_preauth(self, isolated_dirs) -> None:
         live, _ = isolated_dirs
         svc, cfg = self._svc_cfg(live, "   \n\n")
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is False
 
     def test_unrecognised_stderr_is_not_preauth(self, isolated_dirs) -> None:
         """Default is protective for anything we don't positively recognise."""
         live, _ = isolated_dirs
         svc, cfg = self._svc_cfg(live, "some novel ssh explosion nobody has seen")
-        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg)) is False
+        assert svc._is_preauth_failure(cfg, svc._deviation_marker(cfg), _spawned()) is False
 
 
 class TestStateMachine:
@@ -573,7 +589,8 @@ class TestStateMachine:
         cfg = resolve_host("fir")
         alerts: list[str] = []
 
-        async def _hang(c, marker):        # never brings up the master
+        async def _hang(c, marker, rec):   # never brings up the master
+            rec.spawned = True
             await asyncio.sleep(5.0)
 
         async def _capture_alert(text):
@@ -681,6 +698,8 @@ class TestStateMachine:
             return {"status": "ok", "burst_active": True}
 
         class _Proc:
+            pid = 424242
+
             async def wait(self):
                 return 0
 
@@ -696,7 +715,8 @@ class TestStateMachine:
         monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
         monkeypatch.setattr(svc, "_check_master", _true)    # master appears at once
 
-        await svc._attempt_master(cfg, svc._deviation_marker(cfg))
+        await svc._attempt_master(cfg, svc._deviation_marker(cfg),
+                                  ssh_service._AttemptRecord())
 
         burst_calls = [c for c in calls if c[1] == "burst"]
         assert len(burst_calls) == 1
@@ -715,7 +735,8 @@ class TestStateMachine:
         cfg = resolve_host("fir")
         checks = {"n": 0}
 
-        async def _fail_to_bring_up(c, marker):
+        async def _fail_to_bring_up(c, marker, rec):
+            rec.spawned = True
             raise ssh_service._AttemptFailed("ControlMaster did not appear")
 
         async def _master_late(_host):
@@ -935,7 +956,14 @@ _ASKPASS = _HOME / ".ssh" / "awm-duo-askpass"
 
 
 class TestGuardScripts:
-    """Behavioural checks on the installed shell helpers (skip if absent)."""
+    """Behavioural checks on the installed shell helpers (skip if absent).
+
+    Every one of these points the askpass at a throwaway AWM_DUO_LOCK_DIR. It
+    keeps its rate-cap state there, and answering counts toward a cap that trips
+    a 30-minute push-hold refusing ALL Duo answers for the device. Run against
+    the default dir, three runs of this suite inside ten minutes therefore break
+    the real login path — which is exactly what happened on 2026-09-01.
+    """
 
     @pytest.mark.skipif(not _GUARD.exists(), reason="guard not installed")
     def test_guard_exits_nonzero_and_is_loud(self) -> None:
@@ -945,11 +973,13 @@ class TestGuardScripts:
         assert "BLOCKED" in r.stderr
 
     @pytest.mark.skipif(not _ASKPASS.exists(), reason="askpass not installed")
-    def test_askpass_answers_matching_device(self) -> None:
+    def test_askpass_answers_matching_device(self, tmp_path) -> None:
         prompt = ("Duo two-factor login\n\n 1. Duo Push to Mira\n"
                   " 2. Phone call\n\nPasscode or option (1-2): ")
         r = subprocess.run([str(_ASKPASS), prompt], capture_output=True,
-                           text=True)
+                           text=True,
+                           env={**os.environ,
+                                "AWM_DUO_LOCK_DIR": str(tmp_path)})
         assert r.returncode == 0
         assert r.stdout.strip() == "1"
 
@@ -959,7 +989,8 @@ class TestGuardScripts:
         r = subprocess.run([str(_ASKPASS), "password: "],
                            capture_output=True, text=True,
                            env={**os.environ,
-                                "AWM_SSH_ASKPASS_MARKER": str(marker)})
+                                "AWM_SSH_ASKPASS_MARKER": str(marker),
+                                "AWM_DUO_LOCK_DIR": str(tmp_path)})
         assert r.returncode != 0
         assert r.stdout.strip() == ""
         assert marker.exists()
@@ -973,7 +1004,8 @@ class TestGuardScripts:
         r = subprocess.run([str(_ASKPASS), prompt], capture_output=True,
                            text=True,
                            env={**os.environ,
-                                "AWM_SSH_ASKPASS_MARKER": str(marker)})
+                                "AWM_SSH_ASKPASS_MARKER": str(marker),
+                                "AWM_DUO_LOCK_DIR": str(tmp_path)})
         assert r.returncode != 0
         assert r.stdout.strip() == ""
         assert marker.exists()
@@ -1162,7 +1194,8 @@ class TestSlotArbiter:
         async def _trip(c, r):
             tripped.append(r)
 
-        async def _fail_attempt(c, marker):
+        async def _fail_attempt(c, marker, rec):
+            rec.spawned = True   # ssh ran and failed; only that can hold
             raise ssh_service._AttemptFailed("no master")
 
         monkeypatch.setattr(svc, "_trip_breaker", _trip)
@@ -1185,13 +1218,14 @@ class TestSlotArbiter:
         monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)  # local arbiter
         svc = SSHService()
         cfg = resolve_host("fir")
-        (live / "fir.connect.stderr").write_text(
-            "kex_exchange_identification: Connection closed by remote host")
 
         alerts: list[str] = []
         monkeypatch.setattr(svc, "_alert", lambda t: alerts.append(t) or _noop_alert(t))
 
-        async def _fail_attempt(c, marker):
+        async def _fail_attempt(c, marker, rec):
+            rec.spawned = True   # ssh ran and failed; only that can hold
+            (live / "fir.connect.stderr").write_text(
+                "kex_exchange_identification: Connection closed by remote host")
             raise ssh_service._AttemptFailed("no master")
 
         monkeypatch.setattr(svc, "_check_master", _false)
@@ -1218,7 +1252,8 @@ class TestSlotArbiter:
 
         monkeypatch.setattr(svc, "_alert", _noop_alert)
 
-        async def _fail_attempt(c, marker):
+        async def _fail_attempt(c, marker, rec):
+            rec.spawned = True   # ssh ran and failed; only that can hold
             raise ssh_service._AttemptFailed("no master")
 
         monkeypatch.setattr(svc, "_check_master", _false)
@@ -1428,14 +1463,24 @@ class TestActiveSignalUnlock:
         await svc._trip_breaker(cfg, "connect exceeded 120s")
         assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_SELF
 
-    async def test_a_recently_healthy_approver_makes_it_external(
+    async def test_a_live_probe_that_answers_makes_it_external(
             self, isolated_dirs, monkeypatch) -> None:
-        self._fake_2fa(monkeypatch,
-                       reachability={"last_reachable_at": time.time()})
+        """A working approver means the failure was not ours.
+
+        Attribution asks the approver rather than reading how long it has been
+        since anyone did. The old recency test passed for the wrong reason: a
+        timestamp that only ``ping`` refreshed decayed with idle time, so a
+        perfectly healthy but quiet approver was recorded as unavailable — and
+        that cause licenses one automatic retry, i.e. one more Duo push at a
+        host that had already failed.
+        """
+        calls = self._fake_2fa(monkeypatch, ping={"ok": True, "reachable": True})
         svc = SSHService()
         cfg = resolve_host("fir")
         await svc._trip_breaker(cfg, "connect exceeded 120s")
         assert svc._read_lock(cfg)["cause"] == ssh_service._CAUSE_EXTERNAL
+        assert ("2fa", "ping", {"device": "alliance"}) in calls, \
+            "attribution must PROBE the approver, not infer from a timestamp"
 
     async def test_an_auth_rejection_is_never_self_attributed(
             self, isolated_dirs, monkeypatch) -> None:
@@ -1710,3 +1755,287 @@ class TestArbiterAttribution:
         svc = SSHService()
         await svc._connect_via_arbiter_peer(resolve_host("fir"), "mira")
         assert seen["node"] == ssh_service._NODE_NAME
+
+
+class _FakeProc:
+    """An ssh that never finishes authenticating, and remembers being signalled."""
+
+    def __init__(self, pid: int = 987654) -> None:
+        self.pid = pid
+        self.signals: list[int] = []
+
+    async def wait(self):
+        await asyncio.sleep(30.0)
+        return 0
+
+
+class TestChildReaping:
+    """A connect that fails must leave no ssh behind.
+
+    The process is spawned inside a coroutine the 120s wait_for cancels. Before
+    this, the handle was a local in that frame and the frame simply went away —
+    and the one cleanup on the path, `ssh -O exit`, speaks through a socket a
+    pre-auth-hung ssh has never created. So it survived, holding an armed Duo
+    window, until something killed the whole service.
+    """
+
+    def _patch_spawn(self, monkeypatch, proc):
+        async def _spawn(*a, **k):
+            assert k.get("start_new_session") is True, (
+                "the child must lead its own process group, or reaping the "
+                "group kills the service itself")
+            return proc
+
+        monkeypatch.setattr(ssh_service.asyncio, "create_subprocess_exec", _spawn)
+
+    def _patch_killpg(self, monkeypatch, proc, *, alive_after_term=False):
+        """Stand in for the group signal. Unless *alive_after_term*, the group is
+        gone once SIGTERM lands, which is what the kernel reports as
+        ProcessLookupError and what stops the escalation."""
+        def _killpg(pid, sig):
+            assert pid == proc.pid
+            if proc.signals and not alive_after_term:
+                raise ProcessLookupError(pid)
+            proc.signals.append(sig)
+
+        monkeypatch.setattr(ssh_service.os, "killpg", _killpg)
+
+    async def test_timeout_reaps_the_spawned_ssh(
+            self, isolated_dirs, monkeypatch) -> None:
+        proc = _FakeProc()
+        svc = SSHService()
+        cfg = resolve_host("micb0")          # no 2FA device: no burst to fake
+        self._patch_spawn(monkeypatch, proc)
+        self._patch_killpg(monkeypatch, proc)
+        monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(ssh_service, "_REAP_GRACE_S", 0.01)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_exit_master", _true)
+        monkeypatch.setattr(svc, "_trip_breaker", lambda c, r: _coro(None))
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda *a, **k: _coro({"status": "up"}))
+
+        await svc._do_connect_attempt(cfg, gated=False)
+
+        assert proc.signals == [ssh_service.signal.SIGTERM], \
+            "a cancelled attempt must terminate the ssh it spawned, and stop " \
+            "there once it is gone"
+
+    async def test_a_process_that_ignores_sigterm_is_killed(
+            self, isolated_dirs, monkeypatch) -> None:
+        proc = _FakeProc()
+        svc = SSHService()
+        cfg = resolve_host("micb0")
+        self._patch_spawn(monkeypatch, proc)
+        self._patch_killpg(monkeypatch, proc, alive_after_term=True)
+        monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(ssh_service, "_REAP_GRACE_S", 0.01)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_exit_master", _true)
+        monkeypatch.setattr(svc, "_trip_breaker", lambda c, r: _coro(None))
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda *a, **k: _coro({"status": "up"}))
+
+        await svc._do_connect_attempt(cfg, gated=False)
+
+        assert proc.signals == [ssh_service.signal.SIGTERM,
+                                ssh_service.signal.SIGKILL]
+
+    async def test_the_pid_file_is_removed_when_the_attempt_resolves(
+            self, isolated_dirs, monkeypatch) -> None:
+        live, _ = isolated_dirs
+        svc = SSHService()
+        cfg = resolve_host("micb0")
+        proc = _FakeProc()
+        self._patch_spawn(monkeypatch, proc)
+        self._patch_killpg(monkeypatch, proc)
+        monkeypatch.setattr(ssh_service, "_CONNECT_TIMEOUT", 0.05)
+        monkeypatch.setattr(ssh_service, "_REAP_GRACE_S", 0.01)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_exit_master", _true)
+        monkeypatch.setattr(svc, "_trip_breaker", lambda c, r: _coro(None))
+        monkeypatch.setattr(ssh_service.gatewayclient, "call",
+                            lambda *a, **k: _coro({"status": "up"}))
+
+        await svc._do_connect_attempt(cfg, gated=False)
+
+        assert not (live / "micb0.master.pid").exists()
+
+    async def test_boot_reaps_a_master_stranded_by_a_previous_life(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The in-process reap cannot cover a service that was itself killed."""
+        live, _ = isolated_dirs
+        (live / "fir.master.pid").write_text("31337\n")
+        svc = SSHService()
+        reaped: list[int] = []
+
+        monkeypatch.setattr(svc, "_is_our_master", lambda pid: pid == 31337)
+        monkeypatch.setattr(svc, "_reap_group",
+                            lambda pid, host: _coro(reaped.append(pid)))
+
+        await svc._reap_stranded_masters()
+
+        assert reaped == [31337]
+        assert not (live / "fir.master.pid").exists(), \
+            "the record must not outlive the process it names"
+
+    async def test_boot_leaves_a_pid_that_is_not_ours_alone(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A pid is the least durable key there is — reuse must not kill a stranger."""
+        live, _ = isolated_dirs
+        (live / "fir.master.pid").write_text("31337\n")
+        svc = SSHService()
+        reaped: list[int] = []
+
+        monkeypatch.setattr(svc, "_is_our_master", lambda pid: False)
+        monkeypatch.setattr(svc, "_reap_group",
+                            lambda pid, host: _coro(reaped.append(pid)))
+
+        await svc._reap_stranded_masters()
+
+        assert reaped == []
+        assert not (live / "fir.master.pid").exists()
+
+    def test_identity_comes_from_the_environment_not_the_command_line(self) -> None:
+        """Our own process is not one of our masters, however it is spelled."""
+        assert SSHService._is_our_master(os.getpid()) is False
+
+
+class TestNothingWasSpent:
+    """The breaker must hold a host only when an MFA attempt could be spent."""
+
+    async def test_a_failure_before_the_spawn_is_never_a_hold(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A dependency that fails before ssh runs cannot have fired a push.
+
+        Seen live 2026-09-01: `vpn/up` answered HTTP 504, ssh never ran, and the
+        arbiter held sockeye fleet-wide and paged the operator for it.
+        """
+        svc = SSHService()
+        cfg = resolve_host("sockeye")
+        tripped: list[str] = []
+
+        async def _vpn_times_out(c, marker, rec):
+            raise RuntimeError("gateway call vpn/up failed: HTTP 504")
+
+        monkeypatch.setattr(svc, "_attempt_master", _vpn_times_out)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_trip_breaker",
+                            lambda c, r: _coro(tripped.append(r)))
+
+        result = await svc._do_connect_attempt(cfg, gated=False)
+
+        assert result["status"] == "error"
+        assert tripped == [], "nothing ran, so nothing can have been spent"
+        assert svc._read_lock(cfg) is None
+        assert "safe to retry" in result["error"]
+
+    async def test_a_pre_spawn_failure_ignores_an_older_attempts_stderr(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The capture describes whichever attempt last got as far as spawning.
+
+        sockeye's lock on 2026-09-01 quoted "Success. Logging you in..." from a
+        connect six days earlier, because the file was only ever truncated at the
+        spawn.
+        """
+        live, _ = isolated_dirs
+        (live / "sockeye.connect.stderr").write_text(
+            "Permission denied (keyboard-interactive).\n")
+        svc = SSHService()
+        cfg = resolve_host("sockeye")
+
+        async def _vpn_times_out(c, marker, rec):
+            raise RuntimeError("gateway call vpn/up failed: HTTP 504")
+
+        monkeypatch.setattr(svc, "_attempt_master", _vpn_times_out)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_trip_breaker", lambda c, r: _coro(None))
+
+        await svc._do_connect_attempt(cfg, gated=False)
+
+        assert (live / "sockeye.connect.stderr").read_text() == "", \
+            "the capture must be emptied when the attempt starts"
+
+    def _fake_2fa_status(self, monkeypatch, seen):
+        async def _call(_peer, service, fn, args=None, **kw):
+            if service == "2fa" and fn == "status":
+                return {} if seen is None else {"transactions_seen": seen}
+            return {}
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+
+    async def _saw_nothing(self, monkeypatch, *, armed, now):
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        self._fake_2fa_status(monkeypatch, now)
+        rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=armed)
+        return await svc._duo_saw_nothing(cfg, rec)
+
+    async def test_an_unmoved_duo_count_proves_nothing_was_spent(
+            self, isolated_dirs, monkeypatch) -> None:
+        """fir was under vendor maintenance and Duo saw nothing all window."""
+        assert await self._saw_nothing(monkeypatch, armed=7, now=7) is True
+
+    async def test_a_duo_transaction_still_holds(
+            self, isolated_dirs, monkeypatch) -> None:
+        assert await self._saw_nothing(monkeypatch, armed=7, now=8) is False
+
+    async def test_an_unaskable_count_is_not_zero(
+            self, isolated_dirs, monkeypatch) -> None:
+        """No evidence is not evidence of none — the protective default stands."""
+        assert await self._saw_nothing(monkeypatch, armed=None, now=7) is False
+        assert await self._saw_nothing(monkeypatch, armed=7, now=None) is False
+
+    async def test_a_count_that_went_backwards_is_not_zero(
+            self, isolated_dirs, monkeypatch) -> None:
+        """A lower reading means the approver restarted, not that nothing ran."""
+        assert await self._saw_nothing(monkeypatch, armed=7, now=2) is False
+
+    async def test_an_unreachable_approver_is_not_zero(
+            self, isolated_dirs, monkeypatch) -> None:
+        async def _boom(*a, **k):
+            raise RuntimeError("2fa unreachable")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _boom)
+        svc = SSHService()
+        rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=7)
+        assert await svc._duo_saw_nothing(resolve_host("fir"), rec) is False
+
+    async def test_a_host_with_no_device_has_no_witness(
+            self, isolated_dirs, monkeypatch) -> None:
+        svc = SSHService()
+        rec = ssh_service._AttemptRecord(spawned=True, twofa_seen_at_arm=7)
+        assert await svc._duo_saw_nothing(resolve_host("micb0"), rec) is False
+
+    async def test_the_gated_path_frees_the_slot_when_duo_saw_nothing(
+            self, isolated_dirs, monkeypatch) -> None:
+        """The whole point: a maintenance outage costs no operator /approve."""
+        monkeypatch.delenv("AWM_SSH_SLOT_PEER", raising=False)
+        svc = SSHService()
+        cfg = resolve_host("fir")
+        alerts: list[str] = []
+        monkeypatch.setattr(svc, "_alert",
+                            lambda t: alerts.append(t) or _noop_alert(t))
+
+        async def _call(_peer, service, fn, args=None, **kw):
+            if service == "2fa" and fn == "burst":
+                return {"status": "started", "transactions_seen": 4}
+            if service == "2fa" and fn == "status":
+                return {"transactions_seen": 4}      # Duo heard nothing
+            return {}
+
+        async def _hang_after_spawn(c, marker, rec):
+            rec.spawned = True
+            rec.twofa_seen_at_arm = 4
+            raise ssh_service._AttemptFailed("no master")
+
+        monkeypatch.setattr(ssh_service.gatewayclient, "call_maybe_peer", _call)
+        monkeypatch.setattr(svc, "_check_master", _false)
+        monkeypatch.setattr(svc, "_attempt_master", _hang_after_spawn)
+
+        result = await svc._connect_via_local_arbiter(cfg)
+
+        assert result["status"] == "error"
+        assert svc._read_lock(cfg) is None, "no hold — Duo was never presented a login"
+        assert alerts == [], "and therefore nothing to page the operator about"
+        assert "fir" not in svc._leased, "the slot is freed for the next attempt"

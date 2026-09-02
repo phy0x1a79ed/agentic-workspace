@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import signal
 import stat
 import time
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from awm.ssh.config import (
     SSH_ASKPASS,
     HostConfig,
     lock_path,
+    pid_path,
     resolve_host,
     stderr_path,
 )
@@ -36,6 +38,9 @@ _DISCONNECT_POLL_ATTEMPTS = 8
 # which, on the connect timeout path, would strand the host in AUTHENTICATING with
 # the breaker never tripping and every later connect absorbed onto a dead waiter.
 _EXIT_TIMEOUT = 15.0
+# How long a reaped ssh gets to die on SIGTERM before it is SIGKILLed. Short: the
+# process we reap is by definition one that is not making progress.
+_REAP_GRACE_S = 3.0
 # Hard cap on a single `ssh -O check` probe. These are local control-socket probes
 # (no remote round-trip) that normally return in well under a second, but a WEDGED
 # master can make `-O check` block indefinitely. Because connect/disconnect now
@@ -83,9 +88,6 @@ _PROBE_COMMAND = "__awm_probe__"
 #     which was true but misattributed — nothing was wrong with fir.
 _CAUSE_EXTERNAL = "external"
 _CAUSE_SELF = "approver-unavailable"
-# How recent a verified Duo round-trip must be to count as a fresh positive
-# assertion. Short on purpose: this is the whole safety margin.
-_SELF_CLEAR_FRESH_SECONDS = 120.0
 # Connection-slot arbiter selector (federation). For a lockout-sensitive host,
 # EXACTLY ONE attempt may be in flight across the whole fleet — the per-node
 # breaker isn't enough once several nodes drive the same account. So a gated
@@ -191,6 +193,29 @@ class ConnState(enum.Enum):
     AUTHENTICATING = "authenticating"
     CONNECTED = "connected"
     DISPOSING = "disposing"
+
+
+@dataclass
+class _AttemptRecord:
+    """What one attempt actually did, readable by the caller after the attempt is
+    gone — including when it was cancelled mid-flight and returned nothing.
+
+    ``spawned`` is the load-bearing field. An attempt that never reached the ssh
+    exec provably fired no Duo push, whatever the captured stderr says: that file
+    belongs to whichever attempt last got as far as spawning, which may be one
+    from weeks ago. On 2026-09-01 a `vpn/up` timeout was judged against a
+    "Success. Logging you in..." line captured on 2026-08-25, and the arbiter
+    held sockeye fleet-wide for it.
+
+    ``twofa_seen_at_arm`` is the Duo observation count at the moment this attempt
+    armed its burst. Compared against the same counter afterwards it answers "did
+    Duo see anything at all while we were connecting" — the only positive
+    evidence that no MFA attempt was spent. ``None`` means the question could not
+    be asked, which is not the same as zero and must never be read as it.
+    """
+
+    spawned: bool = False
+    twofa_seen_at_arm: int | None = None
 
 
 @dataclass
@@ -311,9 +336,57 @@ class SSHService:
                     self._clear_lock(cfg)
                     log.info("ssh: reconciled %s → connected (adopted live master)",
                              name)
+            await self._reap_stranded_masters()
             await self._reap_orphans()
         except Exception as exc:  # noqa: BLE001 — reconciliation is best-effort
             log.warning("ssh: boot reconciliation failed: %s", exc)
+
+    async def _reap_stranded_masters(self) -> None:
+        """Kill an ssh left running by a PREVIOUS life of this service.
+
+        The in-process reap covers a connect this service is still driving. It
+        cannot cover the case that produced the bug: the service itself dies (a
+        SIGKILL, a crash, an operator stopping it) while an ssh is mid-auth. That
+        process is then reparented to init, holds an armed Duo window, and is
+        invisible to every socket-level probe here because it never made a socket
+        — so it outlives restart after restart.
+
+        Identity, not resemblance, decides. A pid is the least durable key there
+        is, so a recorded pid is killed only when the live process still carries
+        the askpass marker THIS service wrote into its environment. Matching on
+        the command line instead would match any ssh on the box, including one a
+        person is using.
+        """
+        for cfg in KNOWN_HOSTS.values():
+            path = pid_path(cfg)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    pid = int(f.read().strip())
+            except (OSError, ValueError):
+                self._safe_unlink(path)
+                continue
+            if self._is_our_master(pid):
+                log.warning("ssh: %s left a master running from a previous "
+                            "service life — reaping pid %d", cfg.host, pid)
+                await self._reap_group(pid, cfg.host)
+            self._safe_unlink(path)
+
+    @staticmethod
+    def _is_our_master(pid: int) -> bool:
+        """Is *pid* still an ssh this service started, for this workspace?
+
+        Reads the process's own environment for the askpass marker we inject,
+        and requires it to point inside our LIVE_DIR. Anything we cannot read —
+        a dead pid, another user's process — answers False. Never guess toward
+        killing.
+        """
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                environ = f.read()
+        except OSError:
+            return False
+        want = f"AWM_SSH_ASKPASS_MARKER={LIVE_DIR}".encode()
+        return any(entry.startswith(want) for entry in environ.split(b"\0"))
 
     async def _reap_orphans(self) -> None:
         """Remove dead ControlMaster socket files in LIVE_DIR — leftovers from a
@@ -883,8 +956,15 @@ class SSHService:
         release the slot without a hold). See :meth:`_is_preauth_failure`."""
         marker = self._deviation_marker(cfg)
         self._safe_unlink(marker)
+        # Truncate the stderr capture HERE, not at the spawn. It was only ever
+        # truncated when ssh actually started, so a failure that never got that
+        # far was judged against whatever the last spawning attempt left behind
+        # — on 2026-09-01 a vpn timeout on sockeye was recorded, and alerted on,
+        # quoting a successful login from six days earlier.
+        self._truncate_stderr(cfg)
+        rec = _AttemptRecord()
         try:
-            await asyncio.wait_for(self._attempt_master(cfg, marker),
+            await asyncio.wait_for(self._attempt_master(cfg, marker, rec),
                                    timeout=_CONNECT_TIMEOUT)
             log.info("connected to %s", cfg.host)
             return self._status_dict(cfg, "connected")
@@ -904,14 +984,17 @@ class SSHService:
                 return self._status_dict(cfg, "connected")
             reason = self._failure_reason(cfg, marker, str(e))
         except asyncio.TimeoutError:
-            # Reap a possibly half-open master so the hung attempt can't linger.
+            # The ssh we spawned is already dead: cancelling _attempt_master
+            # reaps its process group on the way out. This clears a half-open
+            # master that DID reach the socket stage.
             await self._exit_master(cfg.host)
             reason = self._failure_reason(
                 cfg, marker, f"connect exceeded {_CONNECT_TIMEOUT:.0f}s")
         except Exception as e:  # noqa: BLE001
             log.error("connect to %s failed: %s", cfg.host, e)
             reason = self._failure_reason(cfg, marker, str(e))
-        preauth = self._is_preauth_failure(cfg, marker)
+        preauth = (self._is_preauth_failure(cfg, marker, rec)
+                   or await self._duo_saw_nothing(cfg, rec))
         if preauth:
             # Nothing was spent, so there is nothing to protect: no hold, no page.
             # Tell the caller it is safe to retry — unlike a held host, this needs
@@ -937,10 +1020,16 @@ class SSHService:
             result["_preauth"] = preauth
         return result
 
-    async def _attempt_master(self, cfg: HostConfig, marker: str) -> None:
+    async def _attempt_master(self, cfg: HostConfig, marker: str,
+                              rec: _AttemptRecord) -> None:
         """Orchestrate vpn + 2fa + ssh and poll for the ControlMaster socket.
         Returns on success (lock cleared); raises :class:`_AttemptFailed` if the
-        master never appears."""
+        master never appears.
+
+        ``rec`` is the caller's object, filled in as we go, because this
+        coroutine can be cancelled and then returns nothing at all — and what it
+        got as far as doing is exactly what the caller needs to judge the
+        failure."""
         log.info("connecting to %s (vpn=%s, 2fa=%s)",
                  cfg.host, cfg.vpn_profile or "none",
                  cfg.twofa_device or "none")
@@ -961,13 +1050,19 @@ class SSHService:
             # sockeye/sockeye1 both on cwl) would then skip its grant, leaving budget
             # at 1 for 2 pushes — the 2nd push is held, times out, and trips its
             # breaker. That was the original overlapping-login failure.
-            await gatewayclient.call_maybe_peer(
+            armed = await gatewayclient.call_maybe_peer(
                 gatewayclient.peer_env(_TWOFA_PEER_ENV),
                 "2fa", "burst", {
                     "device": cfg.twofa_device,
                     "window": 120,
                     "count": 1,
                 })
+            # Duo's own observation count as of arming. If it has not moved by
+            # the time this attempt fails, Duo never heard from the login and no
+            # MFA attempt was spent. A 2fa too old to report it leaves this None,
+            # which the caller reads as "no evidence" rather than as zero.
+            seen = (armed or {}).get("transactions_seen")
+            rec.twofa_seen_at_arm = int(seen) if isinstance(seen, int) else None
             log.info("2fa burst armed (+1) for %s on device %s%s",
                      cfg.host, cfg.twofa_device,
                      f" via 2fa@{gatewayclient.peer_env(_TWOFA_PEER_ENV)}"
@@ -1015,8 +1110,29 @@ class SSHService:
                 env=env,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=ef,
+                # Give the child its own process group so the reap below can
+                # signal the GROUP. Without this the child shares the service's
+                # own group and a group signal kills the service. The group is
+                # what covers the askpass helper ssh forks under itself.
+                start_new_session=True,
             )
-            await proc.wait()
+            rec.spawned = True
+            self._write_pid(cfg, proc.pid)
+            try:
+                await proc.wait()
+            except BaseException:
+                # Any exit other than ssh finishing on its own — the 120s
+                # wait_for cancelling us, a service shutdown, a stray cancel.
+                # Before this the process was simply abandoned: the handle was a
+                # local in this frame, the frame was discarded, and the only
+                # cleanup on the timeout path (`ssh -O exit`) speaks through a
+                # ControlMaster socket a pre-auth-hung ssh has never created. So
+                # it survived, holding an armed Duo window, until something else
+                # killed the whole service.
+                await self._reap_group(proc.pid, cfg.host)
+                raise
+            finally:
+                self._safe_unlink(pid_path(cfg))
 
         for _ in range(_CHECK_POLL_ATTEMPTS):
             if await self._check_master(cfg.host):
@@ -1057,6 +1173,58 @@ class SSHService:
     @staticmethod
     async def _check_master(host: str) -> bool:
         return await SSHService._run_check(["ssh", "-O", "check", host])
+
+    # -- reaping the ssh we spawned -----------------------------------------
+    #
+    # `ssh -O exit` and `-O check` both speak through the ControlMaster socket,
+    # so neither can see an ssh that hung before it ever made one. These two are
+    # the pid-level handle on exactly that process, and nothing else in this file
+    # signals anything a user did not ask it to.
+
+    def _write_pid(self, cfg: HostConfig, pid: int) -> None:
+        """Record the spawned ssh's pid so a LATER service life can still reap it.
+
+        Best-effort: failing to write it must not fail the connect, since the
+        in-process reap does not depend on the file.
+        """
+        try:
+            with open(pid_path(cfg), "w", encoding="utf-8") as f:
+                f.write(f"{pid}\n")
+        except OSError as exc:
+            log.warning("ssh: could not record master pid for %s: %s",
+                        cfg.host, exc)
+
+    async def _reap_group(self, pid: int, host: str) -> None:
+        """SIGTERM the process group led by *pid*, then SIGKILL what survives.
+
+        Signals the GROUP, not the pid: ssh forks the askpass helper beneath
+        itself, and killing only ssh strands it. This is safe solely because the
+        spawn passes ``start_new_session=True`` — without it the group is the
+        service's own and this would be suicide.
+        """
+        if not self._signal_group(pid, signal.SIGTERM, host):
+            return
+        log.warning("ssh: reaping stranded master pid %d for %s", pid, host)
+        try:
+            await asyncio.sleep(_REAP_GRACE_S)
+        except asyncio.CancelledError:
+            # We are usually already unwinding a cancellation, and a second one
+            # must not cost us the SIGKILL. Fall through and send it now.
+            pass
+        self._signal_group(pid, signal.SIGKILL, host)
+
+    @staticmethod
+    def _signal_group(pid: int, sig: signal.Signals, host: str) -> bool:
+        """Signal the group led by *pid*. False when there was nothing to signal."""
+        try:
+            os.killpg(pid, sig)
+            return True
+        except ProcessLookupError:
+            return False        # already gone — the normal case after SIGTERM
+        except OSError as exc:
+            log.warning("ssh: could not send %s to master %d for %s: %s",
+                        sig.name, pid, host, exc)
+            return False
 
     # -- operator approval window (Discord /approve) ------------------------
 
@@ -1168,6 +1336,22 @@ class SSHService:
         return os.path.join(LIVE_DIR, f"{cfg.host}.askpass_deviation")
 
     @staticmethod
+    def _truncate_stderr(cfg: HostConfig) -> None:
+        """Empty a host's ssh stderr capture at the start of an attempt.
+
+        Every reader of that file treats it as evidence about the attempt being
+        judged. It must therefore be emptied when the attempt begins, not when
+        ssh happens to start, or a failure that never spawned inherits an older
+        attempt's verdict.
+        """
+        try:
+            with open(stderr_path(cfg), "wb"):
+                pass
+        except OSError as exc:
+            log.warning("ssh: could not clear stderr capture for %s: %s",
+                        cfg.host, exc)
+
+    @staticmethod
     def _safe_unlink(path: str) -> None:
         try:
             os.unlink(path)
@@ -1216,7 +1400,8 @@ class SSHService:
     def _clear_lock(self, cfg: HostConfig) -> None:
         self._safe_unlink(lock_path(cfg))
 
-    def _is_preauth_failure(self, cfg: HostConfig, marker: str) -> bool:
+    def _is_preauth_failure(self, cfg: HostConfig, marker: str,
+                            rec: _AttemptRecord) -> bool:
         """Did this attempt die before the auth phase — i.e. spend no MFA?
 
         Reads the captured ssh stderr rather than the folded reason string, and
@@ -1226,6 +1411,12 @@ class SSHService:
         auth-phase marker vetoes, a Duo-menu deviation vetoes, and no positive
         evidence at all -> False (hold the host).
         """
+        if not rec.spawned:
+            # Nothing ran. The vpn call, the 2fa arming and the exec all precede
+            # any packet ssh could send, so a failure before the exec cannot have
+            # reached a login — no stderr reading required, and none wanted,
+            # since the file describes a different attempt entirely.
+            return True
         try:
             with open(stderr_path(cfg), "r", encoding="utf-8",
                       errors="replace") as f:
@@ -1242,6 +1433,53 @@ class SSHService:
         if os.path.exists(marker) and not self._deviation_was_non_duo(marker):
             return False  # a Duo menu was presented — a push may have fired
         return any(s.lower() in ssh_only for s in _PREAUTH_STDERR)
+
+    async def _duo_saw_nothing(self, cfg: HostConfig,
+                               rec: _AttemptRecord) -> bool:
+        """Did Duo observe no transaction at all while this attempt ran?
+
+        The stderr rules above can only classify a failure that SAID something. A
+        connect that hangs on the network says nothing, so "silence is not
+        evidence" holds the host — correctly, in the absence of another witness.
+        There is another witness. This attempt armed a burst on the 2fa approver,
+        which polls Duo every second for the length of the window and counts what
+        it sees. An unmoved count is a positive assertion from Duo's own API that
+        no login was ever presented, which is exactly "no MFA attempt was spent".
+        On 2026-09-01 fir was under vendor maintenance, Duo saw nothing across the
+        whole window, and the host was held anyway and paged the operator twice.
+
+        Every uncertainty answers False, i.e. hold:
+
+        * a host with no 2FA device has no witness to ask;
+        * a count we could not read at arm time, or cannot read now;
+        * a count that went BACKWARDS, which means the approver restarted and its
+          counter reset — not that nothing happened.
+
+        The count is per DEVICE, and two hosts can share one (sockeye and
+        sockeye1 both use cwl). So a sibling's transaction can make this answer
+        False when our own attempt really did spend nothing. That is the mild
+        direction of the mistake — a spurious hold — and it is the one the
+        classification in this file has always preferred.
+        """
+        if not cfg.twofa_device or rec.twofa_seen_at_arm is None:
+            return False
+        try:
+            info = await gatewayclient.call_maybe_peer(
+                gatewayclient.peer_env(_TWOFA_PEER_ENV),
+                "2fa", "status", {"device": cfg.twofa_device})
+        except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot assert
+            log.info("ssh: cannot check Duo activity for %s (2fa unreachable: "
+                     "%s) — holding", cfg.host, exc)
+            return False
+        now = (info or {}).get("transactions_seen")
+        if not isinstance(now, int) or now < rec.twofa_seen_at_arm:
+            return False
+        if now > rec.twofa_seen_at_arm:
+            return False        # Duo heard a login — an attempt may have been spent
+        log.warning("ssh: %s failed but Duo observed no transaction on device "
+                    "%s for the whole attempt — no MFA attempt was spent, so "
+                    "the host is NOT held", cfg.host, cfg.twofa_device)
+        return True
 
     @staticmethod
     def _deviation_was_non_duo(marker: str) -> bool:
@@ -1312,14 +1550,22 @@ class SSHService:
 
         * the failure was our own connect timeout — not an ssh-reported auth
           rejection, whose marker vetoes outright; and
-        * the 2fa service positively reports that its last verified Duo
-          round-trip for this device is NOT recent, i.e. our approver was
-          demonstrably unable to function at the time.
+        * a LIVE probe of the Duo approver fails right now, i.e. our approver is
+          demonstrably unable to function.
 
         Anything else — an unrecognised reason, an unreachable 2fa service, a
         device we cannot ask about — is ``_CAUSE_EXTERNAL`` and stays
         operator-only. Failing to establish self-attribution is not evidence
         of it.
+
+        The probe used to be a recency test against ``reachability``, which only
+        ever moved when somebody called ``ping``. So the timestamp decayed with
+        idle time alone, and a quiet approver was indistinguishable from a broken
+        one. On 2026-09-01 that filed a maintenance outage on fir as
+        "approver-unavailable" — and since that cause licenses one automatic
+        retry, the next request cleared the hold and spent a second Duo push on a
+        host that was switched off. Ask the approver instead of inferring from
+        how long it has been quiet.
         """
         if not cfg.twofa_device:
             return _CAUSE_EXTERNAL
@@ -1331,14 +1577,13 @@ class SSHService:
         try:
             info = await gatewayclient.call_maybe_peer(
                 gatewayclient.peer_env(_TWOFA_PEER_ENV),
-                "2fa", "reachability", {"device": cfg.twofa_device})
+                "2fa", "ping", {"device": cfg.twofa_device})
         except Exception as exc:  # noqa: BLE001 — cannot ask ⇒ cannot attribute
             log.info("ssh: cannot attribute %s's failure (2fa unreachable: %s) "
                      "— holding as external", cfg.host, exc)
             return _CAUSE_EXTERNAL
-        last = (info or {}).get("last_reachable_at")
-        if last and (time.time() - float(last)) <= _SELF_CLEAR_FRESH_SECONDS:
-            # The approver was verifiably fine — so this failure is not ours.
+        if (info or {}).get("ok"):
+            # The approver just proved itself — so this failure is not ours.
             return _CAUSE_EXTERNAL
         log.warning("ssh: %s timed out while our own Duo approver was NOT "
                     "verifiably reachable — recording a self-inflicted hold, "
