@@ -168,13 +168,9 @@ async def _h_apply(args: dict, as_: str | None = None) -> dict:
 
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "sync")
-    pulled = await _h_pull({"force": args.get("force")}, None)
-    out: dict[str, Any] = {"pull": pulled}
-    # An unchanged library is the ordinary answer, and re-applying an unchanged
-    # bundle would be thousands of round trips proving nothing.
-    if pulled.get("changed"):
-        out["apply"] = await _h_apply({"parent": args.get("parent")}, None)
-    return out
+    return await asyncio.to_thread(
+        sync.run, vault.Vault(), force=bool(args.get("force")),
+        parent=(args.get("parent") or "").strip() or "root")
 
 
 HANDLERS = {

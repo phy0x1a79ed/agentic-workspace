@@ -51,22 +51,31 @@ class Vault:
 
     # -- reading -------------------------------------------------------------
 
-    def owned(self, root: str, label: str) -> dict[str, str]:
-        """Every note under `root` carrying `label`, as `{value: note_id}`.
+    def owned_all(self, root: str, label: str) -> dict[str, list[str]]:
+        """Every note under `root` carrying `label`, as `{value: [note_id…]}`.
 
         One search rather than a walk: the mirror's notes are scattered through
         the collection tree, and this is what tells an update from an insert
         for all of them at once.
+
+        A list rather than one id, because two ids for one key is a state the
+        vault can be in — two syncs running at once each create the note the
+        other has not written yet — and a caller that cannot see the second
+        copy can never remove it.
         """
         hits = _call("note_search", query=f"#{label}", ancestor=root,
                      limit=10000, fast=False)
-        out: dict[str, str] = {}
+        out: dict[str, list[str]] = {}
         for note in (hits or {}).get("results") or []:
             for a in note.get("attributes") or []:
                 if a.get("type") == "label" and a.get("name") == label:
-                    out.setdefault(a.get("value") or "", note["noteId"])
+                    out.setdefault(a.get("value") or "", []).append(note["noteId"])
         out.pop("", None)
         return out
+
+    def owned(self, root: str, label: str) -> dict[str, str]:
+        """The same, keeping one note per value."""
+        return {key: ids[0] for key, ids in self.owned_all(root, label).items()}
 
     def read(self, note_id: str) -> dict:
         return _call("note_get", note_id=note_id)
