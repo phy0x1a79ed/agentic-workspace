@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from awm.trilium import hub_adapter, instances
+from awm.trilium import etapi, hub_adapter, instances
 
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
@@ -35,13 +35,36 @@ def _off_the_real_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(instances, "VAULT",
                         instances.Vault(scope=tmp_path / "vault"))
 
+    # The note verbs reach ETAPI as soon as the gate admits them, and a live
+    # vault on loopback would make these tests pass or fail on whether this
+    # host happens to be serving one. Refusing the client keeps the assertion
+    # on the gate: everything past it fails the same way, which is what the
+    # `except Exception` below already tolerates.
+    def _no_vault() -> None:
+        raise etapi.EtapiError("no vault in this test")
+    monkeypatch.setattr(etapi, "client", _no_vault)
+
 #: Reachable from a browser. Read-only, and the vault's own recovery state.
-READ_VERBS = ["status", "snapshots", "url"]
+#: Named for where a caller may be rather than for what the verb does, because
+#: the note API made "read" and "reachable" two different questions: its read
+#: verbs are operator-only too.
+EDGE_VERBS = ["status", "snapshots", "url"]
 
 #: Everything that starts, stops, reads a log from, rebuilds or replaces the
-#: shared vault.
-WRITE_VERBS = ["start", "stop", "restart", "provision", "logs",
-               "snapshot", "export", "restore", "note_upsert"]
+#: shared vault -- and the whole note API, reads included.
+#:
+#: A note read looks harmless and is not. The edge does not forward `/etapi/`
+#: precisely so that vault-origin JavaScript cannot walk the vault, and an open
+#: `note_get` would be that same surface wearing awm's name. The person reading
+#: the vault already has all of it in front of them, so nothing is lost by
+#: keeping these on the host.
+OPERATOR_VERBS = ["start", "stop", "restart", "provision", "logs",
+                  "snapshot", "export", "restore", "note_upsert",
+                  "note_get", "note_children", "note_search",
+                  "note_create", "note_update", "note_delete",
+                  "note_move", "note_clone", "note_place",
+                  "attrs_get", "attr_set", "attr_delete", "attachment_put",
+                  "board_ensure", "board_cards", "card_upsert"]
 
 #: What the edge stamps. `_as_header` never emits an empty value, so any of
 #: these means the call crossed an edge listener.
@@ -51,17 +74,17 @@ EDGE_IDENTITIES = ["user:tony", "user:steven", "user:operator", "peer"]
 def test_the_two_lists_are_the_whole_surface():
     """A verb added later is in neither list, and this fails until someone has
     decided which it is. Defaulting to unreachable is the point."""
-    assert set(READ_VERBS) | set(WRITE_VERBS) == set(hub_adapter.HANDLERS)
+    assert set(EDGE_VERBS) | set(OPERATOR_VERBS) == set(hub_adapter.HANDLERS)
 
 
-@pytest.mark.parametrize("verb", WRITE_VERBS)
+@pytest.mark.parametrize("verb", OPERATOR_VERBS)
 @pytest.mark.parametrize("as_", EDGE_IDENTITIES)
 def test_a_caller_from_an_edge_cannot_act_on_the_vault(verb, as_):
     with pytest.raises(PermissionError, match="operator verb"):
         asyncio.run(hub_adapter.HANDLERS[verb]({}, as_))
 
 
-@pytest.mark.parametrize("verb", WRITE_VERBS)
+@pytest.mark.parametrize("verb", OPERATOR_VERBS)
 def test_the_console_still_works(verb):
     """`as_ is None` is the host's own CLI: `/invoke` on loopback sends no
     identity header, and the edge always sends one. It is the only way to fix a
@@ -78,7 +101,7 @@ def test_the_console_still_works(verb):
 def test_reading_is_open_to_anyone_signed_in(as_):
     """A collaborator needs to see whether the vault is up and whether there is
     a copy to recover from. Neither fact is anyone's private business."""
-    for verb in READ_VERBS:
+    for verb in EDGE_VERBS:
         try:
             asyncio.run(hub_adapter.HANDLERS[verb]({}, as_))
         except PermissionError:  # pragma: no cover

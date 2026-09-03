@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-zotero"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM zotero service: mirror the Zotero library into the shared vault as notes with their PDFs, on a timer."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+]
+
+# Deliberately NOT awm-trilium. The vault belongs to that service and is
+# reached over its verbs; importing it would let this one write past the
+# supervisor that starts, restarts and holds down the Trilium child.
+#
+# Deliberately no httpx either: the library is read through `curl` on the node
+# that can see it, because that node is reached by ssh and not by a socket
+# this process can open.
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/zotero/.
+[tool.setuptools.packages.find]
+include = ["awm.zotero*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+markers = [
+    "smoke: fast unit tests; target <30s",
+    "unit: pure unit tests, no network or subprocesses",
+]

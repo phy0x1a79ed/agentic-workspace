@@ -23,6 +23,8 @@ Trilium's own revisions dialog, where the person already is.
 from __future__ import annotations
 
 import os
+import secrets
+import string
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,17 @@ TIMEOUT_S = float(os.environ.get("TRILIUM_ETAPI_TIMEOUT_S", "300"))
 
 class EtapiError(RuntimeError):
     """Trilium answered, and said no."""
+
+
+#: Trilium accepts ``[A-Za-z0-9_]{4,128}`` for an entity id and mints 12
+#: characters itself. Attributes are the one entity ETAPI makes the *caller*
+#: name — `POST /etapi/attributes` marks `attributeId` mandatory — so this is
+#: not a convenience but a requirement of the call.
+_ID_ALPHABET = string.ascii_letters + string.digits
+
+
+def new_entity_id(length: int = 12) -> str:
+    return "".join(secrets.choice(_ID_ALPHABET) for _ in range(length))
 
 
 # -- the client -------------------------------------------------------------
@@ -165,6 +178,179 @@ class Etapi:
             return {"note_id": note_id, "created": False, "changed": False}
         self.set_content(note_id, content)
         return {"note_id": note_id, "created": False, "changed": True}
+
+    def patch_note(self, note_id: str, **fields: Any) -> dict:
+        """Change a note's own columns.
+
+        ETAPI accepts only `title`, `type`, `mime` and the creation dates here;
+        a body is :meth:`set_content` and a place in the tree is a branch.
+        Anything else is dropped before the call rather than after it, so a
+        caller gets a refusal it can read instead of a silent no-op.
+        """
+        allowed = {"title", "type", "mime", "dateCreated", "utcDateCreated"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise EtapiError(
+                f"patch_note cannot set {sorted(unknown)}: ETAPI patches only "
+                f"{sorted(allowed)}. A body is set_content, a parent is a branch.")
+        body = {k: v for k, v in fields.items() if v is not None}
+        if not body:
+            return self.note(note_id)
+        return self._request("PATCH", f"/etapi/notes/{note_id}", json=body).json()
+
+    def delete_note(self, note_id: str) -> None:
+        """Delete a note and its subtree. Quiet for a note already gone."""
+        self._request("DELETE", f"/etapi/notes/{note_id}")
+
+    # -- attributes ----------------------------------------------------------
+    #
+    # A label is a fact about a note; a relation is a link to another. Both are
+    # rows in one table, which is why one pair of methods covers them and why
+    # `type` is never inferred.
+
+    def attributes(self, note_id: str) -> list[dict]:
+        """Every attribute owned by this note, as ETAPI reports them on the
+        note itself — there is no list endpoint of its own."""
+        return self.note(note_id).get("attributes") or []
+
+    def create_attribute(self, *, note_id: str, type: str, name: str,
+                         value: str = "", is_inheritable: bool = False) -> dict:
+        if type not in ("label", "relation"):
+            raise EtapiError(f"attribute type must be label or relation, not {type!r}")
+        return self._request("POST", "/etapi/attributes", json={
+            "attributeId": new_entity_id(), "noteId": note_id, "type": type,
+            "name": name, "value": value, "isInheritable": bool(is_inheritable),
+        }).json()
+
+    def patch_attribute(self, attribute_id: str, value: str) -> dict:
+        """Change a label's value. A relation's target is not patchable —
+        upstream allows only `position` there — so :meth:`set_attribute`
+        replaces one instead."""
+        return self._request("PATCH", f"/etapi/attributes/{attribute_id}",
+                             json={"value": value}).json()
+
+    def delete_attribute(self, attribute_id: str) -> None:
+        self._request("DELETE", f"/etapi/attributes/{attribute_id}")
+
+    def set_attribute(self, *, note_id: str, name: str, value: str = "",
+                      type: str = "label", is_inheritable: bool = False) -> dict:
+        """Give the note exactly one attribute of this name and type.
+
+        Matched on the note's **own** attributes, never an inherited one: a
+        label reaching a note from a template belongs to the template, and
+        patching it there would change every note that shares it.
+
+        A relation is replaced rather than patched, because ETAPI will not
+        patch a relation's target. Duplicates of the same name are collapsed
+        onto the first, since a single-valued field with two rows is a state
+        nothing downstream can read.
+        """
+        own = [a for a in self.attributes(note_id)
+               if a.get("name") == name and a.get("type") == type
+               and a.get("noteId") == note_id]
+        if not own:
+            made = self.create_attribute(note_id=note_id, type=type, name=name,
+                                         value=value, is_inheritable=is_inheritable)
+            return {"attribute_id": made["attributeId"], "created": True,
+                    "changed": True}
+        for extra in own[1:]:
+            self.delete_attribute(extra["attributeId"])
+        first = own[0]
+        if first.get("value") == value and bool(first.get("isInheritable")) == bool(is_inheritable):
+            return {"attribute_id": first["attributeId"], "created": False,
+                    "changed": False}
+        if type == "relation" or bool(first.get("isInheritable")) != bool(is_inheritable):
+            self.delete_attribute(first["attributeId"])
+            made = self.create_attribute(note_id=note_id, type=type, name=name,
+                                         value=value, is_inheritable=is_inheritable)
+            return {"attribute_id": made["attributeId"], "created": False,
+                    "changed": True}
+        self.patch_attribute(first["attributeId"], value)
+        return {"attribute_id": first["attributeId"], "created": False,
+                "changed": True}
+
+    def clear_attribute(self, *, note_id: str, name: str,
+                        type: str = "label") -> int:
+        """Remove every attribute of this name the note owns. Returns how many
+        went; an inherited one is not the note's to remove and is left."""
+        gone = 0
+        for a in self.attributes(note_id):
+            if (a.get("name") == name and a.get("type") == type
+                    and a.get("noteId") == note_id):
+                self.delete_attribute(a["attributeId"])
+                gone += 1
+        return gone
+
+    def label_value(self, note_id: str, name: str) -> str | None:
+        for a in self.attributes(note_id):
+            if a.get("type") == "label" and a.get("name") == name:
+                return a.get("value") or ""
+        return None
+
+    # -- attachments ---------------------------------------------------------
+
+    def attachments(self, note_id: str) -> list[dict]:
+        return self._request("GET", f"/etapi/notes/{note_id}/attachments").json()
+
+    def create_attachment(self, *, owner_id: str, title: str, mime: str,
+                          role: str = "file") -> dict:
+        """Make an empty attachment. The bytes go in separately: ETAPI
+        validates the create body's `content` as a string, which a PDF is
+        not."""
+        return self._request("POST", "/etapi/attachments", json={
+            "ownerId": owner_id, "title": title, "mime": mime, "role": role,
+            "content": "",
+        }).json()
+
+    def set_attachment_content(self, attachment_id: str, blob: bytes) -> None:
+        """Put the bytes in. `application/octet-stream` is what makes express
+        hand the route a Buffer rather than a parsed string, which is the
+        difference between a readable PDF and a corrupted one."""
+        self._request("PUT", f"/etapi/attachments/{attachment_id}/content",
+                      headers={"Content-Type": "application/octet-stream"},
+                      content=blob)
+
+    def delete_attachment(self, attachment_id: str) -> None:
+        self._request("DELETE", f"/etapi/attachments/{attachment_id}")
+
+    def upsert_attachment(self, *, owner_id: str, title: str, mime: str,
+                          blob: bytes, role: str = "file") -> dict:
+        """Attach these bytes to this note under this title, replacing what
+        was there. Matched on title, because an attachment has no other stable
+        name — and re-uploaded only when the size differs, so a periodic sync
+        does not rewrite a 20 MB PDF every pass."""
+        existing = [a for a in self.attachments(owner_id)
+                    if a.get("title") == title]
+        for extra in existing[1:]:
+            self.delete_attachment(extra["attachmentId"])
+        if existing:
+            att = existing[0]
+            if att.get("contentLength") == len(blob):
+                return {"attachment_id": att["attachmentId"], "created": False,
+                        "changed": False}
+            self.set_attachment_content(att["attachmentId"], blob)
+            return {"attachment_id": att["attachmentId"], "created": False,
+                    "changed": True}
+        made = self.create_attachment(owner_id=owner_id, title=title, mime=mime,
+                                      role=role)
+        self.set_attachment_content(made["attachmentId"], blob)
+        return {"attachment_id": made["attachmentId"], "created": True,
+                "changed": True}
+
+    # -- placement -----------------------------------------------------------
+
+    def move_note(self, note_id: str, parent_note_id: str) -> dict:
+        """Put the note under this parent and nowhere else.
+
+        Create-then-delete, in that order: a note's last branch takes the note
+        with it, so removing the old placement first would delete the note.
+        """
+        made = self.put_branch(note_id, parent_note_id)
+        for old in self.note(note_id).get("parentBranchIds") or []:
+            if old != made.get("branchId"):
+                self.delete_branch(old)
+        return {"note_id": note_id, "branch_id": made.get("branchId"),
+                "parent": parent_note_id}
 
     def search(self, query: str, **params: Any) -> dict:
         return self._request("GET", "/etapi/notes",
