@@ -63,8 +63,7 @@ OPERATOR_VERBS = ["start", "stop", "restart", "provision", "logs",
                   "note_get", "note_children", "note_search",
                   "note_create", "note_update", "note_delete",
                   "note_move", "note_clone", "note_place",
-                  "attrs_get", "attr_set", "attr_delete", "attachment_put",
-                  "board_ensure", "board_cards", "card_upsert"]
+                  "attrs_get", "attr_set", "attr_delete", "attachment_put"]
 
 #: What the edge stamps. `_as_header` never emits an empty value, so any of
 #: these means the call crossed an edge listener.
