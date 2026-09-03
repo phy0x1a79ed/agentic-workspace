@@ -232,3 +232,50 @@ def test_an_unchanged_file_is_not_re_attached(scope):
 def test_applying_without_a_bundle_says_where_to_get_one(scope):
     with pytest.raises(FileNotFoundError, match="zotero pull"):
         sync.apply(FakeVault(), scope)
+
+
+# -- two syncs at once -------------------------------------------------------
+
+
+def test_a_second_sync_is_refused_while_one_holds_the_lock(scope):
+    """Two applies each read "what is already in the vault" before the other
+    has written it, so both decide the same paper is new and both create it.
+    It happened here and left 216 doubled papers, with every call succeeding."""
+    seed(scope, [item("AAA")])
+    with sync.exclusive(scope):
+        with pytest.raises(sync.Busy, match="another zotero sync"):
+            sync.apply(FakeVault(), scope)
+
+
+def test_the_lock_is_released_when_its_holder_lets_go(scope):
+    seed(scope, [item("AAA")])
+    with sync.exclusive(scope):
+        pass
+    assert sync.apply(FakeVault(), scope)["items"] == 1
+
+
+def test_a_doubled_note_is_collapsed_rather_than_left_for_ever(scope):
+    """Taking the first and ignoring the rest means every later pass makes the
+    same choice and never looks at the other."""
+    seed(scope, [item("AAA", title="Nitrogen")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    original = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
+
+    twin = v.create(parent=out["library_note"], title="Nitrogen",
+                    labels={sync.KEY_LABEL: "users/0/AAA"})
+    again = sync.apply(v, scope)
+    assert again["deduplicated"] == 1
+    assert twin not in v.notes and original in v.notes
+
+
+def test_the_oldest_copy_is_the_one_kept(scope):
+    """It is the one somebody may already have linked to."""
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    first = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
+    v.create(parent=out["library_note"], title="dupe",
+             labels={sync.KEY_LABEL: "users/0/AAA"})
+    sync.apply(v, scope)
+    assert v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"] == first

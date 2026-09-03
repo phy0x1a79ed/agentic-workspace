@@ -13,6 +13,9 @@ enough to actually be periodic.
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import html
 import logging
 import os
@@ -48,6 +51,45 @@ def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
     return bundle_mod.Bundle(scope or VAULT_SCOPE)
 
 
+class Busy(RuntimeError):
+    """Another sync holds the lock."""
+
+
+@contextlib.contextmanager
+def exclusive(scope: Path | None = None):
+    """Hold the mirror's lock for the length of a pull or an apply.
+
+    Two applies running at once each read "what is already in the vault" before
+    the other has written it, so both decide the same paper is new and both
+    create it. That is not hypothetical: it happened here, and it left 216
+    doubled papers in the vault with nothing reporting a problem — every call
+    succeeded.
+
+    A file lock rather than an in-process one, because the two callers are two
+    processes: the service's timer, and somebody typing `awm zotero sync`. It
+    is released by the kernel when the holder dies, so a killed sync does not
+    wedge the next one.
+    """
+    b = bundle(scope)
+    b.root.mkdir(parents=True, exist_ok=True)
+    path = b.root.parent / ".zotero-sync.lock"
+    handle = path.open("w")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            raise Busy(
+                "another zotero sync is running. Two at once each decide the "
+                "same paper is new and both create it.") from e
+        yield b
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
 # -- pull --------------------------------------------------------------------
 
 
@@ -65,7 +107,11 @@ def pull(scope: Path | None = None, *, force: bool = False,
     whole bundle, because a partial file would describe a library state that
     never existed.
     """
-    b = bundle(scope)
+    with exclusive(scope) as b:
+        return _pull(b, force=force, commit=commit)
+
+
+def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
     had = b.versions
     previous = b.read()
     out: dict[str, Any] = {"had": had, "path": str(b.root)}
@@ -233,7 +279,11 @@ def apply(vault, scope: Path | None = None, *,
     is removed only if it carries one, which means the mirror can only ever
     delete what the mirror put there.
     """
-    b = bundle(scope)
+    with exclusive(scope) as b:
+        return _apply(vault, b, parent=parent)
+
+
+def _apply(vault, b: bundle_mod.Bundle, *, parent: str) -> dict[str, Any]:
     if not b.exists:
         raise FileNotFoundError(
             f"no bundle at {b.root} — run `awm zotero pull` on the node that "
@@ -254,7 +304,7 @@ def apply(vault, scope: Path | None = None, *,
     shelves = _ensure_shelves(vault, root, items)
     folders = _ensure_collections(vault, shelves, root,
                                   library.get("collections") or [])
-    known = vault.owned(root, KEY_LABEL)
+    known, doubled = _collapse(vault, root, KEY_LABEL)
 
     made = updated = attached = 0
     for item in items:
@@ -276,8 +326,25 @@ def apply(vault, scope: Path | None = None, *,
 
     return {"library_note": root, "items": len(items), "created": made,
             "updated": updated, "attached": attached, "removed": removed,
-            "collections": len(folders), "libraries": len(shelves),
-            "versions": library.get("versions")}
+            "deduplicated": doubled, "collections": len(folders),
+            "libraries": len(shelves), "versions": library.get("versions")}
+
+
+def _collapse(vault, root: str, label: str) -> tuple[dict[str, str], int]:
+    """One note per key, deleting any second copy of one the mirror owns.
+
+    Taking the first and ignoring the rest leaves a doubled paper in the vault
+    for ever, because every later pass makes the same choice and never looks at
+    the other. The oldest is kept: it is the one a person may already have
+    linked to.
+    """
+    every = vault.owned_all(root, label)
+    doubled = 0
+    for extras in every.values():
+        for note_id in extras[1:]:
+            vault.delete(note_id)
+            doubled += 1
+    return {key: ids[0] for key, ids in every.items()}, doubled
 
 
 def _ensure_shelves(vault, root: str, items: list[dict]) -> dict[str, str]:
@@ -311,7 +378,7 @@ def _ensure_collections(vault, shelves: dict[str, str], root: str,
             return 0
         return 1 + depth(parent, guard + 1)
 
-    known = vault.owned(root, COLLECTION_LABEL)
+    known, _ = _collapse(vault, root, COLLECTION_LABEL)
     made: dict[str, str] = {}
     for c in sorted(tree, key=lambda c: (depth(c["ref"]), c["name"])):
         shelf = shelves.get(c.get("library", ""), root)

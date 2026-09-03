@@ -36,10 +36,17 @@ class FakeVault:
 
     # -- the interface -------------------------------------------------------
 
-    def owned(self, root: str, label: str) -> dict[str, str]:
+    def owned_all(self, root: str, label: str) -> dict[str, list[str]]:
         self.calls.append("owned")
-        return {n["labels"][label]: nid for nid, n in self.notes.items()
-                if n["labels"].get(label) and self._under(nid, root)}
+        out: dict[str, list[str]] = {}
+        for nid, n in self.notes.items():
+            value = n["labels"].get(label)
+            if value and self._under(nid, root):
+                out.setdefault(value, []).append(nid)
+        return out
+
+    def owned(self, root: str, label: str) -> dict[str, str]:
+        return {k: v[0] for k, v in self.owned_all(root, label).items()}
 
     def _under(self, note_id: str, root: str, guard: int = 0) -> bool:
         if note_id == root or guard > 50:

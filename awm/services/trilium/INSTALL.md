@@ -13,7 +13,8 @@ together. It is collaborative by being shared, not by being replicated.
 
 This file holds the decisions a reader cannot recover from the code: why the
 vault is a second upstream on an existing listener rather than a mount or a host
-of its own, why it has no password, why there are three kinds of database copy
+of its own, why it has no password, why the verbs that write notes are refused to
+anyone who arrives through the edge, why there are three kinds of database copy
 and only one of them is a restore path, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
@@ -168,6 +169,70 @@ control the `Secure` flag on Trilium's session cookie: `session_parser.ts` uses 
 literal `config.Network.https`. `loopback` rather than `true`, because the edge
 always connects from there and a blanket trust would let a forged header past
 anything that reads a client address.
+
+## The note API, and why reading it is an operator verb
+
+The service can do to a note anything a person can: read it, create, update,
+delete, move, clone, place it under several parents at once, set and clear a
+label or relation, and attach a file. `awm trilium --help` lists them.
+
+**Every one is operator-only, reads included.** The rest of the write verbs are
+operator-only because the vault is shared and one person's button acts on
+everyone's work. `note_get` is different and lands in the same place for a
+different reason: the edge deliberately does not forward `/etapi/`, so that a
+note in the vault cannot run script that walks the vault. An open read verb
+would be that same surface wearing awm's name. Nothing is lost by keeping it on
+the host — the person reading the vault already has all of it in front of them.
+
+Three places where the ETAPI shape underneath is not the shape a caller expects,
+absorbed here so that every caller does not meet them separately:
+
+- **Attributes are not part of creating a note.** ETAPI's create-note whitelist
+  takes no attributes, so `note_create` taking `labels` is two or three calls
+  wearing one verb.
+- **A note's parent is a branch, not a field.** `note_place` sets the whole
+  parent set in one call, and always adds before it removes: a note's last
+  branch takes the note with it, so unplacing first deletes what you are moving.
+- **An attachment's bytes do not travel in its JSON.** The create body's
+  `content` is validated as a string. The row is made empty and the bytes are
+  PUT after it as `application/octet-stream`, which is what makes express hand
+  the route a Buffer rather than a mangled string.
+
+CAUTION: `note_upsert` is keyed on `(parent, exact title)` and `card_upsert` on
+a label. Neither is interchangeable with the other, and using `note_upsert`
+where a title can repeat is how one person's writing gets overwritten.
+
+## The board
+
+Trilium ships a board view, so a kanban board here is not something this service
+draws. It is a `book` note carrying `#viewType=board`, and a card is any note
+beneath it carrying the label the board groups by — `#status` unless
+`#board:groupBy` says otherwise. We carry no patches to the fork and this does
+not start any.
+
+```
+awm trilium board-ensure --title Board
+awm trilium card-upsert --board <id> --key deploy-42 --title "Ship it" --status Doing
+awm trilium board-cards --board <id>
+```
+
+**The columns are written into the board's own `label:<groupBy>` select
+definition.** The board view resolves its columns from that definition, then
+from its saved `board.json` attachment, then from the values notes actually
+carry. Only the definition is reachable from outside Trilium, and only the
+definition can name a column that nobody is standing in — an empty "Blocked"
+column exists because the definition says so.
+
+**A card awm owns carries `#awmKey`, and identity is that key, not the title.**
+So awm may rename its own card without orphaning it, and a card a person typed
+carries no key and is invisible to every awm pass. That is the whole of how one
+board takes cards from both. `#awmKey` is deliberately not promoted: every
+promoted attribute renders on the card face, and a bookkeeping key on every card
+is noise on the one surface whose job is to be scanned.
+
+CAUTION: the board groups its subtree **flattened and recursively**, so a card
+nested two levels down still appears on it. Placement inside the board matters
+less than the label.
 
 ## Three kinds of copy, and only one is a restore path
 
