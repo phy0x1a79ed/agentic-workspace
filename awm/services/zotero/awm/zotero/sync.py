@@ -159,6 +159,27 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
     return out
 
 
+def run(vault, scope: Path | None = None, *, force: bool = False,
+        parent: str = "root", commit: bool = True) -> dict[str, Any]:
+    """Pull then apply, holding the lock across both.
+
+    Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
+    second sync starting in between would apply the bundle this one has just
+    rewritten and both would decide the same papers were new. One lock, one
+    pass.
+
+    An unchanged library is the ordinary answer, and re-applying an unchanged
+    bundle would be thousands of round trips proving nothing — so the apply
+    runs only when the pull moved something.
+    """
+    with exclusive(scope) as b:
+        pulled = _pull(b, force=force, commit=commit)
+        out: dict[str, Any] = {"pull": pulled}
+        if pulled.get("changed"):
+            out["apply"] = _apply(vault, b, parent=parent)
+        return out
+
+
 def _kept(previous: dict[str, Any], reread: set[str]) -> dict[str, Any]:
     """What the last bundle said about the libraries this pass did not read.
 

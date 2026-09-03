@@ -279,3 +279,23 @@ def test_the_oldest_copy_is_the_one_kept(scope):
              labels={sync.KEY_LABEL: "users/0/AAA"})
     sync.apply(v, scope)
     assert v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"] == first
+
+
+def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
+    """Pull-then-apply as two locked steps leaves a gap: a second sync starting
+    between them applies the bundle the first has just rewritten, and both
+    decide the same papers are new."""
+    seed(scope, [item("AAA")])
+    held: list[bool] = []
+
+    def _pull(b, *, force, commit):
+        try:
+            with sync.exclusive(scope):
+                held.append(False)
+        except sync.Busy:
+            held.append(True)
+        return {"changed": True}
+
+    monkeypatch.setattr(sync, "_pull", _pull)
+    sync.run(FakeVault(), scope)
+    assert held == [True], "the lock was not held while pulling"
