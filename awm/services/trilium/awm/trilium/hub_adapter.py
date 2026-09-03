@@ -24,12 +24,16 @@ Run via `run.sh` (which the gateway spawns and respawns):
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import etapi, instances, server, vault
+from awm.trilium import board, etapi, instances, server, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -190,6 +194,289 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Parent note id. Default root."},
                 {"name": "type", "type": "string",
                  "description": "Trilium note type. Default text."},
+            ],
+        },
+        {
+            "name": "note_get",
+            "tool": "trilium_note_get",
+            "description": (
+                "One note: its title, type, attributes, attachments, parents "
+                "and children, and its body unless you ask for it left out. "
+                "Operator only, like every note verb — see note_upsert."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "Note id. `root` is the top of the tree."},
+                {"name": "content", "type": "boolean",
+                 "description": "Include the body. Default true."},
+            ],
+        },
+        {
+            "name": "note_children",
+            "tool": "trilium_note_children",
+            "description": (
+                "The direct children of a note, in tree order, without their "
+                "bodies. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string",
+                 "description": "Parent note id. Default root."},
+            ],
+        },
+        {
+            "name": "note_search",
+            "tool": "trilium_note_search",
+            "description": (
+                "Search the vault in Trilium's own search grammar — "
+                "`#status=Doing`, `note.title *=* paper`, plain words. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "query", "type": "string", "required": True,
+                 "description": "A Trilium search expression."},
+                {"name": "ancestor", "type": "string",
+                 "description": "Restrict to this note's subtree."},
+                {"name": "limit", "type": "number",
+                 "description": "Maximum hits. Default 50."},
+                {"name": "fast", "type": "boolean",
+                 "description": "Skip note bodies. Default true."},
+            ],
+        },
+        {
+            "name": "note_create",
+            "tool": "trilium_note_create",
+            "description": (
+                "Create a note under a parent and return its id. Unlike "
+                "note_upsert this always makes a new one, so it is what to "
+                "call when the title is not the identity. Attributes given "
+                "here are set in the same call, which ETAPI itself cannot do. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "title", "type": "string", "required": True,
+                 "description": "The note's title."},
+                {"name": "content", "type": "string",
+                 "description": "The body. HTML for a text note. Default empty."},
+                {"name": "parent", "type": "string",
+                 "description": "Parent note id. Default root."},
+                {"name": "type", "type": "string",
+                 "description": "Trilium note type. Default text."},
+                {"name": "mime", "type": "string",
+                 "description": "MIME type, for a code or file note."},
+                {"name": "labels", "type": "object",
+                 "description": "Labels to set, as {name: value}."},
+                {"name": "relations", "type": "object",
+                 "description": "Relations to set, as {name: target note id}."},
+            ],
+        },
+        {
+            "name": "note_update",
+            "tool": "trilium_note_update",
+            "description": (
+                "Change a note in place: its title, type, mime, body, or any "
+                "of them at once. Only what you name is touched. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to change."},
+                {"name": "title", "type": "string",
+                 "description": "New title."},
+                {"name": "content", "type": "string",
+                 "description": "New body. Replaces the old one entirely."},
+                {"name": "type", "type": "string",
+                 "description": "New Trilium note type."},
+                {"name": "mime", "type": "string",
+                 "description": "New MIME type."},
+                {"name": "labels", "type": "object",
+                 "description": "Labels to set in the same call, as {name: value}."},
+            ],
+        },
+        {
+            "name": "note_place",
+            "tool": "trilium_note_place",
+            "description": (
+                "Make a note's parents exactly this set — one call for what "
+                "would otherwise be a move, several clones and an unplace. "
+                "The note is shown under each and nowhere else; it is one "
+                "note in several places, never a copy. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to place."},
+                {"name": "parents", "type": "array", "required": True,
+                 "description": "Every parent it should appear under."},
+            ],
+        },
+        {
+            "name": "note_delete",
+            "tool": "trilium_note_delete",
+            "description": (
+                "Delete a note and everything under it. Operator only, and it "
+                "refuses `root`: there is no undo here, only a snapshot."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to delete, with its subtree."},
+            ],
+        },
+        {
+            "name": "note_move",
+            "tool": "trilium_note_move",
+            "description": (
+                "Move a note under a new parent, leaving it in one place. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to move."},
+                {"name": "parent", "type": "string", "required": True,
+                 "description": "Its new parent."},
+            ],
+        },
+        {
+            "name": "note_clone",
+            "tool": "trilium_note_clone",
+            "description": (
+                "Also show this note under another parent. One note in two "
+                "places, not a copy — editing either edits the note. Operator "
+                "only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to place again."},
+                {"name": "parent", "type": "string", "required": True,
+                 "description": "The additional parent."},
+            ],
+        },
+        {
+            "name": "attrs_get",
+            "tool": "trilium_attrs_get",
+            "description": (
+                "Every label and relation on a note, including the ones it "
+                "inherits and which note owns each. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to read."},
+            ],
+        },
+        {
+            "name": "attr_set",
+            "tool": "trilium_attr_set",
+            "description": (
+                "Give a note exactly one label or relation of this name. "
+                "Matched against the note's own attributes, never an "
+                "inherited one — patching that would change every note "
+                "sharing the template. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to label."},
+                {"name": "name", "type": "string", "required": True,
+                 "description": "Attribute name, without the # or ~."},
+                {"name": "value", "type": "string",
+                 "description": "Label value, or the target note id for a relation."},
+                {"name": "type", "type": "string",
+                 "description": "label or relation. Default label."},
+                {"name": "inheritable", "type": "boolean",
+                 "description": "Also apply to the subtree. Default false."},
+            ],
+        },
+        {
+            "name": "attr_delete",
+            "tool": "trilium_attr_delete",
+            "description": (
+                "Remove every attribute of this name the note owns. An "
+                "inherited one is not the note's to remove and stays. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to clear."},
+                {"name": "name", "type": "string", "required": True,
+                 "description": "Attribute name, without the # or ~."},
+                {"name": "type", "type": "string",
+                 "description": "label or relation. Default label."},
+            ],
+        },
+        {
+            "name": "attachment_put",
+            "tool": "trilium_attachment_put",
+            "description": (
+                "Attach a file to a note, from a path on this host or from "
+                "base64. Replaces an attachment of the same title, and skips "
+                "the upload when the size already matches. Operator only: it "
+                "reads a path the service can reach."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note to attach to."},
+                {"name": "path", "type": "string",
+                 "description": "A file on this host. Either this or content_b64."},
+                {"name": "content_b64", "type": "string",
+                 "description": "The bytes, base64-encoded."},
+                {"name": "title", "type": "string",
+                 "description": "Attachment title. Defaults to the file's name."},
+                {"name": "mime", "type": "string",
+                 "description": "MIME type. Guessed from the name when omitted."},
+            ],
+            "timeout": 300,
+        },
+        {
+            "name": "board_ensure",
+            "tool": "trilium_board_ensure",
+            "description": (
+                "Create a kanban board in the vault, or bring the one with "
+                "this title up to these columns. Trilium's own board view "
+                "renders it; the columns are written into the board's select "
+                "definition, which is what lets a column stand empty. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "title", "type": "string", "required": True,
+                 "description": "The board's title, and its identity under the parent."},
+                {"name": "parent", "type": "string",
+                 "description": "Where the board goes. Default root."},
+                {"name": "columns", "type": "array",
+                 "description": "Column names in order. Default To do/Doing/Blocked/Done."},
+                {"name": "group_by", "type": "string",
+                 "description": "The label a card's column comes from. Default status."},
+            ],
+        },
+        {
+            "name": "board_cards",
+            "tool": "trilium_board_cards",
+            "description": (
+                "What is on a board, by column, saying of each card whether "
+                "awm placed it or a person did. Operator only."
+            ),
+            "params": [
+                {"name": "board", "type": "string", "required": True,
+                 "description": "The board's note id."},
+            ],
+        },
+        {
+            "name": "card_upsert",
+            "tool": "trilium_card_upsert",
+            "description": (
+                "Put a card on a board, or move and retitle the one already "
+                "carrying this key. Matched on #awmKey, never on the title, "
+                "so awm may rename its own card and can never touch one a "
+                "person typed. Operator only."
+            ),
+            "params": [
+                {"name": "board", "type": "string", "required": True,
+                 "description": "The board's note id."},
+                {"name": "key", "type": "string", "required": True,
+                 "description": "Stable identity of the card in its source system."},
+                {"name": "title", "type": "string", "required": True,
+                 "description": "What the card says."},
+                {"name": "status", "type": "string", "required": True,
+                 "description": "The column it belongs in."},
+                {"name": "content", "type": "string",
+                 "description": "The card's body. Left alone when omitted."},
+                {"name": "labels", "type": "object",
+                 "description": "Extra labels to set, as {name: value}."},
             ],
         },
     ],
@@ -355,6 +642,319 @@ async def _h_note_upsert(args: dict, as_: str | None = None) -> dict:
         type=(args.get("type") or "").strip() or "text")
 
 
+# -- the note API -----------------------------------------------------------
+#
+# Every verb here is operator-only, reads included. The edge does not forward
+# `/etapi/`, and these verbs are the same surface by another name: a note in
+# the vault can run script in the vault's origin, and an open read verb would
+# let it walk a knowledge base its author was never shown. The person reading
+# the vault already has all of it in front of them, so nothing is lost.
+
+
+def _mapping(args: dict, key: str) -> dict[str, str]:
+    """A `{name: value}` argument, however the surface it arrived on spells it.
+
+    One catalog projects each verb onto MCP, HTTP and the CLI, and the CLI has
+    no object type — `_json_schema_py_type` maps `object` to `str`, so
+    `--labels '{"status":"Doing"}'` arrives as text while the same call over
+    MCP arrives as a dict. Accepting both is what keeps `awm trilium
+    note-create` and `mcp__awm__trilium` the same verb.
+    """
+    raw = args.get(key)
+    if raw in (None, "", {}):
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{key} is not JSON: {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} is an object of {{name: value}}, not {type(raw).__name__}")
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _note_id(args: dict, key: str = "note_id", default: str | None = None) -> str:
+    got = (args.get(key) or "").strip() or default
+    if not got:
+        raise ValueError(f"{key} is required")
+    return got
+
+
+async def _h_note_get(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_get")
+    note_id = _note_id(args)
+    want_content = args.get("content", True) is not False
+
+    def _read() -> dict:
+        c = etapi.client()
+        out = dict(c.note(note_id))
+        out["attachments"] = c.attachments(note_id)
+        if want_content:
+            out["content"] = c.note_content(note_id)
+        return out
+    return await asyncio.to_thread(_read)
+
+
+async def _h_note_children(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_children")
+    note_id = _note_id(args, default="root")
+
+    def _read() -> dict:
+        kids = etapi.client().children(note_id)
+        return {"parent": note_id, "count": len(kids), "children": [
+            {"note_id": k.get("noteId"), "title": k.get("title"),
+             "type": k.get("type"),
+             "child_count": len(k.get("childNoteIds") or [])}
+            for k in kids]}
+    return await asyncio.to_thread(_read)
+
+
+async def _h_note_search(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_search")
+    query = (args.get("query") or "").strip()
+    if not query:
+        raise ValueError("query is required")
+    params: dict[str, Any] = {
+        "limit": int(args.get("limit") or 50),
+        "fastSearch": args.get("fast", True) is not False,
+    }
+    ancestor = (args.get("ancestor") or "").strip()
+    if ancestor:
+        params["ancestorNoteId"] = ancestor
+    return await asyncio.to_thread(etapi.client().search, query, **params)
+
+
+async def _h_note_create(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_create")
+    title = (args.get("title") or "").strip()
+    if not title:
+        raise ValueError("title is required")
+    labels = _mapping(args, "labels")
+    relations = _mapping(args, "relations")
+
+    def _write() -> dict:
+        c = etapi.client()
+        made = c.create_note(
+            parent_note_id=(args.get("parent") or "").strip() or "root",
+            title=title, type=(args.get("type") or "").strip() or "text",
+            content=str(args.get("content") or ""),
+            mime=(args.get("mime") or "").strip() or None)
+        note_id = made["note"]["noteId"]
+        # A second call each, because ETAPI's create-note whitelist takes no
+        # attributes. Doing it here is the point of the verb: every caller
+        # would otherwise write this loop, and half would forget the relation.
+        for name, value in labels.items():
+            c.set_attribute(note_id=note_id, name=name.lstrip("#"), value=value)
+        for name, target in relations.items():
+            c.set_attribute(note_id=note_id, name=name.lstrip("~"), value=target,
+                            type="relation")
+        return {"note_id": note_id, "created": True,
+                "labels": len(labels), "relations": len(relations)}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_note_update(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_update")
+    note_id = _note_id(args)
+    fields = {k: args[k] for k in ("title", "type", "mime")
+              if args.get(k) not in (None, "")}
+    content = args.get("content")
+    labels = _mapping(args, "labels")
+    if not fields and content is None and not labels:
+        raise ValueError(
+            "nothing to change: give a title, content, type, mime or labels")
+
+    def _write() -> dict:
+        c = etapi.client()
+        if fields:
+            c.patch_note(note_id, **fields)
+        changed = dict(fields)
+        if content is not None:
+            if c.note_content(note_id) != str(content):
+                c.set_content(note_id, str(content))
+                changed["content"] = True
+            else:
+                changed["content"] = False
+        # Set here rather than by a call each, because a sync writing five
+        # fields onto a thousand notes is five thousand round trips otherwise,
+        # every one of them re-reading the same note.
+        written = [n for n, v in labels.items()
+                   if c.set_attribute(note_id=note_id, name=n.lstrip("#"),
+                                      value=v)["changed"]]
+        if written:
+            changed["labels"] = written
+        return {"note_id": note_id, "changed": changed}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_note_place(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_place")
+    note_id = _note_id(args)
+    parents = args.get("parents")
+    if isinstance(parents, str):
+        parents = [p.strip() for p in parents.split(",") if p.strip()]
+    wanted = {str(p).strip() for p in (parents or []) if str(p).strip()}
+    if not wanted:
+        raise ValueError(
+            "parents is required and may not be empty: a note with no branch "
+            "is a deleted note, and note_delete at least says so")
+
+    def _write() -> dict:
+        c = etapi.client()
+        current = set(c.note(note_id).get("parentNoteIds") or [])
+        # Added before removed, always: a note's last branch takes the note
+        # with it, so unplacing first would delete what this is placing.
+        for parent in sorted(wanted - current):
+            c.put_branch(note_id, parent)
+        for parent in sorted(current - wanted):
+            c.delete_branch(c.branch_id(note_id, parent))
+        return {"note_id": note_id, "parents": sorted(wanted),
+                "added": sorted(wanted - current),
+                "removed": sorted(current - wanted)}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_note_delete(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_delete")
+    note_id = _note_id(args)
+    if note_id == "root":
+        raise ValueError(
+            "root is the vault. Deleting it is `restore` from a snapshot, "
+            "which at least says so.")
+
+    def _write() -> dict:
+        etapi.client().delete_note(note_id)
+        return {"note_id": note_id, "deleted": True}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_note_move(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_move")
+    return await asyncio.to_thread(
+        etapi.client().move_note, _note_id(args), _note_id(args, "parent"))
+
+
+async def _h_note_clone(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "note_clone")
+    note_id, parent = _note_id(args), _note_id(args, "parent")
+
+    def _write() -> dict:
+        made = etapi.client().put_branch(note_id, parent)
+        return {"note_id": note_id, "parent": parent,
+                "branch_id": made.get("branchId")}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_attrs_get(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "attrs_get")
+    note_id = _note_id(args)
+
+    def _read() -> dict:
+        attrs = etapi.client().attributes(note_id)
+        return {"note_id": note_id, "attributes": [
+            {"attribute_id": a.get("attributeId"), "type": a.get("type"),
+             "name": a.get("name"), "value": a.get("value"),
+             "inheritable": bool(a.get("isInheritable")),
+             "owned": a.get("noteId") == note_id}
+            for a in attrs]}
+    return await asyncio.to_thread(_read)
+
+
+async def _h_attr_set(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "attr_set")
+    note_id = _note_id(args)
+    name = (args.get("name") or "").strip().lstrip("#~")
+    if not name:
+        raise ValueError("name is required")
+    return await asyncio.to_thread(
+        etapi.client().set_attribute, note_id=note_id, name=name,
+        value=str(args.get("value") or ""),
+        type=(args.get("type") or "").strip() or "label",
+        is_inheritable=bool(args.get("inheritable")))
+
+
+async def _h_attr_delete(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "attr_delete")
+    note_id = _note_id(args)
+    name = (args.get("name") or "").strip().lstrip("#~")
+    if not name:
+        raise ValueError("name is required")
+
+    def _write() -> dict:
+        gone = etapi.client().clear_attribute(
+            note_id=note_id, name=name,
+            type=(args.get("type") or "").strip() or "label")
+        return {"note_id": note_id, "name": name, "removed": gone}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "attachment_put")
+    note_id = _note_id(args)
+    path = (args.get("path") or "").strip()
+    b64 = args.get("content_b64")
+    if bool(path) == bool(b64):
+        raise ValueError("give exactly one of path or content_b64")
+
+    def _write() -> dict:
+        if path:
+            src = Path(path).expanduser()
+            blob = src.read_bytes()
+            title = (args.get("title") or "").strip() or src.name
+        else:
+            blob = base64.b64decode(str(b64))
+            title = (args.get("title") or "").strip()
+            if not title:
+                raise ValueError("title is required when the bytes come inline")
+        mime = ((args.get("mime") or "").strip()
+                or mimetypes.guess_type(title)[0]
+                or "application/octet-stream")
+        out = etapi.client().upsert_attachment(
+            owner_id=note_id, title=title, mime=mime, blob=blob)
+        out.update({"note_id": note_id, "title": title, "mime": mime,
+                    "bytes": len(blob)})
+        return out
+    return await asyncio.to_thread(_write)
+
+
+# -- boards -----------------------------------------------------------------
+
+
+async def _h_board_ensure(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "board_ensure")
+    title = (args.get("title") or "").strip()
+    if not title:
+        raise ValueError("title is required")
+    cols = args.get("columns")
+    if isinstance(cols, str):
+        cols = [c for c in (p.strip() for p in cols.split(",")) if c]
+    return await asyncio.to_thread(
+        board.ensure, etapi.client(), title=title,
+        parent=(args.get("parent") or "").strip() or "root",
+        columns=list(cols) if cols else None,
+        group_by=(args.get("group_by") or "").strip() or board.DEFAULT_GROUP_BY)
+
+
+async def _h_board_cards(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "board_cards")
+    return await asyncio.to_thread(
+        board.cards, etapi.client(), _note_id(args, "board"))
+
+
+async def _h_card_upsert(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "card_upsert")
+    status = (args.get("status") or "").strip()
+    if not status:
+        raise ValueError("status is required: it is the column the card is in")
+    content = args.get("content")
+    return await asyncio.to_thread(
+        board.card_upsert, etapi.client(),
+        board=_note_id(args, "board"), key=str(args.get("key") or ""),
+        title=str(args.get("title") or ""), status=status,
+        content=None if content is None else str(content),
+        labels=_mapping(args, "labels"))
+
+
 HANDLERS = {
     "status": _h_status,
     "start": _h_start,
@@ -368,6 +968,22 @@ HANDLERS = {
     "restore": _h_restore,
     "export": _h_export,
     "note_upsert": _h_note_upsert,
+    "note_get": _h_note_get,
+    "note_children": _h_note_children,
+    "note_search": _h_note_search,
+    "note_create": _h_note_create,
+    "note_update": _h_note_update,
+    "note_delete": _h_note_delete,
+    "note_move": _h_note_move,
+    "note_place": _h_note_place,
+    "note_clone": _h_note_clone,
+    "attrs_get": _h_attrs_get,
+    "attr_set": _h_attr_set,
+    "attr_delete": _h_attr_delete,
+    "attachment_put": _h_attachment_put,
+    "board_ensure": _h_board_ensure,
+    "board_cards": _h_board_cards,
+    "card_upsert": _h_card_upsert,
 }
 
 
