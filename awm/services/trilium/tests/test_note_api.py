@@ -21,6 +21,22 @@ from .fake_vault import FakeVault
 pytestmark = [pytest.mark.unit, pytest.mark.smoke]
 
 
+@pytest.fixture(autouse=True)
+def _never_the_real_vault(monkeypatch):
+    """No test in this file may reach a running Trilium.
+
+    Not a precaution. An earlier version of the empty-column test called
+    `board.ensure` without a fake, the call fell through to the default
+    columns instead of being refused, and it created a real board in the live
+    vault on this host. The `vault` fixture is opt-in per test and overrides
+    this one; being unable to reach a socket is not something to remember.
+    """
+    def _refuse(*a, **kw):
+        raise AssertionError(
+            "a test reached the live vault — use the `vault` fixture")
+    monkeypatch.setattr(etapi.httpx, "request", _refuse)
+
+
 @pytest.fixture
 def vault(monkeypatch):
     fake = FakeVault()
