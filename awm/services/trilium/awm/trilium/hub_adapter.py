@@ -33,7 +33,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import board, etapi, instances, server, vault
+from awm.trilium import etapi, instances, server, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -421,63 +421,6 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "MIME type. Guessed from the name when omitted."},
             ],
             "timeout": 300,
-        },
-        {
-            "name": "board_ensure",
-            "tool": "trilium_board_ensure",
-            "description": (
-                "Create a kanban board in the vault, or bring the one with "
-                "this title up to these columns. Trilium's own board view "
-                "renders it; the columns are written into the board's select "
-                "definition, which is what lets a column stand empty. "
-                "Operator only."
-            ),
-            "params": [
-                {"name": "title", "type": "string", "required": True,
-                 "description": "The board's title, and its identity under the parent."},
-                {"name": "parent", "type": "string",
-                 "description": "Where the board goes. Default root."},
-                {"name": "columns", "type": "array",
-                 "description": "Column names in order. Default To do/Doing/Blocked/Done."},
-                {"name": "group_by", "type": "string",
-                 "description": "The label a card's column comes from. Default status."},
-            ],
-        },
-        {
-            "name": "board_cards",
-            "tool": "trilium_board_cards",
-            "description": (
-                "What is on a board, by column, saying of each card whether "
-                "awm placed it or a person did. Operator only."
-            ),
-            "params": [
-                {"name": "board", "type": "string", "required": True,
-                 "description": "The board's note id."},
-            ],
-        },
-        {
-            "name": "card_upsert",
-            "tool": "trilium_card_upsert",
-            "description": (
-                "Put a card on a board, or move and retitle the one already "
-                "carrying this key. Matched on #awmKey, never on the title, "
-                "so awm may rename its own card and can never touch one a "
-                "person typed. Operator only."
-            ),
-            "params": [
-                {"name": "board", "type": "string", "required": True,
-                 "description": "The board's note id."},
-                {"name": "key", "type": "string", "required": True,
-                 "description": "Stable identity of the card in its source system."},
-                {"name": "title", "type": "string", "required": True,
-                 "description": "What the card says."},
-                {"name": "status", "type": "string", "required": True,
-                 "description": "The column it belongs in."},
-                {"name": "content", "type": "string",
-                 "description": "The card's body. Left alone when omitted."},
-                {"name": "labels", "type": "object",
-                 "description": "Extra labels to set, as {name: value}."},
-            ],
         },
     ],
     "emitters": [],
@@ -926,44 +869,6 @@ async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(_write)
 
 
-# -- boards -----------------------------------------------------------------
-
-
-async def _h_board_ensure(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "board_ensure")
-    title = (args.get("title") or "").strip()
-    if not title:
-        raise ValueError("title is required")
-    cols = args.get("columns")
-    if isinstance(cols, str):
-        cols = [c for c in (p.strip() for p in cols.split(",")) if c]
-    return await asyncio.to_thread(
-        board.ensure, etapi.client(), title=title,
-        parent=(args.get("parent") or "").strip() or "root",
-        columns=list(cols) if cols else None,
-        group_by=(args.get("group_by") or "").strip() or board.DEFAULT_GROUP_BY)
-
-
-async def _h_board_cards(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "board_cards")
-    return await asyncio.to_thread(
-        board.cards, etapi.client(), _note_id(args, "board"))
-
-
-async def _h_card_upsert(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "card_upsert")
-    status = (args.get("status") or "").strip()
-    if not status:
-        raise ValueError("status is required: it is the column the card is in")
-    content = args.get("content")
-    return await asyncio.to_thread(
-        board.card_upsert, etapi.client(),
-        board=_note_id(args, "board"), key=str(args.get("key") or ""),
-        title=str(args.get("title") or ""), status=status,
-        content=None if content is None else str(content),
-        labels=_mapping(args, "labels"))
-
-
 HANDLERS = {
     "status": _h_status,
     "start": _h_start,
@@ -990,9 +895,6 @@ HANDLERS = {
     "attr_set": _h_attr_set,
     "attr_delete": _h_attr_delete,
     "attachment_put": _h_attachment_put,
-    "board_ensure": _h_board_ensure,
-    "board_cards": _h_board_cards,
-    "card_upsert": _h_card_upsert,
 }
 
 

@@ -14,12 +14,14 @@ together. It is collaborative by being shared, not by being replicated.
 This file holds the decisions a reader cannot recover from the code: why the
 vault is a second upstream on an existing listener rather than a mount or a host
 of its own, why it has no password, why the verbs that write notes are refused to
-anyone who arrives through the edge, why there are three kinds of database copy
-and only one of them is a restore path, and what a shared origin costs.
+anyone who arrives through the edge, why the kanban board is Trilium's rather
+than this service's, why there are three kinds of database copy and only one of
+them is a restore path, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
-Where the vault's content lives is `projects/vault`. This file covers only the
-boundary between awm and Trilium.
+The patches we carry to it are the exception, because nothing in that project
+says why they are there. Where the vault's content lives is `projects/vault`.
+This file covers only the boundary between awm and Trilium.
 
 ## The contract
 
@@ -198,41 +200,80 @@ absorbed here so that every caller does not meet them separately:
   PUT after it as `application/octet-stream`, which is what makes express hand
   the route a Buffer rather than a mangled string.
 
-CAUTION: `note_upsert` is keyed on `(parent, exact title)` and `card_upsert` on
-a label. Neither is interchangeable with the other, and using `note_upsert`
-where a title can repeat is how one person's writing gets overwritten.
+`note_update` reports what actually moved, not what it was handed: a field is
+compared before it is written, and offering a title that is already right
+reports nothing and writes nothing. A mirror running on a timer offers every
+field on every pass, so the alternative is a revision on every note every tick.
+
+An argument that is an object — `labels`, `relations` — is spelled as JSON,
+because one catalog projects each verb onto MCP, HTTP and the CLI and the CLI
+has no object type: `--labels '{"status": "To do"}'`.
+
+CAUTION: `note_upsert` is keyed on `(parent, exact title)`. Using it where a
+title can repeat is how one person's writing gets overwritten. Key on a label
+instead, the way the Zotero mirror keys on `#zoteroKey`.
 
 ## The board
 
 Trilium ships a board view, so a kanban board here is not something this service
-draws. It is a `book` note carrying `#viewType=board`, and a card is any note
+draws. A board is a `book` note carrying `#viewType=board`. A card is any note
 beneath it carrying the label the board groups by — `#status` unless
-`#board:groupBy` says otherwise. We carry no patches to the fork and this does
-not start any.
+`#board:groupBy` says otherwise. A board is therefore notes and labels and
+nothing else, which is why the note API already reaches all of it and this
+service offers no board verb.
 
-```
-awm trilium board-ensure --title Board
-awm trilium card-upsert --board <id> --key deploy-42 --title "Ship it" --status Doing
-awm trilium board-cards --board <id>
-```
+It offered three once. `board_ensure`, `card_upsert` and `board_cards` are gone,
+and each is replaced by something a person could do by hand:
 
-**The columns are written into the board's own `label:<groupBy>` select
-definition.** The board view resolves its columns from that definition, then
-from its saved `board.json` attachment, then from the values notes actually
-carry. Only the definition is reachable from outside Trilium, and only the
-definition can name a column that nobody is standing in — an empty "Blocked"
-column exists because the definition says so.
+- **Make a board in the browser.** It is one of the collection types, two clicks
+  from the note menu. A board awm minted carried the labels without the
+  template, so a vault ended up holding two kinds of board that did not look
+  alike.
+- **Read a board with a search.** `note_search` for the grouping label,
+  restricted to the board's subtree, returns exactly the cards. `attrs_get`
+  says which column each one is in.
+- **Place a card with a note and a label.** `note_create` or `note_update` for
+  the card, then `attr_set` for the grouping label.
 
-**A card awm owns carries `#awmKey`, and identity is that key, not the title.**
-So awm may rename its own card without orphaning it, and a card a person typed
-carries no key and is invisible to every awm pass. That is the whole of how one
-board takes cards from both. `#awmKey` is deliberately not promoted: every
-promoted attribute renders on the card face, and a bookkeeping key on every card
-is noise on the one surface whose job is to be scanned.
+**awm never invents a column.** It sets the grouping label only to a value the
+board's `label:<groupBy>` definition already offers, and refuses the write
+otherwise. The board view resolves its columns from that definition first, then
+from its saved `board.json` attachment, then from the values notes carry — so a
+value awm invents becomes a column on the next render, with nobody having asked
+for one. This is a rule for whoever writes the next caller, not a check in the
+code. The code that could have enforced it was the board module, and removing it
+was the point.
 
 CAUTION: the board groups its subtree **flattened and recursively**, so a card
 nested two levels down still appears on it. Placement inside the board matters
 less than the label.
+
+### The two patches we carry
+
+The fork was pristine at `v0.105.0` until this. Both patches are upstream bugs
+rather than local taste, so both belong upstream. Sending them is a decision
+nobody has made yet.
+
+- **A card says where it lives.** Grouping is recursive, so a board shows notes
+  from every depth of its subtree, and every one of them rendered as a bare
+  title. Two notes called "Outline" under different parents read as the same
+  card. A card now renders the titles between it and the board, joined by `/`.
+  The path is accumulated on the way down rather than climbed back up from the
+  card, because a note cloned to two places under one board has one path per
+  branch and only the walk knows which branch a card was reached by.
+- **A column change sticks.** Deleting or renaming a column re-rendered the
+  board while the definition write was still in flight. That render resolved its
+  columns from the definition it had just replaced, put the column back, and
+  persisted what it resolved. So an empty column could not be deleted at all,
+  and a rename left both names standing. The definition now lands on the copy
+  the board holds before the write goes to the server. A definition an ancestor
+  owns, or a template shares with notes off this board, is not this board's to
+  rewrite, and a column it names is refused with a message rather than
+  half-changed.
+
+CAUTION: the tarball install path serves upstream's build, which has neither
+patch. A node that installs from the tarball shows bare card titles and loses a
+column change on reload. Only a node that builds the fork carries them.
 
 ## Three kinds of copy, and only one is a restore path
 

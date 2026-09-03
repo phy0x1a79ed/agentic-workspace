@@ -43,6 +43,15 @@ version moved. The versions live *in the bundle* rather than in a service
 database, so a node that receives the bundle knows what it holds, and a node
 that loses its service state has not lost its place.
 
+**One sync at a time, enforced by a file lock.** Each pass reads what the vault
+already holds before it writes, so two passes overlapping each read "nothing is
+there yet" and both create every note: two concurrent runs left 216 doubled
+papers. The lock is `data/.zotero-sync.lock` and is taken with `flock`, because
+the two callers are two processes — the timer inside the service and `awm
+zotero apply` on the console — and an in-process lock cannot see across that.
+`sync` holds it across both halves rather than taking it twice. A pass that
+finds doubles collapses them, keeping the oldest.
+
 **The mirror only ever rewrites what the mirror wrote.** A note it created
 carries `#zoteroKey`. A note a person writes inside the library carries none,
 so every pass is blind to it — and an item that leaves Zotero is deleted only
