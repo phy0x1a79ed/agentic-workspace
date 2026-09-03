@@ -135,7 +135,7 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     if args.get("probe", True) is not False:
         def _probe() -> dict:
             try:
-                return {"reachable": True, "version": source.library_version(),
+                return {"reachable": True, "versions": source.versions(),
                         "host": source.HOST or "this host",
                         "origin": source.ORIGIN}
             except source.ZoteroUnavailable as e:
@@ -145,9 +145,13 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
                         "host": source.HOST or "this host",
                         "origin": source.ORIGIN}
         out["library"] = await asyncio.to_thread(_probe)
-        have = out["bundle"]["version"]
         if out["library"].get("reachable"):
-            out["behind"] = out["library"]["version"] != have
+            # Behind if any library moved, or if one appeared that the bundle
+            # has never seen. A library the bundle holds and the desktop no
+            # longer offers is not "behind" — `pull` prunes it either way.
+            have = out["bundle"]["versions"]
+            out["behind"] = any(have.get(lib) != v for lib, v
+                                in out["library"]["versions"].items())
     out["scheduled"] = {"enabled": SCHEDULED, "interval_s": INTERVAL_S}
     return out
 

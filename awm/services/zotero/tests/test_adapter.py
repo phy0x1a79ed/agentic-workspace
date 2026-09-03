@@ -55,3 +55,45 @@ def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
     with caplog.at_level(logging.INFO):
         asyncio.run(hub_adapter._on_start())
     assert _no_timer == ["zotero:sync"]
+
+
+# -- status ------------------------------------------------------------------
+
+
+def _status(monkeypatch, tmp_path, versions):
+    """Run the status verb against a one-item bundle and a stubbed desktop."""
+    b = _bundle_at(tmp_path)
+    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+    monkeypatch.setattr(hub_adapter.source, "versions", lambda: versions)
+    return asyncio.run(hub_adapter._h_status({}))
+
+
+def test_status_is_not_behind_when_every_library_matches(tmp_path, monkeypatch):
+    out = _status(monkeypatch, tmp_path, {"users/0": 7})
+    assert out["library"]["reachable"] is True
+    assert out["behind"] is False
+
+
+def test_status_is_behind_when_one_library_moved(tmp_path, monkeypatch):
+    out = _status(monkeypatch, tmp_path, {"users/0": 8})
+    assert out["behind"] is True
+
+
+def test_status_is_behind_when_a_library_is_new(tmp_path, monkeypatch):
+    """A group library shared with you after the last sync is the common case,
+    and it moves no version the bundle already holds."""
+    out = _status(monkeypatch, tmp_path, {"users/0": 7, "groups/1": 3})
+    assert out["behind"] is True
+
+
+def test_an_unreachable_desktop_is_reported_not_raised(tmp_path, monkeypatch):
+    b = _bundle_at(tmp_path)
+    monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
+
+    def _boom() -> dict:
+        raise hub_adapter.source.ZoteroUnavailable("desktop is asleep")
+
+    monkeypatch.setattr(hub_adapter.source, "versions", _boom)
+    out = asyncio.run(hub_adapter._h_status({}))
+    assert out["library"]["reachable"] is False
+    assert "behind" not in out
