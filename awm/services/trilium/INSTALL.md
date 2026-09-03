@@ -261,15 +261,26 @@ nobody has made yet.
   The path is accumulated on the way down rather than climbed back up from the
   card, because a note cloned to two places under one board has one path per
   branch and only the walk knows which branch a card was reached by.
-- **A column change sticks.** Deleting or renaming a column re-rendered the
-  board while the definition write was still in flight. That render resolved its
-  columns from the definition it had just replaced, put the column back, and
-  persisted what it resolved. So an empty column could not be deleted at all,
-  and a rename left both names standing. The definition now lands on the copy
-  the board holds before the write goes to the server. A definition an ancestor
-  owns, or a template shares with notes off this board, is not this board's to
-  rewrite, and a column it names is refused with a message rather than
-  half-changed.
+- **A column change sticks.** A column change writes to three places — the
+  notes, the config attachment and the group-by definition — and each lands
+  separately. Every refresh in between resolved the columns from whichever of
+  the three it could already see, and then persisted what it resolved. One
+  refresh reading a source the change had not reached yet was enough to put the
+  column back for good, so an empty column could not be deleted at all and a
+  rename left both names standing. The board now remembers what it dropped and
+  holds that column out until a note carries the value again. A definition an
+  ancestor owns, or a template shares with notes off this board, is not this
+  board's to rewrite, and a column it names is refused with a message rather
+  than half-changed.
+
+CAUTION: a column change still does not survive the same board being open in a
+second client. Every render resolves the columns from the notes, the attachment
+and the definition and then persists what it resolved, so the client that did
+not make the change writes its own pre-change view back over it — and the cards
+have already lost the label, so they fall off the board. Fixing that means a
+render no longer persisting anything, which is the behaviour migration 0240
+relies on, so it is an upstream design decision rather than a patch. Delete a
+column with the board open once.
 
 CAUTION: the tarball install path serves upstream's build, which has neither
 patch. A node that installs from the tarball shows bare card titles and loses a
