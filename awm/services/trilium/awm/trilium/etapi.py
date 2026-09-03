@@ -270,7 +270,8 @@ class Etapi:
                 "changed": True}
 
     def set_attributes(self, *, note_id: str, values: dict[str, str],
-                       type: str = "label") -> list[str]:
+                       type: str = "label",
+                       attributes: list[dict] | None = None) -> list[str]:
         """Set several attributes, reading the note once.
 
         :meth:`set_attribute` re-reads the note to find what it already owns,
@@ -278,10 +279,14 @@ class Etapi:
         five citation fields onto eight hundred notes made four thousand
         needless round trips, and every one of them asked the same question.
 
+        Pass `attributes` when the caller has already read the note, so an
+        update that inspects the note for other reasons does not read it twice.
+
         Returns the names that actually changed.
         """
         own: dict[str, dict] = {}
-        for a in self.attributes(note_id):
+        for a in (self.attributes(note_id) if attributes is None
+                  else attributes):
             if a.get("type") == type and a.get("noteId") == note_id:
                 own.setdefault(a.get("name") or "", a)
         changed = []
