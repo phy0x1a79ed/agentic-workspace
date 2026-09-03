@@ -277,3 +277,24 @@ def test_bytes_and_a_path_together_are_a_refusal(vault):
     for args in ({}, {"path": "/tmp/x", "content_b64": "eA=="}):
         with pytest.raises(ValueError, match="exactly one"):
             call("attachment_put", note_id=note, **args)
+
+
+def test_several_labels_are_set_by_reading_the_note_once(vault):
+    """Setting them one at a time re-reads the note for each. A sync writing
+    five citation fields onto eight hundred papers made four thousand needless
+    round trips, every one asking the same question."""
+    made = call("note_create", title="Paper")["note_id"]
+    vault.calls.clear()
+    call("note_update", note_id=made,
+         labels={"year": "2019", "doi": "10.1/x", "itemType": "article"})
+    reads = [c for c in vault.calls if c[0] == "GET" and c[1] == f"notes/{made}"]
+    assert len(reads) == 1
+    assert vault.labels(made) == {"year": "2019", "doi": "10.1/x",
+                                  "itemType": "article"}
+
+
+def test_a_batch_reports_only_what_actually_changed(vault):
+    made = call("note_create", title="Paper", labels={"year": "2019"})["note_id"]
+    out = call("note_update", note_id=made,
+               labels={"year": "2019", "doi": "10.1/x"})
+    assert out["changed"]["labels"] == ["doi"]

@@ -743,11 +743,10 @@ async def _h_note_create(args: dict, as_: str | None = None) -> dict:
         # A second call each, because ETAPI's create-note whitelist takes no
         # attributes. Doing it here is the point of the verb: every caller
         # would otherwise write this loop, and half would forget the relation.
-        for name, value in labels.items():
-            c.set_attribute(note_id=note_id, name=name.lstrip("#"), value=value)
-        for name, target in relations.items():
-            c.set_attribute(note_id=note_id, name=name.lstrip("~"), value=target,
-                            type="relation")
+        c.set_attributes(note_id=note_id, values={
+            name.lstrip("#"): value for name, value in labels.items()})
+        c.set_attributes(note_id=note_id, type="relation", values={
+            name.lstrip("~"): target for name, target in relations.items()})
         return {"note_id": note_id, "created": True,
                 "labels": len(labels), "relations": len(relations)}
     return await asyncio.to_thread(_write)
@@ -776,11 +775,12 @@ async def _h_note_update(args: dict, as_: str | None = None) -> dict:
             else:
                 changed["content"] = False
         # Set here rather than by a call each, because a sync writing five
-        # fields onto a thousand notes is five thousand round trips otherwise,
-        # every one of them re-reading the same note.
-        written = [n for n, v in labels.items()
-                   if c.set_attribute(note_id=note_id, name=n.lstrip("#"),
-                                      value=v)["changed"]]
+        # fields onto a thousand notes is five thousand round trips otherwise.
+        # Batched inside the client too, so the note is read once rather than
+        # once per label.
+        written = c.set_attributes(
+            note_id=note_id,
+            values={n.lstrip("#"): v for n, v in labels.items()})
         if written:
             changed["labels"] = written
         return {"note_id": note_id, "changed": changed}

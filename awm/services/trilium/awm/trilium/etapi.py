@@ -269,6 +269,38 @@ class Etapi:
         return {"attribute_id": first["attributeId"], "created": False,
                 "changed": True}
 
+    def set_attributes(self, *, note_id: str, values: dict[str, str],
+                       type: str = "label") -> list[str]:
+        """Set several attributes, reading the note once.
+
+        :meth:`set_attribute` re-reads the note to find what it already owns,
+        which is right for one attribute and wrong for five: a sync writing
+        five citation fields onto eight hundred notes made four thousand
+        needless round trips, and every one of them asked the same question.
+
+        Returns the names that actually changed.
+        """
+        own: dict[str, dict] = {}
+        for a in self.attributes(note_id):
+            if a.get("type") == type and a.get("noteId") == note_id:
+                own.setdefault(a.get("name") or "", a)
+        changed = []
+        for name, value in values.items():
+            existing = own.get(name)
+            if existing is None:
+                self.create_attribute(note_id=note_id, type=type, name=name,
+                                      value=value)
+                changed.append(name)
+            elif existing.get("value") != value:
+                if type == "relation":
+                    self.delete_attribute(existing["attributeId"])
+                    self.create_attribute(note_id=note_id, type=type,
+                                          name=name, value=value)
+                else:
+                    self.patch_attribute(existing["attributeId"], value)
+                changed.append(name)
+        return changed
+
     def clear_attribute(self, *, note_id: str, name: str,
                         type: str = "label") -> int:
         """Remove every attribute of this name the note owns. Returns how many
