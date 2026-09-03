@@ -217,8 +217,15 @@ async def _on_start() -> None:
     here would look exactly like a wedged start.
     """
     b = sync.bundle()
-    log.info("zotero: bundle at %s (version %s, %s items)", b.root,
-             b.stats()["version"], b.stats()["items"])
+    try:
+        st = b.stats()
+        log.info("zotero: bundle at %s (%s items, versions %s)", b.root,
+                 st["items"], st["versions"])
+    except Exception:  # noqa: BLE001
+        # A bundle that cannot be read is what the first sync is for. Saying so
+        # beats refusing to start: the adapter treats an on_start raise as a
+        # failed initialisation and the gateway then reaps the service.
+        log.warning("zotero: no readable bundle at %s yet", b.root)
     spawn_supervised("zotero:sync", _sync_loop)
 
 
