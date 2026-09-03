@@ -125,7 +125,10 @@ Environment, read at start:
 | `ZOTERO_ORIGIN` | `http://172.25.176.1:23119` | where the server answers **as that node sees it**. On WSL that is the Windows side, so the default gateway rather than loopback. |
 | `ZOTERO_HOST_HEADER` | `127.0.0.1:23119` | what the server insists on seeing. Deliberately not derived from the origin. |
 | `ZOTERO_DATA_DIR` | `/mnt/c/Users/phybe/Zotero` | the Zotero data directory as that node can read it. |
+| `ZOTERO_LIBRARY` | `users/0` | the personal library's id. |
 | `ZOTERO_GROUPS` | `1` | mirror the group libraries too. |
+| `ZOTERO_TIMEOUT_S` | `60` | per-request budget for the `ssh`+`curl` hop. |
+| `ZOTERO_LIBRARY_NOTE` | `Library` | title of the note the mirror lives under. |
 | `ZOTERO_SYNC_INTERVAL_S` | `1200` | how often the timer looks. |
 | `ZOTERO_SYNC_ENABLED` | `1` | set `0` on a node that cannot reach the library, where every tick would be a logged failure saying so. |
 

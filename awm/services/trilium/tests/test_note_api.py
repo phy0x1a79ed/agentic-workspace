@@ -81,7 +81,12 @@ def test_a_label_written_with_its_sigil_is_stored_without_one(vault):
 def test_labels_that_are_not_an_object_are_refused(vault):
     with pytest.raises(ValueError, match="object"):
         call("note_create", title="Paper", labels="[1, 2]")
-    with pytest.raises(ValueError, match="not JSON"):
+
+
+def test_the_refusal_names_the_spelling_it_wanted(vault):
+    """`--labels year=2019` is what a person types, and the CLI's own help
+    cannot show the JSON because the option is declared as a plain string."""
+    with pytest.raises(ValueError, match=r'\{"status": "To do"\}'):
         call("note_create", title="Paper", labels="year=2019")
 
 
@@ -148,6 +153,26 @@ def test_note_update_says_when_the_body_was_already_right(vault):
                 content="<p>x</p>")["changed"]["content"] is False
     assert call("note_update", note_id=made,
                 content="<p>y</p>")["changed"]["content"] is True
+
+
+def test_note_update_says_when_the_title_was_already_right(vault):
+    made = call("note_create", title="Paper")["note_id"]
+    assert call("note_update", note_id=made,
+                title="Paper")["changed"] == {}
+    assert call("note_update", note_id=made,
+                title="Better paper")["changed"] == {"title": "Better paper"}
+
+
+def test_a_second_identical_update_reports_no_change_at_all(vault):
+    """What a mirror on a timer asks. Every field is offered on every pass, so
+    an update that reports a field as changed merely because it was given makes
+    the mirror rewrite the whole library each tick and puts a revision on every
+    note in it."""
+    made = call("note_create", title="Paper", content="<p>x</p>",
+                labels='{"year": "2019"}')["note_id"]
+    out = call("note_update", note_id=made, title="Paper", content="<p>x</p>",
+               labels='{"year": "2019"}')["changed"]
+    assert out == {"content": False}
 
 
 def test_note_update_with_nothing_to_change_is_a_refusal(vault):

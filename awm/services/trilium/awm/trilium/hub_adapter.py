@@ -667,7 +667,10 @@ def _mapping(args: dict, key: str) -> dict[str, str]:
         try:
             raw = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise ValueError(f"{key} is not JSON: {e}") from e
+            raise ValueError(
+                f"{key} is an object spelled as JSON, e.g. "
+                f"""--{key} '{{"status": "To do"}}' — got {raw!r} ({e})"""
+            ) from e
     if not isinstance(raw, dict):
         raise ValueError(f"{key} is an object of {{name: value}}, not {type(raw).__name__}")
     return {str(k): str(v) for k, v in raw.items()}
@@ -765,9 +768,16 @@ async def _h_note_update(args: dict, as_: str | None = None) -> dict:
 
     def _write() -> dict:
         c = etapi.client()
-        if fields:
-            c.patch_note(note_id, **fields)
-        changed = dict(fields)
+        # One read serves the whole call: the field comparison below and the
+        # attributes the batch needs. `changed` must report what actually
+        # moved, not what was offered — a mirror running on a timer decides
+        # from it whether it has work to do, and a blind `True` makes every
+        # pass look like a change and writes a revision per note.
+        note = c.note(note_id)
+        differs = {k: v for k, v in fields.items() if note.get(k) != v}
+        if differs:
+            c.patch_note(note_id, **differs)
+        changed: dict[str, Any] = dict(differs)
         if content is not None:
             if c.note_content(note_id) != str(content):
                 c.set_content(note_id, str(content))
@@ -776,11 +786,10 @@ async def _h_note_update(args: dict, as_: str | None = None) -> dict:
                 changed["content"] = False
         # Set here rather than by a call each, because a sync writing five
         # fields onto a thousand notes is five thousand round trips otherwise.
-        # Batched inside the client too, so the note is read once rather than
-        # once per label.
         written = c.set_attributes(
             note_id=note_id,
-            values={n.lstrip("#"): v for n, v in labels.items()})
+            values={n.lstrip("#"): v for n, v in labels.items()},
+            attributes=note.get("attributes") or [])
         if written:
             changed["labels"] = written
         return {"note_id": note_id, "changed": changed}
