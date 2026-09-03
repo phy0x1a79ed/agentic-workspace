@@ -1,0 +1,234 @@
+"""What a mirror must not do to a knowledge base people also write in.
+
+The apply runs on a timer over hundreds of notes, so the interesting
+assertions are all negative: it must not touch a note somebody wrote, must not
+duplicate a paper that is in three collections, must not rewrite anything on a
+pass where nothing changed, and must not delete a note it did not create.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from awm.zotero import bundle, sync
+
+from .fakes import FakeVault, collection, item
+
+pytestmark = [pytest.mark.unit, pytest.mark.smoke]
+
+
+@pytest.fixture
+def scope(tmp_path):
+    return tmp_path
+
+
+def seed(scope, items: list[dict], collections: list[dict] | None = None,
+         versions: dict[str, int] | None = None) -> bundle.Bundle:
+    b = bundle.Bundle(scope)
+    b.root.mkdir(parents=True, exist_ok=True)
+    b.library_json.write_text(json.dumps({
+        "versions": versions or {"users/0": 1}, "pulled": "now",
+        "collections": collections or [], "items": items}), "utf-8")
+    return b
+
+
+# -- the shape it writes -----------------------------------------------------
+
+
+def test_a_reference_becomes_a_note_carrying_its_citation_fields(scope):
+    seed(scope, [item("AAA", title="Nitrogen", year="2008",
+                      doi="10.1/x", creators=["Gruber, Nicolas"])])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+
+    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
+    assert note["title"] == "Gruber 2008 — Nitrogen"
+    assert note["labels"]["year"] == "2008"
+    assert note["labels"]["doi"] == "10.1/x"
+    assert note["labels"][sync.KEY_LABEL] == "users/0/AAA"
+
+
+def test_a_field_zotero_does_not_have_is_left_off_rather_than_written_blank(scope):
+    """`#doi` meaning "there is no DOI" would make `#doi` useless as a
+    filter."""
+    seed(scope, [item("AAA", title="No doi")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
+    assert "doi" not in note["labels"]
+
+
+def test_the_abstract_is_escaped_because_it_is_somebody_elses_text(scope):
+    """A note in this vault runs on awm's own origin, and an abstract arrives
+    from a publisher's metadata."""
+    seed(scope, [item("AAA", abstract="<script>alert(1)</script>")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    body = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]["content"]
+    assert "<script>" not in body and "&lt;script&gt;" in body
+
+
+def test_each_library_gets_its_own_shelf(scope):
+    """Two libraries may both have a collection called "papers", and merging
+    them would put a shared group's reading list inside a personal one with
+    nothing saying it had happened."""
+    seed(scope, [item("AAA", library="users/0", library_name="My Library"),
+                 item("BBB", library="groups/1", library_name="BCB2")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    assert sorted(v.titles_under(out["library_note"])) == ["BCB2", "My Library"]
+
+
+def test_collections_become_a_tree_with_parents_before_children(scope):
+    """Zotero returns collections in no order, and a child made before its
+    parent would land at the top of the library and stay there."""
+    seed(scope,
+         [item("AAA", collections=["users/0/KID"])],
+         [collection("KID", "sub", parent="users/0/TOP"),
+          collection("TOP", "top")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+
+    folders = v.owned(out["library_note"], sync.COLLECTION_LABEL)
+    kid, top = v.notes[folders["users/0/KID"]], folders["users/0/TOP"]
+    assert kid["parents"] == [top]
+
+
+def test_a_paper_in_several_collections_is_one_note_in_several_places(scope):
+    """Branches, not copies. Copies would let the same paper diverge from
+    itself."""
+    seed(scope, [item("AAA", collections=["users/0/C1", "users/0/C2"])],
+         [collection("C1", "one"), collection("C2", "two")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+
+    keyed = v.owned(out["library_note"], sync.KEY_LABEL)
+    assert len(keyed) == 1
+    assert len(v.notes[keyed["users/0/AAA"]]["parents"]) == 2
+
+
+def test_a_paper_in_no_collection_sits_on_its_librarys_shelf(scope):
+    seed(scope, [item("AAA", library_name="My Library")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    paper = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
+    shelf = [nid for nid, n in v.notes.items() if n["title"] == "My Library"]
+    assert paper["parents"] == shelf
+
+
+# -- what it does on the second pass -----------------------------------------
+
+
+def test_a_second_apply_writes_nothing(scope):
+    """This runs on a timer. A pass that rewrites every note puts a revision on
+    every note, every time."""
+    seed(scope, [item("AAA", title="Nitrogen", year="2008")],
+         [collection("C1", "one")])
+    v = FakeVault()
+    sync.apply(v, scope)
+    v.calls.clear()
+    sync.apply(v, scope)
+    assert "create" not in v.calls
+    assert not any(v.update(nid, title=n["title"], content=n["content"])
+                   for nid, n in list(v.notes.items()))
+
+
+def test_a_renamed_paper_keeps_its_note(scope):
+    """Identity is the Zotero key, not the title — so correcting a title in
+    Zotero moves the note rather than orphaning it."""
+    seed(scope, [item("AAA", title="Nitogen")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    first = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
+
+    seed(scope, [item("AAA", title="Nitrogen")])
+    sync.apply(v, scope)
+    assert v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"] == first
+    assert v.notes[first]["title"] == "Nitrogen"
+
+
+def test_an_item_that_left_zotero_takes_its_note(scope):
+    seed(scope, [item("AAA"), item("BBB")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    assert len(v.owned(out["library_note"], sync.KEY_LABEL)) == 2
+
+    seed(scope, [item("AAA")])
+    again = sync.apply(v, scope)
+    assert again["removed"] == 1
+    assert list(v.owned(out["library_note"], sync.KEY_LABEL)) == ["users/0/AAA"]
+
+
+# -- what it must never touch ------------------------------------------------
+
+
+def test_a_note_somebody_wrote_in_the_library_is_never_rewritten(scope):
+    """It carries no #zoteroKey, so every pass is blind to it. That is the
+    whole of how a mirror and a person share one subtree."""
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    mine = v.create(parent=out["library_note"], title="my reading notes",
+                    content="<p>thoughts</p>")
+
+    seed(scope, [])
+    sync.apply(v, scope)
+    assert v.notes[mine]["title"] == "my reading notes"
+    assert v.notes[mine]["content"] == "<p>thoughts</p>"
+
+
+def test_the_mirror_only_removes_what_the_mirror_put_there(scope):
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    mine = v.create(parent=out["library_note"], title="mine")
+
+    seed(scope, [])
+    assert sync.apply(v, scope)["removed"] == 1
+    assert mine in v.notes
+
+
+# -- files -------------------------------------------------------------------
+
+
+def test_a_stored_file_is_attached_to_its_papers_note(scope):
+    b = seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
+    path = b.file_for("users/0/BBB", "p.pdf")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"%PDF-1.4")
+
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
+    assert note["attachments"] == {"p.pdf": 8}
+
+
+def test_a_file_the_bundle_promises_but_does_not_hold_is_skipped(scope):
+    """Not an error. A bundle carried to another node arrives with its pins
+    unmaterialised, and failing the whole apply over one absent PDF would
+    withhold the eight hundred references that are fine."""
+    seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    assert out["attached"] == 0
+    assert v.owned(out["library_note"], sync.KEY_LABEL)
+
+
+def test_an_unchanged_file_is_not_re_attached(scope):
+    b = seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
+    path = b.file_for("users/0/BBB", "p.pdf")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"%PDF-1.4")
+    v = FakeVault()
+    sync.apply(v, scope)
+    assert sync.apply(v, scope)["attached"] == 0
+
+
+# -- the bundle has to be there ----------------------------------------------
+
+
+def test_applying_without_a_bundle_says_where_to_get_one(scope):
+    with pytest.raises(FileNotFoundError, match="zotero pull"):
+        sync.apply(FakeVault(), scope)

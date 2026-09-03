@@ -1,0 +1,4 @@
+# The interpreter path install.sh bakes for the supervisor. Per-machine.
+/.runtime-env
+/*.egg-info
+/.pytest_cache
