@@ -133,6 +133,16 @@ def test_a_refused_path_inside_the_mount_never_reaches_the_child():
     assert "url" not in seen
 
 
+def test_a_refused_path_is_a_404_on_a_node_running_no_profile_either():
+    # A mesh edge consults no allow-list, so without its own refusal the path would reach the
+    # ordinary authentication check and answer 401 -- saying the path exists.
+    seen, handler = _recorder()
+    with _client(_app(profile=None), handler) as c:
+        assert c.get(f"/slice/{BOUND}/etapi/app-info").status_code == 404
+        assert c.get(f"/slice/{BOUND}/share/anything").status_code == 404
+    assert "url" not in seen
+
+
 def test_a_target_that_re_segments_when_decoded_is_refused():
     # The traversal that once let /trilium/api/%2e%2e/etapi/… reach the
     # unauthenticated ETAPI, closed on this mount by the same check.

@@ -688,6 +688,9 @@ async def _http_proxy(request: Request) -> Response:
     # service confirms, and because Trilium's own mask refuses every note
     # outside that slice.
     vault_up = _vault_up(app)
+    if vault_up and slices.refused(path):
+        # Before the branch below, and not left to the policy door: this node may run no profile.
+        return _not_found()
     if vault_up and slices.owns(path):
         return await _slice_proxy(request, path, raw, vault_up)
     ok, refreshed, sub = await _authenticate_sub(request)
