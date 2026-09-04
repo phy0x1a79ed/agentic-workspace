@@ -10,6 +10,7 @@ link learns its visitor once and keeps the name on its own path.
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 
 import httpx
@@ -62,7 +63,7 @@ def _app(*, profile="public"):
     return app
 
 
-def _recorder(known=None):
+def _recorder(known=None, *, result_as_text=False):
     """A transport answering both legs: the gateway's /invoke, then the vault."""
     known = SLICES if known is None else known
     seen: dict = {"resolves": 0}
@@ -70,9 +71,12 @@ def _recorder(known=None):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/invoke":
             seen["resolves"] += 1
-            import json
             token = json.loads(request.content)["args"]["token"]
-            return httpx.Response(200, json={"result": known.get(token, UNKNOWN)})
+            answer = known.get(token, UNKNOWN)
+            # The gateway hands a handler's dict over as JSON or as a JSON string,
+            # depending on how the call reached it.
+            return httpx.Response(200, json={
+                "result": json.dumps(answer) if result_as_text else answer})
         seen["url"] = str(request.url)
         seen["headers"] = {k.lower(): v for k, v in request.headers.items()}
         return httpx.Response(200, content=_body())
@@ -225,6 +229,16 @@ def test_a_bound_slice_sets_no_cookie_at_all():
 
 
 # -- the cost of asking -------------------------------------------------------
+
+def test_a_result_handed_over_as_json_text_resolves_the_same_way():
+    # Which is how the live gateway delivers it, and answering 404 to a live slice is the failure
+    # this pins: the token exists, the service found it, and the edge could not read the answer.
+    seen, handler = _recorder(result_as_text=True)
+    with _client(_app(), handler) as c:
+        r = c.get(f"/slice/{BOUND}/api/tree")
+    assert r.status_code == 200
+    assert seen["headers"][slices.HEADER_ROOT.lower()] == "abc123"
+
 
 def test_a_page_load_resolves_the_token_once_not_once_per_asset():
     seen, handler = _recorder()
