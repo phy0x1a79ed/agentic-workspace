@@ -10,6 +10,7 @@ description = "AWM trilium service: supervise the shared Trilium knowledge base 
 dependencies = [
     "awm-config",
     "awm-gatewayclient",
+    "awm-persistence",
     # Deliberately NOT awm-httpsfront. The edge routes the vault; this service
     # only supervises it. The dependency pointed the other way when each person
     # had their own TLS front, and leaving it would make it easy to grow a
