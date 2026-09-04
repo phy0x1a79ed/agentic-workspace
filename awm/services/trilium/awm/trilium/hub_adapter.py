@@ -28,12 +28,15 @@ import base64
 import json
 import logging
 import mimetypes
+import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from awm import config
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import etapi, instances, server, vault
+from awm.trilium import etapi, instances, server, slices, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -421,6 +424,72 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "MIME type. Guessed from the name when omitted."},
             ],
             "timeout": 300,
+        },
+        {
+            "name": "slice_expose",
+            "tool": "trilium_slice_expose",
+            "description": (
+                "Mint a link that opens one note and its descendants to "
+                "somebody with no awm account. Sets #sliced on the note so a "
+                "person browsing the vault can see what is exposed. With "
+                "user, the visitor's name is baked into the token (a bound "
+                "slice); without it, anyone with the link types their own "
+                "name on first arrival (an open slice). Prints the URL. "
+                "Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string", "required": True,
+                 "description": "The note the slice opens, with its subtree."},
+                {"name": "user", "type": "string",
+                 "description": "Bind the token to this visitor name. Omit for an open link."},
+                {"name": "write", "type": "boolean",
+                 "description": "Let the visitor edit note bodies. Default false (read-only)."},
+                {"name": "expires_in_hours", "type": "number",
+                 "description": "The link stops resolving after this many hours. Default never."},
+            ],
+        },
+        {
+            "name": "slice_list",
+            "tool": "trilium_slice_list",
+            "description": (
+                "Every slice ever minted, newest first -- active and revoked "
+                "alike. Operator only."
+            ),
+            "params": [
+                {"name": "note_id", "type": "string",
+                 "description": "Restrict to slices on this note. Default every slice."},
+            ],
+        },
+        {
+            "name": "slice_revoke",
+            "tool": "trilium_slice_revoke",
+            "description": (
+                "Revoke a slice token; a later slice_resolve of it answers "
+                "'no such slice'. Clears #sliced from the note once no other "
+                "live slice remains on it. Operator only."
+            ),
+            "params": [
+                {"name": "token", "type": "string", "required": True,
+                 "description": "The token to revoke, from slice_expose or slice_list."},
+            ],
+        },
+        {
+            "name": "slice_resolve",
+            "tool": "trilium_slice_resolve",
+            "description": (
+                "What a slice token opens: the note, whether the visitor may "
+                "write, and the visitor name if the token is bound to one. An "
+                "unknown, revoked or expired token answers the same 'not "
+                "found' shape as every other -- the edge turns that into a "
+                "404, deliberately indistinguishable from a link that never "
+                "existed. Operator-only in mechanism: the edge is the caller, "
+                "reaching this over the gateway on loopback with no identity "
+                "header, which is exactly what the gate admits."
+            ),
+            "params": [
+                {"name": "token", "type": "string", "required": True,
+                 "description": "The token from the slice's URL path."},
+            ],
         },
     ],
     "emitters": [],
@@ -869,6 +938,100 @@ async def _h_attachment_put(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(_write)
 
 
+# -- slices -------------------------------------------------------------
+#
+# A slice opens one note and its descendants to somebody with no awm account.
+# The token is a credential, so it lives in this service's own DB (see
+# `slices.py`) rather than on a note. All four verbs are operator-only, and
+# `slice_resolve` is the exception in spirit but not in mechanism: the edge
+# calls it over the gateway on loopback, which carries no identity header --
+# exactly what `_operator_only` admits.
+
+
+def _slice_url(token: str, note_id: str, user: str | None) -> str:
+    """The URL `slice_expose` prints: the token in the path, so the SPA's own
+    relative references resolve inside the slice's mount and two slices open
+    in one browser cannot collide on a cookie. `user` rides the query string
+    only for a bound token, for transparency -- an open token carries none,
+    and the visitor types a name on arrival."""
+    edge = (config.edge_url() or "").rstrip("/")
+    query = f"?user={urllib.parse.quote(user, safe='')}" if user else ""
+    return f"{edge}/slice/{token}/{query}#root/{note_id}"
+
+
+def _fork_only(verb: str) -> None:
+    """Refuse a slice verb on a node serving the published tarball.
+
+    The mask that confines a slice to one subtree lives in the fork. Upstream's
+    build ignores the edge's slice headers entirely and answers every route, so a
+    token resolved against it would open the whole vault to whoever holds the
+    link. Refused at both ends -- minting and resolving -- because a database
+    that reaches such a node by sync carries tokens minted elsewhere.
+    """
+    entry = instances.entry_point()
+    if entry is not None and entry[1] != "fork":
+        raise PermissionError(
+            f"{verb} needs the Trilium fork: this node serves the published "
+            f"tarball, which has no slice mask and would expose the whole vault")
+
+
+async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "slice_expose")
+    _fork_only("slice_expose")
+    note_id = _note_id(args)
+    user = (args.get("user") or "").strip() or None
+    write = bool(args.get("write"))
+    expires_in_hours = args.get("expires_in_hours")
+    expires_at = (time.time() + float(expires_in_hours) * 3600
+                  if expires_in_hours not in (None, "") else None)
+
+    def _write() -> dict:
+        # Set before the mint: a token that failed to record is no exposure
+        # at all, but a note marked #sliced with no live token is merely
+        # confusing, not a security hole.
+        etapi.client().set_attribute(note_id=note_id, name="sliced", value="")
+        return slices.mint(note_id=note_id, user=user, write=write,
+                           expires_at=expires_at)
+    row = await asyncio.to_thread(_write)
+    return {**row, "url": _slice_url(row["token"], note_id, user)}
+
+
+async def _h_slice_list(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "slice_list")
+    note_id = (args.get("note_id") or "").strip() or None
+    return {"slices": await asyncio.to_thread(slices.list_all, note_id)}
+
+
+async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "slice_revoke")
+    token = (args.get("token") or "").strip()
+    if not token:
+        raise ValueError("token is required")
+
+    def _write() -> dict:
+        row = slices.revoke(token)
+        if row is None:
+            raise ValueError(f"no slice for token {token!r}")
+        cleared = False
+        if not slices.list_active(row["note_id"]):
+            etapi.client().clear_attribute(note_id=row["note_id"], name="sliced")
+            cleared = True
+        return {"token": token, "note_id": row["note_id"], "revoked": True,
+                "sliced_cleared": cleared}
+    return await asyncio.to_thread(_write)
+
+
+async def _h_slice_resolve(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "slice_resolve")
+    _fork_only("slice_resolve")
+    token = (args.get("token") or "").strip()
+    row = await asyncio.to_thread(slices.resolve, token) if token else None
+    if row is None:
+        return {"found": False, "note_id": None, "write": False, "user": None}
+    return {"found": True, "note_id": row["note_id"], "write": row["write"],
+            "user": row["user"]}
+
+
 HANDLERS = {
     "status": _h_status,
     "start": _h_start,
@@ -895,6 +1058,10 @@ HANDLERS = {
     "attr_set": _h_attr_set,
     "attr_delete": _h_attr_delete,
     "attachment_put": _h_attachment_put,
+    "slice_expose": _h_slice_expose,
+    "slice_list": _h_slice_list,
+    "slice_revoke": _h_slice_revoke,
+    "slice_resolve": _h_slice_resolve,
 }
 
 
@@ -933,6 +1100,7 @@ async def _on_start() -> None:
     No failure here is fatal. The service still registers, so `status` can
     report *why* it is broken, and the loop keeps retrying.
     """
+    slices.init()
     if instances.entry_point() is None:
         log.warning("trilium: no server bundle at %s or %s — run install.sh; "
                     "the service will register and report this via status",

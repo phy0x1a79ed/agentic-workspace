@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -64,7 +65,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from awm.httpsfront import pages, penpot, policy, store, vault
+from awm.httpsfront import pages, penpot, policy, slices, store, vault
 from awm.httpsfront.auth import AS_COOKIE_NAME, COOKIE_NAME, PEER_SUB, AuthGate, bearer_of
 
 log = logging.getLogger("awm.httpsfront.proxy")
@@ -680,6 +681,14 @@ async def _http_proxy(request: Request) -> Response:
     # line above is not reached there at all.
     if _penpot_up(app) and penpot.refused(path):
         return _not_found()
+    # The slice mount, answered before authentication rather than after it.
+    # This is the one path on this listener a caller reaches without a session,
+    # and it stays narrow because the token has to name a slice the trilium
+    # service confirms, and because Trilium's own mask refuses every note
+    # outside that slice.
+    vault_up = _vault_up(app)
+    if vault_up and slices.owns(path):
+        return await _slice_proxy(request, path, raw, vault_up)
     ok, refreshed, sub = await _authenticate_sub(request)
     if not ok:
         return _deny(request)
@@ -692,7 +701,6 @@ async def _http_proxy(request: Request) -> Response:
     # host running both keeps the vault's pre-existing behaviour; see
     # penpot.py's module docstring for the root-path collision that follows.
     up = app.state.http_up
-    vault_up = _vault_up(app)
     penpot_up = _penpot_up(app)
     bridge: str | None = None
     if vault_up and vault.owns(path):
@@ -748,6 +756,163 @@ async def _http_proxy(request: Request) -> Response:
         await _bridge_penpot_session(request, out, bridge, sub,
                                      resp.status_code)
     return out
+
+
+#: How long a resolved token is reused. A page load is hundreds of asset
+#: requests and each would otherwise be a gateway round trip; a revoked link
+#: must stop working while somebody is still watching it. Both are satisfied
+#: several seconds apart.
+SLICE_RESOLVE_TTL = 5.0
+
+#: Returned by :func:`_slice_visitor` when the link's ``?user=`` contradicts the
+#: name the token was minted with.
+_SLICE_MISMATCH = object()
+
+
+async def _slice_proxy(request: Request, path: str, raw: bytes,
+                       vault_up: str) -> Response:
+    """Serve a public slice of the vault: the same child, a narrower door.
+
+    Everything this function decides is decided from the token. It carries no
+    session, mints none, and reads no cookie except the one that names an open
+    slice's visitor.
+    """
+    app = request.app
+    token = slices.token_of(path)
+    if token is None:
+        return _not_found()
+    info = await _resolve_slice(app, token)
+    if info is None:
+        # 404, deliberately not 403: a slice that was revoked, expired or never
+        # existed should look like a URL that never existed either.
+        return _not_found()
+    if path == slices.shell_bare(token):
+        # Same reasoning as ``_vault_bare`` — every reference in the shell is
+        # relative and resolves against the document's directory.
+        return RedirectResponse(slices.shell(token), status_code=308)
+    inner = slices.upstream_raw_path(raw)
+    if inner is None:
+        # The mount is in the decoded path but not in the bytes.
+        return _not_found()
+    visitor = _slice_visitor(request, info, token)
+    if visitor is _SLICE_MISMATCH:
+        # Loud rather than silently mis-attributed: this link names somebody
+        # the token does not.
+        return Response("this link names a different visitor", status_code=400)
+    client: httpx.AsyncClient = app.state.client
+    url = _upstream_url(vault_up, inner, request.scope.get("query_string") or b"")
+    body = await request.body()
+    upstream_req = client.build_request(
+        request.method, url,
+        headers=_slice_req_headers(request, info, visitor), content=body,
+    )
+    try:
+        resp = await client.send(upstream_req, stream=True)
+    except httpx.ConnectError:
+        return _vault_unavailable(request, "not listening yet")
+    out = StreamingResponse(
+        resp.aiter_raw(),
+        status_code=resp.status_code,
+        background=BackgroundTask(resp.aclose),
+    )
+    out.raw_headers = [
+        (k.encode("latin-1"), v.encode("latin-1")) for k, v in _resp_headers(resp)
+    ]
+    _remember_slice_visitor(request, out, info, token, visitor, _samesite(app))
+    return out
+
+
+def _slice_visitor(request: Request | WebSocket, info: dict, token: str):
+    """Who this request is attributed to, or :data:`_SLICE_MISMATCH`.
+
+    A bound token carries the name; the ``?user=`` in the URL is then a display
+    of it, and a contradiction is refused. An open token learns the name from
+    that same parameter on first arrival and from its own cookie afterwards, so
+    one link can be handed to a group and each of them types their own.
+    """
+    asked = request.query_params.get(slices.USER_PARAM)
+    bound = info.get("user")
+    if bound:
+        return _SLICE_MISMATCH if asked and asked != bound else bound
+    return asked or request.cookies.get(slices.cookie_name(token))
+
+
+def _remember_slice_visitor(request: Request, out: Response, info: dict,
+                            token: str, visitor, samesite: str) -> None:
+    """Keep an open slice's visitor name across the rest of the visit.
+
+    Only for an open token, only when the name arrived in this request's query,
+    and only on this slice's own path — the edge's sign-in and sign-out clear
+    Trilium's cookies at ``path=/`` (see :func:`_clear_vault_cookies`), and a
+    name scoped here by both path and cookie name is not theirs to take.
+    """
+    if info.get("user") or not isinstance(visitor, str) or not visitor:
+        return
+    if request.query_params.get(slices.USER_PARAM) != visitor:
+        return
+    out.set_cookie(slices.cookie_name(token), visitor, path=slices.shell(token),
+                   httponly=True, secure=True, samesite=samesite)
+
+
+def _slice_req_headers(request: Request, info: dict, visitor) -> dict[str, str]:
+    """The forwarded headers: the slice's three, and no identity at all.
+
+    Overwritten rather than defaulted, exactly as ``X-Awm-As`` is in
+    :func:`_req_headers`. Trilium trusts these as much as it trusts loopback,
+    which is total and correct — the child binds loopback and this edge is its
+    only route in — so a browser must not be able to state any of them.
+    """
+    hdrs = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    hdrs["X-Forwarded-Proto"] = "https"
+    for name in (slices.HEADER_ROOT, slices.HEADER_USER, slices.HEADER_WRITE,
+                 "X-Awm-As"):
+        hdrs.pop(name.lower(), None)
+    hdrs[slices.HEADER_ROOT] = info["note_id"]
+    hdrs[slices.HEADER_WRITE] = "1" if info.get("write") else "0"
+    if isinstance(visitor, str) and visitor:
+        hdrs[slices.HEADER_USER] = visitor
+    host = request.headers.get("host")
+    if host:
+        hdrs["X-Forwarded-Host"] = host
+    if request.client:
+        hdrs["X-Forwarded-For"] = request.client.host
+    return hdrs
+
+
+async def _resolve_slice(app, token: str) -> dict | None:
+    """What ``token`` opens, or ``None`` if it opens nothing.
+
+    Asked of the trilium service over the gateway on loopback, with no
+    ``X-Awm-As``: an absent identity is what that service's ``_operator_only``
+    admits, and it is absent here because this call did not cross an edge.
+
+    The answer is ``{"found": bool, "note_id", "user", "write"}``; anything that
+    is not a ``found`` row with a note is nothing. A transport failure is not
+    cached — an unreachable gateway is a 404 for as long as it is unreachable,
+    and no longer.
+    """
+    cache = app.state.slice_cache
+    now = time.monotonic()
+    hit = cache.get(token)
+    if hit and hit[0] > now:
+        return hit[1]
+    client: httpx.AsyncClient = app.state.client
+    try:
+        resp = await client.post(
+            app.state.http_up.rstrip("/") + "/invoke",
+            json={"name": "trilium_slice_resolve", "args": {"token": token}},
+            timeout=5.0,
+        )
+    except httpx.HTTPError as exc:
+        log.debug("slice resolve failed: %s", exc)
+        return None
+    info = None
+    if resp.status_code == 200:
+        result = (resp.json() or {}).get("result")
+        if isinstance(result, dict) and result.get("found") and result.get("note_id"):
+            info = result
+    cache[token] = (now + SLICE_RESOLVE_TTL, info)
+    return info
 
 
 async def _bridge_penpot_session(request: Request, out: Response, kind: str,
@@ -839,11 +1004,21 @@ async def _ws_proxy(ws: WebSocket) -> None:
     # pre-existing feature's behaviour must not shift under it.
     is_penpot = (bool(penpot_ws) and not is_vault
                  and penpot.owns(path))
+    # The same second mount on the same child as the HTTP leg. Trilium builds
+    # its socket URI from ``location.pathname``, so a shell served under a
+    # slice opens its socket there and nowhere else.
+    is_slice = bool(vault_ws) and slices.owns(path)
     if is_vault:
         # The client derives its socket URL from the page's own pathname, so a
         # shell served at /trilium/ opens its socket there. Same rewrite as the
         # HTTP leg, or the vault's live updates never arrive and nothing says so.
         inner = vault.upstream_raw_path(raw)
+        if inner is None:
+            await ws.close(code=1008)
+            return
+        up, raw = vault_ws, inner
+    elif is_slice:
+        inner = slices.upstream_raw_path(raw)
         if inner is None:
             await ws.close(code=1008)
             return
@@ -871,16 +1046,30 @@ async def _ws_proxy(ws: WebSocket) -> None:
     if public and policy.classify(ws.url.path) is policy.Verdict.DENY:
         await ws.close(code=1008)
         return
-    ok, _, sub = _unpack(await gate.authenticate(
-        cookie=ws.cookies.get(COOKIE_NAME),
-        bearer=bearer_of(ws.headers.get("authorization")),
-    ))
-    if not ok or (public and not policy.allows(ws.url.path, sub)):
-        await ws.close(code=1008)  # policy violation
-        return
-    if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
-        await ws.close(code=1008)
-        return
+    slice_info = None
+    slice_token = None
+    sub = None
+    if is_slice:
+        # No session, for the reason the HTTP leg gives: the token is the
+        # credential. The socket outlives the resolve that admitted it, so a
+        # revoked slice keeps an open socket until the client reconnects; what
+        # reaches it through that socket is bounded by the mask either way.
+        slice_token = slices.token_of(path)
+        slice_info = await _resolve_slice(app, slice_token) if slice_token else None
+        if slice_info is None:
+            await ws.close(code=1008)
+            return
+    else:
+        ok, _, sub = _unpack(await gate.authenticate(
+            cookie=ws.cookies.get(COOKIE_NAME),
+            bearer=bearer_of(ws.headers.get("authorization")),
+        ))
+        if not ok or (public and not policy.allows(ws.url.path, sub)):
+            await ws.close(code=1008)  # policy violation
+            return
+        if (is_vault or is_penpot) and sub in (PEER_SUB, "operator"):
+            await ws.close(code=1008)
+            return
 
     # Forward cookies and the verified identity so the gateway sees the real
     # caller. ``origin`` and the forwarded-* hints matter only for a
@@ -893,7 +1082,18 @@ async def _ws_proxy(ws: WebSocket) -> None:
         v = ws.headers.get(k)
         if v:
             fwd[k] = v
-    fwd["X-Awm-As"] = _as_header(sub)
+    if slice_info is not None:
+        visitor = _slice_visitor(ws, slice_info, slice_token)
+        if visitor is _SLICE_MISMATCH:
+            await ws.close(code=1008)
+            return
+        fwd.pop("authorization", None)
+        fwd[slices.HEADER_ROOT] = slice_info["note_id"]
+        fwd[slices.HEADER_WRITE] = "1" if slice_info.get("write") else "0"
+        if isinstance(visitor, str) and visitor:
+            fwd[slices.HEADER_USER] = visitor
+    else:
+        fwd["X-Awm-As"] = _as_header(sub)
     override = _origin_override(app)
     if override and "origin" in fwd:
         fwd["origin"] = override
@@ -1125,6 +1325,8 @@ def build_app(upstream: str, ca_path: str, *, landing: bool = True,
     )
     app.state.gate = AuthGate()
     app.state.profile = profile
+    #: token -> (expires_at, resolved | None). Per app, so a test builds its own.
+    app.state.slice_cache = {}
     if vault_upstream:
         v = vault_upstream.rstrip("/")
         app.state.vault_http_up = v

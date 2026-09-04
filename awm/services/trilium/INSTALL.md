@@ -70,9 +70,10 @@ encrypted with the Trilium password, and there is not one.
 **The invariant it rests on.** `noAuthentication` stands down *every* guard
 Trilium has — the shell, the internal API, the whole of ETAPI, the setup wizard's
 password gate, and the WebSocket's own check. What replaces them is not weaker
-but earlier: the edge authenticates the session before forwarding a byte. That
-holds only while the edge is the **only** route in, so it is enforced rather than
-asserted, in three places:
+but earlier: the edge authenticates the session before forwarding a byte — with
+one exception, `/slice/`, which has a section of its own below and is admitted
+with no session at all. That holds only while the edge is the **only** route in,
+so it is enforced rather than asserted, in three places:
 
 - the child binds loopback, and `child_env` both sets `TRILIUM_HOST` and *removes*
   `TRILIUM_NETWORK_HOST` — upstream's `Network.host` defaults to `0.0.0.0` and
@@ -97,12 +98,19 @@ setting we pass disables *backend* scripting only — so a malicious or imported
 note becomes script execution on the awm origin, able to make credentialed
 same-origin calls as whoever is reading it. `awm_session` is HttpOnly, so it
 cannot be read; it can be used. A shared vault raises this rather than lowering
-it, because one bad note reaches every reader.
+it, because one bad note reaches every reader — and a writable slice widens who
+can plant one from "people with an account" to "anyone with the link". Slice
+writes are sanitised on the way in for that reason, which is the right first move
+and not the complete one: the complete one is the separate origin below.
 
 That is accepted, not overlooked. The mitigations are the minimal forwarded path
 list (`/etapi/`, `/custom/`, `/share/` and `/mcp` are deliberately not forwarded, and
 are matched against the path *inside* the mount — see `vault.NOT_FORWARDED`), the operator-only verb split below, and a tight
-public allow-list. The only complete fix is a separate origin, and the escape
+public allow-list. `/share/` stays off that list even though slices now do what
+it was for: it decides what is public from inside the document, by where a note
+is cloned, so the boundary would be set by whoever can edit the vault rather than
+by whoever can reach the host. A slice is minted by an operator verb and enforced
+against a token instead. The only complete fix is a separate origin, and the escape
 hatch if the trust assumption ever changes is **one** DNS record — a `vault.`
 host bound to the same edge — not one per person.
 
@@ -213,6 +221,74 @@ CAUTION: `note_upsert` is keyed on `(parent, exact title)`. Using it where a
 title can repeat is how one person's writing gets overwritten. Key on a label
 instead, the way the Zotero mirror keys on `#zoteroKey`.
 
+## A public slice of the vault
+
+A slice is a link that opens **one note and everything under it** to somebody
+with no awm account, optionally letting them edit note bodies, with each edit
+recorded against a name. It is the third state between "anyone with an account
+sees the whole vault" and "anyone without one sees none of it".
+
+```
+awm trilium slice-expose --note-id <id> --user steven   # bound to one visitor
+awm trilium slice-expose --note-id <id>                 # open; each visitor names themselves
+awm trilium slice-list
+awm trilium slice-revoke <token>
+```
+
+The URL is `https://<host>/slice/<token>/?user=steven#root/<noteId>`. The token
+is in the *path* for the same reason the vault is at a prefix: the shell's
+references are relative, so they resolve inside the slice's own mount, and two
+slices open in one browser get a cookie path each. The trailing slash is
+load-bearing exactly as it is for `/trilium/`; the edge answers the slash-less
+form with a 308.
+
+**Four gates, and each is meant to be the one that holds.**
+
+- The **edge** classifies `/slice/` as a verdict of its own (`policy.Verdict.SLICE`)
+  and admits it with no subject. It resolves the token by calling
+  `trilium_slice_resolve` over the gateway on loopback — an operator verb, reached
+  because a loopback call carries no `X-Awm-As` — and caches the answer for a few
+  seconds so a page load is one round trip rather than hundreds. An unknown,
+  revoked or expired token is a **404, not a 403**: a slice that no longer exists
+  should look like a URL that never did.
+- The edge then **stamps three headers** and strips any the browser sent:
+  `X-Awm-Slice-Root`, `X-Awm-Slice-User`, `X-Awm-Slice-Write`. Trilium trusts them
+  exactly as much as it trusts loopback, which is total and correct.
+- The **mask** in the fork (`apps/server/src/routes/slice_mask.ts`) sits ahead of
+  the internal API router. It names the routes a slice may call and refuses
+  everything else, so a route an upstream merge adds fails closed. Each named
+  route resolves to a note, which must be the slice's root or a descendant —
+  computed live, so a note moved into the slice is in it without re-issuing the
+  link. Exactly one route may write, `PUT /api/notes/:noteId/data`, only when the
+  link permits it, and only on a text note.
+- The **WebSocket** is tagged with its slice at the upgrade and its fan-out is
+  filtered by the same predicate, because a broadcast otherwise carries every note
+  id and title in the vault to a connection that may see one subtree.
+
+The client is trimmed to match, and only to match: it hoists to the slice's root,
+drops the launcher bar, global search, jump-to-note, settings and note creation,
+shows a read-only link read-only, and never offers a title to rename. None of that
+is a boundary — the mask is, and it holds with the trimming reverted.
+
+**What a visitor's writing leaves behind.** A slice write is sanitised with the
+vault's own allow-list before it is stored, and then recorded as a revision whose
+`source` is `slice` and whose `description` is the visitor's name, throttled to
+one per note per visitor per snapshot interval. The ordinary pre-write snapshot
+still runs, so a note's first slice edit leaves two revisions: the state before
+anybody outside touched it, and that visitor's version. A named revision is spared
+by `eraseExcessRevisionSnapshots` only while `revisionIgnoreNamedSnapshots` is on,
+which is where to look if an audit trail goes missing.
+
+CAUTION: a link is a credential, and anyone it is forwarded to has it. Expiry and
+`slice-revoke` exist for that reason; nothing can make a link identify a person. A
+bound token at least fixes the name, so attribution can be shared but not forged.
+
+CAUTION: the tarball install path carries none of the fork's slice code, so
+upstream's build would answer every route a token reached. `slice_expose` and
+`slice_resolve` therefore refuse outright on a node not serving the fork —
+resolving as well as minting, because a synced database carries tokens minted
+somewhere else.
+
 ## The board
 
 Trilium ships a board view, so a kanban board here is not something this service
@@ -263,28 +339,26 @@ nobody has made yet.
   branch and only the walk knows which branch a card was reached by.
 - **A column change sticks.** A column change writes to three places — the
   notes, the config attachment and the group-by definition — and each lands
-  separately. Every refresh in between resolved the columns from whichever of
-  the three it could already see, and then persisted what it resolved. One
-  refresh reading a source the change had not reached yet was enough to put the
-  column back for good, so an empty column could not be deleted at all and a
-  rename left both names standing. The board now remembers what it dropped and
-  holds that column out until a note carries the value again. A definition an
-  ancestor owns, or a template shares with notes off this board, is not this
-  board's to rewrite, and a column it names is refused with a message rather
-  than half-changed.
+  separately. The board used to persist the columns it had just resolved on
+  every render, so any refresh reading a source the change had not reached yet
+  put the column back for good, and a second client with the same board open
+  wrote its own pre-change view over the first one's change. A render now writes
+  nothing. A board whose group-by definition lookup finds nothing at all is
+  given one once, on sight — what a newly created board needs, and all migration
+  0240 ever did for the boards that predated it. Everything else is written by
+  the column gesture that changed it, which stores the whole resolved list. A
+  definition an ancestor owns, or a template shares with notes off this board,
+  is not this board's to rewrite, and a column it names is refused with a
+  message rather than half-changed.
 
-CAUTION: a column change still does not survive the same board being open in a
-second client. Every render resolves the columns from the notes, the attachment
-and the definition and then persists what it resolved, so the client that did
-not make the change writes its own pre-change view back over it — and the cards
-have already lost the label, so they fall off the board. Fixing that means a
-render no longer persisting anything, which is the behaviour migration 0240
-relies on, so it is an upstream design decision rather than a patch. Delete a
-column with the board open once.
+A delete or a rename can still flicker: between the bulk action stripping the
+label off the cards and the definition write landing, a refresh can resolve the
+old column and draw it. Nothing persists it, and it goes when the write arrives.
 
 CAUTION: the tarball install path serves upstream's build, which has neither
-patch. A node that installs from the tarball shows bare card titles and loses a
-column change on reload. Only a node that builds the fork carries them.
+patch. A node that installs from the tarball shows bare card titles, and loses a
+column change made while the board is open in a second browser. Only a node that
+builds the fork carries them.
 
 ## Three kinds of copy, and only one is a restore path
 

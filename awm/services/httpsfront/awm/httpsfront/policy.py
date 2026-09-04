@@ -7,7 +7,7 @@ is not listed here is a 404 whether or not it carries a session, so nothing
 else in awm — the hub control plane, ``/invoke``, other services, the
 fileviewer root — is even discoverable from outside.
 
-Five answers per path:
+Six answers per path:
 
 * ``DENY``  — not part of the public surface. 404.
 * ``OPEN``  — allowed for any authenticated session.
@@ -17,6 +17,19 @@ Five answers per path:
   person. A fourth verdict rather than ``USER`` because the two mean opposite
   things: ``USER`` admits a path that *names* the caller, and a vault path names
   nobody at all. Reusing ``USER`` would make that distinction untestable.
+* ``SLICE`` — a public slice of the vault: one note and its descendants, opened
+  by a link to somebody with no awm account. The one verdict that is allowed
+  with **no session at all**, which is why it is a verdict of its own rather
+  than a prefix in ``OPEN_PREFIXES``: everything else here narrows what an
+  authenticated caller may reach, and this widens the door to an unauthenticated
+  one. What keeps that narrow is that the token names the slice, the trilium
+  service decides whether it exists, and Trilium's own mask refuses every note
+  outside it — see :mod:`awm.httpsfront.slices`. Deliberately not a member of
+  ``OPEN_PREFIXES`` despite that list's forward-compat note below: entries there
+  are ``startswith`` matches, so listing the mount would classify the paths a
+  slice refuses as OPEN and forward them to the *gateway* — the collision
+  ``penpot.refused`` exists to answer. A branch where that list is the only gate
+  needs this verdict as well, not the prefix on its own.
 * ``PENPOT`` — Penpot's own root-level frontend paths, gated the same way as
   ``VAULT`` and for the same reason: a person's design files, not a machine's.
   Penpot's credential commands are the exception: they answer ``DENY``, because
@@ -32,7 +45,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
-from awm.httpsfront import penpot, vault
+from awm.httpsfront import penpot, slices, vault
 from awm.httpsfront.auth import PEER_SUB
 
 
@@ -41,6 +54,7 @@ class Verdict(str, Enum):
     OPEN = "open"
     USER = "user"
     VAULT = "vault"
+    SLICE = "slice"
     PENPOT = "penpot"
 
 
@@ -101,6 +115,12 @@ def classify(path: str) -> Verdict:
     # anything here — and after nothing, so ``/`` is untouched.
     if vault.owns(path):
         return Verdict.VAULT
+    # Beside the vault because it is the same upstream, and before the exact
+    # and prefix lists for the same reason. A path under the mount that
+    # ``owns`` refused falls through to DENY on its own: no "/slice/" entry
+    # appears in any list below.
+    if slices.owns(path):
+        return Verdict.SLICE
     # Same reasoning, same position, for Penpot. The two mounts are disjoint
     # by construction now that each has a prefix of its own, so the order
     # between them decides nothing.
@@ -136,6 +156,11 @@ def allows(path: str, sub: str | None) -> bool:
     """Whether an authenticated session acting as ``sub`` may reach ``path``."""
     verdict = classify(path)
     if verdict is Verdict.OPEN:
+        return True
+    if verdict is Verdict.SLICE:
+        # No subject, by design: a slice is reached by holding the link. The
+        # token is the credential, and it is checked where credentials are
+        # kept rather than here.
         return True
     if verdict is Verdict.DENY or not sub:
         return False
