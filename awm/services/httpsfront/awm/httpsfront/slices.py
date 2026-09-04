@@ -111,6 +111,17 @@ def owns(path: str) -> bool:
     return not _refused(upstream_path(path))
 
 
+def refused(path: str) -> bool:
+    """Whether ``path`` names a slice but a route inside it we do not forward.
+
+    Distinct from :func:`owns` because the caller has to answer it rather than fall through: a mesh
+    node's edge runs no profile and consults no allow-list, so without this an ``/etapi/`` path
+    inside the mount reaches the ordinary authentication check and answers 401 — telling a stranger
+    that the path exists and that a session would reach it.
+    """
+    return token_of(path) is not None and not owns(path)
+
+
 def shell_bare(token: str) -> str:
     """The slash-less mount, which the edge answers with a 308 to :func:`shell`."""
     return PREFIX + token
