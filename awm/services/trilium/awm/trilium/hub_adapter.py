@@ -999,7 +999,11 @@ async def _h_slice_expose(args: dict, as_: str | None = None) -> dict:
 async def _h_slice_list(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "slice_list")
     note_id = (args.get("note_id") or "").strip() or None
-    return {"slices": await asyncio.to_thread(slices.list_all, note_id)}
+    rows = await asyncio.to_thread(slices.list_all, note_id)
+    # The url the same way `slice_expose` builds it, so a caller listing what is
+    # already shared can hand a link over without minting a second one.
+    return {"slices": [{**r, "url": _slice_url(r["token"], r["note_id"], r["user"])}
+                       for r in rows]}
 
 
 async def _h_slice_revoke(args: dict, as_: str | None = None) -> dict:
