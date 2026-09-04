@@ -41,6 +41,7 @@ and the listener dies with it (one supervised lifetime, exactly like ``mic``).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 import time
@@ -886,8 +887,9 @@ async def _resolve_slice(app, token: str) -> dict | None:
     ``X-Awm-As``: an absent identity is what that service's ``_operator_only``
     admits, and it is absent here because this call did not cross an edge.
 
-    The answer is ``{"found": bool, "note_id", "user", "write"}``; anything that
-    is not a ``found`` row with a note is nothing. A transport failure is not
+    The answer is ``{"found": bool, "note_id", "user", "write"}``, which the
+    gateway delivers as JSON or as a JSON string; anything that is not a
+    ``found`` row with a note is nothing. A transport failure is not
     cached — an unreachable gateway is a 404 for as long as it is unreachable,
     and no longer.
     """
@@ -908,11 +910,26 @@ async def _resolve_slice(app, token: str) -> dict | None:
         return None
     info = None
     if resp.status_code == 200:
-        result = (resp.json() or {}).get("result")
-        if isinstance(result, dict) and result.get("found") and result.get("note_id"):
+        result = _invoke_result((resp.json() or {}).get("result"))
+        if result.get("found") and result.get("note_id"):
             info = result
     cache[token] = (now + SLICE_RESOLVE_TTL, info)
     return info
+
+
+def _invoke_result(result) -> dict:
+    """The gateway's ``result`` as a mapping, however it chose to hand it over.
+
+    A service handler returns a dict and the gateway may deliver it either as
+    JSON or as a JSON *string* — the MCP shape, where a tool's output is text.
+    Anything that is neither is no slice.
+    """
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return {}
+    return result if isinstance(result, dict) else {}
 
 
 async def _bridge_penpot_session(request: Request, out: Response, kind: str,
