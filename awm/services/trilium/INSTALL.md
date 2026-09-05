@@ -14,9 +14,10 @@ together. It is collaborative by being shared, not by being replicated.
 This file holds the decisions a reader cannot recover from the code: why the
 vault is a second upstream on an existing listener rather than a mount or a host
 of its own, why it has no password, why the verbs that write notes are refused to
-anyone who arrives through the edge, why the kanban board is Trilium's rather
-than this service's, why there are three kinds of database copy and only one of
-them is a restore path, and what a shared origin costs.
+anyone who arrives through the edge, how a public slice opens one subtree to
+somebody with no account, why the kanban board is Trilium's rather than this
+service's, why there are three kinds of database copy and only one of them is a
+restore path, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
 The patches we carry to it are the exception, because nothing in that project
@@ -228,6 +229,21 @@ with no awm account, optionally letting them edit note bodies, with each edit
 recorded against a name. It is the third state between "anyone with an account
 sees the whole vault" and "anyone without one sees none of it".
 
+**The affordance is in the note tree.** Right-click a note and choose "Share as
+slice…". The dialog takes a visitor name, a write toggle and an expiry. It mints
+the link, copies it, lists the note's live slices, and revokes one. The entry
+appears only where `AWM_HUB_URL` and `AWM_EDGE_URL` both reach the Trilium
+process, so an ordinary Trilium never shows it. It never appears inside a slice,
+because the mask refuses the three routes the dialog calls.
+
+Those routes are `GET /api/slices/:noteId`, `POST /api/slices` and `DELETE
+/api/slices/:token`, in `apps/server/src/routes/api/slices.ts`. Each one calls
+the gateway verb of the same name. They are server-only rather than shared with
+`trilium-core`, because the standalone WASM build has no transport to a loopback
+gateway.
+
+The same three acts from a terminal:
+
 ```
 awm trilium slice-expose --note-id <id> --user steven   # bound to one visitor
 awm trilium slice-expose --note-id <id>                 # open; each visitor names themselves
@@ -241,6 +257,13 @@ references are relative, so they resolve inside the slice's own mount, and two
 slices open in one browser get a cookie path each. The trailing slash is
 load-bearing exactly as it is for `/trilium/`; the edge answers the slash-less
 form with a 308.
+
+**Declare `AWM_EDGE_URL` on any node that mints links.** `_slice_url` builds the
+URL from `config.edge_url()`, which falls back to this host's mesh address and
+`AWM_HTTPS_PORT` when the variable is absent. A public node without it prints a
+link that resolves only on the mesh. Put the value in `/etc/awm/env` — on sirius,
+`https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
+through the service, so one declaration serves the CLI and the dialog alike.
 
 **Four gates, and each is meant to be the one that holds.**
 
@@ -287,7 +310,7 @@ CAUTION: the tarball install path carries none of the fork's slice code, so
 upstream's build would answer every route a token reached. `slice_expose` and
 `slice_resolve` therefore refuse outright on a node not serving the fork —
 resolving as well as minting, because a synced database carries tokens minted
-somewhere else.
+somewhere else. Give such a node the fork with `ship-bundle.sh`, under Install.
 
 ## The board
 
@@ -432,7 +455,8 @@ difference between a build node and a serving node:
   hash, and skipped when none of the three moved.
 - **Download the published tarball** for the pinned tag. Upstream ships a Node
   runtime inside it, so this path needs no toolchain at all — which is what lets
-  sirius install in a minute instead of building TypeScript on two vCPUs.
+  sirius install in a minute instead of building TypeScript on two vCPUs. That
+  bundled runtime is also what a shipped fork bundle runs under.
 
 `TRILIUM_INSTALL_MODE` forces one; the default picks the build when a fork is
 checked out. A missing fork is a warning and a clean exit, because the gateway
@@ -440,10 +464,38 @@ runs every service's install under `set -e` and a hard failure aborts the whole
 deploy on a node that simply does not serve Trilium. `TRILIUM_REQUIRE_SERVER=1`
 makes it fatal where one is expected.
 
-**The fork is a project, not a dependency.**
+**A node that cannot build can still serve the fork.** It takes
+`apps/server/dist/` from a node that can:
 
 ```
-./bootstrap-fork.sh          # once per node
+./ship-bundle.sh [host]           # default: sirius
+```
+
+The script refuses a bundle that does not match the local HEAD, refuses a remote
+Node that does not match `.nvmrc`, copies the bundle and its build stamp, writes
+`node-bin`, swaps the directory, and restarts the unit. `entry_point()` tests for
+`dist/main.cjs` and prefers the fork whenever that file exists, so the copy is
+the switch and deleting `main.cjs` is the way back. sirius serves the fork this
+way, which is what lets it mint and resolve a slice.
+
+CAUTION: never give a serving node a fork checkout. `install.sh` picks its path
+by testing for `<fork>/.git`, so a checkout there turns every later deploy into a
+monorepo build the node cannot finish. A shipped bundle leaves that directory
+free of `.git`, which keeps the install on the tarball path while the fork bundle
+serves. That also leaves `source_state()` with no revision to report, so the
+build stamp the script copies is the only record of which commit is running.
+
+CAUTION: `node_exe()` returns the tarball's bundled Node only while the tarball
+is the chosen entry. The moment the fork entry exists it reads `node-bin` and
+falls back to a bare `node`, which systemd's PATH does not carry. The tarball's
+runtime and the fork's `.nvmrc` must name the same version. Both are 24.19.0 at
+v0.105.0, and a tag bump that moves one breaks the pairing with no warning.
+
+**The fork is a project, not a dependency.** Run this on a build node only, once.
+A serving node never runs it — that is what the CAUTION above forbids.
+
+```
+./bootstrap-fork.sh
 ```
 
 CAUTION: `git clone --bare` turns every branch on the fork into a local head, and
@@ -492,11 +544,13 @@ wholesale to the awm edge, and the vault is a path on that edge, so the public
 host serves it by the same route and the same code as a mesh node. There is no
 `TRILIUM_FRONTS`, no `TRILIUM_DOMAIN`, no generated vhost and no DNS record.
 
-The one thing that is host-shaped: `client_max_body_size` in
+Two things are host-shaped. `client_max_body_size` in
 `scripts/sirius/etc/nginx/awm-proxy.conf` is 512m, because the vault is behind
 that one location and Trilium uploads whole PDFs and imports whole vaults in a
 single request. nginx generates the 413 itself, so the application never sees it
-and the editor simply appears to break.
+and the editor simply appears to break. And `AWM_EDGE_URL` in `/etc/awm/env`
+names the public origin, because a slice link built from an enumerated mesh
+address resolves nowhere off the mesh.
 
 ## Verify
 
