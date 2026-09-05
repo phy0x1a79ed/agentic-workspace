@@ -53,7 +53,7 @@ tree holding only this service; `--docker` also drives a live appliance round-tr
 `appliance/` holds the container that owns the engine, ported from the game-bot
 POC:
 
-- `Dockerfile` — Debian + pinned **Factorio 2.1.8** headless + Space Age mods.
+- `Dockerfile` — Debian + pinned **Factorio 2.1.17** headless + Space Age mods.
 - `docker-compose.yml` — parameterized by `FACTORIO_*` env (single-session
   defaults: project `rlm-factorio`, container `rlm-factorio-appliance`, ports
   `12140/udp` game + `12142/tcp` control, volume `rlm-factorio-saves`).
@@ -73,7 +73,7 @@ barriers are version + mods.
 
 **Three things must match the server, or the join is refused:**
 
-1. **Exact engine version.** The image is pinned (currently **2.1.8**, the
+1. **Exact engine version.** The image is pinned (currently **2.1.17**, the
    *experimental* branch). The client must be the same build — in Steam,
    *Factorio → Properties → Betas →* opt into the matching version.
 2. **The Space Age expansion.** The server enables `space-age` + `quality` +

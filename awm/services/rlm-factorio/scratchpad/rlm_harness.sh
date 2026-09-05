@@ -31,6 +31,9 @@ ln -s "$SERVICE_DIR" "$HARNESS/services/rlm-factorio"
 export AWM_WORKSPACE="$HARNESS"
 export AWM_SERVICES_DIR="$HARNESS/services"
 export AWM_PORT="$PORT"
+# The service ships a committed `profiles = ["gamebot"]` marker, so a gateway
+# without that profile skips it at bootstrap. Claim it here.
+export AWM_PROFILES="gamebot"
 
 GW_LOG="$HARNESS/gateway.log"
 PASS=0 FAIL=0
