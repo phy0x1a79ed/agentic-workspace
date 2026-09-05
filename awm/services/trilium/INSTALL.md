@@ -265,7 +265,7 @@ link that resolves only on the mesh. Put the value in `/etc/awm/env` — on siri
 `https://nexus.tony-xy-liu.com`. The Trilium process inherits it from the gateway
 through the service, so one declaration serves the CLI and the dialog alike.
 
-**Four gates, and each is meant to be the one that holds.**
+**Six gates, and each is meant to be the one that holds.**
 
 - The **edge** classifies `/slice/` as a verdict of its own (`policy.Verdict.SLICE`)
   and admits it with no subject. It resolves the token by calling
@@ -283,20 +283,35 @@ through the service, so one declaration serves the CLI and the dialog alike.
   route resolves to a note, which must be the slice's root or a descendant —
   computed live, so a note moved into the slice is in it without re-issuing the
   link. Exactly one route may write, `PUT /api/notes/:noteId/data`, only when the
-  link permits it, and only on a text note.
+  link permits it. Descent from the shared note is the whole of membership, so
+  that route accepts a note of any type.
+- The **tree route** (`packages/trilium-core/src/routes/api/tree.ts`) takes the
+  slice root and walks parents and children only inside it. Left unscoped, the
+  route recursed up to the vault root and returned every ancestor's title along
+  with the whole hidden subtree, whatever the mask allowed.
+- The **options route** answers a slice from `SLICE_READABLE_OPTIONS`, a named
+  list rather than the Options dialog's write allow-list. `openNoteContexts` and
+  `hoistedNoteId` name notes from all over the vault.
 - The **WebSocket** is tagged with its slice at the upgrade and its fan-out is
   filtered by the same predicate, because a broadcast otherwise carries every note
-  id and title in the vault to a connection that may see one subtree.
+  id and title in the vault to a connection that may see one subtree. A branch
+  change is judged by both of its ends, or moving the shared note re-attaches its
+  real parent to the visitor's tree.
 
-The client is trimmed to match, and only to match: it hoists to the slice's root,
-drops the launcher bar, global search, jump-to-note, settings and note creation,
-shows a read-only link read-only, and never offers a title to rename. None of that
-is a boundary — the mask is, and it holds with the trimming reverted.
+The client is trimmed to match, and only to match. An action a slice cannot
+perform is left out of the interface rather than disabled, because a greyed
+control still asks to be tried. Every trimming point tests `slice.isSlice()` in
+`apps/client/src/services/slice.ts`, which is the way to find them all. A refused
+request is logged to the console rather than toasted, so a gap the trimming
+missed reads as silence. None of that is a boundary — the mask is, and it holds
+with the trimming reverted.
 
-**What a visitor's writing leaves behind.** A slice write is sanitised with the
-vault's own allow-list before it is stored, and then recorded as a revision whose
-`source` is `slice` and whose `description` is the visitor's name, throttled to
-one per note per visitor per snapshot interval. The ordinary pre-write snapshot
+**What a visitor's writing leaves behind.** A slice write to a text note is
+sanitised with the vault's own allow-list before it is stored. Sanitising is
+skipped for every other type, where it would destroy a code note's source or a
+canvas note's JSON. The write is then recorded as a revision whose `source` is
+`slice` and whose `description` is the visitor's name, throttled to one per note
+per visitor per snapshot interval. The ordinary pre-write snapshot
 still runs, so a note's first slice edit leaves two revisions: the state before
 anybody outside touched it, and that visitor's version. A named revision is spared
 by `eraseExcessRevisionSnapshots` only while `revisionIgnoreNamedSnapshots` is on,
