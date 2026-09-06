@@ -152,8 +152,7 @@ hermes config set model.base_url https://openrouter.ai/api/v1
 # into a terminal you do not own the scrollback of.
 
 hermes mcp add awm --command /home/<you>/lib/miniforge3/envs/awm/bin/awm-mcp \
-  --env AWM_WORKSPACE=/home/<you>/agentic_workspace \
-        AWM_EXPOSED_HOST=127.0.0.1 AWM_EXPOSED_PORT=12100
+  --env AWM_WORKSPACE=/home/<you>/agentic_workspace
 
 ln -sfn ~/.claude/CLAUDE.md ~/.hermes/SOUL.md
 ```
