@@ -142,3 +142,48 @@ anything, so the surface stops exactly where automation begins.
 of it as properties on a `LuaEntity`, so one `configure{x, y, ...}` verb buys
 rotate, recipe, filters and limits together. Adding `rotate` alone patches the
 symptom and leaves the category open.
+
+### G10 — no structured read of what is on screen
+
+`screenshot` returns pixels; `observe` returns a capped nearby summary carrying
+only name/type/position. Between them there is no way to enumerate what is in
+view, and nothing anywhere reports how entities are **connected**. An agent can
+see a factory and cannot read it.
+
+Prototyped live (`scratchpad/` probe, not committed as code) and it works. For a
+frame around a seat it returned 18 entities and an 8-edge graph:
+
+- per entity: `id` (unit_number), name, type, position, `direction`, `status`,
+  `recipe`, `contents`, `enet` (electric network id), damaged health.
+- per edge: `{from, to, kind}` with kinds `belt`, `inserter_pickup`,
+  `inserter_drop`, `circuit_red`, `circuit_green`.
+
+`status` is the payload that matters. The probe's assembler read
+`item_ingredient_shortage` while its inserters read `waiting_for_source_items`,
+and the edge list said why: the input inserter was picking up FROM the assembler
+and dropping INTO the supply chest — built facing the wrong way. That diagnosis is
+unavailable from a screenshot and unavailable from `observe`.
+
+**Shape.** A verb of its own, not a flag on `observe`. It should take the SAME
+frame arguments as `screenshot` (`x`, `y`, `width`, `height`, `zoom`) so that
+rendering a box and enumerating it are the same box — pixels and JSON as two
+media for one question. `observe` stays what it is: seat-centric, small, cheap.
+
+**Bounding is mandatory.** A real factory is thousands of entities. Resources must
+aggregate by name rather than list per tile (the probe does this; the iron patch
+alone is 2414 tiles). Needs `limit` + `truncated` like `recipes`/`technologies`,
+and probably a `types` filter.
+
+**Four things the probe got wrong, to fix in a real implementation:**
+
+1. **No `power_copper` edges.** Poles reported a shared `enet` but
+   `entity.neighbours` yielded nothing under `pcall` — the failure was swallowed
+   rather than surfaced. Needs the 2.0 wire-connector API, not `neighbours`.
+2. **Undirected edges appear twice.** The red circuit wire came back as both
+   pole A -> B and B -> A. Symmetric kinds need dedup; belt/inserter kinds are
+   genuinely directed and must not be.
+3. **Empty lists encode as `{}`.** `resources` came back an object, not an array
+   — the same Lua one-table-type problem T8 already fixed for `observe`'s lists.
+   Coerce service-side.
+4. An unpaired `underground-belt` reports no partner edge. Pairs
+   (`neighbours` for undergrounds, and loaders) need their own kind.
