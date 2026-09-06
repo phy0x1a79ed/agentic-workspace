@@ -81,3 +81,64 @@ description already.
 The consequence is new, though: with G1 fixed, an agent that sets its own colour
 still cannot confirm it. Self-verification needs a second seat or a human. Worth a
 sentence in whatever `set_color` ends up being.
+
+---
+
+# Second pass — the surface as a whole
+
+The first pass listed things that did not work. This pass asks whether the verbs
+are the right *set*. Findings are numbered on from G5.
+
+### G6 — `observe` calls every player a "seat"
+
+`observe`'s `players` list and its `nearby` scan both label a player with the key
+`seat`, holding a player *name*. A human who joined from Steam has no seat — no
+row, no lease, no owner, and the reaper structurally cannot touch them. Measured
+live: `seats` returns one row (the agent's) while `observe` reports
+`{"seat": "Phyberosis", ...}` for the human.
+
+Not exploitable — addressing a verb at `"Phyberosis"` fails as an unknown seat —
+but it is the wrong word in the one place the distinction carries weight. An agent
+cannot tell a teammate it can coordinate with from a person it cannot.
+
+**Patch:** rename the key to `player`, and add a boolean `seat` (or a `seat_id`
+that is null for a human).
+
+### G7 — `mine` is two operations under one name
+
+`mine` filters on `mineable_properties.minable`, not on resource type, so it also
+deconstructs: verified by picking a spawned `assembling-machine-3` up off the
+ground and into the seat's inventory. Its description says "resource/tree/rock",
+which names only half of what it does.
+
+So deconstruct is NOT a missing primitive — it is an undocumented one. **Patch is
+the description**, not the code. Worth deciding whether harvest and deconstruct
+should stay fused; they are one engine operation but two intents, and an agent
+that means to mine ore near its own machines can eat them by accident.
+
+### G8 — placement checking is fused into the attempt
+
+`build` calls `can_place_entity{build_check_type = manual}` internally and
+`blueprint_stamp` pre-counts obstructions and reports `blocked` / `blocked_at`.
+Both fold the question into the action. There is no way to *ask* — no predicate
+that answers "can this go here" without trying.
+
+**Patch:** one `can_place` verb answering for a single entity and a blueprint
+alike (same question, different cardinality), returning the `blocked_at` shape
+`blueprint_stamp` already produces. `blueprint_stamp`'s pre-count should then call
+it rather than carry a second implementation.
+
+### G9 — nothing configures an entity after it is placed
+
+`build` takes `direction` at placement and that is the only moment any property of
+an entity can be set. There is no rotate, no set-recipe, no inserter filter, no
+chest limit, no circuit wiring.
+
+Rotate is the member of this family that gets noticed first. **Set-recipe is the
+one that matters** — without it an assembler placed by an agent can never do
+anything, so the surface stops exactly where automation begins.
+
+**Patch:** this is a missing *category*, not a missing verb. The engine models all
+of it as properties on a `LuaEntity`, so one `configure{x, y, ...}` verb buys
+rotate, recipe, filters and limits together. Adding `rotate` alone patches the
+symptom and leaves the category open.
