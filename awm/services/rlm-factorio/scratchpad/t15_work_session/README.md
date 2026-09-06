@@ -61,15 +61,16 @@ own description says to use `rcon.print`. Collier read it and got its furnace
 readouts first time. The surface is documented; this is a model-quality tax, and
 the cost is only wasted turns.
 
-**An agent config can look pinned to a rig and not be.** The configs used in
-this run set `AWM_EXPOSED_HOST` and `AWM_EXPOSED_PORT`, copying the shape of the
-workspace `.mcp.json`. The proxy reads neither: `awm.config` builds its base URL
-from `AWM_PORT`, defaulting to **7819, the live gateway**. These agents reached
-the rig only because the launching shell had `AWM_PORT=7863` exported and
-opencode passed its environment down to the MCP child. Launched from any other
-shell, the same config would have pointed three agents at prod. The copy kept
-here as `agent_opencode.json` is corrected to set `AWM_PORT`; the transcripts are
-the run as it happened.
+**Pin a sandbox agent with `AWM_PORT`, in the config, not in the shell.**
+`awm.config` builds its base URL from `AWM_PORT` alone, defaulting to 7819.
+These agents reached the rig because the launching shell exported
+`AWM_PORT=7863` and opencode passes its environment down to the MCP child — the
+config itself named no port, so it was the shell holding them there. Name the
+port in the server's `environment` instead, as the copy kept here as
+`agent_opencode.json` does. (The configs as run also carried
+`AWM_EXPOSED_HOST` / `AWM_EXPOSED_PORT`, copied from the workspace
+`.mcp.json`. Those are retired and read by nothing; they have since been
+stripped from the live configs.)
 
 **The radio worked.** Every handoff in this session — ROW UP, LIT, PLATES — was a
 line one agent wrote and another read before acting. Smith used the wait
@@ -87,4 +88,4 @@ step instead of two.
 | `radio/*.md` | the team channel as they left it |
 | `row_lit.jpg` | the five furnaces burning, two players at the row |
 | `row_partial.jpg` | the row four-fifths up, before the blocked tile was solved |
-| `agent_opencode.json` | one agent's config, corrected to pin `AWM_PORT` (see above) |
+| `agent_opencode.json` | one agent's config, with `AWM_PORT` pinned in it (see above) |
