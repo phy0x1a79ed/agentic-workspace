@@ -24,9 +24,8 @@
       ],
       "environment": {
         "AWM_WORKSPACE": "/home/tony/.claude/jobs/9bf14ee0/tmp/t15rig/ws",
-        "AWM_EXPOSED_HOST": "127.0.0.1",
-        "AWM_EXPOSED_PORT": "7863",
-        "AWM_AS": "agent:mason"
+        "AWM_AS": "agent:mason",
+        "AWM_PORT": "7863"
       }
     }
   },
