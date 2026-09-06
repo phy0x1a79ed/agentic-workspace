@@ -164,10 +164,10 @@ and the edge list said why: the input inserter was picking up FROM the assembler
 and dropping INTO the supply chest — built facing the wrong way. That diagnosis is
 unavailable from a screenshot and unavailable from `observe`.
 
-**Shape.** A verb of its own, not a flag on `observe`. It should take the SAME
-frame arguments as `screenshot` (`x`, `y`, `width`, `height`, `zoom`) so that
-rendering a box and enumerating it are the same box — pixels and JSON as two
-media for one question. `observe` stays what it is: seat-centric, small, cheap.
+**Shape.** A verb of its own named `list_fov`, paired explicitly with
+`screenshot`: one field of view, two media. Both take the SAME FOV block (`x`,
+`y`, `width`, `height`, `zoom`, `surface`), so rendering a box and enumerating it
+are provably the same box. `observe` stays what it is: seat-centric, small, cheap.
 
 **Bounding is mandatory.** A real factory is thousands of entities. Resources must
 aggregate by name rather than list per tile (the probe does this; the iron patch
