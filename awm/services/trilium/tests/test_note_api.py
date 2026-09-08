@@ -323,3 +323,20 @@ def test_a_batch_reports_only_what_actually_changed(vault):
     out = call("note_update", note_id=made,
                labels={"year": "2019", "doi": "10.1/x"})
     assert out["changed"]["labels"] == ["doi"]
+
+
+# -- archived notes ----------------------------------------------------------
+
+
+def test_note_search_can_be_asked_to_include_archived_notes(vault):
+    """Trilium's search context appends "not archived" to every expression and
+    the flag is inherited, so a caller that owns notes under an archived
+    ancestor cannot otherwise see them."""
+    call("note_search", query="#zoteroKey", archived=True)
+    assert vault.searches[-1]["includeArchivedNotes"] is True
+
+
+def test_note_search_leaves_archived_notes_out_by_default(vault):
+    """Trilium's own default, so no existing caller changes behaviour."""
+    call("note_search", query="#zoteroKey")
+    assert "includeArchivedNotes" not in vault.searches[-1]

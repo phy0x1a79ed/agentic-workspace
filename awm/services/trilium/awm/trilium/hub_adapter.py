@@ -243,6 +243,9 @@ API_MANIFEST: dict[str, Any] = {
                  "description": "Maximum hits. Default 50."},
                 {"name": "fast", "type": "boolean",
                  "description": "Skip note bodies. Default true."},
+                {"name": "archived", "type": "boolean",
+                 "description": "Include archived notes. Default false, "
+                                "which is Trilium's own."},
             ],
         },
         {
@@ -736,6 +739,11 @@ async def _h_note_search(args: dict, as_: str | None = None) -> dict:
     ancestor = (args.get("ancestor") or "").strip()
     if ancestor:
         params["ancestorNoteId"] = ancestor
+    # Trilium's search context appends "not archived" to every expression, and
+    # the flag is inherited — so one archived ancestor hides a whole subtree
+    # from a caller that owns notes inside it. Off by default, as upstream.
+    if args.get("archived") is True:
+        params["includeArchivedNotes"] = True
     return await asyncio.to_thread(etapi.client().search, query, **params)
 
 
