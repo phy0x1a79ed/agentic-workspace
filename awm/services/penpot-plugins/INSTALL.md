@@ -12,11 +12,20 @@ template's `plugin.ts`), not here.
 ## What problem it solves
 
 Penpot's Plugin Manager installs a plugin from any URL that serves a
-`manifest.json` — ConnectFlow, for example, is hosted on Cloudflare Pages, a
-third-party static host outside our control. A plugin we author ourselves
-needs the same kind of URL, but pointed at infrastructure we run: `awm`'s own
-gateway, the same way `drawio` hosts its web client and `fileviewer` hosts
-arbitrary files, both as a `kind=static` mount.
+`manifest.json` — ConnectFlow, which every profile on nexus now carries, is
+hosted on Cloudflare Pages, a third-party static host outside our control. A
+plugin we author ourselves needs the same kind of URL, but pointed at
+infrastructure we run: `awm`'s own gateway, the same way `drawio` hosts its
+web client and `fileviewer` hosts arbitrary files, both as a `kind=static`
+mount.
+
+**CAUTION: a plugin is fetched from its host every time somebody opens it.**
+Whoever controls that host controls code running with the permissions the
+entry grants — `content:write`, for ConnectFlow, against whatever file is
+open. Vendoring a third-party plugin into `local/` is what pins it, and this
+mount is the one place sirius could host it, because the two share an origin
+there. ConnectFlow is not vendored: it is somebody else's build, and copying
+it needs a licence check first.
 
 ## Why this tree lives in the `awm` repo, not the Penpot fork
 
@@ -74,13 +83,14 @@ below), because Penpot's backend resolves that one, not the browser.
    the one-line `esbuild` invocation) and drop the output beside
    `manifest.json`.
 5. Add an `icon.png` (any image format works; Penpot recommends 56×56).
-6. Restart or wait for the running `penpot-plugins` service to notice — no
-   restart is actually required, since the mount reads `local/` off disk on
-   every request; only a *new* plugin folder needs the service already
-   running to be servable at all (the mount registers `local/` as a whole
-   directory once, at process start).
+6. Restart the service. The mount reads `local/` off disk on every request,
+   so an edit to an existing plugin needs no restart. A *new* folder does:
+   the mount registers `local/` as one directory, once, at process start.
 7. Paste `/penpot-plugins/<your-plugin-name>/manifest.json` into Penpot's
    Plugin Manager on nexus, where the mount and Penpot share an origin.
+   That installs it for you. To install it for everybody, add it to
+   `PLUGIN_SET` in `scripts/sirius/penpot-plugins.sh` instead — Penpot keeps
+   its registry per profile, and the Plugin Manager writes one profile's.
 
 ## The `penpot-view-link` plugin
 

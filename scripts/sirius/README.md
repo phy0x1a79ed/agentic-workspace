@@ -70,6 +70,7 @@ the box afterwards to install it.
 | a change under `etc/` | `deploy.sh`, then `provision.sh` on the box |
 | the Trilium fork bundle | `awm/services/trilium/ship-bundle.sh` |
 | a new person | `scripts/sirius/add-user.sh <name>` |
+| a Penpot plugin everyone should have | `scripts/sirius/penpot-plugins.sh` |
 
 `deploy.sh` covers the routine case on its own. It decides whether the diff
 touched an install file, and it calls `install-awm.sh` when it did. Do not run
