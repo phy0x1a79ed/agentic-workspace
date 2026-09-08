@@ -69,6 +69,7 @@ the box afterwards to install it.
 | a first boot | `provision.sh` on the box, as root |
 | a change under `etc/` | `deploy.sh`, then `provision.sh` on the box |
 | the Trilium fork bundle | `awm/services/trilium/ship-bundle.sh` |
+| a new paper in Zotero | nothing. altair pulls and ships it, and the timer here applies it |
 | a new person | `scripts/sirius/add-user.sh <name>` |
 
 `deploy.sh` covers the routine case on its own. It decides whether the diff
@@ -83,11 +84,17 @@ changed and the environment is rebuilt.
 `promote.sh` runs the full test suite and needs a feature branch. It is the
 wrong tool for a documentation change or a hotfix already sitting on `release`.
 
-**CAUTION** `PUBLIC_SERVICES` in `install-awm.sh` is an allow-list. Every other
-service under `awm/services/` deploys as files on disk and is written disabled.
+**CAUTION** `PUBLIC_SERVICES` in `install-awm.sh` is an allow-list, and it
+gates two things rather than one. It is handed to the gateway installer as
+`AWM_SERVICES`, so a service missing from it is never pip-installed and never
+gets the `.runtime-env` sidecar its `run.sh` needs. It is also the enabled set.
 A deploy that carries a whole new service therefore reports success and changes
-nothing about what the box serves. Add the service name to that list to turn it
-on.
+nothing about what the box serves, and enabling the service in `enabled.json`
+afterwards finds nothing to start. Add the name to that list to turn it on.
+
+`install-awm.sh` refuses a run that would turn a service **off**, and names the
+services it would lose. A stale checkout doing that silently is the recorded
+incident. Set `AWM_ALLOW_DISABLE=1` when turning them off is the intent.
 
 ## Trilium on sirius
 
@@ -103,6 +110,19 @@ selects the fork and deleting that one file selects the tarball again.
 
 **WARNING** Shipping a bundle replaces the binary serving a live vault. Run
 `awm trilium snapshot` first.
+
+## The bibliography on sirius
+
+sirius runs the `zotero` service with `ZOTERO_ROLE=apply`. It cannot reach the
+Zotero desktop, which sits behind the private overlay this box is not on. altair
+reads the library, and ships `library.json` into this box's own vault scope. The
+timer here writes it into the note carrying `#zoteroLibrary`. Read
+`awm/services/zotero/INSTALL.md` for the roles and the label.
+
+**CAUTION** `ZOTERO_MAY_CREATE_ROOT=0` in `/etc/awm/env`. With no note carrying
+the label, apply refuses rather than building a bibliography at the top of a
+vault other people use. An empty `#zoteroLibrary` search is the ordinary reason
+the mirror stops updating.
 
 ## Verifying a deploy
 
