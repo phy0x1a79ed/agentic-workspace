@@ -330,9 +330,9 @@ def ship(destination: str, scope: Path | None = None) -> dict[str, Any]:
 
     The third leg the service always implied: pull on the node with the
     library, ship, apply on the node with the vault. It is a verb rather than a
-    script because the bundle is written by truncate-then-write, and a script
-    rsyncing the file could read a torn one — this takes the same lock the pull
-    half does.
+    script so that it takes the same lock the pull half does: a ship that ran
+    while a pull was mid-pass would carry a bundle whose stored files had been
+    pruned for a library the JSON no longer describes.
 
     Only the JSON travels. The stored files are two orders of magnitude larger
     and the apply side already skips a file the bundle does not hold, so a node

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -246,12 +247,26 @@ class Bundle:
         return hashlib.sha256(blob).hexdigest()[:16]
 
     def write(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Replace `library.json`, never write into it.
+
+        Once a pull has been pinned, this file is a read-only hardlink into the
+        shared DVC cache. Writing in place fails outright with `Permission
+        denied` — and if the mode ever allowed it, the bytes would land inside
+        the cache object itself and corrupt it for every other scope and every
+        commit that pins it. Renaming a new file over the link breaks the link
+        and leaves the cached object alone.
+
+        It is also what makes the file safe to `rsync` while a pass is running:
+        a reader sees the whole old bundle or the whole new one.
+        """
         self.root.mkdir(parents=True, exist_ok=True)
         # Sorted and indented so the diff is the diff in the library, not in
         # whatever order the API happened to answer in.
-        self.library_json.write_text(
-            json.dumps(payload, indent=2, sort_keys=True,
-                       ensure_ascii=False) + "\n", "utf-8")
+        blob = json.dumps(payload, indent=2, sort_keys=True,
+                          ensure_ascii=False) + "\n"
+        staged = self.library_json.with_name(self.library_json.name + ".new")
+        staged.write_text(blob, "utf-8")
+        os.replace(staged, self.library_json)
         return payload
 
     def file_for(self, ref: str, name: str) -> Path:
