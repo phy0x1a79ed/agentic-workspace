@@ -37,12 +37,41 @@ resume then. Two consequences fall out of that, and both have bitten:
   matches is dropped rather than delivered — a pid outlives nothing.
   `reflection_pending` lists what is currently owed.
 
+**How a send is confirmed.** One arbiter answers whether a send landed, on every
+lane: the session's own record at `~/.claude/sessions/<repl-pid>.json`, plus its
+transcript. Nothing reads the rendered screen. Reflection used to demand its own
+text back off the terminal before it would press Enter, and that veto caused the
+exact failure this service exists to prevent. Claude Code does not repaint the
+composer while it compacts, so the one window every deferred resume aims at is
+the one window a screen read cannot describe. A resume written into a live
+compaction now reports `enqueued` off the transcript's `queue-operation` entry
+and runs on the far side — measured on capella prod, a 163-second compaction took
+its resume 0.3 seconds in.
+
+Deleting that read would have removed two checks by accident, so both are now
+explicit. The record is sampled immediately before the write, and a record
+reading `waiting` refuses the attempt before anything is typed. That is the modal
+guard the screen read used to provide by luck, and it is strictly better, because
+it leaves no paste behind in somebody's open dialog. The daemon lane's
+`auth-required` frame is checked between the write and the Enter, through
+`check_not_rejected()` on the writer protocol — real on the daemon writer, a
+documented no-op on the others. Keep it on the protocol, because the sender must
+not be able to tell which lane it is holding.
+
+**Delivery rounds are spaced.** A failed round used to re-arm instantly, and the
+wait it re-entered answered "already started" off a start line still sitting in
+the transcript. So a four-round budget burned inside eight seconds of a
+compaction that ran for ninety-four. `ROUND_BACKOFF_S` holds off 30, then 60,
+then 120 seconds, sized against that measurement. Waiting itself stays unbounded.
+
 **Modal guard.** Some commands open a blocking modal/picker (`/mcp`, `/status`,
 `/config`, `/permissions`, `/agents`, …, and bare `/model`). These *swallow*
 pasted input — a follow-up Enter doesn't escape them and for a navigable list it
 drills deeper — so they would freeze the session (only a hand-typed Esc recovers).
 `send` **refuses** them outright (this cannot be overridden by `confirm`). Run
 them by hand. `/model opus` (with an argument) acts directly and is allowed.
+A modal that is *already* open when a send arrives is a different problem, and
+the record catches that one — see *How a send is confirmed* above.
 
 ## Who gets typed into
 
@@ -135,9 +164,8 @@ Five verbs, all on MCP + CLI + HTTP, none of which takes a target:
 
 - `reflection_send` — type any text/slash command into your own prompt and submit
   it. Destructive commands (`/clear`, `/quit`, `/exit`) require `confirm=true`;
-  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused. A submitted
-  slash command is trailed by a `followup` prompt to keep the session alive.
-- `reflection_compact` — sugar for `send "/compact"` (with the same follow-up).
+  modal commands (`/mcp`, `/status`, bare `/model`, …) are refused.
+- `reflection_compact` — sugar for `send "/compact"`.
 - `reflection_mode` — put your own session back into bypass-permissions mode.
 - `reflection_pending` — list the deferred resumes still owed, node-wide. The
   one verb that is not caller-scoped, because its whole job is to make a *lost*
@@ -211,6 +239,11 @@ that reads as "already in bypass" and returns ok having done nothing. Both were
 measured on one live background session minutes apart. Neither types blind, and
 both leave the session where it was; the useful lane is tmux, which is also the
 one a phone-approved plan takes.
+
+This footer walk is now the only place in the service that treats a rendered
+screen as evidence. Every send confirms from the record and the transcript
+instead. Keep the two apart. The reason the walk may read a screen is that it is
+asking what mode the TUI is displaying, which is a fact only the screen holds.
 
 ## Sessions reflection cannot reach
 
