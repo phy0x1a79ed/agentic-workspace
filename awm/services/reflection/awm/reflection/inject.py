@@ -500,7 +500,15 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
         # Written down BEFORE the watcher starts: the watcher is a thread in this
         # process, and the gateway restarts this process out from under it.
         pending.record(promise)
-        resume_watch(promise, spawn=spawn, tail=tail, **kw)
+        # `read_status` goes with `tail`, and for the same reason: both are
+        # harness-aware, both were built above from `observation_for`, and
+        # forwarding one without the other hands the resume an opencode
+        # transcript and Claude Code's session record. That reads a file that
+        # does not exist for the pid, which the old screen gate happened to
+        # mask; with confirmation the sole arbiter it is the difference
+        # between an arbiter and none.
+        resume_watch(promise, spawn=spawn, tail=tail,
+                     read_status=obs.read_status, **kw)
 
     out = {"ok": True, "session": lane.name or lane.session_id,
            "hosting": lane.hosting, "text": text, "submitted": submitted,
@@ -635,11 +643,14 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
     :data:`MAX_DELIVERY_ROUNDS`.
     """
     who = item.name or item.session_id or f"pid {item.repl_pid}"
-    if tail is None:
+    if tail is None or read_status is None:
+        # Keyed on either being absent, not on `tail` alone. The boot-time replay
+        # arrives with neither; `send` arrives with both. A caller that passes one
+        # and not the other used to get the Claude reader by default whatever
+        # harness it was watching.
         obs = observation.observation_for(item.repl_pid)
-        tail = obs.open_tail(item.repl_pid)
-        if read_status is None:
-            read_status = obs.read_status
+        tail = tail if tail is not None else obs.open_tail(item.repl_pid)
+        read_status = read_status if read_status is not None else obs.read_status
     tail.watch(item.text)
     tail.watch(item.followup)
 

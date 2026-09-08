@@ -302,3 +302,87 @@ def test_open_lane_refuses_a_lane_with_no_transport():
     with pytest.raises(oc_inject.OpencodeError, match="neither a pane nor"):
         with oc_inject.open_lane(lane):
             pass
+
+# ---------------------------------------------------------------------------
+# Which observation a pid gets, and whether the resume keeps it
+# ---------------------------------------------------------------------------
+
+def test_a_claude_pid_gets_the_claude_observation(tmp_path, monkeypatch):
+    from awm.reflection import observation, session_target
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path)
+    (tmp_path / "4242.json").write_text("{}")
+    assert isinstance(observation.observation_for(4242),
+                      observation.ClaudeObservation)
+
+
+def test_an_opencode_pid_gets_the_opencode_observation(tmp_path, monkeypatch):
+    # The dispatch that had no coverage at all. It matters more now than it did:
+    # the reader it picks is the arbiter, and picking the Claude one for an
+    # opencode pid means reading a per-pid record file that does not exist.
+    from awm.reflection import observation, session_target
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path / "empty")
+    monkeypatch.setattr(oc_session, "_is_opencode", lambda pid: True)
+    _use_db(monkeypatch, _mkdb(
+        tmp_path, {"s1": {"directory": "/w", "time_updated": 1}}))
+    _fake_proc(monkeypatch, cwd="/w")
+    assert isinstance(observation.observation_for(1234),
+                      oc_observe.OpencodeObservation)
+
+
+def test_a_pid_that_is_neither_falls_back_to_claude(tmp_path, monkeypatch):
+    # Every fake pid in every other test file is this case, and it must keep
+    # resolving to the module functions the rest of the suite pins.
+    from awm.reflection import observation, session_target
+    monkeypatch.setattr(session_target, "SESSIONS_DIR", tmp_path / "empty")
+    monkeypatch.setattr(oc_session, "_is_opencode", lambda pid: False)
+    assert isinstance(observation.observation_for(9999),
+                      observation.ClaudeObservation)
+
+
+def test_the_deferred_resume_keeps_the_reader_send_chose(monkeypatch):
+    # `send` builds a harness-aware reader and hands it to `deliver` as an
+    # explicit keyword, so it never rode in `**kw` — and the resume, which only
+    # forwarded `kw` and a tail, silently fell back to Claude Code's per-pid
+    # record for an opencode session. The screen gate used to mask that; with
+    # confirmation the sole arbiter it is the difference between an arbiter and
+    # none.
+    from awm.reflection import inject
+
+    def reader(_pid):
+        return ("busy", 1)
+
+    seen = {}
+
+    def fake_await(item, **kw):
+        seen.update(kw)
+
+    monkeypatch.setattr(inject, "_await_and_resume", fake_await)
+    inject.resume_watch(object(), spawn=lambda fn: fn(), tail="the-tail",
+                        read_status=reader)
+    assert seen["read_status"] is reader
+    assert seen["tail"] == "the-tail"
+
+
+def test_a_resume_given_only_one_of_the_pair_rebuilds_the_other(monkeypatch):
+    # The rebuild used to be guarded on `tail is None` alone, so a caller that
+    # passed a tail and no reader got the Claude reader whatever harness it was
+    # watching.
+    from awm.reflection import inject, observation, pending, stop_gate, watcher
+
+    class Obs:
+        def read_status(self, pid): return ("idle", 1)
+        def open_tail(self, pid): raise AssertionError("the tail was supplied")
+
+    class T:
+        def watch(self, _t): pass
+
+    monkeypatch.setattr(observation, "observation_for", lambda pid: Obs())
+    monkeypatch.setattr(stop_gate, "rearm", lambda sid: None)
+    got = {}
+    monkeypatch.setattr(inject, "_await_and_resume_inner",
+                        lambda item, tail, who, **kw: got.update(kw))
+    item = pending.Pending(repl_pid=1, proc_start="1", session_id="s",
+                           text="/compact", followup="resume",
+                           injected_at_ms=0, name="n", hosting="tmux")
+    inject._await_and_resume(item, tail=T())
+    assert got["read_status"] is not watcher.read_status
