@@ -123,6 +123,21 @@ VERIFY_POLL_S = 0.5
 # to ask the session to pause (see :func:`_hold_and_nudge`), not to give up on it.
 MAX_DELIVERY_ROUNDS = 4
 
+# How long to wait before re-arming after a *delivery* round failed, indexed by
+# how many have failed so far (the last value repeats).
+#
+# The numbers are sized against a real compaction. On 2026-09-07 a `/compact` ran
+# for 94 seconds and its resume failed four times in 7.7 — the loop re-entered
+# the wait, the wait saw the command's start line still sitting in the transcript
+# and returned "started" immediately, and the entire delivery budget was spent
+# inside the first eight seconds of a window a minute and a half wide. Whatever
+# is wrong with a lane at the moment a round fails, nothing about it changes in
+# 40ms; the only thing worth spending a round on is a *later* moment. Escalating
+# rather than flat because the second failure is weaker evidence that waiting
+# helps than the first, and 30+60+120 carries the last round well past the
+# longest compaction observed.
+ROUND_BACKOFF_S = (30.0, 60.0, 120.0)
+
 # How many times a session will be asked to bring its turn to a close before the
 # wait goes quiet and simply keeps holding. A pause request is text arriving
 # unbidden in somebody's session, so it is rationed: three across the life of a
@@ -663,10 +678,26 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
         stop_gate.rearm(item.session_id)
 
 
+def _round_backoff(failures: int) -> float:
+    """How long to hold off before re-arming, after ``failures`` failed rounds."""
+    if failures <= 0:
+        return 0.0
+    return ROUND_BACKOFF_S[min(failures, len(ROUND_BACKOFF_S)) - 1]
+
+
 def _await_and_resume_inner(item: pending.Pending, tail, who,
                             read_status=None, **kw) -> None:
+    sleep = kw.get("sleep", time.sleep)
     failures = 0
     while failures < MAX_DELIVERY_ROUNDS:
+        # Spacing between *delivery* rounds only. A round that ended in a hold —
+        # the session had not reached its command yet — re-arms straight away, as
+        # it always did: that is the wait working, and it is unbounded by design.
+        pause = _round_backoff(failures)
+        if pause:
+            log.info("reflection: holding %ss before the next delivery round for "
+                     "session %s (%s failed so far)", pause, who, failures)
+            sleep(pause)
         outcome = watcher.await_completion(item.repl_pid, tail=tail,
                                            injected_at_ms=item.injected_at_ms,
                                            text=item.text, label=who,
