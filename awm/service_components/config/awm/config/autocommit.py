@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 log = logging.getLogger("awm.config.autocommit")
@@ -34,6 +35,14 @@ DVC_FALLBACKS = (
     Path.home() / "lib/miniforge3/envs/awm/bin/dvc",
     Path("/opt/miniforge3/envs/dvc/bin/dvc"),
 )
+
+# A chunk dvc refuses outright — one git already tracks, say — fails identically
+# on every tick, so back a failure off instead of retrying it every time. Two
+# things end the backoff: the chunk changes, or the hour is up. The hour matters
+# because the cause often sits outside the chunk (repo state, a missing cache),
+# so a fix applied elsewhere must heal without waiting for a restart.
+_RETRY_AFTER_S = 3600.0
+_failed: dict[tuple[str, str], tuple[float, float]] = {}
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -102,25 +111,41 @@ def pin_chunk(root: Path, chunk: str, author: str,
     chunk telling git to leave the bytes alone. Committing the first without
     the second stages the bytes as blobs on somebody's next commit, so both
     are always staged together.
+
+    A failure backs off until the chunk changes or an hour passes, so a chunk
+    dvc will never accept costs one subprocess an hour rather than one a tick.
     """
     root, rel = Path(root), Path(chunk)
     target = root / rel
     if not (root / ".dvc" / "config").is_file() or not target.is_dir():
         return None
     pin = target.with_suffix(target.suffix + ".dvc")
-    if pin.is_file() and _newest_mtime(target) <= pin.stat().st_mtime:
+    newest = _newest_mtime(target)
+    if pin.is_file() and newest <= pin.stat().st_mtime:
+        return None
+    key = (str(root), chunk)
+    prev = _failed.get(key)
+    if prev and prev[0] == newest and time.monotonic() - prev[1] < _RETRY_AFTER_S:
         return None
     dvc = dvc_bin()
     if not dvc:
         log.warning("autocommit: %s changed in %s but dvc is not installed",
                     chunk, root)
         return None
-    r = subprocess.run([dvc, "add", "--quiet", str(rel)], cwd=root,
-                       capture_output=True, text=True, check=False)
+    # No --quiet: it suppresses the ERROR text along with the chatter, and that
+    # text is the entire content of the warning below. Output is captured either
+    # way, so dvc sees a pipe rather than a tty and draws no progress bar.
+    # DVC_NO_ANALYTICS: a scheduled loop has no business phoning home, and a run
+    # that fails strands its unsent report in the system temp dir for good.
+    r = subprocess.run([dvc, "add", str(rel)], cwd=root,
+                       capture_output=True, text=True, check=False,
+                       env={**os.environ, "DVC_NO_ANALYTICS": "1"})
     if r.returncode != 0:
-        log.warning("autocommit: dvc add %s failed in %s: %s", chunk, root,
-                    r.stderr.strip())
+        _failed[key] = (newest, time.monotonic())
+        log.warning("autocommit: dvc add %s failed in %s (rc=%d): %s", chunk,
+                    root, r.returncode, r.stderr.strip() or r.stdout.strip())
         return None
+    _failed.pop(key, None)
     if not pin.is_file():
         return None
     os.utime(pin, None)
