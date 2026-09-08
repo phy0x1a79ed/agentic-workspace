@@ -61,7 +61,7 @@ log = logging.getLogger("awm.agents.placement")
 # (``DEFAULT_CLAUDE_PLACEMENT_MODEL``); ``opencode`` matches the opencode
 # backend's own free-Zen default (``AGENTCORE_OPENCODE_MODEL``).
 DEFAULT_CLAUDE_PLACEMENT_MODEL = "haiku"
-DEFAULT_OPENCODE_PLACEMENT_MODEL = "deepseek-v4-flash-free"
+DEFAULT_OPENCODE_PLACEMENT_MODEL = "nemotron-3.5-lightning-free"
 
 
 # ---------------------------------------------------------------------------

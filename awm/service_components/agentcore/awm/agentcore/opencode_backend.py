@@ -37,10 +37,14 @@ from .session import AgentSession
 from .types import AgentConfig, AgentEvent
 
 
-# opencode Zen's free DeepSeek, overridable via params or env. No OpenRouter.
+# A free model on opencode Zen, overridable via params or env. No OpenRouter.
+# CAUTION Zen rotates its free tier, and a retired id is not refused as
+# unknown: it comes back as a bare 500 from POST /session/{id}/message, which
+# reads as a broken server rather than a stale name. ``opencode models`` lists
+# what is live. Keep ``placement.DEFAULT_OPENCODE_PLACEMENT_MODEL`` in step.
 _DEFAULT_PROVIDER_ID = os.environ.get("AGENTCORE_OPENCODE_PROVIDER", "opencode")
 _DEFAULT_MODEL_ID = os.environ.get(
-    "AGENTCORE_OPENCODE_MODEL", "deepseek-v4-flash-free"
+    "AGENTCORE_OPENCODE_MODEL", "nemotron-3.5-lightning-free"
 )
 
 _LISTEN_RE = re.compile(r"https?://(?P<host>[\w.\-]+):(?P<port>\d+)")

@@ -47,7 +47,7 @@ class DriverSettings(BaseModel):
             "Model override for new placements. Blank does NOT inherit the "
             "operator's ambient CLI/ANTHROPIC_MODEL default: placement "
             "resolution fills a concrete per-harness default (claude → "
-            "haiku, opencode → deepseek-v4-flash-free) so every spawn "
+            "haiku, opencode → nemotron-3.5-lightning-free) so every spawn "
             "carries an explicit model (hard-required at the spawn boundary)."
         ),
     )
