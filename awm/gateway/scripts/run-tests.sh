@@ -86,7 +86,10 @@ PYTEST_ARGS="${PYTEST_ARGS:-}"
 # script it then runs under bash, and bash's `exec` rejects `--` — so on mamba
 # 2.5.0 every dist fails identically before pytest is ever reached, which reads
 # like a repo breakage and is not one.
-PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1)"
+# `mamba run` appends a blank line of its own on some builds, so drop empties
+# before taking the last one — otherwise `tail -1` returns "" and every dist is
+# skipped with a message that reads like a broken env.
+PY="$(mamba run -n awm python -c 'import sys; print(sys.executable)' 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)"
 if [ ! -x "$PY" ]; then
   echo "could not resolve the awm env's python (got '${PY:-<empty>}')" >&2
   exit 1
