@@ -321,7 +321,7 @@ def destination_parts(destination: str) -> tuple[str, str]:
         raise ValueError(
             f"ship destination {destination!r} is not host:/path — it names "
             f"the vault scope on the far node, e.g. "
-            f"sirius:/var/lib/awm/projects/vault/sirius")
+            f"sirius:/var/lib/awm/projects/vault/main")
     return host, remote_scope
 
 

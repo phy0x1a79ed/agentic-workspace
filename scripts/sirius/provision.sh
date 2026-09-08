@@ -173,7 +173,17 @@ PENPOT_PUBLIC_URI=https://nexus.tony-xy-liu.com/penpot
 PENPOT_INTERNAL_URI=http://penpot-frontend-internal:8080
 AWM_EDGE_PENPOT=1
 AWM_PENPOT_ROTATION_HOUR=4
+ZOTERO_ROLE=apply
+ZOTERO_MAY_CREATE_ROOT=0
+ZOTERO_SYNC_ENABLED=1
 ENV
+# The zotero keys are what a public box is. It cannot reach the Zotero desktop
+# -- that machine is on the private overlay and this one is not -- so it only
+# ever writes the vault from a bundle another node ships in, and a role of
+# `apply` says so instead of leaving an unreachable host in the log every
+# twenty minutes. Creation is off because the mirror goes under whichever note
+# carries #zoteroLibrary: on a vault somebody uses, refusing to find that note
+# is better than building a library at the top of their tree.
 # PENPOT_INTERNAL_URI is not a second spelling of PENPOT_PUBLIC_URI and the
 # two must not be collapsed. The public one is what the backend and the
 # frontend stamp on browser-bound URLs, and penpot-view strips its /penpot
