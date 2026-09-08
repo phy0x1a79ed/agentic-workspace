@@ -19,14 +19,28 @@ between deciding an address and using it is exactly where a session being
 attached or backgrounded re-homes its pty out from under us — and that window
 should be as close to zero as it can be made.
 
-The confirmation deliberately comes *after* the commit. It used to come before:
+There is exactly one arbiter of whether a send landed, and it is not the screen.
+The session's own record (``status``/``statusUpdatedAt``) and its transcript are
+what every lane already reads, and they say the same thing whether the session
+lives in a pane or in the background daemon. The screen used to gate the commit:
 the text was read back off the lane and Enter was withheld unless it was visible.
-That works on tmux, whose ``capture-pane`` renders current state, and does not
-work at all on the daemon lane, which is a stream of the TUI's repaint deltas —
-the TUI repaints the composer when it feels like it, and a paste it chose not to
-paint was read as a paste that never arrived. Background sessions were written to
-correctly and then never submitted. What can be checked on both lanes is what the
-*session* did, and that only exists once Enter is on the wire.
+That never worked on the daemon lane, which is a stream of the TUI's repaint
+deltas — the TUI repaints the composer when it feels like it, and a paste it
+chose not to paint was read as a paste that never arrived. It turned out not to
+work on tmux either, for a reason no per-lane flag could fix: Claude Code does not
+paint the composer *at all* while it is compacting, so a resume aimed at exactly
+that window was written twelve times and submitted zero times (2026-09-07, across
+a 94-second ``/compact``). A rendered screen renders what the app chose to draw,
+never what it received. What can be checked on both lanes is what the *session*
+did, and that only exists once Enter is on the wire.
+
+Two things the screen gate was doing by accident are now done on purpose. A
+session whose record reads ``waiting`` has a modal holding the keyboard, so the
+attempt is refused *before* anything is typed rather than after a paste has been
+left in a dialog. And the daemon lane's ``auth-required`` rejection frame, which
+used to surface as a side effect of reading the screen, is an explicit
+``check_not_rejected`` on the writer protocol — real on the daemon lane, a no-op
+on the others, so the sender still cannot tell which lane it is holding.
 
 Enter is still the retry boundary, but the record now says which side of it we
 are on. A session that was settled when we wrote and never moved consumed
@@ -45,7 +59,6 @@ consumed the keystrokes. The difference is structural and permanent — see
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from typing import Any, Callable, NamedTuple, Optional
@@ -69,17 +82,6 @@ log = logging.getLogger("awm.reflection.inject")
 # not so many that a genuinely unreachable session is ground against while the
 # caller blocks on the verb.
 ATTEMPTS = 3
-
-# How much of the text to look for in the read-back. A short distinctive prefix
-# beats the whole string: the TUI wraps long input across the prompt box and
-# paints border glyphs at the wrap, which would defeat a full-line match. The
-# first few characters land right after the prompt marker and cannot wrap.
-_PROBE_CHARS = 16
-
-# CSI / OSC escape sequences. The daemon lane hands back the raw pty stream with
-# these still in it; tmux's `capture-pane` is already plain, and stripping a
-# string with none in it is harmless.
-_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.")
 
 # Pause between attempts. This loop used to run flat out, so three attempts at a
 # session that was briefly unreachable were spent inside 2.4 seconds and the
@@ -121,6 +123,21 @@ VERIFY_POLL_S = 0.5
 # to ask the session to pause (see :func:`_hold_and_nudge`), not to give up on it.
 MAX_DELIVERY_ROUNDS = 4
 
+# How long to wait before re-arming after a *delivery* round failed, indexed by
+# how many have failed so far (the last value repeats).
+#
+# The numbers are sized against a real compaction. On 2026-09-07 a `/compact` ran
+# for 94 seconds and its resume failed four times in 7.7 — the loop re-entered
+# the wait, the wait saw the command's start line still sitting in the transcript
+# and returned "started" immediately, and the entire delivery budget was spent
+# inside the first eight seconds of a window a minute and a half wide. Whatever
+# is wrong with a lane at the moment a round fails, nothing about it changes in
+# 40ms; the only thing worth spending a round on is a *later* moment. Escalating
+# rather than flat because the second failure is weaker evidence that waiting
+# helps than the first, and 30+60+120 carries the last round well past the
+# longest compaction observed.
+ROUND_BACKOFF_S = (30.0, 60.0, 120.0)
+
 # How many times a session will be asked to bring its turn to a close before the
 # wait goes quiet and simply keeps holding. A pause request is text arriving
 # unbidden in somebody's session, so it is rationed: three across the life of a
@@ -155,11 +172,15 @@ class CommitFailed(DeliveryError):
     """
 
 
-class NotVerified(RuntimeError):
-    """The text was written but did not show up in the lane's read-back.
+class SessionBlocked(RuntimeError):
+    """A modal dialog holds the session's keyboard, so nothing was typed.
 
-    Only raised on a lane whose read-back renders current state, where "not on
-    screen" means what it says. See ``read_back_is_evidence``.
+    Retryable, and refused *before* the write rather than after it: a paste into
+    an open dialog is consumed by the dialog, and a retry then concatenates onto
+    whatever the dialog did with it. The old screen gate caught this case by
+    accident — the composer is not painted behind a modal — and that accident is
+    the only thing the gate was contributing on the tmux lane, so it is kept as
+    an explicit check on the one signal that says so outright.
     """
 
 
@@ -204,41 +225,8 @@ def resolve_lane(caller_pid: int):
 
 
 # ---------------------------------------------------------------------------
-# Verification
+# Confirmation — the sole arbiter
 # ---------------------------------------------------------------------------
-
-def _flatten(screen: str) -> str:
-    """Strip escapes and all whitespace, so wrapping cannot hide a match.
-
-    Removing whitespace outright rather than collapsing it is deliberate: a wrap
-    inside the probe would otherwise insert a newline that no amount of
-    normalising a *space* would forgive.
-    """
-    return "".join(_ANSI.sub("", screen).split())
-
-
-def _probe(text: str) -> str:
-    return _flatten(text)[:_PROBE_CHARS]
-
-
-def _landed(before: str, after: str, probe: str) -> bool:
-    """Did ``probe`` appear *more* times after the write than before it?
-
-    Presence alone is not evidence. Both lanes hand back text that still holds
-    earlier paints — scrollback for tmux, an append-only byte stream for the
-    daemon — so a session that compacted an hour ago still has ``/compact`` on
-    screen, and a presence check would call the write verified without a single
-    byte having landed. An increase in the count cannot be faked that way.
-
-    A *false* here is only meaningful on a lane that renders. On the daemon lane
-    it means "the TUI did not choose to repaint", which it frequently does not,
-    and reading that as failure is what stopped background sessions compacting
-    themselves. The caller checks ``read_back_is_evidence`` before acting on it.
-    """
-    if not probe:
-        return True
-    return _flatten(after).count(probe) > _flatten(before).count(probe)
-
 
 def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
                     text: str = "", tail=None,
@@ -280,6 +268,10 @@ def _confirm_submit(repl_pid: int, before: Optional[tuple[str, int]], *,
         # by it rather than queued behind a turn — the same failure
         # `guards.INTERACTIVE` refuses on the way in. Named apart from `queued`
         # because the two want opposite things from whoever reads the result.
+        # `_attempt` now refuses this state *before* writing, so on that path
+        # this branch is unreachable; it stays for callers that confirm a submit
+        # they did not make through `_attempt`, and as the honest answer when a
+        # session opened a dialog between the sample and the Enter.
         return CONFIRMED_BLOCKED
     if not watcher.is_settled(before[0], before[1], tail, text):
         deadline = clock() + CONFIRM_WAIT_S
@@ -324,36 +316,36 @@ def _open_lane(lane, **kw):
 _LANE_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
                   tmux_inject.TmuxError, daemon_inject.DaemonError,
                   oc_inject.OpencodeError, oc_inject.ServeError,
-                  NotVerified, NotSubmitted, OSError)
+                  SessionBlocked, NotSubmitted, OSError)
 
 
 def _attempt(repl_pid: int, text: str, *, enter: bool, clear_first: bool,
              detect, read_status=None, tail=None, **kw) -> Delivery:
-    """One detect → write → commit → confirm transaction. Raises on any failure.
+    """One detect → guard → write → commit → confirm transaction. Raises on failure.
 
-    The confirmation is the last step, not the third. It used to sit between the
-    write and the commit, gating Enter on the text being visible in the lane's
-    read-back — which the daemon lane cannot answer, so background sessions were
-    written to correctly and then never submitted. What the write can be checked
-    against is what the *session* did with it, and that is only observable once
-    Enter is on the wire.
+    Nothing rendered is consulted anywhere in here. The only thing asked before
+    the write is the session's own record, and it is asked one question — is a
+    modal holding the keyboard — because that is the one state in which typing
+    does something other than queue. Everything else is settled *after* Enter, by
+    what the session did, which is the same question on every lane.
     """
     lane = detect(repl_pid)
-    # Sampled before anything is typed, because it is the reference the
-    # confirmation compares against: "did this move?" needs a from.
+    # Sampled before anything is typed, because it serves twice: it is the modal
+    # guard below, and it is the reference the confirmation compares against —
+    # "did this move?" needs a from.
     was = (read_status or watcher.read_status)(repl_pid)
+    if was is not None and was[0] == "waiting":
+        raise SessionBlocked(
+            f"session {lane.name or lane.session_id} is at a prompt waiting for "
+            f"an answer, so a paste would be eaten by the dialog rather than "
+            f"queued; nothing was typed")
     with _open_lane(lane, **kw) as writer:
         if clear_first:
             writer.clear()
-        before = writer.read_back()
         writer.write(text)
-        after = writer.read_back()
-        if (not _landed(before, after, _probe(text))
-                and writer.read_back_is_evidence):
-            raise NotVerified(
-                f"the text was written to {writer.label} but never showed up "
-                f"there; the session is not reading its pty, or the paste was "
-                f"swallowed by a modal")
+        # The one thing a lane can say about a write it just took: not that it
+        # arrived, only that the host did not announce discarding it.
+        writer.check_not_rejected()
         if not enter:
             return Delivery(False, lane, NOT_SUBMITTED)
         try:
@@ -410,6 +402,7 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
     detect = detect or resolve_lane
     sleep = kw.get("sleep", time.sleep)
     failures: list[str] = []
+    blocked = False
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             sleep(RETRY_BACKOFF_S)
@@ -423,6 +416,7 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
                       attempts, exc)
             raise
         except _LANE_FAILURES as exc:
+            blocked = isinstance(exc, SessionBlocked)
             failures.append(f"attempt {attempt}: {exc}")
             log.warning("reflection: attempt %s/%s to deliver %s to pid %s "
                         "failed: %s", attempt, attempts, what, repl_pid, exc)
@@ -439,7 +433,12 @@ def deliver(repl_pid: int, text: str, *, enter: bool = True,
         return result
     log.error("reflection: giving up on delivering %s to pid %s after %s "
               "attempts — %s", what, repl_pid, attempts, "; ".join(failures))
-    _wipe_prompt(repl_pid, detect, **kw)
+    if not blocked:
+        # The wipe is safe because by here the only thing that can be in the box
+        # is ours. A session still behind a modal on the last attempt was never
+        # written to at all, and a Ctrl-U aimed at its prompt goes to the dialog
+        # instead — answering somebody's question for them. Leave it alone.
+        _wipe_prompt(repl_pid, detect, **kw)
     raise DeliveryError(
         f"could not deliver {what} to the calling session after {attempts} "
         f"attempts: " + "; ".join(failures))
@@ -516,7 +515,15 @@ def send(text: str, *, caller_pid: Optional[int], enter: bool = True,
         # Written down BEFORE the watcher starts: the watcher is a thread in this
         # process, and the gateway restarts this process out from under it.
         pending.record(promise)
-        resume_watch(promise, spawn=spawn, tail=tail, **kw)
+        # `read_status` goes with `tail`, and for the same reason: both are
+        # harness-aware, both were built above from `observation_for`, and
+        # forwarding one without the other hands the resume an opencode
+        # transcript and Claude Code's session record. That reads a file that
+        # does not exist for the pid, which the old screen gate happened to
+        # mask; with confirmation the sole arbiter it is the difference
+        # between an arbiter and none.
+        resume_watch(promise, spawn=spawn, tail=tail,
+                     read_status=obs.read_status, **kw)
 
     out = {"ok": True, "session": lane.name or lane.session_id,
            "hosting": lane.hosting, "text": text, "submitted": submitted,
@@ -651,11 +658,14 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
     :data:`MAX_DELIVERY_ROUNDS`.
     """
     who = item.name or item.session_id or f"pid {item.repl_pid}"
-    if tail is None:
+    if tail is None or read_status is None:
+        # Keyed on either being absent, not on `tail` alone. The boot-time replay
+        # arrives with neither; `send` arrives with both. A caller that passes one
+        # and not the other used to get the Claude reader by default whatever
+        # harness it was watching.
         obs = observation.observation_for(item.repl_pid)
-        tail = obs.open_tail(item.repl_pid)
-        if read_status is None:
-            read_status = obs.read_status
+        tail = tail if tail is not None else obs.open_tail(item.repl_pid)
+        read_status = read_status if read_status is not None else obs.read_status
     tail.watch(item.text)
     tail.watch(item.followup)
 
@@ -668,10 +678,26 @@ def _await_and_resume(item: pending.Pending, *, tail=None, read_status=None,
         stop_gate.rearm(item.session_id)
 
 
+def _round_backoff(failures: int) -> float:
+    """How long to hold off before re-arming, after ``failures`` failed rounds."""
+    if failures <= 0:
+        return 0.0
+    return ROUND_BACKOFF_S[min(failures, len(ROUND_BACKOFF_S)) - 1]
+
+
 def _await_and_resume_inner(item: pending.Pending, tail, who,
                             read_status=None, **kw) -> None:
+    sleep = kw.get("sleep", time.sleep)
     failures = 0
     while failures < MAX_DELIVERY_ROUNDS:
+        # Spacing between *delivery* rounds only. A round that ended in a hold —
+        # the session had not reached its command yet — re-arms straight away, as
+        # it always did: that is the wait working, and it is unbounded by design.
+        pause = _round_backoff(failures)
+        if pause:
+            log.info("reflection: holding %ss before the next delivery round for "
+                     "session %s (%s failed so far)", pause, who, failures)
+            sleep(pause)
         outcome = watcher.await_completion(item.repl_pid, tail=tail,
                                            injected_at_ms=item.injected_at_ms,
                                            text=item.text, label=who,
