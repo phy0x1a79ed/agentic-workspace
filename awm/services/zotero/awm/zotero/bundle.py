@@ -36,6 +36,7 @@ would silently make one paper overwrite another.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -228,6 +229,21 @@ class Bundle:
         """Where the mirror is, per library, which is also where the next pull
         starts."""
         return {k: int(v) for k, v in (self.read().get("versions") or {}).items()}
+
+    @property
+    def digest(self) -> str:
+        """A fingerprint of the library this bundle holds.
+
+        Over the library's content and not over the file, because `pulled` is a
+        timestamp that moves whenever somebody looks at Zotero. Digesting the
+        file would make a node re-apply the whole mirror — thousands of round
+        trips — to prove that nothing had changed.
+        """
+        library = self.read()
+        blob = json.dumps({k: library.get(k)
+                           for k in ("versions", "collections", "items")},
+                          sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()[:16]
 
     def write(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.root.mkdir(parents=True, exist_ok=True)

@@ -42,6 +42,33 @@ INTERVAL_S = float(os.environ.get("ZOTERO_SYNC_INTERVAL_S", "1200"))
 #: where every tick would be a logged failure saying so.
 SCHEDULED = os.environ.get("ZOTERO_SYNC_ENABLED", "1") not in ("0", "false", "no")
 
+#: What this node does with the mirror.
+#:
+#: `full` — read the library and write the vault, which is one machine doing
+#: both and is the historical behaviour. `pull` — read the library, ship the
+#: bundle, write no vault. `apply` — write the vault from whatever bundle
+#: arrives, and never look for a library.
+#:
+#: The role is what makes the split legible. Without it, the reason a node
+#: never pulls is an unreachable host in a log line every twenty minutes.
+ROLES = ("full", "pull", "apply")
+ROLE = os.environ.get("ZOTERO_ROLE", "full").strip().lower() or "full"
+if ROLE not in ROLES:
+    # Raised at import, so the service fails to start and the gateway trips its
+    # breaker. Visibly wedged is the right answer to a typo that would
+    # otherwise quietly turn an apply-only node back into a puller.
+    raise SystemExit(f"ZOTERO_ROLE={ROLE!r} is not one of {', '.join(ROLES)}")
+
+#: Where a pulled bundle goes, as `host:/path/to/vault/scope`. Orthogonal to
+#: the role: a node can be `full` and still ship, which is what altair does.
+SHIP_TO = os.environ.get("ZOTERO_SHIP_TO", "").strip()
+
+#: Whether apply may create the library root when no note carries
+#: `#zoteroLibrary`. Off on a shared vault, where creating a library at the top
+#: of somebody's tree is worse than refusing.
+MAY_CREATE_ROOT = os.environ.get(
+    "ZOTERO_MAY_CREATE_ROOT", "1") not in ("0", "false", "no")
+
 API_MANIFEST: dict[str, Any] = {
     "functions": [
         {
@@ -81,21 +108,45 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Write the bundle into the vault: collections as a note tree, "
                 "one note per reference with its citation fields as labels, "
-                "each stored file attached. Only notes carrying #zoteroKey are "
-                "ever rewritten. Operator only."
+                "each stored file attached. Goes under the note carrying "
+                "#zoteroLibrary. Only notes carrying #zoteroKey are ever "
+                "rewritten. Operator only."
             ),
             "params": [
                 {"name": "parent", "type": "string",
-                 "description": "Where the library note goes. Default root."},
+                 "description": "Where a fallback library note would be made, "
+                                "when no note carries #zoteroLibrary and this "
+                                "node may create one. Default root."},
+                {"name": "dry_run", "type": "boolean",
+                 "description": "Report what would change and write nothing."},
+                {"name": "force", "type": "boolean",
+                 "description": "Re-apply even when the vault already holds "
+                                "this bundle."},
             ],
             "timeout": 3600,
+        },
+        {
+            "name": "ship",
+            "tool": "zotero_ship",
+            "description": (
+                "Send the bundle's library.json to the node that holds the "
+                "vault, straight into that node's own vault scope. Only the "
+                "JSON travels; stored files stay here. Operator only."
+            ),
+            "params": [
+                {"name": "to", "type": "string",
+                 "description": "host:/path/to/vault/scope. Defaults to "
+                                "ZOTERO_SHIP_TO."},
+            ],
+            "timeout": 900,
         },
         {
             "name": "sync",
             "tool": "zotero_sync",
             "description": (
-                "Pull then apply. What the timer runs, and what to call by "
-                "hand after adding papers in Zotero. Operator only."
+                "Pull, then apply and ship as this node's role says. What the "
+                "timer runs, and what to call by hand after adding papers in "
+                "Zotero. Operator only."
             ),
             "params": [
                 {"name": "force", "type": "boolean",
@@ -132,7 +183,13 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     out: dict[str, Any] = {"bundle": sync.bundle().stats(),
                            "scope": str(sync.VAULT_SCOPE),
                            "last": dict(LAST)}
-    if args.get("probe", True) is not False:
+    out["role"] = {"role": ROLE, "ship_to": SHIP_TO,
+                   "may_create_root": MAY_CREATE_ROOT}
+    # An apply-only node has no library to ask. Probing is this verb's default
+    # and it is the one zotero verb that is not operator-gated, so on such a
+    # node the default would be an ssh to a host that does not resolve — eight
+    # seconds of nothing, on every call.
+    if ROLE != "apply" and args.get("probe", True) is not False:
         def _probe() -> dict:
             try:
                 return {"reachable": True, "versions": source.versions(),
@@ -167,20 +224,43 @@ async def _h_apply(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "apply")
     return await asyncio.to_thread(
         sync.apply, vault.Vault(),
-        parent=(args.get("parent") or "").strip() or "root")
+        parent=(args.get("parent") or "").strip() or "root",
+        may_create=MAY_CREATE_ROOT,
+        force=bool(args.get("force")),
+        dry_run=bool(args.get("dry_run")))
+
+
+async def _h_ship(args: dict, as_: str | None = None) -> dict:
+    _operator_only(as_, "ship")
+    to = (args.get("to") or "").strip() or SHIP_TO
+    if not to:
+        raise ValueError(
+            "no ship destination: pass `to`, or set ZOTERO_SHIP_TO to "
+            "host:/path/to/vault/scope on the node that holds the vault")
+    return await asyncio.to_thread(sync.ship, to)
 
 
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "sync")
+    if ROLE == "apply":
+        # No pull, so no bundle change to notice — the far node's own timer is
+        # what brings a shipped bundle in.
+        return await asyncio.to_thread(
+            sync.apply, vault.Vault(),
+            parent=(args.get("parent") or "").strip() or "root",
+            may_create=MAY_CREATE_ROOT, force=bool(args.get("force")))
     return await asyncio.to_thread(
         sync.run, vault.Vault(), force=bool(args.get("force")),
-        parent=(args.get("parent") or "").strip() or "root")
+        parent=(args.get("parent") or "").strip() or "root",
+        may_create=MAY_CREATE_ROOT, apply_here=ROLE == "full",
+        ship_to=SHIP_TO)
 
 
 HANDLERS = {
     "status": _h_status,
     "pull": _h_pull,
     "apply": _h_apply,
+    "ship": _h_ship,
     "sync": _h_sync,
 }
 

@@ -51,8 +51,10 @@ class Vault:
 
     # -- reading -------------------------------------------------------------
 
-    def owned_all(self, root: str, label: str) -> dict[str, list[str]]:
+    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
         """Every note under `root` carrying `label`, as `{value: [note_id…]}`.
+        A `root` of `None` searches the whole vault, which is how the mirror
+        counts what it owns outside the subtree it is writing.
 
         One search rather than a walk: the mirror's notes are scattered through
         the collection tree, and this is what tells an update from an insert
@@ -62,9 +64,15 @@ class Vault:
         vault can be in — two syncs running at once each create the note the
         other has not written yet — and a caller that cannot see the second
         copy can never remove it.
+
+        `archived` is set because a mirrored note somebody archived is still
+        the mirror's. Trilium's search excludes archived notes by default and
+        the flag is inherited, so without this one checkbox on a note — or on
+        anything above it — hides a paper the mirror owns, and the next pass
+        creates a second copy of it that the collapse pass cannot see either.
         """
-        hits = _call("note_search", query=f"#{label}", ancestor=root,
-                     limit=10000, fast=False)
+        hits = _call("note_search", query=f"#{label}", ancestor=root or "",
+                     limit=10000, fast=False, archived=True)
         out: dict[str, list[str]] = {}
         for note in (hits or {}).get("results") or []:
             for a in note.get("attributes") or []:
@@ -72,6 +80,30 @@ class Vault:
                     out.setdefault(a.get("value") or "", []).append(note["noteId"])
         out.pop("", None)
         return out
+
+    def labelled(self, label: str) -> list[dict[str, Any]]:
+        """Every note in the vault carrying `label`, with its own labels.
+
+        No ancestor, because this is the call that *finds* the root and so
+        cannot be scoped to one. Archived notes are included for the reason
+        `owned_all` gives. Sorted by note id so a message naming an ambiguity
+        names it the same way twice.
+
+        The labels come back with the hit: the root's own attributes are read
+        on every pass anyway, so the sync's cursor costs no extra round trip.
+        """
+        hits = _call("note_search", query=f"#{label}", limit=100, fast=False,
+                     archived=True)
+        out: list[dict[str, Any]] = []
+        for note in (hits or {}).get("results") or []:
+            out.append({
+                "note_id": note["noteId"],
+                "title": note.get("title") or "",
+                "labels": {a.get("name"): a.get("value") or ""
+                           for a in note.get("attributes") or []
+                           if a.get("type") == "label"},
+            })
+        return sorted(out, key=lambda n: n["note_id"])
 
     def owned(self, root: str, label: str) -> dict[str, str]:
         """The same, keeping one note per value."""
