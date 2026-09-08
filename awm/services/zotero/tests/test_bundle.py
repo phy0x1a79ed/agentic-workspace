@@ -178,3 +178,29 @@ def test_the_file_is_written_sorted_so_the_diff_is_the_librarys(tmp_path):
     b.write(bundle.merge([bundle.normalize([], [], {})], {"b": 1, "a": 2}))
     text = b.library_json.read_text()
     assert text.index('"collections"') < text.index('"items"')
+
+
+def test_a_pinned_bundle_can_be_rewritten(tmp_path):
+    """Once DVC has pinned a pull, `library.json` is a read-only hardlink into
+    the shared cache. Writing into it fails, and the mirror then stops the
+    first time somebody adds a paper — which is the only time anyone looks."""
+    b = bundle.Bundle(tmp_path)
+    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
+    b.library_json.chmod(0o444)
+
+    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 2}))
+    assert b.versions == {"users/0": 2}
+
+
+def test_rewriting_leaves_the_cached_object_alone(tmp_path):
+    """The hardlink is the cache object. A write that landed in it would
+    corrupt that object for every other scope and every commit pinning it."""
+    b = bundle.Bundle(tmp_path)
+    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 1}))
+    cached = tmp_path / "cached.json"
+    cached.hardlink_to(b.library_json)
+    b.library_json.chmod(0o444)
+
+    b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 2}))
+    assert '"users/0": 1' in cached.read_text()
+    assert cached.stat().st_nlink == 1
