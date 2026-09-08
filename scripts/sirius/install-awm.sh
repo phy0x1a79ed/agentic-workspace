@@ -91,6 +91,22 @@ want=$(mktemp)
     done
     echo; echo "}"
 } > "$want"
+# A run that would turn a service *off* is almost never what anyone meant. The
+# recorded incident is a feature branch carrying a stale copy of the
+# PUBLIC_SERVICES line above, which would have cut the live public set to one
+# and reported success doing it. Procedure alone did not catch it, so the
+# script compares against what the box already serves and refuses.
+if sudo test -f "$ENABLED"; then
+    enabled_names() { grep -oE '"[A-Za-z0-9_-]+": true' "$1" | cut -d'"' -f2 | sort; }
+    losing=$(comm -23 <(sudo -u "$APP_USER" grep -oE '"[A-Za-z0-9_-]+": true' "$ENABLED" | cut -d'"' -f2 | sort) \
+                      <(enabled_names "$want") | tr '\n' ' ')
+    if [ -n "${losing// /}" ] && [ -z "${AWM_ALLOW_DISABLE:-}" ]; then
+        echo "refusing: this run would disable services the box is serving: ${losing% }" >&2
+        echo "  PUBLIC_SERVICES in this checkout is probably stale — reconcile it with release." >&2
+        echo "  Set AWM_ALLOW_DISABLE=1 if turning them off is genuinely the intent." >&2
+        rm -f "$want"; exit 1
+    fi
+fi
 if ! sudo cmp -s "$want" "$ENABLED"; then
     sudo -u "$APP_USER" tee "$ENABLED" < "$want" >/dev/null
     echo "   wrote $ENABLED (public service set: ${PUBLIC_SERVICES:-none})"
