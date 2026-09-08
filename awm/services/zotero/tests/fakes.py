@@ -24,6 +24,22 @@ class FakeVault:
         self.notes: dict[str, dict] = {}
         self.next_id = 0
         self.calls: list[str] = []
+        #: Notes Trilium would hide from a search. The real vault facade always
+        #: asks to see them; a test flips `sees_archived` off to show what the
+        #: mirror does when it cannot.
+        self.archived: set[str] = set()
+        self.sees_archived = True
+
+    def _hidden(self, note_id: str, guard: int = 0) -> bool:
+        """Archived, or under something archived — Trilium inherits the flag."""
+        if self.sees_archived:
+            return False
+        if note_id in self.archived:
+            return True
+        if guard > 50 or note_id not in self.notes:
+            return False
+        return any(self._hidden(p, guard + 1)
+                   for p in self.notes[note_id]["parents"])
 
     def _new(self, title: str, content: str, parent: str,
              labels: dict[str, str]) -> str:
@@ -36,14 +52,23 @@ class FakeVault:
 
     # -- the interface -------------------------------------------------------
 
-    def owned_all(self, root: str, label: str) -> dict[str, list[str]]:
+    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
         self.calls.append("owned")
         out: dict[str, list[str]] = {}
         for nid, n in self.notes.items():
             value = n["labels"].get(label)
-            if value and self._under(nid, root):
+            if value and (root is None or self._under(nid, root)) \
+                    and not self._hidden(nid):
                 out.setdefault(value, []).append(nid)
         return out
+
+    def labelled(self, label: str) -> list[dict[str, Any]]:
+        self.calls.append("labelled")
+        return sorted(
+            ({"note_id": nid, "title": n["title"], "labels": dict(n["labels"])}
+             for nid, n in self.notes.items()
+             if label in n["labels"] and not self._hidden(nid)),
+            key=lambda h: h["note_id"])
 
     def owned(self, root: str, label: str) -> dict[str, str]:
         return {k: v[0] for k, v in self.owned_all(root, label).items()}
@@ -51,6 +76,9 @@ class FakeVault:
     def _under(self, note_id: str, root: str, guard: int = 0) -> bool:
         if note_id == root or guard > 50:
             return note_id == root
+        # `root` itself is not a note here, so a walk that reaches it stops.
+        if note_id not in self.notes:
+            return False
         return any(self._under(p, root, guard + 1)
                    for p in self.notes[note_id]["parents"])
 

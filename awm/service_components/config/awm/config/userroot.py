@@ -68,7 +68,7 @@ def root_for(user: str) -> Path:
 
 
 def users() -> list[str]:
-    """Every user with an existing root, from the template's parent directory."""
+    """Every user whose root worktree exists, from the template's parent."""
     tpl = _template()
     head, _, tail = tpl.partition("{user}")
     parent = Path(head)
@@ -76,7 +76,11 @@ def users() -> list[str]:
         return []
     out = []
     for entry in sorted(parent.iterdir()):
-        if USER_RE.match(entry.name) and Path(tpl.format(user=entry.name)).is_dir():
+        root = Path(tpl.format(user=entry.name))
+        # A user root is a worktree, and ``.git`` is what says so. Without that
+        # check a container directory beside the real roots reads as a user, and
+        # a service's ``git -C`` there walks up into the workspace checkout.
+        if USER_RE.match(entry.name) and (root / ".git").exists():
             out.append(entry.name)
     return out
 

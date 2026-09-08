@@ -3,6 +3,7 @@ mode refuses instead. autocommit touches only the service's own subdirectory."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,8 +51,11 @@ def test_resolve_known_unknown_and_strict(ws, monkeypatch):
 
 def test_template_override_and_users_listing(ws, monkeypatch):
     alt = ws / "alt"
-    (alt / "steven").mkdir(parents=True)
+    (alt / "steven" / ".git").mkdir(parents=True)
     (alt / "Bad Name").mkdir()
+    # A well-named directory that is not a worktree: a holder for nested roots,
+    # not a user. It sorts first, so a missing check shows up in the list.
+    (alt / "container").mkdir()
     monkeypatch.setenv(userroot.TEMPLATE_ENV, str(alt / "{user}"))
     assert userroot.users() == ["steven"]
     assert userroot.resolve("user:tony") is None
@@ -110,3 +114,46 @@ def test_pin_figures_when_they_move(tmp_path, monkeypatch):
     assert sha and (root / "data" / "figures.dvc").is_file()
     assert "figures.dvc" in _log(root)
     assert autocommit.pin_figures(root, "tony") is None
+
+
+@pytest.mark.skipif(autocommit.dvc_bin() is None, reason="dvc not installed")
+def test_pin_chunk_backs_off_a_chunk_git_already_tracks(tmp_path, monkeypatch, caplog):
+    """dvc refuses an output git owns, and refuses it identically forever. The
+    pin never lands, so the mtime guard never engages and every tick pays for a
+    subprocess. Prove the backoff pays once, says why, and still recovers."""
+    root = _repo(tmp_path / "wt")
+    dvc = autocommit.dvc_bin()
+    subprocess.run([dvc, "init", "-q"], cwd=root, check=True)
+    fig = root / "data" / "figures"
+    fig.mkdir(parents=True)
+    (fig / "a.png").write_bytes(b"png")
+    subprocess.run(["git", "-C", str(root), *autocommit.GIT_IDENTITY, "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(root), *autocommit.GIT_IDENTITY, "commit", "-qm", "track"], check=True)
+    autocommit._failed.clear()
+
+    runs: list = []
+    real_run = subprocess.run
+    monkeypatch.setattr(autocommit.subprocess, "run",
+                        lambda cmd, *a, **k: (runs.append(cmd), real_run(cmd, *a, **k))[1])
+    dvc_runs = lambda: sum(1 for c in runs if c and c[0] == dvc)
+
+    with caplog.at_level(logging.WARNING, logger="awm.config.autocommit"):
+        assert autocommit.pin_figures(root, "tony") is None
+    assert dvc_runs() == 1
+    assert "already tracked by SCM" in caplog.text, caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="awm.config.autocommit"):
+        assert autocommit.pin_figures(root, "tony") is None
+    assert dvc_runs() == 1
+    assert "dvc add" not in caplog.text
+
+    # The cause usually sits outside the chunk, so a fix applied elsewhere has
+    # to heal once the backoff expires — without the chunk itself changing.
+    monkeypatch.setattr(autocommit, "_RETRY_AFTER_S", 0.0)
+    subprocess.run(["git", "-C", str(root), *autocommit.GIT_IDENTITY,
+                    "rm", "-r", "-q", "--cached", "data/figures"], check=True)
+    subprocess.run(["git", "-C", str(root), *autocommit.GIT_IDENTITY,
+                    "commit", "-qm", "untrack"], check=True)
+    assert autocommit.pin_figures(root, "tony")
+    assert (root / "data" / "figures.dvc").is_file()

@@ -11,6 +11,7 @@ pytestmark = [pytest.mark.agent, pytest.mark.smoke]
 
 from awm.agents import gamebot
 from awm.agents import agent_instances as ai
+from awm.agents import placement
 
 
 FACTORIO_TOML = """
@@ -86,6 +87,9 @@ class TestSpawnLifecycle:
         session = ai.get_session_by_scope("game-factorio")
         assert session is not None
         assert session.agent_cli == "opencode"
+        # A registry entry with no ``model`` still spawns on a concrete one:
+        # ``create_session`` refuses a blank model outright.
+        assert session.model == placement.DEFAULT_OPENCODE_PLACEMENT_MODEL
         assert session.mode == "gamebot"
         assert session.turn_budget == 7
         assert session.placement_token is None
@@ -93,6 +97,14 @@ class TestSpawnLifecycle:
         await _drain()
         sent = stub_core["session"].sent
         assert sent and "journal.md" in sent[0]
+
+    @pytest.mark.asyncio
+    async def test_registry_model_wins_over_the_harness_default(
+            self, agents_env, stub_core, games_dir):
+        (games_dir / "factorio.toml").write_text(
+            FACTORIO_TOML + '\nmodel = "pinned-model"\n')
+        await gamebot.spawn_for_game("factorio")
+        assert ai.get_session_by_scope("game-factorio").model == "pinned-model"
 
     @pytest.mark.asyncio
     async def test_second_spawn_dedupes(self, agents_env, stub_core, games_dir):

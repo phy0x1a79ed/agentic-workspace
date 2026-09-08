@@ -29,6 +29,9 @@ class FakeVault:
         #: attachment id -> {"ownerId", "title", "mime", "role", "blob"}
         self.attachments: dict[str, dict] = {}
         self.calls: list[tuple[str, str]] = []
+        #: The query parameters of every search, so a test can assert what the
+        #: adapter asked ETAPI for rather than only what came back.
+        self.searches: list[dict] = []
         self.next_id = 0
 
     # -- helpers a test may use directly -------------------------------------
@@ -128,6 +131,7 @@ class FakeVault:
         """Only the one query shape this service builds: `#name`, optionally
         restricted to a subtree. Anything else is a test writing a query the
         code does not."""
+        self.searches.append(dict(params))
         query = str(params.get("search", "")).strip()
         if not query.startswith("#") or " " in query:
             raise AssertionError(f"fake vault cannot answer {query!r}")

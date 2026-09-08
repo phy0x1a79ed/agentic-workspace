@@ -19,6 +19,7 @@ import fcntl
 import html
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,17 @@ KEY_LABEL = "zoteroKey"
 COLLECTION_LABEL = "zoteroCollection"
 LIBRARY_LABEL = "zoteroLibraryId"
 
+#: The label that names the note the library lives under. Set it from the
+#: Trilium UI and the mirror moves there; it is the whole of the "where does
+#: this go" setting.
+ROOT_LABEL = "zoteroLibrary"
+
+#: The bundle digest the root note was last written from. It lives on the root
+#: rather than in a sidecar because it describes what the *vault* holds, and
+#: because root resolution reads the note's labels anyway — so an apply-only
+#: tick with nothing to do costs one search instead of thousands of calls.
+APPLIED_LABEL = "zoteroApplied"
+
 
 def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
     return bundle_mod.Bundle(scope or VAULT_SCOPE)
@@ -53,6 +65,26 @@ def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
 
 class Busy(RuntimeError):
     """Another sync holds the lock."""
+
+
+class Unreachable(RuntimeError):
+    """The node holding the vault could not be reached.
+
+    Ordinary rather than exceptional: the far node reboots, the link drops.
+    A ship that fails leaves the far node serving the last good mirror.
+    """
+
+
+class RootError(RuntimeError):
+    """The mirror cannot say which note the library belongs under."""
+
+
+class NoRoot(RootError):
+    """No note carries the label, and this node may not create one."""
+
+
+class Ambiguous(RootError):
+    """More than one note carries the label."""
 
 
 @contextlib.contextmanager
@@ -160,7 +192,9 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
 
 def run(vault, scope: Path | None = None, *, force: bool = False,
-        parent: str = "root", commit: bool = True) -> dict[str, Any]:
+        parent: str = "root", commit: bool = True,
+        may_create: bool = True, apply_here: bool = True,
+        ship_to: str = "") -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
     Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
@@ -175,8 +209,19 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     with exclusive(scope) as b:
         pulled = _pull(b, force=force, commit=commit)
         out: dict[str, Any] = {"pull": pulled}
-        if pulled.get("changed"):
-            out["apply"] = _apply(vault, b, parent=parent)
+        if pulled.get("changed") and apply_here:
+            out["apply"] = _apply(vault, b, parent=parent,
+                                  may_create=may_create, force=force)
+        if pulled.get("changed") and ship_to:
+            host, remote_scope = destination_parts(ship_to)
+            try:
+                out["ship"] = _ship(b, host, remote_scope)
+            except Unreachable as e:
+                # Reported, not raised. The far node being asleep is ordinary,
+                # the same way an unreachable library already is, and it leaves
+                # that node serving the last good mirror rather than none.
+                out["ship"] = {"shipped": False, "detail": str(e)[:300]}
+                log.info("zotero: could not ship to %s: %s", host, e)
         return out
 
 
@@ -233,7 +278,115 @@ def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
             "detail": None if sha else "nothing changed"}
 
 
+# -- ship --------------------------------------------------------------------
+
+
+#: Long enough for a slow link, short enough that a wedged ssh does not hold
+#: the mirror's lock through the next tick.
+SHIP_TIMEOUT_S = 600.0
+
+
+def _run(argv: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess:
+    """One place for the subprocess call, so a test can watch the command line
+    without a network."""
+    return subprocess.run(argv, input=stdin, capture_output=True, text=True,
+                          timeout=SHIP_TIMEOUT_S, check=False)
+
+
+def _rsync_argv(source_path: Path, host: str, remote_dir: str) -> list[str]:
+    """The command that carries the library.
+
+    `--rsync-path` is the house idiom for this pair of nodes: ssh lands as an
+    unprivileged user who cannot read `/var/lib/awm` at all, so the *remote*
+    rsync is the thing that has to run as the service account.
+
+    `--chmod` is not cosmetic. `library.json` is a read-only hardlink into the
+    DVC cache, and `-a` would faithfully carry mode 444 across — leaving the
+    far node a bundle its own pull could never replace.
+    """
+    return ["rsync", "-a", "--chmod=F644",
+            "--rsync-path=sudo -n -u awm rsync",
+            str(source_path), f"{host}:{remote_dir}/"]
+
+
+def destination_parts(destination: str) -> tuple[str, str]:
+    """`host:/path/to/vault/scope`, split and checked.
+
+    Checked at the seam rather than at the rsync, because a destination with no
+    path silently becomes the far node's filesystem root.
+    """
+    host, _, remote_scope = destination.partition(":")
+    remote_scope = remote_scope.rstrip("/")
+    if not host or not remote_scope.startswith("/"):
+        raise ValueError(
+            f"ship destination {destination!r} is not host:/path — it names "
+            f"the vault scope on the far node, e.g. "
+            f"sirius:/var/lib/awm/projects/vault/main")
+    return host, remote_scope
+
+
+def ship(destination: str, scope: Path | None = None) -> dict[str, Any]:
+    """Carry `library.json` to the node that holds the vault.
+
+    The third leg the service always implied: pull on the node with the
+    library, ship, apply on the node with the vault. It is a verb rather than a
+    script because the bundle is written by truncate-then-write, and a script
+    rsyncing the file could read a torn one — this takes the same lock the pull
+    half does.
+
+    Only the JSON travels. The stored files are two orders of magnitude larger
+    and the apply side already skips a file the bundle does not hold, so a node
+    that receives only this gets a complete mirror without the PDFs.
+
+    `destination` is `host:/path/to/vault/scope` — the far node's vault scope,
+    which is where that node's own bundle reader already looks. Spelled in full
+    rather than derived, because the scope's directory is named per host and a
+    guess that is wrong writes a library somewhere nobody reads.
+    """
+    host, remote_scope = destination_parts(destination)
+    with exclusive(scope) as b:
+        return _ship(b, host, remote_scope)
+
+
+def _ship(b: bundle_mod.Bundle, host: str, remote_scope: str) -> dict[str, Any]:
+    if not b.exists:
+        raise FileNotFoundError(f"no bundle at {b.root} — nothing to ship")
+    remote_dir = f"{remote_scope}/{bundle_mod.CHUNK}"
+    # A shell fed on stdin, never an argument string: `sudo -u` runs one
+    # command, so a `&&` written as an argument would be interpreted by the
+    # calling user's shell and silently run under the wrong identity.
+    made = _run(["ssh", host, "sudo -n -u awm bash -s"],
+                stdin=f"test -d {remote_scope} && mkdir -p {remote_dir}\n")
+    if made.returncode != 0:
+        raise Unreachable(
+            f"{host}:{remote_scope} is not a vault scope this node can reach: "
+            f"{(made.stderr or made.stdout).strip()[:300]}")
+    sent = _run(_rsync_argv(b.library_json, host, remote_dir))
+    if sent.returncode != 0:
+        raise Unreachable(
+            f"rsync to {host} failed: "
+            f"{(sent.stderr or sent.stdout).strip()[:300]}")
+    return {"shipped": True, "host": host, "remote": remote_dir,
+            "digest": b.digest, "bytes": b.library_json.stat().st_size}
+
+
 # -- apply -------------------------------------------------------------------
+
+
+def _followable(url: str) -> bool:
+    """Whether a publisher's URL may become an `href`.
+
+    Escaping makes the metadata safe as *text*; it does nothing to an href, and
+    these notes run on awm's own origin. So the scheme is checked rather than
+    the characters: `javascript:` and `data:` render as text instead.
+
+    Protocol-relative is allowed deliberately. The library holds one such URL,
+    and an http/https-only guard would silently unlink it.
+    """
+    u = url.strip()
+    if u.startswith("//"):
+        return True
+    return u.lower().startswith(("http://", "https://"))
 
 
 def _card(item: dict) -> str:
@@ -256,10 +409,14 @@ def _card(item: dict) -> str:
     if item.get("doi"):
         doi = e(item["doi"])
         parts.append(f'<tr><th>DOI</th><td><a href="https://doi.org/{doi}">'
-                     f"{doi}</a></td></tr>")
+                     f"https://doi.org/{doi}</a></td></tr>")
     if item.get("url"):
         url = e(item["url"])
-        parts.append(f'<tr><th>URL</th><td><a href="{url}">{url}</a></td></tr>')
+        if _followable(item["url"]):
+            parts.append(f'<tr><th>URL</th><td>'
+                         f'<a href="{url}">{url}</a></td></tr>')
+        else:
+            parts.append(f"<tr><th>URL</th><td>{url}</td></tr>")
     parts.append("</table>")
     if item.get("abstract"):
         parts.append(f"<p>{e(item['abstract'])}</p>")
@@ -284,14 +441,68 @@ def _labels(item: dict) -> dict[str, str]:
     out = {"itemType": item.get("item_type", ""),
            "zoteroLibraryName": item.get("library_name", ""),
            "year": item.get("year", ""),
+           # Not `#journal`: the same field carries a book or a proceedings
+           # title, and naming those a journal would be wrong.
+           "publication": item.get("publication", ""),
            "doi": item.get("doi", ""),
            "url": item.get("url", ""),
            "creators": "; ".join(item.get("creators") or [])}
     return {k: v for k, v in out.items() if v}
 
 
+def _labelled_root(vault, *, may_create: bool) -> dict[str, Any] | None:
+    """The note somebody labelled, or `None` if there is none to find.
+
+    Refusing on two labelled notes is not fastidiousness. The removal pass is
+    scoped to the resolved root, so a root that alternated between passes would
+    build the whole library under one, then build it again under the other and
+    delete the first — a churn storm with a revision on every note and no error
+    anywhere.
+    """
+    hits = vault.labelled(ROOT_LABEL)
+    if len(hits) > 1:
+        raise Ambiguous(
+            f"{len(hits)} notes carry #{ROOT_LABEL} "
+            f"({', '.join(h['note_id'] for h in hits)}) — the mirror needs "
+            f"exactly one; remove the label from all but the one you want")
+    if hits:
+        return hits[0]
+    if not may_create:
+        raise NoRoot(
+            f"no note carries #{ROOT_LABEL}, and this node may not create the "
+            f"library — add the label to the note you want the library under, "
+            f"from the Trilium UI")
+    return None
+
+
+def _resolve_root(vault, *, parent: str,
+                  may_create: bool) -> tuple[str, str, dict[str, str]]:
+    """The note the library lives under, and where that answer came from.
+
+    A note somebody labelled `#zoteroLibrary` wins, so the destination is a
+    setting in the Trilium UI rather than a constant here.
+    """
+    hit = _labelled_root(vault, may_create=may_create)
+    if hit is not None:
+        # Neither `ensure` nor `set_label` is called on this branch, and that
+        # is the whole of its correctness. `ensure` resolves through
+        # `note_upsert`, which replaces the body of a title match and would
+        # erase whatever the person wrote in the note they chose; `set_label`
+        # patches the value, silently turning a bare `#zoteroLibrary` typed in
+        # the UI into `#zoteroLibrary=1`. The note is taken exactly as it is.
+        return hit["note_id"], "label", hit["labels"]
+    root = vault.ensure(
+        parent=parent, title=LIBRARY_NOTE,
+        content="<p>Mirrored from Zotero. Notes here carry "
+                "<code>#zoteroKey</code> and are rewritten on every sync; "
+                "anything you write without one is left alone.</p>")
+    vault.set_label(root, ROOT_LABEL, "1")
+    return root, "title", {ROOT_LABEL: "1"}
+
+
 def apply(vault, scope: Path | None = None, *,
-          parent: str = "root") -> dict[str, Any]:
+          parent: str = "root", may_create: bool = True,
+          force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """Write the bundle into the vault: collections as a tree, one note per
     reference, each stored file attached.
 
@@ -299,12 +510,56 @@ def apply(vault, scope: Path | None = None, *,
     none, so it is invisible to every pass — and an item that has left Zotero
     is removed only if it carries one, which means the mirror can only ever
     delete what the mirror put there.
+
+    A pass whose bundle digest already sits on the root does nothing. The
+    tradeoff is deliberate and is a change from how this used to behave: a
+    mirror note somebody hand-edited is no longer repaired until the library
+    itself moves. `force` is the way to repair it.
     """
     with exclusive(scope) as b:
-        return _apply(vault, b, parent=parent)
+        if dry_run:
+            return _plan(vault, b, parent=parent, may_create=may_create)
+        return _apply(vault, b, parent=parent, may_create=may_create,
+                      force=force)
 
 
-def _apply(vault, b: bundle_mod.Bundle, *, parent: str) -> dict[str, Any]:
+def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
+          may_create: bool) -> dict[str, Any]:
+    """What an apply would do, writing nothing.
+
+    Two searches and a file read. There is deliberately no would-update count:
+    knowing it means rendering and comparing every note, which is the pass this
+    exists to avoid running.
+    """
+    if not b.exists:
+        raise FileNotFoundError(f"no bundle at {b.root}")
+    library = b.read()
+    items = library.get("items") or []
+    # Resolved without creating: a dry run that made the root note would be a
+    # write, and the one thing this verb promises is that it makes none.
+    hit = _labelled_root(vault, may_create=may_create)
+    root = hit["note_id"] if hit else ""
+    labels = hit["labels"] if hit else {}
+    known = vault.owned_all(root, KEY_LABEL) if root else {}
+    seen = {i["ref"] for i in items}
+    digest = b.digest
+    return {
+        "dry_run": True,
+        "library_note": root, "root_from": "label" if root else "would create",
+        "digest": digest, "applied": labels.get(APPLIED_LABEL) or "",
+        "up_to_date": labels.get(APPLIED_LABEL) == digest,
+        "would_visit": len(items),
+        "would_create": len([i for i in items if i["ref"] not in known]),
+        "would_delete": len([r for r in known if r not in seen]),
+        "would_deduplicate": sum(len(ids) - 1 for ids in known.values()),
+        "collections": len(library.get("collections") or []),
+        "outside_root": _outside(vault,
+                                 sum(len(ids) for ids in known.values())),
+    }
+
+
+def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
+           may_create: bool = True, force: bool = False) -> dict[str, Any]:
     if not b.exists:
         raise FileNotFoundError(
             f"no bundle at {b.root} — run `awm zotero pull` on the node that "
@@ -312,12 +567,13 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str) -> dict[str, Any]:
     library = b.read()
     items = library.get("items") or []
 
-    root = vault.ensure(
-        parent=parent, title=LIBRARY_NOTE,
-        content="<p>Mirrored from Zotero. Notes here carry "
-                "<code>#zoteroKey</code> and are rewritten on every sync; "
-                "anything you write without one is left alone.</p>")
-    vault.set_label(root, "zoteroLibrary", "1")
+    root, source_of_root, labels = _resolve_root(
+        vault, parent=parent, may_create=may_create)
+    digest = b.digest
+    if not force and labels.get(APPLIED_LABEL) == digest:
+        return {"library_note": root, "root_from": source_of_root,
+                "skipped": True, "digest": digest, "items": len(items),
+                "detail": "the vault already holds this bundle"}
 
     # One subtree per library. Two libraries may both have a collection called
     # "papers", and merging them would put a shared group's reading list inside
@@ -345,10 +601,29 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str) -> dict[str, Any]:
             vault.delete(note_id)
             removed += 1
 
-    return {"library_note": root, "items": len(items), "created": made,
+    # Last, and only here: a pass that died halfway must retry rather than
+    # declare itself done.
+    vault.set_label(root, APPLIED_LABEL, digest)
+
+    return {"library_note": root, "root_from": source_of_root,
+            "digest": digest, "items": len(items), "created": made,
             "updated": updated, "attached": attached, "removed": removed,
             "deduplicated": doubled, "collections": len(folders),
-            "libraries": len(shelves), "versions": library.get("versions")}
+            "libraries": len(shelves), "versions": library.get("versions"),
+            "outside_root": _outside(vault, len(items))}
+
+
+def _outside(vault, inside: int) -> int:
+    """Keyed notes anywhere in the vault that the pass did not just write.
+
+    Counting notes rather than keys, and against the item count rather than a
+    second scoped search: every item has exactly one note under the root by the
+    time this runs, so anything above that total lives somewhere else. An
+    orphaned subtree left by a root that moved otherwise shows up only as a
+    bibliography appearing twice with nothing saying why.
+    """
+    everywhere = sum(len(ids) for ids in vault.owned_all(None, KEY_LABEL).values())
+    return max(0, everywhere - inside)
 
 
 def _collapse(vault, root: str, label: str) -> tuple[dict[str, str], int]:
