@@ -201,10 +201,20 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
 
 
 def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, Any]:
-    """One library payload per library, folded into the bundle's shape."""
+    """One library payload per library, folded into the bundle's shape.
+
+    Ordered by `ref`, because Zotero does not answer in a stable order and two
+    reads of an unchanged library came back as two different files. Sorting
+    keys alone does not fix that — these are lists. What depends on it: the
+    bundle's digest, which is how a node that only applies decides it has
+    nothing to do. An order-sensitive digest makes every pull look like a
+    changed library and re-walks the whole mirror to prove it was not.
+    """
     return {"pulled": _stamp(), "versions": dict(versions),
-            "collections": [c for p in parts for c in p["collections"]],
-            "items": [i for p in parts for i in p["items"]]}
+            "collections": sorted((c for p in parts for c in p["collections"]),
+                                  key=lambda c: c["ref"]),
+            "items": sorted((i for p in parts for i in p["items"]),
+                            key=lambda i: i["ref"])}
 
 
 class Bundle:
