@@ -34,7 +34,7 @@ class FakePane:
     """A tmux server holding one pane with a working prompt box."""
 
     def __init__(self, *, pane_pid="4242", session="sess0", list_panes=None,
-                 returncode=0, swallow_paste=False, scrollback=""):
+                 returncode=0, paints=True, fail_verbs=(), scrollback=""):
         self.calls: list[list[str]] = []
         self.buffers: dict[str, str] = {}
         self.prompt = ""
@@ -44,9 +44,12 @@ class FakePane:
         self._session = session
         self._list_panes = list(list_panes or [])
         self._rc = returncode
-        # Models a modal (or a session not reading its pty): the paste is
-        # accepted by tmux and never reaches the prompt.
-        self._swallow = swallow_paste
+        # Models what Claude Code does while it compacts: the paste lands in the
+        # composer exactly as it always did, and the composer is simply not
+        # painted, so `capture-pane` shows a pane with no sign of it. Reading
+        # that as "the paste never arrived" is the bug this whole change is about.
+        self._paints = paints
+        self._fail_verbs = tuple(fail_verbs)
 
     def __call__(self, argv, **kw):
         self.calls.append(argv)
@@ -55,12 +58,13 @@ class FakePane:
             rest = rest[2:]
         verb = rest[0] if rest else ""
         stdout = ""
+        if verb in self._fail_verbs:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
         if verb == "load-buffer":
             self.buffers[argv[argv.index("-b") + 1]] = \
                 kw.get("input", b"").decode()
         elif verb == "paste-buffer":
-            if not self._swallow:
-                self.prompt += self.buffers.get(argv[argv.index("-b") + 1], "")
+            self.prompt += self.buffers.get(argv[argv.index("-b") + 1], "")
         elif verb == "send-keys":
             key = argv[-1]
             if key == "Enter":
@@ -70,7 +74,8 @@ class FakePane:
             elif key == tmux_inject._CLEAR_KEY:
                 self.prompt = ""
         elif verb == "capture-pane":
-            stdout = f"{self.scrollback}❯ {self.prompt}"
+            stdout = (f"{self.scrollback}❯ {self.prompt}" if self._paints
+                      else self.scrollback)
         elif verb == "display-message":
             fmt = argv[-1]
             stdout = {"#{pane_pid}": self._pane_pid,
@@ -170,29 +175,35 @@ def test_enter_false_leaves_the_text_in_the_prompt_unsubmitted():
 
 
 # ---------------------------------------------------------------------------
-# Verification, on this lane specifically
+# A composer that is not painted, on this lane specifically
 # ---------------------------------------------------------------------------
 
-def test_a_swallowed_paste_is_not_reported_as_sent():
-    # tmux accepted every call and the prompt stayed empty — a modal ate it.
-    pane = FakePane(swallow_paste=True)
-    with pytest.raises(inject.DeliveryError):
-        send("/compact", pane)
-    assert pane.submitted == []
+def test_a_paste_the_tui_never_paints_is_still_submitted():
+    # The regression, at the real tmux writer. Claude Code stops painting its
+    # composer while it compacts, so `capture-pane` shows a pane with nothing in
+    # it while the paste sits in the composer perfectly well. This lane used to
+    # call that a missing paste and withhold Enter — for the entire 94 seconds of
+    # a live compaction on 2026-09-07, twelve times, which is how a session came
+    # back on a fresh context with nothing to do.
+    pane = FakePane(paints=False)
+    result = send("/compact", pane)
+    assert result.submitted is True
+    assert pane.submitted == ["/compact"]
+    assert pane.verbs().count("paste-buffer") == 1, "and on the first attempt"
 
 
-def test_an_earlier_compaction_in_the_scrollback_does_not_fake_a_success():
-    # `capture-pane` hands back the visible screen, which still holds the last
-    # time this session compacted. Verification counts occurrences for exactly
-    # this reason.
-    pane = FakePane(swallow_paste=True,
-                    scrollback="❯ /compact\n⎿ Compacted (ctrl+o …)\n")
-    with pytest.raises(inject.DeliveryError):
-        send("/compact", pane)
+def test_the_pane_is_never_captured_during_a_send():
+    # `capture-pane` still exists for `permission_mode`, which reads the TUI's
+    # own footer and is a different question. The send path must not reach for
+    # it: on this lane a screen read is a plausible-looking answer to a question
+    # the screen cannot answer while the session is compacting.
+    pane = FakePane()
+    send("/compact", pane)
+    assert "capture-pane" not in pane.verbs()
 
 
 def test_a_retry_wipes_the_prompt_with_ctrl_u():
-    pane = FakePane(swallow_paste=True)
+    pane = FakePane(fail_verbs=("paste-buffer",))
     with pytest.raises(inject.DeliveryError):
         send("/compact", pane)
     assert pane.flat().count(tmux_inject._CLEAR_KEY) == 3, \
@@ -222,7 +233,7 @@ def test_a_dead_pane_is_refused():
 def test_the_pane_is_re_checked_on_every_attempt():
     # The checks belong to the attempt, not to some earlier resolution: a pane
     # can be destroyed between detecting it and writing to it.
-    pane = FakePane(swallow_paste=True)
+    pane = FakePane(fail_verbs=("paste-buffer",))
     with pytest.raises(inject.DeliveryError):
         send("/compact", pane)
     assert pane.verbs().count("display-message") == 8, \

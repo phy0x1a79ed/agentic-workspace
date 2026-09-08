@@ -249,10 +249,15 @@ def test_serve_commit_surfaces_http_errors():
             w.commit()
 
 
-def test_serve_lane_read_back_is_not_evidence():
-    # No screen to read: a silent probe proves nothing, exactly the daemon rule.
+def test_serve_lane_offers_no_screen_and_answers_the_rejection_check():
+    # There was never a screen here; there is no longer one anywhere. What the
+    # sender does call between the write and the commit is the rejection check,
+    # and on this lane it has nothing to report — the POST *is* the write, so a
+    # refusal surfaces as its HTTP status instead.
     with oc_inject.open_lane(_serve_lane(), opener=lambda u, *a, **kw: FakeResp(200)) as w:
-        assert w.read_back_is_evidence is False
+        assert not hasattr(w, "read_back")
+        assert not hasattr(w, "read_back_is_evidence")
+        w.check_not_rejected()
 
 
 # ---------------------------------------------------------------------------

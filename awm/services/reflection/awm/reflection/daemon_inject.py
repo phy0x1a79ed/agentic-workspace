@@ -360,33 +360,13 @@ class Connection:
         return self.output.decode("utf-8", "replace")
 
     # -- the lane verbs ----------------------------------------------------
-    # The same four :mod:`awm.reflection.inject` drives the tmux lane through.
+    # The same ones :mod:`awm.reflection.inject` drives the tmux lane through.
     # It must not be able to tell which one it is holding.
-
-    # A negative read-back here proves NOTHING, and treating it as proof is what
-    # broke self-compaction on 2026-08-15. This is a byte stream of the TUI's
-    # repaint deltas, not a rendered screen, and the TUI repaints the composer
-    # only when it decides to: measured on a scratch session, a short paste into
-    # an empty composer painted in 21ms every time, while a long paste into a
-    # composer that already held text produced no paint at all inside five
-    # seconds. The bytes were still delivered. So the sender may use this to
-    # corroborate a write, never to veto one.
-    read_back_is_evidence = False
 
     @property
     def label(self) -> str:
         return (f"background session "
                 f"{self._target.name or self._target.session_id}")
-
-    def read_back(self) -> str:
-        """What the host has painted, bounded tightly.
-
-        A live session streams its own output continuously, so this cannot wait
-        for the stream to fall quiet the way the handshake can — it takes a short
-        window and works with what arrives. Pumping is also what surfaces an
-        ``auth-required``, so every read doubles as the rejection check.
-        """
-        return self.screen(quiet_for=_ACCEPT_QUIET_S, cap=_ACCEPT_CHECK_S)
 
     def clear(self) -> None:
         self.send_keys(_CLEAR_KEY)

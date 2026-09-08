@@ -1,18 +1,23 @@
-"""The send transaction: detect → write → commit → confirm, up to three times.
+"""The send transaction: detect → guard → write → commit → confirm, three times.
 
 A send used to be a blind write — paste, Enter, hope, report success. Then it
-became a write gated on reading the text back off the lane, which broke every
-background session: that lane returns a stream of the TUI's repaint deltas, not a
-rendered screen, so "I cannot see it" was read as "it never arrived" and Enter
-was withheld from sessions that had received the paste perfectly well.
+became a write gated on reading the text back off the lane, and that gate is what
+these tests mostly exist to say is gone.
 
-So the fakes here come in two shapes, and the difference between them is the
-whole point. A *rendering* lane (tmux, ``capture-pane``) shows what is on screen,
-so a missing probe is real evidence. A *non-rendering* lane (the daemon PTY) may
-show nothing at all, and the transaction has to submit anyway and get its answer
-from the session's own status record instead. The old fake echoed what was
-written to it by construction, which erased exactly this distinction — which is
-why the suite was green while self-compaction was dead.
+The gate was wrong twice over. It could not work on the daemon lane, which hands
+back a stream of the TUI's repaint deltas rather than a rendered screen, so "I
+cannot see it" was read as "it never arrived" and Enter was withheld from
+sessions that had taken the paste perfectly well. And it could not work on tmux
+either, though that took a year longer to surface: Claude Code stops painting its
+composer while it compacts, so the one window every deferred resume is aimed at
+is the one window the screen lies about.
+
+So there is no lane flag here any more, and no fake that renders. Every lane is
+written to and committed to, and the answer to "did it land" comes from the
+session's own record and transcript — the same two signals on every transport,
+which is what makes one code path defensible. What a lane may still say is that
+it *refused* the write; that is :meth:`check_not_rejected`, a negative check
+only, and the fakes model it with ``fail_on=("check",)``.
 """
 from __future__ import annotations
 
@@ -54,21 +59,18 @@ class FakeRecord:
 
 
 class FakeWriter:
-    """A prompt box that may or may not admit to what was typed into it.
+    """A prompt box, with no opinion about what is on anybody's screen.
 
-    ``shows`` is whether the read-back reflects the write; ``renders`` is whether
-    a read-back that does not reflect it means anything. tmux is
-    ``renders=True``; the daemon PTY is ``renders=False`` and routinely
-    ``shows=False`` at the same time, which is not a fault.
+    ``deaf`` is a session that takes the keystrokes and starts no turn — the one
+    thing past Enter the record can prove, and the only reason a retry is allowed
+    to cross the commit. ``fail_on`` names the verbs that blow up; ``"check"`` is
+    the daemon lane's ``auth-required``, the sole way a lane can report that what
+    it was just handed was discarded.
     """
 
-    def __init__(self, events, *, shows=True, renders=True, fail_on=None,
-                 screen="", record=None, deaf=False):
+    def __init__(self, events, *, fail_on=None, record=None, deaf=False):
         self.events = events
-        self._shows = shows
-        self.read_back_is_evidence = renders
         self._fail_on = fail_on or ()
-        self._screen = screen
         self._record = record
         self._deaf = deaf
 
@@ -78,20 +80,17 @@ class FakeWriter:
         if verb in self._fail_on:
             raise tmux_inject.TmuxError(f"{verb} blew up")
 
-    def read_back(self):
-        self.events.append("read")
-        return self._screen
-
     def clear(self):
         self.events.append("clear")
         self._maybe_fail("clear")
-        self._screen = ""
 
     def write(self, text):
         self.events.append(f"write:{text}")
         self._maybe_fail("write")
-        if self._shows:
-            self._screen += text
+
+    def check_not_rejected(self):
+        self.events.append("check")
+        self._maybe_fail("check")
 
     def commit(self):
         self.events.append("commit")
@@ -134,15 +133,22 @@ def deliver(writers, monkeypatch, *, detects=None, record=None, **kw):
 
 
 def daemon(events, record, **kw):
-    """A lane shaped like the real background one: silent, and not evidence."""
-    return FakeWriter(events, shows=False, renders=False, record=record, **kw)
+    """A lane shaped like the real background one. Shaped like the tmux one too.
+
+    Kept as a name rather than inlined because several tests below read better
+    for saying which lane they are standing in — but there is deliberately
+    nothing left to distinguish it, and that is the change.
+    """
+    return FakeWriter(events, record=record, **kw)
 
 
 # ---------------------------------------------------------------------------
 # The happy path
 # ---------------------------------------------------------------------------
 
-def test_a_clean_send_reads_writes_reads_then_commits(monkeypatch):
+def test_a_clean_send_writes_checks_then_commits(monkeypatch):
+    # Three verbs, in this order, and no fourth. Nothing is read off the lane
+    # before Enter, because nothing a lane could say there is worth a veto.
     events = []
     rec = FakeRecord()
     w = FakeWriter(events, record=rec)
@@ -150,7 +156,7 @@ def test_a_clean_send_reads_writes_reads_then_commits(monkeypatch):
     assert result.submitted is True
     assert result.lane is LANE
     assert result.confirmed == inject.CONFIRMED_RECORD
-    assert events == ["read", "write:/compact", "read", "commit"]
+    assert events == ["write:/compact", "check", "commit"]
 
 
 def test_the_first_attempt_never_clears_the_prompt(monkeypatch):
@@ -172,15 +178,29 @@ def test_enter_false_writes_but_does_not_commit_or_claim_a_submit(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Lanes that do not render — the case this suite used to be blind to
+# The screen is not consulted — on any lane
 # ---------------------------------------------------------------------------
 
+def test_the_transaction_never_asks_a_lane_what_is_on_its_screen(monkeypatch):
+    # A writer that has no read-back at all must drive the whole transaction. If
+    # anything in the sender ever reaches for one again, this raises rather than
+    # quietly re-growing a per-lane flag to decide whether to believe it.
+    class NoScreen(FakeWriter):
+        def __getattr__(self, name):
+            raise AssertionError(f"the sender asked the lane for {name!r}")
+
+    events = []
+    rec = FakeRecord()
+    _, result = deliver([NoScreen(events, record=rec)], monkeypatch, record=rec)
+    assert result.submitted is True
+    assert events == ["write:/compact", "check", "commit"]
+
+
 def test_a_lane_that_never_echoes_still_submits(monkeypatch):
-    # The regression. A background session's PTY hands back the TUI's repaint
-    # deltas, and the TUI often repaints nothing for a paste. Every byte still
-    # arrived. Withholding Enter here is what stopped background sessions from
-    # compacting themselves, so the transaction must commit and let the session's
-    # own record settle it.
+    # The original regression, from the daemon side: a background session's PTY
+    # hands back the TUI's repaint deltas and often repaints nothing for a paste,
+    # though every byte arrived. Withholding Enter here is what stopped
+    # background sessions compacting themselves.
     events = []
     rec = FakeRecord()
     _, result = deliver([daemon(events, rec)], monkeypatch, record=rec)
@@ -190,34 +210,57 @@ def test_a_lane_that_never_echoes_still_submits(monkeypatch):
     assert events.count("write:/compact") == 1, "and without needing a retry"
 
 
-def test_text_that_never_appears_on_a_rendering_lane_is_still_refused(monkeypatch):
-    # The other half: `capture-pane` renders current state, so a probe that is
-    # not in the read-back is genuinely not on screen. Demoting the check to
-    # advisory everywhere would have thrown away a real signal.
+def test_a_resume_into_a_compacting_session_commits_once_and_is_enqueued(
+        monkeypatch):
+    # THE regression this change exists for. 2026-09-07: a session's own
+    # `/compact` ran for 94 seconds, and Claude Code does not paint its composer
+    # while it compacts — so the pane read back empty, the sender called the
+    # paste missing and withheld Enter, twelve times. The session came back on a
+    # fresh context with nothing to do.
+    #
+    # A compacting session is `busy` and its transcript carries the enqueue. That
+    # pair is the whole answer, and it is the same pair on every lane.
+    class Tail:
+        def poll(self): return True
+        def watch(self, _t): pass
+        def landed(self, _t): return True
+
+    events = []
+    rec = FakeRecord(status="busy")
+    _, result = deliver([FakeWriter(events, record=rec, deaf=True)], monkeypatch,
+                        record=rec, tail=Tail())
+    assert result.submitted is True
+    assert result.confirmed == inject.CONFIRMED_ENQUEUED
+    assert events == ["write:/compact", "check", "commit"], \
+        "written once, submitted once — no attempt refused itself"
+
+
+# ---------------------------------------------------------------------------
+# What a lane may still say: that it refused the write
+# ---------------------------------------------------------------------------
+
+def test_a_lane_that_reports_the_write_discarded_never_commits(monkeypatch):
+    # The daemon lane answers an unauthenticated raw frame with an
+    # `auth-required` control frame and drops the input. That used to surface as
+    # a side effect of reading the screen for verification; deleting the read
+    # would have deleted the check with it, so it is its own verb now.
     events = []
     rec = FakeRecord()
     with pytest.raises(inject.DeliveryError):
-        deliver([FakeWriter(events, shows=False, record=rec)], monkeypatch,
-                record=rec)
-    assert "commit" not in events, "nothing may be submitted unverified there"
+        deliver([FakeWriter(events, fail_on=("check",), record=rec)],
+                monkeypatch, record=rec)
+    assert "commit" not in events, "a refused write must not be submitted"
+    assert events.count("write:/compact") == 3, "and it is retried"
 
 
-def test_verification_counts_occurrences_rather_than_presence(monkeypatch):
-    # A session that compacted an hour ago still has "/compact" on screen. A
-    # presence check would call this verified without a byte having landed.
+def test_the_rejection_check_sits_between_the_write_and_the_commit(monkeypatch):
+    # Order matters: before the write there is nothing to have been refused, and
+    # after Enter it is too late to withhold it.
     events = []
-    stale = FakeWriter(events, shows=False, screen="… ❯ /compact\n⎿ Compacted")
-    with pytest.raises(inject.DeliveryError):
-        deliver([stale], monkeypatch, record=FakeRecord())
-
-
-def test_a_wrapped_paste_still_verifies():
-    # The TUI wraps long input and paints escape sequences at the boundary, so
-    # the comparison is made on text with escapes and whitespace removed.
-    before = "❯ "
-    after = "❯ Please run this ex\x1b[0m\nactly as written"
-    assert inject._landed(before, after, inject._probe(
-        "Please run this exactly as written"))
+    rec = FakeRecord()
+    deliver([FakeWriter(events, record=rec)], monkeypatch, record=rec)
+    assert events.index("write:/compact") < events.index("check") < \
+        events.index("commit")
 
 
 # ---------------------------------------------------------------------------
@@ -287,14 +330,39 @@ def test_a_busy_session_whose_transcript_shows_the_line_is_evidence(monkeypatch)
     assert result.confirmed == inject.CONFIRMED_ENQUEUED
 
 
-def test_a_session_behind_a_modal_is_not_called_queued(monkeypatch):
-    # `waiting` is a blocking dialog, not a turn in flight. The line was most
-    # likely swallowed rather than queued, and the two want opposite things from
-    # whoever reads the result — so they do not share a word.
+def test_a_session_behind_a_modal_is_refused_before_anything_is_typed(
+        monkeypatch):
+    # `waiting` is a blocking dialog, not a turn in flight: a paste goes into the
+    # dialog rather than into a queue. The old screen gate caught this by
+    # accident — the composer is not painted behind a modal — but only *after*
+    # leaving a paste in it. Asking the record instead refuses with the box
+    # untouched, which is strictly the better failure.
     events = []
     rec = FakeRecord(status="waiting")
-    _, result = deliver([daemon(events, rec, deaf=True)], monkeypatch, record=rec)
-    assert result.confirmed == inject.CONFIRMED_BLOCKED
+    with pytest.raises(inject.DeliveryError) as err:
+        deliver([daemon(events, rec)], monkeypatch, record=rec)
+    assert events == [], "nothing typed, nothing cleared, nothing submitted"
+    assert "waiting for an answer" in str(err.value)
+
+
+def test_a_give_up_against_a_modal_does_not_clear_its_prompt(monkeypatch):
+    # The give-up wipe is only safe because by then the one thing in the box is
+    # ours. Against a modal nothing of ours ever went in, and a Ctrl-U aimed at
+    # the prompt lands in the dialog instead — answering somebody's question for
+    # them, unasked.
+    events = []
+    rec = FakeRecord(status="waiting")
+    with pytest.raises(inject.DeliveryError):
+        deliver([daemon(events, rec)], monkeypatch, record=rec)
+    assert "clear" not in events
+
+
+def test_a_modal_that_opens_after_the_sample_is_still_named_apart_from_queued():
+    # The guard above reads the record before the write; a session can open a
+    # dialog in the gap. Confirmation still has a word for it, and it is not
+    # `queued` — the two want opposite things from whoever reads the result.
+    assert inject._confirm_submit(4242, ("waiting", 1000)) == \
+        inject.CONFIRMED_BLOCKED
 
 
 def test_an_unreadable_record_is_not_read_as_a_failure(monkeypatch):
@@ -310,14 +378,16 @@ def test_an_unreadable_record_is_not_read_as_a_failure(monkeypatch):
 
 
 def test_confirmation_does_not_care_which_lane_it_is(monkeypatch):
-    # One code path for both transports. There were two hand-written watchers
-    # once and they drifted; the confirming half must not go the same way.
-    for renders in (True, False):
+    # One code path for every transport. There were two hand-written watchers
+    # once and they drifted; the confirming half must not go the same way — and
+    # since the lanes no longer differ in anything the sender can see, the only
+    # way they could drift again is if something reintroduced a branch.
+    for make in (FakeWriter, daemon):
         events = []
         rec = FakeRecord()
-        _, result = deliver(
-            [FakeWriter(events, shows=renders, renders=renders, record=rec)],
-            monkeypatch, record=rec)
+        _, result = deliver([make(events, rec) if make is daemon
+                             else make(events, record=rec)],
+                            monkeypatch, record=rec)
         assert result.confirmed == inject.CONFIRMED_RECORD
 
 
@@ -328,7 +398,7 @@ def test_confirmation_does_not_care_which_lane_it_is(monkeypatch):
 def test_three_attempts_then_a_failure_naming_all_three(monkeypatch, caplog):
     events = []
     rec = FakeRecord()
-    w = FakeWriter(events, shows=False, record=rec)
+    w = FakeWriter(events, fail_on=("write",), record=rec)
     with caplog.at_level(logging.WARNING, logger="awm.reflection.inject"):
         with pytest.raises(inject.DeliveryError) as err:
             deliver([w], monkeypatch, record=rec)
@@ -344,8 +414,8 @@ def test_a_retry_clears_the_prompt_first(monkeypatch):
     events = []
     rec = FakeRecord()
     with pytest.raises(inject.DeliveryError):
-        deliver([FakeWriter(events, shows=False, record=rec)], monkeypatch,
-                record=rec)
+        deliver([FakeWriter(events, fail_on=("write",), record=rec)],
+                monkeypatch, record=rec)
     assert events.index("clear") > events.index("write:/compact"), \
         "attempt 1 writes before any clear happens"
     assert events.count("clear") == 3, \
@@ -359,8 +429,8 @@ def test_a_give_up_leaves_nothing_in_the_prompt(monkeypatch):
     events = []
     rec = FakeRecord()
     with pytest.raises(inject.DeliveryError):
-        deliver([FakeWriter(events, shows=False, record=rec)], monkeypatch,
-                record=rec)
+        deliver([FakeWriter(events, fail_on=("write",), record=rec)],
+                monkeypatch, record=rec)
     assert events[-1] == "clear"
 
 
@@ -383,8 +453,8 @@ def test_each_attempt_detects_the_lane_again(monkeypatch):
     # deciding it and using it — which is exactly how a re-homed pty is missed.
     detects = []
     with pytest.raises(inject.DeliveryError):
-        deliver([FakeWriter([], shows=False)], monkeypatch, detects=detects,
-                record=FakeRecord())
+        deliver([FakeWriter([], fail_on=("write",))], monkeypatch,
+                detects=detects, record=FakeRecord())
     # Three attempts, plus the one the give-up clear makes to find the prompt.
     assert detects == [4242, 4242, 4242, 4242]
 

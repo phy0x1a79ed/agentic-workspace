@@ -93,23 +93,21 @@ def _promise(**over) -> pending.Pending:
 
 
 class Writer:
-    """A lane that accepts anything and shows what was written."""
+    """A lane that accepts anything and refuses nothing."""
 
     label = "the fake lane"
 
     def __init__(self, seen):
         self.seen = seen
-        self._screen = ""
-
-    def read_back(self):
-        return self._screen
 
     def clear(self):
-        self._screen = ""
+        pass
 
     def write(self, text):
         self.seen.append(text)
-        self._screen += text
+
+    def check_not_rejected(self):
+        pass
 
     def commit(self):
         pass
