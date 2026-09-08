@@ -2,15 +2,15 @@
 
 Two jobs sit either side of this module, and putting a file between them is
 what makes the mirror portable. `pull` needs the machine the Zotero desktop is
-on; `apply` needs the machine the vault is on; today those are two different
+on. `apply` needs the machine the vault is on. Today those are two different
 machines, and on sirius they can never be the same one. A bundle is the thing
-that travels — versioned by the commit that versions it, pinned by DVC like any
-other data in this workspace, and carried to another node by merging a branch
-rather than by a courier written for the purpose.
+that travels: versioned by the commit that versions it, pinned by DVC like any
+other data in this workspace.
 
-It also makes the sync auditable. Zotero's own state is not diffable and the
-vault's is a SQLite file; the bundle in between is JSON, so `git log -p` says
-what changed in the library and when.
+It does not travel by merging a branch. Two hosts' vaults are separate
+repositories with unrelated histories, the vault declares no DVC remote, and
+`data/.gitignore` excludes this chunk, so nothing carries these bytes but the
+`ship` verb — an rsync into the far node's own vault scope.
 
 **Shape.**
 
