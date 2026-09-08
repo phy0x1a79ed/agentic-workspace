@@ -204,3 +204,17 @@ def test_rewriting_leaves_the_cached_object_alone(tmp_path):
     b.write(bundle.merge([bundle.normalize([], [], {})], {"users/0": 2}))
     assert '"users/0": 1' in cached.read_text()
     assert cached.stat().st_nlink == 1
+
+
+def test_two_reads_of_one_library_give_the_same_digest(tmp_path):
+    """Zotero does not answer in a stable order, and the digest is how an
+    apply-only node decides it has nothing to do. An order-sensitive one turns
+    every pull into a full re-walk of the mirror."""
+    items = [raw("AAA", "journalArticle", title="A"),
+             raw("BBB", "journalArticle", title="B"),
+             raw("CCC", "journalArticle", title="C")]
+    a, b = bundle.Bundle(tmp_path / "a"), bundle.Bundle(tmp_path / "b")
+    a.write(bundle.merge([bundle.normalize(items, [], {})], {"users/0": 1}))
+    b.write(bundle.merge([bundle.normalize(reversed(items), [], {})],
+                         {"users/0": 1}))
+    assert a.digest == b.digest
