@@ -166,8 +166,12 @@ def pull(scope: Path | None = None, *, force: bool = False,
     whole bundle, because a partial file would describe a library state that
     never existed.
     """
+    phases = Phases()
     with exclusive(scope) as b:
-        return _pull(b, force=force, commit=commit)
+        out = _pull(b, force=force, commit=commit, phases=phases)
+        out["timings"] = {"total_s": phases.total, **phases.spans}
+        log.info("zotero: pull in %.1fs — %s", phases.total, phases.summary())
+        return out
 
 
 def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
@@ -442,11 +446,15 @@ def apply(vault, scope: Path | None = None, *,
     mirror note somebody hand-edited is no longer repaired until the library
     itself moves. `force` is the way to repair it.
     """
+    phases = Phases()
     with exclusive(scope) as b:
         if dry_run:
             return _plan(vault, b, parent=parent, may_create=may_create)
-        return _apply(vault, b, parent=parent, may_create=may_create,
-                      force=force, trigger=trigger)
+        out = _apply(vault, b, parent=parent, may_create=may_create,
+                     force=force, trigger=trigger, phases=phases)
+        out["timings"] = {"total_s": phases.total, **phases.spans}
+        log.info("zotero: apply in %.1fs — %s", phases.total, phases.summary())
+        return out
 
 
 def _stamp(item: dict) -> str:
