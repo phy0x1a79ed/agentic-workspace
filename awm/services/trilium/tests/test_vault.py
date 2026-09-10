@@ -147,6 +147,47 @@ def test_an_empty_export_does_not_replace_the_notes_tree(inst, monkeypatch):
     assert (inst.notes_dir / "kept.md").read_text() == "still here"
 
 
+def test_a_scope_that_is_not_a_checkout_keeps_its_files_and_says_so(tmp_path):
+    """A node serving the published tarball has a plain directory here rather
+    than a worktree, and pins nothing. The snapshot still lands; only the
+    history is missing, and saying that beats a `git add` failure that reads as
+    though the snapshot itself went wrong."""
+    plain = instances.Vault(scope=tmp_path / "plain")
+    plain.snapshots_dir.mkdir(parents=True)
+    (plain.snapshots_dir / "backup-x.db").write_bytes(b"sqlite")
+
+    report = vault._pin_and_commit(plain, "vault: snapshot x", vault.CHUNK)
+
+    assert plain.exists and not plain.is_checkout
+    assert report["committed"] is False
+    assert "not a git checkout" in report["detail"]
+    assert (plain.snapshots_dir / "backup-x.db").is_file()
+
+
+def test_the_export_is_pinned_rather_than_committed_as_text(inst, monkeypatch):
+    """The fork is a public repository. A pin publishes a hash and leaves the
+    bytes in the local cache, which is the only reason the notes can live
+    here at all."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Root/note.md", "# hello")
+
+    class _Api:
+        def export_zip(self, note_id="root", fmt="markdown"):
+            return buf.getvalue()
+
+    monkeypatch.setattr(vault.etapi, "client", lambda: _Api())
+    asked = {}
+    monkeypatch.setattr(vault, "_pin_and_commit",
+                        lambda v, message, chunk: asked.update(chunk=chunk))
+
+    out = vault.export(inst)
+
+    assert asked["chunk"] == vault.NOTES_CHUNK
+    assert (inst.notes_dir / "Root" / "note.md").read_text() == "# hello"
+    assert Path(out["notes_dir"]).is_relative_to(inst.scope / "data")
+
+
 def test_a_held_child_is_not_respawned_by_the_supervision_loop(inst):
     """The loop respawns anything not alive, once every pass. A restore that
     did not hold the child would race it: the server comes back between the

@@ -6,10 +6,10 @@ instance, one database, one knowledge base that collaborators work in together.
 The awm edge session says who is reading; the vault does not need to, and no
 longer asks.
 
-**The vault is a project, not per-user data.** `projects/vault/<branch>` holds
-the live database, the DVC-pinned snapshots and the markdown export. It is
-deliberately not under `projects/userdata/`, whose every subdirectory is one
-person's data on one person's branch — a shared vault is neither.
+**The vault lives inside the Trilium project.** The fork worktree this node
+serves holds the live database under `live/`, and the DVC-pinned snapshots,
+Zotero mirror and markdown export under `data/vault/`. The code and the data it
+serves move together, and there is one path to know rather than two.
 
 **The port is defined once, in `awm.config`.** The supervisor binds it and the
 edge proxies to it, and neither owns it. One definition means there is no RPC
@@ -48,16 +48,19 @@ LOG_DIR = STATE_DIR / "logs"
 INSTALL_DIR = SERVICE_DIR
 NODE_BIN_FILE = INSTALL_DIR / "node-bin"
 
-#: The shared vault's worktree. Its branch is named per host (`vault/<host>`)
-#: so two hosts' vaults can never be mistaken for one another; the directory
-#: name stays fixed so nothing has to look the branch up.
-SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE")
-             or (WORKSPACE_ROOT / "projects" / "vault" / "main"))
-
 #: The fork worktree this node serves. `release` by default. A dev sandbox
 #: points TRILIUM_FORK_DIR at `dev`.
 FORK_DIR = Path(os.environ.get("TRILIUM_FORK_DIR")
                 or (WORKSPACE_ROOT / "projects" / "trilium" / "release"))
+
+#: Where the vault's content lives — the same worktree, so the code and the
+#: data it serves are one path.
+#:
+#: A node that serves the published tarball has no fork to check out, and gets
+#: a plain directory at this path instead. Every write below asks whether the
+#: scope is a git checkout before it pins or commits, so one implementation
+#: covers both shapes.
+SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE") or FORK_DIR)
 
 #: What `pnpm server:build` emits — one bundle, plus an `assets/` beside it.
 FORK_ENTRY = FORK_DIR / "apps" / "server" / "dist" / "main.cjs"
@@ -72,6 +75,13 @@ TARBALL_NODE = TARBALL_DIR / "node" / "bin" / "node"
 
 #: What `install.sh` last built, written where the worktree already ignores it.
 BUILD_STAMP = FORK_DIR / ".awm" / "trilium-build-stamp"
+
+#: The parts of the worktree that are the vault's rather than Trilium's, as git
+#: pathspecs. Excluded from the dirtiness probe below: a pending pin is not a
+#: source change, and `install.sh` rebuilds the whole monorepo when it reads the
+#: tree as dirty. That script spells the same two — they have to agree, or a
+#: deploy alternates between rebuilding and not.
+NOT_SOURCE = (":!data", ":!live")
 
 #: The loopback port the vault's node process binds. Defined in `awm.config`
 #: because the edge needs the same number; see its comment there.
@@ -106,11 +116,22 @@ class Vault:
 
     @property
     def exists(self) -> bool:
-        """Whether the vault's worktree is on disk.
+        """Whether the vault's directory is on disk.
 
-        A worktree's `.git` is a file rather than a directory, so both forms
-        count. Without it there is nothing to serve and the supervisor says so
-        instead of spawning a child against an empty path.
+        Without it there is nothing to serve and the supervisor says so instead
+        of spawning a child against an empty path. A directory is enough: a
+        node serving the published tarball has one, and no checkout.
+        """
+        return self.scope.is_dir()
+
+    @property
+    def is_checkout(self) -> bool:
+        """Whether this vault can hold history.
+
+        True on the node that authors Trilium, where the scope is the fork's
+        git worktree; false on a node serving the published tarball, where the
+        same path is a plain directory. A worktree's `.git` is a file rather
+        than a directory, so both forms count.
         """
         return (self.scope / ".git").exists()
 
@@ -147,7 +168,7 @@ class Vault:
         hardlinks safe. Each file is written once under a name that is never
         reused, so nothing ever has to overwrite a pinned file.
         """
-        return self.scope / "data" / "backups"
+        return self.scope / "data" / "vault" / "backups"
 
     @property
     def superseded_dir(self) -> Path:
@@ -163,9 +184,13 @@ class Vault:
 
     @property
     def notes_dir(self) -> Path:
-        """The markdown export tree. Plain committed text, and a derived view —
-        Trilium stores markup as HTML, so importing it back is lossy."""
-        return self.scope / "notes"
+        """The markdown export tree — a DVC chunk beside the snapshots.
+
+        A derived view: Trilium stores markup as HTML, so importing it back is
+        lossy. Pinned rather than committed as text, because the fork is a
+        public repository and a pin publishes a hash.
+        """
+        return self.scope / "data" / "vault" / "notes"
 
     @property
     def log_file(self) -> Path:
@@ -237,7 +262,7 @@ def source_state() -> dict[str, Any]:
     }
     if not (FORK_DIR / ".git").exists():
         return state
-    status = _git("status", "--porcelain")
+    status = _git("status", "--porcelain", "--", *NOT_SOURCE)
     head = _git("rev-parse", "HEAD")
     stamp = None
     try:
@@ -247,7 +272,9 @@ def source_state() -> dict[str, Any]:
         pass
     state.update({
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "describe": _git("describe", "--tags", "--always", "--dirty"),
+        # No `--dirty`: it has no pathspec, so it would read the vault's own
+        # writes as a modified source tree. `dirty` below answers that.
+        "describe": _git("describe", "--tags", "--always"),
         "head": head,
         "dirty": None if status is None else bool(status),
         "built_head": (stamp or {}).get("head"),
