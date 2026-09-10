@@ -250,3 +250,85 @@ def test_a_paper_with_no_notes_serialises_as_it_always_did():
     out = bundle.normalize([raw("AAA", "journalArticle", title="A paper")],
                            [], {})
     assert "notes" not in out["items"][0]
+
+
+# -- folding a window into what is already held ------------------------------
+
+
+def whole(items, collections=(), library="users/0"):
+    return bundle.normalize(items, collections, {}, library=library)
+
+
+def held(items, collections=(), library="users/0"):
+    """A previous bundle, in the shape `library.json` holds."""
+    part = whole(items, collections, library)
+    return {"items": part["items"], "collections": part["collections"]}
+
+
+def test_a_window_replaces_the_paper_it_carries():
+    before = held([raw("AAA", "journalArticle", title="Old")])
+    window = whole([raw("AAA", "journalArticle", title="New")])
+
+    out = bundle.fold(before, window, [], [], library="users/0")
+
+    assert [i["title"] for i in out["items"]] == ["New"]
+
+
+def test_a_window_never_takes_a_papers_notes_wholesale():
+    """A paper's notes are separate items with their own versions, so a window
+    carrying an edited paper carries none of its unchanged notes. Replacing the
+    record wholesale drops them, and the fingerprint then says the shortened
+    note is current."""
+    before = held([
+        raw("AAA", "journalArticle", title="Old"),
+        raw("N1", "note", parentItem="AAA", note="<p>one</p>"),
+        raw("N2", "note", parentItem="AAA", note="<p>two</p>")])
+    window = whole([raw("AAA", "journalArticle", title="New")])
+
+    out = bundle.fold(before, window, [], [], library="users/0")
+
+    assert out["items"][0]["notes"] == {"N1": "<p>one</p>", "N2": "<p>two</p>"}
+
+
+def test_a_note_added_to_an_existing_paper_costs_no_request():
+    """The paper did not change, so the window carries the note alone. Against a
+    keyed mapping that is a dictionary update; against a bare list it would have
+    meant fetching the paper's children back over the network."""
+    before = held([raw("AAA", "journalArticle", title="A paper")])
+    window = whole([raw("N9", "note", parentItem="AAA", note="<p>new</p>")])
+
+    out = bundle.fold(before, window, [], [], library="users/0")
+
+    assert out["items"][0]["notes"] == {"N9": "<p>new</p>"}
+
+
+def test_a_key_that_left_is_dropped_as_a_paper_or_as_a_note():
+    before = held([
+        raw("AAA", "journalArticle", title="A paper"),
+        raw("N1", "note", parentItem="AAA", note="<p>one</p>"),
+        raw("BBB", "journalArticle", title="Another")])
+
+    out = bundle.fold(before, whole([]), ["BBB", "N1"], [], library="users/0")
+
+    assert [i["ref"] for i in out["items"]] == ["users/0/AAA"]
+    assert "notes" not in out["items"][0], "an emptied mapping must be dropped"
+
+
+def test_a_fold_leaves_another_librarys_papers_alone():
+    """`fold` is handed the whole bundle. A window for one library must not be
+    able to touch another's, or one save retires a shared group."""
+    before = held([raw("AAA", "journalArticle", title="Mine")])
+    before["items"] += held([raw("GGG", "journalArticle", title="Theirs")],
+                            library="groups/1")["items"]
+
+    out = bundle.fold(before, whole([]), [], [], library="users/0")
+
+    assert [i["ref"] for i in out["items"]] == ["users/0/AAA"]
+
+
+def test_one_paper_from_both_sides_makes_one_record():
+    """Sorting is stable, so a part carrying a record another part already had
+    leaves both in the list rather than one replacing the other."""
+    part = whole([raw("AAA", "journalArticle", title="A paper")])
+    merged = bundle.merge([part, part], {"users/0": 1})
+    assert len(merged["items"]) == 1

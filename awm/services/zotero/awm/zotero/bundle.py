@@ -162,6 +162,11 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
     """
     refs: dict[str, Item] = {}
     children: list[dict] = []
+    #: parent key -> {note key: HTML}, for notes whose parent is not in this
+    #: batch. Empty for a whole read and ordinary for a window: a child note
+    #: carries its own version, so adding one to a paper does not move that
+    #: paper and the paper does not come with it.
+    orphans: dict[str, dict[str, str]] = {}
 
     for raw in items:
         data = raw.get("data") or {}
@@ -192,8 +197,16 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
             collections=sorted(set(data.get("collections") or [])))
 
     for data in children:
-        parent = refs.get(data.get("parentItem") or "")
+        parent_key = data.get("parentItem") or ""
+        parent = refs.get(parent_key)
         if parent is None:
+            # Kept rather than dropped, so a caller merging a window can put it
+            # on the paper the bundle already holds. A whole read never reaches
+            # here for a note whose parent it can see, and one whose parent it
+            # cannot see belongs to another library or to the trash.
+            if (parent_key and data.get("itemType") == "note"
+                    and data.get("note")):
+                orphans.setdefault(parent_key, {})[data["key"]] = data["note"]
             continue
         if data.get("itemType") == "attachment":
             name = stored.get(data["key"])
@@ -213,7 +226,85 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
     for item in refs.values():
         item.collections = sorted(f"{library}/{k}" for k in item.collections)
 
-    return {"collections": tree, "items": [i.as_json() for i in refs.values()]}
+    return {"collections": tree, "items": [i.as_json() for i in refs.values()],
+            "orphan_notes": orphans}
+
+
+def settle(record: dict[str, Any]) -> dict[str, Any]:
+    """A record with its empty fields dropped, the way `Item.as_json` drops them.
+
+    A merged record and a freshly read one must agree on which fields are absent
+    as well as on their values, because the fingerprint that decides whether a
+    note is rewritten is taken over the whole record. A record carrying an empty
+    mapping where a whole read would have omitted the key is a different record.
+    """
+    return {k: v for k, v in record.items() if v not in ("", [], {})}
+
+
+def fold(previous: dict[str, Any], window: dict[str, Any],
+         gone_items: Iterable[str], gone_collections: Iterable[str], *,
+         library: str) -> dict[str, Any]:
+    """One library's records, brought up to date by a window read.
+
+    **The bundle stays a full picture of the library. Only the read is
+    partial.** Everything downstream of here — and in particular the pass that
+    retires a paper because the bundle no longer names it — goes on seeing a
+    whole library, so none of it has to learn that a read can be partial.
+
+    Four rules, and the second is the one that is easy to get wrong:
+
+    - a paper in the window replaces the record held for it;
+    - its notes do not. They are the notes already held, updated by whichever
+      notes arrived, because a window carrying a paper carries only the notes
+      that changed with it. Taking them wholesale drops the rest, and the
+      fingerprint then says the shortened note is current;
+    - a note whose paper did not change lands on the paper already held, which
+      is what makes adding a note to an existing paper cost no request;
+    - a key that left is dropped, both as a paper and as a note on whichever
+      paper holds it.
+
+    `previous` is the whole bundle as last written, not this library's share of
+    it. Records belonging to other libraries are ignored here and carried by
+    `_kept`, so a caller cannot accidentally fold one library's window onto
+    another library's papers.
+    """
+    mine = {r["ref"]: r for r in previous.get("items") or []
+            if r.get("library") == library}
+    folders = {c["ref"]: c for c in previous.get("collections") or []
+               if c.get("library") == library}
+
+    for record in window.get("items") or []:
+        held = mine.get(record["ref"]) or {}
+        notes = {**(held.get("notes") or {}), **(record.get("notes") or {})}
+        mine[record["ref"]] = settle({**record, "notes": notes})
+
+    for parent_key, arrived in (window.get("orphan_notes") or {}).items():
+        held = mine.get(f"{library}/{parent_key}")
+        if held is None:
+            # The paper is not in this bundle: another library's, or trashed.
+            continue
+        mine[held["ref"]] = settle(
+            {**held, "notes": {**(held.get("notes") or {}), **arrived}})
+
+    for collection in window.get("collections") or []:
+        folders[collection["ref"]] = collection
+
+    for key in gone_items:
+        ref = f"{library}/{key}"
+        mine.pop(ref, None)
+        # The same key may name a child note rather than a paper, and nothing
+        # in the answer says which. Removing it from wherever it is held costs
+        # a walk and gets both cases right.
+        for record in list(mine.values()):
+            if key in (record.get("notes") or {}):
+                notes = {k: v for k, v in record["notes"].items() if k != key}
+                mine[record["ref"]] = settle({**record, "notes": notes})
+
+    for key in gone_collections:
+        folders.pop(f"{library}/{key}", None)
+
+    return {"collections": list(folders.values()),
+            "items": list(mine.values())}
 
 
 def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, Any]:
@@ -227,10 +318,23 @@ def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, An
     changed library and re-walks the whole mirror to prove it was not.
     """
     return {"pulled": _stamp(), "versions": dict(versions),
-            "collections": sorted((c for p in parts for c in p["collections"]),
-                                  key=lambda c: c["ref"]),
-            "items": sorted((i for p in parts for i in p["items"]),
-                            key=lambda i: i["ref"])}
+            "collections": _by_ref(c for p in parts for c in p["collections"]),
+            "items": _by_ref(i for p in parts for i in p["items"])}
+
+
+def _by_ref(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sorted by `ref`, and one record per `ref`.
+
+    The deduplication is not tidiness. Sorting is stable, so a later part
+    carrying a record another part already had leaves *both* in the list rather
+    than one replacing the other. Nothing downstream would raise: the apply
+    would visit the paper twice, stamp it from whichever copy came second, and
+    over-count the library — which silently disarms the check that watches for
+    a keyed subtree stranded elsewhere in the vault, because that check compares
+    a whole-vault count against this one.
+    """
+    latest = {r["ref"]: r for r in records}
+    return [latest[ref] for ref in sorted(latest)]
 
 
 class Bundle:
