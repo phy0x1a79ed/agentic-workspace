@@ -54,7 +54,7 @@ way out, because by then the only thing in the box is ours.
 
 None of this establishes that the command *ran*. It establishes that the session
 consumed the keystrokes. The difference is structural and permanent — see
-``daemon_inject``'s module docstring.
+``awm.claudedaemon``'s module docstring.
 """
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ import threading
 import time
 from typing import Any, Callable, NamedTuple, Optional
 
+from awm import claudedaemon
 from awm.reflection import (
-    daemon_inject,
     guards,
     observation,
     oc_inject,
@@ -306,7 +306,7 @@ def _open_lane(lane, **kw):
             lane, **{k: v for k, v in kw.items()
                      if k in ("opener", "socket", "runner", "sleep")})
     if isinstance(lane, session_target.DaemonLane):
-        return daemon_inject.open_lane(
+        return claudedaemon.open_lane(
             lane, **{k: v for k, v in kw.items() if k in ("opener", "sleep")})
     return tmux_inject.open_lane(
         lane, **{k: v for k, v in kw.items()
@@ -314,7 +314,7 @@ def _open_lane(lane, **kw):
 
 
 _LANE_FAILURES = (session_target.ResolveError, oc_session.ResolveError,
-                  tmux_inject.TmuxError, daemon_inject.DaemonError,
+                  tmux_inject.TmuxError, claudedaemon.DaemonError,
                   oc_inject.OpencodeError, oc_inject.ServeError,
                   SessionBlocked, NotSubmitted, OSError)
 

@@ -25,7 +25,7 @@ set -uo pipefail
 WS="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" rev-parse --show-toplevel)"
 cd "$WS"
 
-COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient"
+COMP="$WS/awm/service_components/config:$WS/awm/service_components/persistence:$WS/awm/service_components/gatewayclient:$WS/awm/service_components/claudedaemon"
 
 # dist name -> "<source-root-dir>::<test-dir>"
 # agentcore is a leaf component (no service folder) — it has its own source
@@ -36,6 +36,7 @@ declare -A DISTS=(
   [gatewayclient]="$WS/awm/service_components/gatewayclient::$WS/awm/service_components/gatewayclient/tests"
   [config]="$WS/awm/service_components/config::$WS/awm/service_components/config/tests"
   [telemetry]="$WS/awm/service_components/telemetry::$WS/awm/service_components/telemetry/tests"
+  [claudedaemon]="$WS/awm/service_components/claudedaemon::$WS/awm/service_components/claudedaemon/tests"
   [scopes]="$WS/awm/services/scopes::$WS/awm/services/scopes/tests"
   [workspace]="$WS/awm/services/workspace::$WS/awm/services/workspace/tests"
   [agents]="$WS/awm/services/agents::$WS/awm/services/agents/awm/tests"
@@ -70,10 +71,11 @@ declare -A DISTS=(
   [penpot]="$WS/awm/services/penpot::$WS/awm/services/penpot/tests"
   [penpot-view]="$WS/awm/services/penpot-view::$WS/awm/services/penpot-view/tests"
   [penpot-plugins]="$WS/awm/services/penpot-plugins::$WS/awm/services/penpot-plugins/tests"
+  [cx]="$WS/awm/services/cx::$WS/awm/services/cx/tests"
 )
 
 # Stable run order.
-ORDER=(gateway agentcore gatewayclient config telemetry scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins)
+ORDER=(gateway agentcore gatewayclient config telemetry claudedaemon scopes workspace agents artifacts writing events precedence social 2fa ssh auth httpsfront rlm-browser orchestrator graphify stt tts fileviewer drawio notes virtmic mic vpn compute reflection dvc claude-science dsh hermes trilium zotero penpot penpot-view penpot-plugins cx)
 
 # Allow selecting a subset on the command line.
 if [ "$#" -gt 0 ]; then
