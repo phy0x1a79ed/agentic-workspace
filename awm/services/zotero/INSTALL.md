@@ -9,8 +9,9 @@ is a note, linking to it is an ordinary note link.
 This file holds the decisions a reader cannot recover from the code: why the
 library is read from Zotero's own service rather than from a machine, why the
 personal library is called `users/0` when the service calls it something else,
-why a saved paper cannot be read any sooner than it is, what the fast path may
-not do, and how the mirror finds the note it writes into.
+why a saved paper cannot be read any sooner than it is, what a window read can
+and cannot see, why every list inside a record is sorted, and how the mirror
+finds the note it writes into.
 
 Zotero's own behaviour belongs to Zotero's documentation. Where the vault lives
 and how it is served is in `awm/services/trilium/INSTALL.md`. This file covers
@@ -37,12 +38,15 @@ against it sees the first one's notes and works from its own older bundle. Each
 pass then deletes what the other just wrote. Nothing reports an error and every
 note gains a revision. Today that node is sirius.
 
-**A pass reads a library whole, not by delta.** Reading only what changed is
-fewer requests and needs the parent of every changed attachment fetched back,
-which is the class of mistake that turns one missing file into a paper that
-never gets one. A library is a handful of pages, and reading it whole is what
-lets the apply treat absence as a removal: a partial read cannot tell a paper
-that left from one it was simply not sent.
+**A pass reads only what moved. The bundle stays a full picture of the
+library.** Those are one decision rather than two, and the second is what makes
+the first safe. Absence from the bundle is how the apply retires a paper, so a
+partial *read* is only ever folded into the whole library the bundle already
+holds. Nothing downstream of the fold knows a read can be partial.
+
+Reading whole is still in the code, and it is the only read whose absences mean
+anything. It happens on the first pull, on `--force`, once a day per library, and
+whenever a window cannot explain what changed. See *Reading only what moved*.
 
 **One sync at a time, enforced by a file lock.** Each pass reads what the vault
 already holds before it writes, so two passes overlapping each read "nothing is
@@ -85,10 +89,11 @@ the floor on how fast this can be.
 
 **Three facts about the two interfaces, because the service used to read the
 other one.** A desktop's copy has no `deleted` route at all, so a mirror reading
-a desktop can only learn that a paper is gone by re-reading everything. A
-desktop refuses any request whose `Host` header is not localhost, which made a
-healthy Zotero look broken from anywhere else. And a desktop is a desktop: it is
-asleep when the machine is off. None of the three applies now.
+a desktop could only learn that a paper was gone by re-reading everything — this
+one has the route, which is what makes reading only what changed safe. A desktop
+refuses any request whose `Host` header is not localhost, which made a healthy
+Zotero look broken from anywhere else. And a desktop is a desktop: it is asleep
+when the machine is off. None of the three applies now.
 
 **Group libraries are included, and that default is load-bearing.** A Zotero
 account has a personal library and any number of shared groups, each with its
@@ -129,22 +134,111 @@ never delivered. So the callback sets a flag and returns, and the worker clears
 that flag *before* the pass rather than after: a change arriving mid-pass has to
 leave it set, so the next turn picks it up instead of the pass swallowing it.
 
+**The frame decides which libraries the pass reads, and names them.** A push
+reads only what the stream named, and takes each library's display name from the
+bundle rather than asking Zotero — that name is inside every fingerprint and is
+the title of the library's shelf, so a missing one rewrites a library's worth of
+notes and renames their shelf to nothing. Only a library this bundle has never
+seen is worth a request for a name.
+
+The names accumulate rather than replacing each other. The loop coalesces a burst
+behind one flag, so a save to the personal library and one to a group inside the
+settle window would otherwise leave whichever came first for the floor tick.
+
+**A push that finds the lock held is retried, not dropped.** The pass holding it
+may have read its libraries before this frame arrived, and the flag is cleared
+before the pass, so dropping the frame left that paper for the floor tick twenty
+minutes away.
+
+**`ZOTERO_SETTLE_S` is half a second.** It collapses a burst into one pass, and a
+second pass now costs one small request rather than a whole-library read, so
+paying more than that on every wake is the wrong side of the trade.
+
+## Reading only what moved
+
+**The read is also the movement probe.** Asking a library what has changed since
+a version returns nothing when it has not moved, and every answer names the
+library's current version in its own header. So there is no request asking where
+a library is: that number arrives with the records, or with their absence.
+
+Three answers, and the middle one is the whole design.
+
+- **Records came back.** They explain the version, and one of them is the paper
+  somebody is waiting for. That is enough to write the vault. The collections
+  window is read only when a record names a collection the bundle does not hold,
+  and on a push the deletions window waits for the floor tick — a paper appearing
+  quickly and a paper disappearing quickly are different requirements, and only
+  the first has somebody standing over it.
+- **Nothing came back and the version rose.** Something changed that a window
+  cannot show. Nobody is waiting on it, so the pass looks properly: collections,
+  deletions, and when those are empty too, the library whole.
+- **Nothing came back and the version held.** Skip.
+
+**CAUTION** The escalation needs all three to be empty. A collection rename and a
+tag change each move the version and return no items, and escalating on those
+would spend the whole read this exists to avoid.
+
+**A paper in Zotero's trash is invisible to every route.** Not in `/items`, not
+in a window, not in `deleted` — that route reports a permanent removal. The
+library's version moving with nothing to show for it is the only sign there is,
+which is what the escalation above is for, and a whole read once a day per
+library is what bounds the case where a trashing shared a pass with some other
+change.
+
+**A whole read is only authoritative about absence while it is a snapshot.** The
+walk pages by offset over a list the service orders by modification date, so an
+item edited part-way through jumps to the front and pushes the item on the page
+boundary out of the window. That item is then absent, and absence retires a
+paper. Each page's version is compared against the first; a walk that moved is
+restarted, and one that will not settle raises rather than returning a short
+answer.
+
+**Two refusals guard the same failure.** A library whose read raised is carried
+unread and keeps every record the bundle holds for it — not read is not the same
+as read and found empty. And a whole read that comes back empty against a bundle
+that is not raises `ZoteroLostItsLibrary`, because that is the one shape that
+empties the vault in a single pass with every call succeeding.
+
+**A window read cannot merge into a bundle written before notes carried keys.**
+Such a bundle holds a bare list of note HTML and nothing can say which entry an
+arriving note replaces. It is read as holding no notes, and the whole read that a
+bundle with no whole-read stamp is due rebuilds it. That is the upgrade path and
+it needs nobody to run anything.
+
 ## What a pass costs
 
 A note carries `#zoteroStamp`, a fingerprint of the whole bundle record behind a
 render version. A paper whose fingerprint already matches is skipped without a
-call. Measured against 823 papers in 60 collections: a pass where the library
-moved but nothing this vault holds changed costs five calls, one changed paper
-costs seven, and a pass whose bundle digest is unchanged still costs one.
+call. Not Zotero's item version: a version cursor cannot see a group renamed or
+a file arriving after the item stopped changing, and a digest of the record is a
+strict superset of every narrower cursor.
+
+Measured on the live library of 823 papers in 20 collections:
+
+| pass | requests to Zotero | seconds |
+|---|---|---|
+| a push, narrowed to the library that moved | 1 | 0.3 |
+| a floor tick where nothing moved | one per library | 0.5 |
+| catching up 60 versions across three libraries | a handful | 2.6 |
+| a whole read of all three libraries | about sixteen | 22 |
+
+**Every list inside a record is sorted, and that is correctness rather than
+tidiness.** The fingerprint is taken over the whole record, so a list carrying
+the service's answer order makes the same library state produce two different
+records: two whole reads at one version once differed on 44 of 823 papers, and
+the apply rewrote every one. It is also what lets a window read and a whole read
+be compared at all, which is the property the whole design rests on.
+
+**A paper's child notes are keyed by the note's own key.** A child note is its
+own item with its own version, so adding one to a paper does not move that paper:
+a window carries the note without its parent, or the parent without its notes.
+Against a bare list neither can be merged, and the choice would have been between
+losing notes and fetching a parent's children back over the network. Against keys
+both are a dictionary update costing no request.
 
 **CAUTION** `RENDER` in `sync.py` must be bumped whenever `_title`, `_card` or
 `_labels` change what a note looks like. Forgetting is silent and total: every
 note keeps a fingerprint claiming it is current, and only a forced pass notices.
-
-**Not Zotero's item version, and the reason recurs.** A version cursor cannot
-see a change that does not move the item — a group renamed, a file arriving
-after the item stopped changing. The fingerprint is over the whole record, so it
-is a strict superset of every narrower cursor and needs no special case.
 
 **The fingerprint is written last**, after the placement. One written with the
 content would mark a paper whose placement failed as current, and nothing
@@ -156,8 +250,8 @@ puts back a paper somebody dragged in the interface, which no cursor would
 notice. It is also why a renamed or moved collection needs no cursor of its own:
 the papers keep the same parent note and none of them is touched.
 
-**`--force` is the repair verb**, and it is now the only thing that repairs a
-hand-edited note, a hand-deleted attachment, or a fingerprint that lies.
+**`--force` is the repair verb**, and the only thing that repairs a hand-edited
+note or a fingerprint that lies.
 
 **An apply that has nothing to do costs one search.** Apply records the bundle's
 digest on the root note as `#zoteroApplied`, after the removal pass, so a pass
@@ -260,11 +354,13 @@ Environment, read at start:
 | `ZOTERO_STREAM_ENABLED` | `1` | set `0` to fall back to the timer alone. |
 | `ZOTERO_STREAM_URL` | `wss://stream.zotero.org/` | the event stream. |
 | `ZOTERO_STREAM_IDLE_S` | `3600` | rebuild a stream that has said nothing for this long. |
-| `ZOTERO_SETTLE_S` | `2` | wait this long after being told, so a burst becomes one pass. |
+| `ZOTERO_SETTLE_S` | `0.5` | wait this long after being told, so a burst becomes one pass. |
 | `ZOTERO_LIBRARY_NOTE` | `Library` | title of the note the mirror creates when it may create one. |
 | `ZOTERO_MAY_CREATE_ROOT` | `1` | set `0` on a shared vault, where apply must refuse rather than create a library. |
 | `ZOTERO_SYNC_INTERVAL_S` | `1200` | the floor under the stream. |
 | `ZOTERO_SYNC_ENABLED` | `1` | set `0` to stop the floor. |
+| `ZOTERO_BUSY_RETRY_S` | `5` | wait this long before retrying a push that found the lock held. |
+| `ZOTERO_RECONCILE_S` | `86400` | read a library whole when it has not been read whole for this long. This is the bound on how long a trashed paper can sit in the vault. |
 
 ## Verify
 
@@ -281,8 +377,13 @@ is reported, not raised — a network drops, and that is an answer rather than a
 fault.
 
 A dry run reports what it would create, update, replace and leave alone. On a
-vault that is up to date it should say it would leave every paper alone; if it
+vault that is up to date it should say it would leave every paper alone. If it
 says it would update all of them, `RENDER` moved or a fingerprint is wrong.
+
+`awm zotero sync` logs where the pass spent its seconds, largest first. That is
+how to tell a slow Zotero from a slow vault without guessing, and guessing got it
+wrong once: a request was priced at 1.5 seconds across the board, when a page of
+a hundred items costs about 1.6 and a window read costs about 0.3.
 
 ## Removing the mirror
 
