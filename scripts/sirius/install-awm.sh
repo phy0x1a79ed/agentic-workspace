@@ -12,8 +12,8 @@
 #   3. .awm and the other gitignored write dirs -> symlinks into /var/lib/awm
 #   4. `awm gateway init` as the app user, enabled.json reconciled to the set
 #   5. remove the retired per-person Trilium vhosts and env keys, if any
-#   6. the `vault` project and its scope, so the shared knowledge base has a
-#      worktree to live in
+#   6. the vault's directory under the Trilium project, so the knowledge base
+#      has somewhere to live
 #   7. /usr/local/bin/{awm,awm-mcp}, awm.service, restart
 set -euo pipefail
 
@@ -138,63 +138,26 @@ if [ -n "${nginx_dirty:-}" ]; then
     sudo nginx -t -q && sudo systemctl reload nginx
 fi
 
-step "vault scope"
-# The shared knowledge base is a project, not per-user data: `projects/vault`
-# has its own history, and `projects/userdata/<name>` means one person's data on
-# one person's branch. The branch is named per host so two hosts' vaults can
-# never be mistaken for one another.
+step "vault directory"
+# The vault's data sits where the service looks for it, which is the Trilium
+# project's release scope on every node. Here that is a plain directory and
+# nothing else: this box serves the published tarball, holds no fork, and so
+# needs no git or DVC for source that is not there.
 #
-# Best-effort throughout. The gateway runs every service's install under
-# `set -e`, so a hard failure here would abort the whole deploy on a box that
-# is otherwise fine — the same trap an unguarded mkdir sprang once already. A
-# vault that could not be created is reported by `awm trilium status`, which is
-# where someone would look anyway.
+# Best-effort, like the rest of this script. The gateway runs every service's
+# install under `set -e`, so a hard failure here would abort the whole deploy on
+# a box that is otherwise fine — the trap an unguarded mkdir sprang once
+# already.
 #
-# The absolute path, not `awm`: /usr/local/bin/awm is symlinked by the last
-# stage of this script, so on a first install it does not exist yet.
-AWM_BIN="$MF/envs/awm/bin/awm"
-VAULT_BRANCH="vault/$(hostname -s)"
-vault_ok=1
-if ! "$AWM_BIN" project search --query vault 2>/dev/null | grep -q '"name": "vault"'; then
-    "$AWM_BIN" project create --name vault >/dev/null 2>&1 \
-        && echo "   created project vault" \
-        || { echo "   WARNING: could not create project vault"; vault_ok=; }
-fi
-if [ -n "$vault_ok" ] && ! "$AWM_BIN" scope search --project vault --query main 2>/dev/null | grep -q '"scope": "main"'; then
-    "$AWM_BIN" scope create --project vault --scope main --branch-name "$VAULT_BRANCH" >/dev/null 2>&1 \
-        && echo "   created scope vault/main on $VAULT_BRANCH" \
-        || { echo "   WARNING: could not create scope vault/main"; vault_ok=; }
-fi
-VROOT="$ROOT/projects/vault/main"
-if sudo -u "$APP_USER" test -d "$VROOT"; then
-    # live/ is runtime state: the database, its write-ahead log, the session
-    # store and Trilium's own rolling backups. Never committed and never
-    # DVC-pinned — a pin taken while the server runs records a state that never
-    # existed, and it looks healthy until someone restores it. data/backups/
-    # holds the named snapshots awm moved there, which is the chunk.
-    sudo -u "$APP_USER" mkdir -p "$VROOT/live" "$VROOT/data/backups" "$VROOT/notes"
-    if ! sudo -u "$APP_USER" test -f "$VROOT/.gitignore"; then
-        printf '/live/\n/.notes.incoming/\n/.notes.retired/\n' \
-            | sudo -u "$APP_USER" tee "$VROOT/.gitignore" >/dev/null
-        echo "   wrote $VROOT/.gitignore"
-    fi
-    # Commit it, or a fresh box is left with a dirty vault worktree for ever —
-    # the file is never staged by anything else, and an uncommitted ignore rule
-    # is one `git add -A` away from being someone's confusing diff.
-    sudo -u "$APP_USER" git -C "$VROOT" add -- .gitignore 2>/dev/null || true
-    if ! sudo -u "$APP_USER" git -C "$VROOT" diff --cached --quiet 2>/dev/null; then
-        sudo -u "$APP_USER" git -C "$VROOT" \
-            -c user.name=awm -c user.email=awm@localhost \
-            commit -q -m "vault: scaffold" -m "Author-Handle: system" \
-            && echo "   committed the vault scaffold"
-    fi
-    # Scope metadata is excluded in the bare, matching the userdata convention,
-    # rather than in a tracked .gitignore that would then differ per host.
-    EX="$ROOT/projects/vault/.bare/info/exclude"
-    sudo -u "$APP_USER" grep -qx '\.awm/' "$EX" 2>/dev/null \
-        || printf '.awm/\n' | sudo -u "$APP_USER" tee -a "$EX" >/dev/null
+# live/ is runtime state: the database, its write-ahead log, the session store
+# and Trilium's own rolling backups. data/vault/ takes the named snapshots and
+# the mirrored Zotero library. Neither is pinned here. Pinning needs a checkout,
+# and without one the service writes its files and says it committed nothing.
+VROOT="$ROOT/projects/trilium/release"
+if sudo -u "$APP_USER" mkdir -p "$VROOT/live" "$VROOT/data/vault"; then
+    echo "   vault directory at $VROOT"
 else
-    echo "   WARNING: no vault worktree at $VROOT — the service will report this via status"
+    echo "   WARNING: no vault directory at $VROOT — the service will report this via status"
 fi
 
 step "built pages"
