@@ -7,7 +7,9 @@ server on loopback and served by awm's edge at `/trilium/`.
 
 Trilium is single-user per instance, and that is what this design wants: one
 instance, one database, one knowledge base that everyone signed in works in
-together. It is collaborative by being shared, not by being replicated.
+together. It is collaborative by being *shared* — one document, not a document
+each. It is durable by being *replicated*: that one document runs on three
+machines and converges within a minute. See *One document, three machines*.
 
 ## Purpose & Contents
 
@@ -16,9 +18,11 @@ vault is a second upstream on an existing listener rather than a mount or a host
 of its own, why it has no password, why the verbs that write notes are refused to
 anyone who arrives through the edge, how a public slice opens one subtree to
 somebody with no account, why the kanban board is Trilium's rather than this
-service's, why there are three kinds of database copy and only one of them is a
-restore path, why a node that serves the tarball gets a directory where a node
-that builds the fork gets a checkout, and what a shared origin costs.
+service's, why the document is replicated over an ssh forward rather than over
+the edge, why exactly one node may run a service that writes into the vault, why
+there are four kinds of database copy and only two of them survive a deletion,
+why a node that serves the tarball gets a directory where a node that builds the
+fork gets a checkout, and what a shared origin costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
 The patches we carry to it are the exception, because nothing in that project
@@ -182,6 +186,87 @@ literal `config.Network.https`. `loopback` rather than `true`, because the edge
 always connects from there and a blanket trust would let a forged header past
 anything that reads a client address.
 
+## One document, three machines
+
+sirius holds the vault. altair and capella run copies of it that anyone can also
+write to, and an edit on any of the three reaches the other two inside a minute.
+Every machine therefore holds the whole knowledge base, which is the redundancy;
+the schedule under *Four kinds of copy* is the recovery, and they are not
+substitutes.
+
+**The topology is a star because Trilium's is.** An instance has exactly one
+upstream, so sirius is the centre and the others are spokes of it. Traffic goes
+both ways over that one link, so the result is still a complete copy everywhere.
+There is no second hub to fail over to and no way to make a ring.
+
+**The link is an ssh port forward, not the edge.** Two facts close the obvious
+routes. `noAuthentication` stands down the guard on `/api/sync/*` as well as
+everything else, and `/api/sync/stats` carries no guard at all — so the hub's
+vault port is a document that anyone reaching it may read and rewrite, and it
+must never be reachable off loopback. And the edge, which is the route people
+use, deliberately refuses a peer credential at the vault mount, which is the one
+credential a machine has. So each spoke's trilium service holds
+`ssh -N -L 127.0.0.1:<local>:127.0.0.1:<vault port> sirius` open, supervised by
+the same health tick that watches the vault child, and points its own Trilium
+down it. Both ends stay on loopback and nothing new is exposed to any network.
+See `awm/trilium/sync.py`.
+
+**One value decides which node a machine is.** `TRILIUM_SYNC_HUB` in the
+workspace env file names the hub's ssh destination. A node that has it is a
+spoke. A node without it is the hub — sirius has no env file at all, which is
+why it cannot accidentally become a client of itself. The hub's vault child is
+told `TRILIUM_SYNC_SYNCSERVERHOST=disabled` rather than nothing, because every
+node runs a *copy* of one database and a stored `syncServerHost` would travel
+with the copy; `disabled` is Trilium's own override for exactly that.
+
+The sync host is always the local end of this node's own forward, never the
+hub's address, so a machine cannot be pointed at a hub it holds no tunnel to.
+`child_env` asserts that, next to the assert that keeps the bind on loopback.
+
+**A machine is seeded by copying the database, not by the setup wizard.**
+Trilium's "sync from server" flow fetches a seed from behind a password check,
+and that check does not stand down when `noAuthentication` is set — it refuses
+outright because no password exists. Copying is the supported alternative rather
+than a workaround: the sync client's login step lowers its own pull cursor to the
+server's position and says in as many words that this is for a manually copied
+document. The instance identity is a random string minted per process and never
+stored, so two copies of one database come up as two distinct instances on their
+own.
+
+The procedure is: `trilium snapshot` on the hub, carry the file to the spoke,
+advance `lastSyncedPull` and `lastSyncedPush` in the copy to the highest synced
+`entity_changes` id it contains, then `trilium restore` it. The cursor step is an
+optimisation and not load-bearing — a raw copy converges too, by pushing its
+whole history back for the hub to discard — but on a real vault that is a
+pointless multi-megabyte first sync.
+
+WARNING: **a service that writes into the vault must run on exactly one
+machine.** The Zotero mirror runs on sirius. A second mirror against the same
+document would not merge with the first: each pass reconciles the tree against
+its own view of the library, so the two would take turns deleting what the other
+had just written. This is the least obvious consequence of sharing the document
+and the easiest to trip over, because installing the mirror on a second node
+looks like the obvious next step.
+
+WARNING: **a replica follows a deletion.** Within a minute of a note being
+deleted anywhere it is gone everywhere. Replication is not backup, which is why
+the snapshot schedule exists and is not optional.
+
+CAUTION: conflicts are resolved last-write-wins per note, on `utcDateChanged`.
+Editing one note on two machines at once keeps the later write and files the
+loser as a note revision. Recoverable, but not a merge.
+
+CAUTION: the clocks have to agree within five minutes or sync login is rejected
+outright, and every instance must report the same `syncVersion` — it is a
+constant in the build, so that is really a question about which bundle each
+machine runs. Both are the first things to suspect when a link goes quiet.
+`curl -s localhost:<vault port>/api/setup/status` answers the second without
+authentication.
+
+CAUTION: capella sleeps with its host, so it spends time behind. That is what the
+pull cursor is for; a lagging capella is not a broken link until you have checked
+that it is awake.
+
 ## The note API, and why reading it is an operator verb
 
 The service can do to a note anything a person can: read it, create, update,
@@ -325,8 +410,12 @@ bound token at least fixes the name, so attribution can be shared but not forged
 CAUTION: the tarball install path carries none of the fork's slice code, so
 upstream's build would answer every route a token reached. `slice_expose` and
 `slice_resolve` therefore refuse outright on a node not serving the fork —
-resolving as well as minting, because a synced database carries tokens minted
-somewhere else. Give such a node the fork with `ship-bundle.sh`, under Install.
+resolving as well as minting, because a replicated database carries the notes a
+token was minted against. That is a live condition rather than a hypothetical
+one: capella serves the tarball and now holds the shared document, so slices are
+minted and resolved on sirius alone. `ship-bundle.sh` closes the gap, but it is
+written for sirius today — the `/opt/awm` paths and the `awm` service account in
+it are that host's, not a mesh node's.
 
 ## The board
 
@@ -430,13 +519,36 @@ The data tree is also excluded from the probe that decides whether to rebuild.
 `install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
 to agree, or a deploy alternates between rebuilding and not.
 
-## Three kinds of copy, and only one is a restore path
+## Four kinds of copy, and only one is a restore path
 
-| where | what | pinned | overwritten |
+| where | what | pinned | survives a deletion |
 |---|---|---|---|
-| `live/backups/` | Trilium's own daily/weekly/monthly rotation | no | on a schedule |
-| `data/vault/backups/` | named snapshots `trilium snapshot` moved there | yes | never |
-| `data/vault/notes/` | the markdown export | yes | every export |
+| the other two machines | the live replica, converged within a minute | no | no |
+| `live/backups/` | Trilium's own daily/weekly/monthly rotation | no | until the next rotation |
+| `data/vault/backups/` | named snapshots `trilium snapshot` moved there | yes | yes |
+| `data/vault/notes/` | the markdown export | yes | until the next export |
+
+**The replica is redundancy, not backup, and the difference is the column on the
+right.** It protects against losing a machine and against nothing else: a note
+deleted on any node is deleted on all of them within a minute. Only the pinned
+snapshots stand between a mistake and a permanent loss.
+
+**The snapshot schedule lives where a snapshot becomes a pin.** A supervised loop
+in this service wakes hourly and takes one when the newest is more than a day old
+— an age test rather than a time of day, so a node that was asleep at the nominal
+hour still snapshots when it wakes. Taking it, thinning the older ones and
+committing the pin land as one commit. From there the existing nightly archive
+job carries the bytes off-site, append-only, with no new work.
+
+That is why the schedule runs on altair and not on sirius. sirius has no checkout,
+so nothing it writes is pinned and nothing reaches the archive; altair holds the
+same document and does have one. The loop stands down on a node where
+`is_checkout` is false rather than writing copies nobody ships.
+
+The checked-out set is thinned so the working tree does not grow without bound:
+everything from the last fortnight is kept, and older snapshots are reduced to
+the newest of each calendar month. Safe only because the archive is append-only —
+pruning the tree does not prune what was already shipped.
 
 **The rolling backups cannot be the DVC chunk.** It is the tempting arrangement —
 they are the only consistent database copies on disk, because Trilium writes them
@@ -601,6 +713,11 @@ the service resolves is a directory there rather than a checkout — see *Where
 the vault's content lives*. `scripts/sirius/install-awm.sh` creates it with two
 mkdirs.
 
+The other is that it is the sync hub, and that is an absence rather than a
+setting: it has no `TRILIUM_SYNC_HUB` because it has no workspace env file at
+all. Every other node names it and opens a forward to it. Nothing on sirius is
+configured for this, and nothing should be — see *One document, three machines*.
+
 Two things are host-shaped. `client_max_body_size` in
 `scripts/sirius/etc/nginx/awm-proxy.conf` is 512m, because the vault is behind
 that one location and Trilium uploads whole PDFs and imports whole vaults in a
@@ -642,6 +759,20 @@ reachable from a browser — run them where you can ssh.
 
 On a node with no checkout both write their files and report that they committed
 nothing. That is the expected answer there, not a failure.
+
+The replication link, on a spoke:
+
+```
+awm trilium status | python3 -c 'import json,sys; print(json.load(sys.stdin)["sync"])'
+curl -s localhost:12511/api/sync/stats
+```
+
+`status` reports the role, the hub, whether the forward is up and what the vault
+child was told its upstream is. `outstandingPullCount` of zero means this node
+has caught up. The check that proves the whole thing is still a person's: write a
+note on one machine and watch it appear on the other two within two minutes, then
+do it in the other direction. A vault that syncs happily can still be serving a
+shell whose WebSocket never connected.
 
 ## AGPL-3.0
 

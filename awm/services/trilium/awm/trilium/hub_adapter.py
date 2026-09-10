@@ -5,8 +5,9 @@ ready → serve → reconnect), so the vault is a service like any other: visibl
 in `awm services list`, health as a verb, and reachable from any node rather
 than a node process somebody started by hand.
 
-Two things live under this one supervised process: the Trilium server on
-loopback (see `server`), and the data lifecycle verbs that snapshot, restore
+Three things live under this one supervised process: the Trilium server on
+loopback (see `server`), the ssh forward it replicates over on a node that is
+not the hub (see `sync`), and the data lifecycle verbs that snapshot, restore
 and export what is in it (see `vault`). There is no front here and no
 discovery: the awm edge serves the vault at `/trilium/`, and there is one vault, so
 there is nothing to enumerate.
@@ -36,7 +37,7 @@ from typing import Any
 from awm import config
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.trilium import etapi, instances, server, slices, vault
+from awm.trilium import etapi, instances, server, slices, sync, vault
 
 log = logging.getLogger("awm.trilium.hub_adapter")
 
@@ -53,7 +54,8 @@ API_MANIFEST: dict[str, Any] = {
             "tool": "trilium_status",
             "description": (
                 "Whether the vault is up, whether it has a database yet, how "
-                "many pinned snapshots it has, and which bundle is serving it. "
+                "many pinned snapshots it has, which bundle is serving it, and "
+                "whether this node holds a live sync link to the hub. "
                 "A caller arriving through the edge gets the readable half; "
                 "pids, ports and absolute paths are for the console."
             ),
@@ -550,7 +552,8 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
             state["snapshots"] = 0
         return state
 
-    out = {"vault": await asyncio.to_thread(_read)}
+    out = {"vault": await asyncio.to_thread(_read),
+           "sync": sync.TUNNEL.snapshot(verbose=verbose)}
     if verbose:
         out["source"] = await asyncio.to_thread(instances.source_state)
     return out
@@ -1099,11 +1102,46 @@ async def _health_loop() -> None:
                             res.get("previous_exit"))
             elif res.get("action") == "respawn-failed":
                 log.error("trilium: respawn failed: %s", res.get("error"))
+            # The link the vault syncs over, reconciled by the same tick. Inert
+            # on the hub, which has no tunnel to hold.
+            link = await asyncio.to_thread(sync.TUNNEL.reconcile)
+            if link.get("action") == "reopened":
+                log.warning("trilium: sync tunnel reopened (previous exit %s, "
+                            "retrying every %ss)", link.get("previous_exit"),
+                            link.get("retry_s"))
+            elif link.get("action") == "reopen-failed":
+                log.error("trilium: sync tunnel failed to open: %s",
+                          link.get("error"))
         except Exception:  # noqa: BLE001 — never let the loop die
             # CancelledError is a BaseException and so passes through, which is
             # what the supervisor above wants: a *return* from here would read
             # as a defect and be respawned, but a cancellation is a shutdown.
             log.exception("trilium: supervision pass failed")
+
+
+async def _snapshot_loop() -> None:
+    """Keep a point-in-time copy that a deletion cannot follow. Never exits.
+
+    A tick that fails is skipped rather than fatal, and the loop never breaks
+    out: a backup that quietly stopped happening looks exactly like a backup
+    that was never needed, and the day it is needed is the day anyone finds
+    out.
+    """
+    log.info("trilium: snapshot schedule started (every %ss, when the newest "
+             "is older than %ss)", vault.SNAPSHOT_INTERVAL_S,
+             vault.SNAPSHOT_MAX_AGE_S)
+    while True:
+        try:
+            await asyncio.sleep(vault.SNAPSHOT_INTERVAL_S)
+            res = await asyncio.to_thread(vault.scheduled_snapshot,
+                                          instances.VAULT)
+            if res.get("action") == "snapshot":
+                log.info("trilium: snapshot %s taken (%s bytes, pruned %d, "
+                         "committed=%s)", res.get("snapshot"), res.get("bytes"),
+                         len(res.get("pruned") or []),
+                         (res.get("git") or {}).get("committed"))
+        except Exception:  # noqa: BLE001 — never let the loop die
+            log.exception("trilium: scheduled snapshot failed")
 
 
 async def _on_start() -> None:
@@ -1113,6 +1151,17 @@ async def _on_start() -> None:
     report *why* it is broken, and the loop keeps retrying.
     """
     slices.init()
+    # Before the vault, because Trilium's first sync fires five seconds after
+    # it loads: a link opened afterwards costs a whole cycle of being behind.
+    if sync.is_client():
+        try:
+            res = await asyncio.to_thread(sync.TUNNEL.start)
+            log.info("trilium: sync tunnel %s to %s (127.0.0.1:%s -> :%s)",
+                     res.get("action"), sync.hub(), sync.tunnel_port(),
+                     sync.hub_port())
+        except Exception:  # noqa: BLE001
+            log.exception("trilium: sync tunnel failed to open; the loop will "
+                          "retry")
     if instances.entry_point() is None:
         log.warning("trilium: no server bundle at %s or %s — run install.sh; "
                     "the service will register and report this via status",
@@ -1134,9 +1183,19 @@ async def _on_start() -> None:
     # A dead supervision loop looks exactly like a vault that has not crashed,
     # so it is spawned supervised rather than as a bare task nobody reads.
     spawn_supervised("trilium:health", _health_loop)
+    # Only where a snapshot becomes a pin. A node serving the published tarball
+    # has no checkout to commit into, and its copy of the vault is covered by
+    # whichever node does.
+    if instances.VAULT.is_checkout:
+        spawn_supervised("trilium:snapshot", _snapshot_loop)
 
 
 async def main() -> None:
+    # Which node is the hub and which are spokes is declared in the workspace
+    # env file, and the gateway reads that file once at its own start. Reading
+    # it again here is what lets the declaration change with a restart of this
+    # service rather than of everything.
+    config.load_env_file()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

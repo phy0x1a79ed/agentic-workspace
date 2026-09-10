@@ -307,6 +307,126 @@ def snapshots(vault: Vault) -> dict[str, Any]:
     }
 
 
+# -- the schedule -----------------------------------------------------------
+#
+# A replica follows a deletion: within a minute of a note being deleted on any
+# node it is gone on all of them. A snapshot does not, which is what makes this
+# loop the only thing standing between a mistake and a permanent loss.
+#
+# It runs where the vault is a git checkout, because that is what turns a
+# snapshot into a pin, and the pin's bytes into something the nightly archive
+# job already ships off-site. On a node serving the published tarball there is
+# nothing to pin and the schedule stands down.
+
+#: How often the loop wakes. Cheap: it reads one directory and usually stops.
+SNAPSHOT_INTERVAL_S = float(os.environ.get("TRILIUM_SNAPSHOT_INTERVAL_S", "3600"))
+
+#: How old the newest snapshot may be before the next tick takes one. A day,
+#: so a node that was asleep at the nominal hour still snapshots when it wakes
+#: — which is the whole reason this is an age test rather than a time of day.
+SNAPSHOT_MAX_AGE_S = float(os.environ.get("TRILIUM_SNAPSHOT_MAX_AGE_S", "86400"))
+
+#: Every snapshot from this many days back stays in the working tree. Older
+#: ones are thinned to the newest of each calendar month. Safe because the
+#: archive is append-only: pruning the tree does not prune what was shipped.
+SNAPSHOT_KEEP_DAYS = int(os.environ.get("TRILIUM_SNAPSHOT_KEEP_DAYS", "14"))
+
+_STAMPED = re.compile(r"(\d{8}T\d{6}Z)(?:\.[a-z]+)*$")
+
+
+def _taken_at(path: Path) -> datetime:
+    """When a snapshot was taken, from its name, falling back to its mtime.
+
+    The name is authoritative: a snapshot copied between machines keeps the
+    moment it records and loses the moment it arrived.
+    """
+    hit = _STAMPED.search(path.stem)
+    if hit:
+        try:
+            return datetime.strptime(hit.group(1), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+
+
+def prune_snapshots(vault: Vault, *, keep_days: int = SNAPSHOT_KEEP_DAYS,
+                    now: datetime | None = None) -> list[str]:
+    """Thin the checked-out snapshot set. Returns the names removed.
+
+    Everything inside `keep_days` is kept, and one snapshot survives each
+    calendar month before that. Nothing is pinned again here — the caller
+    commits the new pin, so a prune and the snapshot that triggered it land as
+    one change.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        files = [p for p in vault.snapshots_dir.glob(f"backup-*{PLAIN_EXT}")
+                 if p.is_file()]
+    except OSError:
+        return []
+    files += [p for p in vault.snapshots_dir.glob(f"backup-*{CONTAINER_EXT}")
+              if p.is_file()]
+    dated = sorted(((p, _taken_at(p)) for p in files), key=lambda t: t[1],
+                   reverse=True)
+
+    cutoff_s = keep_days * 86400
+    kept_months: set[tuple[int, int]] = set()
+    removed: list[str] = []
+    for path, taken in dated:
+        if (now - taken).total_seconds() <= cutoff_s:
+            continue
+        month = (taken.year, taken.month)
+        if month not in kept_months:
+            kept_months.add(month)
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.warning("trilium: could not prune %s: %s", path.name, exc)
+            continue
+        removed.append(path.stem)
+    return removed
+
+
+def newest_snapshot_age_s(vault: Vault) -> float | None:
+    """Seconds since the most recent snapshot, or None if there is none."""
+    try:
+        files = [p for p in vault.snapshots_dir.glob("backup-*.*") if p.is_file()]
+    except OSError:
+        return None
+    if not files:
+        return None
+    newest = max(_taken_at(p) for p in files)
+    return (datetime.now(timezone.utc) - newest).total_seconds()
+
+
+def scheduled_snapshot(vault: Vault, *,
+                       max_age_s: float = SNAPSHOT_MAX_AGE_S,
+                       keep_days: int = SNAPSHOT_KEEP_DAYS) -> dict[str, Any]:
+    """Take a snapshot if the newest one is older than `max_age_s`.
+
+    The snapshot, the prune and the pin land in one commit, so the tree never
+    holds a pin that describes a directory somebody is about to thin.
+    """
+    _require_vault(vault)
+    if not vault.is_checkout:
+        return {"action": "not-a-checkout", "scope": str(vault.scope)}
+    age = newest_snapshot_age_s(vault)
+    if age is not None and age < max_age_s:
+        return {"action": "not-due", "age_s": round(age)}
+
+    out = snapshot(vault, "nightly", commit=False)
+    pruned = prune_snapshots(vault, keep_days=keep_days)
+    message = f"vault: snapshot {out['snapshot']}"
+    if pruned:
+        message += f" (pruned {len(pruned)})"
+    out["pruned"] = pruned
+    out["git"] = _pin_and_commit(vault, message, CHUNK)
+    out["action"] = "snapshot"
+    return out
+
+
 def resolve_snapshot(vault: Vault, name: str) -> Path:
     """The file a snapshot name refers to. Accepts the stem or the filename."""
     stem = name[:-len(PLAIN_EXT)] if name.endswith(PLAIN_EXT) else name
