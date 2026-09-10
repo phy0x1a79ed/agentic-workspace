@@ -62,6 +62,20 @@ KEY = os.environ.get("ZOTERO_API_KEY", "").strip()
 #: thing to get wrong.
 USER = os.environ.get("ZOTERO_USER", "").strip()
 
+#: What the bundle and every note in the vault call the personal library.
+#:
+#: **Not the account number, and that is a migration rather than a preference.**
+#: The desktop's copy of this interface numbers the signed-in user `0`, because
+#: locally there is only one. Every note this mirror has ever written carries
+#: `#zoteroKey=users/0/<key>`, and the bundle identifies its items the same way.
+#: Switching to the account's real number would change the identity of all 823
+#: of them at once: the pass would find no note for any new reference, create a
+#: second copy of the whole library, and then delete the first for being absent.
+#:
+#: So `users/0` stays the name, and the number appears only in a URL. Groups
+#: need none of this — a group is numbered the same by both.
+PERSONAL = "users/0"
+
 #: Whether to mirror the group libraries as well as the personal one.
 #:
 #: On by default, and that default is load-bearing rather than generous. On this
@@ -251,14 +265,25 @@ def user() -> str:
 
 
 def personal() -> str:
-    return f"users/{user()}"
+    """The personal library's name, which is not its address. See `PERSONAL`."""
+    return PERSONAL
+
+
+def path_of(library: str) -> str:
+    """Where a library is reached, given what it is called.
+
+    The one place the two spellings meet. Everything above this works in names
+    so that a name can go on a note and stay put; everything below works in
+    addresses so that a request can be made.
+    """
+    return f"users/{user()}" if library == PERSONAL else library
 
 
 def groups() -> list[dict]:
     """The shared libraries this account is a member of."""
     if not GROUPS:
         return []
-    got = _checked(_get(f"/{personal()}/groups", {"limit": 100}), "groups")
+    got = _checked(_get(f"/{path_of(PERSONAL)}/groups", {"limit": 100}), "groups")
     return [{"id": f"groups/{g['id']}",
              "name": (g.get("data") or {}).get("name") or str(g["id"])}
             for g in got.json() or []]
@@ -272,7 +297,7 @@ def libraries() -> list[dict]:
 def library_version(library: str | None = None) -> int:
     """Where one library is now. One request, and the whole cost of a tick that
     has nothing to do."""
-    got = _checked(_get(f"/{library or personal()}/items", {"limit": 1}),
+    got = _checked(_get(f"/{path_of(library or PERSONAL)}/items", {"limit": 1}),
                    "library version")
     return int(got.headers.get("last-modified-version") or 0)
 
@@ -304,7 +329,7 @@ def _paged(path: str, params: dict[str, Any] | None = None) -> Iterator[dict]:
 def collections(library: str | None = None,
                 since: int | None = None) -> list[dict]:
     params = {"since": since} if since else {}
-    return list(_paged(f"/{library or personal()}/collections", params))
+    return list(_paged(f"/{path_of(library or PERSONAL)}/collections", params))
 
 
 def items(library: str | None = None, since: int | None = None) -> list[dict]:
@@ -320,4 +345,4 @@ def items(library: str | None = None, since: int | None = None) -> list[dict]:
     limitation here, and it is why nothing tries to read a desktop sooner.
     """
     params = {"since": since} if since else {}
-    return list(_paged(f"/{library or personal()}/items", params))
+    return list(_paged(f"/{path_of(library or PERSONAL)}/items", params))

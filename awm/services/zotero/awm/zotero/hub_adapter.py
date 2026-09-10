@@ -30,13 +30,22 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.zotero import bundle as bundle_mod
-from awm.zotero import source, sync, vault
+from awm.zotero import source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")
 
-#: How often the timer looks. Twenty minutes, because the answer is one request
-#: when nothing has changed and a person adding a paper is not waiting on it.
+#: How often the timer looks, and it is now a floor rather than the mechanism.
+#: The stream is what makes a saved paper appear in seconds; this catches what a
+#: stream cannot — a subscription lost behind a healthy socket, a note somebody
+#: hand-edited, anything that happened while the service was down.
 INTERVAL_S = float(os.environ.get("ZOTERO_SYNC_INTERVAL_S", "1200"))
+
+#: How long to wait after being told a library moved, before reading it.
+#:
+#: Several libraries can move together and a save is more than one write, so a
+#: pass fired on the first frame reads a library mid-change and then has to be
+#: told again. Waiting a moment collapses a burst into one pass.
+SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "2"))
 
 #: Whether the timer runs at all. Off on a node that cannot reach the library,
 #: where every tick would be a logged failure saying so.
@@ -130,8 +139,9 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-#: What the last tick did, so `status` can answer without running one.
-LAST: dict[str, Any] = {"tick": None, "result": None, "error": None}
+#: What the last pass did, so `status` can answer without running one.
+LAST: dict[str, Any] = {"tick": None, "result": None, "error": None,
+                        "told": None}
 
 
 def _operator_only(as_: str | None, verb: str) -> None:
@@ -183,6 +193,7 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
             out["behind"] = any(have.get(lib) != v for lib, v
                                 in out["library"]["versions"].items())
     out["scheduled"] = {"enabled": SCHEDULED, "interval_s": INTERVAL_S}
+    out["stream"] = STREAM.health
     return out
 
 
@@ -219,6 +230,57 @@ HANDLERS = {
 }
 
 
+#: Set when the stream says a library moved. An event rather than a queue: what
+#: matters is that something changed, not how many times, and a pass reads
+#: whatever has moved by the time it runs.
+WOKEN = asyncio.Event()
+
+STREAM = stream_mod.Stream(
+    lambda library, version: _woken(library, version))
+
+
+async def _woken(library: str, version: int) -> None:
+    """What the stream calls. Deliberately does almost nothing.
+
+    The stream must keep reading its socket while a pass runs, or a change that
+    lands during a long apply is never delivered. So this sets a flag and
+    returns, and the worker below does the work.
+    """
+    LAST["told"] = {"library": library, "version": version,
+                    "at": sync._now()}
+    WOKEN.set()
+
+
+async def _push_loop() -> None:
+    """Sync when the stream says to. Never exits.
+
+    One pass at a time, and the flag is cleared *before* the pass rather than
+    after: a change arriving while a pass is running must leave the flag set, so
+    the next turn of this loop picks it up instead of the pass swallowing it.
+    """
+    log.info("zotero: push loop started (settle=%ss)", SETTLE_S)
+    while True:
+        try:
+            await WOKEN.wait()
+            await asyncio.sleep(SETTLE_S)
+            WOKEN.clear()
+            LAST["tick"] = "push"
+            try:
+                LAST["result"] = await _h_sync({}, None)
+                LAST["error"] = None
+            except source.ZoteroUnavailable as e:
+                LAST["error"] = str(e)[:300]
+                log.info("zotero: library not reachable on this push: %s", e)
+            except sync.Busy:
+                # The floor is mid-pass. It reads whatever moved anyway, so
+                # this one has nothing to add.
+                log.info("zotero: a sync was already running; leaving it to it")
+        except Exception:  # noqa: BLE001 — never let the loop die
+            LAST["error"] = "push pass failed; see the log"
+            log.exception("zotero: push pass failed")
+            await asyncio.sleep(5)
+
+
 async def _sync_loop() -> None:
     """Sync on a timer. Never exits.
 
@@ -227,14 +289,14 @@ async def _sync_loop() -> None:
     unreachable library is logged at info and waited out: it means the desktop
     is off, which is not something to escalate every twenty minutes.
     """
-    log.info("zotero: sync loop started (interval=%ss, enabled=%s)",
+    log.info("zotero: floor loop started (interval=%ss, enabled=%s)",
              INTERVAL_S, SCHEDULED)
     while True:
         try:
             await asyncio.sleep(INTERVAL_S)
             if not SCHEDULED:
                 continue
-            LAST["tick"] = asyncio.get_running_loop().time()
+            LAST["tick"] = "floor"
             try:
                 LAST["result"] = await _h_sync({}, None)
                 LAST["error"] = None
@@ -265,6 +327,8 @@ async def _on_start() -> None:
         # failed initialisation and the gateway then reaps the service.
         log.warning("zotero: no readable bundle at %s yet", b.root)
     spawn_supervised("zotero:sync", _sync_loop)
+    spawn_supervised("zotero:push", _push_loop)
+    spawn_supervised("zotero:stream", STREAM.run)
 
 
 async def main() -> None:
