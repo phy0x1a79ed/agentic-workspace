@@ -74,7 +74,10 @@ def library_of(topic: str) -> str:
     """
     parts = [p for p in (topic or "").split("/") if p]
     if len(parts) == 2 and parts[0] in ("users", "groups"):
-        return f"{parts[0]}/{parts[1]}"
+        # Named, not addressed. A topic carries the account's number and the
+        # rest of this service calls the personal library `users/0`, so
+        # reporting the topic verbatim would give the same library two names.
+        return source.name_of(f"{parts[0]}/{parts[1]}")
     return ""
 
 

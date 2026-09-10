@@ -269,6 +269,29 @@ def personal() -> str:
     return PERSONAL
 
 
+def name_of(path: str) -> str:
+    """What a library is called, given the address something used for it.
+
+    The inverse of `path_of`, and it exists because the event stream names its
+    topics by address. Without it the stream reports the personal library under
+    a name nothing else in this service uses, and anything that ever keys off
+    that name silently matches nothing.
+    """
+    if not path.startswith("users/"):
+        # A group is numbered the same by both, so this answers without asking
+        # anybody anything. That matters: this is called from the event stream,
+        # which can deliver a frame before the first request has been made.
+        return path
+    try:
+        mine = user()
+    except (ZoteroError, ZoteroUnavailable):
+        # The account is not known yet and this is a naming question, not a
+        # reason to fail. The address is a worse name than `users/0` and a
+        # perfectly correct one.
+        return path
+    return PERSONAL if path == f"users/{mine}" else path
+
+
 def path_of(library: str) -> str:
     """Where a library is reached, given what it is called.
 
