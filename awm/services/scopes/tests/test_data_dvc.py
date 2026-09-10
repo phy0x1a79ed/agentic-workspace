@@ -358,3 +358,135 @@ class TestWiring:
         assert Path(str(dd.cache_dir())).is_absolute()
         # DVC gitignores config.local itself, which is why it is the right home.
         assert _git(wt, "check-ignore", ".dvc/config.local").strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# collect_garbage — the only verb here that can destroy data
+# ---------------------------------------------------------------------------
+
+class TestCollectGarbage:
+    """Three defects that only compound.
+
+    Each was reproduced against real dvc before these tests existed:
+    a repeated ``-p`` kept one repo of sixty, the working directory decided
+    which cache got collected, and naming that directory in its own projects
+    list deadlocked the run against itself.
+    """
+
+    def _repos(self, tmp_path, shared, *, wired: list[str], private: list[str]):
+        """Bare DVC repos, some pointed at ``shared`` and some left unprovisioned."""
+        made = {}
+        for name in [*wired, *private]:
+            r = tmp_path / name
+            r.mkdir(parents=True)
+            _sh("git", "init", "-q", "-b", "main", str(r))
+            _git(r, "config", "user.email", "t@t")
+            _git(r, "config", "user.name", "t")
+            _sh(dd.dvc_bin(), "init", "-q", cwd=str(r))
+            if name in wired:
+                (r / ".dvc" / "config.local").write_text(
+                    f"[cache]\n    dir = {shared}\n")
+            _git(r, "add", "-A")
+            _git(r, "commit", "-q", "-m", name)
+            made[name] = r
+        return made
+
+    @needs_dvc
+    def test_one_projects_flag_carries_every_path(self, tmp_path, monkeypatch):
+        """`-p` is nargs="*", so a repeated flag OVERWRITES.
+
+        Passing one flag per repo kept only the last, and every other named
+        worktree silently left the keep set — i.e. became garbage. The captured
+        argv is the assertion because the damage is invisible in the result.
+        """
+        shared = tmp_path / "cache"
+        shared.mkdir()
+        monkeypatch.setattr(dd, "cache_dir", lambda: shared)
+        repos = self._repos(tmp_path, shared, wired=["a", "b", "c"], private=[])
+
+        seen = {}
+        real_dvc = dd._dvc
+
+        def fake_dvc(repo, *args, **kw):
+            # Intercept only the collection; `cache dir` must stay real, since
+            # choosing the working directory depends on its answer.
+            if args and args[0] == "gc":
+                seen["cwd"] = repo
+                seen["args"] = list(args)
+                import subprocess as sp
+                return sp.CompletedProcess([], 0, "", "")
+            return real_dvc(repo, *args, **kw)
+
+        monkeypatch.setattr(dd, "_dvc", fake_dvc)
+        dd.collect_garbage([repos["a"], repos["b"], repos["c"]], dry_run=True)
+
+        assert seen["args"].count("-p") == 1, "one flag, or repos silently drop out"
+        tail = seen["args"][seen["args"].index("-p") + 1:]
+        listed = [t for t in tail if not t.startswith("--")]
+        # cwd repo is deliberately absent from -p; the other two must be there.
+        assert len(listed) == 2
+        assert str(seen["cwd"]) not in listed
+
+    @needs_dvc
+    def test_working_directory_repo_is_not_named_in_projects(self, tmp_path, monkeypatch):
+        """DVC locks the cwd repo AND every listed repo.
+
+        Naming the cwd repo in its own projects list takes one lock twice and
+        aborts with "Unable to acquire lock" — with no other dvc process alive.
+        This is a real run, not a stub, because the deadlock is the point.
+        """
+        shared = tmp_path / "cache"
+        shared.mkdir()
+        monkeypatch.setattr(dd, "cache_dir", lambda: shared)
+        repos = self._repos(tmp_path, shared, wired=["a", "b"], private=[])
+        rep = dd.collect_garbage([repos["a"], repos["b"]], dry_run=True)
+        assert rep["result"] == "ok", rep.get("output")
+        assert "Unable to acquire lock" not in (rep.get("output") or "")
+
+    @needs_dvc
+    def test_runs_from_a_worktree_on_the_shared_cache(self, tmp_path, monkeypatch):
+        """The cwd decides which cache is collected, so it is chosen, not inherited.
+
+        ``data_gc`` sorts each project's worktrees, so ``repos[0]`` was an
+        alphabetical accident. Here the first-sorted repo resolves to a private
+        cache; picking it would collect that one and report the shared path.
+        """
+        shared = tmp_path / "cache"
+        shared.mkdir()
+        monkeypatch.setattr(dd, "cache_dir", lambda: shared)
+        repos = self._repos(tmp_path, shared, wired=["bbb"], private=["aaa"])
+        rep = dd.collect_garbage([repos["aaa"], repos["bbb"]], dry_run=True)
+
+        assert rep["cwd"] == str(repos["bbb"]), "must skip the private-cache repo"
+        assert rep["cache"] == str(shared)
+        # The unwired one is reported, not refused: DVC unions used-object
+        # hashes across every named repo, so it still protects its own content.
+        assert [e["repo"] for e in rep["resolved_elsewhere"]] == [str(repos["aaa"])]
+
+    @needs_dvc
+    def test_refuses_when_nothing_resolves_to_the_shared_cache(self, tmp_path, monkeypatch):
+        """A run that cannot reach the shared cache must say so, not report success."""
+        shared = tmp_path / "cache"
+        shared.mkdir()
+        monkeypatch.setattr(dd, "cache_dir", lambda: shared)
+        repos = self._repos(tmp_path, shared, wired=[], private=["aaa", "bbb"])
+        rep = dd.collect_garbage([repos["aaa"], repos["bbb"]], dry_run=True)
+
+        assert rep["result"] == "refused"
+        assert "shared" in rep["detail"]
+        assert len(rep["resolved_elsewhere"]) == 2
+
+    @needs_dvc
+    def test_resolved_cache_reports_what_dvc_actually_uses(self, tmp_path, monkeypatch):
+        """A worktree awm never provisioned resolves to its own cache, silently."""
+        shared = tmp_path / "cache"
+        shared.mkdir()
+        monkeypatch.setattr(dd, "cache_dir", lambda: shared)
+        repos = self._repos(tmp_path, shared, wired=["w"], private=["p"])
+        assert dd.resolved_cache(repos["w"]).resolve() == shared.resolve()
+        assert dd.resolved_cache(repos["p"]).resolve() != shared.resolve()
+
+    def test_still_refuses_an_empty_repo_list(self, scopes_workspace):
+        """The plural argument is the guard; an empty set keeps nothing."""
+        rep = dd.collect_garbage([], dry_run=True)
+        assert rep["result"] in ("refused", "unavailable")

@@ -37,7 +37,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from awm import config
-from awm.gateway import mcp_caller
+from awm.gateway import mcp_caller, mcp_http
 from awm.gateway._path import resolve_bin
 
 server = Server("awm")
@@ -72,7 +72,8 @@ async def list_tools() -> list[Tool]:
     background snapshot, so this is one loopback GET.
     """
     data = await _request_with_retry(
-        "GET", "/tools", params={"view": "domains", "peers": "1"})
+        "GET", "/tools", params={"view": "domains", "peers": "1"},
+        read_timeout=mcp_http.catalog_read_timeout())
     return [Tool.model_validate(t) for t in data["tools"]]
 
 
@@ -148,6 +149,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if isinstance(detail, dict):
             return [TextContent(type="text", text=json.dumps(detail))]
         return [TextContent(type="text", text=json.dumps({"error": detail}))]
+    except mcp_http.CoreNoReply as e:
+        # Delivered but unanswered. Composed here because this is where the tool
+        # and verb are known; the helper only knows it waited.
+        env = mcp_http.no_reply_envelope(name, arguments.get("verb"), e.waited_s)
+        return [TextContent(type="text", text=json.dumps(env))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
 
@@ -160,21 +166,32 @@ async def _request_with_retry(
     method: str,
     path: str,
     json_body: dict | None = None,
-    max_wait: float = 10.0,
+    max_wait: float = mcp_http.RECONNECT_WINDOW,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    read_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Make an HTTP request to the local awm daemon, reconnecting across
     restarts.
 
-    On a transport error the first attempt nudges systemd to start the
-    daemon, then we retry for up to ``max_wait`` seconds so the caller's
-    request transparently survives a ``systemctl restart``.
+    The phase split of :mod:`awm.gateway.mcp_stdio` — see
+    :mod:`awm.gateway.mcp_http` for why the reconnect window and the read
+    ceiling are different questions. httpx names the phases directly, so the
+    classification is explicit rather than inherited from exception ancestry.
+
+    This is the rollback proxy and it had drifted: ``httpx.ReadTimeout`` was in
+    neither branch, so an unanswered request escaped this helper entirely and
+    reached the caller as ``{"error": ""}`` — httpx gives a ReadTimeout an empty
+    message. Same bug as the default proxy's, presenting with no message at all.
     """
-    deadline = time.monotonic() + max_wait
+    if read_timeout is None:
+        read_timeout = mcp_http.read_timeout()
+    started = time.monotonic()
+    deadline = started + max_wait
     last_err: Exception | None = None
     first_attempt = True
-    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=60.0) as client:
+    tmo = httpx.Timeout(read_timeout, connect=10.0)
+    async with httpx.AsyncClient(base_url=config.BASE_URL, timeout=tmo) as client:
         while time.monotonic() < deadline:
             try:
                 r = await client.request(method, path, json=json_body,
@@ -183,13 +200,25 @@ async def _request_with_retry(
                 return r.json()
             except httpx.HTTPStatusError:
                 raise
-            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
+            except (httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                # Response phase: delivered (or mid-delivery), unanswered. Never
+                # retried — see the non-idempotency argument in mcp_http. A
+                # WriteTimeout on a small loopback body is near-impossible, and
+                # is grouped here deliberately: a half-sent request that MIGHT
+                # have landed is safer to re-check than to replay.
+                raise mcp_http.CoreNoReply(
+                    time.monotonic() - started, path) from e
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+                    httpx.ReadError, httpx.RemoteProtocolError) as e:
+                # Connect phase — PoolTimeout included: no connection was ever
+                # handed out, so nothing was sent and replay is safe.
                 last_err = e
                 if first_attempt:
                     _ensure_core_running()
                     first_attempt = False
                 await asyncio.sleep(0.3)
-    raise RuntimeError(f"awm daemon unreachable after {max_wait}s: {last_err}")
+    raise mcp_http.CoreUnreachable(
+        f"awm daemon unreachable after {max_wait}s: {last_err}")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +249,9 @@ async def _peer_invoke(peer_name: str, base_name: str, arguments: dict,
         headers = {"Authorization": f"Bearer {bearer}"}
         if as_:
             headers["X-Awm-As"] = as_
-        async with httpx.AsyncClient(timeout=60.0, verify=ca) as cli:
+        # Same ladder as the loopback path; only the connect leg stays short.
+        ptmo = httpx.Timeout(mcp_http.read_timeout(), connect=10.0)
+        async with httpx.AsyncClient(timeout=ptmo, verify=ca) as cli:
             resp = await cli.post(f"{edge}/invoke",
                                   json={"name": base_name, "args": arguments},
                                   headers=headers)
