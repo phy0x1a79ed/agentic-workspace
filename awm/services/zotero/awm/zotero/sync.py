@@ -36,7 +36,7 @@ log = logging.getLogger("awm.zotero.sync")
 VAULT_SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE")
                    or (Path(os.environ.get("AWM_WORKSPACE",
                                            Path.home() / "agentic_workspace"))
-                       / "projects" / "vault" / "main"))
+                       / "projects" / "trilium" / "release"))
 
 #: Where the library lands in the vault. One note, and everything under it.
 LIBRARY_NOTE = os.environ.get("ZOTERO_LIBRARY_NOTE", "Library")
@@ -321,7 +321,7 @@ def destination_parts(destination: str) -> tuple[str, str]:
         raise ValueError(
             f"ship destination {destination!r} is not host:/path — it names "
             f"the vault scope on the far node, e.g. "
-            f"sirius:/var/lib/awm/projects/vault/main")
+            f"sirius:/var/lib/awm/projects/trilium/release")
     return host, remote_scope
 
 
@@ -340,8 +340,8 @@ def ship(destination: str, scope: Path | None = None) -> dict[str, Any]:
 
     `destination` is `host:/path/to/vault/scope` — the far node's vault scope,
     which is where that node's own bundle reader already looks. Spelled in full
-    rather than derived, because the scope's directory is named per host and a
-    guess that is wrong writes a library somewhere nobody reads.
+    rather than derived, because a far node's workspace root is not this one's
+    and a guess that is wrong writes a library somewhere nobody reads.
     """
     host, remote_scope = destination_parts(destination)
     with exclusive(scope) as b:

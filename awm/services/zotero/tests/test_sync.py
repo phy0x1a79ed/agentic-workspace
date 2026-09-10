@@ -131,7 +131,7 @@ def test_a_second_apply_writes_nothing(scope):
     sync.apply(v, scope)
     v.calls.clear()
     sync.apply(v, scope)
-    assert "create" not in v.calls
+    assert "create" not in v.verbs
     assert not any(v.update(nid, title=n["title"], content=n["content"])
                    for nid, n in list(v.notes.items()))
 
@@ -481,7 +481,7 @@ def test_a_second_apply_of_an_unchanged_bundle_writes_nothing_at_all(scope):
     v.calls.clear()
     out = sync.apply(v, scope)
     assert out["skipped"] is True
-    assert [c for c in v.calls if c in ("create", "update", "delete",
+    assert [c for c in v.verbs if c in ("create", "update", "delete",
                                         "place", "attach", "ensure")] == []
 
 
@@ -543,12 +543,13 @@ def test_ship_sends_only_the_library_json_through_a_sudo_rsync(scope, monkeypatc
         return subprocess.CompletedProcess(argv, 0, "", "")
     monkeypatch.setattr(sync, "_run", fake_run)
 
-    out = sync.ship("sirius:/var/lib/awm/projects/vault/main", scope)
+    out = sync.ship("sirius:/var/lib/awm/projects/trilium/release", scope)
     argv = seen[-1][0]
     assert argv[0] == "rsync"
     assert "--rsync-path=sudo -n -u awm rsync" in argv
     assert argv[-2].endswith("library.json")
-    assert argv[-1] == "sirius:/var/lib/awm/projects/vault/main/data/zotero/"
+    assert argv[-1] == ("sirius:/var/lib/awm/projects/trilium/release"
+                       "/data/vault/zotero/")
     assert not any("files" in a for a in argv)
     assert out["shipped"] is True
 
@@ -575,7 +576,7 @@ def test_ship_feeds_the_remote_shell_on_stdin_rather_than_as_an_argument(scope,
     sync.ship("sirius:/vault", scope)
     argv, stdin = seen[0]
     assert argv == ["ssh", "sirius", "sudo -n -u awm bash -s"]
-    assert "&&" in stdin and "mkdir -p /vault/data/zotero" in stdin
+    assert "&&" in stdin and "mkdir -p /vault/data/vault/zotero" in stdin
 
 
 def test_ship_holds_the_lock(scope):
