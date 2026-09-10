@@ -62,7 +62,7 @@ API_MANIFEST: dict[str, Any] = {
                 {"name": "cwd", "type": "string", "required": True,
                  "description": "The directory to move the session to."},
             ],
-            "timeout": 8,
+            "timeout": 9,
         },
         {
             "name": "seed",

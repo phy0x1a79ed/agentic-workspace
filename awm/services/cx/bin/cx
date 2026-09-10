@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# cx — start Claude Code, warm if the pool has something and cold if it does not.
+#
+# Ask the gateway for a session, then hand the terminal to Claude Code and get
+# out of the way. Both branches end in `exec`, so once Claude Code is running
+# there is no process of this tooling left anywhere in the tree: no wrapper
+# shell, no watcher, no backgrounded reconcile. Ctrl+Z, Ctrl+C and the left
+# arrow therefore do exactly what the vendor documents, because nothing here is
+# still around to interfere with them.
+#
+# CAUTION: the `exec` is why this is a script and not a shell function. A
+# function would replace the interactive shell, and the terminal would close
+# when Claude Code exits.
+#
+# Every rung falls through to a plain launch: no gateway, a refused connection,
+# no service, an error envelope, an empty id, or a read that runs out of time.
+# `cx` must never leave you without a session, so nothing here is fatal.
+
+CX_CLAUDE=${CX_CLAUDE:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}
+CX_MODEL=${CX_MODEL:-'sonnet[1m]'}
+CX_EFFORT=${CX_EFFORT:-medium}
+CX_PORT=${AWM_PORT:-7819}
+# A claim answers in about a fifth of a second on an idle box and a few seconds
+# on a loaded one. This has to sit above the service's own nine-second budget so
+# a slow answer arrives rather than being cut off here, and it is only ever
+# spent on a gateway that is listening and not replying — a gateway that is down
+# refuses the connection at once.
+CX_WAIT=${CX_WAIT:-10}
+
+cold() {
+  exec env ANTHROPIC_MODEL="$CX_MODEL" "$CX_CLAUDE" \
+    --dangerously-skip-permissions --allow-dangerously-skip-permissions \
+    --effort "$CX_EFFORT" "$@"
+}
+
+# Arguments mean the caller wants something specific, and a pipe is not a
+# terminal to attach to. Either way the pool has nothing to offer.
+[ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ] || cold "$@"
+
+claim() {
+  local dir body line resp=""
+  dir=${PWD//\\/\\\\}
+  dir=${dir//\"/\\\"}
+  body="{\"cwd\":\"$dir\"}"
+  # Grouped so the redirection failure is reported into /dev/null. Bash
+  # writes a bare `exec 3<>... : Connection refused` to the shell's own
+  # stderr otherwise, and a refused gateway must be silent.
+  { exec 3<>"/dev/tcp/127.0.0.1/$CX_PORT"; } 2>/dev/null || return 1
+  printf 'POST /svc/cx/fn/claim HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+    "${#body}" "$body" >&3 2>/dev/null || { exec 3<&-; return 1; }
+  # The first read waits out the claim itself; the rest are already in flight.
+  IFS= read -r -t "$CX_WAIT" -u 3 line || { exec 3<&-; return 1; }
+  resp=$line
+  while IFS= read -r -t 1 -u 3 line; do resp+=$line; done
+  # The body is the last line and carries no newline, so the read that consumed
+  # it reported failure. Dropping `line` here drops the whole answer.
+  resp+=$line
+  exec 3<&- 3>&-
+  [[ $resp =~ \"session\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9]+)\" ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+id=$(claim) && [ -n "$id" ] && exec "$CX_CLAUDE" attach "$id"
+cold

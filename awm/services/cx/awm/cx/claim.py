@@ -32,7 +32,15 @@ log = logging.getLogger("awm.cx.claim")
 #: beats are the difference between a claim that sits in front of an attach and
 #: one you notice.
 SETTLE_S = 0.05
-MOVE_TIMEOUT_S = 3.0
+
+#: How long to wait for a move to land before giving up on it.
+#:
+#: Generous on purpose. Once `/cd` has been typed the session is committed, so
+#: giving up early costs the warm session *and* still pays for the cold launch
+#: that follows. On an idle box a move lands in about 200ms; on this one under a
+#: load average of 25 it took 1.8s, and the load that makes a move slow makes a
+#: cold launch slow too.
+MOVE_TIMEOUT_S = 6.0
 POLL_S = 0.02
 
 
@@ -60,14 +68,16 @@ async def claim(cwd: str) -> dict[str, Any]:
             await asyncio.to_thread(_type_cd, s, want)
         except claudedaemon.DaemonError as exc:
             return _miss(f"{s.short} would not take the move: {exc}")
+        typed = time.monotonic()
         if not await _arrived(s.short, want):
             await asyncio.to_thread(_abandon, s)
             return _miss(f"{s.short} did not reach {want} in time")
         settled = _recheck(s.short, want)
         if settled is None:
             return _miss(f"{s.short} was taken while we were moving it")
-        log.info("cx: %s claimed %s in %.0fms", want, s.short,
-                 (time.monotonic() - started) * 1000)
+        log.info("cx: %s claimed %s in %.0fms (typing %.0fms, landing %.0fms)",
+                 want, s.short, (time.monotonic() - started) * 1000,
+                 (typed - started) * 1000, (time.monotonic() - typed) * 1000)
         return {"session": s.short, "cwd": want}
 
 
