@@ -156,3 +156,34 @@ def test_the_transient_unit_never_kills_its_own_control_group(monkeypatch):
         return
     assert "--property=KillMode=process" in argv
     assert argv[argv.index("--") + 1].endswith("claude")
+
+
+def test_the_removal_plan_holds_only_the_session_nobody_can_reach(box):
+    """The one case removal exists for, and nothing else on a live box."""
+    from awm.cx import remove
+
+    items = remove.plan(now=_now_for(box))
+    assert [i["session"] for i in items] == ["strandeddead"]
+    assert items[0]["why"] == "the process is gone"
+
+
+def test_the_removal_plan_is_empty_while_every_session_is_alive(box, monkeypatch):
+    from awm.cx import remove, sessions
+
+    # Drop the corpse and nothing is left to collect: the adopted session is
+    # renamed, the stranded one was claimed, and the fresh one is in use.
+    import json
+    roster = box / "daemon" / "roster.json"
+    data = json.loads(roster.read_text())
+    del data["workers"]["strandeddead"]
+    roster.write_text(json.dumps(data))
+    assert remove.plan(now=_now_for(box)) == []
+
+
+def _now_for(box) -> float:
+    """A clock reading a minute after the newest captured session started."""
+    import json
+
+    roster = json.loads((box / "daemon" / "roster.json").read_text())
+    newest = max(w["startedAt"] for w in roster["workers"].values())
+    return newest / 1000.0 + 60.0

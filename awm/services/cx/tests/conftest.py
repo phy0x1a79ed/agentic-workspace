@@ -17,6 +17,9 @@ import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures" / "box"
 
+#: The version the captured sessions were seeded by.
+VERSION = "2.1.268"
+
 
 def _own_proc_start() -> str:
     with open("/proc/self/stat") as fh:
@@ -40,6 +43,12 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setenv("AWM_CX_ROSTER", str(roster))
     monkeypatch.setenv("AWM_CX_JOBS", str(root / "jobs"))
     monkeypatch.setenv("AWM_CX_STATE", str(root / "cx"))
+    # The pool reads the binary's version off the symlink rather than by running
+    # it, so a symlink into a directory named for a version is the whole fake.
+    (root / "versions" / VERSION).mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "claude").symlink_to(root / "versions" / VERSION)
+    monkeypatch.setenv("AWM_CX_CLAUDE", str(root / "bin" / "claude"))
     return root
 
 

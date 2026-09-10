@@ -21,11 +21,13 @@ import asyncio
 import logging
 from typing import Any
 
-from awm.gatewayclient import ServiceAdapter
+from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import pool, seed
+from awm.cx import pool, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
+
+LOOP = reconcile.Loop()
 
 API_MANIFEST: dict[str, Any] = {
     "description": (
@@ -61,10 +63,41 @@ API_MANIFEST: dict[str, Any] = {
             "params": [],
             "timeout": 60,
         },
+        {
+            "name": "remove",
+            "tool": "cx_remove",
+            "description": (
+                "List the sessions this service may delete, with the reason "
+                "each one qualifies. Deletes nothing unless `apply` is true. "
+                "A session that has been renamed, prompted, or claimed and is "
+                "still alive never appears here: once somebody has taken a "
+                "session it is theirs, and the pool waits for the daemon's own "
+                "retirement instead."
+            ),
+            "params": [
+                {"name": "apply", "type": "boolean",
+                 "description": "Carry out the plan (default false)."},
+            ],
+            "timeout": 120,
+        },
     ],
     "emitters": [],
     "sessions": [],
 }
+
+def _on_start() -> None:
+    """Start the reconcile loop, unless this process must not own the pool.
+
+    Through `spawn_supervised` so a loop that dies on its first line is logged
+    and respawned, rather than leaving the service registered and healthy with
+    the warm session silently absent.
+    """
+    why = LOOP.enabled()
+    if why:
+        log.info("cx: not reconciling — %s", why)
+        return
+    spawn_supervised("cx.reconcile", LOOP.run)
+
 
 async def _seed(args: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -73,9 +106,16 @@ async def _seed(args: dict[str, Any]) -> dict[str, Any]:
         return {"session": None, "refused": str(exc)}
 
 
+async def _remove(args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("apply"):
+        return {"applied": await remove.apply()}
+    return {"plan": remove.plan()}
+
+
 HANDLERS: dict[str, Any] = {
-    "status": lambda args: pool.status(),
+    "status": lambda args: pool.status(LOOP),
     "seed": _seed,
+    "remove": _remove,
 }
 
 
@@ -84,7 +124,8 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await ServiceAdapter("cx", API_MANIFEST, HANDLERS).run()
+    await ServiceAdapter("cx", API_MANIFEST, HANDLERS,
+                         on_start=_on_start).run()
 
 
 if __name__ == "__main__":
