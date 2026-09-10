@@ -23,7 +23,7 @@ from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
-from awm.cx import pool, reconcile, remove, seed
+from awm.cx import claim, pool, reconcile, remove, seed
 
 log = logging.getLogger("awm.cx.hub_adapter")
 
@@ -48,6 +48,21 @@ API_MANIFEST: dict[str, Any] = {
                 "and when its last tick ran."
             ),
             "params": [],
+        },
+        {
+            "name": "claim",
+            "tool": "cx_claim",
+            "description": (
+                "Take the warm session, move it to `cwd`, and return its id for "
+                "`claude attach`. An empty id means there was nothing warm, "
+                "which the caller answers with an ordinary cold launch. This is "
+                "what the `cx` command calls; a person has no reason to."
+            ),
+            "params": [
+                {"name": "cwd", "type": "string", "required": True,
+                 "description": "The directory to move the session to."},
+            ],
+            "timeout": 8,
         },
         {
             "name": "seed",
@@ -112,8 +127,18 @@ async def _remove(args: dict[str, Any]) -> dict[str, Any]:
     return {"plan": remove.plan()}
 
 
+async def _claim(args: dict[str, Any]) -> dict[str, Any]:
+    out = await claim.claim(args.get("cwd") or "")
+    if out.get("session"):
+        # Seed the replacement while the caller is still starting up, rather
+        # than up to a tick later.
+        LOOP.kick()
+    return out
+
+
 HANDLERS: dict[str, Any] = {
     "status": lambda args: pool.status(LOOP),
+    "claim": _claim,
     "seed": _seed,
     "remove": _remove,
 }

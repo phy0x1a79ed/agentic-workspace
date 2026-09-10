@@ -8,10 +8,19 @@ half that goes stale. "The warm session" is whichever claimable one is newest.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
 from awm.cx import config, sessions
+
+#: Serialises a claim against the removal half of a reconcile tick.
+#: Both run in this one process and this one event loop, so an
+#: in-process lock is the whole of the mutual exclusion. Two claims
+#: arriving together take it in turn: the first moves the session,
+#: which stamps its origin directory, and the second then finds
+#: nothing claimable and answers with a miss.
+LOCK = asyncio.Lock()
 
 
 def warm(all_sessions: list[sessions.Session], *, version: str | None,

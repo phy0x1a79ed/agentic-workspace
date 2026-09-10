@@ -92,7 +92,11 @@ class Loop:
         have = len(pool.warm(sessions.load(), version=version))
         if have < config.want():
             await self._seed()
-        for item in await remove.apply():
+        # Under the pool lock so a claim in flight cannot have its session
+        # deleted out from under it between the move and the reply.
+        async with pool.LOCK:
+            done = await remove.apply()
+        for item in done:
             log.info("cx: %s %s (%s)", "removed" if item["removed"] else "kept",
                      item["session"], item["why"])
         self._last_tick = time.time()

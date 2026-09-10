@@ -48,6 +48,7 @@ class Session:
     cli_version: str | None
     pty_sock: str | None
     pty_auth: str | None
+    dec_modes: tuple[int, ...]
     session_id: str | None
     source: str | None
     seed_name: str | None
@@ -215,6 +216,8 @@ def _build(short: str, w: dict) -> Session:
         cli_version=_as_str(w.get("cliVersion")),
         pty_sock=_as_str(w.get("ptySock")),
         pty_auth=_as_str(w.get("ptyAuth")),
+        dec_modes=tuple(m for m in (w.get("decModes") or [])
+                        if isinstance(m, int)),
         session_id=_as_str(w.get("sessionId")),
         source=_as_str(dispatch.get("source")),
         seed_name=_as_str(seed.get("name")),
