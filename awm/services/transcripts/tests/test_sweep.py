@@ -194,3 +194,28 @@ def test_a_session_a_process_still_holds_is_never_swept(tree, monkeypatch):
 
     assert result["sessions"] == 0
     assert (projects / "proj" / "parked.jsonl").exists()
+
+
+def test_a_file_that_vanishes_mid_walk_does_not_abort_the_session(tree,
+                                                                  monkeypatch):
+    """Claude Code writes into these trees while the sweep runs."""
+    projects, archive = tree
+    make_session(projects, "proj", "sess", age_days=30)
+    real = sweep._gzip_into
+    seen = []
+
+    def flaky(src, dest):
+        seen.append(src)
+        if src.name == "out.txt":
+            src.unlink()
+            raise FileNotFoundError(2, "No such file or directory", str(src))
+        return real(src, dest)
+
+    monkeypatch.setattr(sweep, "_gzip_into", flaky)
+    result = sweep.archive(days=7)
+
+    assert result["sessions"] == 1
+    assert result["vanished"] == 1
+    assert not (projects / "proj" / "sess").exists()
+    assert (archive / "proj" / "sess.jsonl.gz").exists()
+    assert (archive / "proj" / "sess" / "subagents" / "a.jsonl.gz").exists()

@@ -89,24 +89,39 @@ def _carry_mtime(src: Path, dest: Path) -> None:
 
 
 def archive_one(s: Session, *, dry_run: bool = False) -> dict:
-    """Archive one session's transcript and sidecar together."""
+    """Archive one session's transcript and sidecar together.
+
+    A file that disappears between the directory listing and the copy is
+    skipped rather than raised on. ``os.walk`` hands back a snapshot of names,
+    and Claude Code writes into these trees while the sweep runs, so a vanished
+    name is a race rather than a fault — and aborting the session on one would
+    leave the transcript archived and the sidecar half-moved, which is exactly
+    what happened on capella's first sweep.
+    """
     out = {"project": s.project, "session": s.session_id,
            "bytes_before": s.bytes, "bytes_after": 0, "files": 0,
+           "vanished": 0,
            "sidecar": s.sidecar is not None, "orphan": s.transcript is None}
     if dry_run:
         return out
     if s.transcript is not None:
         dest = ARCHIVE / s.project / (s.session_id + ".jsonl.gz")
-        out["bytes_after"] += _gzip_into(s.transcript, dest)
-        out["files"] += 1
-        s.transcript.unlink()
+        try:
+            out["bytes_after"] += _gzip_into(s.transcript, dest)
+            out["files"] += 1
+            s.transcript.unlink()
+        except FileNotFoundError:
+            out["vanished"] += 1
     if s.sidecar is not None:
         for dirpath, _, names in os.walk(s.sidecar):
             rel = Path(dirpath).relative_to(s.sidecar)
             for n in names:
                 dest = (ARCHIVE / s.project / s.session_id / rel / (n + ".gz"))
-                out["bytes_after"] += _gzip_into(Path(dirpath) / n, dest)
-                out["files"] += 1
+                try:
+                    out["bytes_after"] += _gzip_into(Path(dirpath) / n, dest)
+                    out["files"] += 1
+                except FileNotFoundError:
+                    out["vanished"] += 1
         shutil.rmtree(s.sidecar, ignore_errors=True)
     return out
 
@@ -134,6 +149,7 @@ def archive(*, days: float = DEFAULT_RETENTION_DAYS,
         "sessions": len(done),
         "orphans": sum(1 for d in done if d["orphan"]),
         "files": sum(d["files"] for d in done),
+        "vanished": sum(d["vanished"] for d in done),
         "bytes_before": sum(d["bytes_before"] for d in done),
         "bytes_after": sum(d["bytes_after"] for d in done),
         "failed": failed,

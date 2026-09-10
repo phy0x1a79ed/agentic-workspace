@@ -20,7 +20,7 @@ from awm.persistence.dao import BaseDAO
 from awm.persistence.databases import init_service_db, new_uuid
 
 SERVICE = "transcripts"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS transcripts_runs (
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS transcripts_runs (
     sessions       INTEGER NOT NULL DEFAULT 0,
     orphans        INTEGER NOT NULL DEFAULT 0,
     files          INTEGER NOT NULL DEFAULT 0,
+    vanished       INTEGER NOT NULL DEFAULT 0,
     bytes_before   INTEGER NOT NULL DEFAULT 0,
     bytes_after    INTEGER NOT NULL DEFAULT 0,
     failures       INTEGER NOT NULL DEFAULT 0,
@@ -44,8 +45,18 @@ CREATE INDEX IF NOT EXISTS transcripts_runs_started
 """
 
 
+# v2 added `vanished`, the count of files that disappeared between the directory
+# listing and the copy. Capella's first sweep found one and aborted that session
+# on it, leaving the transcript archived and its sidecar half-moved.
+MIGRATIONS = {
+    (1, 2): "ALTER TABLE transcripts_runs ADD COLUMN vanished INTEGER NOT NULL "
+            "DEFAULT 0;",
+}
+
+
 def init() -> None:
-    init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION)
+    init_service_db(SERVICE, SCHEMA_SQL, schema_version=SCHEMA_VERSION,
+                    migrations=MIGRATIONS)
 
 
 class RunsDAO(BaseDAO):
@@ -57,14 +68,15 @@ class RunsDAO(BaseDAO):
         run_id = new_uuid()
         self.execute(
             "INSERT INTO transcripts_runs (id, kind, trigger, dry_run, "
-            "retention_days, sessions, orphans, files, bytes_before, "
+            "retention_days, sessions, orphans, files, vanished, bytes_before, "
             "bytes_after, failures, detail, started_at, seconds) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, kind, trigger, int(bool(result.get("dry_run"))),
              float(result.get("retention_days") or 0),
              int(result.get("sessions") or 0),
              int(result.get("orphans") or 0),
              int(result.get("files") or 0),
+             int(result.get("vanished") or 0),
              int(result.get("bytes_before") or 0),
              int(result.get("bytes_after") or result.get("bytes_freed") or 0),
              len(result.get("failed") or ()),
