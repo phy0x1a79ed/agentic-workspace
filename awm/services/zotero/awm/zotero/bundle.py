@@ -9,13 +9,13 @@ other data in this workspace.
 
 It does not travel by merging a branch. Two hosts' vaults are separate
 repositories with unrelated histories, the vault declares no DVC remote, and
-`data/.gitignore` excludes this chunk, so nothing carries these bytes but the
-`ship` verb — an rsync into the far node's own vault scope.
+`data/vault/.gitignore` excludes this chunk, so nothing carries these bytes but
+the `ship` verb — an rsync into the far node's own vault scope.
 
 **Shape.**
 
 ```
-data/zotero/
+data/vault/zotero/
   library.json          the normalized items and collections, plus the version
   files/<key>/<name>    the stored attachments, exactly as Zotero filed them
 ```
@@ -47,8 +47,9 @@ from typing import Any, Iterable
 
 #: The chunk, relative to the vault scope. `data/` is what DVC pins in this
 #: workspace, and the whole point is that the bytes live in the shared cache
-#: rather than in git.
-CHUNK = "data/zotero"
+#: rather than in git. `data/vault/` is the vault's corner of the Trilium
+#: project, beside the snapshots the trilium service pins.
+CHUNK = "data/vault/zotero"
 
 LIBRARY_JSON = "library.json"
 FILES_DIR = "files"

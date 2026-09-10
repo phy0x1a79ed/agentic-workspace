@@ -54,9 +54,21 @@ _NAME_STRIP = re.compile(r"[^a-zA-Z0-9_-]")
 PLAIN_EXT = ".db"
 CONTAINER_EXT = ".tnbackup"
 
-#: The chunk, relative to the scope worktree. One path, named once, because the
-#: pin, the commit and the `.gitignore` DVC writes all have to agree on it.
-CHUNK = "data/backups"
+#: The two chunks, relative to the scope worktree. Named once each, because
+#: the pin, the commit and the `.gitignore` DVC writes all have to agree.
+#:
+#: The export is a chunk rather than committed text because the fork is a
+#: public repository. A pin publishes a hash; the bytes stay in the local
+#: cache. The cost is that an export no longer shows up in a branch diff — the
+#: tree on disk is still diffable, and an older export is still reachable
+#: through its pin.
+CHUNK = "data/vault/backups"
+NOTES_CHUNK = "data/vault/notes"
+
+
+def _chunk_ignore(chunk: str) -> str:
+    """The `.gitignore` `dvc add` writes beside `chunk`."""
+    return f"{chunk.rsplit('/', 1)[0]}/.gitignore"
 
 GIT_TIMEOUT_S = 120
 DVC_TIMEOUT_S = 1800
@@ -133,35 +145,33 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _pin_and_commit(vault: Vault, message: str, paths: list[str]) -> dict[str, Any]:
-    """Pin the snapshot chunk, stage `paths`, and make one commit of the lot.
+def _pin_and_commit(vault: Vault, message: str, chunk: str) -> dict[str, Any]:
+    """Pin `chunk` and commit the pin.
 
-    One commit, not two, so the markdown and the database pin that produced it
-    move together — a tree whose text says one thing and whose pin says another
-    is worse than either alone.
+    The pin and the `.gitignore` beside it go in one commit, because a pin
+    committed without the ignore stages the bytes themselves as blobs on
+    somebody's next commit.
     """
     scope = vault.scope
     report: dict[str, Any] = {"committed": False}
-    staged = list(paths)
+    staged: list[str] = []
 
-    if not (scope / ".git").exists():
+    if not vault.is_checkout:
         # The snapshot or the export is already written and is on disk. Only
         # the history is missing, and saying so is better than a `git add`
         # failure that reads as though the snapshot itself went wrong.
         report["detail"] = f"{scope} is not a git checkout — files written, not committed"
         return report
 
-    if vault.snapshots_dir.is_dir() and any(vault.snapshots_dir.iterdir()):
+    target = scope / chunk
+    if target.is_dir() and any(target.iterdir()):
         if not _is_dvc_repo(scope):
             report["pin"] = "skipped: worktree does not track a .dvc/config"
         else:
-            r = _dvc(scope, "add", CHUNK)
+            r = _dvc(scope, "add", chunk)
             report["pin"] = "ok" if r.returncode == 0 else f"failed: {_out(r)[-400:]}"
             if r.returncode == 0:
-                # `dvc add` writes both: the pin, and a `.gitignore` telling git
-                # to leave the chunk itself alone. Committing one without the
-                # other leaves the binaries staged as blobs on the next commit.
-                staged += [f"{CHUNK}.dvc", "data/.gitignore"]
+                staged += [f"{chunk}.dvc", _chunk_ignore(chunk)]
 
     add = _git(scope, "add", "--", *staged)
     if add.returncode != 0:
@@ -194,10 +204,10 @@ def _find_backup(directory: Path, name: str) -> Path | None:
 
 
 def _require_vault(vault: Vault) -> None:
-    """Refuse to act on a vault that has no worktree.
+    """Refuse to act on a vault whose directory is not there.
 
     Without this the directory-creating verbs happily scaffold `live/` and
-    `data/backups/` under a path that is not a git worktree — and a non-empty
+    `data/vault/backups/` under a path that is not a worktree — and a non-empty
     directory is exactly what makes `git worktree add` refuse later, so the
     phantom tree blocks the real one from ever being created. Observed: a test
     calling `snapshot` against the live singleton left a directory that took a
@@ -205,8 +215,8 @@ def _require_vault(vault: Vault) -> None:
     """
     if not vault.exists:
         raise FileNotFoundError(
-            f"no vault worktree at {vault.scope} — create it with "
-            f"`awm scope create --project vault --scope main`")
+            f"no vault directory at {vault.scope} — run "
+            f"awm/services/trilium/install.sh")
 
 
 def snapshot(vault: Vault, name: str | None = None, *,
@@ -258,7 +268,7 @@ def snapshot(vault: Vault, name: str | None = None, *,
     }
     if commit:
         out["git"] = _pin_and_commit(
-            vault, f"vault: snapshot {dest.stem}", [])
+            vault, f"vault: snapshot {dest.stem}", CHUNK)
     return out
 
 
@@ -373,7 +383,7 @@ def _safe_members(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
 
 def export(vault: Vault, *, note_id: str = "root",
            commit: bool = True) -> dict[str, Any]:
-    """Write the vault out as markdown into the scope, and commit it.
+    """Write the vault out as markdown into its chunk, and pin it.
 
     The tree is replaced rather than merged. It is a derived view of what
     Trilium holds, so a file that survived only because a previous export made
@@ -383,7 +393,9 @@ def export(vault: Vault, *, note_id: str = "root",
     api = etapi.client()
     blob = api.export_zip(note_id=note_id, fmt="markdown")
 
-    staging = vault.scope / ".notes.incoming"
+    # Beside the chunk, not inside it: `dvc add` pins whatever the chunk
+    # directory holds, and a half-extracted export is not an export.
+    staging = vault.notes_dir.parent / ".notes.incoming"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     try:
@@ -393,14 +405,16 @@ def export(vault: Vault, *, note_id: str = "root",
         files = [p for p in staging.rglob("*") if p.is_file()]
         if not files:
             raise RuntimeError(
-                "the export contained no files — refusing to replace notes/ with "
-                "nothing. An empty vault exports at least its metadata.")
+                "the export contained no files — refusing to replace the notes "
+                "chunk with nothing. An empty vault exports at least its "
+                "metadata.")
         # Measured here, before the rename: these paths stop existing the moment
         # the staging tree becomes `notes/`.
         count, total = len(files), sum(p.stat().st_size for p in files)
 
-        retired = vault.scope / ".notes.retired"
+        retired = vault.notes_dir.parent / ".notes.retired"
         shutil.rmtree(retired, ignore_errors=True)
+        vault.notes_dir.parent.mkdir(parents=True, exist_ok=True)
         if vault.notes_dir.exists():
             vault.notes_dir.rename(retired)
         staging.rename(vault.notes_dir)
@@ -416,5 +430,5 @@ def export(vault: Vault, *, note_id: str = "root",
     }
     if commit:
         out["git"] = _pin_and_commit(
-            vault, f"vault: export {count} files", ["notes"])
+            vault, f"vault: export {count} files", NOTES_CHUNK)
     return out

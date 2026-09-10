@@ -1,87 +1,104 @@
-"""Reading the Zotero library, wherever the machine holding it happens to be.
+"""Reading the library from Zotero's own service.
 
-Zotero is a desktop application. It keeps one SQLite database and one folder of
-stored files, and it publishes a read-only copy of the Zotero Web API on
-`127.0.0.1:23119` when the user has ticked "Allow other applications on this
-computer to communicate with Zotero".
+**Zotero is already a sync system, and this is a reader of it, not a second
+one.** Every desktop signed into the account uploads about three seconds after
+an edit and is pushed other machines' changes over a websocket. So the library
+this reads is the same copy every client converges on, and awm never has to
+decide which desktop to trust, never has to wait for one to wake up, and cannot
+make two machines disagree.
 
-**The API is the read path; the database file is not.** `zotero.sqlite` is open
-and journalled the whole time Zotero runs, so a copy taken from underneath it
-is a copy of a state that may never have existed. The API answers from the
-running application, which is the same reason `trilium` snapshots through ETAPI
-rather than copying `document.db`.
+That is a change from how this service began. It read the desktop's own copy of
+this interface over `ssh` and `curl`, which was sound while there was one
+machine and became unsound the moment there were two: a desktop that had not
+finished syncing reported a lower version, and the mirror rewrote itself
+backwards from it.
 
-**Three facts about reaching it that are not guessable.**
+**Three facts that decided the move, none of them guessable.**
 
-*The host header is checked.* Zotero's server refuses any request whose `Host`
-is not localhost — a defence against DNS rebinding — and answers `400 Bad
-Request` with no explanation. Reaching it from anywhere but the loopback
-interface therefore means sending the address in the URL and `127.0.0.1` in the
-header. Without that this looks like a Zotero that is running but broken.
+*A locally saved item is invisible until it uploads.* An item Zotero has not yet
+sent carries version `0`, and the version a library reports is the one the
+service assigned, so a paper saved a second ago is in no `since` window at all.
+Reading a desktop sooner than the service therefore buys nothing: the paper is
+not there to read.
 
-*The file endpoint hands back a path, not the bytes.* `/items/<key>/file`
-answers `302` with a `file:///C:/…` location. So the PDF comes off the
-filesystem, and on a Windows host reached through WSL that means translating
-the drive letter to its `/mnt/` mount. An endpoint that redirects to the local
-filesystem is only useful to something already on that filesystem.
+*The desktop cannot report a deletion.* Its copy of this interface has no
+`deleted` route — not an empty one, absent. This one has it. The mirror does not
+call it, and the reason is worth recording: with one reader against the
+authoritative copy, re-reading a library that moved makes absence mean what it
+says, and a library is a handful of pages. Reading only what changed would be
+fewer requests and would need the parent of every changed attachment fetched
+back, which is the class of bug that turns one missing file into a paper that
+never gets one. The route is there when a library grows large enough to want it.
 
-*Only some items have a file.* An attachment whose `linkMode` is
-`imported_url` records a filename whether or not the bytes were ever
-downloaded. What is on disk is what is in `storage/<key>/`, and the item list
-does not say which those are.
+*This module only ever issues GET.* The method is not a parameter anywhere
+below, and `_get` is the single seam. The key this runs under may hold write
+access for something later, and on a public host the difference between "does
+not write" and "cannot write from here" is worth the two lines it costs: a
+deletion made with that key propagates to every machine the account syncs.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import os
-import shlex
-import subprocess
+import threading
+import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-#: The node the library lives on, as ssh addresses it. Empty means this host —
-#: which is the ordinary case for a laptop running both, and not the case here.
-HOST = os.environ.get("ZOTERO_SSH_HOST", "capella")
+log = logging.getLogger("awm.zotero.source")
 
-#: Where the Zotero HTTP server answers *from the point of view of `HOST`*. On
-#: a WSL host that is the Windows side, so it is the default gateway rather
-#: than loopback; on a plain Linux host it is loopback.
-ORIGIN = os.environ.get("ZOTERO_ORIGIN", "http://172.25.176.1:23119")
+#: Where the library lives. Overridable only so a test can point somewhere else.
+API = os.environ.get("ZOTERO_API_BASE", "https://api.zotero.org").rstrip("/")
 
-#: What the server insists on seeing in `Host`. Not derived from ORIGIN: that
-#: is the point of it.
-HOST_HEADER = os.environ.get("ZOTERO_HOST_HEADER", "127.0.0.1:23119")
+#: The key. Read-only is all this needs; see the module docstring.
+KEY = os.environ.get("ZOTERO_API_KEY", "").strip()
 
-#: The Zotero data directory as `HOST` can read it. `storage/<key>/<filename>`
-#: hangs off this.
-DATA_DIR = os.environ.get("ZOTERO_DATA_DIR", "/mnt/c/Users/phybe/Zotero")
+#: The account, as the service numbers it. Discovered from the key when unset,
+#: because a key already knows whose it is and a second setting is a second
+#: thing to get wrong.
+USER = os.environ.get("ZOTERO_USER", "").strip()
 
-#: `0` means "whichever user this Zotero is logged in as", which is the only
-#: one a local API can serve.
-PERSONAL = os.environ.get("ZOTERO_LIBRARY", "users/0")
+#: What the bundle and every note in the vault call the personal library.
+#:
+#: **Not the account number, and that is a migration rather than a preference.**
+#: The desktop's copy of this interface numbers the signed-in user `0`, because
+#: locally there is only one. Every note this mirror has ever written carries
+#: `#zoteroKey=users/0/<key>`, and the bundle identifies its items the same way.
+#: Switching to the account's real number would change the identity of all 823
+#: of them at once: the pass would find no note for any new reference, create a
+#: second copy of the whole library, and then delete the first for being absent.
+#:
+#: So `users/0` stays the name, and the number appears only in a URL. Groups
+#: need none of this — a group is numbered the same by both.
+PERSONAL = "users/0"
 
 #: Whether to mirror the group libraries as well as the personal one.
 #:
-#: On by default, and that default is load-bearing rather than generous. A
-#: shared research library is where the PDFs are: this account's personal
-#: library has 2 stored files and its one active group has 50, so mirroring
-#: `users/0` alone would produce a bibliography with almost no papers attached
-#: to it and no error anywhere saying why.
+#: On by default, and that default is load-bearing rather than generous. On this
+#: account the personal library holds almost no attached papers and one shared
+#: group holds most of them, so mirroring the personal library alone produces a
+#: bibliography that looks broken with nothing anywhere saying why.
 GROUPS = os.environ.get("ZOTERO_GROUPS", "1") not in ("0", "false", "no")
 
-#: One page of items. Zotero's own cap is 100.
+#: One page of items. The service's own cap is 100.
 PAGE = 100
 
-TIMEOUT_S = float(os.environ.get("ZOTERO_TIMEOUT_S", "60"))
+TIMEOUT_S = float(os.environ.get("ZOTERO_TIMEOUT_S", "30"))
+
+#: The version of the interface this speaks. Pinned rather than left to default,
+#: because the default is whatever the service decides it is today.
+API_VERSION = "3"
 
 
 class ZoteroUnavailable(RuntimeError):
     """The library could not be reached.
 
-    Its own class because it is an ordinary outcome, not a defect: Zotero is a
-    desktop application and the desktop is sometimes asleep. A sync tick that
-    hits this reports and waits rather than failing the service.
+    Its own class because it is an ordinary outcome rather than a defect: a
+    network drops, a service restarts. A tick that hits this reports and waits.
     """
 
 
@@ -96,226 +113,236 @@ class Response:
     body: bytes
 
     def json(self) -> Any:
-        return json.loads(self.body.decode("utf-8"))
+        return json.loads(self.body.decode("utf-8")) if self.body else None
 
 
-def _run(argv: list[str], *, binary: bool = False) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(argv, capture_output=True, timeout=TIMEOUT_S,
-                              check=False)
-    except FileNotFoundError as e:                      # no ssh, no curl
-        raise ZoteroUnavailable(str(e)) from e
-    except subprocess.TimeoutExpired as e:
-        raise ZoteroUnavailable(f"timed out after {TIMEOUT_S}s") from e
+# -- the connection ----------------------------------------------------------
+#
+# One socket, held across calls and rebuilt when the far end drops it. A pass
+# over a large library is dozens of requests, and a handshake each is most of
+# the wall clock.
+
+_conn: http.client.HTTPSConnection | None = None
+_lock = threading.Lock()
+#: Earliest the next request may go out. The service asks for politeness by
+#: header rather than by refusing, so honouring it is on us.
+_not_before = 0.0
 
 
-def _remote(command: str) -> list[str]:
-    """The argv that runs `command` where the library is.
+def _connect() -> http.client.HTTPSConnection:
+    global _conn
+    if _conn is None:
+        parsed = urllib.parse.urlsplit(API)
+        _conn = http.client.HTTPSConnection(parsed.netloc, timeout=TIMEOUT_S)
+    return _conn
 
-    A local library is not a special case worth a second code path; it is this
-    one with the ssh hop removed.
+
+def _drop() -> None:
+    global _conn
+    if _conn is not None:
+        try:
+            _conn.close()
+        except OSError:
+            pass
+        _conn = None
+
+
+def _wait_turn() -> None:
+    delay = _not_before - time.monotonic()
+    if delay > 0:
+        log.info("zotero: holding off %.1fs, as asked", delay)
+        time.sleep(min(delay, 300.0))
+
+
+def _note_backoff(headers: dict[str, str]) -> None:
+    """Record how long the service asked us to wait.
+
+    `Backoff` means "keep going, but slower"; `Retry-After` comes with a refusal.
+    Both are seconds, both are advisory in the sense that nothing enforces them,
+    and ignoring either is how a well-behaved client becomes a blocked one.
     """
-    if not HOST:
-        return ["bash", "-lc", command]
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", HOST,
-            command]
+    global _not_before
+    for name in ("backoff", "retry-after"):
+        raw = headers.get(name)
+        if raw:
+            try:
+                _not_before = max(_not_before, time.monotonic() + float(raw))
+            except ValueError:
+                pass
 
 
-def request(path: str, params: dict[str, Any] | None = None,
-            headers: dict[str, str] | None = None,
-            library: str | None = None) -> Response:
-    """One call against the local API, with the Host override that makes it
-    answer at all.
+def _get(path: str, params: dict[str, Any] | None = None) -> Response:
+    """One read. The only request this module makes, and the only one it can.
 
-    Status and headers come back separately from the body because the whole
-    sync turns on two headers — `Last-Modified-Version`, which is the cursor,
-    and `Total-Results`, which is how many pages are left.
+    There is no method parameter here or anywhere above it. See the module
+    docstring: the key may carry write access for something later, and this is
+    what keeps that a deliberate change rather than an accident.
     """
-    query = ""
-    if params:
-        query = "?" + "&".join(
-            f"{k}={_quote(str(v))}" for k, v in params.items())
-    url = f"{ORIGIN}/api/{library or PERSONAL}{path}{query}"
-    argv = ["curl", "-sS", "-m", str(int(TIMEOUT_S)), "-D", "-",
-            "-H", f"Host: {HOST_HEADER}"]
-    for name, value in (headers or {}).items():
-        argv += ["-H", f"{name}: {value}"]
-    argv.append(url)
+    if not KEY:
+        raise ZoteroError(
+            "no ZOTERO_API_KEY: the mirror reads the library from Zotero's own "
+            "service, so it needs a key. Make a read-only one at "
+            "zotero.org/settings/keys and put it where this node reads its "
+            "settings.")
+    query = urllib.parse.urlencode(params or {})
+    url = f"{path}?{query}" if query else path
+    headers = {"Zotero-API-Key": KEY, "Zotero-API-Version": API_VERSION,
+               "Accept": "application/json", "Connection": "keep-alive"}
 
-    done = _run(_remote(" ".join(shlex.quote(a) for a in argv)))
-    if done.returncode != 0:
-        raise ZoteroUnavailable(
-            f"cannot reach Zotero at {ORIGIN} via {HOST or 'this host'}: "
-            f"{done.stderr.decode('utf-8', 'replace').strip()[:300]}")
-    return _split(done.stdout)
+    with _lock:
+        _wait_turn()
+        for attempt in (1, 2):
+            try:
+                conn = _connect()
+                conn.request("GET", url, headers=headers)
+                raw = conn.getresponse()
+                body = raw.read()
+                got = Response(status=raw.status,
+                               headers={k.lower(): v for k, v in
+                                        raw.getheaders()},
+                               body=body)
+                break
+            except (http.client.RemoteDisconnected,
+                    http.client.BadStatusLine,
+                    http.client.CannotSendRequest,
+                    ConnectionError) as e:
+                # A keep-alive socket the far end closed between requests
+                # surfaces here on the *next* request. That is housekeeping, not
+                # an outage, so the first one is retried without comment.
+                _drop()
+                if attempt == 2:
+                    raise ZoteroUnavailable(
+                        f"cannot reach {API}: {e}") from e
+            except OSError as e:
+                _drop()
+                raise ZoteroUnavailable(f"cannot reach {API}: {e}") from e
 
-
-def _quote(value: str) -> str:
-    return "".join(
-        c if c.isalnum() or c in "-_.~" else f"%{ord(c):02X}"
-        for c in value)
-
-
-def _split(raw: bytes) -> Response:
-    """Split curl's `-D -` output into headers and body.
-
-    Loops over blocks because a 302 is answered as two header blocks, and the
-    last one is the one that describes what came back.
-    """
-    head, sep, body = raw.partition(b"\r\n\r\n")
-    while sep and body[:5] in (b"HTTP/",):
-        head, sep, body = body.partition(b"\r\n\r\n")
-    lines = head.decode("utf-8", "replace").splitlines()
-    status = int(lines[0].split()[1]) if lines and lines[0].startswith("HTTP/") else 0
-    headers = {}
-    for line in lines[1:]:
-        name, _, value = line.partition(":")
-        headers[name.strip().lower()] = value.strip()
-    return Response(status=status, headers=headers, body=body)
+    _note_backoff(got.headers)
+    return got
 
 
 def _checked(res: Response, what: str) -> Response:
-    if res.status == 400:
+    if res.status == 403:
         raise ZoteroError(
-            f"{what}: Zotero answered 400. It refuses a Host header that is "
-            f"not localhost, so ZOTERO_HOST_HEADER ({HOST_HEADER}) has to name "
-            f"one however the address in ZOTERO_ORIGIN is spelled.")
-    if res.status == 0:
-        raise ZoteroUnavailable(f"{what}: no HTTP response")
+            f"{what}: refused. The key does not reach this library — check it "
+            f"has read access to the personal library and to the groups.")
+    if res.status == 429 or res.status == 503:
+        raise ZoteroUnavailable(
+            f"{what}: asked to back off ({res.status}); "
+            f"waiting {res.headers.get('retry-after', '?')}s")
     if res.status >= 400:
         raise ZoteroError(f"{what}: {res.status} "
                           f"{res.body.decode('utf-8', 'replace')[:200]}")
     return res
 
 
+# -- what the account holds --------------------------------------------------
+
+
+def whoami() -> dict[str, Any]:
+    """The account behind the key, and what the key may do.
+
+    Also the cheapest liveness check there is, and the one `status` uses: it
+    needs no library and no version, so it answers on an account with nothing
+    in it.
+    """
+    got = _checked(_get("/keys/current"), "key")
+    body = got.json() or {}
+    access = body.get("access") or {}
+    return {"user_id": str(body.get("userID") or ""),
+            "username": body.get("username") or "",
+            "writes": bool((access.get("user") or {}).get("write")),
+            "groups_read": bool(((access.get("groups") or {}).get("all")
+                                 or {}).get("library"))}
+
+
+def user() -> str:
+    """The personal library's id, discovered once from the key if unset."""
+    global USER
+    if not USER:
+        USER = whoami()["user_id"]
+    return USER
+
+
+def personal() -> str:
+    """The personal library's name, which is not its address. See `PERSONAL`."""
+    return PERSONAL
+
+
+def path_of(library: str) -> str:
+    """Where a library is reached, given what it is called.
+
+    The one place the two spellings meet. Everything above this works in names
+    so that a name can go on a note and stay put; everything below works in
+    addresses so that a request can be made.
+    """
+    return f"users/{user()}" if library == PERSONAL else library
+
+
 def groups() -> list[dict]:
-    """The shared libraries this Zotero is a member of."""
+    """The shared libraries this account is a member of."""
     if not GROUPS:
         return []
-    res = _checked(request("/groups", {"limit": 100}), "groups")
+    got = _checked(_get(f"/{path_of(PERSONAL)}/groups", {"limit": 100}), "groups")
     return [{"id": f"groups/{g['id']}",
              "name": (g.get("data") or {}).get("name") or str(g["id"])}
-            for g in res.json()]
+            for g in got.json() or []]
 
 
 def libraries() -> list[dict]:
     """Everything to mirror: the personal library, then each group."""
-    return [{"id": PERSONAL, "name": "My Library"}, *groups()]
+    return [{"id": personal(), "name": "My Library"}, *groups()]
 
 
 def library_version(library: str | None = None) -> int:
     """Where one library is now. One request, and the whole cost of a tick that
     has nothing to do."""
-    res = _checked(request("/items", {"limit": 1, "format": "json"},
-                           library=library),
+    got = _checked(_get(f"/{path_of(library or PERSONAL)}/items", {"limit": 1}),
                    "library version")
-    return int(res.headers.get("last-modified-version") or 0)
+    return int(got.headers.get("last-modified-version") or 0)
 
 
 def versions() -> dict[str, int]:
     """Every library's version, which together are the sync cursor.
 
     A dict rather than one number because the libraries move independently: a
-    paper added to a shared group changes nothing about the personal library,
-    and one version for the lot would either miss that or re-read everything.
+    paper added to a shared group changes nothing about the personal library.
     """
     return {lib["id"]: library_version(lib["id"]) for lib in libraries()}
 
 
-def unchanged_since(version: int, library: str | None = None) -> bool:
-    """Whether a library has moved. `304` here is the answer a scheduled sync
-    gets almost every time it runs."""
-    if version <= 0:
-        return False
-    res = request("/items", {"limit": 1, "format": "json"},
-                  {"If-Modified-Since-Version": str(version)}, library=library)
-    if res.status == 304:
-        return True
-    _checked(res, "modified check")
-    return False
-
-
-def _paged(path: str, params: dict[str, Any] | None = None,
-           library: str | None = None) -> Iterator[dict]:
+def _paged(path: str, params: dict[str, Any] | None = None) -> Iterator[dict]:
     start = 0
     while True:
-        res = _checked(
-            request(path, {**(params or {}), "limit": PAGE, "start": start,
-                           "format": "json"}, library=library),
+        got = _checked(
+            _get(path, {**(params or {}), "limit": PAGE, "start": start,
+                        "format": "json"}),
             f"GET {path}")
-        page = res.json()
+        page = got.json() or []
         yield from page
-        total = int(res.headers.get("total-results") or 0)
+        total = int(got.headers.get("total-results") or 0)
         start += PAGE
         if start >= total or not page:
             return
 
 
-def collections(library: str | None = None) -> list[dict]:
-    return list(_paged("/collections", library=library))
+def collections(library: str | None = None,
+                since: int | None = None) -> list[dict]:
+    params = {"since": since} if since else {}
+    return list(_paged(f"/{path_of(library or PERSONAL)}/collections", params))
 
 
-def items(library: str | None = None) -> list[dict]:
-    """Every item, including attachments and notes.
+def items(library: str | None = None, since: int | None = None) -> list[dict]:
+    """Every item, or everything that moved since a version.
 
-    Not `/items/top`: an attachment is where the file is, and a child note is
-    the annotation somebody wrote. Sorting them out belongs to whatever builds
-    the bundle, which can see all three.
+    Not `/items/top`: an attachment is where a file is recorded and a child note
+    is an annotation somebody wrote. Folding the three together belongs to
+    whatever builds the bundle, which can see all of them.
+
+    **`since` is a cursor over what the service assigned, not over wall clock.**
+    An item created locally and not yet uploaded carries version `0` and appears
+    in no `since` window. That is a fact about the account rather than a
+    limitation here, and it is why nothing tries to read a desktop sooner.
     """
-    return list(_paged("/items", library=library))
-
-
-def stored_files() -> dict[str, str]:
-    """Which attachment keys have their bytes on disk, and under what filename.
-
-    Listed from the filesystem rather than asked of the API, because the API
-    reports the filename an attachment *records* whether or not it was ever
-    downloaded. `storage/<key>/` is the only place that knows.
-    """
-    listing = _run(_remote(
-        f"find {shlex.quote(DATA_DIR)}/storage -mindepth 2 -maxdepth 2 "
-        f"-type f ! -name '.zotero*' -printf '%h/%f\\n' 2>/dev/null"))
-    out: dict[str, str] = {}
-    for line in listing.stdout.decode("utf-8", "replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.rsplit("/", 2)
-        if len(parts) == 3:
-            out[parts[1]] = parts[2]
-    return out
-
-
-def fetch_files(keys: list[str], into) -> dict[str, str]:
-    """Copy each named attachment's stored file into `into`, keeping its name.
-
-    One `tar` over the ssh channel rather than a connection per file: 48 files
-    is 48 handshakes otherwise, and the library grows.
-    """
-    if not keys:
-        return {}
-    into.mkdir(parents=True, exist_ok=True)
-    listed = " ".join(shlex.quote(k) for k in keys)
-    # `.zotero-ft-cache` and `.zotero-ft-info` are Zotero's own full-text
-    # index, not the document — several times the size of the PDF beside them
-    # and of no use to anything here.
-    command = (f"cd {shlex.quote(DATA_DIR)}/storage && "
-               f"tar -cf - --exclude='.zotero*' {listed} 2>/dev/null")
-    proc = subprocess.Popen(_remote(command), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
-    try:
-        extract = subprocess.run(["tar", "-xf", "-", "-C", str(into)],
-                                 stdin=proc.stdout, capture_output=True,
-                                 timeout=TIMEOUT_S * 10, check=False)
-    except subprocess.TimeoutExpired as e:
-        proc.kill()
-        raise ZoteroUnavailable("copying stored files timed out") from e
-    finally:
-        if proc.stdout:
-            proc.stdout.close()
-        proc.wait(timeout=10)
-    if extract.returncode != 0:
-        raise ZoteroUnavailable(
-            "copying stored files failed: "
-            + extract.stderr.decode("utf-8", "replace")[:300])
-    return {k: str(into / k) for k in keys if (into / k).is_dir()}
+    params = {"since": since} if since else {}
+    return list(_paged(f"/{path_of(library or PERSONAL)}/items", params))

@@ -40,7 +40,7 @@ def test_start_reports_the_bundle_it_found(tmp_path, monkeypatch, caplog,
         asyncio.run(hub_adapter._on_start())
     line = " ".join(r.getMessage() for r in caplog.records)
     assert "1 items" in line and "users/0" in line
-    assert _no_timer == ["zotero:sync"]
+    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
 
 
 def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
@@ -54,23 +54,27 @@ def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
                         lambda: bundle.Bundle(tmp_path / "nothing"))
     with caplog.at_level(logging.INFO):
         asyncio.run(hub_adapter._on_start())
-    assert _no_timer == ["zotero:sync"]
+    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
 
 
 # -- status ------------------------------------------------------------------
 
 
 def _status(monkeypatch, tmp_path, versions):
-    """Run the status verb against a one-item bundle and a stubbed desktop."""
+    """Run the status verb against a one-item bundle and a stubbed service."""
     b = _bundle_at(tmp_path)
     monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
     monkeypatch.setattr(hub_adapter.source, "versions", lambda: versions)
+    monkeypatch.setattr(hub_adapter.source, "whoami",
+                        lambda: {"user_id": "1", "username": "someone",
+                                 "writes": False, "groups_read": True})
     return asyncio.run(hub_adapter._h_status({}))
 
 
 def test_status_is_not_behind_when_every_library_matches(tmp_path, monkeypatch):
     out = _status(monkeypatch, tmp_path, {"users/0": 7})
     assert out["library"]["reachable"] is True
+    assert out["library"]["key_can_write"] is False
     assert out["behind"] is False
 
 
@@ -86,13 +90,16 @@ def test_status_is_behind_when_a_library_is_new(tmp_path, monkeypatch):
     assert out["behind"] is True
 
 
-def test_an_unreachable_desktop_is_reported_not_raised(tmp_path, monkeypatch):
+def test_an_unreachable_library_is_reported_not_raised(tmp_path, monkeypatch):
+    """The network drops and the service restarts. Saying so is the answer, not
+    failing the tick."""
     b = _bundle_at(tmp_path)
     monkeypatch.setattr(hub_adapter.sync, "bundle", lambda: b)
 
     def _boom() -> dict:
-        raise hub_adapter.source.ZoteroUnavailable("desktop is asleep")
+        raise hub_adapter.source.ZoteroUnavailable("the network went away")
 
+    monkeypatch.setattr(hub_adapter.source, "whoami", _boom)
     monkeypatch.setattr(hub_adapter.source, "versions", _boom)
     out = asyncio.run(hub_adapter._h_status({}))
     assert out["library"]["reachable"] is False

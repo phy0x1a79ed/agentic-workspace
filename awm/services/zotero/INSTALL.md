@@ -41,16 +41,21 @@ simply never syncs.
 
 Today altair is `full` with a ship destination, and sirius is `apply`.
 
-**The bundle is the thing that travels.** `pull` writes `data/zotero/` in the
-vault scope — `library.json` plus the stored files — and commits a DVC pin.
+**The bundle is the thing that travels.** `pull` writes `data/vault/zotero/` in
+the vault scope — `library.json` plus the stored files — and commits a DVC pin.
 That makes the mirror ordinary workspace data, versioned by the commit that
-versions it.
+versions it. The vault scope is the Trilium worktree the node serves, so the
+bundle sits beside the snapshots that service pins.
 
 **CAUTION** The bundle does not reach another node by merging a branch. Two
 hosts' vaults are separate repositories with unrelated histories, the vault
-declares no DVC remote, and `data/.gitignore` excludes the chunk. `ship` is the
-only route, and it is an `rsync` straight into the far node's own vault scope,
-where that node's bundle reader already looks.
+declares no DVC remote, and `data/vault/.gitignore` excludes the chunk. `ship`
+is the only route, and it is an `rsync` straight into the far node's own vault
+scope, where that node's bundle reader already looks.
+
+A node that serves the published Trilium tarball has no checkout there at all,
+so it pins nothing and commits nothing. `pull` and `apply` still write the
+bundle and say that they committed nothing, which is the expected answer.
 
 **Only `library.json` travels.** It is 1.4 MB against 92 MB of stored files.
 The apply side already skips a file the bundle does not hold, so a node that
@@ -221,7 +226,7 @@ Environment, read at start:
 | `ZOTERO_TIMEOUT_S` | `60` | per-request budget for the `ssh`+`curl` hop. |
 | `ZOTERO_LIBRARY_NOTE` | `Library` | title of the note the mirror creates when it may create one. |
 | `ZOTERO_ROLE` | `full` | `full`, `pull` or `apply`. An unrecognised value fails the service at start-up. |
-| `ZOTERO_SHIP_TO` | empty | `host:/path/to/vault/scope` on the node that holds the vault. Spelled in full: the scope directory is named per host. |
+| `ZOTERO_SHIP_TO` | empty | `host:/path/to/vault/scope` on the node that holds the vault. Spelled in full: a far node's workspace root is not this one's. |
 | `ZOTERO_MAY_CREATE_ROOT` | `1` | set `0` on a shared vault, where apply must refuse rather than create a library. |
 | `ZOTERO_SYNC_INTERVAL_S` | `1200` | how often the timer looks. |
 | `ZOTERO_SYNC_ENABLED` | `1` | set `0` to stop the timer. |

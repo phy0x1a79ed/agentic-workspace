@@ -30,38 +30,32 @@ from typing import Any
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
 
 from awm.zotero import bundle as bundle_mod
-from awm.zotero import source, sync, vault
+from awm.zotero import source, stream as stream_mod, sync, vault
 
 log = logging.getLogger("awm.zotero.hub_adapter")
 
-#: How often the timer looks. Twenty minutes, because the answer is one request
-#: when nothing has changed and a person adding a paper is not waiting on it.
+#: How often the timer looks, and it is now a floor rather than the mechanism.
+#: The stream is what makes a saved paper appear in seconds; this catches what a
+#: stream cannot — a subscription lost behind a healthy socket, a note somebody
+#: hand-edited, anything that happened while the service was down.
 INTERVAL_S = float(os.environ.get("ZOTERO_SYNC_INTERVAL_S", "1200"))
+
+#: How long to wait after being told a library moved, before reading it.
+#:
+#: Several libraries can move together and a save is more than one write, so a
+#: pass fired on the first frame reads a library mid-change and then has to be
+#: told again. Waiting a moment collapses a burst into one pass.
+SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "2"))
 
 #: Whether the timer runs at all. Off on a node that cannot reach the library,
 #: where every tick would be a logged failure saying so.
 SCHEDULED = os.environ.get("ZOTERO_SYNC_ENABLED", "1") not in ("0", "false", "no")
 
-#: What this node does with the mirror.
-#:
-#: `full` — read the library and write the vault, which is one machine doing
-#: both and is the historical behaviour. `pull` — read the library, ship the
-#: bundle, write no vault. `apply` — write the vault from whatever bundle
-#: arrives, and never look for a library.
-#:
-#: The role is what makes the split legible. Without it, the reason a node
-#: never pulls is an unreachable host in a log line every twenty minutes.
-ROLES = ("full", "pull", "apply")
-ROLE = os.environ.get("ZOTERO_ROLE", "full").strip().lower() or "full"
-if ROLE not in ROLES:
-    # Raised at import, so the service fails to start and the gateway trips its
-    # breaker. Visibly wedged is the right answer to a typo that would
-    # otherwise quietly turn an apply-only node back into a puller.
-    raise SystemExit(f"ZOTERO_ROLE={ROLE!r} is not one of {', '.join(ROLES)}")
-
-#: Where a pulled bundle goes, as `host:/path/to/vault/scope`. Orthogonal to
-#: the role: a node can be `full` and still ship, which is what altair does.
-SHIP_TO = os.environ.get("ZOTERO_SHIP_TO", "").strip()
+#: There is no role any more, and its absence is the point. A node used to have
+#: to say whether it read a library, wrote a vault, or shipped a bundle between
+#: two machines that could not both do it. The library now comes from Zotero's
+#: own service, which every node can reach, so one node reads it and writes the
+#: vault and there is nothing to choose.
 
 #: Whether apply may create the library root when no note carries
 #: `#zoteroLibrary`. Off on a shared vault, where creating a library at the top
@@ -89,10 +83,9 @@ API_MANIFEST: dict[str, Any] = {
             "name": "pull",
             "tool": "zotero_pull",
             "description": (
-                "Read the Zotero library into the bundle in the vault scope, "
-                "fetch any stored file it does not have, and commit the pin. "
-                "Free when the library's version has not moved. Operator only, "
-                "and it needs the node the library is on."
+                "Read the Zotero library into the bundle in the vault scope "
+                "and commit the pin. Free when no library's version has moved. "
+                "Operator only."
             ),
             "params": [
                 {"name": "force", "type": "boolean",
@@ -108,7 +101,7 @@ API_MANIFEST: dict[str, Any] = {
             "description": (
                 "Write the bundle into the vault: collections as a note tree, "
                 "one note per reference with its citation fields as labels, "
-                "each stored file attached. Goes under the note carrying "
+                "Goes under the note carrying "
                 "#zoteroLibrary. Only notes carrying #zoteroKey are ever "
                 "rewritten. Operator only."
             ),
@@ -126,27 +119,12 @@ API_MANIFEST: dict[str, Any] = {
             "timeout": 3600,
         },
         {
-            "name": "ship",
-            "tool": "zotero_ship",
-            "description": (
-                "Send the bundle's library.json to the node that holds the "
-                "vault, straight into that node's own vault scope. Only the "
-                "JSON travels; stored files stay here. Operator only."
-            ),
-            "params": [
-                {"name": "to", "type": "string",
-                 "description": "host:/path/to/vault/scope. Defaults to "
-                                "ZOTERO_SHIP_TO."},
-            ],
-            "timeout": 900,
-        },
-        {
             "name": "sync",
             "tool": "zotero_sync",
             "description": (
-                "Pull, then apply and ship as this node's role says. What the "
-                "timer runs, and what to call by hand after adding papers in "
-                "Zotero. Operator only."
+                "Read whatever moved in the library and write it into the "
+                "vault. What the timer runs as its floor, and what to call by "
+                "hand. Operator only."
             ),
             "params": [
                 {"name": "force", "type": "boolean",
@@ -161,8 +139,9 @@ API_MANIFEST: dict[str, Any] = {
     "sessions": [],
 }
 
-#: What the last tick did, so `status` can answer without running one.
-LAST: dict[str, Any] = {"tick": None, "result": None, "error": None}
+#: What the last pass did, so `status` can answer without running one.
+LAST: dict[str, Any] = {"tick": None, "result": None, "error": None,
+                        "told": None}
 
 
 def _operator_only(as_: str | None, verb: str) -> None:
@@ -183,33 +162,38 @@ async def _h_status(args: dict, as_: str | None = None) -> dict:
     out: dict[str, Any] = {"bundle": sync.bundle().stats(),
                            "scope": str(sync.VAULT_SCOPE),
                            "last": dict(LAST)}
-    out["role"] = {"role": ROLE, "ship_to": SHIP_TO,
-                   "may_create_root": MAY_CREATE_ROOT}
+    out["may_create_root"] = MAY_CREATE_ROOT
     # An apply-only node has no library to ask. Probing is this verb's default
     # and it is the one zotero verb that is not operator-gated, so on such a
     # node the default would be an ssh to a host that does not resolve — eight
     # seconds of nothing, on every call.
-    if ROLE != "apply" and args.get("probe", True) is not False:
+    if args.get("probe", True) is not False:
         def _probe() -> dict:
             try:
+                who = source.whoami()
                 return {"reachable": True, "versions": source.versions(),
-                        "host": source.HOST or "this host",
-                        "origin": source.ORIGIN}
+                        "api": source.API, "account": who["username"],
+                        # Surfaced because the key sits on a public host and a
+                        # write it does not need is worth being able to see.
+                        "key_can_write": who["writes"]}
             except source.ZoteroUnavailable as e:
-                # Not an error state. Zotero is a desktop application and the
-                # desktop is sometimes asleep; saying so is the answer.
+                # Not an error state. The network drops and the service
+                # restarts; saying so is the answer.
                 return {"reachable": False, "detail": str(e)[:300],
-                        "host": source.HOST or "this host",
-                        "origin": source.ORIGIN}
+                        "api": source.API}
+            except source.ZoteroError as e:
+                return {"reachable": False, "detail": str(e)[:300],
+                        "api": source.API}
         out["library"] = await asyncio.to_thread(_probe)
         if out["library"].get("reachable"):
             # Behind if any library moved, or if one appeared that the bundle
-            # has never seen. A library the bundle holds and the desktop no
+            # has never seen. A library the bundle holds and the service no
             # longer offers is not "behind" — `pull` prunes it either way.
             have = out["bundle"]["versions"]
             out["behind"] = any(have.get(lib) != v for lib, v
                                 in out["library"]["versions"].items())
     out["scheduled"] = {"enabled": SCHEDULED, "interval_s": INTERVAL_S}
+    out["stream"] = STREAM.health
     return out
 
 
@@ -230,39 +214,71 @@ async def _h_apply(args: dict, as_: str | None = None) -> dict:
         dry_run=bool(args.get("dry_run")))
 
 
-async def _h_ship(args: dict, as_: str | None = None) -> dict:
-    _operator_only(as_, "ship")
-    to = (args.get("to") or "").strip() or SHIP_TO
-    if not to:
-        raise ValueError(
-            "no ship destination: pass `to`, or set ZOTERO_SHIP_TO to "
-            "host:/path/to/vault/scope on the node that holds the vault")
-    return await asyncio.to_thread(sync.ship, to)
-
-
 async def _h_sync(args: dict, as_: str | None = None) -> dict:
     _operator_only(as_, "sync")
-    if ROLE == "apply":
-        # No pull, so no bundle change to notice — the far node's own timer is
-        # what brings a shipped bundle in.
-        return await asyncio.to_thread(
-            sync.apply, vault.Vault(),
-            parent=(args.get("parent") or "").strip() or "root",
-            may_create=MAY_CREATE_ROOT, force=bool(args.get("force")))
     return await asyncio.to_thread(
         sync.run, vault.Vault(), force=bool(args.get("force")),
         parent=(args.get("parent") or "").strip() or "root",
-        may_create=MAY_CREATE_ROOT, apply_here=ROLE == "full",
-        ship_to=SHIP_TO)
+        may_create=MAY_CREATE_ROOT)
 
 
 HANDLERS = {
     "status": _h_status,
     "pull": _h_pull,
     "apply": _h_apply,
-    "ship": _h_ship,
     "sync": _h_sync,
 }
+
+
+#: Set when the stream says a library moved. An event rather than a queue: what
+#: matters is that something changed, not how many times, and a pass reads
+#: whatever has moved by the time it runs.
+WOKEN = asyncio.Event()
+
+STREAM = stream_mod.Stream(
+    lambda library, version: _woken(library, version))
+
+
+async def _woken(library: str, version: int) -> None:
+    """What the stream calls. Deliberately does almost nothing.
+
+    The stream must keep reading its socket while a pass runs, or a change that
+    lands during a long apply is never delivered. So this sets a flag and
+    returns, and the worker below does the work.
+    """
+    LAST["told"] = {"library": library, "version": version,
+                    "at": sync._now()}
+    WOKEN.set()
+
+
+async def _push_loop() -> None:
+    """Sync when the stream says to. Never exits.
+
+    One pass at a time, and the flag is cleared *before* the pass rather than
+    after: a change arriving while a pass is running must leave the flag set, so
+    the next turn of this loop picks it up instead of the pass swallowing it.
+    """
+    log.info("zotero: push loop started (settle=%ss)", SETTLE_S)
+    while True:
+        try:
+            await WOKEN.wait()
+            await asyncio.sleep(SETTLE_S)
+            WOKEN.clear()
+            LAST["tick"] = "push"
+            try:
+                LAST["result"] = await _h_sync({}, None)
+                LAST["error"] = None
+            except source.ZoteroUnavailable as e:
+                LAST["error"] = str(e)[:300]
+                log.info("zotero: library not reachable on this push: %s", e)
+            except sync.Busy:
+                # The floor is mid-pass. It reads whatever moved anyway, so
+                # this one has nothing to add.
+                log.info("zotero: a sync was already running; leaving it to it")
+        except Exception:  # noqa: BLE001 — never let the loop die
+            LAST["error"] = "push pass failed; see the log"
+            log.exception("zotero: push pass failed")
+            await asyncio.sleep(5)
 
 
 async def _sync_loop() -> None:
@@ -273,14 +289,14 @@ async def _sync_loop() -> None:
     unreachable library is logged at info and waited out: it means the desktop
     is off, which is not something to escalate every twenty minutes.
     """
-    log.info("zotero: sync loop started (interval=%ss, enabled=%s)",
+    log.info("zotero: floor loop started (interval=%ss, enabled=%s)",
              INTERVAL_S, SCHEDULED)
     while True:
         try:
             await asyncio.sleep(INTERVAL_S)
             if not SCHEDULED:
                 continue
-            LAST["tick"] = asyncio.get_running_loop().time()
+            LAST["tick"] = "floor"
             try:
                 LAST["result"] = await _h_sync({}, None)
                 LAST["error"] = None
@@ -311,6 +327,8 @@ async def _on_start() -> None:
         # failed initialisation and the gateway then reaps the service.
         log.warning("zotero: no readable bundle at %s yet", b.root)
     spawn_supervised("zotero:sync", _sync_loop)
+    spawn_supervised("zotero:push", _push_loop)
+    spawn_supervised("zotero:stream", STREAM.run)
 
 
 async def main() -> None:

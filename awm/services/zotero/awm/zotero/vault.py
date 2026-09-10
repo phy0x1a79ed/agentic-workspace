@@ -21,6 +21,7 @@ some corner of ETAPI that would then have to be carried across a node boundary.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -34,25 +35,57 @@ SERVICE = "trilium"
 #: PDF import should not fail the pass.
 TIMEOUT_S = 300.0
 
+#: The most notes a scan will look at.
+#:
+#: A search that comes back holding exactly this many has almost certainly been
+#: cut off, and a cut-off scan is worse than no scan at all: the pass cannot see
+#: notes the mirror already owns, decides they are new, and creates a second
+#: copy of every one of them. That is the 216-doubled-papers failure with a
+#: different cause, and every call still succeeds.
+SCAN_LIMIT = 10000
+
 
 class VaultError(RuntimeError):
     """The trilium service answered, and said no."""
 
 
-def _call(fn: str, **args: Any) -> Any:
-    try:
-        return call_sync(SERVICE, fn, args, timeout=TIMEOUT_S)
-    except Exception as e:  # noqa: BLE001 — the transport's own errors vary
-        raise VaultError(f"trilium {fn}: {e}") from e
+def labels_of(note: dict) -> dict[str, str]:
+    """The labels a note owns, which is not the same as the labels it shows.
+
+    Trilium hands back inherited attributes alongside a note's own, so a label
+    arriving from a template above it looks identical to one the mirror wrote.
+    Reading an inherited value as this note's cursor would skip a note that was
+    never written. The trilium service's own attribute writer draws the line in
+    the same place, by owner.
+    """
+    note_id = note.get("noteId")
+    return {a.get("name"): a.get("value") or ""
+            for a in note.get("attributes") or []
+            if a.get("type") == "label" and a.get("noteId") == note_id}
 
 
 class Vault:
     """What a mirror needs of a knowledge base."""
 
+    def __init__(self) -> None:
+        #: Verb -> how many times this pass called it. The mirror's whole cost
+        #: is round trips, so a change that claims to be cheaper is judged by
+        #: this rather than by a stopwatch.
+        self.calls: Counter[str] = Counter()
+
+    def _call(self, fn: str, **args: Any) -> Any:
+        self.calls[fn] += 1
+        try:
+            return call_sync(SERVICE, fn, args, timeout=TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001 — the transport's own errors vary
+            raise VaultError(f"trilium {fn}: {e}") from e
+
     # -- reading -------------------------------------------------------------
 
-    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
-        """Every note under `root` carrying `label`, as `{value: [note_id…]}`.
+    def scan(self, root: str | None, label: str) -> dict[str, list[dict]]:
+        """Every note under `root` carrying `label`, with everything the search
+        already told us about it: `{value: [{note_id, title, labels, parents}…]}`.
+
         A `root` of `None` searches the whole vault, which is how the mirror
         counts what it owns outside the subtree it is writing.
 
@@ -60,10 +93,16 @@ class Vault:
         the collection tree, and this is what tells an update from an insert
         for all of them at once.
 
-        A list rather than one id, because two ids for one key is a state the
-        vault can be in — two syncs running at once each create the note the
-        other has not written yet — and a caller that cannot see the second
-        copy can never remove it.
+        **The extra fields are free, and they are the point.** A Trilium search
+        result carries the matched note's whole attribute list and its current
+        parents. Reading only the label that was filtered on threw away both,
+        and the pass then paid a round trip per note to ask again — a cursor
+        read and a placement check that the search had already answered.
+
+        A list rather than one entry per value, because two notes for one key is
+        a state the vault can be in — two syncs running at once each create the
+        note the other has not written yet — and a caller that cannot see the
+        second copy can never remove it.
 
         `archived` is set because a mirrored note somebody archived is still
         the mirror's. Trilium's search excludes archived notes by default and
@@ -71,15 +110,34 @@ class Vault:
         anything above it — hides a paper the mirror owns, and the next pass
         creates a second copy of it that the collapse pass cannot see either.
         """
-        hits = _call("note_search", query=f"#{label}", ancestor=root or "",
-                     limit=10000, fast=False, archived=True)
-        out: dict[str, list[str]] = {}
-        for note in (hits or {}).get("results") or []:
-            for a in note.get("attributes") or []:
-                if a.get("type") == "label" and a.get("name") == label:
-                    out.setdefault(a.get("value") or "", []).append(note["noteId"])
-        out.pop("", None)
+        hits = self._call("note_search", query=f"#{label}", ancestor=root or "",
+                          limit=SCAN_LIMIT, fast=False, archived=True)
+        results = (hits or {}).get("results") or []
+        if len(results) >= SCAN_LIMIT:
+            raise VaultError(
+                f"the vault holds at least {SCAN_LIMIT} notes carrying "
+                f"#{label} and the search was cut off. A pass cannot run on a "
+                f"partial answer: it would treat every note it could not see as "
+                f"new and create a second copy of it.")
+        out: dict[str, list[dict]] = {}
+        for note in results:
+            labels = labels_of(note)
+            value = labels.get(label)
+            if not value:
+                continue
+            out.setdefault(value, []).append({
+                "note_id": note["noteId"],
+                "title": note.get("title") or "",
+                "labels": labels,
+                "parents": list(note.get("parentNoteIds") or []),
+            })
         return out
+
+    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
+        """`scan`, keeping only the ids. The shape every caller wanted before
+        the rest of the search result turned out to be worth keeping."""
+        return {value: [n["note_id"] for n in notes]
+                for value, notes in self.scan(root, label).items()}
 
     def labelled(self, label: str) -> list[dict[str, Any]]:
         """Every note in the vault carrying `label`, with its own labels.
@@ -92,16 +150,15 @@ class Vault:
         The labels come back with the hit: the root's own attributes are read
         on every pass anyway, so the sync's cursor costs no extra round trip.
         """
-        hits = _call("note_search", query=f"#{label}", limit=100, fast=False,
-                     archived=True)
+        hits = self._call("note_search", query=f"#{label}", limit=100,
+                          fast=False, archived=True)
         out: list[dict[str, Any]] = []
         for note in (hits or {}).get("results") or []:
             out.append({
                 "note_id": note["noteId"],
                 "title": note.get("title") or "",
-                "labels": {a.get("name"): a.get("value") or ""
-                           for a in note.get("attributes") or []
-                           if a.get("type") == "label"},
+                "labels": labels_of(note),
+                "parents": list(note.get("parentNoteIds") or []),
             })
         return sorted(out, key=lambda n: n["note_id"])
 
@@ -110,7 +167,7 @@ class Vault:
         return {key: ids[0] for key, ids in self.owned_all(root, label).items()}
 
     def read(self, note_id: str) -> dict:
-        return _call("note_get", note_id=note_id)
+        return self._call("note_get", note_id=note_id)
 
     # -- writing -------------------------------------------------------------
 
@@ -118,12 +175,12 @@ class Vault:
                type: str = "book") -> str:
         """The note with exactly this title under this parent, made if absent.
         Used for the library's own root, whose identity is what it is called."""
-        return _call("note_upsert", parent=parent, title=title,
+        return self._call("note_upsert", parent=parent, title=title,
                      content=content, type=type)["note_id"]
 
     def create(self, *, parent: str, title: str, content: str = "",
                type: str = "text", labels: dict[str, str] | None = None) -> str:
-        return _call("note_create", parent=parent, title=title,
+        return self._call("note_create", parent=parent, title=title,
                      content=content, type=type, labels=labels or {})["note_id"]
 
     def update(self, note_id: str, *, title: str | None = None,
@@ -143,11 +200,11 @@ class Vault:
             args["labels"] = labels
         if len(args) == 1:
             return False
-        changed = _call("note_update", **args).get("changed") or {}
+        changed = self._call("note_update", **args).get("changed") or {}
         return any(v not in (False, [], None) for v in changed.values())
 
     def set_label(self, note_id: str, name: str, value: str) -> bool:
-        return bool(_call("attr_set", note_id=note_id, name=name,
+        return bool(self._call("attr_set", note_id=note_id, name=name,
                           value=value).get("changed"))
 
     def place(self, note_id: str, parents: list[str]) -> dict:
@@ -157,7 +214,7 @@ class Vault:
         rather than a copy: a paper in three collections is one note in three
         places, and copies would let it diverge from itself.
         """
-        return _call("note_place", note_id=note_id, parents=sorted(set(parents)))
+        return self._call("note_place", note_id=note_id, parents=sorted(set(parents)))
 
     def attach(self, note_id: str, path: Path, *,
                title: str | None = None) -> bool:
@@ -168,9 +225,9 @@ class Vault:
         twice. Both processes are on this host and the bundle is a committed
         artifact of it, so a path is a shared reference rather than a guess.
         """
-        out = _call("attachment_put", note_id=note_id, path=str(path),
+        out = self._call("attachment_put", note_id=note_id, path=str(path),
                     title=title or path.name)
         return bool(out.get("changed"))
 
     def delete(self, note_id: str) -> None:
-        _call("note_delete", note_id=note_id)
+        self._call("note_delete", note_id=note_id)

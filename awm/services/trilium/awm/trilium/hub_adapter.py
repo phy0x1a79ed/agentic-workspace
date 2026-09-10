@@ -1118,9 +1118,9 @@ async def _on_start() -> None:
                     "the service will register and report this via status",
                     instances.FORK_ENTRY, instances.TARBALL_ENTRY)
     elif not instances.VAULT.exists:
-        log.warning("trilium: no vault worktree at %s — create it with "
-                    "`awm scope create --project vault --scope main`; the "
-                    "service will register and report this via status",
+        log.warning("trilium: no vault directory at %s — run "
+                    "awm/services/trilium/install.sh; the service will "
+                    "register and report this via status",
                     instances.VAULT.scope)
     else:
         try:

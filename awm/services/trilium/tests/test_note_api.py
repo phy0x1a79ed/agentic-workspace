@@ -297,6 +297,53 @@ def test_a_changed_file_replaces_the_attachment_in_place(vault, tmp_path):
     assert len(vault.attachments) == 1
 
 
+def test_a_text_attachment_with_a_multibyte_character_is_not_re_uploaded(
+        vault, tmp_path):
+    """The defect this fixes, and the reason it hid for so long.
+
+    Trilium decides by mime that an HTML snapshot is text, decodes it, and
+    stores it in a SQLite TEXT column. The length it reports back is a count of
+    characters. Comparing that to a count of bytes marks every snapshot holding
+    one accented letter as changed, on every pass, for ever — twelve files and
+    about thirteen megabytes each time in the live vault, with every call
+    succeeding and nothing saying why.
+    """
+    src = tmp_path / "page.html"
+    src.write_bytes("<p>Bj\u00f6rk and Ma\u00f1ana</p>".encode("utf-8"))
+    assert len(src.read_bytes()) != len(src.read_text("utf-8"))
+
+    note = call("note_create", title="Paper")["note_id"]
+    call("attachment_put", note_id=note, path=str(src))
+    vault.calls.clear()
+    again = call("attachment_put", note_id=note, path=str(src))
+    assert again["changed"] is False
+    assert not [c for c in vault.calls if c[0] in ("POST", "PUT")]
+
+
+def test_a_changed_text_attachment_is_still_re_uploaded(vault, tmp_path):
+    """The comparison may only ever be wrong toward uploading."""
+    src = tmp_path / "page.html"
+    src.write_bytes("<p>Bj\u00f6rk</p>".encode("utf-8"))
+    note = call("note_create", title="Paper")["note_id"]
+    call("attachment_put", note_id=note, path=str(src))
+    src.write_bytes("<p>Bj\u00f6rk and Ma\u00f1ana</p>".encode("utf-8"))
+    assert call("attachment_put", note_id=note, path=str(src))["changed"] is True
+
+
+def test_content_that_is_not_text_at_all_is_uploaded_rather_than_skipped(
+        vault, tmp_path):
+    """A file this cannot decode answers with a length nothing equals, so the
+    caller uploads. That is today's behaviour, which is the point: a wrong
+    guess about an encoding costs a needless upload and can never make a real
+    change look unchanged."""
+    src = tmp_path / "page.html"
+    src.write_bytes(b"\xff\xfe<\x00p\x00>\x00")
+    note = call("note_create", title="Paper")["note_id"]
+    first = call("attachment_put", note_id=note, path=str(src))
+    assert first["created"] is True
+    assert call("attachment_put", note_id=note, path=str(src))["changed"] is True
+
+
 def test_bytes_and_a_path_together_are_a_refusal(vault):
     note = call("note_create", title="Paper")["note_id"]
     for args in ({}, {"path": "/tmp/x", "content_b64": "eA=="}):

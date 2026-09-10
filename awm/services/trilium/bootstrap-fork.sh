@@ -108,6 +108,19 @@ if [ -d "$WS/projects/$PROJECT/$DEFAULT_BRANCH" ]; then
     git -C "$BARE" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
 fi
 
+# The vault's runtime paths, excluded in the bare rather than in a tracked
+# `.gitignore`: upstream owns the root `.gitignore`, and anything added there is
+# a merge conflict at every version bump. `.awm/` is already excluded by
+# `scope create`. Anchored, so only the worktree root's copies match.
+#
+# `data/vault/` itself is not here — DVC writes a `.gitignore` beside the chunks
+# it pins, and the pins are tracked on purpose.
+EX="$BARE/info/exclude"
+for pattern in '/live/' '/data/vault/.notes.incoming/' \
+               '/data/vault/.notes.retired/' '/data/vault/.zotero-sync.lock'; do
+    grep -qxF "$pattern" "$EX" 2>/dev/null || echo "$pattern" >> "$EX"
+done
+
 # Fail loudly rather than leave a half-shaped project: every later step assumes
 # this exact layout.
 test -n "$(git -C "$BARE" rev-parse --verify --quiet "$DEFAULT_BRANCH")"

@@ -16,10 +16,13 @@ from __future__ import annotations
 import contextlib
 import errno
 import fcntl
+import hashlib
 import html
+import json
 import logging
 import os
-import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +39,7 @@ log = logging.getLogger("awm.zotero.sync")
 VAULT_SCOPE = Path(os.environ.get("TRILIUM_VAULT_SCOPE")
                    or (Path(os.environ.get("AWM_WORKSPACE",
                                            Path.home() / "agentic_workspace"))
-                       / "projects" / "vault" / "main"))
+                       / "projects" / "trilium" / "release"))
 
 #: Where the library lands in the vault. One note, and everything under it.
 LIBRARY_NOTE = os.environ.get("ZOTERO_LIBRARY_NOTE", "Library")
@@ -58,6 +61,37 @@ ROOT_LABEL = "zoteroLibrary"
 #: tick with nothing to do costs one search instead of thousands of calls.
 APPLIED_LABEL = "zoteroApplied"
 
+#: What a note was last written from. The per-item cursor, and the reason
+#: landing one new paper no longer rewrites the other eight hundred.
+#:
+#: **Not Zotero's own item version.** A stored file finishing its download
+#: changes what the note should say without moving the version of the item that
+#: records it — which is exactly why `pull` grew a `force`. A version cursor
+#: would skip that paper's file for ever. This digests the whole bundle record
+#: instead, so it moves when the version moves, when a file appears, when
+#: collection membership changes, and when the library is renamed.
+STAMP_LABEL = "zoteroStamp"
+
+#: Bumped by hand whenever `_title`, `_card` or `_labels` change what a note
+#: looks like.
+#:
+#: **CAUTION** Forgetting is silent and total. Without it, changing how a note
+#: is rendered leaves every note in the vault carrying a stamp that says it is
+#: current, and only a forced pass ever notices.
+RENDER = "1"
+
+#: Zotero's own version for the item, written for a person to read and for the
+#: push path to order two updates by. Never the skip decision — see
+#: `STAMP_LABEL` for why it cannot be.
+VERSION_LABEL = "zoteroVersion"
+
+#: The note that says what the mirror last did, and the label on the root that
+#: points at it. A stalled mirror and an idle one are otherwise identical from
+#: inside the vault, which is how this one ran dead for days unnoticed.
+STATUS_LABEL = "zoteroStatus"
+STATUS_POINTER = "zoteroStatusNote"
+STATUS_NOTE = "Zotero mirror"
+
 
 def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
     return bundle_mod.Bundle(scope or VAULT_SCOPE)
@@ -65,14 +99,6 @@ def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
 
 class Busy(RuntimeError):
     """Another sync holds the lock."""
-
-
-class Unreachable(RuntimeError):
-    """The node holding the vault could not be reached.
-
-    Ordinary rather than exceptional: the far node reboots, the link drops.
-    A ship that fails leaves the far node serving the last good mirror.
-    """
 
 
 class RootError(RuntimeError):
@@ -150,40 +176,46 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
     libraries = source.libraries()
     now = {lib["id"]: source.library_version(lib["id"]) for lib in libraries}
-    moved = [lib for lib in libraries if force or now[lib["id"]] != had.get(lib["id"])]
+    # Risen, not merely different. Versions are assigned by the service and only
+    # ever go up, so a library reporting a lower one is a reader that has fallen
+    # behind rather than a library that has changed. Re-reading from it rewrote
+    # the bundle backwards, and the removal pass then retracted every paper the
+    # bundle had and the reader did not.
+    moved = [lib for lib in libraries
+             if force or now[lib["id"]] > had.get(lib["id"], -1)]
+    behind = sorted(lib["id"] for lib in libraries
+                    if now[lib["id"]] < had.get(lib["id"], -1))
+    if behind:
+        log.warning("zotero: %s reports a lower version than the bundle holds; "
+                    "not reading it", ", ".join(behind))
     if not moved:
-        out.update({"versions": now, "changed": False,
+        out.update({"versions": now, "changed": False, "behind": behind,
                     "detail": "no library has moved"})
         return out
 
-    stored = source.stored_files()
     by_library = {lib["id"]: lib["name"] for lib in libraries}
     kept = _kept(previous, {lib["id"] for lib in moved})
+    # A library that moved is read whole rather than by delta. It is a handful
+    # of pages, and it is what lets the apply keep treating absence as a
+    # removal: a partial read cannot tell a paper that left from one it was
+    # simply not sent.
     parts = [kept] + [
         bundle_mod.normalize(source.items(lib["id"]),
                              source.collections(lib["id"]),
-                             stored, library=lib["id"],
+                             {}, library=lib["id"],
                              library_name=lib["name"])
         for lib in moved]
-    payload = b.write(bundle_mod.merge(parts, now))
+    # The cursor is monotone even when a reader is not, so a library that went
+    # backwards keeps the higher number and stops being read until it catches up.
+    effective = {k: max(now.get(k, 0), had.get(k, 0)) for k in {*now, *had}}
+    payload = b.write(bundle_mod.merge(parts, effective))
 
-    wanted = {f"{item['library']}/{key}"
-              for item in payload["items"]
-              for key in item.get("files", {})}
-    missing = sorted(
-        (f"{item['library']}/{key}", key, name)
-        for item in payload["items"]
-        for key, name in item.get("files", {}).items()
-        if not b.file_for(f"{item['library']}/{key}", name).is_file())
-    fetched = _fetch(b, missing)
-    dropped = b.prune_files(wanted)
-
-    out.update({"versions": now, "changed": True,
+    out.update({"versions": effective, "read_versions": now, "changed": True,
+                "behind": behind,
                 "read": [lib["name"] for lib in moved],
                 "libraries": {by_library[k]: v for k, v in now.items()},
                 "items": len(payload["items"]),
-                "collections": len(payload["collections"]),
-                "files_fetched": fetched, "files_dropped": dropped})
+                "collections": len(payload["collections"])})
     if commit:
         out["git"] = _commit(b, "zotero: library at "
                                 + ", ".join(f"{by_library[k]} {v}"
@@ -193,8 +225,7 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
 def run(vault, scope: Path | None = None, *, force: bool = False,
         parent: str = "root", commit: bool = True,
-        may_create: bool = True, apply_here: bool = True,
-        ship_to: str = "") -> dict[str, Any]:
+        may_create: bool = True) -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
     Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
@@ -209,19 +240,9 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     with exclusive(scope) as b:
         pulled = _pull(b, force=force, commit=commit)
         out: dict[str, Any] = {"pull": pulled}
-        if pulled.get("changed") and apply_here:
+        if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
                                   may_create=may_create, force=force)
-        if pulled.get("changed") and ship_to:
-            host, remote_scope = destination_parts(ship_to)
-            try:
-                out["ship"] = _ship(b, host, remote_scope)
-            except Unreachable as e:
-                # Reported, not raised. The far node being asleep is ordinary,
-                # the same way an unreachable library already is, and it leaves
-                # that node serving the last good mirror rather than none.
-                out["ship"] = {"shipped": False, "detail": str(e)[:300]}
-                log.info("zotero: could not ship to %s: %s", host, e)
         return out
 
 
@@ -243,24 +264,6 @@ def _kept(previous: dict[str, Any], reread: set[str]) -> dict[str, Any]:
     }
 
 
-def _fetch(b: bundle_mod.Bundle, missing: list[tuple[str, str, str]]) -> int:
-    """Copy the stored files the bundle is short of, one library at a time.
-
-    Grouped because the copy is one archive stream per call and Zotero files
-    everything under a single flat `storage/`, so the source keys are bare
-    while the destination is nested by library.
-    """
-    got = 0
-    by_library: dict[str, list[tuple[str, str]]] = {}
-    for ref, key, name in missing:
-        by_library.setdefault(ref.rsplit("/", 1)[0], []).append((key, name))
-    for library, wanted in by_library.items():
-        into = b.files / library
-        source.fetch_files([k for k, _ in wanted], into)
-        got += len([1 for k, n in wanted if (into / k / n).is_file()])
-    return got
-
-
 def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
     """Pin the chunk and commit it.
 
@@ -276,98 +279,6 @@ def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
     sha = autocommit.pin_chunk(b.scope, bundle_mod.CHUNK, "awm", message)
     return {"committed": bool(sha), "rev": sha,
             "detail": None if sha else "nothing changed"}
-
-
-# -- ship --------------------------------------------------------------------
-
-
-#: Long enough for a slow link, short enough that a wedged ssh does not hold
-#: the mirror's lock through the next tick.
-SHIP_TIMEOUT_S = 600.0
-
-
-def _run(argv: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess:
-    """One place for the subprocess call, so a test can watch the command line
-    without a network."""
-    return subprocess.run(argv, input=stdin, capture_output=True, text=True,
-                          timeout=SHIP_TIMEOUT_S, check=False)
-
-
-def _rsync_argv(source_path: Path, host: str, remote_dir: str) -> list[str]:
-    """The command that carries the library.
-
-    `--rsync-path` is the house idiom for this pair of nodes: ssh lands as an
-    unprivileged user who cannot read `/var/lib/awm` at all, so the *remote*
-    rsync is the thing that has to run as the service account.
-
-    `--chmod` is not cosmetic. `library.json` is a read-only hardlink into the
-    DVC cache, and `-a` would faithfully carry mode 444 across — leaving the
-    far node a bundle its own pull could never replace.
-    """
-    return ["rsync", "-a", "--chmod=F644",
-            "--rsync-path=sudo -n -u awm rsync",
-            str(source_path), f"{host}:{remote_dir}/"]
-
-
-def destination_parts(destination: str) -> tuple[str, str]:
-    """`host:/path/to/vault/scope`, split and checked.
-
-    Checked at the seam rather than at the rsync, because a destination with no
-    path silently becomes the far node's filesystem root.
-    """
-    host, _, remote_scope = destination.partition(":")
-    remote_scope = remote_scope.rstrip("/")
-    if not host or not remote_scope.startswith("/"):
-        raise ValueError(
-            f"ship destination {destination!r} is not host:/path — it names "
-            f"the vault scope on the far node, e.g. "
-            f"sirius:/var/lib/awm/projects/vault/main")
-    return host, remote_scope
-
-
-def ship(destination: str, scope: Path | None = None) -> dict[str, Any]:
-    """Carry `library.json` to the node that holds the vault.
-
-    The third leg the service always implied: pull on the node with the
-    library, ship, apply on the node with the vault. It is a verb rather than a
-    script so that it takes the same lock the pull half does: a ship that ran
-    while a pull was mid-pass would carry a bundle whose stored files had been
-    pruned for a library the JSON no longer describes.
-
-    Only the JSON travels. The stored files are two orders of magnitude larger
-    and the apply side already skips a file the bundle does not hold, so a node
-    that receives only this gets a complete mirror without the PDFs.
-
-    `destination` is `host:/path/to/vault/scope` — the far node's vault scope,
-    which is where that node's own bundle reader already looks. Spelled in full
-    rather than derived, because the scope's directory is named per host and a
-    guess that is wrong writes a library somewhere nobody reads.
-    """
-    host, remote_scope = destination_parts(destination)
-    with exclusive(scope) as b:
-        return _ship(b, host, remote_scope)
-
-
-def _ship(b: bundle_mod.Bundle, host: str, remote_scope: str) -> dict[str, Any]:
-    if not b.exists:
-        raise FileNotFoundError(f"no bundle at {b.root} — nothing to ship")
-    remote_dir = f"{remote_scope}/{bundle_mod.CHUNK}"
-    # A shell fed on stdin, never an argument string: `sudo -u` runs one
-    # command, so a `&&` written as an argument would be interpreted by the
-    # calling user's shell and silently run under the wrong identity.
-    made = _run(["ssh", host, "sudo -n -u awm bash -s"],
-                stdin=f"test -d {remote_scope} && mkdir -p {remote_dir}\n")
-    if made.returncode != 0:
-        raise Unreachable(
-            f"{host}:{remote_scope} is not a vault scope this node can reach: "
-            f"{(made.stderr or made.stdout).strip()[:300]}")
-    sent = _run(_rsync_argv(b.library_json, host, remote_dir))
-    if sent.returncode != 0:
-        raise Unreachable(
-            f"rsync to {host} failed: "
-            f"{(sent.stderr or sent.stdout).strip()[:300]}")
-    return {"shipped": True, "host": host, "remote": remote_dir,
-            "digest": b.digest, "bytes": b.library_json.stat().st_size}
 
 
 # -- apply -------------------------------------------------------------------
@@ -504,7 +415,7 @@ def apply(vault, scope: Path | None = None, *,
           parent: str = "root", may_create: bool = True,
           force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """Write the bundle into the vault: collections as a tree, one note per
-    reference, each stored file attached.
+    reference with its citation fields as labels.
 
     Matched on `#zoteroKey`. A note somebody writes inside the library carries
     none, so it is invisible to every pass — and an item that has left Zotero
@@ -523,13 +434,340 @@ def apply(vault, scope: Path | None = None, *,
                       force=force)
 
 
+def _stamp(item: dict) -> str:
+    """A fingerprint of everything the note is rendered from.
+
+    Over the whole bundle record, because the record is the only input: title,
+    card and labels are all functions of it. So the fingerprint is a strict
+    superset of every narrower cursor, and the awkward cases — a file that
+    arrives after the item stopped changing, a paper filed into a new
+    collection — need no special handling at all.
+
+    Prefixed by `RENDER` so that changing the renderer invalidates every stamp
+    at once. A digest alone cannot see that the code around it moved.
+    """
+    blob = json.dumps(item, sort_keys=True, ensure_ascii=False)
+    return f"{RENDER}:{hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass
+class Survey:
+    """What the vault already holds, read once, before anything is written.
+
+    Three searches and no walk. Each one already carries the whole of what it
+    found — every note's own labels and its current parents — so the comparisons
+    the pass used to make by asking are made here instead, for nothing.
+    """
+
+    root: str
+    root_from: str
+    root_labels: dict[str, str] = field(default_factory=dict)
+    #: `#zoteroKey` value -> the notes carrying it.
+    items: dict[str, list[dict]] = field(default_factory=dict)
+    folders: dict[str, list[dict]] = field(default_factory=dict)
+    shelves: dict[str, list[dict]] = field(default_factory=dict)
+
+
+def _survey(vault, root: str, root_from: str,
+            root_labels: dict[str, str]) -> Survey:
+    return Survey(root=root, root_from=root_from, root_labels=root_labels,
+                  items=vault.scan(root, KEY_LABEL),
+                  folders=vault.scan(root, COLLECTION_LABEL),
+                  shelves=vault.scan(root, LIBRARY_LABEL))
+
+
+def _first(found: dict[str, list[dict]]) -> dict[str, dict]:
+    """One note per value, taking any duplicate as read rather than removing it.
+
+    What the push path uses. It sees part of the library, and a second note for
+    a key is indistinguishable from a note it simply was not told about, so
+    removing one is not its call to make.
+    """
+    return {value: notes[0] for value, notes in found.items() if notes}
+
+
+def _collapse(vault, found: dict[str, list[dict]]) -> tuple[dict[str, dict], int]:
+    """One note per value, deleting any second copy of one the mirror owns.
+
+    Taking the first and ignoring the rest leaves a doubled paper in the vault
+    for ever, because every later pass makes the same choice and never looks at
+    the other.
+
+    **A duplicate is invisible to the stamp.** The second copy carries the same
+    current fingerprint as the first, so this cannot be folded into the skip and
+    has to keep looking at everything the scan found.
+    """
+    doubled = 0
+    for notes in found.values():
+        for extra in notes[1:]:
+            vault.delete(extra["note_id"])
+            doubled += 1
+    return _first(found), doubled
+
+
+def _ensure_shelves(vault, survey: Survey, known: dict[str, dict],
+                    items: list[dict]) -> tuple[dict[str, str], int]:
+    """One note per library, named as Zotero names it.
+
+    Found by its label, not by its title. Resolving a title under the root
+    walked every child of the root on every pass, once per library — and
+    renaming a shelf in the interface made the next pass create a second one
+    beside it, while the first kept the label and the papers.
+    """
+    named: dict[str, str] = {}
+    for item in items:
+        if item.get("library"):
+            named.setdefault(item["library"],
+                             item.get("library_name") or item["library"])
+    out: dict[str, str] = {}
+    made = 0
+    for library, name in sorted(named.items(), key=lambda kv: kv[1]):
+        have = known.get(library)
+        if have is None:
+            out[library] = vault.create(parent=survey.root, title=name,
+                                        type="book",
+                                        labels={LIBRARY_LABEL: library})
+            made += 1
+            continue
+        note_id = have["note_id"]
+        if have["title"] != name:
+            vault.update(note_id, title=name)
+        if sorted(set(have["parents"])) != [survey.root]:
+            vault.place(note_id, [survey.root])
+        out[library] = note_id
+    return out, made
+
+
+def _ensure_collections(vault, survey: Survey, known: dict[str, dict],
+                        shelves: dict[str, str],
+                        tree: list[dict]) -> tuple[dict[str, str], int, int]:
+    """Zotero's collection tree as notes, parents before children.
+
+    Ordered by depth rather than recursed, because Zotero returns collections
+    in no particular order and a child made before its parent would land at the
+    top of the library and stay there.
+
+    Title and placement are compared against what the scan already reported, so
+    a tree that has not moved costs nothing. That is also why a renamed or moved
+    collection needs no cursor of its own: the papers inside it keep the same
+    parent note, so none of them is touched.
+    """
+    by_ref = {c["ref"]: c for c in tree}
+
+    def depth(ref: str, guard: int = 0) -> int:
+        parent = by_ref.get(ref, {}).get("parent") or ""
+        if not parent or parent not in by_ref or guard > 50:
+            return 0
+        return 1 + depth(parent, guard + 1)
+
+    made: dict[str, str] = {}
+    created = moved = 0
+    for c in sorted(tree, key=lambda c: (depth(c["ref"]), c["name"])):
+        shelf = shelves.get(c.get("library", ""), survey.root)
+        under = made.get(c["parent"], shelf) if c["parent"] else shelf
+        have = known.get(c["ref"])
+        if have is None:
+            note_id = vault.create(parent=under, title=c["name"], type="book",
+                                   labels={COLLECTION_LABEL: c["ref"]})
+            created += 1
+        else:
+            note_id = have["note_id"]
+            if have["title"] != c["name"]:
+                vault.update(note_id, title=c["name"])
+            if sorted(set(have["parents"])) != [under]:
+                vault.place(note_id, [under])
+                moved += 1
+        made[c["ref"]] = note_id
+    return made, created, moved
+
+
+def _upsert(vault, survey: Survey,
+            known: dict[str, dict], items: list[dict],
+            collections: list[dict], *,
+            force: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
+    """Make these papers and these collections true, and delete nothing.
+
+    One code path for both callers: the reconcile pass hands it the whole
+    library, the push path hands it what just changed. **Absence means nothing
+    here.** A caller holding part of the library must not be able to conclude
+    anything from a paper it was not given, so every removal lives in `_retire`
+    and only the caller that can see everything runs it.
+    """
+    shelves, shelves_made = _ensure_shelves(vault, survey, _first(survey.shelves),
+                                            items)
+    folders, folders_made, folders_moved = _ensure_collections(
+        vault, survey, _first(survey.folders), shelves, collections)
+
+    # `unchanged`, not `skipped`: the root's digest guard already answers
+    # "this whole pass had nothing to do" under that name, and one word meaning
+    # two things in one result is how a reader draws the wrong conclusion.
+    out: dict[str, Any] = {"created": 0, "updated": 0, "unchanged": 0,
+                           "replaced": 0}
+    #: The paper worth linking to from the status note: the newest thing this
+    #: pass made, falling back to the last thing it changed.
+    newest: tuple[int, str, str] | None = None
+    touched_last: tuple[str, str] | None = None
+    for item in items:
+        home = shelves.get(item.get("library", ""), survey.root)
+        wanted = sorted({folders[c] for c in item.get("collections") or []
+                         if c in folders} or {home})
+        have = known.get(item["ref"])
+        stamp = _stamp(item)
+        fresh = (have is not None and not force
+                 and have["labels"].get(STAMP_LABEL) == stamp)
+
+        if have is None:
+            # Created under the parent it belongs to, rather than created and
+            # then moved. On a first pass that is one fewer branch write and
+            # one fewer note read per paper.
+            note_id = vault.create(
+                parent=wanted[0], title=_title(item), content=_card(item),
+                labels={KEY_LABEL: item["ref"],
+                        VERSION_LABEL: str(item.get("version") or 0),
+                        **_labels(item)})
+            out["created"] += 1
+            placed = [wanted[0]]
+            rank = (int(item.get("version") or 0), note_id, _title(item))
+            if newest is None or rank[0] >= newest[0]:
+                newest = rank
+        else:
+            note_id = have["note_id"]
+            placed = sorted(set(have["parents"]))
+            if fresh:
+                out["unchanged"] += 1
+            else:
+                vault.update(
+                    note_id, title=_title(item), content=_card(item),
+                    labels={VERSION_LABEL: str(item.get("version") or 0),
+                            **_labels(item)})
+                out["updated"] += 1
+                touched_last = (note_id, _title(item))
+
+        # Placement is checked on every pass whatever the stamp says, because
+        # the scan already reported where the note is and comparing costs
+        # nothing. It is also what puts back a paper somebody dragged in the
+        # interface, which no cursor would ever notice.
+        if placed != wanted:
+            vault.place(note_id, wanted)
+            if have is not None:
+                out["replaced"] += 1
+
+        if not fresh:
+            # Last, after the file and after the placement. A stamp written with
+            # the content would mark a paper whose file never arrived, or whose
+            # placement failed, as current — and nothing revisits it.
+            vault.set_label(note_id, STAMP_LABEL, stamp)
+
+    out.update({"collections": len(folders), "collections_created": folders_made,
+                "collections_moved": folders_moved,
+                "libraries": len(shelves), "libraries_created": shelves_made,
+                "newest": ({"note_id": newest[1], "title": newest[2]}
+                           if newest else
+                           {"note_id": touched_last[0], "title": touched_last[1]}
+                           if touched_last else None)})
+    return out, folders
+
+
+#: What counts as having done something. A pass that changed nothing writes no
+#: status, so a quiet mirror puts no revision on the note and costs no call.
+DID_SOMETHING = ("created", "updated", "replaced", "removed",
+                 "deduplicated", "collections_created", "collections_moved",
+                 "libraries_created")
+
+
+def _status_note(vault, survey: Survey) -> tuple[str, bool]:
+    """The note the mirror writes its own state into, made if there is none.
+
+    Found by a pointer label on the root, which `_labelled_root` has already
+    read — so on the ordinary pass this costs nothing at all. Only a vault that
+    has never had one, or has lost it, pays a search.
+
+    **Created, never ensured.** `ensure` resolves a title under the root and
+    would adopt a note somebody happened to call the same thing, which is the
+    trap the shelf step already documents. The pointer is the identity; the
+    title is decoration and carries a timestamp precisely because a changed
+    title is the cheapest thing a person watching the tree notices.
+    """
+    pointed = survey.root_labels.get(STATUS_POINTER) or ""
+    if pointed:
+        return pointed, False
+    hits = [h for h in vault.labelled(STATUS_LABEL)]
+    if hits:
+        return hits[0]["note_id"], True
+    return vault.create(parent=survey.root, title=STATUS_NOTE, type="text",
+                        labels={STATUS_LABEL: "1"}), True
+
+
+def _status_body(out: dict[str, Any], versions: Any) -> str:
+    e = html.escape
+    counts = [(name, out.get(name)) for name in
+              ("created", "updated", "unchanged", "replaced",
+               "removed", "deduplicated")]
+    rows = [f"<tr><th>{e(n)}</th><td>{e(str(v))}</td></tr>"
+            for n, v in counts if v]
+    parts = [f"<p>Last change {e(_now())} · "
+             f"from {e(str(out.get('source') or 'a reconcile'))}.</p>",
+             "<table>", *rows, "</table>"]
+    if versions:
+        parts.append("<p>Library versions: "
+                     + e(", ".join(f"{k} {v}" for k, v in
+                                   sorted((versions or {}).items())))
+                     + "</p>")
+    newest = out.get("newest")
+    if newest and newest.get("note_id"):
+        parts.append(f'<p>Newest: <a href="#root/{e(newest["note_id"])}">'
+                     f'{e(newest["title"])}</a></p>')
+    for name, label in (("outside_root", "keyed notes outside the library"),
+                        ("stale_collections", "collections Zotero no longer has")):
+        value = out.get(name)
+        if value:
+            parts.append(f"<p>{e(label)}: {e(str(value))}</p>")
+    return "".join(parts)
+
+
+def _write_status(vault, survey: Survey, out: dict[str, Any],
+                  versions: Any) -> dict[str, Any] | None:
+    """Say in the vault what the mirror just did. One call, and none at all on a
+    pass that changed nothing."""
+    if not any(out.get(name) for name in DID_SOMETHING):
+        return None
+    note_id, fresh_pointer = _status_note(vault, survey)
+    summary = ", ".join(f"{out[n]} {n}" for n in
+                        ("created", "updated", "removed") if out.get(n)) \
+        or "no papers changed"
+    vault.update(note_id, title=f"{STATUS_NOTE} — {_now()} · {summary}",
+                 content=_status_body(out, versions))
+    if fresh_pointer:
+        vault.set_label(survey.root, STATUS_POINTER, note_id)
+    return {"note_id": note_id, "summary": summary}
+
+
+def _retire(vault, known: dict[str, dict], seen: set[str]) -> int:
+    """The papers the mirror owns that the library no longer names.
+
+    The only place a note is removed for being absent, and so the only place a
+    caller has to be holding the whole library to be allowed to call.
+    """
+    removed = 0
+    for ref, note in known.items():
+        if ref not in seen:
+            vault.delete(note["note_id"])
+            removed += 1
+    return removed
+
+
 def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
           may_create: bool) -> dict[str, Any]:
     """What an apply would do, writing nothing.
 
-    Two searches and a file read. There is deliberately no would-update count:
-    knowing it means rendering and comparing every note, which is the pass this
-    exists to avoid running.
+    Three searches and a file read. It can now say what it would *update* as
+    well as what it would create, because the fingerprint that decides is
+    already on the note and already in the scan — the render-and-compare this
+    used to have to avoid is exactly the work the stamp removed.
     """
     if not b.exists:
         raise FileNotFoundError(f"no bundle at {b.root}")
@@ -540,21 +778,46 @@ def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
     hit = _labelled_root(vault, may_create=may_create)
     root = hit["note_id"] if hit else ""
     labels = hit["labels"] if hit else {}
-    known = vault.owned_all(root, KEY_LABEL) if root else {}
+    survey = (_survey(vault, root, "label", labels) if root
+              else Survey(root="", root_from="would create"))
+    known = _first(survey.items)
+    folders = _first(survey.folders)
+    shelves = _first(survey.shelves)
+
+    def would(item: dict) -> str:
+        have = known.get(item["ref"])
+        if have is None:
+            return "create"
+        if have["labels"].get(STAMP_LABEL) != _stamp(item):
+            return "update"
+        wanted = sorted({folders[c]["note_id"]
+                         for c in item.get("collections") or []
+                         if c in folders}
+                        or {(shelves.get(item.get("library", "")) or {})
+                            .get("note_id", root)})
+        return "replace" if sorted(set(have["parents"])) != wanted else "skip"
+
+    verdicts = [would(i) for i in items]
     seen = {i["ref"] for i in items}
-    digest = b.digest
+    tree = library.get("collections") or []
     return {
         "dry_run": True,
-        "library_note": root, "root_from": "label" if root else "would create",
-        "digest": digest, "applied": labels.get(APPLIED_LABEL) or "",
-        "up_to_date": labels.get(APPLIED_LABEL) == digest,
+        "library_note": root, "root_from": survey.root_from,
+        "digest": b.digest, "applied": labels.get(APPLIED_LABEL) or "",
+        "up_to_date": labels.get(APPLIED_LABEL) == b.digest,
         "would_visit": len(items),
-        "would_create": len([i for i in items if i["ref"] not in known]),
+        "would_create": verdicts.count("create"),
+        "would_update": verdicts.count("update"),
+        "would_replace": verdicts.count("replace"),
+        "would_leave_alone": verdicts.count("skip"),
         "would_delete": len([r for r in known if r not in seen]),
-        "would_deduplicate": sum(len(ids) - 1 for ids in known.values()),
-        "collections": len(library.get("collections") or []),
+        "would_deduplicate": sum(len(n) - 1 for n in survey.items.values()),
+        "collections": len(tree),
+        "stale_collections": sorted(r for r in survey.folders
+                                    if r not in {c["ref"] for c in tree}),
         "outside_root": _outside(vault,
-                                 sum(len(ids) for ids in known.values())),
+                                 sum(len(n) for n in survey.items.values())),
+        "calls": dict(getattr(vault, "calls", {})),
     }
 
 
@@ -573,44 +836,40 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
     if not force and labels.get(APPLIED_LABEL) == digest:
         return {"library_note": root, "root_from": source_of_root,
                 "skipped": True, "digest": digest, "items": len(items),
-                "detail": "the vault already holds this bundle"}
+                "detail": "the vault already holds this bundle",
+                "calls": dict(getattr(vault, "calls", {}))}
+
+    survey = _survey(vault, root, source_of_root, labels)
+    known, doubled = _collapse(vault, survey.items)
 
     # One subtree per library. Two libraries may both have a collection called
     # "papers", and merging them would put a shared group's reading list inside
     # somebody's personal one with nothing saying it had happened.
-    shelves = _ensure_shelves(vault, root, items)
-    folders = _ensure_collections(vault, shelves, root,
-                                  library.get("collections") or [])
-    known, doubled = _collapse(vault, root, KEY_LABEL)
+    out, _folders = _upsert(vault, survey, known, items,
+                            library.get("collections") or [], force=force)
 
-    made = updated = attached = 0
-    for item in items:
-        home = shelves.get(item.get("library", ""), root)
-        note_id, was_new, was_changed = _upsert_item(vault, home, item, known)
-        made += was_new
-        updated += was_changed
-        attached += _attach(vault, b, note_id, item)
-        wanted = [folders[c] for c in item.get("collections") or []
-                  if c in folders] or [home]
-        vault.place(note_id, wanted)
-
-    seen = {i["ref"] for i in items}
-    removed = 0
-    for ref, note_id in known.items():
-        if ref not in seen:
-            vault.delete(note_id)
-            removed += 1
+    removed = _retire(vault, known, {i["ref"] for i in items})
 
     # Last, and only here: a pass that died halfway must retry rather than
     # declare itself done.
     vault.set_label(root, APPLIED_LABEL, digest)
 
-    return {"library_note": root, "root_from": source_of_root,
-            "digest": digest, "items": len(items), "created": made,
-            "updated": updated, "attached": attached, "removed": removed,
-            "deduplicated": doubled, "collections": len(folders),
-            "libraries": len(shelves), "versions": library.get("versions"),
-            "outside_root": _outside(vault, len(items))}
+    out.update({"library_note": root, "root_from": source_of_root,
+                "digest": digest, "items": len(items), "removed": removed,
+                "deduplicated": doubled,
+                "versions": library.get("versions")})
+    # The one search left that reads the whole vault, and it produces a single
+    # integer. A stray keyed subtree appears when the root moves, which is
+    # exactly when things get created — so a pass that changed nothing has
+    # nothing to find and does not look.
+    if out["created"] or removed or doubled or force:
+        out["outside_root"] = _outside(vault, len(items))
+    else:
+        out["outside_root"] = None
+    out["status_note"] = _write_status(vault, survey, out,
+                                       library.get("versions"))
+    out["calls"] = dict(getattr(vault, "calls", {}))
+    return out
 
 
 def _outside(vault, inside: int) -> int:
@@ -624,87 +883,3 @@ def _outside(vault, inside: int) -> int:
     """
     everywhere = sum(len(ids) for ids in vault.owned_all(None, KEY_LABEL).values())
     return max(0, everywhere - inside)
-
-
-def _collapse(vault, root: str, label: str) -> tuple[dict[str, str], int]:
-    """One note per key, deleting any second copy of one the mirror owns.
-
-    Taking the first and ignoring the rest leaves a doubled paper in the vault
-    for ever, because every later pass makes the same choice and never looks at
-    the other. The oldest is kept: it is the one a person may already have
-    linked to.
-    """
-    every = vault.owned_all(root, label)
-    doubled = 0
-    for extras in every.values():
-        for note_id in extras[1:]:
-            vault.delete(note_id)
-            doubled += 1
-    return {key: ids[0] for key, ids in every.items()}, doubled
-
-
-def _ensure_shelves(vault, root: str, items: list[dict]) -> dict[str, str]:
-    """One note per library, named as Zotero names it."""
-    named = {}
-    for item in items:
-        if item.get("library"):
-            named.setdefault(item["library"], item.get("library_name")
-                             or item["library"])
-    out = {}
-    for library, name in sorted(named.items(), key=lambda kv: kv[1]):
-        note_id = vault.ensure(parent=root, title=name, content="")
-        vault.set_label(note_id, LIBRARY_LABEL, library)
-        out[library] = note_id
-    return out
-
-
-def _ensure_collections(vault, shelves: dict[str, str], root: str,
-                        tree: list[dict]) -> dict[str, str]:
-    """Zotero's collection tree as notes, parents before children.
-
-    Ordered by depth rather than recursed, because Zotero returns collections
-    in no particular order and a child made before its parent would land at the
-    top of the library and stay there.
-    """
-    by_ref = {c["ref"]: c for c in tree}
-
-    def depth(ref: str, guard: int = 0) -> int:
-        parent = by_ref.get(ref, {}).get("parent") or ""
-        if not parent or parent not in by_ref or guard > 50:
-            return 0
-        return 1 + depth(parent, guard + 1)
-
-    known, _ = _collapse(vault, root, COLLECTION_LABEL)
-    made: dict[str, str] = {}
-    for c in sorted(tree, key=lambda c: (depth(c["ref"]), c["name"])):
-        shelf = shelves.get(c.get("library", ""), root)
-        under = made.get(c["parent"], shelf) if c["parent"] else shelf
-        note_id = known.get(c["ref"])
-        if note_id is None:
-            note_id = vault.create(parent=under, title=c["name"], type="book",
-                                   labels={COLLECTION_LABEL: c["ref"]})
-        else:
-            vault.update(note_id, title=c["name"])
-            vault.place(note_id, [under])
-        made[c["ref"]] = note_id
-    return made
-
-
-def _upsert_item(vault, root: str, item: dict,
-                 known: dict[str, str]) -> tuple[str, int, int]:
-    title, body, labels = _title(item), _card(item), _labels(item)
-    note_id = known.get(item["ref"])
-    if note_id is None:
-        return (vault.create(parent=root, title=title, content=body,
-                             labels={KEY_LABEL: item["ref"], **labels}), 1, 0)
-    changed = vault.update(note_id, title=title, content=body, labels=labels)
-    return note_id, 0, int(changed)
-
-
-def _attach(vault, b: bundle_mod.Bundle, note_id: str, item: dict) -> int:
-    attached = 0
-    for key, name in (item.get("files") or {}).items():
-        path = b.file_for(f"{item['library']}/{key}", name)
-        if path.is_file() and vault.attach(note_id, path, title=name):
-            attached += 1
-    return attached
