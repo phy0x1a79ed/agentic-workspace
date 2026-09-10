@@ -44,6 +44,8 @@ def why_not(s: sessions.Session, *, version: str | None,
     """Why this session cannot be handed out, in a word a person can act on."""
     if version is None:
         return "no claude binary"
+    if not s.has_record:
+        return "deleted"
     if not sessions.is_ours(s):
         return "renamed"
     if s.tokens != 0:
@@ -71,7 +73,8 @@ def status(loop: Any = None) -> dict[str, Any]:
     # answer, and dropping it the instant it is renamed answers nothing.
     prefix = config.name_prefix()
     mine = [s for s in sessions.load()
-            if sessions.is_ours(s) or (s.seed_name or "").startswith(prefix)]
+            if s.has_record
+            and (sessions.is_ours(s) or (s.seed_name or "").startswith(prefix))]
     rows = []
     for s in mine:
         rows.append({

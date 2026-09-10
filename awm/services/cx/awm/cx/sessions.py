@@ -34,6 +34,9 @@ class Session:
 
     short: str
     # --- from the session's own state record (identity) ---
+    #: False when the record is absent, which is what `claude rm` leaves
+    #: behind for the moment before the daemon clears the roster entry.
+    has_record: bool
     name: str
     tokens: int
     intent: str
@@ -203,6 +206,7 @@ def _build(short: str, w: dict) -> Session:
     seed = dispatch.get("seed") if isinstance(dispatch.get("seed"), dict) else {}
     return Session(
         short=short,
+        has_record=bool(st),
         name=str(st.get("name") or ""),
         tokens=int(st.get("tokens") or 0),
         intent=str(st.get("intent") or ""),
