@@ -22,7 +22,8 @@ checkout the service account can read, and make the checkout's `.awm/`
 with `AWM_SERVICES` set to the services the host needs. `setup.sh` refuses
 to run when `AWM_WORKSPACE` names a different checkout, so a second install
 cannot land in a home directory by accident. `scripts/sirius/` is the worked
-example: `provision.sh`, `install-awm.sh`, `deploy.sh`.
+example — see [`scripts/sirius/README.md`](scripts/sirius/README.md) for how that
+host is provisioned, deployed to, verified and rolled back.
 
 ## Manual Install
 

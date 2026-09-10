@@ -14,8 +14,8 @@ import pytest
 
 pytestmark = [pytest.mark.smoke]
 
-from awm.reflection import (daemon_inject, permission_mode, session_target,
-                            tmux_inject)
+from awm.reflection import (daemon_inject, oc_inject, permission_mode,
+                            session_target, tmux_inject)
 
 
 # ---------------------------------------------------------------------------
@@ -93,11 +93,11 @@ def paste_and_submit(text, tgt, *, enter=True, opener):
     """
     with daemon_inject.open_lane(tgt, opener=opener) as conn:
         conn.write(text)
-        # The read-back is not optional garnish: pumping the socket is what
-        # surfaces an `auth-required`, so the sender's verification step doubles
-        # as the rejection check. Skipping it here would make a host that
-        # discarded our input look like a clean write.
-        conn.read_back()
+        # Not optional garnish: pumping the socket is what surfaces an
+        # `auth-required`, and it is the one verb on the writer protocol a lane
+        # may use to say it discarded what it was handed. Skipping it here would
+        # make a host that dropped our input look like a clean write.
+        conn.check_not_rejected()
         if enter:
             conn.commit()
 
@@ -203,20 +203,32 @@ def test_unrecognised_greeting_refuses():
         paste_and_submit("hi", target(), enter=False, opener=opener_for(sock))
 
 
-def test_this_lane_does_not_claim_its_read_back_is_evidence():
-    # The two lanes hand back different KINDS of thing, and this flag is the only
-    # place the difference is written down. `capture-pane` renders the current
-    # screen; this is a byte stream of the TUI's repaint deltas, and the TUI
-    # repaints the composer when it feels like it — measured on a live background
-    # session, an identical paste painted in 21ms into an empty composer and not
-    # at all within five seconds into one that already held text, both times
-    # having been delivered. A sender that reads silence here as failure withholds
-    # Enter from a session that got the paste, which is what killed background
-    # self-compaction on 2026-08-15.
+def test_no_lane_offers_the_sender_a_screen_to_judge_a_write_by():
+    # There is no read-back on the writer protocol and no flag saying whether to
+    # believe one. Both used to exist because the two lanes hand back different
+    # KINDS of thing — `capture-pane` renders the current screen, this is a byte
+    # stream of the TUI's repaint deltas — and the flag was how the sender knew
+    # which silence to trust. It turned out neither is trustworthy: the TUI
+    # repaints the composer when it feels like it (21ms into an empty composer,
+    # not at all within five seconds into one that already held text, both times
+    # delivered), and Claude Code paints no composer at all while it compacts.
     sock = FakeSock(ctl({"t": "hello", "replPid": 4242}))
     with daemon_inject.open_lane(target(), opener=opener_for(sock)) as conn:
-        assert conn.read_back_is_evidence is False
-    assert tmux_inject._TmuxWriter.read_back_is_evidence is True
+        assert not hasattr(conn, "read_back")
+        assert not hasattr(conn, "read_back_is_evidence")
+    assert not hasattr(tmux_inject._TmuxWriter, "read_back")
+    assert not hasattr(tmux_inject._TmuxWriter, "read_back_is_evidence")
+
+
+def test_every_lane_answers_the_rejection_check():
+    # The sender calls this between the write and the commit and must not be able
+    # to tell which lane it is holding. Only the daemon lane has anything to
+    # report; the others answer by not raising, which is the contract.
+    sock = FakeSock(ctl({"t": "hello", "replPid": 4242}))
+    with daemon_inject.open_lane(target(), opener=opener_for(sock)) as conn:
+        conn.check_not_rejected()
+    for cls in (tmux_inject._TmuxWriter, oc_inject._ServeWriter):
+        assert callable(getattr(cls, "check_not_rejected"))
 
 
 # ---------------------------------------------------------------------------

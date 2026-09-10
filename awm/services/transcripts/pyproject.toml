@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awm-transcripts"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AWM transcripts service: sweeps Claude Code session logs out of ~/.claude/projects into a gzipped archive, keeping each session's transcript and its sidecar tree together, and prunes the archive so it stops growing without bound."
+dependencies = [
+    "awm-config",
+    "awm-gatewayclient",
+    "awm-persistence",
+]
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-asyncio"]
+
+# The daily sweep. Not a CLI verb: a CLI verb reaches the service over the hub,
+# so a timer using one stops silently whenever the gateway is down. See
+# awm/transcripts/nightly.py.
+[project.scripts]
+awm-transcripts-sweep = "awm.transcripts.nightly:main"
+
+# PEP 420 namespace package: no top-level awm/__init__.py; the namespace dir is awm/transcripts/.
+[tool.setuptools.packages.find]
+include = ["awm.transcripts*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
