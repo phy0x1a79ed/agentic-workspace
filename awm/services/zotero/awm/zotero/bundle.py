@@ -1,16 +1,16 @@
 """The mirrored library on disk: what `pull` writes and `apply` reads.
 
-Two jobs sit either side of this module, and putting a file between them is
-what makes the mirror portable. `pull` needs the machine the Zotero desktop is
-on. `apply` needs the machine the vault is on. Today those are two different
-machines, and on sirius they can never be the same one. A bundle is the thing
-that travels: versioned by the commit that versions it, pinned by DVC like any
-other data in this workspace.
+**A full picture of every library, always — and that is what lets the read be
+partial.** `apply` retires a paper because the bundle no longer names it, so
+absence here is load-bearing. `fold` is the seam that keeps both true: a window
+read is merged into the library this file already describes, and nothing on the
+far side of that merge knows a read can be partial.
 
-It does not travel by merging a branch. Two hosts' vaults are separate
-repositories with unrelated histories, the vault declares no DVC remote, and
-`data/vault/.gitignore` excludes this chunk, so nothing carries these bytes but
-the `ship` verb — an rsync into the far node's own vault scope.
+The file also carries the cursor. `versions` holds one per library, so a node
+that loses its service state has not lost its place, and `whole_read` holds when
+each library was last read whole — outside the three keys `digest` covers,
+because a timestamp inside them would make every node re-apply the whole mirror
+to prove nothing had changed.
 
 **Shape.**
 

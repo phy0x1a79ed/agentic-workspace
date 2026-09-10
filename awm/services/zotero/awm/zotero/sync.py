@@ -1,14 +1,21 @@
 """Pull the library into the bundle, and apply the bundle to the vault.
 
-Two halves that never call each other, because they need two different
-machines: `pull` needs to reach the Zotero desktop, `apply` needs to reach the
-vault. On this node both are here; on sirius only the second can be, and the
-bundle is what crosses between them.
+Two halves with the bundle between them. `pull` reads Zotero and writes the
+bundle; `apply` reads the bundle and writes the vault. They meet nowhere else,
+which is what lets the read become incremental without the apply learning
+anything: `pull` folds a window into the whole library the bundle already holds,
+so `apply` goes on seeing a complete library and goes on retiring a paper by its
+absence from one.
 
-**Both halves are idempotent, and the first one is usually free.** Zotero's
-library carries a version that rises on any change, so a tick whose version has
-not moved costs one HTTP request and stops. That is what makes "periodic" cheap
-enough to actually be periodic.
+**Both halves are idempotent, and both are usually free.** A window read returns
+nothing when a library has not moved, and a paper whose fingerprint still matches
+its note is skipped without a call. That is what makes "periodic" cheap enough to
+actually be periodic, and what makes a push cost one request.
+
+The order of work inside a pass is a latency decision. Somebody is standing over
+a push, so anything they are not waiting for — the pin, the commit, the
+whole-vault census — happens after the paper is in the vault. Anything added
+here belongs after it too.
 """
 
 from __future__ import annotations
