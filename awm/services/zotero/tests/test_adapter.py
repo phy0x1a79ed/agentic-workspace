@@ -104,3 +104,33 @@ def test_an_unreachable_library_is_reported_not_raised(tmp_path, monkeypatch):
     out = asyncio.run(hub_adapter._h_status({}))
     assert out["library"]["reachable"] is False
     assert "behind" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_push_that_finds_the_lock_held_is_retried_not_dropped(
+        monkeypatch):
+    """The pass holding the lock may have read its libraries before this frame
+    arrived, and the flag is cleared before the pass. Dropping the frame here
+    leaves the paper for the floor tick, twenty minutes away."""
+    monkeypatch.setattr(hub_adapter, "SETTLE_S", 0)
+    monkeypatch.setattr(hub_adapter, "BUSY_RETRY_S", 0)
+
+    attempts: list[str] = []
+
+    async def _sync(args, as_=None):
+        attempts.append(args["trigger"])
+        if len(attempts) == 1:
+            raise hub_adapter.sync.Busy("another sync is running")
+        return {"pull": {"changed": False}}
+
+    monkeypatch.setattr(hub_adapter, "_h_sync", _sync)
+    hub_adapter.WOKEN.set()
+
+    task = asyncio.create_task(hub_adapter._push_loop())
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if len(attempts) >= 2:
+            break
+    task.cancel()
+
+    assert len(attempts) >= 2, "the busy push was dropped rather than retried"

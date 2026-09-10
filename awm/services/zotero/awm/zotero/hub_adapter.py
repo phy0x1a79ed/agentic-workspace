@@ -47,7 +47,15 @@ INTERVAL_S = float(os.environ.get("ZOTERO_SYNC_INTERVAL_S", "1200"))
 #: Several libraries can move together and a save is more than one write, so a
 #: pass fired on the first frame reads a library mid-change and then has to be
 #: told again. Waiting a moment collapses a burst into one pass.
-SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "2"))
+#:
+#: Half a second rather than two, because the trade inverted. A second pass used
+#: to cost a whole-library read; it now costs one small request, so waiting to
+#: avoid one is no longer worth a tenth of the delay a person feels. It is paid
+#: on every wake, the lone frame of a single save included.
+SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "0.5"))
+
+#: How long to wait before trying again when another pass holds the lock.
+BUSY_RETRY_S = float(os.environ.get("ZOTERO_BUSY_RETRY_S", "5"))
 
 #: Whether the timer runs at all. Off on a node that cannot reach the library,
 #: where every tick would be a logged failure saying so.
@@ -224,7 +232,10 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
         may_create=MAY_CREATE_ROOT,
         # What set this off, so the status note can say. A note whose whole job
         # is to tell you what happened must not guess at the half it knows.
-        trigger=(args.get("trigger") or "hand"))
+        trigger=(args.get("trigger") or "hand"),
+        # Which libraries the stream named. Absent means look at all of them,
+        # which is what the floor tick and a hand invocation both want.
+        only=(args.get("only") or None))
 
 
 HANDLERS = {
@@ -239,6 +250,14 @@ HANDLERS = {
 #: matters is that something changed, not how many times, and a pass reads
 #: whatever has moved by the time it runs.
 WOKEN = asyncio.Event()
+
+#: Which libraries the stream has named since the last pass started.
+#:
+#: A set rather than one name, because the loop coalesces a burst behind one
+#: flag. Saving to the personal library and to a group inside the settle window
+#: would otherwise leave whichever came first for the floor tick, twenty minutes
+#: away.
+NAMED: set[str] = set()
 
 STREAM = stream_mod.Stream(
     lambda library, version: _woken(library, version))
@@ -261,6 +280,7 @@ async def _woken(library: str, version: int) -> None:
                     "at": datetime.now(timezone.utc)
                     .isoformat(timespec="milliseconds"),
                     "since": time.monotonic()}
+    NAMED.add(library)
     WOKEN.set()
 
 
@@ -277,10 +297,15 @@ async def _push_loop() -> None:
             await WOKEN.wait()
             await asyncio.sleep(SETTLE_S)
             WOKEN.clear()
+            # Taken, not read: a frame arriving during the pass belongs to the
+            # next one, and putting these back is how a busy lock is retried.
+            named, NAMED_taken = sorted(NAMED), set(NAMED)
+            NAMED.clear()
             LAST["tick"] = "push"
             told_at = (LAST.get("told") or {}).get("since")
             try:
-                LAST["result"] = await _h_sync({"trigger": "push"}, None)
+                LAST["result"] = await _h_sync(
+                    {"trigger": "push", "only": named}, None)
                 LAST["error"] = None
                 if told_at is not None:
                     # The frame-to-note number, which is what a person feels.
@@ -292,9 +317,16 @@ async def _push_loop() -> None:
                 LAST["error"] = str(e)[:300]
                 log.info("zotero: library not reachable on this push: %s", e)
             except sync.Busy:
-                # The floor is mid-pass. It reads whatever moved anyway, so
-                # this one has nothing to add.
-                log.info("zotero: a sync was already running; leaving it to it")
+                # Not "it will pick this up anyway". The pass holding the lock
+                # may have read its libraries *before* this frame arrived, and
+                # the flag was cleared above, so dropping it here leaves the
+                # paper for the floor tick twenty minutes away. Put the flag
+                # back and wait for the other pass to let go.
+                log.info("zotero: a sync was already running; retrying in %ss",
+                         BUSY_RETRY_S)
+                NAMED.update(NAMED_taken)
+                WOKEN.set()
+                await asyncio.sleep(BUSY_RETRY_S)
         except Exception:  # noqa: BLE001 — never let the loop die
             LAST["error"] = "push pass failed; see the log"
             log.exception("zotero: push pass failed")

@@ -268,7 +268,7 @@ def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
     seed(scope, [item("AAA")])
     held: list[bool] = []
 
-    def _pull(b, *, force, commit, phases=None):
+    def _pull(b, *, force, commit, only=None, phases=None):
         try:
             with sync.exclusive(scope):
                 held.append(False)
@@ -281,13 +281,38 @@ def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
     assert held == [True], "the lock was not held while pulling"
 
 
+def test_the_pin_waits_for_the_vault(scope, monkeypatch):
+    """Somebody is waiting for the note, not for the pin.
+
+    Nothing in the apply reads git or DVC, so pinning first only makes a person
+    wait for a `dvc add`. Pinning afterwards also makes the pin mean more: it
+    describes a bundle that was applied rather than one that was about to be.
+    """
+    seed(scope, [item("AAA")])
+    order: list[str] = []
+
+    monkeypatch.setattr(sync, "_pull",
+                        lambda b, *, force, commit, only=None, phases=None:
+                        {"changed": True, "commit_message": "m"})
+    monkeypatch.setattr(sync, "_commit",
+                        lambda b, message: order.append("commit") or {})
+    real_apply = sync._apply
+    monkeypatch.setattr(sync, "_apply",
+                        lambda *a, **kw: (order.append("apply"),
+                                          real_apply(*a, **kw))[1])
+
+    sync.run(FakeVault(), scope)
+
+    assert order == ["apply", "commit"]
+
+
 def test_a_pass_says_where_it_spent_its_time(scope, monkeypatch):
     """Reasoning about this from request counts got it wrong once already: the
     counts said the library read was the whole delay, and a measured pass said a
     third of it happened after the last response from Zotero."""
     seed(scope, [item("AAA")])
     monkeypatch.setattr(sync, "_pull",
-                        lambda b, *, force, commit, phases=None:
+                        lambda b, *, force, commit, only=None, phases=None:
                         {"changed": True})
 
     out = sync.run(FakeVault(), scope)

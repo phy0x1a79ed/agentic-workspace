@@ -22,13 +22,12 @@ Reading a desktop sooner than the service therefore buys nothing: the paper is
 not there to read.
 
 *The desktop cannot report a deletion.* Its copy of this interface has no
-`deleted` route — not an empty one, absent. This one has it. The mirror does not
-call it, and the reason is worth recording: with one reader against the
-authoritative copy, re-reading a library that moved makes absence mean what it
-says, and a library is a handful of pages. Reading only what changed would be
-fewer requests and would need the parent of every changed attachment fetched
-back, which is the class of bug that turns one missing file into a paper that
-never gets one. The route is there when a library grows large enough to want it.
+`deleted` route — not an empty one, absent. This one has it, and that is what
+lets the mirror read only what changed: a since-window read says what arrived
+and the `deleted` route says what left, so absence from a partial answer never
+has to mean anything. Reading a library whole remains the repair path and the
+backstop, and it is the only read whose absences are load-bearing — which is why
+it is also the only one that has to be a snapshot. See `Sheared`.
 
 *This module only ever issues GET.* The method is not a parameter anywhere
 below, and `_get` is the single seam. The key this runs under may hold write
@@ -47,7 +46,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 log = logging.getLogger("awm.zotero.source")
 
@@ -87,6 +86,11 @@ GROUPS = os.environ.get("ZOTERO_GROUPS", "1") not in ("0", "false", "no")
 #: One page of items. The service's own cap is 100.
 PAGE = 100
 
+#: How many times a read may restart because the library moved under it. Small,
+#: because each attempt is a whole walk and a library somebody is working in
+#: would otherwise never settle.
+WALK_ATTEMPTS = 3
+
 TIMEOUT_S = float(os.environ.get("ZOTERO_TIMEOUT_S", "30"))
 
 #: The version of the interface this speaks. Pinned rather than left to default,
@@ -104,6 +108,15 @@ class ZoteroUnavailable(RuntimeError):
 
 class ZoteroError(RuntimeError):
     """Zotero answered, and said no."""
+
+
+class Sheared(RuntimeError):
+    """A library moved while it was being read, so the answer has a hole in it.
+
+    Its own class because the caller's response is neither "retry the request"
+    nor "report a fault": it is "this answer's absences mean nothing, do not let
+    it reach anything that retires a paper".
+    """
 
 
 @dataclass(frozen=True)
@@ -318,8 +331,13 @@ def libraries() -> list[dict]:
 
 
 def library_version(library: str | None = None) -> int:
-    """Where one library is now. One request, and the whole cost of a tick that
-    has nothing to do."""
+    """Where one library is now, asked on its own.
+
+    The pull does not use this and must not: a since-window read reports the
+    same number in its own response header, so asking first is a request spent
+    learning what the next request would have said. What is left is `status`,
+    which has no bundle to read a cursor from and so has nothing to window on.
+    """
     got = _checked(_get(f"/{path_of(library or PERSONAL)}/items", {"limit": 1}),
                    "library version")
     return int(got.headers.get("last-modified-version") or 0)
@@ -334,28 +352,78 @@ def versions() -> dict[str, int]:
     return {lib["id"]: library_version(lib["id"]) for lib in libraries()}
 
 
-def _paged(path: str, params: dict[str, Any] | None = None) -> Iterator[dict]:
-    start = 0
+@dataclass(frozen=True)
+class Window:
+    """What a library said when asked what it holds, or what has changed.
+
+    The version travels with the records because the answer carries it: every
+    response names the library's own current version, so a read is also the
+    movement probe and there is no separate request to make. Empty records with
+    a version above the cursor is a real and meaningful answer — something
+    changed that a since-window cannot show, which is how a paper moved to the
+    trash looks from here.
+    """
+
+    records: list[dict]
+    version: int
+
+
+def _one_walk(path: str, params: dict[str, Any]) -> Window:
+    """One offset walk, refused if the library moved under it.
+
+    The walk pages by offset over a list the service orders by modification
+    date, so an item edited part-way through jumps to the front and pushes the
+    item on the current page boundary out of the window. That item is then
+    absent from the answer — and absence from a whole read is what retires a
+    paper, so a live edit during a read could delete somebody's note.
+
+    Every response names the library's version, so a version that moves between
+    pages says the walk is no longer a snapshot. Refuse rather than return.
+    """
+    records: list[dict] = []
+    start = version = 0
     while True:
         got = _checked(
-            _get(path, {**(params or {}), "limit": PAGE, "start": start,
+            _get(path, {**params, "limit": PAGE, "start": start,
                         "format": "json"}),
             f"GET {path}")
         page = got.json() or []
-        yield from page
+        seen = int(got.headers.get("last-modified-version") or 0)
+        if start == 0:
+            version = seen
+        elif seen != version:
+            raise Sheared(f"{path}: the library moved from {version} to {seen} "
+                          f"while it was being read")
+        records.extend(page)
         total = int(got.headers.get("total-results") or 0)
         start += PAGE
         if start >= total or not page:
-            return
+            return Window(records=records, version=version)
+
+
+def _paged(path: str, params: dict[str, Any] | None = None) -> Window:
+    """One walk, retried while the library keeps moving under it.
+
+    Bounded, because a library somebody is actively working in would otherwise
+    spin. Giving up raises rather than returning what it has: a short answer
+    from a read whose absences are load-bearing is worse than no answer.
+    """
+    for attempt in range(1, WALK_ATTEMPTS + 1):
+        try:
+            return _one_walk(path, params or {})
+        except Sheared as e:
+            log.info("zotero: re-reading, %s (attempt %d of %d)",
+                     e, attempt, WALK_ATTEMPTS)
+    raise Sheared(f"{path}: still moving after {WALK_ATTEMPTS} reads")
 
 
 def collections(library: str | None = None,
-                since: int | None = None) -> list[dict]:
-    params = {"since": since} if since else {}
-    return list(_paged(f"/{path_of(library or PERSONAL)}/collections", params))
+                since: int | None = None) -> Window:
+    return _paged(f"/{path_of(library or PERSONAL)}/collections",
+                  _window(since))
 
 
-def items(library: str | None = None, since: int | None = None) -> list[dict]:
+def items(library: str | None = None, since: int | None = None) -> Window:
     """Every item, or everything that moved since a version.
 
     Not `/items/top`: an attachment is where a file is recorded and a child note
@@ -367,5 +435,45 @@ def items(library: str | None = None, since: int | None = None) -> list[dict]:
     in no `since` window. That is a fact about the account rather than a
     limitation here, and it is why nothing tries to read a desktop sooner.
     """
-    params = {"since": since} if since else {}
-    return list(_paged(f"/{path_of(library or PERSONAL)}/items", params))
+    return _paged(f"/{path_of(library or PERSONAL)}/items", _window(since))
+
+
+def deleted(library: str | None = None, since: int | None = None) -> Window:
+    """The keys removed from a library since a version.
+
+    The route the desktop's copy of this interface does not have, and the reason
+    the mirror could once only learn about a removal by reading everything and
+    finding a paper missing.
+
+    **It reports a permanent removal, not a trashing.** An item somebody moved
+    to the trash is absent from `/items` altogether and absent from here too, so
+    nothing about a since-window read can see it. Only its library's version
+    moving without a matching change gives it away.
+
+    `records` holds the item keys. Collection keys are on the same answer and
+    are read by `deleted_collections`, because a caller wants one or the other
+    and never a dictionary to index.
+    """
+    got = _checked(_get(f"/{path_of(library or PERSONAL)}/deleted",
+                        _window(since)), "deleted")
+    body = got.json() or {}
+    return Window(records=list(body.get("items") or []),
+                  version=int(got.headers.get("last-modified-version") or 0))
+
+
+def deleted_collections(library: str | None = None,
+                        since: int | None = None) -> list[str]:
+    """The collection keys removed since a version. See `deleted`."""
+    got = _checked(_get(f"/{path_of(library or PERSONAL)}/deleted",
+                        _window(since)), "deleted")
+    return list((got.json() or {}).get("collections") or [])
+
+
+def _window(since: int | None) -> dict[str, Any]:
+    """A cursor, or the absence of one, spelled explicitly.
+
+    A version of zero is falsy and reads as "no cursor" to every truthiness
+    test, which happens to be the right answer and is the wrong reason. Reading
+    a library whole is a decision, so make it one.
+    """
+    return {} if since is None else {"since": int(since)}

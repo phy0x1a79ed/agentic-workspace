@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from awm.config import autocommit
 
@@ -89,6 +89,15 @@ VERSION_LABEL = "zoteroVersion"
 #: The note that says what the mirror last did, and the label on the root that
 #: points at it. A stalled mirror and an idle one are otherwise identical from
 #: inside the vault, which is how this one ran dead for days unnoticed.
+#: How long a library may go without being read whole.
+#:
+#: The bound on the one gap a window read cannot close. A paper moved to
+#: Zotero's trash is absent from every route, so only reading the library whole
+#: and finding it missing retracts it. The escalation in `_read_one` catches a
+#: trashing that happened on its own; this catches one that shared a pass with
+#: another change.
+RECONCILE_S = float(os.environ.get("ZOTERO_RECONCILE_S", str(24 * 3600)))
+
 STATUS_LABEL = "zoteroStatus"
 STATUS_POINTER = "zoteroStatusNote"
 STATUS_NOTE = "Zotero mirror"
@@ -112,6 +121,16 @@ class NoRoot(RootError):
 
 class Ambiguous(RootError):
     """More than one note carries the label."""
+
+
+class ZoteroLostItsLibrary(RuntimeError):
+    """A whole read came back empty against a bundle that is not.
+
+    Its own class because it is the one shape that can empty the vault in a
+    single pass with every call succeeding, and because the answer is never to
+    retry: either the read is wrong, or somebody really did empty the library
+    and means it.
+    """
 
 
 @contextlib.contextmanager
@@ -174,70 +193,251 @@ def pull(scope: Path | None = None, *, force: bool = False,
         return out
 
 
+@dataclass
+class _Read:
+    """What one library said when this pass asked it."""
+
+    library: str
+    name: str
+    version: int
+    #: The library's records in bundle shape, or None when nothing moved.
+    part: dict[str, Any] | None
+    #: Whether this was a whole read, whose absences are therefore meaningful.
+    whole: bool
+    #: The refs the window actually named, so the apply can write those first.
+    #: Empty after a whole read, where every paper is as interesting as the rest.
+    touched: set[str] = field(default_factory=set)
+
+
+def _stale(when: str | None) -> bool:
+    """Whether a library is due a whole read.
+
+    The bound on the one gap a window read cannot close. A paper moved to
+    Zotero's trash is absent from `/items`, absent from a window, and absent
+    from the deletions route, so nothing short of reading the library whole and
+    finding the paper missing retracts it. `_read_one` catches the common case
+    the moment it happens; this catches a trashing that shared a pass with some
+    other change.
+    """
+    if not when:
+        return True
+    try:
+        was = datetime.strptime(when, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - was).total_seconds() >= RECONCILE_S
+
+
+def _read_one(lib: dict, cursor: int | None, previous: dict[str, Any], *,
+              whole: bool, hot: bool) -> _Read:
+    """Read one library, by window where that is enough and whole where it is not.
+
+    **The window read is also the movement probe.** It returns nothing when the
+    library has not moved and reports the library's current version either way,
+    so there is no separate request asking where the library is.
+
+    Three answers, and the middle one is the interesting one:
+
+    - records came back. They explain the version, and one of them is the paper
+      somebody is waiting for. Collections are read only when a record names one
+      the bundle does not hold, and on the hot path deletions wait for the floor:
+      a paper appearing quickly and a paper disappearing quickly are different
+      requirements and only the first is what a person is standing over.
+    - nothing came back and the version rose. Something changed that a window
+      cannot show. Nobody is waiting on it, so this pass can afford to look
+      properly: read the collections and the deletions, and when those are empty
+      too, read the library whole and let absence do the retracting.
+    - nothing came back and the version did not move. Skip.
+    """
+    lid, name = lib["id"], lib["name"]
+    if whole:
+        window = source.items(lid, since=None)
+        part = bundle_mod.normalize(window.records,
+                                    source.collections(lid, since=None).records,
+                                    {}, library=lid, library_name=name)
+        return _Read(lid, name, window.version, part, whole=True)
+
+    window = source.items(lid, since=cursor)
+    if not window.records and window.version <= (cursor or 0):
+        return _Read(lid, name, window.version, None, whole=False)
+
+    gone_items: list[str] = []
+    gone_collections: list[str] = []
+    folders: list[dict] = []
+
+    if window.records:
+        wanted = {c for r in window.records
+                  for c in (r.get("data") or {}).get("collections") or []}
+        known = {c["ref"] for c in previous.get("collections") or []}
+        if any(f"{lid}/{key}" not in known for key in wanted):
+            folders = source.collections(lid, since=cursor).records
+        if not hot:
+            gone_items = source.deleted(lid, since=cursor).records
+            gone_collections = source.deleted_collections(lid, since=cursor)
+    else:
+        folders = source.collections(lid, since=cursor).records
+        gone_items = source.deleted(lid, since=cursor).records
+        gone_collections = source.deleted_collections(lid, since=cursor)
+        if not folders and not gone_items and not gone_collections:
+            # The trash case. Nothing a window can show moved, so read it whole
+            # and let the paper's absence retract it.
+            log.info("zotero: %s moved to %s with nothing to show for it; "
+                     "reading it whole", name, window.version)
+            return _read_one(lib, cursor, previous, whole=True, hot=hot)
+
+    delta = bundle_mod.normalize(window.records, folders, {},
+                                 library=lid, library_name=name)
+    part = bundle_mod.fold(previous, delta, gone_items, gone_collections,
+                           library=lid)
+    return _Read(lid, name, window.version, part, whole=False,
+                 touched={i["ref"] for i in delta["items"]})
+
+
+def _libraries(only: Iterable[str] | None,
+               previous: dict[str, Any]) -> list[dict]:
+    """Which libraries this pass reads, and what each is called.
+
+    Asking Zotero costs a request, and on a push it is a request spent learning
+    something already known: the caller was told which library moved, and the
+    bundle already carries that library's display name on every record of it.
+    So a narrowed pass asks nobody, and only a library this bundle has never
+    seen sends the pass to Zotero for a name.
+
+    A name matters more than it looks. It goes on every record, so it is inside
+    the fingerprint that decides whether a note is rewritten, and it is the
+    title of the library's shelf. An empty one rewrites a library's worth of
+    notes and renames their shelf to nothing, which is why a missing name is
+    worth a request rather than a default.
+    """
+    if only is None:
+        return source.libraries()
+
+    wanted = list(dict.fromkeys(only))
+    named = {r.get("library"): r.get("library_name")
+             for r in previous.get("items") or [] if r.get("library_name")}
+    if all(named.get(lib) for lib in wanted):
+        return [{"id": lib, "name": named[lib]} for lib in wanted]
+
+    known = {lib["id"]: lib["name"] for lib in source.libraries()}
+    return [{"id": lib, "name": named.get(lib) or known.get(lib) or lib}
+            for lib in wanted if lib in known or lib in named]
+
+
 def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
+          only: Iterable[str] | None = None,
           phases: Phases | None = None) -> dict[str, Any]:
     at = phases.mark if phases else (lambda _name: None)
     had = b.versions
     previous = b.read()
+    whole_read = dict(previous.get("whole_read") or {})
     at("bundle_read")
     out: dict[str, Any] = {"had": had, "path": str(b.root)}
 
-    libraries = source.libraries()
-    now = {lib["id"]: source.library_version(lib["id"]) for lib in libraries}
-    at("zotero_probe")
-    # Risen, not merely different. Versions are assigned by the service and only
-    # ever go up, so a library reporting a lower one is a reader that has fallen
-    # behind rather than a library that has changed. Re-reading from it rewrote
-    # the bundle backwards, and the removal pass then retracted every paper the
-    # bundle had and the reader did not.
-    moved = [lib for lib in libraries
-             if force or now[lib["id"]] > had.get(lib["id"], -1)]
-    behind = sorted(lib["id"] for lib in libraries
-                    if now[lib["id"]] < had.get(lib["id"], -1))
+    libraries = _libraries(only, previous)
+    by_library = {lib["id"]: lib["name"] for lib in libraries}
+    # Somebody is standing over a push. A floor tick can afford to be thorough.
+    hot = only is not None
+
+    reads: list[_Read] = []
+    behind: list[str] = []
+    unread: list[str] = []
+    for lib in libraries:
+        cursor = had.get(lib["id"])
+        try:
+            got = _read_one(lib, cursor, previous,
+                            whole=force or cursor is None
+                            or _stale(whole_read.get(lib["id"])),
+                            hot=hot)
+        except (source.Sheared, source.ZoteroError) as e:
+            # Not read is not the same as read and found empty. A library left
+            # out of this pass keeps every record the bundle holds for it; a
+            # library counted as read and contributing nothing would have every
+            # one of its papers retired.
+            log.warning("zotero: %s not read: %s", lib["name"], e)
+            unread.append(lib["id"])
+            continue
+        # Risen, not merely different. Versions are assigned by the service and
+        # only ever go up, so a library reporting a lower one is a reader that
+        # has fallen behind rather than a library that has changed. Re-reading
+        # from it rewrote the bundle backwards, and the removal pass then
+        # retracted every paper the bundle had and the reader did not.
+        if cursor is not None and got.version < cursor:
+            behind.append(got.library)
+            continue
+        reads.append(got)
+    at("zotero_read")
+
     if behind:
         log.warning("zotero: %s reports a lower version than the bundle holds; "
                     "not reading it", ", ".join(behind))
+
+    moved = [r for r in reads if r.part is not None]
+    now = {r.library: r.version for r in reads}
     if not moved:
-        out.update({"versions": now, "changed": False, "behind": behind,
+        out.update({"versions": {**had, **now}, "changed": False,
+                    "behind": behind, "unread": unread,
                     "detail": "no library has moved"})
         return out
 
-    by_library = {lib["id"]: lib["name"] for lib in libraries}
-    kept = _kept(previous, {lib["id"] for lib in moved})
-    # A library that moved is read whole rather than by delta. It is a handful
-    # of pages, and it is what lets the apply keep treating absence as a
-    # removal: a partial read cannot tell a paper that left from one it was
-    # simply not sent.
-    parts = [kept] + [
-        bundle_mod.normalize(source.items(lib["id"]),
-                             source.collections(lib["id"]),
-                             {}, library=lib["id"],
-                             library_name=lib["name"])
-        for lib in moved]
-    at("zotero_read")
+    for r in moved:
+        _refuse_an_empty_whole_read(r, previous)
+        if r.whole:
+            whole_read[r.library] = _now()
+
+    kept = _kept(previous, {r.library for r in moved})
     # The cursor is monotone even when a reader is not, so a library that went
     # backwards keeps the higher number and stops being read until it catches up.
     effective = {k: max(now.get(k, 0), had.get(k, 0)) for k in {*now, *had}}
-    payload = b.write(bundle_mod.merge(parts, effective))
+    payload = b.write(bundle_mod.merge([kept] + [r.part for r in moved],
+                                       effective, whole_read=whole_read))
     at("bundle_write")
 
     out.update({"versions": effective, "read_versions": now, "changed": True,
-                "behind": behind,
-                "read": [lib["name"] for lib in moved],
+                "behind": behind, "unread": unread,
+                "read": [r.name for r in moved],
+                "whole": sorted(r.name for r in moved if r.whole),
                 "libraries": {by_library[k]: v for k, v in now.items()},
                 "items": len(payload["items"]),
-                "collections": len(payload["collections"])})
+                "collections": len(payload["collections"]),
+                # For the apply, which writes these before the rest so the
+                # paper somebody is waiting for is not the eight hundredth note
+                # visited.
+                "touched": sorted(set().union(*(r.touched for r in moved)))})
+    # Built here because only here knows the version each library was read at,
+    # and handed back so that `run` can pin *after* the vault has been written.
+    out["commit_message"] = ("zotero: library at "
+                             + ", ".join(f"{by_library[k]} {v}"
+                                         for k, v in sorted(now.items())))
     if commit:
-        out["git"] = _commit(b, "zotero: library at "
-                                + ", ".join(f"{by_library[k]} {v}"
-                                            for k, v in sorted(now.items())))
+        out["git"] = _commit(b, out["commit_message"])
         at("commit")
     return out
 
 
+def _refuse_an_empty_whole_read(read: _Read, previous: dict[str, Any]) -> None:
+    """A whole read that came back empty against a bundle that is not is a bug.
+
+    Absence from a whole read retires a paper, so this is the one shape that can
+    empty the vault in a single pass while every call succeeds. A library really
+    emptied by hand raises here too, and `--force` after deleting the bundle is
+    the way to say that is what was meant.
+    """
+    if not read.whole or (read.part or {}).get("items"):
+        return
+    was = sum(1 for i in previous.get("items") or []
+              if i.get("library") == read.library)
+    if was:
+        raise ZoteroLostItsLibrary(
+            f"{read.name} read whole and returned nothing, against {was} "
+            f"papers in the bundle. Refusing to write, because absence from a "
+            f"whole read is what deletes a note.")
+
+
 def run(vault, scope: Path | None = None, *, force: bool = False,
-        parent: str = "root", commit: bool = True,
-        may_create: bool = True, trigger: str = "hand") -> dict[str, Any]:
+        parent: str = "root", commit: bool = True, may_create: bool = True,
+        trigger: str = "hand",
+        only: Iterable[str] | None = None) -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
     Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
@@ -252,12 +452,23 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     phases = Phases()
     with exclusive(scope) as b:
         phases.mark("lock")
-        pulled = _pull(b, force=force, commit=commit, phases=phases)
+        # Pinning is deferred past the apply on purpose. Nothing in the apply
+        # reads git or DVC — it reads the bundle off the working tree, which the
+        # write has already produced — and somebody is waiting for the vault,
+        # not for the pin. Pinning afterwards also strengthens what the pin
+        # means: it now describes a bundle that was applied, not one that was
+        # about to be.
+        pulled = _pull(b, force=force, commit=False, only=only, phases=phases)
         out: dict[str, Any] = {"pull": pulled}
         if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
                                   may_create=may_create, force=force,
-                                  trigger=trigger, phases=phases)
+                                  trigger=trigger, phases=phases,
+                                  first=set(pulled.get("touched") or ()))
+            if commit:
+                pulled["git"] = _commit(
+                    b, pulled.get("commit_message") or "zotero: library")
+                phases.mark("commit")
         out["timings"] = {"total_s": phases.total, **phases.spans}
         log.info("zotero: %s pass in %.1fs — %s", trigger, phases.total,
                  phases.summary())
@@ -349,7 +560,10 @@ def _card(item: dict) -> str:
     parts.append("</table>")
     if item.get("abstract"):
         parts.append(f"<p>{e(item['abstract'])}</p>")
-    for note in item.get("notes") or []:
+    # By key, so that two reads of one library render the same note. Zotero
+    # answers in modification order, which moves when somebody edits any one of
+    # them.
+    for _key, note in sorted((item.get("notes") or {}).items()):
         parts.append(f"<blockquote>{e(note)}</blockquote>")
     return "".join(parts)
 
@@ -643,8 +857,8 @@ def _ensure_collections(vault, survey: Survey, known: dict[str, dict],
 
 def _upsert(vault, survey: Survey,
             known: dict[str, dict], items: list[dict],
-            collections: list[dict], *,
-            force: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
+            collections: list[dict], *, force: bool = False,
+            first: set[str] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
     """Make these papers and these collections true, and delete nothing.
 
     One code path for both callers: the reconcile pass hands it the whole
@@ -667,6 +881,11 @@ def _upsert(vault, survey: Survey,
     #: pass made, falling back to the last thing it changed.
     newest: tuple[int, str, str] | None = None
     touched_last: tuple[str, str] | None = None
+    # The papers the read actually named go first. Otherwise a new paper in a
+    # group can be the eight hundredth note visited, and somebody is watching
+    # for that one. Stable, so everything else keeps its order.
+    if first:
+        items = sorted(items, key=lambda i: i["ref"] not in first)
     for item in items:
         home = shelves.get(item.get("library", ""), survey.root)
         wanted = sorted({folders[c] for c in item.get("collections") or []
@@ -882,7 +1101,7 @@ def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
 
 def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
            may_create: bool = True, force: bool = False,
-           trigger: str = "hand",
+           trigger: str = "hand", first: set[str] | None = None,
            phases: Phases | None = None) -> dict[str, Any]:
     at = phases.mark if phases else (lambda _name: None)
     if not b.exists:
@@ -912,7 +1131,8 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
     # "papers", and merging them would put a shared group's reading list inside
     # somebody's personal one with nothing saying it had happened.
     out, _folders = _upsert(vault, survey, known, items,
-                            library.get("collections") or [], force=force)
+                            library.get("collections") or [], force=force,
+                            first=first)
     at("upsert")
 
     removed = _retire(vault, known, {i["ref"] for i in items})

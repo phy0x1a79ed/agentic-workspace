@@ -184,3 +184,167 @@ def collection(key: str, name: str, *, library: str = "users/0",
                parent: str = "") -> dict:
     return {"key": key, "ref": f"{library}/{key}", "library": library,
             "name": name, "parent": parent}
+
+
+class FakeLibrary:
+    """Zotero's own service, as much of it as the mirror can tell apart.
+
+    Built to be adversarial rather than convenient, because the two failures
+    worth catching are invisible to a helpful fake. It answers newest first, so
+    a reader that folds children into parents by response order produces a
+    different record on two reads of the same state. And it can be changed
+    between two pages of one walk, which is how a paper edited during a whole
+    read gets pushed out of the window and then retired for being absent.
+
+    Versions rise the way the service's do: one counter per library, bumped on
+    every write, stamped onto whatever was written.
+    """
+
+    def __init__(self, libraries: dict[str, str] | None = None) -> None:
+        #: library id -> display name
+        self.libraries = dict(libraries or {"users/0": "My Library"})
+        self.version = {lib: 0 for lib in self.libraries}
+        #: library -> key -> raw item, as the service would return it
+        self.items_by: dict[str, dict[str, dict]] = {
+            lib: {} for lib in self.libraries}
+        self.collections_by: dict[str, dict[str, dict]] = {
+            lib: {} for lib in self.libraries}
+        #: library -> kind -> key -> the version at which it was erased, so a
+        #: since-window over deletions filters the way the service's does.
+        #: Returning every deletion ever, whatever the cursor, hides the case
+        #: where a version moved with nothing to show for it.
+        self.gone: dict[str, dict[str, dict[str, int]]] = {
+            lib: {"items": {}, "collections": {}} for lib in self.libraries}
+        #: Keys the trash holds. Invisible to every route, exactly as they are
+        #: in the real service — which is the whole reason a version can move
+        #: with nothing to show for it.
+        self.trashed: dict[str, set[str]] = {lib: set() for lib in self.libraries}
+        self.calls: list[tuple[str, str, Any]] = []
+        #: Called once, before the second page of the next walk.
+        self.mid_walk = None
+
+    # -- writing, as a person using Zotero would ----------------------------
+
+    def put(self, key: str, *, library: str = "users/0", parent: str = "",
+            item_type: str = "journalArticle", **data: Any) -> dict:
+        self.version[library] += 1
+        body = {"key": key, "itemType": item_type, **data}
+        if parent:
+            body["parentItem"] = parent
+        raw = {"key": key, "version": self.version[library], "data": body}
+        self.items_by[library][key] = raw
+        return raw
+
+    def note(self, key: str, html: str, *, library: str = "users/0",
+             parent: str = "") -> dict:
+        """A child note, which is its own item and carries its own version.
+
+        Adding one to a paper does not move that paper's version, so a delta
+        carries the note and not its parent. That is the case a merge has to
+        get right.
+        """
+        return self.put(key, library=library, parent=parent,
+                        item_type="note", note=html)
+
+    def put_collection(self, key: str, name: str, *, library: str = "users/0",
+                       parent: str = "") -> dict:
+        self.version[library] += 1
+        raw = {"key": key, "version": self.version[library],
+               "data": {"key": key, "name": name, "parentCollection": parent}}
+        self.collections_by[library][key] = raw
+        return raw
+
+    def trash(self, key: str, *, library: str = "users/0") -> None:
+        """What a person does when they remove a paper.
+
+        The version moves and every route stops mentioning the item. Nothing in
+        a since-window read or in `deleted` can see it, which is why only a
+        whole read retracts it.
+        """
+        self.version[library] += 1
+        self.items_by[library].pop(key, None)
+        self.trashed[library].add(key)
+
+    def erase(self, key: str, *, library: str = "users/0") -> None:
+        """A permanent removal, which `deleted` does report."""
+        self.version[library] += 1
+        self.items_by[library].pop(key, None)
+        self.gone[library]["items"][key] = self.version[library]
+
+    def rename_library(self, library: str, name: str) -> None:
+        self.libraries[library] = name
+
+    # -- reading, as `source` does ------------------------------------------
+
+    def _window(self, rows: list[dict], since: int | None) -> list[dict]:
+        kept = [r for r in rows if since is None or r["version"] > since]
+        # Newest first, which is what the service does and what makes an
+        # order-dependent reader produce two answers for one state.
+        return sorted(kept, key=lambda r: (-r["version"], r["key"]))
+
+    def items(self, library: str | None = None, since: int | None = None):
+        library = library or "users/0"
+        self.calls.append(("items", library, since))
+        rows = self._window(list(self.items_by[library].values()), since)
+        if self.mid_walk is not None and len(rows) > 1:
+            hook, self.mid_walk = self.mid_walk, None
+            hook()
+            raise _sheared()
+        return _window(rows, self.version[library])
+
+    def collections(self, library: str | None = None, since: int | None = None):
+        library = library or "users/0"
+        self.calls.append(("collections", library, since))
+        rows = self._window(list(self.collections_by[library].values()), since)
+        return _window(rows, self.version[library])
+
+    def _gone(self, library: str, kind: str, since: int | None) -> list[str]:
+        return sorted(k for k, at in self.gone[library][kind].items()
+                      if since is None or at > since)
+
+    def deleted(self, library: str | None = None, since: int | None = None):
+        library = library or "users/0"
+        self.calls.append(("deleted", library, since))
+        return _window(self._gone(library, "items", since),
+                       self.version[library])
+
+    def deleted_collections(self, library: str | None = None,
+                            since: int | None = None) -> list[str]:
+        library = library or "users/0"
+        self.calls.append(("deleted_collections", library, since))
+        return self._gone(library, "collections", since)
+
+    def library_version(self, library: str | None = None) -> int:
+        library = library or "users/0"
+        self.calls.append(("library_version", library, None))
+        return self.version[library]
+
+    def all_libraries(self) -> list[dict]:
+        self.calls.append(("libraries", "", None))
+        return [{"id": lib, "name": name}
+                for lib, name in self.libraries.items()]
+
+    def install(self, monkeypatch, module) -> "FakeLibrary":
+        """Put this in front of `source` for the module under test."""
+        monkeypatch.setattr(module.source, "items", self.items)
+        monkeypatch.setattr(module.source, "collections", self.collections)
+        monkeypatch.setattr(module.source, "deleted", self.deleted)
+        monkeypatch.setattr(module.source, "deleted_collections",
+                            self.deleted_collections)
+        monkeypatch.setattr(module.source, "library_version",
+                            self.library_version)
+        monkeypatch.setattr(module.source, "libraries", self.all_libraries)
+        return self
+
+    def asked(self, verb: str) -> list[tuple[str, str, Any]]:
+        return [c for c in self.calls if c[0] == verb]
+
+
+def _window(records, version):
+    from awm.zotero.source import Window
+    return Window(records=list(records), version=version)
+
+
+def _sheared():
+    from awm.zotero.source import Sheared
+    return Sheared("the library moved while it was being read")
