@@ -23,7 +23,10 @@ class FakeVault:
         #: note id -> {"title", "content", "labels", "parents", "attachments"}
         self.notes: dict[str, dict] = {}
         self.next_id = 0
-        self.calls: list[str] = []
+        #: (verb, note id) per call. Keyed by note because half of what this
+        #: change is worth is "exactly one note was touched", which a bare list
+        #: of verb names cannot say.
+        self.calls: list[tuple[str, str]] = []
         #: Notes Trilium would hide from a search. The real vault facade always
         #: asks to see them; a test flips `sees_archived` off to show what the
         #: mirror does when it cannot.
@@ -41,6 +44,17 @@ class FakeVault:
         return any(self._hidden(p, guard + 1)
                    for p in self.notes[note_id]["parents"])
 
+    @property
+    def verbs(self) -> list[str]:
+        """Just the verb names, for a test that only asks whether something
+        happened at all."""
+        return [verb for verb, _ in self.calls]
+
+    def touched(self, *verbs: str) -> set[str]:
+        """Which notes these verbs were called on."""
+        wanted = set(verbs)
+        return {nid for verb, nid in self.calls if verb in wanted and nid}
+
     def _new(self, title: str, content: str, parent: str,
              labels: dict[str, str]) -> str:
         self.next_id += 1
@@ -52,20 +66,30 @@ class FakeVault:
 
     # -- the interface -------------------------------------------------------
 
-    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
-        self.calls.append("owned")
-        out: dict[str, list[str]] = {}
+    def scan(self, root: str | None, label: str) -> dict[str, list[dict]]:
+        self.calls.append(("scan", ""))
+        out: dict[str, list[dict]] = {}
         for nid, n in self.notes.items():
             value = n["labels"].get(label)
             if value and (root is None or self._under(nid, root)) \
                     and not self._hidden(nid):
-                out.setdefault(value, []).append(nid)
+                out.setdefault(value, []).append({
+                    "note_id": nid,
+                    "title": n["title"],
+                    "labels": dict(n["labels"]),
+                    "parents": list(n["parents"]),
+                })
         return out
 
+    def owned_all(self, root: str | None, label: str) -> dict[str, list[str]]:
+        return {value: [n["note_id"] for n in notes]
+                for value, notes in self.scan(root, label).items()}
+
     def labelled(self, label: str) -> list[dict[str, Any]]:
-        self.calls.append("labelled")
+        self.calls.append(("labelled", ""))
         return sorted(
-            ({"note_id": nid, "title": n["title"], "labels": dict(n["labels"])}
+            ({"note_id": nid, "title": n["title"], "labels": dict(n["labels"]),
+              "parents": list(n["parents"])}
              for nid, n in self.notes.items()
              if label in n["labels"] and not self._hidden(nid)),
             key=lambda h: h["note_id"])
@@ -87,7 +111,7 @@ class FakeVault:
 
     def ensure(self, *, parent: str, title: str, content: str,
                type: str = "book") -> str:
-        self.calls.append("ensure")
+        self.calls.append(("ensure", ""))
         for nid, n in self.notes.items():
             if n["title"] == title and parent in n["parents"]:
                 return nid
@@ -95,13 +119,13 @@ class FakeVault:
 
     def create(self, *, parent: str, title: str, content: str = "",
                type: str = "text", labels: dict[str, str] | None = None) -> str:
-        self.calls.append("create")
+        self.calls.append(("create", ""))
         return self._new(title, content, parent, labels or {})
 
     def update(self, note_id: str, *, title: str | None = None,
                content: str | None = None,
                labels: dict[str, str] | None = None) -> bool:
-        self.calls.append("update")
+        self.calls.append(("update", note_id))
         note, changed = self.notes[note_id], False
         if title is not None and note["title"] != title:
             note["title"], changed = title, True
@@ -113,6 +137,7 @@ class FakeVault:
         return changed
 
     def set_label(self, note_id: str, name: str, value: str) -> bool:
+        self.calls.append(("set_label", note_id))
         note = self.notes[note_id]
         if note["labels"].get(name) == value:
             return False
@@ -120,12 +145,12 @@ class FakeVault:
         return True
 
     def place(self, note_id: str, parents: list[str]) -> dict:
-        self.calls.append("place")
+        self.calls.append(("place", note_id))
         self.notes[note_id]["parents"] = sorted(set(parents))
         return {"note_id": note_id, "parents": sorted(set(parents))}
 
     def attach(self, note_id: str, path, *, title: str | None = None) -> bool:
-        self.calls.append("attach")
+        self.calls.append(("attach", note_id))
         name = title or path.name
         blob = path.read_bytes()
         note = self.notes[note_id]
@@ -135,7 +160,7 @@ class FakeVault:
         return True
 
     def delete(self, note_id: str) -> None:
-        self.calls.append("delete")
+        self.calls.append(("delete", note_id))
         self.notes.pop(note_id, None)
 
     # -- helpers a test may use ---------------------------------------------

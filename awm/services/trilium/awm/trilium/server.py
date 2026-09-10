@@ -211,8 +211,8 @@ class Child:
         vault = self.vault
         if not vault.exists:
             raise FileNotFoundError(
-                f"no vault worktree at {vault.scope} — create it with "
-                f"`awm scope create --project vault --scope main`")
+                f"no vault directory at {vault.scope} — run "
+                f"awm/services/trilium/install.sh")
         vault.data_dir.mkdir(parents=True, exist_ok=True)
         vault.rolling_dir.mkdir(parents=True, exist_ok=True)
         vault.log_file.parent.mkdir(parents=True, exist_ok=True)
