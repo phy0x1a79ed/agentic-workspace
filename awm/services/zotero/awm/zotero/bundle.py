@@ -121,8 +121,17 @@ class Item:
     collections: list[str] = field(default_factory=list)
     #: attachment key -> filename, for the ones whose bytes are on disk.
     files: dict[str, str] = field(default_factory=dict)
-    #: Zotero's own child notes, as HTML.
-    notes: list[str] = field(default_factory=list)
+    #: Zotero's own child notes: the note's own key -> its HTML.
+    #:
+    #: **Keyed rather than listed, and that is what makes a partial read safe.**
+    #: A child note is its own item with its own version, so adding one to a
+    #: paper does not move that paper. A window read therefore carries the note
+    #: without its parent, and a read that carries the parent may carry none of
+    #: its notes. Against a bare list neither case can be merged: there is no
+    #: way to say which entry a note replaces, so the only options were to lose
+    #: the notes that did not arrive or to fetch the parent's children back over
+    #: the network. Against keys both are a dictionary update.
+    notes: dict[str, str] = field(default_factory=dict)
 
     @property
     def ref(self) -> str:
@@ -173,8 +182,14 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
                          or data.get("bookTitle")
                          or data.get("proceedingsTitle") or "").strip(),
             abstract=(data.get("abstractNote") or "").strip(),
-            tags=[t["tag"] for t in data.get("tags") or [] if t.get("tag")],
-            collections=list(data.get("collections") or []))
+            # Sorted, because both sit inside the fingerprint that decides
+            # whether a note is rewritten, and neither is read in order by
+            # anything downstream. Left in the service's order, the same
+            # library state read twice produces two different records: 44 of
+            # 823 papers moved that way between two reads at one version.
+            tags=sorted({t["tag"] for t in data.get("tags") or []
+                         if t.get("tag")}),
+            collections=sorted(set(data.get("collections") or [])))
 
     for data in children:
         parent = refs.get(data.get("parentItem") or "")
@@ -185,7 +200,7 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
             if name:
                 parent.files[data["key"]] = name
         elif data.get("itemType") == "note" and data.get("note"):
-            parent.notes.append(data["note"])
+            parent.notes[data["key"]] = data["note"]
 
     tree = [{"key": c["data"]["key"],
              "ref": f"{library}/{c['data']['key']}",
@@ -196,7 +211,7 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
             for c in collections if (c.get("data") or {}).get("key")]
 
     for item in refs.values():
-        item.collections = [f"{library}/{k}" for k in item.collections]
+        item.collections = sorted(f"{library}/{k}" for k in item.collections)
 
     return {"collections": tree, "items": [i.as_json() for i in refs.values()]}
 

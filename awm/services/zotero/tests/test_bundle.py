@@ -70,7 +70,9 @@ def test_zoteros_own_notes_ride_along_with_their_parent():
         [raw("AAA", "journalArticle", title="A paper"),
          raw("CCC", "note", parentItem="AAA", note="<p>read this</p>")],
         [], {})
-    assert out["items"][0]["notes"] == ["<p>read this</p>"]
+    # Under the note's own key, so a window read carrying one note of three can
+    # say which one it replaces.
+    assert out["items"][0]["notes"] == {"CCC": "<p>read this</p>"}
 
 
 def test_attachments_and_notes_are_not_references_themselves():
@@ -218,3 +220,33 @@ def test_two_reads_of_one_library_give_the_same_digest(tmp_path):
     b.write(bundle.merge([bundle.normalize(reversed(items), [], {})],
                          {"users/0": 1}))
     assert a.digest == b.digest
+
+
+def test_one_library_state_makes_one_record_whatever_the_answer_order():
+    """Observed live: two whole reads of a library at the identical version
+    produced different records for 44 of 823 papers, and the apply rewrote every
+    one of them. Nothing had changed in Zotero.
+
+    The lists inside a record all sit inside the fingerprint that decides
+    whether a note is rewritten, and none of them is read in order by anything
+    downstream. So they are ours to settle, and settling them is what lets a
+    window read and a whole read be compared at all.
+    """
+    def read(order):
+        return bundle.normalize(
+            [raw("AAA", "journalArticle", title="A paper",
+                 tags=[{"tag": t} for t in order],
+                 collections=list(reversed(order))),
+             *[raw(k, "note", parentItem="AAA", note=f"<p>{k}</p>")
+               for k in order]],
+            [], {})
+
+    assert read(["b", "a", "c"]) == read(["c", "b", "a"])
+
+
+def test_a_paper_with_no_notes_serialises_as_it_always_did():
+    """Otherwise every fingerprint in the vault moves at once, and all 823
+    papers are rewritten to say nothing new."""
+    out = bundle.normalize([raw("AAA", "journalArticle", title="A paper")],
+                           [], {})
+    assert "notes" not in out["items"][0]

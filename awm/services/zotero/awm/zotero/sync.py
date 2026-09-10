@@ -362,7 +362,10 @@ def _card(item: dict) -> str:
     parts.append("</table>")
     if item.get("abstract"):
         parts.append(f"<p>{e(item['abstract'])}</p>")
-    for note in item.get("notes") or []:
+    # By key, so that two reads of one library render the same note. Zotero
+    # answers in modification order, which moves when somebody edits any one of
+    # them.
+    for _key, note in sorted((item.get("notes") or {}).items()):
         parts.append(f"<blockquote>{e(note)}</blockquote>")
     return "".join(parts)
 
