@@ -329,3 +329,26 @@ def test_a_group_renamed_outside_its_version_waits_for_a_whole_read(scope,
 
     sync._pull(b, force=True, commit=False)
     assert {i["library_name"] for i in b.read()["items"]} == {"Renamed group"}
+
+
+def test_a_bundle_from_before_notes_carried_keys_is_read_whole(scope, library):
+    """The live bundle at the time this landed held a bare list of note HTML.
+    Nothing can merge a window into that — no entry can be named — so the pass
+    has to rebuild it, and a bundle with no whole-read stamp is due exactly that.
+    """
+    library.put("AAA", title="A paper")
+    library.put("N1", parent="AAA", item_type="note", note="<p>one</p>")
+    b = caught_up(scope, library)
+
+    payload = json.loads(b.library_json.read_text())
+    payload.pop("whole_read")
+    for record in payload["items"]:
+        if record.get("notes"):
+            record["notes"] = list(record["notes"].values())
+    b.library_json.write_text(json.dumps(payload))
+
+    out = sync._pull(b, force=False, commit=False)
+
+    assert out["whole"] == ["A group", "My Library"]
+    assert [i for i in b.read()["items"] if i["ref"] == "users/0/AAA"][0][
+        "notes"] == {"N1": "<p>one</p>"}

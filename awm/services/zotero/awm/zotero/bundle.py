@@ -230,6 +230,23 @@ def normalize(items: Iterable[dict], collections: Iterable[dict],
             "orphan_notes": orphans}
 
 
+def notes_of(record: dict[str, Any]) -> dict[str, str]:
+    """A record's child notes as a mapping, whatever shape it was written in.
+
+    A bundle written before notes carried their keys holds a bare list. Such a
+    record cannot be merged — nothing says which entry an arriving note replaces
+    — so it is treated as holding none, and the whole read that a bundle with no
+    whole-read stamp is due rebuilds it from the library. That read is not a
+    hope: `_stale` returns true for a library with no stamp, which is every
+    library in a bundle written by the older code.
+
+    Here rather than at the point of reading the file, because a silent upgrade
+    on load would hide the one pass where the vault's notes come back.
+    """
+    notes = record.get("notes")
+    return dict(notes) if isinstance(notes, dict) else {}
+
+
 def settle(record: dict[str, Any]) -> dict[str, Any]:
     """A record with its empty fields dropped, the way `Item.as_json` drops them.
 
@@ -275,7 +292,7 @@ def fold(previous: dict[str, Any], window: dict[str, Any],
 
     for record in window.get("items") or []:
         held = mine.get(record["ref"]) or {}
-        notes = {**(held.get("notes") or {}), **(record.get("notes") or {})}
+        notes = {**notes_of(held), **notes_of(record)}
         mine[record["ref"]] = settle({**record, "notes": notes})
 
     for parent_key, arrived in (window.get("orphan_notes") or {}).items():
@@ -283,8 +300,8 @@ def fold(previous: dict[str, Any], window: dict[str, Any],
         if held is None:
             # The paper is not in this bundle: another library's, or trashed.
             continue
-        mine[held["ref"]] = settle(
-            {**held, "notes": {**(held.get("notes") or {}), **arrived}})
+        mine[held["ref"]] = settle({**held, "notes": {**notes_of(held),
+                                                       **arrived}})
 
     for collection in window.get("collections") or []:
         folders[collection["ref"]] = collection
@@ -296,8 +313,9 @@ def fold(previous: dict[str, Any], window: dict[str, Any],
         # in the answer says which. Removing it from wherever it is held costs
         # a walk and gets both cases right.
         for record in list(mine.values()):
-            if key in (record.get("notes") or {}):
-                notes = {k: v for k, v in record["notes"].items() if k != key}
+            notes = notes_of(record)
+            if key in notes:
+                notes.pop(key)
                 mine[record["ref"]] = settle({**record, "notes": notes})
 
     for key in gone_collections:

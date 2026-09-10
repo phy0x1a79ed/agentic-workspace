@@ -86,9 +86,6 @@ RENDER = "1"
 #: `STAMP_LABEL` for why it cannot be.
 VERSION_LABEL = "zoteroVersion"
 
-#: The note that says what the mirror last did, and the label on the root that
-#: points at it. A stalled mirror and an idle one are otherwise identical from
-#: inside the vault, which is how this one ran dead for days unnoticed.
 #: How long a library may go without being read whole.
 #:
 #: The bound on the one gap a window read cannot close. A paper moved to
@@ -98,6 +95,9 @@ VERSION_LABEL = "zoteroVersion"
 #: another change.
 RECONCILE_S = float(os.environ.get("ZOTERO_RECONCILE_S", str(24 * 3600)))
 
+#: The note that says what the mirror last did, and the label on the root that
+#: points at it. A stalled mirror and an idle one are otherwise identical from
+#: inside the vault, which is how this one ran dead for days unnoticed.
 STATUS_LABEL = "zoteroStatus"
 STATUS_POINTER = "zoteroStatusNote"
 STATUS_NOTE = "Zotero mirror"
@@ -563,7 +563,7 @@ def _card(item: dict) -> str:
     # By key, so that two reads of one library render the same note. Zotero
     # answers in modification order, which moves when somebody edits any one of
     # them.
-    for _key, note in sorted((item.get("notes") or {}).items()):
+    for _key, note in sorted(bundle_mod.notes_of(item).items()):
         parts.append(f"<blockquote>{e(note)}</blockquote>")
     return "".join(parts)
 
