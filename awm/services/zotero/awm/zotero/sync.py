@@ -21,7 +21,6 @@ import html
 import json
 import logging
 import os
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,14 +101,6 @@ class Busy(RuntimeError):
     """Another sync holds the lock."""
 
 
-class Unreachable(RuntimeError):
-    """The node holding the vault could not be reached.
-
-    Ordinary rather than exceptional: the far node reboots, the link drops.
-    A ship that fails leaves the far node serving the last good mirror.
-    """
-
-
 class RootError(RuntimeError):
     """The mirror cannot say which note the library belongs under."""
 
@@ -185,40 +176,46 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
     libraries = source.libraries()
     now = {lib["id"]: source.library_version(lib["id"]) for lib in libraries}
-    moved = [lib for lib in libraries if force or now[lib["id"]] != had.get(lib["id"])]
+    # Risen, not merely different. Versions are assigned by the service and only
+    # ever go up, so a library reporting a lower one is a reader that has fallen
+    # behind rather than a library that has changed. Re-reading from it rewrote
+    # the bundle backwards, and the removal pass then retracted every paper the
+    # bundle had and the reader did not.
+    moved = [lib for lib in libraries
+             if force or now[lib["id"]] > had.get(lib["id"], -1)]
+    behind = sorted(lib["id"] for lib in libraries
+                    if now[lib["id"]] < had.get(lib["id"], -1))
+    if behind:
+        log.warning("zotero: %s reports a lower version than the bundle holds; "
+                    "not reading it", ", ".join(behind))
     if not moved:
-        out.update({"versions": now, "changed": False,
+        out.update({"versions": now, "changed": False, "behind": behind,
                     "detail": "no library has moved"})
         return out
 
-    stored = source.stored_files()
     by_library = {lib["id"]: lib["name"] for lib in libraries}
     kept = _kept(previous, {lib["id"] for lib in moved})
+    # A library that moved is read whole rather than by delta. It is a handful
+    # of pages, and it is what lets the apply keep treating absence as a
+    # removal: a partial read cannot tell a paper that left from one it was
+    # simply not sent.
     parts = [kept] + [
         bundle_mod.normalize(source.items(lib["id"]),
                              source.collections(lib["id"]),
-                             stored, library=lib["id"],
+                             {}, library=lib["id"],
                              library_name=lib["name"])
         for lib in moved]
-    payload = b.write(bundle_mod.merge(parts, now))
+    # The cursor is monotone even when a reader is not, so a library that went
+    # backwards keeps the higher number and stops being read until it catches up.
+    effective = {k: max(now.get(k, 0), had.get(k, 0)) for k in {*now, *had}}
+    payload = b.write(bundle_mod.merge(parts, effective))
 
-    wanted = {f"{item['library']}/{key}"
-              for item in payload["items"]
-              for key in item.get("files", {})}
-    missing = sorted(
-        (f"{item['library']}/{key}", key, name)
-        for item in payload["items"]
-        for key, name in item.get("files", {}).items()
-        if not b.file_for(f"{item['library']}/{key}", name).is_file())
-    fetched = _fetch(b, missing)
-    dropped = b.prune_files(wanted)
-
-    out.update({"versions": now, "changed": True,
+    out.update({"versions": effective, "read_versions": now, "changed": True,
+                "behind": behind,
                 "read": [lib["name"] for lib in moved],
                 "libraries": {by_library[k]: v for k, v in now.items()},
                 "items": len(payload["items"]),
-                "collections": len(payload["collections"]),
-                "files_fetched": fetched, "files_dropped": dropped})
+                "collections": len(payload["collections"])})
     if commit:
         out["git"] = _commit(b, "zotero: library at "
                                 + ", ".join(f"{by_library[k]} {v}"
@@ -228,8 +225,7 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
 def run(vault, scope: Path | None = None, *, force: bool = False,
         parent: str = "root", commit: bool = True,
-        may_create: bool = True, apply_here: bool = True,
-        ship_to: str = "") -> dict[str, Any]:
+        may_create: bool = True) -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
     Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
@@ -244,19 +240,9 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     with exclusive(scope) as b:
         pulled = _pull(b, force=force, commit=commit)
         out: dict[str, Any] = {"pull": pulled}
-        if pulled.get("changed") and apply_here:
+        if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
                                   may_create=may_create, force=force)
-        if pulled.get("changed") and ship_to:
-            host, remote_scope = destination_parts(ship_to)
-            try:
-                out["ship"] = _ship(b, host, remote_scope)
-            except Unreachable as e:
-                # Reported, not raised. The far node being asleep is ordinary,
-                # the same way an unreachable library already is, and it leaves
-                # that node serving the last good mirror rather than none.
-                out["ship"] = {"shipped": False, "detail": str(e)[:300]}
-                log.info("zotero: could not ship to %s: %s", host, e)
         return out
 
 
@@ -278,24 +264,6 @@ def _kept(previous: dict[str, Any], reread: set[str]) -> dict[str, Any]:
     }
 
 
-def _fetch(b: bundle_mod.Bundle, missing: list[tuple[str, str, str]]) -> int:
-    """Copy the stored files the bundle is short of, one library at a time.
-
-    Grouped because the copy is one archive stream per call and Zotero files
-    everything under a single flat `storage/`, so the source keys are bare
-    while the destination is nested by library.
-    """
-    got = 0
-    by_library: dict[str, list[tuple[str, str]]] = {}
-    for ref, key, name in missing:
-        by_library.setdefault(ref.rsplit("/", 1)[0], []).append((key, name))
-    for library, wanted in by_library.items():
-        into = b.files / library
-        source.fetch_files([k for k, _ in wanted], into)
-        got += len([1 for k, n in wanted if (into / k / n).is_file()])
-    return got
-
-
 def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
     """Pin the chunk and commit it.
 
@@ -311,98 +279,6 @@ def _commit(b: bundle_mod.Bundle, message: str) -> dict[str, Any]:
     sha = autocommit.pin_chunk(b.scope, bundle_mod.CHUNK, "awm", message)
     return {"committed": bool(sha), "rev": sha,
             "detail": None if sha else "nothing changed"}
-
-
-# -- ship --------------------------------------------------------------------
-
-
-#: Long enough for a slow link, short enough that a wedged ssh does not hold
-#: the mirror's lock through the next tick.
-SHIP_TIMEOUT_S = 600.0
-
-
-def _run(argv: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess:
-    """One place for the subprocess call, so a test can watch the command line
-    without a network."""
-    return subprocess.run(argv, input=stdin, capture_output=True, text=True,
-                          timeout=SHIP_TIMEOUT_S, check=False)
-
-
-def _rsync_argv(source_path: Path, host: str, remote_dir: str) -> list[str]:
-    """The command that carries the library.
-
-    `--rsync-path` is the house idiom for this pair of nodes: ssh lands as an
-    unprivileged user who cannot read `/var/lib/awm` at all, so the *remote*
-    rsync is the thing that has to run as the service account.
-
-    `--chmod` is not cosmetic. `library.json` is a read-only hardlink into the
-    DVC cache, and `-a` would faithfully carry mode 444 across — leaving the
-    far node a bundle its own pull could never replace.
-    """
-    return ["rsync", "-a", "--chmod=F644",
-            "--rsync-path=sudo -n -u awm rsync",
-            str(source_path), f"{host}:{remote_dir}/"]
-
-
-def destination_parts(destination: str) -> tuple[str, str]:
-    """`host:/path/to/vault/scope`, split and checked.
-
-    Checked at the seam rather than at the rsync, because a destination with no
-    path silently becomes the far node's filesystem root.
-    """
-    host, _, remote_scope = destination.partition(":")
-    remote_scope = remote_scope.rstrip("/")
-    if not host or not remote_scope.startswith("/"):
-        raise ValueError(
-            f"ship destination {destination!r} is not host:/path — it names "
-            f"the vault scope on the far node, e.g. "
-            f"sirius:/var/lib/awm/projects/trilium/release")
-    return host, remote_scope
-
-
-def ship(destination: str, scope: Path | None = None) -> dict[str, Any]:
-    """Carry `library.json` to the node that holds the vault.
-
-    The third leg the service always implied: pull on the node with the
-    library, ship, apply on the node with the vault. It is a verb rather than a
-    script so that it takes the same lock the pull half does: a ship that ran
-    while a pull was mid-pass would carry a bundle whose stored files had been
-    pruned for a library the JSON no longer describes.
-
-    Only the JSON travels. The stored files are two orders of magnitude larger
-    and the apply side already skips a file the bundle does not hold, so a node
-    that receives only this gets a complete mirror without the PDFs.
-
-    `destination` is `host:/path/to/vault/scope` — the far node's vault scope,
-    which is where that node's own bundle reader already looks. Spelled in full
-    rather than derived, because a far node's workspace root is not this one's
-    and a guess that is wrong writes a library somewhere nobody reads.
-    """
-    host, remote_scope = destination_parts(destination)
-    with exclusive(scope) as b:
-        return _ship(b, host, remote_scope)
-
-
-def _ship(b: bundle_mod.Bundle, host: str, remote_scope: str) -> dict[str, Any]:
-    if not b.exists:
-        raise FileNotFoundError(f"no bundle at {b.root} — nothing to ship")
-    remote_dir = f"{remote_scope}/{bundle_mod.CHUNK}"
-    # A shell fed on stdin, never an argument string: `sudo -u` runs one
-    # command, so a `&&` written as an argument would be interpreted by the
-    # calling user's shell and silently run under the wrong identity.
-    made = _run(["ssh", host, "sudo -n -u awm bash -s"],
-                stdin=f"test -d {remote_scope} && mkdir -p {remote_dir}\n")
-    if made.returncode != 0:
-        raise Unreachable(
-            f"{host}:{remote_scope} is not a vault scope this node can reach: "
-            f"{(made.stderr or made.stdout).strip()[:300]}")
-    sent = _run(_rsync_argv(b.library_json, host, remote_dir))
-    if sent.returncode != 0:
-        raise Unreachable(
-            f"rsync to {host} failed: "
-            f"{(sent.stderr or sent.stdout).strip()[:300]}")
-    return {"shipped": True, "host": host, "remote": remote_dir,
-            "digest": b.digest, "bytes": b.library_json.stat().st_size}
 
 
 # -- apply -------------------------------------------------------------------
@@ -539,7 +415,7 @@ def apply(vault, scope: Path | None = None, *,
           parent: str = "root", may_create: bool = True,
           force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """Write the bundle into the vault: collections as a tree, one note per
-    reference, each stored file attached.
+    reference with its citation fields as labels.
 
     Matched on `#zoteroKey`. A note somebody writes inside the library carries
     none, so it is invisible to every pass — and an item that has left Zotero
@@ -709,7 +585,7 @@ def _ensure_collections(vault, survey: Survey, known: dict[str, dict],
     return made, created, moved
 
 
-def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
+def _upsert(vault, survey: Survey,
             known: dict[str, dict], items: list[dict],
             collections: list[dict], *,
             force: bool = False) -> tuple[dict[str, Any], dict[str, str]]:
@@ -730,7 +606,7 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
     # "this whole pass had nothing to do" under that name, and one word meaning
     # two things in one result is how a reader draws the wrong conclusion.
     out: dict[str, Any] = {"created": 0, "updated": 0, "unchanged": 0,
-                           "replaced": 0, "attached": 0}
+                           "replaced": 0}
     #: The paper worth linking to from the status note: the newest thing this
     #: pass made, falling back to the last thing it changed.
     newest: tuple[int, str, str] | None = None
@@ -771,9 +647,6 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
                 out["updated"] += 1
                 touched_last = (note_id, _title(item))
 
-        if not fresh:
-            out["attached"] += _attach(vault, b, note_id, item)
-
         # Placement is checked on every pass whatever the stamp says, because
         # the scan already reported where the note is and comparing costs
         # nothing. It is also what puts back a paper somebody dragged in the
@@ -801,7 +674,7 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
 
 #: What counts as having done something. A pass that changed nothing writes no
 #: status, so a quiet mirror puts no revision on the note and costs no call.
-DID_SOMETHING = ("created", "updated", "replaced", "attached", "removed",
+DID_SOMETHING = ("created", "updated", "replaced", "removed",
                  "deduplicated", "collections_created", "collections_moved",
                  "libraries_created")
 
@@ -832,7 +705,7 @@ def _status_note(vault, survey: Survey) -> tuple[str, bool]:
 def _status_body(out: dict[str, Any], versions: Any) -> str:
     e = html.escape
     counts = [(name, out.get(name)) for name in
-              ("created", "updated", "unchanged", "replaced", "attached",
+              ("created", "updated", "unchanged", "replaced",
                "removed", "deduplicated")]
     rows = [f"<tr><th>{e(n)}</th><td>{e(str(v))}</td></tr>"
             for n, v in counts if v]
@@ -972,7 +845,7 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
     # One subtree per library. Two libraries may both have a collection called
     # "papers", and merging them would put a shared group's reading list inside
     # somebody's personal one with nothing saying it had happened.
-    out, _folders = _upsert(vault, b, survey, known, items,
+    out, _folders = _upsert(vault, survey, known, items,
                             library.get("collections") or [], force=force)
 
     removed = _retire(vault, known, {i["ref"] for i in items})
@@ -1010,12 +883,3 @@ def _outside(vault, inside: int) -> int:
     """
     everywhere = sum(len(ids) for ids in vault.owned_all(None, KEY_LABEL).values())
     return max(0, everywhere - inside)
-
-
-def _attach(vault, b: bundle_mod.Bundle, note_id: str, item: dict) -> int:
-    attached = 0
-    for key, name in (item.get("files") or {}).items():
-        path = b.file_for(f"{item['library']}/{key}", name)
-        if path.is_file() and vault.attach(note_id, path, title=name):
-            attached += 1
-    return attached

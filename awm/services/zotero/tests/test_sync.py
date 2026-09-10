@@ -203,44 +203,6 @@ def test_the_mirror_only_removes_what_the_mirror_put_there(scope):
     assert mine in v.notes
 
 
-# -- files -------------------------------------------------------------------
-
-
-def test_a_stored_file_is_attached_to_its_papers_note(scope):
-    b = seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
-    path = b.file_for("users/0/BBB", "p.pdf")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"%PDF-1.4")
-
-    v = FakeVault()
-    out = sync.apply(v, scope)
-    note = v.notes[v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]]
-    assert note["attachments"] == {"p.pdf": 8}
-
-
-def test_a_file_the_bundle_promises_but_does_not_hold_is_skipped(scope):
-    """Not an error. A bundle carried to another node arrives with its pins
-    unmaterialised, and failing the whole apply over one absent PDF would
-    withhold the eight hundred references that are fine."""
-    seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
-    v = FakeVault()
-    out = sync.apply(v, scope)
-    assert out["attached"] == 0
-    assert v.owned(out["library_note"], sync.KEY_LABEL)
-
-
-def test_an_unchanged_file_is_not_re_attached(scope):
-    b = seed(scope, [item("AAA", files={"BBB": "p.pdf"})])
-    path = b.file_for("users/0/BBB", "p.pdf")
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"%PDF-1.4")
-    v = FakeVault()
-    sync.apply(v, scope)
-    # Forced, because an unchanged bundle is now skipped outright — see
-    # `test_a_second_apply_of_an_unchanged_bundle_writes_nothing_at_all`.
-    assert sync.apply(v, scope, force=True)["attached"] == 0
-
-
 # -- the bundle has to be there ----------------------------------------------
 
 
@@ -573,81 +535,6 @@ def test_a_dry_run_after_an_apply_says_it_is_up_to_date(scope):
     assert out["would_create"] == 0 and out["would_delete"] == 0
 
 
-# -- shipping ----------------------------------------------------------------
-
-
-def test_ship_sends_only_the_library_json_through_a_sudo_rsync(scope, monkeypatch):
-    seed(scope, [item("AAA")])
-    seen = []
-
-    def fake_run(argv, *, stdin=None):
-        seen.append((argv, stdin))
-        return subprocess.CompletedProcess(argv, 0, "", "")
-    monkeypatch.setattr(sync, "_run", fake_run)
-
-    out = sync.ship("sirius:/var/lib/awm/projects/trilium/release", scope)
-    argv = seen[-1][0]
-    assert argv[0] == "rsync"
-    assert "--rsync-path=sudo -n -u awm rsync" in argv
-    assert argv[-2].endswith("library.json")
-    assert argv[-1] == ("sirius:/var/lib/awm/projects/trilium/release"
-                       "/data/vault/zotero/")
-    assert not any("files" in a for a in argv)
-    assert out["shipped"] is True
-
-
-def test_ship_carries_a_writable_mode_over_the_read_only_hardlink(scope, monkeypatch):
-    """library.json is a read-only hardlink into the DVC cache, and `-a` would
-    leave the far node a bundle its own pull could never replace."""
-    seed(scope, [item("AAA")])
-    monkeypatch.setattr(sync, "_run", lambda argv, *, stdin=None:
-                        subprocess.CompletedProcess(argv, 0, "", ""))
-    argv = sync._rsync_argv(bundle.Bundle(scope).library_json, "h", "/d")
-    assert "--chmod=F644" in argv
-
-
-def test_ship_feeds_the_remote_shell_on_stdin_rather_than_as_an_argument(scope,
-                                                                        monkeypatch):
-    """`sudo -u` runs one command, so a `&&` written in an argument string
-    would belong to the calling user's shell."""
-    seed(scope, [item("AAA")])
-    seen = []
-    monkeypatch.setattr(sync, "_run", lambda argv, *, stdin=None:
-                        (seen.append((argv, stdin)),
-                         subprocess.CompletedProcess(argv, 0, "", ""))[1])
-    sync.ship("sirius:/vault", scope)
-    argv, stdin = seen[0]
-    assert argv == ["ssh", "sirius", "sudo -n -u awm bash -s"]
-    assert "&&" in stdin and "mkdir -p /vault/data/vault/zotero" in stdin
-
-
-def test_ship_holds_the_lock(scope):
-    """The bundle is written by truncate-then-write, so a courier that did not
-    take the lock could read a torn file."""
-    seed(scope, [item("AAA")])
-    with sync.exclusive(scope):
-        with pytest.raises(sync.Busy):
-            sync.ship("sirius:/vault", scope)
-
-
-def test_a_destination_with_no_path_is_refused(scope):
-    with pytest.raises(ValueError, match="host:/path"):
-        sync.ship("sirius", scope)
-
-
-def test_a_failed_ship_is_reported_rather_than_raised(scope, monkeypatch):
-    """The far node being asleep is ordinary, and it leaves that node serving
-    the last good mirror rather than none."""
-    seed(scope, [item("AAA")])
-    monkeypatch.setattr(sync, "_pull", lambda b, **k: {"changed": True})
-    monkeypatch.setattr(sync, "_run", lambda argv, *, stdin=None:
-                        subprocess.CompletedProcess(argv, 255, "", "no route"))
-    out = sync.run(FakeVault(), scope, apply_here=False,
-                   ship_to="sirius:/vault")
-    assert out["ship"]["shipped"] is False
-    assert "no route" in out["ship"]["detail"]
-
-
 # -- the per-paper cursor ----------------------------------------------------
 #
 # The mirror runs on a timer over hundreds of notes, and until these existed a
@@ -707,25 +594,23 @@ def test_version_zero_does_not_defeat_the_cursor(scope):
     assert v.touched("update") == set()
 
 
-def test_a_file_that_arrives_later_is_attached_though_the_version_did_not_move(
-        scope):
-    """The case that decides the cursor.
+def test_a_renamed_library_rewrites_its_papers_though_no_version_moved(scope):
+    """One of the cases that decides the cursor.
 
-    A stored file finishing its download changes nothing about the item that
-    records it, which is why `pull` has a `force` at all. A cursor keyed on
-    Zotero's item version would skip this paper's file for ever; one keyed on
-    the whole record sees the file appear.
+    Renaming a shared group changes what every note in it must say and moves no
+    item's version at all. A cursor keyed on Zotero's version would sail past
+    it; one keyed on the whole record sees the name change.
     """
-    seed(scope, [item("AAA")])
+    seed(scope, [item("AAA", library="groups/9", library_name="BCB2")])
     v = FakeVault()
     sync.apply(v, scope)
 
-    b = _bump(scope, [item("AAA", files={"F1": "paper.pdf"})])
-    got = b.file_for("users/0/F1", "paper.pdf")
-    got.parent.mkdir(parents=True, exist_ok=True)
-    got.write_bytes(b"%PDF-1.4")
+    _bump(scope, [item("AAA", library="groups/9", library_name="BCB Two")])
     v.calls.clear()
-    assert sync.apply(v, scope)["attached"] == 1
+    out = sync.apply(v, scope)
+    assert out["updated"] == 1 and out["unchanged"] == 0
+    paper = v.owned(out["library_note"], sync.KEY_LABEL)["groups/9/AAA"]
+    assert v.notes[paper]["labels"]["zoteroLibraryName"] == "BCB Two"
 
 
 def test_a_renderer_change_restamps_every_note(scope, monkeypatch):
