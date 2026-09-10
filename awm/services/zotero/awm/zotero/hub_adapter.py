@@ -47,7 +47,15 @@ INTERVAL_S = float(os.environ.get("ZOTERO_SYNC_INTERVAL_S", "1200"))
 #: Several libraries can move together and a save is more than one write, so a
 #: pass fired on the first frame reads a library mid-change and then has to be
 #: told again. Waiting a moment collapses a burst into one pass.
-SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "2"))
+#:
+#: Half a second rather than two, because the trade inverted. A second pass used
+#: to cost a whole-library read; it now costs one small request, so waiting to
+#: avoid one is no longer worth a tenth of the delay a person feels. It is paid
+#: on every wake, the lone frame of a single save included.
+SETTLE_S = float(os.environ.get("ZOTERO_SETTLE_S", "0.5"))
+
+#: How long to wait before trying again when another pass holds the lock.
+BUSY_RETRY_S = float(os.environ.get("ZOTERO_BUSY_RETRY_S", "5"))
 
 #: Whether the timer runs at all. Off on a node that cannot reach the library,
 #: where every tick would be a logged failure saying so.
@@ -292,9 +300,15 @@ async def _push_loop() -> None:
                 LAST["error"] = str(e)[:300]
                 log.info("zotero: library not reachable on this push: %s", e)
             except sync.Busy:
-                # The floor is mid-pass. It reads whatever moved anyway, so
-                # this one has nothing to add.
-                log.info("zotero: a sync was already running; leaving it to it")
+                # Not "it will pick this up anyway". The pass holding the lock
+                # may have read its libraries *before* this frame arrived, and
+                # the flag was cleared above, so dropping it here leaves the
+                # paper for the floor tick twenty minutes away. Put the flag
+                # back and wait for the other pass to let go.
+                log.info("zotero: a sync was already running; retrying in %ss",
+                         BUSY_RETRY_S)
+                WOKEN.set()
+                await asyncio.sleep(BUSY_RETRY_S)
         except Exception:  # noqa: BLE001 — never let the loop die
             LAST["error"] = "push pass failed; see the log"
             log.exception("zotero: push pass failed")

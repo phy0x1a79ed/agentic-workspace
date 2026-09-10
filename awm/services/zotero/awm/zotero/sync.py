@@ -227,10 +227,13 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
                 "libraries": {by_library[k]: v for k, v in now.items()},
                 "items": len(payload["items"]),
                 "collections": len(payload["collections"])})
+    # Built here because only here knows the version each library was read at,
+    # and handed back so that `run` can pin *after* the vault has been written.
+    out["commit_message"] = ("zotero: library at "
+                             + ", ".join(f"{by_library[k]} {v}"
+                                         for k, v in sorted(now.items())))
     if commit:
-        out["git"] = _commit(b, "zotero: library at "
-                                + ", ".join(f"{by_library[k]} {v}"
-                                            for k, v in sorted(now.items())))
+        out["git"] = _commit(b, out["commit_message"])
         at("commit")
     return out
 
@@ -252,12 +255,22 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     phases = Phases()
     with exclusive(scope) as b:
         phases.mark("lock")
-        pulled = _pull(b, force=force, commit=commit, phases=phases)
+        # Pinning is deferred past the apply on purpose. Nothing in the apply
+        # reads git or DVC — it reads the bundle off the working tree, which the
+        # write has already produced — and somebody is waiting for the vault,
+        # not for the pin. Pinning afterwards also strengthens what the pin
+        # means: it now describes a bundle that was applied, not one that was
+        # about to be.
+        pulled = _pull(b, force=force, commit=False, phases=phases)
         out: dict[str, Any] = {"pull": pulled}
         if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
                                   may_create=may_create, force=force,
                                   trigger=trigger, phases=phases)
+            if commit:
+                pulled["git"] = _commit(
+                    b, pulled.get("commit_message") or "zotero: library")
+                phases.mark("commit")
         out["timings"] = {"total_s": phases.total, **phases.spans}
         log.info("zotero: %s pass in %.1fs — %s", trigger, phases.total,
                  phases.summary())
