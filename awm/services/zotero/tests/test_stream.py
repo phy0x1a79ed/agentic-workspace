@@ -61,16 +61,22 @@ def connect(monkeypatch):
 
 
 @pytest.mark.parametrize("topic,expected", [
-    ("/users/5331043", "users/5331043"),
+    # The account's own number comes back as the name the vault uses, not as
+    # the address the stream sent. One library, one name.
+    ("/users/5331043", "users/0"),
     ("/groups/5284390", "groups/5284390"),
     # A feed rather than a library. The mirror does not read it, and guessing
     # would send a pass looking for a library that does not exist.
     ("/users/5331043/publications", ""),
+    # Somebody else's library would be an address this vault has no name for,
+    # and passing it through unchanged is the honest answer.
+    ("/users/999", "users/999"),
     ("/somethingnew/1", ""),
     ("", ""),
     ("/", ""),
 ])
-def test_only_a_library_topic_is_read_as_one(topic, expected):
+def test_only_a_library_topic_is_read_as_one(topic, expected, monkeypatch):
+    monkeypatch.setattr(stream_mod.source, "USER", "5331043")
     assert stream_mod.library_of(topic) == expected
 
 
