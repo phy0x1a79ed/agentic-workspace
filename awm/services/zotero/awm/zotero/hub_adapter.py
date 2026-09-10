@@ -219,7 +219,10 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
     return await asyncio.to_thread(
         sync.run, vault.Vault(), force=bool(args.get("force")),
         parent=(args.get("parent") or "").strip() or "root",
-        may_create=MAY_CREATE_ROOT)
+        may_create=MAY_CREATE_ROOT,
+        # What set this off, so the status note can say. A note whose whole job
+        # is to tell you what happened must not guess at the half it knows.
+        trigger=(args.get("trigger") or "hand"))
 
 
 HANDLERS = {
@@ -266,7 +269,7 @@ async def _push_loop() -> None:
             WOKEN.clear()
             LAST["tick"] = "push"
             try:
-                LAST["result"] = await _h_sync({}, None)
+                LAST["result"] = await _h_sync({"trigger": "push"}, None)
                 LAST["error"] = None
             except source.ZoteroUnavailable as e:
                 LAST["error"] = str(e)[:300]
@@ -298,7 +301,7 @@ async def _sync_loop() -> None:
                 continue
             LAST["tick"] = "floor"
             try:
-                LAST["result"] = await _h_sync({}, None)
+                LAST["result"] = await _h_sync({"trigger": "floor"}, None)
                 LAST["error"] = None
             except source.ZoteroUnavailable as e:
                 LAST["error"] = str(e)[:300]
