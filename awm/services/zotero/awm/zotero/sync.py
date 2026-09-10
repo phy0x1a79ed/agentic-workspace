@@ -209,8 +209,8 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
     # removal: a partial read cannot tell a paper that left from one it was
     # simply not sent.
     parts = [kept] + [
-        bundle_mod.normalize(source.items(lib["id"]),
-                             source.collections(lib["id"]),
+        bundle_mod.normalize(source.items(lib["id"]).records,
+                             source.collections(lib["id"]).records,
                              {}, library=lib["id"],
                              library_name=lib["name"])
         for lib in moved]
