@@ -25,6 +25,16 @@ def scope(tmp_path):
     return tmp_path
 
 
+def notes_touched(v, out, *verbs) -> set[str]:
+    """Which notes these verbs hit, not counting the mirror's own status note.
+
+    The status note is written once per pass that changed anything, which is
+    correct and is exactly what makes a stalled mirror visible — but it is not a
+    paper, and every assertion below is about papers."""
+    status = (out.get("status_note") or {}).get("note_id")
+    return v.touched(*verbs) - ({status} if status else set())
+
+
 def seed(scope, items: list[dict], collections: list[dict] | None = None,
          versions: dict[str, int] | None = None) -> bundle.Bundle:
     b = bundle.Bundle(scope)
@@ -79,7 +89,9 @@ def test_each_library_gets_its_own_shelf(scope):
                  item("BBB", library="groups/1", library_name="BCB2")])
     v = FakeVault()
     out = sync.apply(v, scope)
-    assert sorted(v.titles_under(out["library_note"])) == ["BCB2", "My Library"]
+    shelves = [n["title"] for n in v.notes.values()
+               if sync.LIBRARY_LABEL in n["labels"]]
+    assert sorted(shelves) == ["BCB2", "My Library"]
 
 
 def test_collections_become_a_tree_with_parents_before_children(scope):
@@ -534,7 +546,7 @@ def test_a_paper_whose_stamp_never_landed_is_written_again(scope):
     v.calls.clear()
     out = sync.apply(v, scope)
     assert out["unchanged"] == 1 and out["updated"] == 1
-    assert len(v.touched("update")) == 1
+    assert len(notes_touched(v, out, "update")) == 1
 
 
 def test_a_dry_run_reports_what_would_change_and_writes_nothing(scope):
@@ -678,7 +690,7 @@ def test_one_changed_paper_touches_exactly_one_note(scope):
     v.calls.clear()
     out = sync.apply(v, scope)
     assert out["updated"] == 1 and out["unchanged"] == 2
-    assert v.touched("update") == {keyed["users/0/BBB"]}
+    assert notes_touched(v, out, "update") == {keyed["users/0/BBB"]}
 
 
 def test_version_zero_does_not_defeat_the_cursor(scope):
@@ -763,7 +775,8 @@ def test_a_renamed_collection_re_places_no_paper(scope):
     v.calls.clear()
     out = sync.apply(v, scope)
     assert out["unchanged"] == 1
-    assert v.touched("update") and not (v.touched("update") & keyed)
+    assert notes_touched(v, out, "update") and not (
+        notes_touched(v, out, "update") & keyed)
     assert v.touched("place") == set()
 
 
@@ -781,7 +794,7 @@ def test_a_moved_collection_moves_the_folder_and_not_the_papers(scope):
     v.calls.clear()
     out = sync.apply(v, scope)
     assert out["collections_moved"] == 1
-    assert paper not in v.touched("place", "update")
+    assert paper not in notes_touched(v, out, "place", "update")
 
 
 def test_a_paper_filed_into_a_collection_is_re_placed(scope):
@@ -851,3 +864,74 @@ def test_a_dry_run_says_what_it_would_leave_alone(scope):
     out = sync.apply(v, scope, dry_run=True)
     assert out["would_leave_alone"] == 1 and out["would_update"] == 1
     assert out["would_create"] == 0 and out["would_replace"] == 0
+
+
+# -- saying so in the vault --------------------------------------------------
+
+
+def test_the_status_note_records_the_pass_and_links_the_newest_paper(scope):
+    seed(scope, [item("AAA", title="Old", version=1),
+                 item("BBB", title="New", version=9)])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+
+    note = v.notes[out["status_note"]["note_id"]]
+    assert note["labels"][sync.STATUS_LABEL] == "1"
+    assert sync.KEY_LABEL not in note["labels"], (
+        "a status note carrying a Zotero key would be in the removal pass's "
+        "sights and in the count of notes outside the library")
+    assert note["title"].startswith(sync.STATUS_NOTE)
+    assert "2 created" in note["title"]
+    newest = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/BBB"]
+    assert f'href="#root/{newest}"' in note["content"]
+
+
+def test_the_root_points_at_the_status_note_so_finding_it_is_free(scope):
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    root = v.notes[out["library_note"]]
+    assert root["labels"][sync.STATUS_POINTER] == out["status_note"]["note_id"]
+
+    _bump(scope, [item("AAA", title="moved on", version=2)])
+    v.calls.clear()
+    again = sync.apply(v, scope)
+    assert again["status_note"]["note_id"] == out["status_note"]["note_id"]
+    assert "labelled" not in v.verbs[1:], (
+        "the pointer is read from labels the root resolution already fetched, "
+        "so a second search for the status note is a round trip for nothing")
+
+
+def test_a_pass_that_changed_nothing_does_not_touch_the_status_note(scope):
+    """It runs on a timer. A status note rewritten on every look puts a revision
+    on it every time and tells you nothing."""
+    papers = [item("AAA")]
+    seed(scope, papers)
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    status = out["status_note"]["note_id"]
+
+    _bump(scope, papers)
+    v.calls.clear()
+    again = sync.apply(v, scope)
+    assert again["status_note"] is None
+    assert status not in v.touched("update", "create", "set_label")
+
+
+def test_a_persons_note_called_zotero_mirror_is_not_adopted(scope):
+    """`ensure` resolves a title under the root and would take this note over.
+    The pointer is the identity; the title is decoration."""
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope, dry_run=True)  # resolves nothing, writes nothing
+    assert out["dry_run"] is True
+
+    v = FakeVault()
+    first = sync.apply(v, scope)
+    theirs = v.create(parent=first["library_note"], title=sync.STATUS_NOTE,
+                      content="<p>my own reading notes</p>")
+
+    _bump(scope, [item("AAA", title="moved on", version=2)])
+    again = sync.apply(v, scope)
+    assert again["status_note"]["note_id"] != theirs
+    assert v.notes[theirs]["content"] == "<p>my own reading notes</p>"

@@ -23,6 +23,7 @@ import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,13 @@ RENDER = "1"
 #: push path to order two updates by. Never the skip decision — see
 #: `STAMP_LABEL` for why it cannot be.
 VERSION_LABEL = "zoteroVersion"
+
+#: The note that says what the mirror last did, and the label on the root that
+#: points at it. A stalled mirror and an idle one are otherwise identical from
+#: inside the vault, which is how this one ran dead for days unnoticed.
+STATUS_LABEL = "zoteroStatus"
+STATUS_POINTER = "zoteroStatusNote"
+STATUS_NOTE = "Zotero mirror"
 
 
 def bundle(scope: Path | None = None) -> bundle_mod.Bundle:
@@ -566,6 +574,10 @@ def _stamp(item: dict) -> str:
     return f"{RENDER}:{hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]}"
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @dataclass
 class Survey:
     """What the vault already holds, read once, before anything is written.
@@ -719,6 +731,10 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
     # two things in one result is how a reader draws the wrong conclusion.
     out: dict[str, Any] = {"created": 0, "updated": 0, "unchanged": 0,
                            "replaced": 0, "attached": 0}
+    #: The paper worth linking to from the status note: the newest thing this
+    #: pass made, falling back to the last thing it changed.
+    newest: tuple[int, str, str] | None = None
+    touched_last: tuple[str, str] | None = None
     for item in items:
         home = shelves.get(item.get("library", ""), survey.root)
         wanted = sorted({folders[c] for c in item.get("collections") or []
@@ -739,6 +755,9 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
                         **_labels(item)})
             out["created"] += 1
             placed = [wanted[0]]
+            rank = (int(item.get("version") or 0), note_id, _title(item))
+            if newest is None or rank[0] >= newest[0]:
+                newest = rank
         else:
             note_id = have["note_id"]
             placed = sorted(set(have["parents"]))
@@ -750,6 +769,7 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
                     labels={VERSION_LABEL: str(item.get("version") or 0),
                             **_labels(item)})
                 out["updated"] += 1
+                touched_last = (note_id, _title(item))
 
         if not fresh:
             out["attached"] += _attach(vault, b, note_id, item)
@@ -771,8 +791,86 @@ def _upsert(vault, b: bundle_mod.Bundle, survey: Survey,
 
     out.update({"collections": len(folders), "collections_created": folders_made,
                 "collections_moved": folders_moved,
-                "libraries": len(shelves), "libraries_created": shelves_made})
+                "libraries": len(shelves), "libraries_created": shelves_made,
+                "newest": ({"note_id": newest[1], "title": newest[2]}
+                           if newest else
+                           {"note_id": touched_last[0], "title": touched_last[1]}
+                           if touched_last else None)})
     return out, folders
+
+
+#: What counts as having done something. A pass that changed nothing writes no
+#: status, so a quiet mirror puts no revision on the note and costs no call.
+DID_SOMETHING = ("created", "updated", "replaced", "attached", "removed",
+                 "deduplicated", "collections_created", "collections_moved",
+                 "libraries_created")
+
+
+def _status_note(vault, survey: Survey) -> tuple[str, bool]:
+    """The note the mirror writes its own state into, made if there is none.
+
+    Found by a pointer label on the root, which `_labelled_root` has already
+    read — so on the ordinary pass this costs nothing at all. Only a vault that
+    has never had one, or has lost it, pays a search.
+
+    **Created, never ensured.** `ensure` resolves a title under the root and
+    would adopt a note somebody happened to call the same thing, which is the
+    trap the shelf step already documents. The pointer is the identity; the
+    title is decoration and carries a timestamp precisely because a changed
+    title is the cheapest thing a person watching the tree notices.
+    """
+    pointed = survey.root_labels.get(STATUS_POINTER) or ""
+    if pointed:
+        return pointed, False
+    hits = [h for h in vault.labelled(STATUS_LABEL)]
+    if hits:
+        return hits[0]["note_id"], True
+    return vault.create(parent=survey.root, title=STATUS_NOTE, type="text",
+                        labels={STATUS_LABEL: "1"}), True
+
+
+def _status_body(out: dict[str, Any], versions: Any) -> str:
+    e = html.escape
+    counts = [(name, out.get(name)) for name in
+              ("created", "updated", "unchanged", "replaced", "attached",
+               "removed", "deduplicated")]
+    rows = [f"<tr><th>{e(n)}</th><td>{e(str(v))}</td></tr>"
+            for n, v in counts if v]
+    parts = [f"<p>Last change {e(_now())} · "
+             f"from {e(str(out.get('source') or 'a reconcile'))}.</p>",
+             "<table>", *rows, "</table>"]
+    if versions:
+        parts.append("<p>Library versions: "
+                     + e(", ".join(f"{k} {v}" for k, v in
+                                   sorted((versions or {}).items())))
+                     + "</p>")
+    newest = out.get("newest")
+    if newest and newest.get("note_id"):
+        parts.append(f'<p>Newest: <a href="#root/{e(newest["note_id"])}">'
+                     f'{e(newest["title"])}</a></p>')
+    for name, label in (("outside_root", "keyed notes outside the library"),
+                        ("stale_collections", "collections Zotero no longer has")):
+        value = out.get(name)
+        if value:
+            parts.append(f"<p>{e(label)}: {e(str(value))}</p>")
+    return "".join(parts)
+
+
+def _write_status(vault, survey: Survey, out: dict[str, Any],
+                  versions: Any) -> dict[str, Any] | None:
+    """Say in the vault what the mirror just did. One call, and none at all on a
+    pass that changed nothing."""
+    if not any(out.get(name) for name in DID_SOMETHING):
+        return None
+    note_id, fresh_pointer = _status_note(vault, survey)
+    summary = ", ".join(f"{out[n]} {n}" for n in
+                        ("created", "updated", "removed") if out.get(n)) \
+        or "no papers changed"
+    vault.update(note_id, title=f"{STATUS_NOTE} — {_now()} · {summary}",
+                 content=_status_body(out, versions))
+    if fresh_pointer:
+        vault.set_label(survey.root, STATUS_POINTER, note_id)
+    return {"note_id": note_id, "summary": summary}
 
 
 def _retire(vault, known: dict[str, dict], seen: set[str]) -> int:
@@ -895,6 +993,8 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
         out["outside_root"] = _outside(vault, len(items))
     else:
         out["outside_root"] = None
+    out["status_note"] = _write_status(vault, survey, out,
+                                       library.get("versions"))
     out["calls"] = dict(getattr(vault, "calls", {}))
     return out
 
