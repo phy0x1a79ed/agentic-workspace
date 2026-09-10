@@ -40,7 +40,7 @@ def test_start_reports_the_bundle_it_found(tmp_path, monkeypatch, caplog,
         asyncio.run(hub_adapter._on_start())
     line = " ".join(r.getMessage() for r in caplog.records)
     assert "1 items" in line and "users/0" in line
-    assert _no_timer == ["zotero:sync"]
+    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
 
 
 def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
@@ -54,7 +54,7 @@ def test_start_survives_a_bundle_that_is_not_there_yet(tmp_path, monkeypatch,
                         lambda: bundle.Bundle(tmp_path / "nothing"))
     with caplog.at_level(logging.INFO):
         asyncio.run(hub_adapter._on_start())
-    assert _no_timer == ["zotero:sync"]
+    assert _no_timer == ["zotero:sync", "zotero:push", "zotero:stream"]
 
 
 # -- status ------------------------------------------------------------------
