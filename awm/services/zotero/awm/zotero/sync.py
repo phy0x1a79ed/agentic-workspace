@@ -225,7 +225,7 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
 
 def run(vault, scope: Path | None = None, *, force: bool = False,
         parent: str = "root", commit: bool = True,
-        may_create: bool = True) -> dict[str, Any]:
+        may_create: bool = True, trigger: str = "hand") -> dict[str, Any]:
     """Pull then apply, holding the lock across both.
 
     Not `pull()` followed by `apply()`: each takes the lock and drops it, so a
@@ -242,7 +242,8 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
         out: dict[str, Any] = {"pull": pulled}
         if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
-                                  may_create=may_create, force=force)
+                                  may_create=may_create, force=force,
+                                  trigger=trigger)
         return out
 
 
@@ -413,7 +414,8 @@ def _resolve_root(vault, *, parent: str,
 
 def apply(vault, scope: Path | None = None, *,
           parent: str = "root", may_create: bool = True,
-          force: bool = False, dry_run: bool = False) -> dict[str, Any]:
+          force: bool = False, dry_run: bool = False,
+          trigger: str = "hand") -> dict[str, Any]:
     """Write the bundle into the vault: collections as a tree, one note per
     reference with its citation fields as labels.
 
@@ -431,7 +433,7 @@ def apply(vault, scope: Path | None = None, *,
         if dry_run:
             return _plan(vault, b, parent=parent, may_create=may_create)
         return _apply(vault, b, parent=parent, may_create=may_create,
-                      force=force)
+                      force=force, trigger=trigger)
 
 
 def _stamp(item: dict) -> str:
@@ -709,8 +711,11 @@ def _status_body(out: dict[str, Any], versions: Any) -> str:
                "removed", "deduplicated")]
     rows = [f"<tr><th>{e(n)}</th><td>{e(str(v))}</td></tr>"
             for n, v in counts if v]
-    parts = [f"<p>Last change {e(_now())} · "
-             f"from {e(str(out.get('source') or 'a reconcile'))}.</p>",
+    told = {"push": "a change Zotero pushed",
+            "floor": "the periodic pass",
+            "hand": "somebody at a console"}.get(out.get("trigger") or "",
+                                                 "an unnamed pass")
+    parts = [f"<p>Last change {e(_now())}, from {e(told)}.</p>",
              "<table>", *rows, "</table>"]
     if versions:
         parts.append("<p>Library versions: "
@@ -822,7 +827,8 @@ def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
 
 
 def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
-           may_create: bool = True, force: bool = False) -> dict[str, Any]:
+           may_create: bool = True, force: bool = False,
+           trigger: str = "hand") -> dict[str, Any]:
     if not b.exists:
         raise FileNotFoundError(
             f"no bundle at {b.root} — run `awm zotero pull` on the node that "
@@ -866,6 +872,7 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
         out["outside_root"] = _outside(vault, len(items))
     else:
         out["outside_root"] = None
+    out["trigger"] = trigger
     out["status_note"] = _write_status(vault, survey, out,
                                        library.get("versions"))
     out["calls"] = dict(getattr(vault, "calls", {}))

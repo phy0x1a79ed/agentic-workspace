@@ -820,3 +820,17 @@ def test_a_persons_note_called_zotero_mirror_is_not_adopted(scope):
     again = sync.apply(v, scope)
     assert again["status_note"]["note_id"] != theirs
     assert v.notes[theirs]["content"] == "<p>my own reading notes</p>"
+
+
+def test_the_status_note_says_what_set_the_pass_off(scope):
+    """The note's whole job is to say what happened. Guessing at the half it
+    knows is the one thing it must not do."""
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope, trigger="push")
+    body = v.notes[out["status_note"]["note_id"]]["content"]
+    assert "a change Zotero pushed" in body
+
+    _bump(scope, [item("AAA", title="moved on", version=2)])
+    again = sync.apply(v, scope, trigger="floor")
+    assert "the periodic pass" in v.notes[again["status_note"]["note_id"]]["content"]
