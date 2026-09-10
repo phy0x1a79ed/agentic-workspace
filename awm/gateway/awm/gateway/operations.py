@@ -12,6 +12,8 @@ import typer
 from fastapi import HTTPException, Query
 from mcp.types import Tool
 
+from awm.gateway import mcp_http
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -545,10 +547,13 @@ def _invoke_dispatch(tool_name: str, api_func: Callable, kwargs: dict) -> None:
     """Dispatch a service tool through the by-name ``/invoke`` endpoint — the
     same path the MCP proxy uses — dropping unset (``None``) options."""
     args = {k: v for k, v in kwargs.items() if v is not None}
-    # Generous ceiling (not the default 30s): a service verb may declare a longer
-    # per-function timeout the catalog now honors (bulk re-embed / dedup). A fast
-    # verb still returns immediately; this only bounds a hang.
-    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args}, timeout=600)
+    # Ceiling, not budget: a service verb declares its own per-function timeout
+    # and the catalog enforces it server-side, so this only bounds a hang. It
+    # was 600s, which sits *under* the longest declared budget (3600s) and so
+    # truncated `awm scope create` the same way the MCP proxy did. Shared with
+    # the proxies so the two surfaces cannot drift apart again.
+    r = api_func("POST", "/invoke", json={"name": tool_name, "args": args},
+                 timeout=mcp_http.read_timeout())
     _render_invoke_output(r)
 
 

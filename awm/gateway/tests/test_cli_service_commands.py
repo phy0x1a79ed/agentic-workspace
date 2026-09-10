@@ -192,7 +192,14 @@ def test_dispatch_posts_name_and_args_to_invoke(capsys):
     # Invoke the generated handler directly (None options are dropped).
     create.callback(project="demo", scope="s1", guests=None)
 
-    assert calls == [("POST", "/invoke", {"json": {"name": "scope_create", "args": {"project": "demo", "scope": "s1"}}, "timeout": 600})]
+    # The ceiling is asserted against the shared constant, not a literal: it is
+    # a backstop that must stay above the largest per-function budget a manifest
+    # declares, and pinning the number here is how the two drift apart.
+    from awm.gateway import mcp_http
+    assert calls == [("POST", "/invoke", {
+        "json": {"name": "scope_create", "args": {"project": "demo", "scope": "s1"}},
+        "timeout": mcp_http.read_timeout()})]
+    assert mcp_http.read_timeout() > 3600.0
     # The `result` string is JSON → pretty-printed.
     out = capsys.readouterr().out
     assert '"ok": true' in out
