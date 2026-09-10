@@ -246,3 +246,86 @@ def test_a_library_the_bundle_has_never_seen_is_worth_a_request(scope, library):
 
     assert library.asked("libraries"), "the name was guessed rather than asked"
     assert out["read"] == ["A group"]
+
+
+# -- the one that matters ----------------------------------------------------
+
+
+def test_replaying_windows_lands_where_one_whole_read_would(scope, library,
+                                                            tmp_path):
+    """The property the whole design rests on, and the only test that keeps
+    biting as the fold is refactored.
+
+    Drive a library through the operations a person performs. After every one,
+    catch up by window and compare against a bundle built by reading the same
+    state whole. The two must be the same library, because everything downstream
+    treats the bundle as a full picture and cannot tell which way it got there.
+
+    Compared after *every* step rather than at the end, because an escalation to
+    a whole read rebuilds every record and would heal a divergence introduced
+    three steps earlier. Checking only the end result hides exactly the bugs this
+    is here to catch.
+    """
+    delta = bundle.Bundle(scope)
+    step = 0
+
+    def catch_up(what: str):
+        nonlocal step
+        step += 1
+        sync._pull(delta, force=False, commit=False)
+        whole = bundle.Bundle(tmp_path / f"whole{step}")
+        sync._pull(whole, force=True, commit=False)
+        assert delta.read()["items"] == whole.read()["items"], what
+        assert delta.read()["collections"] == whole.read()["collections"], what
+        assert delta.digest == whole.digest, what
+
+    library.put_collection("COL", "Papers")
+    library.put("AAA", title="First", collections=["COL"])
+    library.put("BBB", title="Second")
+    library.put("GGG", library="groups/1", title="Shared")
+    catch_up("the first read")
+
+    library.put("N1", parent="AAA", item_type="note", note="<p>one</p>")
+    catch_up("a note added to a paper nothing else touched")
+
+    library.put("AAA", title="First, corrected", collections=["COL"],
+                tags=[{"tag": "b"}, {"tag": "a"}])
+    catch_up("a paper edited, whose notes did not come with it")
+
+    library.put("N2", parent="AAA", item_type="note", note="<p>two</p>")
+    catch_up("a second note on the same paper")
+
+    library.put("N1", parent="AAA", item_type="note", note="<p>one, edited</p>")
+    catch_up("one note of two edited")
+
+    library.put("CCC", title="Third", collections=["COL"])
+    catch_up("another paper")
+
+    library.put_collection("COL", "Papers, renamed")
+    catch_up("a collection renamed, which moves the version and returns no items")
+
+    library.erase("BBB")
+    catch_up("a paper deleted for good")
+
+    library.erase("N2")
+    catch_up("a child note deleted for good, whose key names no paper")
+
+    library.trash("CCC")
+    catch_up("a paper trashed, which no route reports")
+
+
+def test_a_group_renamed_outside_its_version_waits_for_a_whole_read(scope,
+                                                                    library):
+    """Not a defect, and worth stating because the equivalence test above leaves
+    it out. A library's display name is not part of its contents, so renaming a
+    group moves no version and no window can carry it. The daily whole read is
+    what picks it up."""
+    library.put("GGG", library="groups/1", title="Shared")
+    b = caught_up(scope, library)
+    library.rename_library("groups/1", "Renamed group")
+
+    sync._pull(b, force=False, commit=False)
+    assert {i["library_name"] for i in b.read()["items"]} == {"A group"}
+
+    sync._pull(b, force=True, commit=False)
+    assert {i["library_name"] for i in b.read()["items"]} == {"Renamed group"}

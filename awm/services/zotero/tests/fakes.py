@@ -209,9 +209,12 @@ class FakeLibrary:
             lib: {} for lib in self.libraries}
         self.collections_by: dict[str, dict[str, dict]] = {
             lib: {} for lib in self.libraries}
-        #: library -> {"items": [...keys], "collections": [...keys]}
-        self.gone: dict[str, dict[str, list[str]]] = {
-            lib: {"items": [], "collections": []} for lib in self.libraries}
+        #: library -> kind -> key -> the version at which it was erased, so a
+        #: since-window over deletions filters the way the service's does.
+        #: Returning every deletion ever, whatever the cursor, hides the case
+        #: where a version moved with nothing to show for it.
+        self.gone: dict[str, dict[str, dict[str, int]]] = {
+            lib: {"items": {}, "collections": {}} for lib in self.libraries}
         #: Keys the trash holds. Invisible to every route, exactly as they are
         #: in the real service — which is the whole reason a version can move
         #: with nothing to show for it.
@@ -266,7 +269,7 @@ class FakeLibrary:
         """A permanent removal, which `deleted` does report."""
         self.version[library] += 1
         self.items_by[library].pop(key, None)
-        self.gone[library]["items"].append(key)
+        self.gone[library]["items"][key] = self.version[library]
 
     def rename_library(self, library: str, name: str) -> None:
         self.libraries[library] = name
@@ -295,17 +298,21 @@ class FakeLibrary:
         rows = self._window(list(self.collections_by[library].values()), since)
         return _window(rows, self.version[library])
 
+    def _gone(self, library: str, kind: str, since: int | None) -> list[str]:
+        return sorted(k for k, at in self.gone[library][kind].items()
+                      if since is None or at > since)
+
     def deleted(self, library: str | None = None, since: int | None = None):
         library = library or "users/0"
         self.calls.append(("deleted", library, since))
-        return _window(list(self.gone[library]["items"]),
+        return _window(self._gone(library, "items", since),
                        self.version[library])
 
     def deleted_collections(self, library: str | None = None,
                             since: int | None = None) -> list[str]:
         library = library or "users/0"
         self.calls.append(("deleted_collections", library, since))
-        return list(self.gone[library]["collections"])
+        return self._gone(library, "collections", since)
 
     def library_version(self, library: str | None = None) -> int:
         library = library or "users/0"
