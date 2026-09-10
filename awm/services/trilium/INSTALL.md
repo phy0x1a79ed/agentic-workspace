@@ -16,12 +16,14 @@ vault is a second upstream on an existing listener rather than a mount or a host
 of its own, why it has no password, why the verbs that write notes are refused to
 anyone who arrives through the edge, why the kanban board is Trilium's rather
 than this service's, why there are three kinds of database copy and only one of
-them is a restore path, and what a shared origin costs.
+them is a restore path, why a node that serves the tarball gets a directory
+where a node that builds the fork gets a checkout, and what a shared origin
+costs.
 
 Trilium's own architecture belongs to `projects/trilium` and its upstream docs.
 The patches we carry to it are the exception, because nothing in that project
-says why they are there. Where the vault's content lives is `projects/vault`.
-This file covers only the boundary between awm and Trilium.
+says why they are there. This file covers only the boundary between awm and
+Trilium.
 
 ## The contract
 
@@ -360,13 +362,44 @@ patch. A node that installs from the tarball shows bare card titles, and loses a
 column change made while the board is open in a second browser. Only a node that
 builds the fork carries them.
 
+## Where the vault's content lives
+
+`projects/trilium/release`, the same worktree the node serves. `live/` holds the
+database. `data/vault/` holds the pinned snapshots, the mirrored Zotero library
+and the markdown export. One path moves on a deploy instead of two, so nothing
+has to keep a second one in step.
+
+The path is the same on every node. What sits at it is not.
+
+- A node that builds the fork has a git worktree there with a DVC repository.
+  Its pins are committed on `release`.
+- A node that serves the published tarball has a plain directory. No `.git`, no
+  `.dvc`, no bare repository, no scope row. It holds no Trilium source, so git
+  has nothing to track and DVC has nothing to pin.
+
+Every write asks `is_checkout` before it pins or commits. Without a checkout the
+service writes its files and reports that it committed nothing. That is what
+lets a deployment box run this service with no code of its own, so treat it as
+load-bearing rather than as a graceful degradation.
+
+WARNING: the live database sits inside a git worktree on a build node. `git
+clean -fdx` there deletes it and nothing warns first.
+
+CAUTION: `live/` is excluded through the bare repository's `info/exclude`, never
+through the fork's root `.gitignore`. Upstream owns that file. Anything added to
+it conflicts at every version bump.
+
+The data tree is also excluded from the probe that decides whether to rebuild.
+`install.sh` and `instances.NOT_SOURCE` spell the same two exclusions. They have
+to agree, or a deploy alternates between rebuilding and not.
+
 ## Three kinds of copy, and only one is a restore path
 
 | where | what | pinned | overwritten |
 |---|---|---|---|
 | `live/backups/` | Trilium's own daily/weekly/monthly rotation | no | on a schedule |
-| `data/backups/` | named snapshots `trilium snapshot` moved there | yes | never |
-| `notes/` | the markdown export | as text | every export |
+| `data/vault/backups/` | named snapshots `trilium snapshot` moved there | yes | never |
+| `data/vault/notes/` | the markdown export | yes | every export |
 
 **The rolling backups cannot be the DVC chunk.** It is the tempting arrangement —
 they are the only consistent database copies on disk, because Trilium writes them
@@ -382,7 +415,12 @@ existed — and it looks healthy until someone restores it.
 
 **The markdown export is a derived view.** Trilium stores markup as HTML, so the
 export is a conversion and importing it back is lossy. It is there to be read,
-diffed, searched and merged by a person. Recovery is a snapshot, never this.
+searched and merged by a person. Recovery is a snapshot, never this.
+
+The export is pinned rather than committed as text, because the fork is a public
+repository. A pin publishes a hash and the bytes stay in the local cache. The
+cost is that an export no longer appears in a branch diff. The tree on disk is
+still diffable and an older export is still reachable through its pin.
 
 **`restore` is whole-vault, and that is a limitation with a reason.** Putting one
 note's revision back is `POST /api/revisions/{id}/restore`, on the internal API,
@@ -492,6 +530,11 @@ wholesale to the awm edge, and the vault is a path on that edge, so the public
 host serves it by the same route and the same code as a mesh node. There is no
 `TRILIUM_FRONTS`, no `TRILIUM_DOMAIN`, no generated vhost and no DNS record.
 
+One shape it does not share is the vault's. sirius holds no fork, so the path
+the service resolves is a directory there rather than a checkout — see *Where
+the vault's content lives*. `scripts/sirius/install-awm.sh` creates it with two
+mkdirs.
+
 The one thing that is host-shaped: `client_max_body_size` in
 `scripts/sirius/etc/nginx/awm-proxy.conf` is 512m, because the vault is behind
 that one location and Trilium uploads whole PDFs and imports whole vaults in a
@@ -522,12 +565,15 @@ An end-to-end check of the data verbs, on the host:
 ```
 awm trilium snapshot --name before-upgrade
 awm trilium export
-git -C projects/vault/main log --oneline -2
+git -C projects/trilium/release log --oneline -2
 ```
 
-Both commit in the vault's scope. `snapshot` adds a pinned database copy,
-`export` replaces `notes/` and commits the markdown with the pin in one commit.
-Neither is reachable from a browser — run them where you can ssh.
+Each commits one pin on `release`. `snapshot` adds a database copy under a name
+no other snapshot has. `export` replaces the notes chunk wholesale. Neither is
+reachable from a browser — run them where you can ssh.
+
+On a node with no checkout both write their files and report that they committed
+nothing. That is the expected answer there, not a failure.
 
 ## AGPL-3.0
 
