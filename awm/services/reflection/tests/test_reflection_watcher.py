@@ -303,4 +303,4 @@ def test_the_watcher_imports_no_transport():
     from awm.reflection import watcher as w
     src = inspect.getsource(w)
     assert "tmux_inject" not in src
-    assert "daemon_inject" not in src
+    assert "claudedaemon" not in src
