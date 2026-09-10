@@ -497,14 +497,44 @@ def test_the_cursor_is_not_written_when_a_pass_dies_partway(scope):
     seed(scope, [item("AAA")])
     v = FakeVault()
     boom = RuntimeError("the vault went away")
+    real = v.set_label
 
-    def explode(*a, **k):
-        raise boom
-    v.place = explode
+    def explode(note_id, name, value):
+        if name == sync.STAMP_LABEL:
+            raise boom
+        return real(note_id, name, value)
+    v.set_label = explode
     with pytest.raises(RuntimeError):
         sync.apply(v, scope)
     roots = [n for n in v.notes.values() if sync.ROOT_LABEL in n["labels"]]
     assert sync.APPLIED_LABEL not in roots[0]["labels"]
+
+
+def test_a_paper_whose_stamp_never_landed_is_written_again(scope):
+    """The reason the stamp is written last, and the case that decides it.
+
+    A pass that died between the content and the file leaves a note that looks
+    finished. Only the absent stamp says otherwise, so a stamp written any
+    earlier would strand that paper for ever.
+    """
+    seed(scope, [item("AAA"), item("BBB")])
+    v = FakeVault()
+    real = v.set_label
+
+    def explode(note_id, name, value):
+        if name == sync.STAMP_LABEL and v.notes[note_id]["labels"].get(
+                sync.KEY_LABEL) == "users/0/BBB":
+            raise RuntimeError("the vault went away")
+        return real(note_id, name, value)
+    v.set_label = explode
+    with pytest.raises(RuntimeError):
+        sync.apply(v, scope)
+
+    v.set_label = real
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert out["unchanged"] == 1 and out["updated"] == 1
+    assert len(v.touched("update")) == 1
 
 
 def test_a_dry_run_reports_what_would_change_and_writes_nothing(scope):
@@ -604,3 +634,220 @@ def test_a_failed_ship_is_reported_rather_than_raised(scope, monkeypatch):
                    ship_to="sirius:/vault")
     assert out["ship"]["shipped"] is False
     assert "no route" in out["ship"]["detail"]
+
+
+# -- the per-paper cursor ----------------------------------------------------
+#
+# The mirror runs on a timer over hundreds of notes, and until these existed a
+# single new paper rewrote every one of them. Each test below is a negative:
+# what the pass must NOT touch.
+
+
+def _bump(scope, items, collections=None, versions=None):
+    """Re-seed with a moved library version, so the root's digest guard lets the
+    pass through and the per-paper cursor is what is actually under test."""
+    return seed(scope, items, collections,
+                versions or {"users/0": 99})
+
+
+def test_an_unchanged_library_touches_no_note(scope):
+    """Distinct from the root's digest guard, which stops the pass before it
+    ever looks at a paper. This defeats that guard deliberately, so what is
+    proven is the per-paper cursor and nothing else."""
+    papers = [item(k) for k in ("AAA", "BBB", "CCC")]
+    seed(scope, papers)
+    v = FakeVault()
+    sync.apply(v, scope)
+
+    _bump(scope, papers)
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert out["unchanged"] == 3
+    assert out["created"] == out["updated"] == out["replaced"] == 0
+    assert v.touched("update", "place", "attach", "create", "delete") == set()
+
+
+def test_one_changed_paper_touches_exactly_one_note(scope):
+    seed(scope, [item("AAA"), item("BBB"), item("CCC")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    keyed = v.owned(out["library_note"], sync.KEY_LABEL)
+
+    _bump(scope, [item("AAA"), item("BBB", title="A better title", version=2),
+                  item("CCC")])
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert out["updated"] == 1 and out["unchanged"] == 2
+    assert v.touched("update") == {keyed["users/0/BBB"]}
+
+
+def test_version_zero_does_not_defeat_the_cursor(scope):
+    """A paper Zotero has not versioned must still be skippable. A predicate
+    written on the version rather than on the fingerprint reads 0 as "unknown"
+    and puts that paper on the slow path for ever."""
+    papers = [item("AAA", version=0)]
+    seed(scope, papers)
+    v = FakeVault()
+    sync.apply(v, scope)
+    _bump(scope, papers)
+    v.calls.clear()
+    assert sync.apply(v, scope)["unchanged"] == 1
+    assert v.touched("update") == set()
+
+
+def test_a_file_that_arrives_later_is_attached_though_the_version_did_not_move(
+        scope):
+    """The case that decides the cursor.
+
+    A stored file finishing its download changes nothing about the item that
+    records it, which is why `pull` has a `force` at all. A cursor keyed on
+    Zotero's item version would skip this paper's file for ever; one keyed on
+    the whole record sees the file appear.
+    """
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    sync.apply(v, scope)
+
+    b = _bump(scope, [item("AAA", files={"F1": "paper.pdf"})])
+    got = b.file_for("users/0/F1", "paper.pdf")
+    got.parent.mkdir(parents=True, exist_ok=True)
+    got.write_bytes(b"%PDF-1.4")
+    v.calls.clear()
+    assert sync.apply(v, scope)["attached"] == 1
+
+
+def test_a_renderer_change_restamps_every_note(scope, monkeypatch):
+    """Without this the day somebody edits `_card` is the day the vault stops
+    matching it, silently, for ever."""
+    papers = [item("AAA"), item("BBB")]
+    seed(scope, papers)
+    v = FakeVault()
+    sync.apply(v, scope)
+
+    monkeypatch.setattr(sync, "RENDER", "2")
+    _bump(scope, papers)
+    v.calls.clear()
+    assert sync.apply(v, scope)["updated"] == 2
+
+
+def test_a_doubled_note_is_collapsed_though_both_carry_a_current_stamp(scope):
+    """A duplicate is invisible to the cursor: the second copy carries the same
+    fingerprint as the first. So the scan still has to look at everything."""
+    seed(scope, [item("AAA")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    original = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
+    twin = dict(v.notes[original])
+    twin["labels"] = dict(twin["labels"])
+    v.notes["twin"] = twin
+
+    _bump(scope, [item("AAA")])
+    assert sync.apply(v, scope)["deduplicated"] == 1
+    assert "twin" not in v.notes and original in v.notes
+
+
+# -- the collection axis, which needs no cursor of its own -------------------
+
+
+def test_a_renamed_collection_re_places_no_paper(scope):
+    """Renaming a collection moves no paper: every note keeps the same parent
+    note. That is why an item cursor sailing past a rename is not a problem."""
+    papers = [item("AAA", collections=["users/0/C1"])]
+    seed(scope, papers, [collection("C1", "one")])
+    v = FakeVault()
+    sync.apply(v, scope)
+    keyed = set(v.owned("", sync.KEY_LABEL).values()) or {
+        n for n, d in v.notes.items() if sync.KEY_LABEL in d["labels"]}
+
+    _bump(scope, papers, [collection("C1", "renamed")])
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert out["unchanged"] == 1
+    assert v.touched("update") and not (v.touched("update") & keyed)
+    assert v.touched("place") == set()
+
+
+def test_a_moved_collection_moves_the_folder_and_not_the_papers(scope):
+    papers = [item("AAA", collections=["users/0/C2"])]
+    tree = [collection("C1", "one"), collection("C2", "two")]
+    seed(scope, papers, tree)
+    v = FakeVault()
+    sync.apply(v, scope)
+    paper = [n for n, d in v.notes.items() if sync.KEY_LABEL in d["labels"]][0]
+
+    moved = [collection("C1", "one"),
+             collection("C2", "two", parent="users/0/C1")]
+    _bump(scope, papers, moved)
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert out["collections_moved"] == 1
+    assert paper not in v.touched("place", "update")
+
+
+def test_a_paper_filed_into_a_collection_is_re_placed(scope):
+    tree = [collection("C1", "one")]
+    seed(scope, [item("AAA")], tree)
+    v = FakeVault()
+    sync.apply(v, scope)
+    paper = [n for n, d in v.notes.items() if sync.KEY_LABEL in d["labels"]][0]
+
+    _bump(scope, [item("AAA", collections=["users/0/C1"])], tree)
+    v.calls.clear()
+    sync.apply(v, scope)
+    assert paper in v.touched("place")
+
+
+def test_a_paper_dragged_out_of_place_by_hand_is_put_back(scope):
+    """Placement is checked on every pass whatever the cursor says, because the
+    scan already reported where the note is. No cursor would ever notice this."""
+    papers = [item("AAA", collections=["users/0/C1"])]
+    seed(scope, papers, [collection("C1", "one")])
+    v = FakeVault()
+    out = sync.apply(v, scope)
+    paper = v.owned(out["library_note"], sync.KEY_LABEL)["users/0/AAA"]
+    v.notes[paper]["parents"] = [out["library_note"]]
+
+    _bump(scope, papers, [collection("C1", "one")])
+    v.calls.clear()
+    again = sync.apply(v, scope)
+    assert again["replaced"] == 1 and again["updated"] == 0
+    assert paper in v.touched("place")
+
+
+# -- what a pass costs -------------------------------------------------------
+
+
+def test_an_unchanged_bundle_costs_one_search(scope):
+    seed(scope, [item(k) for k in ("AAA", "BBB", "CCC")])
+    v = FakeVault()
+    sync.apply(v, scope)
+    v.calls.clear()
+    assert sync.apply(v, scope)["skipped"] is True
+    assert v.verbs == ["labelled"]
+
+
+def test_a_library_that_moved_but_did_not_change_costs_three_searches(scope):
+    """The whole pass, when the library moved for somebody else's paper: one
+    search to find the root, three to read what the vault holds, and one write
+    to record the new digest on the root. Nothing per paper at all."""
+    papers = [item(k) for k in ("AAA", "BBB", "CCC")]
+    seed(scope, papers)
+    v = FakeVault()
+    sync.apply(v, scope)
+
+    _bump(scope, papers)
+    v.calls.clear()
+    out = sync.apply(v, scope)
+    assert v.verbs == ["labelled", "scan", "scan", "scan", "set_label"]
+    assert v.touched("set_label") == {out["library_note"]}
+
+
+def test_a_dry_run_says_what_it_would_leave_alone(scope):
+    papers = [item("AAA"), item("BBB")]
+    seed(scope, papers)
+    v = FakeVault()
+    sync.apply(v, scope)
+    _bump(scope, [item("AAA"), item("BBB", title="moved on", version=2)])
+    out = sync.apply(v, scope, dry_run=True)
+    assert out["would_leave_alone"] == 1 and out["would_update"] == 1
+    assert out["would_create"] == 0 and out["would_replace"] == 0
