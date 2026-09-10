@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from awm.trilium import instances
+from awm.trilium import instances, sync
 from awm.trilium.instances import Vault
 
 log = logging.getLogger("awm.trilium.server")
@@ -91,6 +91,13 @@ def child_env(vault: Vault) -> dict[str, str]:
     `TRILIUM_NETWORK_HOST` cannot move it. If you are adding a second route — an
     nginx location, another listener, a port forward — this variable has to go
     first.
+
+    **The upstream this vault replicates to.** Set from the environment rather
+    than left to the stored option, because the choice belongs to the machine
+    and not to the document — every node here runs a copy of one database, and
+    a stored host would travel with it. The value is always the local end of
+    this node's own ssh forward, so a node cannot be pointed at a hub it has no
+    tunnel to. See `sync`.
     """
     env = dict(os.environ)
     env.update({
@@ -102,6 +109,7 @@ def child_env(vault: Vault) -> dict[str, str]:
         "TRILIUM_NETWORK_TRUSTEDREVERSEPROXY": "loopback",
         "TRILIUM_SECURITY_BACKEND_SCRIPTING_ENABLED": "false",
         "TRILIUM_SECURITY_SQL_CONSOLE_ENABLED": "false",
+        "TRILIUM_SYNC_SYNCSERVERHOST": sync.sync_server_host(),
         "HOME": str(Path.home()),
     })
     if instances.EDGE_ONLY:
@@ -122,6 +130,12 @@ def child_env(vault: Vault) -> dict[str, str]:
     # failure this whole design must not have.
     assert env["TRILIUM_HOST"] == "127.0.0.1", \
         "the vault child must bind loopback: the edge is the only way in"
+    # The same invariant read the other way. Sync speaks to a vault whose
+    # authentication is off, so the address this child dials must be one that
+    # only leaves the machine inside an ssh forward.
+    assert (env["TRILIUM_SYNC_SYNCSERVERHOST"] == sync.DISABLED
+            or env["TRILIUM_SYNC_SYNCSERVERHOST"].startswith("http://127.0.0.1:")), \
+        "the vault child must sync through loopback: the tunnel is the only link"
     nb = instances.NODE_BIN_FILE
     try:
         recorded = nb.read_text().strip()
