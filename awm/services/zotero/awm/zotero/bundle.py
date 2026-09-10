@@ -307,7 +307,8 @@ def fold(previous: dict[str, Any], window: dict[str, Any],
             "items": list(mine.values())}
 
 
-def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, Any]:
+def merge(parts: list[dict[str, Any]], versions: dict[str, int],
+          whole_read: dict[str, str] | None = None) -> dict[str, Any]:
     """One library payload per library, folded into the bundle's shape.
 
     Ordered by `ref`, because Zotero does not answer in a stable order and two
@@ -317,9 +318,15 @@ def merge(parts: list[dict[str, Any]], versions: dict[str, int]) -> dict[str, An
     nothing to do. An order-sensitive digest makes every pull look like a
     changed library and re-walks the whole mirror to prove it was not.
     """
-    return {"pulled": _stamp(), "versions": dict(versions),
-            "collections": _by_ref(c for p in parts for c in p["collections"]),
-            "items": _by_ref(i for p in parts for i in p["items"])}
+    out = {"pulled": _stamp(), "versions": dict(versions),
+           "collections": _by_ref(c for p in parts for c in p["collections"]),
+           "items": _by_ref(i for p in parts for i in p["items"])}
+    # Outside the three keys `digest` covers, deliberately. A timestamp inside
+    # them would make every node re-apply the whole mirror to prove that nothing
+    # had changed, every time a library was read whole.
+    if whole_read:
+        out["whole_read"] = dict(whole_read)
+    return out
 
 
 def _by_ref(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

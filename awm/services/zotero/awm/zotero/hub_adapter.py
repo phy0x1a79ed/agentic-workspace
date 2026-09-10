@@ -232,7 +232,10 @@ async def _h_sync(args: dict, as_: str | None = None) -> dict:
         may_create=MAY_CREATE_ROOT,
         # What set this off, so the status note can say. A note whose whole job
         # is to tell you what happened must not guess at the half it knows.
-        trigger=(args.get("trigger") or "hand"))
+        trigger=(args.get("trigger") or "hand"),
+        # Which libraries the stream named. Absent means look at all of them,
+        # which is what the floor tick and a hand invocation both want.
+        only=(args.get("only") or None))
 
 
 HANDLERS = {
@@ -247,6 +250,14 @@ HANDLERS = {
 #: matters is that something changed, not how many times, and a pass reads
 #: whatever has moved by the time it runs.
 WOKEN = asyncio.Event()
+
+#: Which libraries the stream has named since the last pass started.
+#:
+#: A set rather than one name, because the loop coalesces a burst behind one
+#: flag. Saving to the personal library and to a group inside the settle window
+#: would otherwise leave whichever came first for the floor tick, twenty minutes
+#: away.
+NAMED: set[str] = set()
 
 STREAM = stream_mod.Stream(
     lambda library, version: _woken(library, version))
@@ -269,6 +280,7 @@ async def _woken(library: str, version: int) -> None:
                     "at": datetime.now(timezone.utc)
                     .isoformat(timespec="milliseconds"),
                     "since": time.monotonic()}
+    NAMED.add(library)
     WOKEN.set()
 
 
@@ -285,10 +297,15 @@ async def _push_loop() -> None:
             await WOKEN.wait()
             await asyncio.sleep(SETTLE_S)
             WOKEN.clear()
+            # Taken, not read: a frame arriving during the pass belongs to the
+            # next one, and putting these back is how a busy lock is retried.
+            named, NAMED_taken = sorted(NAMED), set(NAMED)
+            NAMED.clear()
             LAST["tick"] = "push"
             told_at = (LAST.get("told") or {}).get("since")
             try:
-                LAST["result"] = await _h_sync({"trigger": "push"}, None)
+                LAST["result"] = await _h_sync(
+                    {"trigger": "push", "only": named}, None)
                 LAST["error"] = None
                 if told_at is not None:
                     # The frame-to-note number, which is what a person feels.
@@ -307,6 +324,7 @@ async def _push_loop() -> None:
                 # back and wait for the other pass to let go.
                 log.info("zotero: a sync was already running; retrying in %ss",
                          BUSY_RETRY_S)
+                NAMED.update(NAMED_taken)
                 WOKEN.set()
                 await asyncio.sleep(BUSY_RETRY_S)
         except Exception:  # noqa: BLE001 — never let the loop die

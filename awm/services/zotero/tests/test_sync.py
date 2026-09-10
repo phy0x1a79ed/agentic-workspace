@@ -268,7 +268,7 @@ def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
     seed(scope, [item("AAA")])
     held: list[bool] = []
 
-    def _pull(b, *, force, commit, phases=None):
+    def _pull(b, *, force, commit, only=None, phases=None):
         try:
             with sync.exclusive(scope):
                 held.append(False)
@@ -292,7 +292,7 @@ def test_the_pin_waits_for_the_vault(scope, monkeypatch):
     order: list[str] = []
 
     monkeypatch.setattr(sync, "_pull",
-                        lambda b, *, force, commit, phases=None:
+                        lambda b, *, force, commit, only=None, phases=None:
                         {"changed": True, "commit_message": "m"})
     monkeypatch.setattr(sync, "_commit",
                         lambda b, message: order.append("commit") or {})
@@ -312,7 +312,7 @@ def test_a_pass_says_where_it_spent_its_time(scope, monkeypatch):
     third of it happened after the last response from Zotero."""
     seed(scope, [item("AAA")])
     monkeypatch.setattr(sync, "_pull",
-                        lambda b, *, force, commit, phases=None:
+                        lambda b, *, force, commit, only=None, phases=None:
                         {"changed": True})
 
     out = sync.run(FakeVault(), scope)
