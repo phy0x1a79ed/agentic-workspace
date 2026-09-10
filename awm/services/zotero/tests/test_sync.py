@@ -268,7 +268,7 @@ def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
     seed(scope, [item("AAA")])
     held: list[bool] = []
 
-    def _pull(b, *, force, commit):
+    def _pull(b, *, force, commit, phases=None):
         try:
             with sync.exclusive(scope):
                 held.append(False)
@@ -279,6 +279,25 @@ def test_sync_holds_the_lock_across_both_halves(scope, monkeypatch):
     monkeypatch.setattr(sync, "_pull", _pull)
     sync.run(FakeVault(), scope)
     assert held == [True], "the lock was not held while pulling"
+
+
+def test_a_pass_says_where_it_spent_its_time(scope, monkeypatch):
+    """Reasoning about this from request counts got it wrong once already: the
+    counts said the library read was the whole delay, and a measured pass said a
+    third of it happened after the last response from Zotero."""
+    seed(scope, [item("AAA")])
+    monkeypatch.setattr(sync, "_pull",
+                        lambda b, *, force, commit, phases=None:
+                        {"changed": True})
+
+    out = sync.run(FakeVault(), scope)
+
+    timings = out["timings"]
+    assert timings["total_s"] >= 0
+    # The phases a person waits through, named so a slow one can be found.
+    for phase in ("resolve_root", "survey", "upsert", "retire", "census",
+                  "status_note"):
+        assert phase in timings, f"{phase} is not timed"
 
 
 # -- the reference itself ----------------------------------------------------
