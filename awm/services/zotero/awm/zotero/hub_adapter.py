@@ -25,6 +25,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from awm.gatewayclient import ServiceAdapter, spawn_supervised
@@ -248,9 +250,17 @@ async def _woken(library: str, version: int) -> None:
     The stream must keep reading its socket while a pass runs, or a change that
     lands during a long apply is never delivered. So this sets a flag and
     returns, and the worker below does the work.
+
+    The two stamps are for two different questions. `at` is a wall clock to a
+    millisecond, and is what a save's own upload time is compared against to
+    price the leg between Zotero accepting an upload and this frame arriving —
+    the one segment of the delay nothing here can shorten. `since` is monotonic
+    and prices the leg the push loop owns.
     """
     LAST["told"] = {"library": library, "version": version,
-                    "at": sync._now()}
+                    "at": datetime.now(timezone.utc)
+                    .isoformat(timespec="milliseconds"),
+                    "since": time.monotonic()}
     WOKEN.set()
 
 
@@ -268,9 +278,16 @@ async def _push_loop() -> None:
             await asyncio.sleep(SETTLE_S)
             WOKEN.clear()
             LAST["tick"] = "push"
+            told_at = (LAST.get("told") or {}).get("since")
             try:
                 LAST["result"] = await _h_sync({"trigger": "push"}, None)
                 LAST["error"] = None
+                if told_at is not None:
+                    # The frame-to-note number, which is what a person feels.
+                    # The pass logs its own breakdown; this is the wrapper
+                    # around it, settle included.
+                    log.info("zotero: %.1fs from the stream frame to the pass "
+                             "finishing", time.monotonic() - told_at)
             except source.ZoteroUnavailable as e:
                 LAST["error"] = str(e)[:300]
                 log.info("zotero: library not reachable on this push: %s", e)

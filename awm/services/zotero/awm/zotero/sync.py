@@ -21,6 +21,7 @@ import html
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -169,13 +170,17 @@ def pull(scope: Path | None = None, *, force: bool = False,
         return _pull(b, force=force, commit=commit)
 
 
-def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
+def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool,
+          phases: Phases | None = None) -> dict[str, Any]:
+    at = phases.mark if phases else (lambda _name: None)
     had = b.versions
     previous = b.read()
+    at("bundle_read")
     out: dict[str, Any] = {"had": had, "path": str(b.root)}
 
     libraries = source.libraries()
     now = {lib["id"]: source.library_version(lib["id"]) for lib in libraries}
+    at("zotero_probe")
     # Risen, not merely different. Versions are assigned by the service and only
     # ever go up, so a library reporting a lower one is a reader that has fallen
     # behind rather than a library that has changed. Re-reading from it rewrote
@@ -205,10 +210,12 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
                              {}, library=lib["id"],
                              library_name=lib["name"])
         for lib in moved]
+    at("zotero_read")
     # The cursor is monotone even when a reader is not, so a library that went
     # backwards keeps the higher number and stops being read until it catches up.
     effective = {k: max(now.get(k, 0), had.get(k, 0)) for k in {*now, *had}}
     payload = b.write(bundle_mod.merge(parts, effective))
+    at("bundle_write")
 
     out.update({"versions": effective, "read_versions": now, "changed": True,
                 "behind": behind,
@@ -220,6 +227,7 @@ def _pull(b: bundle_mod.Bundle, *, force: bool, commit: bool) -> dict[str, Any]:
         out["git"] = _commit(b, "zotero: library at "
                                 + ", ".join(f"{by_library[k]} {v}"
                                             for k, v in sorted(now.items())))
+        at("commit")
     return out
 
 
@@ -237,13 +245,18 @@ def run(vault, scope: Path | None = None, *, force: bool = False,
     bundle would be thousands of round trips proving nothing — so the apply
     runs only when the pull moved something.
     """
+    phases = Phases()
     with exclusive(scope) as b:
-        pulled = _pull(b, force=force, commit=commit)
+        phases.mark("lock")
+        pulled = _pull(b, force=force, commit=commit, phases=phases)
         out: dict[str, Any] = {"pull": pulled}
         if pulled.get("changed"):
             out["apply"] = _apply(vault, b, parent=parent,
                                   may_create=may_create, force=force,
-                                  trigger=trigger)
+                                  trigger=trigger, phases=phases)
+        out["timings"] = {"total_s": phases.total, **phases.spans}
+        log.info("zotero: %s pass in %.1fs — %s", trigger, phases.total,
+                 phases.summary())
         return out
 
 
@@ -454,6 +467,39 @@ def _stamp(item: dict) -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Phases:
+    """Where one pass spent its seconds.
+
+    A person waits for this pass, so which part of it is slow is an operational
+    question rather than a curiosity. Reasoning about it from request counts
+    got the answer wrong once already: the counts said the library read was
+    everything, and a measured pass said a third of the time was spent after
+    the last response from Zotero.
+
+    Monotonic, because the wall clock can step. Rounded, because nothing here
+    is worth more than a millisecond.
+    """
+
+    def __init__(self) -> None:
+        self._start = self._last = time.monotonic()
+        self.spans: dict[str, float] = {}
+
+    def mark(self, name: str) -> None:
+        now = time.monotonic()
+        self.spans[name] = round(now - self._last, 3)
+        self._last = now
+
+    @property
+    def total(self) -> float:
+        return round(time.monotonic() - self._start, 3)
+
+    def summary(self) -> str:
+        """The spans worth reading, largest first, as one log line."""
+        ranked = sorted(self.spans.items(), key=lambda kv: -kv[1])
+        return " ".join(f"{name}={span}s" for name, span in ranked
+                        if span >= 0.001)
 
 
 @dataclass
@@ -828,7 +874,9 @@ def _plan(vault, b: bundle_mod.Bundle, *, parent: str,
 
 def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
            may_create: bool = True, force: bool = False,
-           trigger: str = "hand") -> dict[str, Any]:
+           trigger: str = "hand",
+           phases: Phases | None = None) -> dict[str, Any]:
+    at = phases.mark if phases else (lambda _name: None)
     if not b.exists:
         raise FileNotFoundError(
             f"no bundle at {b.root} — run `awm zotero pull` on the node that "
@@ -838,7 +886,9 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
 
     root, source_of_root, labels = _resolve_root(
         vault, parent=parent, may_create=may_create)
+    at("resolve_root")
     digest = b.digest
+    at("digest")
     if not force and labels.get(APPLIED_LABEL) == digest:
         return {"library_note": root, "root_from": source_of_root,
                 "skipped": True, "digest": digest, "items": len(items),
@@ -846,15 +896,19 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
                 "calls": dict(getattr(vault, "calls", {}))}
 
     survey = _survey(vault, root, source_of_root, labels)
+    at("survey")
     known, doubled = _collapse(vault, survey.items)
+    at("collapse")
 
     # One subtree per library. Two libraries may both have a collection called
     # "papers", and merging them would put a shared group's reading list inside
     # somebody's personal one with nothing saying it had happened.
     out, _folders = _upsert(vault, survey, known, items,
                             library.get("collections") or [], force=force)
+    at("upsert")
 
     removed = _retire(vault, known, {i["ref"] for i in items})
+    at("retire")
 
     # Last, and only here: a pass that died halfway must retry rather than
     # declare itself done.
@@ -872,9 +926,11 @@ def _apply(vault, b: bundle_mod.Bundle, *, parent: str,
         out["outside_root"] = _outside(vault, len(items))
     else:
         out["outside_root"] = None
+    at("census")
     out["trigger"] = trigger
     out["status_note"] = _write_status(vault, survey, out,
                                        library.get("versions"))
+    at("status_note")
     out["calls"] = dict(getattr(vault, "calls", {}))
     return out
 
